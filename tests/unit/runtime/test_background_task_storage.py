@@ -105,7 +105,7 @@ def test_background_task_storage_persists_delegated_reminder_episode_state(
         request=BackgroundTaskRequestSnapshot(
             prompt="delegate work",
             parent_session_id="leader-session",
-            metadata={"delegation": {"mode": "background", "subagent_type": "worker"}},
+            metadata={"delegation": {"mode": "background", "subagent_type": "execute"}},
         ),
         session_id="child-session",
     )
@@ -157,7 +157,7 @@ def test_background_task_storage_stops_delegated_reminder_on_terminal_state(
             request=BackgroundTaskRequestSnapshot(
                 prompt="delegate work",
                 parent_session_id="leader-session",
-                metadata={"delegation": {"mode": "background", "subagent_type": "worker"}},
+                metadata={"delegation": {"mode": "background", "subagent_type": "execute"}},
             ),
             session_id="child-session",
         ),
@@ -194,7 +194,7 @@ def test_background_task_storage_mark_sent_preserves_stronger_stop_condition(
             request=BackgroundTaskRequestSnapshot(
                 prompt="delegate work",
                 parent_session_id="leader-session",
-                metadata={"delegation": {"mode": "background", "subagent_type": "worker"}},
+                metadata={"delegation": {"mode": "background", "subagent_type": "execute"}},
             ),
             session_id="child-session",
         ),
@@ -815,7 +815,7 @@ def test_background_task_storage_enriches_parent_visible_delegated_event_payload
                 metadata={
                     "delegation": {
                         "mode": "background",
-                        "subagent_type": "worker",
+                        "subagent_type": "execute",
                         "description": "Quick delegated run",
                     }
                 },
@@ -851,7 +851,7 @@ def test_background_task_storage_enriches_parent_visible_delegated_event_payload
         "child_session_id": "child-session",
         "approval_request_id": "approval-42",
         "routing_mode": "background",
-        "routing_subagent_type": "worker",
+        "routing_subagent_type": "execute",
         "routing_description": "Quick delegated run",
     }
 
@@ -885,7 +885,7 @@ def test_background_task_storage_preserves_supervisor_completed_event_payload_fi
                 metadata={
                     "delegation": {
                         "mode": "background",
-                        "subagent_type": "advisor",
+                        "subagent_type": "review",
                     }
                 },
             ),
@@ -917,8 +917,8 @@ def test_background_task_storage_preserves_supervisor_completed_event_payload_fi
                 "delegated_task_id": "task-completed-event",
                 "approval_request_id": None,
                 "question_request_id": None,
-                "routing": {"mode": "background", "subagent_type": "advisor"},
-                "selected_preset": "advisor",
+                "routing": {"mode": "background", "subagent_type": "review"},
+                "selected_preset": "review",
                 "selected_execution_engine": "provider",
                 "lifecycle_status": "completed",
                 "approval_blocked": False,
@@ -935,7 +935,7 @@ def test_background_task_storage_preserves_supervisor_completed_event_payload_fi
     assert appended.payload["child_session_id"] == "child-session"
     assert appended.payload["status"] == "completed"
     assert appended.payload["result_available"] is True
-    assert appended.payload["routing_subagent_type"] == "advisor"
+    assert appended.payload["routing_subagent_type"] == "review"
     assert appended.payload["delegation"] == {
         "parent_session_id": "leader-session",
         "requested_child_session_id": "child-requested",
@@ -943,8 +943,8 @@ def test_background_task_storage_preserves_supervisor_completed_event_payload_fi
         "delegated_task_id": "task-completed-event",
         "approval_request_id": None,
         "question_request_id": None,
-        "routing": {"mode": "background", "subagent_type": "advisor"},
-        "selected_preset": "advisor",
+        "routing": {"mode": "background", "subagent_type": "review"},
+        "selected_preset": "review",
         "selected_execution_engine": "provider",
         "lifecycle_status": "completed",
         "approval_blocked": False,

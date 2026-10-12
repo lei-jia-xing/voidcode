@@ -153,7 +153,7 @@ def test_local_workflow_hierarchical_task_delegation_without_runtime_service(tmp
                         {
                             "prompt": "Read subtask json",
                             "run_in_background": False,
-                            "subagent_type": "worker",
+                            "subagent_type": "execute",
                             "load_skills": [],
                         },
                         tool_call_id="p-call-1",
@@ -209,7 +209,7 @@ def test_local_workflow_explicit_context_guards() -> None:
     task_tool = TaskTool()
     call = ToolCall(
         "task",
-        {"prompt": "unbound", "run_in_background": False, "subagent_type": "worker", "load_skills": []},
+        {"prompt": "unbound", "run_in_background": False, "subagent_type": "execute", "load_skills": []},
         tool_call_id="call-unbound",
     )
 

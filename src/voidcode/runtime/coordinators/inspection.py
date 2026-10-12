@@ -160,7 +160,6 @@ from ..session import (
     StoredSessionForestEntry,
     StoredSessionLineageEntry,
     StoredSessionSummary,
-    session_metadata_for_replay,
     validate_session_workspace,
 )
 from ..skill_metadata import fresh_request_metadata, skill_snapshot_from_metadata
@@ -727,7 +726,7 @@ class InspectionCoordinator:
         """Read the persisted session transcript without resume semantics."""
         validate_id(session_id)
         response = self._load_stored_response(session_id=session_id)
-        projected_metadata = session_metadata_for_replay(response.session.metadata)
+        projected_metadata = response.session.metadata
         return RuntimeResponse(
             session=SessionState(
                 session=response.session.session,
@@ -754,7 +753,7 @@ class InspectionCoordinator:
         if any(event.event_type in _POLICY_PROJECTED_EVENT_TYPES for event in events):
             events = self._events_with_runtime_policy_projection(
                 events,
-                metadata=session_metadata_for_replay(stored.metadata),
+                metadata=stored.metadata,
             )
         return SessionEventBatch(status=stored.status, events=events)
 

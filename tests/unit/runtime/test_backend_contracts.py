@@ -144,11 +144,11 @@ def test_runtime_policy_observability_payload_is_bounded_and_redacted() -> None:
 
     payload = events_module.runtime_policy_observability_payload(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "policy_version": "v1",
             "read_only": False,
-            "agent_preset": "leader",
-            "agent_manifest_id": "leader",
+            "agent_preset": "default",
+            "agent_manifest_id": "default",
             "intent": {
                 "label": "unspecified",
                 "confidence": 0.0,
@@ -170,12 +170,6 @@ def test_runtime_policy_observability_payload_is_bounded_and_redacted() -> None:
                 "allowed_event_scopes": ["pre_tool"],
                 "actions": ["observe"],
                 "authoritative": False,
-            },
-            "prompt_activation": {
-                "enabled": True,
-                "raw_prompt_stored": False,
-                "activated_this_turn": True,
-                "activated_refs": ["role_reminder"],
             },
             "precedence_trace": [{"source": "runtime_hard_denials", "applied": True}],
             "diagnostics": {"api_key": "<redacted>", "large": "x" * 1000},
@@ -224,14 +218,14 @@ def test_event_envelope_exposes_typed_delegated_lifecycle_payload() -> None:
                 "parent_session_id": "leader-session",
                 "child_session_id": "child-session",
                 "requested_child_session_id": "child-requested",
-                "routing": {"mode": "background", "subagent_type": "worker"},
+                "routing": {"mode": "background", "subagent_type": "execute"},
                 "lifecycle_status": "completed",
                 "result_available": True,
                 "approval_blocked": False,
                 "cancellation_cause": None,
                 "approval_request_id": None,
                 "question_request_id": None,
-                "selected_preset": "worker",
+                "selected_preset": "execute",
                 "selected_execution_engine": "provider",
             },
             "message": {
@@ -250,6 +244,6 @@ def test_event_envelope_exposes_typed_delegated_lifecycle_payload() -> None:
     assert delegated is not None
     assert delegated.delegation.delegated_task_id == "task-1"
     assert delegated.delegation.routing is not None
-    assert delegated.delegation.routing.subagent_type == "worker"
+    assert delegated.delegation.routing.subagent_type == "execute"
     assert delegated.message.summary_output == "Completed: delegated work"
     assert delegated.message.status == "completed"

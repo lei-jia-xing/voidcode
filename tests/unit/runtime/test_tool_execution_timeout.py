@@ -1572,7 +1572,7 @@ def test_cancelled_bound_task_command_cannot_register_a_child(tmp_path: Path, mo
             abort_signal=signal,
         )
         call = ToolCall(
-            "task", {"prompt": "must not start", "run_in_background": True, "subagent_type": "worker", "load_skills": []}, "cancelled-task-call"
+            "task", {"prompt": "must not start", "run_in_background": True, "subagent_type": "execute", "load_skills": []}, "cancelled-task-call"
         )
         command = bind_tool_command(TaskCommand(runtime=runtime).invoke, call=call, context=context)
         signal.set_cancelled(True, reason="foreground invocation cancelled")

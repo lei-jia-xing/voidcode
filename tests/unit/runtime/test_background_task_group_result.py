@@ -36,7 +36,7 @@ def _task(
             metadata={
                 "delegation": {
                     "mode": "background",
-                    "subagent_type": "worker",
+                    "subagent_type": "execute",
                     "parallel_group_id": group,
                     "parallel_group_size": size,
                 }

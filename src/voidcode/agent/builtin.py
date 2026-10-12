@@ -15,7 +15,7 @@ _WORKSPACE_DISCOVERY_TOOLS = (
 _CHILD_HANDOFF_TOOLS = ("yield",)
 
 
-_LEADER_TOOL_ALLOWLIST = (
+_DEFAULT_TOOL_ALLOWLIST = (
     *_WORKSPACE_DISCOVERY_TOOLS,
     "write",
     "edit",
@@ -32,45 +32,36 @@ _LEADER_TOOL_ALLOWLIST = (
     "mcp/*",
 )
 
-_BUILTIN_PROMPT_MATERIALIZATION_VERSION = 2
+_BUILTIN_PROMPT_MATERIALIZATION_VERSION = 3
 
-_LEADER_PRESET_HOOK_REFS = (
-    "role_reminder",
-    "delegation_guard",
-    "background_output_quality_guidance",
-    "delegated_retry_guidance",
-    "todo_continuation_guidance",
-)
+_DEFAULT_PRESET_HOOK_REFS = ("delegation_guard",)
 
-_DELEGATED_PRESET_HOOK_REFS = (
-    "role_reminder",
-    "delegation_guard",
-)
+_DELEGATED_PRESET_HOOK_REFS = ("delegation_guard",)
 
-LEADER_AGENT_MANIFEST = AgentManifest(
-    id="leader",
-    name="Leader",
+DEFAULT_AGENT_MANIFEST = AgentManifest(
+    id="default",
+    name="Default",
     mode="primary",
-    description=("Primary user-facing agent preset with runtime-owned delegation guidance for task, task_batch, and child preset selection."),
-    prompt_profile="leader",
+    description="General user-facing assistant; runtime owns policy and tool scope.",
+    prompt_profile="default",
     execution_engine="provider",
-    tool_allowlist=_LEADER_TOOL_ALLOWLIST,
-    preset_hook_refs=_LEADER_PRESET_HOOK_REFS,
+    tool_allowlist=_DEFAULT_TOOL_ALLOWLIST,
+    preset_hook_refs=_DEFAULT_PRESET_HOOK_REFS,
     top_level_selectable=True,
     prompt_materialization=AgentPromptMaterialization(
-        profile="leader",
+        profile="default",
         version=_BUILTIN_PROMPT_MATERIALIZATION_VERSION,
         source="builtin",
         format="text",
     ),
 )
 
-WORKER_AGENT_MANIFEST = AgentManifest(
-    id="worker",
-    name="Worker",
+EXECUTE_AGENT_MANIFEST = AgentManifest(
+    id="execute",
+    name="Execute",
     mode="subagent",
-    description=("Focused delegated executor preset for narrow implementation tasks, bounded by the active runtime tool allowlist."),
-    prompt_profile="worker",
+    description="Delegated execution of an assigned task; runtime enforces the active tool scope.",
+    prompt_profile="execute",
     execution_engine="provider",
     tool_allowlist=(
         *_WORKSPACE_DISCOVERY_TOOLS,
@@ -85,25 +76,25 @@ WORKER_AGENT_MANIFEST = AgentManifest(
     preset_hook_refs=_DELEGATED_PRESET_HOOK_REFS,
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
-        profile="worker",
+        profile="execute",
         version=_BUILTIN_PROMPT_MATERIALIZATION_VERSION,
         source="builtin",
         format="text",
     ),
 )
 
-ADVISOR_AGENT_MANIFEST = AgentManifest(
-    id="advisor",
-    name="Advisor",
+REVIEW_AGENT_MANIFEST = AgentManifest(
+    id="review",
+    name="Review",
     mode="subagent",
-    description=("Read-only advisory preset for architecture, debugging, risk, and review guidance."),
-    prompt_profile="advisor",
+    description="Delegated review of evidence, risks, and options.",
+    prompt_profile="review",
     execution_engine="provider",
     tool_allowlist=(*_WORKSPACE_DISCOVERY_TOOLS, *_CHILD_HANDOFF_TOOLS),
     preset_hook_refs=_DELEGATED_PRESET_HOOK_REFS,
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
-        profile="advisor",
+        profile="review",
         version=_BUILTIN_PROMPT_MATERIALIZATION_VERSION,
         source="builtin",
         format="text",
@@ -114,7 +105,7 @@ EXPLORE_AGENT_MANIFEST = AgentManifest(
     id="explore",
     name="Explore",
     mode="subagent",
-    description=("Read-only workspace-bound exploration preset for local code structure, paths, and pattern discovery."),
+    description="Delegated read-only discovery of relevant workspace evidence.",
     prompt_profile="explore",
     execution_engine="provider",
     tool_allowlist=(*_WORKSPACE_DISCOVERY_TOOLS, *_CHILD_HANDOFF_TOOLS),
@@ -128,25 +119,25 @@ EXPLORE_AGENT_MANIFEST = AgentManifest(
     ),
 )
 
-RESEARCHER_AGENT_MANIFEST = AgentManifest(
-    id="researcher",
-    name="Researcher",
+RESEARCH_AGENT_MANIFEST = AgentManifest(
+    id="research",
+    name="Research",
     mode="subagent",
-    description=("External research preset for public docs, repositories, and implementation examples."),
-    prompt_profile="researcher",
+    description="Delegated research using public sources and external evidence.",
+    prompt_profile="research",
     execution_engine="provider",
     tool_allowlist=("web_search", "web_fetch", *_CHILD_HANDOFF_TOOLS),
     preset_hook_refs=_DELEGATED_PRESET_HOOK_REFS,
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
-        profile="researcher",
+        profile="research",
         version=_BUILTIN_PROMPT_MATERIALIZATION_VERSION,
         source="builtin",
         format="text",
     ),
 )
 
-_PRODUCT_TOOL_ALLOWLIST = (
+_PLAN_TOOL_ALLOWLIST = (
     *_WORKSPACE_DISCOVERY_TOOLS,
     *_CHILD_HANDOFF_TOOLS,
     "skill",
@@ -155,19 +146,19 @@ _PRODUCT_TOOL_ALLOWLIST = (
     "invoke_tool",
 )
 
-PRODUCT_AGENT_MANIFEST = AgentManifest(
-    id="product",
-    name="Product",
+PLAN_AGENT_MANIFEST = AgentManifest(
+    id="plan",
+    name="Planning",
     mode="subagent",
-    description=("Product agent: produces a concrete implementation plan from a request without user interaction."),
-    prompt_profile="product",
+    description="Delegated read-only planning grounded in the request and relevant evidence.",
+    prompt_profile="plan",
     execution_engine="provider",
-    tool_allowlist=_PRODUCT_TOOL_ALLOWLIST,
+    tool_allowlist=_PLAN_TOOL_ALLOWLIST,
     preset_hook_refs=_DELEGATED_PRESET_HOOK_REFS,
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
-        profile="product",
-        version=2,
+        profile="plan",
+        version=_BUILTIN_PROMPT_MATERIALIZATION_VERSION,
         source="builtin",
         format="text",
     ),
@@ -237,12 +228,12 @@ def validate_builtin_agent_manifests(
 
 _VALIDATED_BUILTIN_AGENT_MANIFESTS = validate_builtin_agent_manifests(
     (
-        LEADER_AGENT_MANIFEST,
-        WORKER_AGENT_MANIFEST,
-        ADVISOR_AGENT_MANIFEST,
+        DEFAULT_AGENT_MANIFEST,
+        EXECUTE_AGENT_MANIFEST,
+        REVIEW_AGENT_MANIFEST,
         EXPLORE_AGENT_MANIFEST,
-        RESEARCHER_AGENT_MANIFEST,
-        PRODUCT_AGENT_MANIFEST,
+        RESEARCH_AGENT_MANIFEST,
+        PLAN_AGENT_MANIFEST,
     )
 )
 

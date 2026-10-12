@@ -573,8 +573,8 @@ def _delegated_request(prompt: str, *, parent_session_id: str = "leader-session"
         metadata={
             "delegation": {
                 "mode": "background",
-                "subagent_type": "worker",
-                "selected_preset": "worker",
+                "subagent_type": "execute",
+                "selected_preset": "execute",
                 "selected_execution_engine": "provider",
             }
         },

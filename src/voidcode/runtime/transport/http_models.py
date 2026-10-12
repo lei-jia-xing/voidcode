@@ -447,16 +447,6 @@ class RuntimePolicyHookPolicyBody(ResponseModel):
 
 
 @final
-class RuntimePolicyPromptActivationBody(ResponseModel):
-    """The prompt-activation projection (never the raw prompt)."""
-
-    enabled: bool
-    raw_prompt_stored: bool
-    activated_this_turn: bool
-    activated_refs: list[str]
-
-
-@final
 class RuntimePolicyBody(ResponseModel):
     """``runtime_policy_observability_payload``: the bounded policy projection.
 
@@ -476,7 +466,6 @@ class RuntimePolicyBody(ResponseModel):
     tool_policy: RuntimePolicyToolPolicyBody
     delegation_policy: RuntimePolicyDelegationPolicyBody
     hook_policy: RuntimePolicyHookPolicyBody
-    prompt_activation: RuntimePolicyPromptActivationBody
     precedence_trace: list[dict[str, str | bool | int | float | None]]
     diagnostics: dict[str, object]
     redacted: Literal[True]

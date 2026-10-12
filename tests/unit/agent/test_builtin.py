@@ -10,8 +10,8 @@ from voidcode.agent import (
 from voidcode.agent.builtin import validate_builtin_agent_manifests
 from voidcode.agent.models import AgentManifest, AgentPromptMaterialization
 
-_READ_ONLY_AGENT_PRESETS = ("advisor", "explore", "researcher", "product")
-_DELEGATED_ONLY_AGENT_PRESETS = ("worker", "advisor", "explore", "researcher", "product")
+_READ_ONLY_AGENT_PRESETS = ("review", "explore", "research", "plan")
+_DELEGATED_ONLY_AGENT_PRESETS = ("execute", "review", "explore", "research", "plan")
 _CALLABLE_CHILD_AGENT_PRESETS = _DELEGATED_ONLY_AGENT_PRESETS
 _MUTATING_TOOL_PATTERNS = frozenset(
     {
@@ -44,9 +44,7 @@ def test_builtin_agent_manifests_have_materialized_prompt_profiles_and_execution
 def test_builtin_agent_manifests_declare_top_level_selectability() -> None:
     manifests = list_builtin_agent_manifests()
 
-    assert [manifest.id for manifest in manifests if manifest.top_level_selectable] == [
-        "leader",
-    ]
+    assert [manifest.id for manifest in manifests if manifest.top_level_selectable] == ["default"]
 
 
 def test_builtin_delegated_only_agent_manifests_are_not_top_level_selectable() -> None:
@@ -61,7 +59,7 @@ def test_builtin_delegated_only_agent_manifests_are_not_top_level_selectable() -
 def test_builtin_subagent_tool_allowlists_enforce_role_boundaries() -> None:
     write_tools = {"write", "edit"}
 
-    for preset in ("advisor", "explore"):
+    for preset in ("review", "explore"):
         manifest = get_builtin_agent_manifest(preset)
         assert manifest is not None
         assert write_tools.isdisjoint(manifest.tool_allowlist)
@@ -69,20 +67,20 @@ def test_builtin_subagent_tool_allowlists_enforce_role_boundaries() -> None:
         assert "background_task" not in manifest.tool_allowlist
         assert "question" not in manifest.tool_allowlist
 
-    worker = get_builtin_agent_manifest("worker")
-    assert worker is not None
-    assert write_tools.issubset(worker.tool_allowlist)
-    assert "task" not in worker.tool_allowlist
-    assert "todo" in worker.tool_allowlist
-    assert "mcp/*" in worker.tool_allowlist
-    assert "background_task" not in worker.tool_allowlist
-    assert "question" not in worker.tool_allowlist
+    execute = get_builtin_agent_manifest("execute")
+    assert execute is not None
+    assert write_tools.issubset(execute.tool_allowlist)
+    assert "task" not in execute.tool_allowlist
+    assert "todo" in execute.tool_allowlist
+    assert "mcp/*" in execute.tool_allowlist
+    assert "background_task" not in execute.tool_allowlist
+    assert "question" not in execute.tool_allowlist
 
-    researcher = get_builtin_agent_manifest("researcher")
-    assert researcher is not None
-    assert "todo" not in researcher.tool_allowlist
-    assert "background_task" not in researcher.tool_allowlist
-    assert "question" not in researcher.tool_allowlist
+    research = get_builtin_agent_manifest("research")
+    assert research is not None
+    assert "todo" not in research.tool_allowlist
+    assert "background_task" not in research.tool_allowlist
+    assert "question" not in research.tool_allowlist
 
 
 def test_builtin_read_only_agent_tool_allowlists_exclude_mutating_capabilities() -> None:
@@ -101,20 +99,26 @@ def test_builtin_delegated_executor_roles_do_not_receive_recursive_task_tool() -
         assert "task" not in manifest.tool_allowlist
 
 
+def test_old_builtin_ids_are_not_builtin_routes() -> None:
+    for old_id in ("leader", "worker", "advisor", "researcher", "product"):
+        assert get_builtin_agent_manifest(old_id) is None
+        assert render_builtin_prompt_profile(old_id) is None
+
+
 def test_validate_builtin_agent_manifests_rejects_unknown_preset_hook_ref() -> None:
     with pytest.raises(ValueError, match="references unknown hook preset"):
         _ = validate_builtin_agent_manifests(
             (
                 AgentManifest(
-                    id="leader",
-                    name="Leader",
+                    id="default",
+                    name="Default",
                     mode="primary",
                     description="Primary preset",
-                    prompt_profile="leader",
+                    prompt_profile="default",
                     execution_engine="provider",
                     preset_hook_refs=("missing_hook",),
                     top_level_selectable=True,
-                    prompt_materialization=AgentPromptMaterialization(profile="leader"),
+                    prompt_materialization=AgentPromptMaterialization(profile="default"),
                 ),
             )
         )

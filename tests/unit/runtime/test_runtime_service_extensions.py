@@ -104,8 +104,8 @@ def _delegated_request(prompt: str, *, parent_session_id: str = "leader-session"
         metadata={
             "delegation": {
                 "mode": "background",
-                "subagent_type": "worker",
-                "selected_preset": "worker",
+                "subagent_type": "execute",
+                "selected_preset": "execute",
                 "selected_execution_engine": "provider",
             }
         },
@@ -135,7 +135,7 @@ def force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _prompt_materialization_payload(profile: str) -> dict[str, object]:
-    return {"profile": profile, "version": 2, "source": "builtin", "format": "text"}
+    return {"profile": profile, "version": 3, "source": "builtin", "format": "text"}
 
 
 def _private_attr(instance: object, name: str) -> Any:
@@ -968,7 +968,7 @@ def test_runtime_persists_agent_capability_snapshot_for_replay(
             model="opencode-zen/gpt-5.4",
             skills=RuntimeSkillsConfig(enabled=True),
             agent=RuntimeAgentConfig(
-                preset="leader",
+                preset="default",
                 hook_refs=("role_reminder",),
                 tools=RuntimeToolsConfig(allowlist=("read", "skill", "mcp/*")),
             ),
@@ -987,7 +987,7 @@ def test_runtime_persists_agent_capability_snapshot_for_replay(
     skill_snapshot = cast(dict[str, object], metadata["skill_snapshot"])
 
     assert capability_snapshot["snapshot_version"] == 4
-    assert cast(dict[str, object], capability_snapshot["agent"])["preset"] == "leader"
+    assert cast(dict[str, object], capability_snapshot["agent"])["preset"] == "default"
     generation = cast(dict[str, object], capability_snapshot["tools"])["generation"]
     assert isinstance(generation, str)
     assert cast(dict[str, object], capability_snapshot["skills"])["force_loaded_names"] == ["demo"]
@@ -2265,7 +2265,7 @@ def test_runtime_retries_failed_background_task_as_fresh_queued_task(
             metadata={
                 "delegation": {
                     "mode": "background",
-                    "subagent_type": "worker",
+                    "subagent_type": "execute",
                     "description": "Retry me",
                     "command": "test retry",
                 },
@@ -2469,7 +2469,7 @@ def test_runtime_drain_marks_invalid_queued_task_failed_and_continues(
             task=BackgroundTaskRef(id="task-invalid-metadata"),
             request=BackgroundTaskRequestSnapshot(
                 prompt="invalid",
-                metadata={"agent": {"preset": "leader", "model": ""}},
+                metadata={"agent": {"preset": "default", "model": ""}},
                 parent_session_id=parent.session.session.id,
             ),
             created_at=1,
@@ -2800,7 +2800,7 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
                 allowlist=("read", "grep"),
             ),
             agent=RuntimeAgentConfig(
-                preset="leader",
+                preset="default",
                 hook_refs=("role_reminder",),
                 context_transform_refs=("runtime_file_rules",),
                 model="opencode-zen/gpt-5.4",
@@ -2808,7 +2808,7 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
             context_window=RuntimeContextWindowConfig(),
             lsp=RuntimeLspConfig(enabled=True),
             mcp=RuntimeMcpConfig(enabled=True),
-            agents={"leader": RuntimeAgentConfig(preset="leader", model="opencode-zen/gpt-5.4")},
+            agents={"default": RuntimeAgentConfig(preset="default", model="opencode-zen/gpt-5.4")},
         ),
     )
 
@@ -2861,8 +2861,8 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
         allowlist=("read", "grep"),
     )
     assert effective.agent == RuntimeAgentConfig(
-        preset="leader",
-        prompt_profile="leader",
+        preset="default",
+        prompt_profile="default",
         hook_refs=("role_reminder",),
         context_transform_refs=("runtime_file_rules",),
         model="opencode-zen/gpt-5.4",
@@ -2881,7 +2881,7 @@ def test_runtime_config_request_metadata_overrides_supported_fields(
             model="opencode-zen/original",
             reasoning_effort="low",
             agent=RuntimeAgentConfig(
-                preset="leader",
+                preset="default",
                 context_transform_refs=("hook_preset_guidance", "runtime_file_rules"),
             ),
         ),
@@ -2892,7 +2892,7 @@ def test_runtime_config_request_metadata_overrides_supported_fields(
             prompt="hello",
             metadata=validate_runtime_request_metadata(
                 {
-                    "agent": {"preset": "leader", "model": "opencode-zen/gpt-5.4"},
+                    "agent": {"preset": "default", "model": "opencode-zen/gpt-5.4"},
                     "reasoning_effort": "medium",
                     "context_transform_refs": ["runtime_file_rules"],
                 }
@@ -2903,8 +2903,8 @@ def test_runtime_config_request_metadata_overrides_supported_fields(
     assert resolved.model == "opencode-zen/gpt-5.4"
     assert resolved.reasoning_effort == "medium"
     assert resolved.agent == RuntimeAgentConfig(
-        preset="leader",
-        prompt_profile="leader",
+        preset="default",
+        prompt_profile="default",
         context_transform_refs=("runtime_file_rules",),
         model="opencode-zen/gpt-5.4",
         execution_engine="provider",
@@ -2928,7 +2928,7 @@ def test_runtime_config_rejects_unknown_persisted_field(tmp_path: Path) -> None:
     (
         ("workflow", {"snapshot_version": 2}),
         ("context_transform_refs", ["runtime_file_rules"]),
-        ("agent_preset", "leader"),
+        ("agent_preset", "default"),
         ("provider", "openai"),
     ),
 )
@@ -2956,7 +2956,7 @@ def test_runtime_config_rejects_removed_top_level_metadata_without_runtime_confi
     with pytest.raises(ValueError, match="persisted session metadata must include runtime_config"):
         _ = runtime.effective_runtime_config_from_metadata(
             {
-                "agent": {"preset": "leader"},
+                "agent": {"preset": "default"},
                 "reasoning_effort": "medium",
                 "context_transform_refs": ["runtime_file_rules"],
             }
@@ -2973,7 +2973,7 @@ def test_runtime_child_capability_snapshot_is_bounded_by_parent_policy(
             execution_engine="provider",
             model="opencode-zen/gpt-5.4",
             agent=RuntimeAgentConfig(
-                preset="leader",
+                preset="default",
                 tools=RuntimeToolsConfig(allowlist=("read", "task", "yield")),
             ),
         ),
@@ -2985,7 +2985,7 @@ def test_runtime_child_capability_snapshot_is_bounded_by_parent_policy(
             prompt="delegated child",
             session_id="subset-child",
             parent_session_id="subset-parent",
-            metadata={"delegation": {"mode": "sync", "subagent_type": "worker"}},
+            metadata={"delegation": {"mode": "sync", "subagent_type": "execute"}},
         )
     )
 
@@ -3002,11 +3002,11 @@ def test_runtime_child_capability_snapshot_is_bounded_by_parent_policy(
     assert child_delegation["parent_bounded"] is True
     assert child_delegation["can_expand_parent_policy"] is False
     assert cast(list[str], child_delegation["allowed_child_presets"]) == [
-        "advisor",
+        "review",
         "explore",
-        "researcher",
-        "worker",
-        "product",
+        "research",
+        "execute",
+        "plan",
     ]
     assert child_delegation["denied"] == []
 
@@ -3616,7 +3616,7 @@ def test_runtime_effective_runtime_config_keeps_persisted_non_agent_sessions_cle
             providers=_STANDIN_PROVIDERS,
             model="fresh/model",
             agent=RuntimeAgentConfig(
-                preset="leader",
+                preset="default",
                 model="opencode-zen/gpt-5.4",
             ),
         ),
@@ -3681,18 +3681,18 @@ def test_runtime_effective_runtime_config_recovers_provider_engine(tmp_path: Pat
     assert effective.model == "opencode-zen/gpt-5.4"
 
 
-def test_runtime_product_agent_config_is_not_top_level_selectable(
+def test_runtime_plan_agent_config_is_not_top_level_selectable(
     tmp_path: Path,
 ) -> None:
-    # ``product`` is a delegated plan subagent (top_level_selectable=False), so
+    # ``plan`` is a delegated planning subagent (top_level_selectable=False), so
     # the runtime rejects it at construction time — the top-level active agent
     # must be an executable primary preset.
-    with pytest.raises(ValueError, match="agent preset 'product' cannot be executed as the top-level active agent"):
+    with pytest.raises(ValueError, match="agent preset 'plan' cannot be executed as the top-level active agent"):
         _ = VoidCodeRuntime(
             workspace=tmp_path,
             config=RuntimeConfig(
                 agent=RuntimeAgentConfig(
-                    preset="product",
+                    preset="plan",
                     model="opencode-zen/gpt-5.4",
                 )
             ),
@@ -3702,11 +3702,11 @@ def test_runtime_product_agent_config_is_not_top_level_selectable(
 def test_runtime_rejects_non_top_level_agent_config(tmp_path: Path) -> None:
     with pytest.raises(
         ValueError,
-        match="agent preset 'worker' cannot be executed as the top-level active agent",
+        match="agent preset 'execute' cannot be executed as the top-level active agent",
     ):
         _ = VoidCodeRuntime(
             workspace=tmp_path,
-            config=RuntimeConfig(agent=RuntimeAgentConfig(preset="worker")),
+            config=RuntimeConfig(agent=RuntimeAgentConfig(preset="execute")),
         )
 
 
@@ -3715,13 +3715,13 @@ def test_runtime_rejects_non_top_level_request_agent_override(tmp_path: Path) ->
 
     with pytest.raises(
         ValueError,
-        match=("request metadata 'agent': agent preset 'worker' cannot be executed as the top-level active agent"),
+        match=("request metadata 'agent': agent preset 'execute' cannot be executed as the top-level active agent"),
     ):
         _ = runtime.run(
             RuntimeRequest(
                 prompt="read sample.txt",
                 session_id="worker-agent-request",
-                metadata={"agent": {"preset": "worker"}},
+                metadata={"agent": {"preset": "execute"}},
             )
         )
 
@@ -3734,7 +3734,7 @@ def test_runtime_agent_tool_allowlist_limits_provider_visible_tools(tmp_path: Pa
         workspace=tmp_path,
         config=RuntimeConfig(
             agent=RuntimeAgentConfig(
-                preset="leader",
+                preset="default",
                 model="opencode-zen/gpt-5.4",
                 tools=RuntimeToolsConfig(allowlist=("read",)),
             )
@@ -3750,9 +3750,9 @@ def test_runtime_agent_tool_allowlist_limits_provider_visible_tools(tmp_path: Pa
     assert visible_tool_names == {"read"}
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
     assert runtime_config["agent"] == {
-        "preset": "leader",
-        "prompt_profile": "leader",
-        "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("leader")},
+        "preset": "default",
+        "prompt_profile": "default",
+        "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("default")},
         "model": "opencode-zen/gpt-5.4",
         "tools": {"allowlist": ["read"]},
     }
@@ -3766,7 +3766,7 @@ def test_runtime_agent_tool_default_set_further_narrows_allowlist(tmp_path: Path
         workspace=tmp_path,
         config=RuntimeConfig(
             agent=RuntimeAgentConfig(
-                preset="leader",
+                preset="default",
                 model="opencode-zen/gpt-5.4",
                 tools=RuntimeToolsConfig(
                     allowlist=("read", "grep"),
@@ -3793,7 +3793,7 @@ def test_runtime_agent_empty_tool_allowlist_exposes_no_tools(tmp_path: Path) -> 
         workspace=tmp_path,
         config=RuntimeConfig(
             agent=RuntimeAgentConfig(
-                preset="leader",
+                preset="default",
                 model="opencode-zen/gpt-5.4",
                 tools=RuntimeToolsConfig(allowlist=()),
             )
@@ -3816,7 +3816,7 @@ def test_runtime_agent_empty_default_set_exposes_no_tools(tmp_path: Path) -> Non
         workspace=tmp_path,
         config=RuntimeConfig(
             agent=RuntimeAgentConfig(
-                preset="leader",
+                preset="default",
                 model="opencode-zen/gpt-5.4",
                 tools=RuntimeToolsConfig(
                     allowlist=("read", "grep"),
@@ -3842,7 +3842,7 @@ def test_runtime_agent_builtin_tools_disabled_exposes_no_builtin_tools(tmp_path:
         workspace=tmp_path,
         config=RuntimeConfig(
             agent=RuntimeAgentConfig(
-                preset="leader",
+                preset="default",
                 model="opencode-zen/gpt-5.4",
                 tools=RuntimeToolsConfig(
                     builtin=RuntimeToolsBuiltinConfig(enabled=False),
@@ -3859,9 +3859,9 @@ def test_runtime_agent_builtin_tools_disabled_exposes_no_builtin_tools(tmp_path:
     assert registry.requests[0].available_tools == ()
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
     assert runtime_config["agent"] == {
-        "preset": "leader",
-        "prompt_profile": "leader",
-        "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("leader")},
+        "preset": "default",
+        "prompt_profile": "default",
+        "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("default")},
         "model": "opencode-zen/gpt-5.4",
         "tools": {"builtin": {"enabled": False}},
     }
@@ -3878,7 +3878,7 @@ def test_runtime_agent_builtin_tools_disabled_preserves_injected_non_builtin_too
         tool_registry=ToolRegistry.from_tools((_InjectedMcpNamespaceTool(),)),
         config=RuntimeConfig(
             agent=RuntimeAgentConfig(
-                preset="leader",
+                preset="default",
                 model="opencode-zen/gpt-5.4",
                 tools=RuntimeToolsConfig(
                     builtin=RuntimeToolsBuiltinConfig(enabled=False),
@@ -3914,7 +3914,7 @@ def test_runtime_agent_tool_allowlist_blocks_invocation(tmp_path: Path) -> None:
         workspace=tmp_path,
         config=RuntimeConfig(
             agent=RuntimeAgentConfig(
-                preset="leader",
+                preset="default",
                 model="opencode-zen/gpt-5.4",
                 tools=RuntimeToolsConfig(allowlist=("read",)),
             )
@@ -3987,7 +3987,7 @@ def test_runtime_agent_tool_allowlist_survives_approval_resume(tmp_path: Path) -
         config=RuntimeConfig(
             approval_mode="ask",
             agent=RuntimeAgentConfig(
-                preset="leader",
+                preset="default",
                 model="opencode-zen/gpt-5.4",
                 tools=RuntimeToolsConfig(allowlist=("write",)),
             ),
@@ -4003,7 +4003,7 @@ def test_runtime_agent_tool_allowlist_survives_approval_resume(tmp_path: Path) -
         config=RuntimeConfig(
             approval_mode="ask",
             agent=RuntimeAgentConfig(
-                preset="leader",
+                preset="default",
                 model="opencode-zen/gpt-5.4",
                 tools=RuntimeToolsConfig(allowlist=("read",)),
             ),

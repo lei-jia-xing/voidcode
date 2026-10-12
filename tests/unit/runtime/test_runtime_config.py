@@ -8,7 +8,7 @@ from typing import Literal, cast
 
 import pytest
 
-from voidcode.agent import LEADER_AGENT_MANIFEST, AgentPromptMaterialization, get_builtin_agent_manifest
+from voidcode.agent import AgentPromptMaterialization, get_builtin_agent_manifest
 from voidcode.agent.models import AgentMcpBindingIntent
 from voidcode.formatter import RuntimeFormatterPresetConfig, default_formatter_presets
 from voidcode.provider.config import (
@@ -67,7 +67,7 @@ from voidcode.tui.theme import validate_theme_configuration
 
 
 def _prompt_materialization_payload(profile: str) -> dict[str, object]:
-    return {"profile": profile, "version": 2, "source": "builtin", "format": "text"}
+    return {"profile": profile, "version": 3, "source": "builtin", "format": "text"}
 
 
 def _write_agent_manifest(path: Path, frontmatter: str, body: str = "Custom prompt.") -> None:
@@ -912,7 +912,7 @@ def test_runtime_config_parses_agent_preset_from_repo_file(tmp_path: Path) -> No
         tmp_path,
         {
             "agent": {
-                "preset": "leader",
+                "preset": "default",
                 "model": "opencode-zen/gpt-5.4",
                 "tools": {"builtin": {"enabled": True}},
                 "skills": {"enabled": True, "paths": [".voidcode/skills"]},
@@ -925,8 +925,8 @@ def test_runtime_config_parses_agent_preset_from_repo_file(tmp_path: Path) -> No
     config = load_runtime_config(tmp_path, env={})
 
     assert config.agent == RuntimeAgentConfig(
-        preset="leader",
-        prompt_profile="leader",
+        preset="default",
+        prompt_profile="default",
         model="opencode-zen/gpt-5.4",
         execution_engine="provider",
         tools=RuntimeToolsConfig(
@@ -1069,7 +1069,7 @@ def test_runtime_config_applies_manifest_fallback_models_to_configured_agent_mod
 def test_runtime_agent_payload_round_trips_through_serialization() -> None:
     agent = parse_runtime_agent_payload(
         {
-            "preset": "leader",
+            "preset": "default",
             "model": "opencode-zen/gpt-5.4",
             "tools": {
                 "builtin": {"enabled": True},
@@ -1084,9 +1084,9 @@ def test_runtime_agent_payload_round_trips_through_serialization() -> None:
 
     assert agent is not None
     assert serialize_runtime_agent_config(agent, include_runtime_internal=True) == {
-        "preset": "leader",
-        "prompt_profile": "leader",
-        "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("leader")},
+        "preset": "default",
+        "prompt_profile": "default",
+        "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("default")},
         "model": "opencode-zen/gpt-5.4",
         "tools": {
             "builtin": {"enabled": True},
@@ -1104,7 +1104,7 @@ def test_runtime_agent_payload_rejects_invalid_mcp_binding() -> None:
         match=r"runtime config field 'agent.mcp_binding.servers\[0\]' must be a string",
     ):
         _ = parse_runtime_agent_payload(
-            {"preset": "leader", "mcp_binding": {"servers": [123]}},
+            {"preset": "default", "mcp_binding": {"servers": [123]}},
             source="test payload",
         )
 
@@ -1112,19 +1112,19 @@ def test_runtime_agent_payload_rejects_invalid_mcp_binding() -> None:
 def test_runtime_agent_serialization_materialization_preserves_prompt_profile_override() -> None:
     agent = parse_runtime_agent_payload(
         {
-            "preset": "leader",
-            "runtime_internal": {"prompt_ref": "researcher", "prompt_source": "builtin"},
+            "preset": "default",
+            "runtime_internal": {"prompt_ref": "research", "prompt_source": "builtin"},
         },
         source="test payload",
         allow_runtime_internal=True,
     )
     assert agent is not None
     assert serialize_runtime_agent_config(agent, include_runtime_internal=True) == {
-        "preset": "leader",
-        "prompt_profile": "researcher",
+        "preset": "default",
+        "prompt_profile": "research",
         "runtime_internal": {
-            "prompt_materialization": _prompt_materialization_payload("researcher"),
-            "prompt_ref": "researcher",
+            "prompt_materialization": _prompt_materialization_payload("research"),
+            "prompt_ref": "research",
             "prompt_source": "builtin",
         },
     }
@@ -1133,7 +1133,7 @@ def test_runtime_agent_serialization_materialization_preserves_prompt_profile_ov
 def test_runtime_agent_payload_round_trips_explicit_empty_tool_boundaries() -> None:
     agent = parse_runtime_agent_payload(
         {
-            "preset": "leader",
+            "preset": "default",
             "tools": {
                 "allowlist": [],
                 "default": [],
@@ -1143,22 +1143,22 @@ def test_runtime_agent_payload_round_trips_explicit_empty_tool_boundaries() -> N
     )
 
     assert agent == RuntimeAgentConfig(
-        preset="leader",
-        prompt_profile="leader",
+        preset="default",
+        prompt_profile="default",
         execution_engine="provider",
         tools=RuntimeToolsConfig(allowlist=(), default=()),
     )
     assert serialize_runtime_agent_config(agent, include_runtime_internal=True) == {
-        "preset": "leader",
-        "prompt_profile": "leader",
-        "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("leader")},
+        "preset": "default",
+        "prompt_profile": "default",
+        "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("default")},
         "tools": {"allowlist": [], "default": []},
     }
 
 
 def test_runtime_agent_serialization_excludes_unsupported_local_tools() -> None:
     agent = RuntimeAgentConfig(
-        preset="leader",
+        preset="default",
         tools=RuntimeToolsConfig(
             local=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
             allowlist=("read",),
@@ -1166,23 +1166,23 @@ def test_runtime_agent_serialization_excludes_unsupported_local_tools() -> None:
     )
 
     assert serialize_runtime_agent_config(agent, include_runtime_internal=True) == {
-        "preset": "leader",
-        "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("leader")},
+        "preset": "default",
+        "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("default")},
         "tools": {"allowlist": ["read"]},
     }
 
 
 def test_runtime_agent_payload_resolves_through_builtin_agent_manifest() -> None:
-    manifest = get_builtin_agent_manifest("leader")
+    manifest = get_builtin_agent_manifest("default")
 
-    assert manifest == LEADER_AGENT_MANIFEST
+    assert manifest is not None
 
-    agent = parse_runtime_agent_payload({"preset": "leader"}, source="test payload")
+    agent = parse_runtime_agent_payload({"preset": "default"}, source="test payload")
 
     assert agent == RuntimeAgentConfig(
-        preset="leader",
-        prompt_profile=LEADER_AGENT_MANIFEST.prompt_profile,
-        execution_engine=LEADER_AGENT_MANIFEST.execution_engine,
+        preset="default",
+        prompt_profile=manifest.prompt_profile,
+        execution_engine=manifest.execution_engine,
     )
 
 
@@ -1192,17 +1192,17 @@ def test_runtime_agent_payload_rejects_removed_leader_mode() -> None:
         match="runtime config field 'agent.leader_mode' is not supported",
     ):
         _ = parse_runtime_agent_payload(
-            {"preset": "leader", "leader_mode": "plan_first"},
+            {"preset": "default", "leader_mode": "plan_first"},
             source="test payload",
         )
 
 
-def test_runtime_agent_payload_accepts_future_role_presets_without_execution_mapping() -> None:
-    agent = parse_runtime_agent_payload({"preset": "worker"}, source="test payload")
+def test_runtime_agent_payload_accepts_builtin_role_presets() -> None:
+    agent = parse_runtime_agent_payload({"preset": "execute"}, source="test payload")
 
     assert agent == RuntimeAgentConfig(
-        preset="worker",
-        prompt_profile="worker",
+        preset="execute",
+        prompt_profile="execute",
         execution_engine="provider",
     )
 
@@ -1210,9 +1210,9 @@ def test_runtime_agent_payload_accepts_future_role_presets_without_execution_map
 def test_runtime_agent_payload_parses_prompt_and_hook_references() -> None:
     agent = parse_runtime_agent_payload(
         {
-            "preset": "leader",
+            "preset": "default",
             "runtime_internal": {
-                "prompt_ref": "advisor",
+                "prompt_ref": "review",
                 "prompt_source": "builtin",
             },
             "hook_refs": ["role_reminder", "delegation_guard"],
@@ -1222,10 +1222,10 @@ def test_runtime_agent_payload_parses_prompt_and_hook_references() -> None:
     )
 
     assert agent == RuntimeAgentConfig(
-        preset="leader",
-        prompt_profile="advisor",
+        preset="default",
+        prompt_profile="review",
         runtime_internal=RuntimeAgentInternalState(
-            prompt_ref="advisor",
+            prompt_ref="review",
             prompt_source="builtin",
         ),
         hook_refs=("role_reminder", "delegation_guard"),
@@ -1233,10 +1233,39 @@ def test_runtime_agent_payload_parses_prompt_and_hook_references() -> None:
     )
 
 
+def test_resolved_builtin_defaults_replace_stale_persisted_prompt_and_hook_refs() -> None:
+    old_refs = (
+        "role_reminder",
+        "delegation_guard",
+        "background_output_quality_guidance",
+        "delegated_retry_guidance",
+        "todo_continuation_guidance",
+    )
+    legacy = RuntimeAgentConfig(
+        preset="default",
+        runtime_internal=RuntimeAgentInternalState(
+            prompt_materialization=AgentPromptMaterialization(
+                profile="default",
+                version=2,
+                source="builtin",
+                format="text",
+            ),
+            manifest_source_scope="builtin",
+            manifest_hook_refs=old_refs,
+        ),
+    )
+
+    resolved = runtime_config._resolve_agent_config(legacy)
+    assert resolved.runtime_internal is not None
+    assert resolved.runtime_internal.prompt_materialization is not None
+    assert resolved.runtime_internal.prompt_materialization.version == 3
+    assert resolved.runtime_internal.manifest_hook_refs == ("delegation_guard",)
+
+
 def test_runtime_agent_payload_parses_context_transform_references() -> None:
     agent = parse_runtime_agent_payload(
         {
-            "preset": "leader",
+            "preset": "default",
             "context_transform_refs": [
                 "hook_preset_guidance",
                 "runtime_file_rules",
@@ -1246,8 +1275,8 @@ def test_runtime_agent_payload_parses_context_transform_references() -> None:
     )
 
     assert agent == RuntimeAgentConfig(
-        preset="leader",
-        prompt_profile="leader",
+        preset="default",
+        prompt_profile="default",
         context_transform_refs=("hook_preset_guidance", "runtime_file_rules"),
         execution_engine="provider",
     )
@@ -1256,7 +1285,7 @@ def test_runtime_agent_payload_parses_context_transform_references() -> None:
 def test_runtime_agent_payload_applies_explicit_prompt_override() -> None:
     agent = parse_runtime_agent_payload(
         {
-            "preset": "leader",
+            "preset": "default",
             "prompt": "You are a local reviewer.",
             "prompt_append": "Always include file paths.",
         },
@@ -1275,7 +1304,7 @@ def test_runtime_agent_payload_applies_explicit_prompt_override() -> None:
 
 def test_runtime_agent_payload_appends_to_builtin_prompt() -> None:
     agent = parse_runtime_agent_payload(
-        {"preset": "leader", "prompt_append": "Prefer concise findings."},
+        {"preset": "default", "prompt_append": "Prefer concise findings."},
         source="test payload",
     )
 
@@ -1290,7 +1319,7 @@ def test_runtime_agent_payload_appends_to_builtin_prompt() -> None:
 
     with pytest.raises(ValueError, match=r"runtime config field 'agent.prompt_ref' is not supported"):
         _ = parse_runtime_agent_payload(
-            {"preset": "leader", "prompt_ref": "unknown"},
+            {"preset": "default", "prompt_ref": "unknown"},
             source="test payload",
         )
 
@@ -1301,13 +1330,13 @@ def test_runtime_agent_payload_rejects_unknown_hook_reference() -> None:
         match=r"runtime config field 'agent.hook_refs' references unknown hook preset",
     ):
         _ = parse_runtime_agent_payload(
-            {"preset": "leader", "hook_refs": ["unknown"]},
+            {"preset": "default", "hook_refs": ["unknown"]},
             source="test payload",
         )
 
     with pytest.raises(ValueError, match=r"runtime config field 'agent.manifest_hook_refs' is not supported"):
         _ = parse_runtime_agent_payload(
-            {"preset": "leader", "manifest_hook_refs": ["unknown"]},
+            {"preset": "default", "manifest_hook_refs": ["unknown"]},
             source="test payload",
         )
 
@@ -1321,7 +1350,7 @@ def test_runtime_agent_payload_rejects_unknown_context_transform_reference() -> 
         ),
     ):
         _ = parse_runtime_agent_payload(
-            {"preset": "leader", "context_transform_refs": ["unknown"]},
+            {"preset": "default", "context_transform_refs": ["unknown"]},
             source="test payload",
         )
 
@@ -1331,8 +1360,8 @@ def test_runtime_config_parses_agents_map_with_builtin_keys(tmp_path: Path) -> N
         tmp_path,
         {
             "agents": {
-                "leader": {"model": "opencode-zen/gpt-5.4"},
-                "worker": {"model": "anthropic/claude-3-5-sonnet"},
+                "default": {"model": "opencode-zen/gpt-5.4"},
+                "execute": {"model": "anthropic/claude-3-5-sonnet"},
             }
         },
     )
@@ -1340,16 +1369,16 @@ def test_runtime_config_parses_agents_map_with_builtin_keys(tmp_path: Path) -> N
     config = load_runtime_config(tmp_path, env={})
 
     assert config.agents is not None
-    assert set(config.agents.keys()) == {"leader", "worker"}
-    assert config.agents["leader"] == RuntimeAgentConfig(
-        preset="leader",
-        prompt_profile="leader",
+    assert set(config.agents.keys()) == {"default", "execute"}
+    assert config.agents["default"] == RuntimeAgentConfig(
+        preset="default",
+        prompt_profile="default",
         model="opencode-zen/gpt-5.4",
         execution_engine="provider",
     )
-    assert config.agents["worker"] == RuntimeAgentConfig(
-        preset="worker",
-        prompt_profile="worker",
+    assert config.agents["execute"] == RuntimeAgentConfig(
+        preset="execute",
+        prompt_profile="execute",
         model="anthropic/claude-3-5-sonnet",
         execution_engine="provider",
     )
@@ -1360,7 +1389,7 @@ def test_runtime_config_parses_agents_fallback_models_shorthand(tmp_path: Path) 
         tmp_path,
         {
             "agents": {
-                "worker": {
+                "execute": {
                     "model": "opencode-zen/gpt-5.4",
                     "fallback_models": ["opencode-zen/gpt-5.3", "custom/demo"],
                 }
@@ -1371,25 +1400,25 @@ def test_runtime_config_parses_agents_fallback_models_shorthand(tmp_path: Path) 
     config = load_runtime_config(tmp_path, env={})
 
     assert config.agents is not None
-    assert config.agents["worker"].provider_fallback == RuntimeProviderFallbackConfig(
+    assert config.agents["execute"].provider_fallback == RuntimeProviderFallbackConfig(
         preferred_model="opencode-zen/gpt-5.4",
         fallback_models=("opencode-zen/gpt-5.3", "custom/demo"),
     )
-    assert serialize_runtime_agent_config(config.agents["worker"], include_runtime_internal=True) == {
-        "preset": "worker",
-        "prompt_profile": "worker",
-        "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("worker")},
+    assert serialize_runtime_agent_config(config.agents["execute"], include_runtime_internal=True) == {
+        "preset": "execute",
+        "prompt_profile": "execute",
+        "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("execute")},
         "model": "opencode-zen/gpt-5.4",
         "fallback_models": ["opencode-zen/gpt-5.3", "custom/demo"],
     }
 
 
 def test_runtime_config_rejects_agents_fallback_models_without_model(tmp_path: Path) -> None:
-    _write_runtime_config(tmp_path, {"agents": {"worker": {"fallback_models": ["opencode-zen/gpt-5.3"]}}})
+    _write_runtime_config(tmp_path, {"agents": {"execute": {"fallback_models": ["opencode-zen/gpt-5.3"]}}})
 
     with pytest.raises(
         ValueError,
-        match=r"runtime config field 'agents.worker.model' is required",
+        match=r"runtime config field 'agents.execute.model' is required",
     ):
         _ = load_runtime_config(tmp_path, env={})
 
@@ -1400,7 +1429,7 @@ def test_runtime_config_parses_agents_map_with_custom_keys(tmp_path: Path) -> No
         {
             "agents": {
                 "my_helper": {
-                    "preset": "advisor",
+                    "preset": "review",
                     "model": "anthropic/claude-3-5-sonnet",
                 },
                 "code-finder": {"preset": "explore"},
@@ -1412,8 +1441,8 @@ def test_runtime_config_parses_agents_map_with_custom_keys(tmp_path: Path) -> No
 
     assert config.agents is not None
     assert config.agents["my_helper"] == RuntimeAgentConfig(
-        preset="advisor",
-        prompt_profile="advisor",
+        preset="review",
+        prompt_profile="review",
         model="anthropic/claude-3-5-sonnet",
         execution_engine="provider",
     )
@@ -1429,8 +1458,8 @@ def test_runtime_config_rejects_internal_agent_references_in_repo_config(tmp_pat
         tmp_path,
         {
             "agent": {
-                "preset": "leader",
-                "prompt_ref": "researcher",
+                "preset": "default",
+                "prompt_ref": "research",
                 "prompt_source": "builtin",
                 "hook_refs": ["role_reminder"],
             },
@@ -1445,7 +1474,7 @@ def test_runtime_config_parses_agent_context_transform_refs(tmp_path: Path) -> N
         tmp_path,
         {
             "agent": {
-                "preset": "leader",
+                "preset": "default",
                 "context_transform_refs": ["runtime_file_rules"],
             }
         },
@@ -1454,8 +1483,8 @@ def test_runtime_config_parses_agent_context_transform_refs(tmp_path: Path) -> N
     config = load_runtime_config(tmp_path, env={})
 
     assert config.agent == RuntimeAgentConfig(
-        preset="leader",
-        prompt_profile="leader",
+        preset="default",
+        prompt_profile="default",
         context_transform_refs=("runtime_file_rules",),
         execution_engine="provider",
     )
@@ -2048,29 +2077,29 @@ def test_runtime_config_rejects_invalid_repo_local_execution_engine(tmp_path: Pa
             id="providers-openai-shape",
         ),
         pytest.param(
-            {"agent": {"preset": "leader", "tools": {"paths": [".voidcode/tools"]}}},
+            {"agent": {"preset": "default", "tools": {"paths": [".voidcode/tools"]}}},
             "runtime config field 'agent.tools.paths'",
             id="agent-tools-paths-removed",
         ),
         pytest.param(
-            {"agent": {"preset": "leader", "tools": {"local": {"enabled": True}}}},
+            {"agent": {"preset": "default", "tools": {"local": {"enabled": True}}}},
             "runtime config field 'agent.tools.local' is not supported",
             id="agent-tools-local-unsupported",
         ),
         pytest.param(
-            {"agent": {"preset": "leader", "tools": {"local": None}}},
+            {"agent": {"preset": "default", "tools": {"local": None}}},
             "runtime config field 'agent.tools.local' is not supported",
             id="agent-tools-local-null-unsupported",
         ),
         pytest.param(
-            {"agent": {"preset": "leader", "plan": {"provider": "custom"}}},
+            {"agent": {"preset": "default", "plan": {"provider": "custom"}}},
             "runtime config field 'agent.plan'",
             id="agent-plan-removed",
         ),
         pytest.param(
-            {"agent": {"leader": {"model": "opencode-zen/gpt-5.4"}}},
-            "runtime config field 'agent.leader'",
-            id="agent-nested-preset-alias-removed",
+            {"agent": {"default": {"model": "opencode-zen/gpt-5.4"}}},
+            "runtime config field 'agent.default'",
+            id="agent-nested-preset-config-key-unsupported",
         ),
         pytest.param(
             {"providers": {"openai": {"api_key": 1}}},
@@ -2685,9 +2714,8 @@ def test_runtime_config_parses_policy_config_contract(tmp_path: Path) -> None:
                 "enabled": True,
                 "version": "v1",
                 "tool_policy": {"default": "runtime_default"},
-                "delegation_policy": {"default": "runtime_default", "deny": ["product"]},
+                "delegation_policy": {"default": "runtime_default", "deny": ["plan"]},
                 "hook_policy": {"allowed_event_scopes": ["pre_tool", "post_tool"]},
-                "prompt_activation": {"enabled": True},
             }
         },
     )
@@ -2696,19 +2724,19 @@ def test_runtime_config_parses_policy_config_contract(tmp_path: Path) -> None:
 
     policy = getattr(config, "policy", None)
     assert policy is not None
-    assert policy.schema_version == 1
+    assert policy.schema_version == 2
     assert policy.version == "v1"
-    assert policy.delegation_policy.denied == ("product",)
+    assert policy.delegation_policy.denied == ("plan",)
     assert policy.hook_policy.allowed_event_scopes == ("pre_tool", "post_tool")
 
 
-def test_runtime_config_policy_allows_product_delegation(tmp_path: Path) -> None:
+def test_runtime_config_policy_allows_plan_delegation(tmp_path: Path) -> None:
     _write_runtime_config(
         tmp_path,
         {
             "policy": {
                 "version": "v1",
-                "delegation_policy": {"allow": ["product"]},
+                "delegation_policy": {"allow": ["plan"]},
             }
         },
     )
@@ -2716,4 +2744,4 @@ def test_runtime_config_policy_allows_product_delegation(tmp_path: Path) -> None
     config = load_runtime_config(tmp_path, env={})
 
     assert config.policy is not None
-    assert config.policy.delegation_policy.allowed == ("product",)
+    assert config.policy.delegation_policy.allowed == ("plan",)

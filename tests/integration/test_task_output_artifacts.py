@@ -94,7 +94,7 @@ class _SingleTaskGraph:
                             "prompt": "large structured child",
                             "run_in_background": True,
                             "load_skills": [],
-                            "subagent_type": "worker",
+                            "subagent_type": "execute",
                             "description": "Large structured child",
                             "outputSchema": SCHEMA,
                             "schemaMode": "strict",
@@ -158,7 +158,7 @@ class _BatchGraph:
                                 {
                                     "prompt": prompt,
                                     "load_skills": [],
-                                    "subagent_type": "worker",
+                                    "subagent_type": "execute",
                                     "description": description,
                                     "outputSchema": BATCH_SCHEMA,
                                     "schemaMode": "strict",
@@ -350,11 +350,11 @@ def test_task_batch_rejects_invalid_batches_before_child_creation(
     ) as runtime:
         _ = runtime.run(RuntimeRequest(prompt="task batch preflight", session_id=PARENT))
         command = TaskBatchCommand(runtime=runtime)
-        item = {"prompt": "identical child", "load_skills": [], "subagent_type": "worker"}
+        item = {"prompt": "identical child", "load_skills": [], "subagent_type": "execute"}
         tasks = (
             [dict(item) for _ in range(2)]
             if batch_kind == "duplicate"
-            else [{"prompt": f"child {index}", "load_skills": [], "subagent_type": "worker"} for index in range(101)]
+            else [{"prompt": f"child {index}", "load_skills": [], "subagent_type": "execute"} for index in range(101)]
         )
         with pytest.raises(ValueError):
             _ = command.invoke(_call("task_batch", {"tasks": tasks}), context=ToolContext(session_id=PARENT))
@@ -390,7 +390,7 @@ class _KeepAliveGraph:
                             "run_in_background": True,
                             "keep_alive": True,
                             "load_skills": [],
-                            "subagent_type": "worker",
+                            "subagent_type": "execute",
                         },
                     ),
                 )
@@ -473,8 +473,8 @@ class _MixedControlGraph:
                         "task_batch",
                         {
                             "tasks": [
-                                {"prompt": "approval child", "load_skills": [], "subagent_type": "worker"},
-                                {"prompt": "question child", "load_skills": [], "subagent_type": "worker"},
+                                {"prompt": "approval child", "load_skills": [], "subagent_type": "execute"},
+                                {"prompt": "question child", "load_skills": [], "subagent_type": "execute"},
                             ]
                         },
                     ),

@@ -100,7 +100,7 @@ class ResolvedSubagentRoute:
     execution_engine: Literal["provider"] = "provider"
 
 
-CALLABLE_SUBAGENT_PRESETS: tuple[str, ...] = ("advisor", "explore", "researcher", "worker", "product")
+CALLABLE_SUBAGENT_PRESETS: tuple[str, ...] = ("review", "explore", "research", "execute", "plan")
 
 
 def resolve_subagent_route(
@@ -109,8 +109,8 @@ def resolve_subagent_route(
     callable_subagent_presets: frozenset[str] | tuple[str, ...] | None = None,
 ) -> ResolvedSubagentRoute:
     callable_presets = callable_subagent_presets or CALLABLE_SUBAGENT_PRESETS
-    if requested.subagent_type == "leader":
-        raise ValueError("subagent_type 'leader' is not a callable child preset")
+    if requested.subagent_type == "default":
+        raise ValueError("subagent_type 'default' is not a callable child preset")
     if requested.subagent_type not in callable_presets:
         valid_presets = ", ".join(sorted(callable_presets))
         raise ValueError(f"unknown subagent_type '{requested.subagent_type}'; valid child presets are: {valid_presets}")

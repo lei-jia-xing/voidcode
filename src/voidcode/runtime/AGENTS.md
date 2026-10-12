@@ -75,6 +75,6 @@ runtime/
 - **Provider fallback:** `RuntimeHost.invoke()` delegates retry/fallback policy to runtime, swaps the active target/producer, and preserves the current core run-step watermark. Core owns batch completion and safe-boundary steering/follow-up progression.
 
 ## NOTES
-- Top-level execution is limited to `leader`; supported delegated child presets are `advisor`, `explore`, `researcher`, `worker`, and `product` (read-only plan agent delegated via `task`, handing the plan back with `yield`).
+- Top-level execution is limited to `default`; supported delegated child presets are `execute`, `review`, `explore`, `research`, and `plan` (read-only planning delegated via `task`, handing the plan back with `yield`).
 - LSP and MCP tooling are constructed by runtime and refreshed from managed capability state rather than treated as static builtins.
 - Session metadata carries runtime config truth for replay/resume, including provider fallback and applied skills.

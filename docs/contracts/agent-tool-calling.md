@@ -583,7 +583,7 @@ runtime 在成功的 mutation 后更新 session metadata 中的 runtime todo sta
 - `full_session=true` 仅对单任务 selector 生效，返回 bounded child-session metadata/transcript preview；聚合 selector 始终是 no-transcript projection。`message_limit` 被限制在 1–100。
 - `operation="ps"` 无额外参数，读取当前 active parent session 的 bounded background-task roster，不返回 prompt、transcript 或 child result content。
 - `operation="cancel"` 接受一个 `task_id`；unknown、running、completed/cancelled 等状态返回确定性的单任务 status payload。
-- `operation="steer"` 接受 `task_id`、`prompt`，向 parent-owned keep-alive delegated worker 派发下一轮指令。
+- `operation="steer"` 接受 `task_id`、`prompt`，向 parent-owned keep-alive delegated child 派发下一轮指令。
 - 详见 `docs/contracts/background-task-delegation.md`。
 
 #### `background_process`

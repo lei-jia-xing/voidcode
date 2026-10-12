@@ -237,7 +237,7 @@ class StdioAcpServer:
             request = RuntimeRequest(
                 prompt=prompt,
                 session_id=binding.runtime_session_id,
-                metadata=validate_runtime_request_metadata({"agent": {"preset": "leader"}}),
+                metadata=validate_runtime_request_metadata({"agent": {"preset": "default"}}),
                 allocate_session_id=binding.runtime_session_id is None,
             )
             chunks = self.runtime.run_stream(request)

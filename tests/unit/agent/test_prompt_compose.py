@@ -9,57 +9,65 @@ from voidcode.agent import AgentPromptMaterialization, get_builtin_agent_manifes
 from voidcode.agent import prompts as agent_prompts
 
 
-def test_typed_package_body_precedes_append_and_does_not_select_builtin_profile() -> None:
+def test_typed_package_body_precedes_append_without_builtin_prompt_selection() -> None:
     materialization = AgentPromptMaterialization(
         profile="leader",
         version=1,
         source="custom_markdown",
         format="markdown",
-        body="  package-owned persona  ",
+        body="  package-owned prompt  ",
         prompt_append="  user-authored constraint  ",
     )
     rendered = render_agent_prompt(materialization)
     assert rendered is not None
-    assert rendered.startswith("package-owned persona")
+    assert rendered.startswith("package-owned prompt")
     assert rendered.endswith("user-authored constraint")
-    assert rendered.index("package-owned persona") < rendered.index("user-authored constraint")
+    assert rendered.index("package-owned prompt") < rendered.index("user-authored constraint")
 
 
-def test_typed_custom_body_without_append_is_not_replaced_by_profile() -> None:
+def test_typed_custom_prompt_without_append_is_not_replaced_by_profile() -> None:
     materialization = AgentPromptMaterialization(
         profile="worker",
         version=1,
         source="custom_markdown",
         format="markdown",
-        body="  actual custom persona  ",
+        body="  actual custom prompt  ",
     )
-    assert render_agent_prompt(materialization) == "actual custom persona"
+    assert render_agent_prompt(materialization) == "actual custom prompt"
 
 
-def test_selecting_genuine_builtin_materializations_changes_active_persona() -> None:
-    leader = get_builtin_agent_manifest("leader")
-    worker = get_builtin_agent_manifest("worker")
-    assert leader is not None and worker is not None
-    assert leader.prompt_materialization is not None and worker.prompt_materialization is not None
-    assert render_agent_prompt(leader.prompt_materialization) != render_agent_prompt(worker.prompt_materialization)
+def test_selecting_genuine_builtin_materializations_changes_active_prompts() -> None:
+    default = get_builtin_agent_manifest("default")
+    execute = get_builtin_agent_manifest("execute")
+    assert default is not None and execute is not None
+    assert default.prompt_materialization is not None and execute.prompt_materialization is not None
+    assert render_agent_prompt(default.prompt_materialization) != render_agent_prompt(execute.prompt_materialization)
 
 
-def test_unknown_builtin_materialization_refuses_instead_of_generating_persona() -> None:
+def test_unknown_builtin_materialization_refuses_instead_of_generating_prompt() -> None:
     with pytest.raises(ValueError):
         render_agent_prompt(AgentPromptMaterialization(profile="not-a-builtin-profile", version=1))
+
+
+@pytest.mark.parametrize("old_id", ("leader", "worker", "advisor", "researcher", "product"))
+def test_old_builtin_materializations_are_not_rendered(old_id: str) -> None:
+    with pytest.raises(ValueError, match="unknown builtin agent prompt profile"):
+        render_agent_prompt(AgentPromptMaterialization(profile=old_id))
 
 
 def test_builtin_prompt_profiles_load_from_zip_resources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     archive_path = tmp_path / "agent-prompts.zip"
     with zipfile.ZipFile(archive_path, "w") as archive:
-        archive.writestr("leader/base.txt", " zip-backed leader prompt ")
+        archive.writestr("default/base.txt", " zip-backed default prompt ")
 
     monkeypatch.setattr(agent_prompts, "files", lambda _package: zipfile.Path(archive_path))
     agent_prompts._render_known_builtin_prompt_profile.cache_clear()
     try:
-        assert agent_prompts.has_builtin_prompt_profile("leader")
-        assert agent_prompts.render_builtin_prompt_profile("leader") == "zip-backed leader prompt"
-        assert not agent_prompts.has_builtin_prompt_profile("worker")
-        assert agent_prompts.render_builtin_prompt_profile("worker") is None
+        assert agent_prompts.has_builtin_prompt_profile("default")
+        assert agent_prompts.render_builtin_prompt_profile("default") == "zip-backed default prompt"
+        for old_id in ("leader", "worker", "advisor", "researcher", "product"):
+            assert not agent_prompts.is_builtin_prompt_profile(old_id)
+            assert not agent_prompts.has_builtin_prompt_profile(old_id)
+            assert agent_prompts.render_builtin_prompt_profile(old_id) is None
     finally:
         agent_prompts._render_known_builtin_prompt_profile.cache_clear()

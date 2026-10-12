@@ -49,9 +49,11 @@ hook bundles 也是 guidance-only。它们会进入 snapshot，帮助解释历�
 
 当前有三类容易混淆的 agent 输入：
 
-- **builtin preset**：仓库内置 `leader`、`product`、`worker`、`advisor`、`explore`、`researcher` manifest 与 prompt profile。
+- **builtin preset**：仓库内置 `default`、`plan`、`execute`、`review`、`explore`、`research` manifest。旧 builtin IDs `leader`、`worker`、`advisor`、`researcher`、`product` 及对应 prompt-profile keys 已移除，不提供 aliases 或迁移；旧存储 routes 可能自然失败。Custom namespace 不受旧名称约束，custom id `leader` 是独立 custom agent，不是兼容 alias。
 - **configured alias/default**：`.voidcode.json` 的 `agent` / `agents.<key>` 只配置已存在 preset 的 model、fallback、tools、skills、MCP intent 等 runtime defaults。它不定义新 prompt，也不创建新 agent manifest。
-- **true local manifest**：project `.voidcode/agents/*.md` 或 user config agents 目录中的 markdown 文件。frontmatter 定义 manifest metadata，markdown body 定义 prompt material。project scope 对同 id 的 user scope custom manifest 覆盖；custom manifest 不允许替换 builtin id。frontmatter 是标准 YAML：未加引号的标量中 ` #` 会开始注释（`description: Fix bug #42` 实际读作 `Fix bug`），需要保留字面文本时必须加引号（`description: "Fix bug #42"`）；值中间出现 `: ` 或以 YAML 指示符（`&`、`*`、`!`、`%`、`@`、反引号）开头时同样要加引号。
+- **true local manifest**：project `.voidcode/agents/*.md` 或 user config agents 目录中的 markdown 文件。frontmatter 定义 manifest metadata，markdown body 定义 prompt material。project scope 对同 id 的 user scope custom manifest 覆盖；custom manifest 可使用与旧 builtin 名称相同的 id，因为旧名称不保留 builtin alias。frontmatter 是标准 YAML：未加引号的标量中 ` #` 会开始注释（`description: Fix bug #42` 实际读作 `Fix bug`），需要保留字面文本时必须加引号（`description: "Fix bug #42"`）；值中间出现 `: ` 或以 YAML 指示符（`&`、`*`、`!`、`%`、`@`、反引号）开头时同样要加引号。
+
+Builtin prompt 来自所选 manifest 的普通 prompt body；`mode=primary/subagent` 是路由资格声明，实际权限仍由 runtime policy 决定。`plan` 仅为 delegated read-only child；只有 `default` 是可顶层选择的 builtin preset。
 
 Custom markdown manifest 与 config-defined prompt override 的 prompt materialization 会随 session 持久化到 runtime config metadata / `agent_capability_snapshot`，而不是在 replay 时重新读取文件或重新解析 `.voidcode.json`。`body` 表示 base prompt，`prompt_append` 表示追加 guidance，provider context 渲染时只追加一次。这保证文件变更或删除后，历史 session 仍按当时的 prompt/capability snapshot 解释。
 
@@ -69,7 +71,7 @@ Custom manifest 仍只是 declaration layer：它可以收窄或建议 capabilit
 
 `agent_capability_snapshot` explains what the selected agent manifest and config declared. `RuntimePolicySnapshot` is the later authorization snapshot that applies runtime hard denials, persisted session policy, config, manifest, request/session options, hook metadata, deterministic intent, and defaults in fixed precedence order.
 
-Agent declarations can only select or narrow capability intent before policy materialization. They cannot grant a tool, skill body, hook authority, MCP binding, delegation target, approval, or product delegation that runtime policy denies. Child policy is derived from the parent snapshot plus the child manifest and can only be a subset of parent capabilities. Replay/debug should prefer persisted `RuntimePolicySnapshot` for enforcement explanation, while `agent_capability_snapshot` remains the declaration/materialization evidence that fed it.
+Agent declarations can only select or narrow capability intent before policy materialization. They cannot grant a tool, skill body, hook authority, MCP binding, delegation target, approval, or plan delegation that runtime policy denies. Child policy is derived from the parent snapshot plus the child manifest and can only be a subset of parent capabilities. Replay/debug should prefer persisted `RuntimePolicySnapshot` for enforcement explanation, while `agent_capability_snapshot` remains the declaration/materialization evidence that fed it.
 
 ## Replay 要求
 

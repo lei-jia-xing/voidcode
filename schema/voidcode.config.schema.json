@@ -285,22 +285,22 @@
         "null"
       ],
       "properties": {
-        "leader": {
+        "default": {
           "$ref": "#/$defs/agentConfig"
         },
-        "worker": {
+        "execute": {
           "$ref": "#/$defs/agentConfig"
         },
-        "advisor": {
+        "review": {
           "$ref": "#/$defs/agentConfig"
         },
         "explore": {
           "$ref": "#/$defs/agentConfig"
         },
-        "researcher": {
+        "research": {
           "$ref": "#/$defs/agentConfig"
         },
-        "product": {
+        "plan": {
           "$ref": "#/$defs/agentConfig"
         }
       }
@@ -344,12 +344,12 @@
         "prompt_profile": {
           "description": "Prompt/profile selection for this agent entry.",
           "enum": [
-            "leader",
-            "worker",
-            "advisor",
+            "default",
+            "execute",
+            "review",
             "explore",
-            "researcher",
-            "product",
+            "research",
+            "plan",
             null
           ],
           "minLength": 1,
@@ -1367,33 +1367,11 @@
         },
         "hook_policy": {
           "$ref": "#/$defs/runtimePolicyHookPolicyConfig"
-        },
-        "prompt_activation": {
-          "$ref": "#/$defs/runtimePolicyPromptActivationConfig"
         }
       },
       "required": [
         "version"
       ],
-      "type": "object"
-    },
-    "runtimePolicyPromptActivationConfig": {
-      "additionalProperties": false,
-      "properties": {
-        "enabled": {
-          "type": "boolean"
-        },
-        "profile_refs": {
-          "items": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
-        }
-      },
       "type": "object"
     },
     "runtimePolicyToolPolicyConfig": {

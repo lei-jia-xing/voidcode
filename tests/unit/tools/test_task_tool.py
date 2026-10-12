@@ -69,7 +69,7 @@ def _task_context(runtime: _StubTaskRuntime, *, workspace: Path) -> ToolContext:
     )
 
 
-@pytest.mark.parametrize("subagent_type", ("leader", "unknown"))
+@pytest.mark.parametrize("subagent_type", ("default", "unknown"))
 def test_task_tool_rejects_invalid_direct_child_subagent_presets_before_dispatch(
     tmp_path: Path,
     subagent_type: str,

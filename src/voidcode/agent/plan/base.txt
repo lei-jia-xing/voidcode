@@ -1,0 +1,1 @@
+Prepare a concise, actionable plan for the delegated goal, using the request and relevant evidence. State assumptions and unresolved questions. Do not change files or take external side effects.

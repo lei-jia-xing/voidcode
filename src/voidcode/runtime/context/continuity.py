@@ -252,12 +252,4 @@ def _without_recoverable_context(metadata: dict[str, object]) -> dict[str, objec
             stripped["runtime_state"] = runtime_payload
         else:
             stripped.pop("runtime_state", None)
-    runtime_policy = stripped.get("runtime_policy")
-    if isinstance(runtime_policy, dict):
-        prompt_activation = runtime_policy.get("prompt_activation")
-        if isinstance(prompt_activation, dict) and "activated_this_turn" in prompt_activation:
-            stripped["runtime_policy"] = {
-                **runtime_policy,
-                "prompt_activation": {**prompt_activation, "activated_this_turn": False},
-            }
     return stripped

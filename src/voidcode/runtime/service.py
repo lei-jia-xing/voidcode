@@ -33,7 +33,6 @@ from ..core.turns import ReportedCall, TurnProducer, TurnRequest
 from ..hook.plan import ResolvedHookPlan, hook_plan_from_session_metadata, materialize_hook_plan
 from ..hook.presets import (
     ResolvedHookPresetSnapshot,
-    hook_preset_snapshot_from_payload,
     resolve_hook_preset_refs,
 )
 from ..hook.typed import (
@@ -358,7 +357,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_EXECUTABLE_AGENT_PRESETS = frozenset({"leader"})
+_EXECUTABLE_AGENT_PRESETS = frozenset({"default"})
 
 #: System prompt for the opt-in compaction summary (one module-level constant
 #: next to the call that uses it, ``VoidCodeRuntime.summarize_continuity``).
@@ -764,7 +763,7 @@ class VoidCodeRuntime(RuntimeSurface):
         self._hydrate_provider_model_catalog_cache()
         initial_agent = self._config.agent
         if initial_agent is None and self._config.execution_engine == "provider":
-            initial_agent = RuntimeAgentConfig(preset="leader")
+            initial_agent = RuntimeAgentConfig(preset="default")
         if initial_agent is not None:
             initial_agent = parse_runtime_agent_payload(
                 serialize_runtime_agent_config(initial_agent, include_runtime_internal=True),
@@ -2350,7 +2349,7 @@ class VoidCodeRuntime(RuntimeSurface):
             resolved_hook_plan = materialize_hook_plan(
                 self._config.hooks,
                 agent_hook_refs=hook_preset_refs_for_agent(effective_config.agent),
-                agent_source=(effective_config.agent.preset if effective_config.agent is not None else "leader"),
+                agent_source=(effective_config.agent.preset if effective_config.agent is not None else "default"),
             )
         resolved_hook_presets = self._build_hook_preset_snapshot(
             effective_config.agent,
@@ -2408,8 +2407,8 @@ class VoidCodeRuntime(RuntimeSurface):
                 ),
                 "runtime_policy": materialize_runtime_policy_snapshot(
                     persisted_session_policy=persisted_runtime_policy,
-                    agent_preset=effective_config.agent.preset if effective_config.agent is not None else "leader",
-                    agent_manifest_id=effective_config.agent.preset if effective_config.agent is not None else "leader",
+                    agent_preset=effective_config.agent.preset if effective_config.agent is not None else "default",
+                    agent_manifest_id=effective_config.agent.preset if effective_config.agent is not None else "default",
                     callable_subagent_presets=self._agent_registry.executable_subagent_ids(),
                     runtime_config={
                         **self._runtime_config_metadata(
@@ -4778,10 +4777,7 @@ class VoidCodeRuntime(RuntimeSurface):
                     agent_prompt_materialization = manifest.prompt_materialization
         tool_feedback_mode = self._tool_feedback_mode_for_effective_config(effective_config)
         agent_prompt_context = render_agent_prompt(agent_prompt_materialization) or ""
-        hook_preset_context = self._hook_preset_context_from_metadata(
-            session_metadata,
-            agent=effective_config.agent,
-        )
+        hook_preset_context = self._hook_preset_context_for_agent(agent=effective_config.agent)
         comp_ref = None
         if session_metadata is not None and ("composition_ref" in session_metadata or "agent_capability_snapshot" in session_metadata):
             try:
@@ -4817,7 +4813,6 @@ class VoidCodeRuntime(RuntimeSurface):
             compaction_budget=compaction_budget,
             before_compact=before_compact,
             agent_prompt_context=agent_prompt_context,
-            prompt_profile_name=effective_config.agent.prompt_profile if effective_config.agent is not None else None,
             hook_preset_context=hook_preset_context,
             context_transform_result=context_transform_result,
             skill_prompt_context=skill_prompt_context,
@@ -5219,27 +5214,12 @@ class VoidCodeRuntime(RuntimeSurface):
         refs = hook_preset_refs_for_agent(agent)
         return resolve_hook_preset_refs(refs)
 
-    def _hook_preset_context_from_metadata(
+    def _hook_preset_context_for_agent(
         self,
-        metadata: dict[str, object],
         *,
         agent: RuntimeAgentConfig | None,
     ) -> str:
-        raw_snapshot: object | None = metadata.get("resolved_hook_presets")
-        if isinstance(raw_snapshot, dict):
-            raw_snapshot_payload: object | None = raw_snapshot
-        else:
-            raw_snapshot_payload = None
-            raw_runtime_config = metadata.get("runtime_config")
-            if isinstance(raw_runtime_config, dict):
-                runtime_config_payload: Mapping[str, object] = raw_runtime_config
-                nested_snapshot: object = runtime_config_payload.get("resolved_hook_presets")
-                if isinstance(nested_snapshot, dict):
-                    raw_snapshot_payload = nested_snapshot
-        snapshot = hook_preset_snapshot_from_payload(raw_snapshot_payload)
-        if snapshot is None:
-            snapshot = self._build_hook_preset_snapshot(agent)
-        return snapshot.guidance_context()
+        return self._build_hook_preset_snapshot(agent).guidance_context()
 
     def _context_transform_registry_for_agent(
         self,
@@ -5582,7 +5562,7 @@ class VoidCodeRuntime(RuntimeSurface):
         provider_fallback = self._config.provider_fallback
         agent = self._config.agent
         if agent is None and execution_engine == "provider":
-            agent = RuntimeAgentConfig(preset="leader")
+            agent = RuntimeAgentConfig(preset="default")
         context_window = self._context_window_config_override or self._config.context_window
         allow_persisted_subagent_presets = False
         if metadata is not None:
@@ -5608,7 +5588,7 @@ class VoidCodeRuntime(RuntimeSurface):
             )
         elif execution_engine == "provider":
             agent = parse_runtime_agent_payload(
-                serialize_runtime_agent_config(RuntimeAgentConfig(preset="leader"), include_runtime_internal=True),
+                serialize_runtime_agent_config(RuntimeAgentConfig(preset="default"), include_runtime_internal=True),
                 source="runtime config agent",
                 hooks=self._config.hooks,
                 agent_registry=self._agent_registry,

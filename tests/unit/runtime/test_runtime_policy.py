@@ -15,7 +15,6 @@ _REQUIRED_SNAPSHOT_FIELDS = {
     "tool_policy",
     "delegation_policy",
     "hook_policy",
-    "prompt_activation",
     "precedence_trace",
     "diagnostics",
     "created_at",
@@ -34,8 +33,8 @@ def _runtime_policy_module() -> Any:
 
 def _sample_policy_inputs() -> dict[str, object]:
     return {
-        "agent_preset": "leader",
-        "agent_manifest_id": "leader",
+        "agent_preset": "default",
+        "agent_manifest_id": "default",
         "runtime_config": {
             "tools": {"allowlist": ["read", "grep", "task"]},
             "policy": {"enabled": True, "version": "v1"},
@@ -59,21 +58,20 @@ def _materialize_sample_snapshot(**overrides: object) -> Mapping[str, object]:
     return cast(Mapping[str, object], snapshot)
 
 
-def test_runtime_policy_snapshot_schema_contains_required_v1_fields() -> None:
+def test_runtime_policy_snapshot_schema_contains_required_fields() -> None:
     snapshot = _materialize_sample_snapshot()
 
     assert set(snapshot) >= _REQUIRED_SNAPSHOT_FIELDS
     assert ("created_at" in snapshot) ^ ("turn_id" in snapshot)
-    assert snapshot["schema_version"] == 1
+    assert snapshot["schema_version"] == 2
     assert isinstance(snapshot["policy_version"], str)
-    assert snapshot["agent_preset"] == "leader"
-    assert snapshot["agent_manifest_id"] == "leader"
+    assert snapshot["agent_preset"] == "default"
+    assert snapshot["agent_manifest_id"] == "default"
     for field in (
         "intent",
         "tool_policy",
         "delegation_policy",
         "hook_policy",
-        "prompt_activation",
         "diagnostics",
     ):
         assert isinstance(snapshot[field], Mapping), field
@@ -97,10 +95,10 @@ def test_runtime_policy_precedence_trace_orders_authoritative_sources() -> None:
             "policy": {
                 "enabled": True,
                 "version": "v1",
-                "delegation_policy": {"allow": ["worker"]},
+                "delegation_policy": {"allow": ["execute"]},
             }
         },
-        request_metadata={"delegation": {"subagent_type": "worker"}},
+        request_metadata={"delegation": {"subagent_type": "execute"}},
     )
 
     trace = cast(Sequence[Mapping[str, object]], snapshot["precedence_trace"])
@@ -159,7 +157,7 @@ def test_runtime_policy_neutral_intent_cannot_grant_capabilities() -> None:
     assert intent["matched_rule_ids"] == []
     assert "write" not in cast(Sequence[str], tool_policy.get("allowed", ()))
     assert "task" not in cast(Sequence[str], tool_policy.get("allowed", ()))
-    assert "product" in cast(Sequence[str], delegation_policy.get("allowed_presets", ()))
+    assert "plan" in cast(Sequence[str], delegation_policy.get("allowed_presets", ()))
     intent_trace = next(entry for entry in trace if entry.get("source") == "intent_metadata")
     assert intent_trace.get("applied") is False
     assert intent_trace.get("authoritative") is False
@@ -174,7 +172,7 @@ def test_runtime_policy_hooks_are_non_authoritative() -> None:
             "event_scope": "pre_tool",
             "actions": ["observe", "report", "grant_tool", "create_child"],
             "tool_policy_patch": {"allow": ["shell_exec"]},
-            "delegation_policy_patch": {"allow": ["product"]},
+            "delegation_policy_patch": {"allow": ["plan"]},
         },
         runtime_config={"tools": {"allowlist": ["read"]}},
     )
@@ -189,20 +187,20 @@ def test_runtime_policy_hooks_are_non_authoritative() -> None:
         "guidance",
     }
     assert "shell_exec" not in cast(Sequence[str], tool_policy.get("allowed", ()))
-    assert "product" in cast(Sequence[str], delegation_policy.get("allowed_presets", ()))
+    assert "plan" in cast(Sequence[str], delegation_policy.get("allowed_presets", ()))
 
 
-def test_runtime_policy_product_is_an_allowed_child_preset() -> None:
+def test_runtime_policy_plan_is_an_allowed_child_preset() -> None:
     snapshot = _materialize_sample_snapshot(
-        request_metadata={"delegation": {"mode": "background", "subagent_type": "product"}},
+        request_metadata={"delegation": {"mode": "background", "subagent_type": "plan"}},
         runtime_config={
-            "policy": {"delegation_policy": {"allow": ["advisor", "product"]}},
-            "agents": {"planner": {"preset": "product"}},
+            "policy": {"delegation_policy": {"allow": ["review", "plan"]}},
+            "agents": {"planner": {"preset": "plan"}},
         },
     )
 
     delegation_policy = cast(Mapping[str, object], snapshot["delegation_policy"])
-    assert "product" in cast(Sequence[str], delegation_policy.get("allowed_presets", ()))
+    assert "plan" in cast(Sequence[str], delegation_policy.get("allowed_presets", ()))
     denied = cast(Sequence[Mapping[str, object]], delegation_policy.get("denied", ()))
     assert denied == []
 
@@ -219,7 +217,7 @@ def test_runtime_policy_requires_persisted_snapshot() -> None:
     "unsupported_snapshot",
     [
         {"schema_version": 999, "policy_version": "v1"},
-        {"schema_version": 1, "policy_version": "v999"},
+        {"schema_version": 2, "policy_version": "v999"},
     ],
 )
 def test_runtime_policy_rejects_unsupported_explicit_snapshot_versions(
@@ -242,7 +240,7 @@ def test_runtime_policy_rejects_current_version_with_incomplete_shape() -> None:
     assert error_type is not None
 
     with pytest.raises(error_type, match="missing required fields"):
-        module.runtime_policy_snapshot_from_session_metadata({"runtime_policy": {"schema_version": 1, "policy_version": "v1"}})
+        module.runtime_policy_snapshot_from_session_metadata({"runtime_policy": {"schema_version": 2, "policy_version": "v1"}})
 
 
 def test_runtime_policy_ignores_legacy_mode_extra_and_preserves_read_only() -> None:
@@ -276,7 +274,7 @@ def test_runtime_policy_child_snapshot_is_subset_of_parent_snapshot() -> None:
         runtime_config={
             "tools": {"allowlist": ["read", "write", "task"]},
             "policy": {
-                "delegation_policy": {"allow": ["explore", "worker"]},
+                "delegation_policy": {"allow": ["explore", "execute"]},
                 "hook_policy": {
                     "allowed_event_scopes": ["pre_tool", "post_tool"],
                     "actions": ["observe", "report"],

@@ -1,0 +1,1 @@
+Investigate the delegated question using available external sources. Distinguish sourced facts from uncertainty and cite evidence. Do not change workspace files or take external side effects.

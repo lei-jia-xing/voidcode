@@ -31,42 +31,35 @@
 - MCP / LSP / ACP lifecycle
 - 当前 multi-agent orchestration
 
-## 当前角色集
+## 当前 builtin ID
 
-- [`leader`](./leader/base.txt)
-- [`worker`](./worker/base.txt)
-- [`advisor`](./advisor/base.txt)
-- [`explore`](./explore/base.txt)
-- [`researcher`](./researcher/base.txt)
-- [`product`](./product/base.txt)
+- [`default`](./default/base.txt)：唯一可作为顶层 agent 选择的通用助手
+- [`execute`](./execute/base.txt)：delegated executor
+- [`review`](./review/base.txt)：delegated reviewer
+- [`explore`](./explore/base.txt)：delegated workspace discovery
+- [`research`](./research/base.txt)：delegated external research
+- [`plan`](./plan/base.txt)：delegated read-only planning
 
-当前 builtin manifest 已覆盖以下角色：
+这些 builtin ID 替换旧的 `leader`、`worker`、`advisor`、`researcher`、`product` ID；不提供旧 ID alias 或迁移。自定义 manifest 使用独立 namespace，例如用户自定义的 `leader` 仍是自定义 agent，不会解析为 builtin `default`。
 
-- `leader`
-- `worker`
-- `advisor`
-- `explore`
-- `researcher`
-- `product`
-
-其中 `leader` 是唯一的顶层执行 preset；`worker`、`advisor`、`explore`、`researcher`、`product` 均通过 runtime-owned delegation path 作为 delegated child presets 执行。`product` 是只读 plan child，由 leader 通过 `task(subagent_type="product")` 委托并以 `yield` 交回计划。
+只有 `default` 的 `top_level_selectable` 为 `true`。其余 agent 只通过 runtime-owned delegation path 执行；`plan` 是只读 child，由 `task(subagent_type="plan")` 委托并通过 `yield` 交回计划。`mode=primary/subagent` 仍是 routing authority，不是 personality label。
 
 ## Preset intent vs runtime truth
 
 本目录描述的是“一个角色默认希望带什么组合”，不是“runtime 今天已经能怎样执行它”。
 
-- `leader`：唯一的顶层执行/编码角色；`preset` / `prompt_profile` / `model` / `execution_engine` / `tools` / `skills` / `provider_fallback` 会进入 runtime config truth 并随 session 持久化
-- `product`：delegated read-only plan child；由 leader 通过 `task(subagent_type="product")` 委托，使用 `yield` 返回计划；不能作为 top-level active agent。
-- `worker`：delegated focused executor preset；可进入 child execution，但不作为任意顶层 active agent 直接运行
-- `advisor`：delegated advisory preset；可进入 child execution，但不作为任意顶层 active agent 直接运行
-- `explore`：delegated local-code exploration preset；可进入 child execution，但不作为任意顶层 active agent 直接运行
-- `researcher`：delegated external research preset；可进入 child execution，但不作为任意顶层 active agent 直接运行
+- `default`：通用顶层助手；`preset` / `prompt_profile` / `model` / `execution_engine` / `tools` / `skills` / `provider_fallback` 会进入 runtime config truth 并随 session 持久化
+- `execute`：delegated executor；仅通过 runtime 的 child execution path 运行
+- `review`：delegated reviewer；仅通过 runtime 的 child execution path 运行
+- `explore`：delegated workspace discovery；仅通过 runtime 的 child execution path 运行
+- `research`：delegated external research；仅通过 runtime 的 child execution path 运行
+- `plan`：delegated read-only planning；仅通过 runtime 的 child execution path 运行
 
 当前 builtin preset 都有 agent-owned prompt profile；active / delegated agent 的 manifest allowlist 会收窄 provider 可见的 `available_tools`，并且同一边界也会约束实际 tool lookup / invocation。builtin `prompt_profile` 由 `src/voidcode/agent/` 统一 materialize 后进入 provider system message，`model_preference` / `execution_engine` 会作为 manifest live defaults 被 runtime 解析，manifest `skill_refs` 会作为默认 skill selection 进入 runtime skill application，agent manifest 的 `preset_hook_refs` 必须引用 `src/voidcode/hook/presets.py` 中的 builtin hook preset catalog，`agent.skills` 会覆盖本次运行使用的 runtime-managed skill discovery / application policy。
 
-`prompt_materialization` 是 prompt 审计元数据：它声明 builtin prompt profile、materialization version、source/format。当前 builtin agents 共享各自默认 profile；profile 选择规则属于 agent declaration 层，最终 provider system message 的组装仍由 runtime/provider 路径负责。
+`prompt_materialization` 是 prompt 审计元数据：它声明 builtin prompt profile、materialization version、source/format。当前 builtin agents 使用各自默认 profile；profile 选择规则属于 agent declaration 层，最终 provider system message 的组装仍由 runtime/provider 路径负责。
 
-`top_level_selectable` 显式声明一个 manifest 是否允许作为顶层 active agent 被选择。当前仅 `leader` 为 `true`；`product` 与 `worker`、`advisor`、`explore`、`researcher` 是 delegated/internal presets，不能作为顶层 active agent 选择。runtime 仍通过自己的 `_EXECUTABLE_AGENT_PRESETS` 做执行时 enforcement，测试会校验该 allowlist 与 manifest 声明保持一致。
+`top_level_selectable` 显式声明一个 manifest 是否允许作为顶层 active agent 被选择。当前仅 `default` 为 `true`；`execute`、`review`、`explore`、`research`、`plan` 是 delegated/internal presets，不能作为顶层 active agent 选择。runtime 仍通过自己的 `_EXECUTABLE_AGENT_PRESETS` 做执行时 enforcement，测试会校验该 allowlist 与 manifest 声明保持一致。
 
 此外，builtin prompt 文本 ownership 现在明确归属 `src/voidcode/agent/`：agent 层负责 builtin prompt 内容、profile materialization 与 manifest 校验，provider 层只负责 message assembly 和模型调用，不再持有 role-specific persona 源码副本。
 
@@ -85,8 +78,8 @@ builtin prompt 文件通过 `importlib.resources` 读取，因此直接从 wheel
 
 - 角色要有清晰的 responsibility boundary，而不是只有 prompt 名称
 - 窄职责角色应当配更窄的工具权限与更明确的 skill 附着
-- `explore` 与 `researcher` 应分开：前者面向本地仓库，后者面向外部资料
-- `product` 更像 pre-plan / acceptance 对齐角色，而不是新的 orchestrator
+- `explore` 与 `research` 分开：前者面向 workspace，后者面向外部资料
+- `plan` 负责只读规划，不是新的 orchestrator
 - hook 应按 event 类型表达系统干预点，而不是混成角色自己的执行权
 
 ## 相关文档

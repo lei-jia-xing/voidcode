@@ -8,7 +8,7 @@ from .models import AgentPromptMaterialization
 from .prompt_sections import user_append_heading_block
 
 _PROMPT_FILE_NAME = "base.txt"
-BUILTIN_PROMPT_PROFILES = ("leader", "worker", "advisor", "explore", "researcher", "product")
+BUILTIN_PROMPT_PROFILES = ("default", "execute", "review", "explore", "research", "plan")
 _BUILTIN_PROMPT_PROFILES = frozenset(BUILTIN_PROMPT_PROFILES)
 
 

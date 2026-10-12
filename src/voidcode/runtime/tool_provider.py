@@ -87,7 +87,7 @@ def scoped_tool_registry_for_agent(
         patterns = list(internal.manifest_tool_allowlist)
         if agent.tools is not None and agent.tools.allowlist is not None:
             patterns.extend(agent.tools.allowlist)
-        if agent.preset == "leader":
+        if agent.preset == "default":
             package_tools = [name for name in registry.declarations if name not in BUILTIN_TOOL_NAMES and not name.startswith("mcp")]
             patterns.extend(package_tools)
         scoped_registry = scoped_registry.filtered(patterns)

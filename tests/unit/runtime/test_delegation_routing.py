@@ -14,7 +14,7 @@ def test_request_and_task_metadata_share_delegation_identity_parser() -> None:
     metadata: dict[str, object] = {
         "delegation": {
             "mode": "background",
-            "subagent_type": "worker",
+            "subagent_type": "execute",
             "description": "Inspect the runtime",
             "depth": 2,
         }
@@ -26,7 +26,7 @@ def test_request_and_task_metadata_share_delegation_identity_parser() -> None:
 @pytest.mark.parametrize(
     "delegation",
     [
-        {"mode": "invalid", "subagent_type": "worker"},
+        {"mode": "invalid", "subagent_type": "execute"},
         {"mode": "sync", "subagent_type": ""},
         {"mode": "sync"},
     ],
@@ -48,7 +48,7 @@ def test_request_boundary_still_rejects_unknown_delegation_fields() -> None:
             {
                 "delegation": {
                     "mode": "sync",
-                    "subagent_type": "worker",
+                    "subagent_type": "execute",
                     "unexpected": True,
                 }
             }
@@ -64,7 +64,7 @@ def test_parallel_group_fields_are_accepted_and_normalized() -> None:
     # Given: delegation metadata carrying the parallel-group fields the task tool emits
     delegation: dict[str, object] = {
         "mode": "background",
-        "subagent_type": "worker",
+        "subagent_type": "execute",
         "parallel_group_id": "alpha-beta-writers",
         "parallel_group_size": "2",
     }
@@ -80,7 +80,7 @@ def test_parallel_group_fields_are_accepted_and_normalized() -> None:
 def test_parallel_group_size_must_be_a_positive_integer() -> None:
     delegation: dict[str, object] = {
         "mode": "background",
-        "subagent_type": "worker",
+        "subagent_type": "execute",
         "parallel_group_size": "0",
     }
 
@@ -98,7 +98,7 @@ def test_output_schema_fields_are_accepted_and_normalized() -> None:
     }
     delegation: dict[str, object] = {
         "mode": "background",
-        "subagent_type": "worker",
+        "subagent_type": "execute",
         "output_schema": declared_schema,
         "schema_mode": "strict",
     }
@@ -114,7 +114,7 @@ def test_output_schema_fields_are_accepted_and_normalized() -> None:
 def test_output_schema_must_be_an_object() -> None:
     delegation: dict[str, object] = {
         "mode": "background",
-        "subagent_type": "worker",
+        "subagent_type": "execute",
         "output_schema": "not-a-schema",
     }
 
@@ -125,7 +125,7 @@ def test_output_schema_must_be_an_object() -> None:
 def test_schema_mode_must_be_permissive_or_strict() -> None:
     delegation: dict[str, object] = {
         "mode": "background",
-        "subagent_type": "worker",
+        "subagent_type": "execute",
         "output_schema": {"type": "object"},
         "schema_mode": "lenient",
     }

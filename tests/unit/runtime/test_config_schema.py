@@ -122,12 +122,12 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     assert agents["propertyNames"] == {"pattern": "^[a-z][a-z0-9_-]*$"}
     # Builtin map keys may omit ``preset``; only additional entries require it.
     assert set(cast(dict[str, object], agents["properties"])) == {
-        "leader",
-        "worker",
-        "advisor",
+        "default",
+        "execute",
+        "review",
         "explore",
-        "researcher",
-        "product",
+        "research",
+        "plan",
     }
     assert "categories" not in properties
     assert isinstance(defs, dict)
@@ -317,7 +317,7 @@ def test_runtime_config_rejects_removed_workflows_field(tmp_path: Path) -> None:
                 "workflows": {
                     "custom": {
                         "id": "custom",
-                        "default_agent": "leader",
+                        "default_agent": "default",
                         "category": "implementation",
                     }
                 },
@@ -367,14 +367,13 @@ def test_runtime_config_json_schema_exposes_policy_config_contract() -> None:
         "tool_policy",
         "delegation_policy",
         "hook_policy",
-        "prompt_activation",
     }
     assert "metadata" not in policy_properties
     assert policy_properties["version"] == {"type": "string", "const": "v1"}
     assert policy_properties["tool_policy"] == {"$ref": "#/$defs/runtimePolicyToolPolicyConfig"}
     assert policy_properties["delegation_policy"] == {"$ref": "#/$defs/runtimePolicyDelegationPolicyConfig"}
     assert policy_properties["hook_policy"] == {"$ref": "#/$defs/runtimePolicyHookPolicyConfig"}
-    assert policy_properties["prompt_activation"] == {"$ref": "#/$defs/runtimePolicyPromptActivationConfig"}
+    assert "runtimePolicyPromptActivationConfig" not in defs
     assert policy_properties["enabled"] == {"type": "boolean"}
     assert policy_config["required"] == ["version"]
     # The policy list sections accept the ``default`` key the loader understands,
@@ -427,14 +426,14 @@ def test_runtime_config_rejects_invalid_policy_shapes(tmp_path: Path) -> None:
         _ = load_runtime_config(tmp_path, env={})
 
 
-def test_runtime_config_accepts_policy_product_delegation(tmp_path: Path) -> None:
+def test_runtime_config_accepts_policy_plan_delegation(tmp_path: Path) -> None:
     config_path = tmp_path / ".voidcode.json"
     config_path.write_text(
         json.dumps(
             {
                 "policy": {
                     "version": "v1",
-                    "delegation_policy": {"allow": ["product"]},
+                    "delegation_policy": {"allow": ["plan"]},
                 }
             }
         ),
@@ -444,7 +443,7 @@ def test_runtime_config_accepts_policy_product_delegation(tmp_path: Path) -> Non
     config = load_runtime_config(tmp_path, env={})
 
     assert config.policy is not None
-    assert config.policy.delegation_policy.allowed == ("product",)
+    assert config.policy.delegation_policy.allowed == ("plan",)
 
 
 def test_runtime_config_rejects_invalid_policy_hook_scope(tmp_path: Path) -> None:

@@ -7,10 +7,7 @@ from typing import Final
 #: Canonical placeholder for redacted secret text/values.
 REDACTED_PLACEHOLDER: Final[str] = "[redacted]"
 
-#: Canonical credential blocklist shared by every redactor. Deliberately
-#: excludes ``prompt``/``env``/``skill_body``: those were policy-diagnostics-only
-#: fragments, and matching them session-wide nukes structural keys such as
-#: ``prompt_activation`` and ``prompt`` (breaks bundle roundtrips).
+#: Canonical credential blocklist shared by every redactor.
 SECRET_KEY_FRAGMENTS: Final[tuple[str, ...]] = (
     "access_token",
     "api_key",
@@ -55,7 +52,6 @@ DIAGNOSTIC_DEPTH: Final[int] = 8
 DIAGNOSTIC_ITEMS: Final[int] = 256
 DEBUG_CONTENT_CHARS: Final[int] = 2_000
 PROMPT_FRAGMENT_PREVIEW_CHARS: Final[int] = 240
-PROMPT_ACTIVATION_PREVIEW_CHARS: Final[int] = 160
 POLICY_DIAGNOSTIC_CHARS: Final[int] = 256
 POLICY_DIAGNOSTIC_LIMIT: Final[int] = 32
 TOOL_OUTPUT_LINES: Final[int] = 1000

@@ -1239,7 +1239,11 @@ def _resolve_agent_config(
             ),
             manifest_hook_refs=(
                 agent.runtime_internal.manifest_hook_refs
-                if agent.runtime_internal is not None and agent.runtime_internal.manifest_hook_refs
+                if (
+                    agent.runtime_internal is not None
+                    and agent.runtime_internal.manifest_source_scope not in (None, "builtin")
+                    and agent.runtime_internal.manifest_hook_refs
+                )
                 else manifest.preset_hook_refs
             ),
         ),
@@ -1260,7 +1264,7 @@ def _resolve_agent_prompt_materialization(
 ) -> AgentPromptMaterialization | None:
     internal = agent.runtime_internal
     if agent.prompt is None and agent.prompt_append is None:
-        if internal is not None and internal.prompt_materialization is not None:
+        if internal is not None and internal.prompt_materialization is not None and internal.prompt_materialization.source != "builtin":
             return internal.prompt_materialization
         materialization = manifest.prompt_materialization
         if materialization is None:

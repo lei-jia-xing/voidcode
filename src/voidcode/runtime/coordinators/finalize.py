@@ -384,12 +384,11 @@ class FinalizeCoordinator:
 
     def load_replay_response(self, *, session_id: str) -> RuntimeResponse:
         from ..session import SessionState as _SessionState
-        from ..session import session_metadata_for_replay
 
         response = self.load_stored_response(session_id=session_id)
         if "runtime_config" in response.session.metadata:
             self._surface.effective_runtime_config_from_metadata(response.session.metadata)
-        projected_metadata = session_metadata_for_replay(response.session.metadata)
+        projected_metadata = response.session.metadata
         replay_events = self.events_with_runtime_policy_projection(
             response.events,
             metadata=projected_metadata,

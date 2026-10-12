@@ -45,13 +45,13 @@ CLI flags never bypass runtime request policy, they only populate request fields
 
 ## Runtime Harness Policy v1
 
-Runtime Harness Policy v1 is the runtime-owned authorization and explanation layer for a single turn. It materializes the effective intent, tool, delegation, hook, and prompt-activation decisions into one persisted `RuntimePolicySnapshot`. It is not a second control plane: extension points may contribute validated declarations, diagnostics, or narrowing guidance, but runtime policy remains the only source of authorization.
+Runtime Harness Policy v1 is the runtime-owned authorization and explanation layer for a single turn. It materializes effective intent, tool, delegation, and hook decisions into one persisted `RuntimePolicySnapshot`. Agent prompt material is the ordinary body selected by the resolved manifest, with optional local guidance supplied through `prompt_append`. Extension points may contribute validated declarations, diagnostics, or narrowing guidance, but runtime policy remains the only source of authorization.
 
-`RuntimePolicySnapshot` v1 is a JSON-serializable, redacted object with these required fields:
+`RuntimePolicySnapshot` schema v2 is a JSON-serializable, redacted object with these required fields:
 
 | Field | Required shape | Meaning |
 | --- | --- | --- |
-| `schema_version` | integer, `1` | Snapshot schema version. Unsupported versions fail fast on load/import. |
+| `schema_version` | integer, `2` | Snapshot schema version. Unsupported versions fail fast on load/import. |
 | `policy_version` | string | Version of the materialization rules used to compute this snapshot. |
 | `created_at` or `turn_id` | RFC3339 timestamp or stable turn identifier | Identifies when/for which turn the snapshot was created without exposing prompt body. |
 | `agent_preset` | string | Selected runtime agent preset for the run or child session. |
@@ -60,7 +60,6 @@ Runtime Harness Policy v1 is the runtime-owned authorization and explanation lay
 | `tool_policy` | object | Effective visible/callable tool policy, including allowed and denied tool ids plus stable denial reasons. |
 | `delegation_policy` | object | Effective child routing policy, allowed child presets/categories, denied targets, and stable denial reasons. |
 | `hook_policy` | object | Named event-scoped hook policy with allowed observe/report/cancel/guidance actions. Hooks are non-authoritative. |
-| `prompt_activation` | object | One-time guidance activation ids, activation state, and redacted previews only. It cannot alter tool or delegation policy. |
 | `precedence_trace` | array | Ordered, audit-safe decisions showing which source allowed, narrowed, or denied each policy facet. |
 | `diagnostics` | object | Redacted bounded diagnostics. No raw prompts, skill bodies, env values, credentials, or unrestricted metadata escape hatches. |
 
@@ -68,7 +67,7 @@ Runtime Harness Policy v1 is the runtime-owned authorization and explanation lay
 
 Policy materialization uses this fixed order from highest to lowest authority:
 
-1. Runtime hard denials and security invariants, including product non-delegation.
+1. Runtime hard denials and security invariants, including plan non-delegation.
 2. Persisted session policy for resume/replay/import when a snapshot already exists.
 3. Validated runtime config and schema-bounded policy fields.
 4. Agent manifest declared capabilities and top-level/subagent mode.
@@ -77,23 +76,23 @@ Policy materialization uses this fixed order from highest to lowest authority:
 7. Bounded neutral intent metadata, which is non-authoritative and cannot grant or infer capability.
 8. Runtime defaults and registry/provider capabilities.
 
-Lower-precedence inputs may narrow or annotate higher-precedence decisions, but they cannot grant a tool, hook action, prompt activation, MCP binding, delegation target, approval, or product delegation denied above them. Intent metadata cannot grant capabilities or reintroduce heuristic prompt classification. Hooks cannot grant capabilities or mutate persisted policy truth. Prompt activation is guidance-only.
+Lower-precedence inputs may narrow or annotate higher-precedence decisions, but they cannot grant a tool, hook action, MCP binding, delegation target, approval, or plan delegation denied above them. Intent metadata cannot grant capabilities or reintroduce heuristic prompt classification. Hooks cannot grant capabilities or mutate persisted policy truth.
 
 ### Bounded observability
 
-Runtime attaches a `runtime_policy` object to `runtime.request_received`; that object carries a nested `materialization` marker (`materialization.kind == "runtime_policy_materialized"`, `source == "runtime_control_plane"`) recording that the runtime control plane has materialized policy for this turn. There is no standalone `runtime.policy_materialized` event in the event vocabulary. This payload is a bounded projection of the persisted `RuntimePolicySnapshot`, not a second policy source. It exposes schema/policy version, mode/read-only state, agent ids, neutral intent metadata, allowed/denied tool and delegation ids, hook policy actions/scopes, prompt-activation state, precedence trace, and diagnostics. Lists are capped, strings are preview-sized, and the payload never includes raw prompt bodies, skill bodies, env values, credentials, or unbounded metadata.
+Runtime attaches a `runtime_policy` object to `runtime.request_received`; that object carries a nested `materialization` marker (`materialization.kind == "runtime_policy_materialized"`, `source == "runtime_control_plane"`) recording that the runtime control plane has materialized policy for this turn. There is no standalone `runtime.policy_materialized` event in the event vocabulary. This payload is a bounded projection of the persisted `RuntimePolicySnapshot`, not a second policy source. It exposes schema/policy version, mode/read-only state, agent ids, neutral intent metadata, allowed/denied tool and delegation ids, hook policy actions/scopes, precedence trace, and diagnostics. Lists are capped, strings are preview-sized, and the projection does not expose prompt bodies.
 
-Tool allow/deny and approval decisions remain observable through `runtime.tool_lookup_succeeded`, `runtime.permission_resolved`, `runtime.approval_requested`, `runtime.approval_resolved`, `runtime.tool_started`, `runtime.tool_completed`, and `runtime.failed` denial payloads. Delegation allow/deny remains observable through background/delegated lifecycle events and explicit runtime failure payloads for policy denials. Hook decisions remain observable through `runtime.tool_hook_pre` / `runtime.tool_hook_post` with `hook_policy.authoritative=false`. Prompt activation persists inside `RuntimePolicySnapshot.prompt_activation`; replay/resume may show historical activation records but must project run-local `activated_this_turn` as false unless the current run actually activated it.
+Tool allow/deny and approval decisions remain observable through `runtime.tool_lookup_succeeded`, `runtime.permission_resolved`, `runtime.approval_requested`, `runtime.approval_resolved`, `runtime.tool_started`, `runtime.tool_completed`, and `runtime.failed` denial payloads. Delegation allow/deny remains observable through background/delegated lifecycle events and explicit runtime failure payloads for policy denials. Hook decisions remain observable through `runtime.tool_hook_pre` / `runtime.tool_hook_post` with `hook_policy.authoritative=false`.
 
-Sessions must contain a stored v1 runtime policy snapshot on replay and debug surfaces. Missing snapshots and unsupported snapshot/schema versions fail fast.
+Sessions must contain a stored schema-v2 runtime policy snapshot on replay and debug surfaces. Removing the dead `prompt_activation` field changed the snapshot schema; persisted v1 snapshots are unsupported and fail fast without migration. This does not change Runtime Harness Policy config version `v1`.
 
-### Product delegation invariant
+### Plan delegation invariant
 
-`leader` 是唯一可作为 top-level active agent 执行的 builtin preset。`product` 是 runtime-owned `task` delegation path 上的只读 plan child preset，必须通过 `subagent_type="product"` 作为 delegated child 执行，并通过 `yield` 将 plan 交回 parent。它不能作为 top-level active agent，也不能作为任意 child-spawn orchestrator。runtime 在 top-level 运行前以稳定错误拒绝 `product`。
+`default` 是唯一可作为 top-level active builtin agent 执行的 preset。`plan` 是 runtime-owned `task` delegation path 上的只读 plan child，必须通过 `subagent_type="plan"` 作为 delegated child 执行，并通过 `yield` 将 plan 交回 parent。它不能作为 top-level active agent，也不能作为任意 child-spawn orchestrator。Builtin `mode=primary/subagent` 是路由资格声明，不取代 runtime policy 对工具和 delegation 的治理。旧 builtin IDs `leader`、`worker`、`advisor`、`researcher`、`product` 及 prompt-profile keys 已移除，无 aliases 或迁移；旧存储 routes 可能自然失败。Custom namespace 不受这些旧名称限制，custom id `leader` 是独立 custom agent，不是 alias。
 
 ### v1 non-goals
 
-Runtime Harness Policy v1 不定义通用 policy DSL、LLM/heuristic intent classifier、任意 multi-agent topology、product top-level execution、agent-to-agent bus、MCP redesign、marketplace/dynamic plugin system 或 prompt-text enforcement layer。它保留现有 config gates 下的 MCP。
+Runtime Harness Policy v1 不定义通用 policy DSL、LLM/heuristic intent classifier、任意 multi-agent topology、plan top-level execution、agent-to-agent bus、MCP redesign、marketplace/dynamic plugin system 或 prompt-text enforcement layer。它保留现有 config gates 下的 MCP。
 
 ## Extension Families
 

@@ -326,7 +326,7 @@ export const useAppStore = create<AppState>()(
   persist(
     (set, get) => ({
       language: "en",
-      agentPreset: "leader",
+      agentPreset: "default",
       providerModel: "deepseek/deepseek-v4-pro",
       reasoningEffort: "",
 
@@ -384,7 +384,7 @@ export const useAppStore = create<AppState>()(
         const selectable = agents.filter((agent) => agent.selectable !== false);
         const currentPreset = get().agentPreset;
         if (selectable.some((agent) => agent.id === currentPreset)) return;
-        set({ agentPreset: selectable[0]?.id ?? "leader" });
+        set({ agentPreset: selectable[0]?.id ?? "default" });
       },
 
       hydrateModelFromSettings: (model) => {

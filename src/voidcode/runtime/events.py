@@ -332,7 +332,6 @@ def runtime_policy_observability_payload(
     tool_policy = _mapping_or_empty(snapshot.get("tool_policy"))
     delegation_policy = _mapping_or_empty(snapshot.get("delegation_policy"))
     hook_policy = _mapping_or_empty(snapshot.get("hook_policy"))
-    prompt_activation = _mapping_or_empty(snapshot.get("prompt_activation"))
     intent = _mapping_or_empty(snapshot.get("intent"))
     return {
         "schema_version": snapshot.get("schema_version"),
@@ -364,12 +363,6 @@ def runtime_policy_observability_payload(
             "allowed_event_scopes": _bounded_string_list(hook_policy.get("allowed_event_scopes")),
             "actions": _bounded_string_list(hook_policy.get("actions")),
             "authoritative": hook_policy.get("authoritative") is True,
-        },
-        "prompt_activation": {
-            "enabled": prompt_activation.get("enabled") is not False,
-            "raw_prompt_stored": prompt_activation.get("raw_prompt_stored") is True,
-            "activated_this_turn": prompt_activation.get("activated_this_turn") is True,
-            "activated_refs": _bounded_string_list(prompt_activation.get("activated_refs")),
         },
         "precedence_trace": _bounded_trace(snapshot.get("precedence_trace")),
         "diagnostics": _bounded_diagnostics(snapshot.get("diagnostics")),

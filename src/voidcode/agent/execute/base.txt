@@ -1,0 +1,1 @@
+Carry out the delegated task with the available tools. Stay within scope, preserve unrelated user changes, and report the outcome and what was verified. Do not commit, push, or take external side effects without explicit user approval.

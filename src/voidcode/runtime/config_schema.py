@@ -181,10 +181,9 @@ def _shared_definition_entries() -> dict[str, dict[str, object]]:
 #: keeps it nullable for the other surfaces. The published contract drops the
 #: ``null`` branch for exactly these keys.
 _NON_NULLABLE_POLICY_KEYS: dict[str, tuple[str, ...]] = {
-    "runtimePolicyConfig": ("enabled", "tool_policy", "delegation_policy", "hook_policy", "prompt_activation"),
+    "runtimePolicyConfig": ("enabled", "tool_policy", "delegation_policy", "hook_policy"),
     "runtimePolicyToolPolicyConfig": ("default",),
     "runtimePolicyDelegationPolicyConfig": ("default",),
-    "runtimePolicyPromptActivationConfig": ("enabled",),
     # the loader rejects an explicit null for a formatter preset command
     # (an empty argv is not a formatter invocation)
     "formatterPresetConfig": ("command",),

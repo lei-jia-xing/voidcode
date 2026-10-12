@@ -44,7 +44,7 @@ DECLARED_SCHEMA: dict[str, object] = {
 def _delegation(schema_mode: str = "permissive") -> dict[str, object]:
     return {
         "mode": "background",
-        "subagent_type": "worker",
+        "subagent_type": "execute",
         "output_schema": dict(DECLARED_SCHEMA),
         "schema_mode": schema_mode,
     }

@@ -1477,7 +1477,6 @@ export interface components {
             precedence_trace: {
                 [key: string]: string | boolean | number | null;
             }[];
-            prompt_activation: components["schemas"]["RuntimePolicyPromptActivationBody"];
             /** Read Only */
             read_only?: boolean | null;
             /**
@@ -1551,20 +1550,6 @@ export interface components {
              * @constant
              */
             source: "runtime_control_plane";
-        };
-        /**
-         * RuntimePolicyPromptActivationBody
-         * @description The prompt-activation projection (never the raw prompt).
-         */
-        RuntimePolicyPromptActivationBody: {
-            /** Activated Refs */
-            activated_refs: string[];
-            /** Activated This Turn */
-            activated_this_turn: boolean;
-            /** Enabled */
-            enabled: boolean;
-            /** Raw Prompt Stored */
-            raw_prompt_stored: boolean;
         };
         /**
          * RuntimePolicyToolPolicyBody

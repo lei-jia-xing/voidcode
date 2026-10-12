@@ -27,7 +27,7 @@ type PersistedState = {
     language: "en" | "zh-CN";
     currentSessionId: string | null;
     childSessionParentId?: string | null;
-    agentPreset?: "leader";
+    agentPreset?: "default";
     providerModel?: string;
     sessionSidebarWidth?: number;
   };
@@ -403,7 +403,7 @@ async function resetStoreForTest() {
   queryClient.clear();
   useAppStore.setState({
     language: "en",
-    agentPreset: "leader",
+    agentPreset: "default",
     providerModel: "deepseek/deepseek-v4-pro",
     reasoningEffort: "",
     reviewMode: "changes",
@@ -942,7 +942,7 @@ describe("useAppStore integration flow", () => {
       state: {
         language: "zh-CN",
         currentSessionId: sessionId,
-        agentPreset: "leader",
+        agentPreset: "default",
         providerModel: "test-model/v1",
       },
       version: 0,
@@ -962,7 +962,7 @@ describe("useAppStore integration flow", () => {
     const state = useAppStore.getState();
     expect(state.language).toBe("zh-CN");
     expect(state.currentSessionId).toBe(sessionId);
-    expect(state.agentPreset).toBe("leader");
+    expect(state.agentPreset).toBe("default");
     expect(state.providerModel).toBe("test-model/v1");
     expect(state.currentSessionState?.status).toBe("completed");
     expect(state.currentSessionOutput).toBe("note body");
@@ -978,7 +978,7 @@ describe("useAppStore integration flow", () => {
       state: {
         language: "zh-CN",
         currentSessionId: sessionId,
-        agentPreset: "leader",
+        agentPreset: "default",
         providerModel: "test-model/v1",
       },
       version: 0,
@@ -1915,7 +1915,7 @@ describe("useAppStore integration flow", () => {
       JSON.stringify({
         state: {
           language: "en",
-          agentPreset: "leader",
+          agentPreset: "default",
           providerModel: "test-model/v1",
           reasoningEffort: "",
           currentSessionId: "child-session",

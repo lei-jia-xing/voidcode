@@ -226,7 +226,7 @@ def test_delegation_adapters_consume_substrate() -> None:
     task_result = task_cmd.invoke(
         ToolCall(
             tool_name="task",
-            arguments={"prompt": "subtask prompt", "run_in_background": True, "subagent_type": "worker", "load_skills": []},
+            arguments={"prompt": "subtask prompt", "run_in_background": True, "subagent_type": "execute", "load_skills": []},
         ),
         context=ctx,
     )

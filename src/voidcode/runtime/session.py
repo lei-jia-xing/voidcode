@@ -161,24 +161,6 @@ def session_metadata_for_public(metadata: dict[str, object]) -> dict[str, object
     return _bounded_redacted_mapping(projected)
 
 
-def session_metadata_for_replay(metadata: dict[str, object]) -> dict[str, object]:
-    """Return session metadata projected for replay/resume without run-local markers."""
-
-    projected = dict(metadata)
-    raw_runtime_policy = projected.get("runtime_policy")
-    if not isinstance(raw_runtime_policy, dict):
-        return projected
-    runtime_policy: dict[str, object] = dict(raw_runtime_policy)
-    raw_prompt_activation = runtime_policy.get("prompt_activation")
-    if isinstance(raw_prompt_activation, dict):
-        runtime_policy["prompt_activation"] = {
-            **raw_prompt_activation,
-            "activated_this_turn": False,
-        }
-    projected["runtime_policy"] = runtime_policy
-    return projected
-
-
 def _policy_observations(events: tuple[EventEnvelope, ...]) -> dict[str, object]:
     tool_policy_denial: dict[str, object] | None = None
     for event in events:

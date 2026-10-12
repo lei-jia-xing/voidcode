@@ -99,7 +99,6 @@ def _accepted_persisted_runtime_config_values() -> dict[str, object]:
         "policy": {
             "enabled": True,
             "version": "v1",
-            "prompt_activation": {"enabled": True},
         },
         "execution_engine": "deterministic",
         "tool_timeout_seconds": None,
@@ -129,8 +128,8 @@ def _accepted_persisted_runtime_config_values() -> dict[str, object]:
         },
         "resolved_hook_presets": {"refs": []},
         "tools": {"builtin": {"enabled": True}, "allowlist": ["read"]},
-        "agent": {"preset": "leader"},
-        "agents": {"leader": {"preset": "leader"}},
+        "agent": {"preset": "default"},
+        "agents": {"default": {"preset": "default"}},
         "context_window": {"version": 2, "default_tool_result_chars": 4_000, "per_tool_result_chars": {"read": 2_000}},
         "reminders": {"enabled": False, "todo": {"max_per_cycle": 1}},
         "lsp": {"mode": "disabled", "configured_enabled": False, "servers": []},
@@ -182,7 +181,7 @@ def test_persisted_runtime_config_accepts_representative_value_for_each_key(fiel
         assert materialized.reminders == RuntimeRemindersConfig(enabled=False, todo=RuntimeTodoReminderConfig(max_per_cycle=1))
     elif field == "agent":
         assert materialized.has_agent is True
-        assert materialized.raw_agent == {"preset": "leader"}
+        assert materialized.raw_agent == {"preset": "default"}
     elif field == "resolved_provider":
         assert materialized.raw_resolved_provider == _accepted_persisted_runtime_config_values()[field]
 

@@ -5,16 +5,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Final, Literal, TypeIs
 
-from voidcode.agent.profile_overlays import get_profile_overlay
-from voidcode.agent.prompt_sections import (
-    capability_block,
-    dynamic_boundary_marker,
-    identity_header,
-    prompt_activation_guidance_block,
-)
-from voidcode.security.redaction import (
-    PROMPT_ACTIVATION_PREVIEW_CHARS as _PROMPT_ACTIVATION_PREVIEW_CHARS,
-)
+from voidcode.agent.prompt_sections import dynamic_boundary_marker
 from voidcode.security.redaction import (
     PROMPT_FRAGMENT_PREVIEW_CHARS as _PROMPT_FRAGMENT_PREVIEW_CHARS,
 )
@@ -82,118 +73,6 @@ def _bounded_hook_guidance_items(guidance: Iterable[str] | None) -> tuple[tuple[
         if len(items) >= _MAX_HOOK_GUIDANCE_ITEMS:
             break
     return tuple(items)
-
-
-@dataclass(frozen=True, slots=True)
-class PromptActivationDecision:
-    section: PromptAssemblySection | None
-    metadata: dict[str, object]
-
-
-def prompt_activation_decision(
-    *,
-    session_metadata: Mapping[str, object],
-    prompt_profile_name: str | None,
-) -> PromptActivationDecision:
-    runtime_policy = _mapping_value(session_metadata.get("runtime_policy"))
-    prompt_activation = _mapping_value(runtime_policy.get("prompt_activation"))
-    enabled = prompt_activation.get("enabled", True) is not False
-    intent = _mapping_value(runtime_policy.get("intent"))
-    intent_slot = _metadata_string(intent, "label") or "unspecified"
-    activation_id = _activation_id(prompt_profile_name)
-    activation_key = _activation_key(
-        activation_id=activation_id,
-        intent_slot=intent_slot,
-    )
-    existing_records = _activation_records(prompt_activation.get("activated"))
-    already_active = any(record.get("key") == activation_key for record in existing_records)
-    profile_refs = _string_list(prompt_activation.get("profile_refs"))
-    base_metadata: dict[str, object] = {
-        **prompt_activation,
-        "enabled": enabled,
-        "activation_id": activation_id,
-        "intent_slot": intent_slot,
-        "granularity": "session+activation_id+intent_slot",
-        "raw_prompt_stored": False,
-        "activated": existing_records,
-    }
-    if not enabled or already_active:
-        # A previously activated prompt is inert for this turn; the one-shot
-        # activation signal is the transition into the branch below.
-        base_metadata["activated_this_turn"] = False
-        return PromptActivationDecision(section=None, metadata=base_metadata)
-
-    guidance = prompt_activation_guidance_block(
-        activation_id=activation_id,
-        intent_slot=intent_slot,
-        profile_refs=profile_refs,
-    )
-    preview_source = f"Activation {activation_id} for intent slot {intent_slot}. Guidance-only; runtime policy remains enforcement truth."
-    preview, preview_truncated = _redacted_preview(preview_source)
-    record: dict[str, object] = {
-        "key": activation_key,
-        "activation_id": activation_id,
-        "intent_slot": intent_slot,
-        "source": "runtime_policy",
-        "guidance_only": True,
-        "raw_prompt_stored": False,
-        "preview": preview[:_PROMPT_ACTIVATION_PREVIEW_CHARS],
-        "preview_truncated": preview_truncated or len(preview) > _PROMPT_ACTIVATION_PREVIEW_CHARS,
-    }
-    base_metadata["activated"] = [*existing_records, record]
-    base_metadata["activated_this_turn"] = True
-    base_metadata["last_activation"] = record
-    return PromptActivationDecision(
-        section=PromptAssemblySection(
-            role="system",
-            content=guidance,
-            source="runtime_prompt_activation",
-            tier="instruction",
-            metadata={
-                "layer": "prompt_activation",
-                "activation_id": activation_id,
-                "intent_slot": intent_slot,
-                "guidance_only": True,
-            },
-        ),
-        metadata=base_metadata,
-    )
-
-
-def _activation_id(prompt_profile_name: str | None) -> str:
-    profile = prompt_profile_name.strip() if prompt_profile_name is not None else ""
-    return f"agent_prompt:{profile}" if profile else "agent_prompt:default"
-
-
-def _activation_key(*, activation_id: str, intent_slot: str) -> str:
-    return f"{activation_id}|intent:{intent_slot}"
-
-
-def _mapping_value(value: object) -> dict[str, object]:
-    return dict(value) if isinstance(value, Mapping) else {}
-
-
-def _metadata_string(metadata: Mapping[str, object], key: str) -> str | None:
-    value = metadata.get(key)
-    return value.strip() if isinstance(value, str) and value.strip() else None
-
-
-def _string_list(value: object) -> list[str]:
-    if not isinstance(value, list | tuple):
-        return []
-    return [item for item in value if isinstance(item, str) and item.strip()]
-
-
-def _activation_records(value: object) -> list[dict[str, object]]:
-    if not isinstance(value, list | tuple):
-        return []
-    records: list[dict[str, object]] = []
-    for item in value:
-        if isinstance(item, Mapping):
-            record = dict(item)
-            if isinstance(record.get("key"), str):
-                records.append(record)
-    return records
 
 
 type ContextTier = Literal["instruction", "workspace", "task", "recent"]
@@ -286,8 +165,6 @@ def build_prompt_assembly_plan(
     todo_prompt_context: str = "",
     continuity_summary: str = "",
     artifact_reference_sections: Iterable[PromptAssemblySection] = (),
-    prompt_profile_name: str | None = None,
-    prompt_activation_section: PromptAssemblySection | None = None,
     tool_catalog_context: str = "",
     hook_guidance: Iterable[str] | None = None,
 ) -> PromptAssemblyPlan:
@@ -339,74 +216,24 @@ def build_prompt_assembly_plan(
             return
         sections.append(block.to_section())
 
-    profile_overlay = get_profile_overlay(prompt_profile_name) if prompt_profile_name is not None else None
-
-    if profile_overlay is not None:
-        append_system(
-            _BASE_SAFETY_GUIDANCE,
-            source="runtime_base_safety",
-            tier="instruction",
-            layer="base_safety",
-        )
-        append_system(
-            identity_header(profile_overlay.profile_name, profile_overlay.role_summary),
-            source="agent_identity_header",
-            tier="instruction",
-            layer="persona_profile",
-        )
-        append_system(
-            capability_block(list(profile_overlay.capabilities)),
-            source="agent_capability_block",
-            tier="instruction",
-            layer="persona_profile",
-        )
-        append_system(
-            agent_prompt_context,
-            source="agent_prompt",
-            tier="instruction",
-            layer="persona_profile",
-        )
-        for prompt_section in profile_overlay.prompt_sections:
-            append_system(
-                prompt_section,
-                source="agent_profile_overlay",
-                tier="instruction",
-                layer="persona_profile",
-            )
-    else:
-        append_system(
-            _BASE_SAFETY_GUIDANCE,
-            source="runtime_base_safety",
-            tier="instruction",
-            layer="base_safety",
-        )
-        append_system(
-            runtime_instruction_precedence,
-            source="runtime_instruction_precedence",
-            tier="instruction",
-            layer="base_safety",
-        )
-        append_system(
-            agent_prompt_context,
-            source="agent_prompt",
-            tier="instruction",
-            layer="persona_profile",
-        )
-    if profile_overlay is not None:
-        append_system(
-            runtime_instruction_precedence,
-            source="runtime_instruction_precedence",
-            tier="instruction",
-            layer="base_safety",
-        )
-    if prompt_activation_section is not None:
-        append_system(
-            prompt_activation_section.content,
-            source=prompt_activation_section.source,
-            tier=prompt_activation_section.tier,
-            layer="prompt_activation",
-            metadata=prompt_activation_section.metadata,
-        )
+    append_system(
+        _BASE_SAFETY_GUIDANCE,
+        source="runtime_base_safety",
+        tier="instruction",
+        layer="base_safety",
+    )
+    append_system(
+        runtime_instruction_precedence,
+        source="runtime_instruction_precedence",
+        tier="instruction",
+        layer="base_safety",
+    )
+    append_system(
+        agent_prompt_context,
+        source="agent_prompt",
+        tier="instruction",
+        layer="agent_instructions",
+    )
     append_system(
         skill_prompt_context,
         source="skill_prompt",
@@ -603,10 +430,8 @@ def _metadata_layer(metadata: Mapping[str, object], *, fallback: str) -> str:
 def _default_layer_for_source(source: str) -> str:
     if source in {"runtime_base_safety", "runtime_instruction_precedence"}:
         return "base_safety"
-    if source == "runtime_prompt_activation":
-        return "prompt_activation"
-    if source.startswith("agent_"):
-        return "persona_profile"
+    if source == "agent_prompt":
+        return "agent_instructions"
     if source == "skill_prompt":
         return "skills"
     if source in {"context_transform", "hook_preset_guidance", "hook_argv_guidance"}:
@@ -651,6 +476,5 @@ __all__ = [
     "build_prompt_assembly_plan",
     "is_context_tier",
     "metadata_source",
-    "prompt_activation_decision",
     "prompt_fragments_for_sections",
 ]

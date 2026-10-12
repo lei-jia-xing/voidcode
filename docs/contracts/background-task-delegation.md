@@ -1,14 +1,14 @@
-# 后台任务结果读取与 leader 通知契约
+# 后台任务结果读取与 Default 通知契约
 
 来源 issue：#139，#289
 
 ## 目的
 
-定义由 runtime 拥有的契约，使后台任务和 delegated child execution 的完成结果能够被 leader session 可靠感知和消费。
+定义由 runtime 拥有的契约，使后台任务和 delegated child execution 的完成结果能够被 parent（顶层 builtin `default`）session 可靠感知和消费。
 
 当前 runtime 已经具备这层 shipped baseline：
 
-- leader 可见的后台任务生命周期通知
+- parent/default session 可见的后台任务生命周期通知
 - 结构化结果读取面
 - 后台子任务 transcript 的恢复路径
 - 通知的去重与重启恢复语义
@@ -35,11 +35,11 @@
 
 它支持的 async delegation 语义是收敛的：
 
-1. leader 启动一个后台任务
-2. leader 继续执行或稍后恢复
+1. `default` 启动一个后台任务
+2. `default` 继续执行或稍后恢复
 3. 后台任务完成、失败、取消，或进入 approval-blocked 状态
-4. leader 被 runtime 可靠通知
-5. leader 读取结构化结果摘要，或恢复完整的子任务 transcript
+4. `default` session 被 runtime 可靠通知
+5. `default` 读取结构化结果摘要，或恢复完整的子任务 transcript
 
 这层契约的目标是避免 async agent flow 退化成 prompt hack、轮询拼接或 client-local 推断，而不是扩展成任意拓扑 multi-agent runtime。
 
@@ -48,7 +48,7 @@
 本契约覆盖：
 
 1. **后台结果读取**
-2. **leader 通知**
+2. **Default 通知**
 3. **足够支撑恢复的 parent/child linkage**
 4. **顺序与去重语义**
 5. **让 hooks / clients 消费 runtime truth，而不是自行发明语义**
@@ -73,7 +73,7 @@
 
 runtime 已有的基础能力：
 
-- `BackgroundTaskState`，包含 `queued/running/idle/completed/failed/cancelled/interrupted` 状态（`idle` 表示 keep-alive 任务 turn 结束、等待 leader steer；它不是 terminal 状态）
+- `BackgroundTaskState`，包含 `queued/running/idle/completed/failed/cancelled/interrupted` 状态（`idle` 表示 keep-alive 任务 turn 结束、等待 parent steer；它不是 terminal 状态）
 - `start_background_task` / `load_background_task` / `list_background_tasks` / `cancel_background_task` / `retry_background_task` / `steer_background_task`
 - 用户全局 XDG SQLite 中以 `workspace_id` scoped rows 保存的后台任务持久化
 - 已有的 session truth，以及通过 `resume(session_id)` 恢复 transcript 的路径
@@ -86,7 +86,7 @@ runtime 已有的基础能力：
 - foreground multi-tool calls 适合短小、独立的 read/search 类工作；它们不是绕过审批的并行写入通道，也不是 delegated child execution。
 - foreground `shell_exec` 会在工具内部 worker thread 中运行，以便流式转发 progress events；这不是同一 turn 内的多工具并行执行。
 - `task(..., run_in_background=true)` 会创建 persisted `queued` background task，runtime queue 会按 provider/model/default concurrency limit 启动多个 worker thread；默认 concurrency 由 `RuntimeBackgroundTaskConfig.default_concurrency` 控制，并可被 provider/model 级配置覆盖。
-- background worker lifecycle、queued/running/completed/failed/cancelled/interrupted 状态、parent notification events 与 result retrieval 都持久化在同一 runtime truth 中；leader 不需要靠 prompt 文本或客户端本地状态推断完成情况。
+- background worker lifecycle、queued/running/completed/failed/cancelled/interrupted 状态、parent notification events 与 result retrieval 都持久化在同一 runtime truth 中；parent 无需靠 prompt 文本或客户端本地状态推断完成情况。
 - `task(operation="output", block=true)` 是显式阻塞等待 surface；常规 agent flow 应优先继续其他安全工作，等待 parent-session notification event 或稍后读取 `task(operation="output", task_id=...)`。
 
 当前 shipped baseline 还必须保持以下限制：
@@ -95,11 +95,11 @@ runtime 已有的基础能力：
 - result retrieval 不会把完整 child transcript 自动复制进 parent session
 - retry 是显式 runtime operation，不能引入无限自动重试；旧 terminal task 保持不可变，retry 会创建新的 queued task handle
 - MCP 只按 runtime scope 管理，不声明 workspace-scoped lifecycle
-- `product` is a delegated read-only plan subagent (child preset). Top-level execution of `product` (e.g. `voidcode run --agent product ...` or a top-level request/runtime-config `agent=product` without delegation) must fail before run/session side effects with the stable `ValueError` message from runtime agent validation: `agent preset 'product' cannot be executed as the top-level active agent in the current runtime; executable agent presets are: leader`. Delegated execution via `task` (`subagent_type=product`) is allowed, and the child returns its plan to the leader via `yield`. This state remains visible through bounded runtime policy diagnostics and delegated/task error surfaces.
+- `plan` is a delegated read-only plan subagent (child preset). Top-level execution of `plan` (e.g. `voidcode run --agent plan ...` or a top-level request/runtime-config `agent=plan` without delegation) must fail before run/session side effects. Delegated execution via `task` (`subagent_type=plan`) is allowed, and the child returns its plan to the parent via `yield`. Only builtin `default` is top-level selectable; `mode=primary/subagent` remains the routing declaration, while runtime delegation policy and tool boundaries govern execution. Old builtin IDs `leader`, `worker`, `advisor`, `researcher`, and `product`, plus their prompt-profile keys, have no aliases or migration; old stored routes may fail naturally. Custom IDs remain unrestricted, so custom `leader` is not a compatibility alias.
 
-## Leader-native batch dispatch
+## Default-native batch dispatch
 
-The leader-facing `task_batch` tool is a bounded ergonomic surface over the existing
+The `default`-facing `task_batch` tool is a bounded ergonomic surface over the existing
 runtime background-task and parallel-group contracts. It accepts 1–100 independent
 child requests; every item explicitly supplies `prompt`, `load_skills`, and
 `subagent_type`, with optional `description`, `command`, `outputSchema`, and
@@ -143,7 +143,7 @@ bounded group projection, and Condition-based wait used by `task` and
 
 ### 1. Parent / Child Linkage
 
-凡是需要通知 leader 的 delegated/background task，都必须显式携带 leader session linkage。
+凡是需要通知 parent 的 delegated/background task，都必须显式携带 parent session linkage。
 
 最小要求：
 
@@ -151,13 +151,13 @@ bounded group projection, and Condition-based wait used by `task` and
 
 解释：
 
-- `None` 表示这是普通后台任务，没有 leader-notification target
+- `None` 表示这是普通后台任务，没有 parent-notification target
 - 非空值表示 runtime 必须把该 session 当作通知目标
 
 当前实现中的 `BackgroundTaskState.session_id` 已经表示后台运行生成的结果 session。为了避免与现有 `session_id` 泛称冲突，本文档统一使用：
 
 - `task_id`：后台任务 id
-- `parent_session_id`：leader session id
+- `parent_session_id`：parent session id
 - `child_session_id`：后台子任务对应的结果 session id
 
 并明确约定：
@@ -200,13 +200,13 @@ def load_background_task_result(task_id: str) -> BackgroundTaskResult: ...
 ### 语义说明
 
 - `load_background_task(task_id)` 继续作为低层 task-status surface
-- `load_background_task_result(task_id)` 作为 leader-facing retrieval surface
-- `summary_output` 是面向 leader 的紧凑结果摘要，仅在可安全暴露时出现
+- `load_background_task_result(task_id)` 作为 parent-facing retrieval surface
+- `summary_output` 是面向 parent 的紧凑结果摘要，仅在可安全暴露时出现
 - `child_session_id` 指向完整 child transcript；完整 transcript 继续通过已有的 `resume(child_session_id)` 路径读取
 - `result_available` 只在 runtime 能安全暴露摘要结果或 child transcript pointer 时为 `true`
 - `approval_blocked` 是**结果视图上的派生字段**，不是对 `BackgroundTaskState.status` 的扩展
 - 当 child session 的 `SessionState.status == "waiting"` 时，`approval_blocked` 应为 `true`
-- `task(operation="output", full_session=true)` 可以返回 bounded child transcript metadata；`message_limit` 当前被限制在 1 到 100，避免把完整 session 无界塞回 leader context
+- `task(operation="output", full_session=true)` 可以返回 bounded child transcript metadata；`message_limit` 当前被限制在 1 到 100，避免把完整 session 无界塞回 parent context
 - failed child result 只提供显式 user-request retry / continuation guidance，建议使用 `session_id=<child_session_id>` 继续；不能由工具自动无限重试
 - interrupted child result 是确定性终态，表示 runtime 在重启/中断/超时类场景中无法证明 child 已完成；它与 failed 一样可读取错误摘要，但不能被 late child completion 回退或覆盖
 ### `task(operation="output")` projection
@@ -221,22 +221,22 @@ def load_background_task_result(task_id: str) -> BackgroundTaskResult: ...
 
 ## Transcript 恢复契约
 
-完整 delegated/background history **不应**复制进 leader session。
+完整 delegated/background history **不应**复制进 parent session。
 
 正确模型应是：
 
-- leader 收到一条 runtime-owned notification event，其中始终包含 `task_id`，并在 child session 已建立时包含 `child_session_id`
+- parent 收到一条 runtime-owned notification event，其中始终包含 `task_id`，并在 child session 已建立时包含 `child_session_id`
 - 完整 child transcript 继续保持为 session-scoped truth
 - 当 `child_session_id` 存在时，调用方通过现有 `resume(child_session_id)` 路径恢复 child transcript
 
 这保持了当前 runtime 模型的一致性：
 
-- parent session 拥有 leader 可见通知
+- parent session 拥有 parent 可见通知
 - child session 拥有 delegated execution history
 
 ## Keep-alive 委托与 steer 契约
 
-`task` 工具的 `keep_alive: true` 参数（要求 `run_in_background=true`）创建可重入 worker：child session 跨 turn 累积上下文，leader 反复驱动同一个 child，直到 worker 提交最终结果。
+`task` 工具的 `keep_alive: true` 参数（要求 `run_in_background=true`）创建可重入 child：child session 跨 turn 累积上下文，parent 反复驱动同一个 child，直到 child 提交最终结果。
 
 ### 状态模型
 
@@ -270,13 +270,13 @@ def steer_background_task(task_id: str, content: str) -> BackgroundTaskState: ..
 
 ### 工具 / CLI / HTTP surface（与 status/output/cancel/retry/list 平级）
 
-- leader 工具 `task(operation="steer", task_id, prompt)`：调用方必须是任务的 parent（`context.session_id == task.parent_session_id`，session_id 取自 runtime tool context，不信任客户端传入）；`keep_alive=true` 时 `task` 工具在 request metadata **顶层**加 `"keep_alive": true`（不放 delegation 子对象）。
+- parent 调用 `task(operation="steer", task_id, prompt)`：调用方必须是任务的 parent（`context.session_id == task.parent_session_id`，session_id 取自 runtime tool context，不信任客户端传入）；`keep_alive=true` 时 `task` 工具在 request metadata **顶层**加 `"keep_alive": true`（不放 delegation 子对象）。
 - CLI：`voidcode tasks steer <task_id> "<prompt>" [--json]`；`tasks status` 对 `idle` 状态给出 `tasks steer` / `tasks cancel` 指引。
 - HTTP：`POST /api/tasks/<task_id>/steer`，body `{"prompt": "..."}`，返回 steered task state。
 
 ## 通知契约
 
-leader notification 必须表现为**附加到 parent session 上的 runtime events**。
+parent notification 必须表现为**附加到 parent session 上的 runtime events**。
 
 ### 需要稳定化的事件
 
@@ -295,9 +295,9 @@ leader notification 必须表现为**附加到 parent session 上的 runtime eve
 - `yield.data` must already be JSON-compatible and finite. NaN, infinity, and unsupported values are rejected before an artifact or terminal handoff is created; the runtime does not coerce or default them.
 
 
-这些事件覆盖 issue #139 的 leader-notification 需求，以及 keep-alive 委托的 leader 驱动需求。
+这些事件覆盖 issue #139 的 parent-notification 需求，以及 keep-alive 委托的 parent 驱动需求。
 
-当前 runtime 同时发出 `runtime.delegated_result_available`，用于表达 delegated/background result 已作为 runtime truth 可被 leader-facing retrieval 消费。background-task lifecycle 事件仍承载 `result_available` 与 `summary_output` 等字段。
+当前 runtime 同时发出 `runtime.delegated_result_available`，用于表达 delegated/background result 已作为 runtime truth 可被 parent-facing retrieval 消费。background-task lifecycle 事件仍承载 `result_available` 与 `summary_output` 等字段。
 
 ### `runtime.background_task_progress` payload
 
@@ -307,12 +307,12 @@ leader notification 必须表现为**附加到 parent session 上的 runtime eve
 
 ### parent-session payload 基线
 
-所有 leader-notification events 至少应包含：
+所有 parent-notification events 至少应包含：
 
 ```json
 {
   "task_id": "task-123",
-  "parent_session_id": "session-leader",
+  "parent_session_id": "session-default",
   "status": "completed",
   "result_available": true
 }
@@ -376,7 +376,7 @@ leader notification 必须表现为**附加到 parent session 上的 runtime eve
 - `result_available`（可选）
 - `delegation` / `message`（可选；`_delegated_lifecycle_payloads` 结构）
 
-该事件在每个 keep-alive turn 结束时投递一次（去重键 per-turn），表示 worker 已挂起、等待 leader 用 `task(operation="steer", task_id, prompt)` / `tasks steer` / `POST /api/tasks/<id>/steer` 派发下一 turn。
+该事件在每个 keep-alive turn 结束时投递一次（去重键 per-turn），表示 child 已挂起、等待 parent 用 `task(operation="steer", task_id, prompt)` / `tasks steer` / `POST /api/tasks/<id>/steer` 派发下一 turn。
 
 ## 顺序规则
 
@@ -458,7 +458,7 @@ v1 的 delegated/background idle reminder 只能由 runtime 拥有，并且只�
 约束如下：
 
 - 触发源以 `session_idle` 这类真实 lifecycle signal 为准，而不是客户端空闲、prompt 文本或定时调度
-- reminder 的目标是提示 leader 继续查看、恢复或显式处理 child session，而不是替代 task/session truth
+- reminder 的目标是提示 parent 继续查看、恢复或显式处理 child session，而不是替代 task/session truth
 - reminder 不能把自己变成新的 authority layer，也不能把 hook、client 或 prompt 文本变成 truth source
 
 ### cooldown 与 dedupe
@@ -502,7 +502,7 @@ background process 相关 guardrail 只覆盖当前 v1 已落地的有限范围�
 
 ## 去重规则
 
-leader notification 必须满足：**对同一语义转换至多投递一次**。
+parent notification 必须满足：**对同一语义转换至多投递一次**。
 
 最小要求：
 
@@ -517,7 +517,7 @@ leader notification 必须满足：**对同一语义转换至多投递一次**�
 
 重启后，runtime 必须依据持久化的 notification delivery state，避免把同一条通知再次写入 parent session。
 
-> 这里的 delivery state 属于 runtime 内部持久化真相，不要求出现在 `BackgroundTaskResult` 这样的 leader-facing retrieval payload 中。
+> 这里的 delivery state 属于 runtime 内部持久化真相，不要求出现在 `BackgroundTaskResult` 这样的 parent-facing retrieval payload 中。
 
 实现上，completion delivery 复用 parent session metadata 中的 bounded
 `pending_messages` interaction outbox；每条 completion interaction 携带稳定
@@ -531,24 +531,24 @@ completion outbox，但普通 steering/follow-up 仍受 terminal seal 约束。
 
 ## 恢复语义
 
-恢复是必需的，因为 parent 或 runtime 可能在 child 完成后、leader 消费前重启。
+恢复是必需的，因为 parent 或 runtime 可能在 child 完成后、parent 消费前重启。
 
 要求：
 
 1. child task 先持久化自己的 lifecycle truth
 2. 通知投递状态也作为 runtime truth 持久化，而不是依赖内存回调
-3. 重启后 runtime 能判断 leader 是否已经被通知
+3. 重启后 runtime 能判断 parent 是否已经被通知
 4. 如果 lifecycle truth 已存在、但通知尚未完成提交，则 runtime 在 reconciliation 中补全通知投递
 5. parent session 的 `resume(session_id)` 必须像其他 session event 一样暴露这些已投递通知
 
 ## Approval-blocked 语义
 
-approval-blocked 不是 terminal task status，但它对 leader 是重要事件。
+approval-blocked 不是 terminal task status，但它对 parent 是重要事件。
 
 要求：
 
 - 当 child session 进入 `waiting` 时，runtime 向 parent session 发出 `runtime.background_task_waiting_approval`
-- leader 可通过 `child_session_id` 检查进入 `waiting` 的 child session
+- parent 可通过 `child_session_id` 检查进入 `waiting` 的 child session
 - 通知不得通过普通文本输出注入来伪装实现
 
 ## Routing、工具与 skill guardrails
@@ -556,17 +556,17 @@ approval-blocked 不是 terminal task status，但它对 leader 是重要事件�
 Delegated child execution 必须先经过 runtime-owned routing 与 tool scope enforcement：
 
 - `task` 工具会校验 `subagent_type`，只允许受支持的 child presets。
-- 当前顶层 active preset 是 `leader`；delegated child presets 是 `advisor`、`explore`、`researcher`、`worker`、`product`（`product` 是只读 plan subagent）。
+- 当前唯一可选的顶层 builtin preset 是 `default`；delegated child presets 是 `execute`、`review`、`explore`、`research`、`plan`（`plan` 是只读计划子代理）。只有 `default` 可作为顶层 builtin；`mode=primary/subagent` 保留为路由资格声明。
 - provider 可见工具 schema 会被 agent manifest allowlist 和 request tool config 收窄。
 - 即使 provider 伪造 raw tool call，runtime tool lookup 仍必须拒绝 denied built-in tools。
-- `worker` 当前不默认获得再次 delegation 的 `task` 工具；这避免形成无控制的 nested delegation。
+- `execute` 当前不默认获得再次 delegation 的 `task` 工具；这避免形成无控制的 nested delegation。
 - hook guardrails 是 runtime lifecycle 的观察/干预层，不是 session truth 的替代品；background lifecycle hook failure（无论 `hooks.failure_mode=warn` 还是 `fail`）都将 bounded `hook_status=error` event 追加到目标 session（目标已 sealed/unknown 时安全丢弃），不改写已持久化的 terminal truth。
 
 ## Runtime Harness Policy delegation gate
 
-Before any child-session allocation, background-task row creation, queueing, lifecycle hook notification, or provider/tool execution side effect, delegated execution must pass the parent `RuntimePolicySnapshot.delegation_policy`. The child snapshot is derived from the parent snapshot plus the selected child manifest and can only be a subset of parent tools, skills, hooks, MCP bindings, prompt activations, and delegation rights.
+Before any child-session allocation, background-task row creation, queueing, lifecycle hook notification, or provider/tool execution side effect, delegated execution must pass the parent `RuntimePolicySnapshot.delegation_policy`. The child snapshot is derived from the parent snapshot plus the selected child manifest and can only be a subset of parent tools, skills, hooks, MCP bindings, and delegation rights.
 
-The product plan preset is a delegated read-only child preset at this gate. Direct `subagent_type="product"` and configured aliases that resolve to product route to the product subagent, which returns its plan to the leader via `yield`. Top-level execution of `product` (e.g. `voidcode run --agent product ...` or a top-level request/runtime-config `agent=product` without delegation) must fail before run/session side effects with the stable `ValueError` message `agent preset 'product' cannot be executed as the top-level active agent in the current runtime; executable agent presets are: leader`. This contract does not add product delegation helpers beyond the existing `task` routing, and the product subagent stays read-only (no task/shell/write). Delegated execution remains runtime-owned.
+`plan` is a delegated read-only child preset at this gate. Direct `subagent_type="plan"` and configured aliases resolving to `plan` route to the `plan` subagent, which returns its plan to the parent via `yield`. Top-level execution of `plan` is not selectable and must be rejected before run/session side effects.
 
 ## MCP scope 与测试立场
 
@@ -579,7 +579,7 @@ MCP 当前是 runtime-managed capability，不是 workspace-scoped marketplace�
 
 ## Result、retry 与 cancel flow
 
-Leader 读取结果时应遵守以下规则：
+Parent 读取结果时应遵守以下规则：
 
 - `task(operation="output")` 的 selector 必须严格互斥：单任务使用 `task_id`；聚合调用使用 `task_ids` 或 `parallel_group_id`，三者只能提供一个。`task_ids` 有界且不得重复；`parallel_group_id` 由 runtime 按持久化 group truth 解析。
 - `task(operation="ps")` 无参数，要求 active runtime tool context；runtime 使用其中的 parent `session_id` 只投影该 parent 的最多 100 条 task roster。返回 task/child/group/lifecycle/timestamp/approval/result flags 与 next-step references，不返回 prompt、transcript 或 child result content。
@@ -591,7 +591,7 @@ Leader 读取结果时应遵守以下规则：
 - failed/cancelled/interrupted task 可以通过 runtime 方法 `retry_background_task(task_id)`、CLI `voidcode tasks retry <task_id>` 或 HTTP `POST /api/tasks/<task_id>/retry` 显式重试。retry 必须复用旧 task 持久化的 request prompt、requested child session id、parent session id、metadata、routing 与 `allocate_session_id`，并创建新的 queued task handle；不得改写旧 terminal task。
 - idle keep-alive task 通过 `task(operation="steer", task_id, prompt)`（CLI `voidcode tasks steer <task_id> "<prompt>"`、HTTP `POST /api/tasks/<task_id>/steer`）派发下一 worker turn；keep-alive 的 `interrupted` 任务可视为断点续跑同样 steer。steer 只对 keep-alive 任务开放，且任务必须处于 `idle`/`interrupted`（turn 在飞时拒绝）。
 - failed/interrupted child 输出可以提示用户显式请求 retry/continue，并优先使用 runtime-owned `retry_background_task` 返回的新 task id；工具本身不得自动进入无限 retry loop。
-- repeated child failure 应升级给 leader / user，而不是继续隐藏在后台循环里。
+- repeated child failure 应升级给 parent / user，而不是继续隐藏在后台循环里。
 - `task(operation="cancel", task_id=...)` 对 unknown task 返回稳定 `status="unknown"` payload；即使 model-facing runtime context 中 authorization 先发现 unknown id，也不得把 unknown 误报为权限错误；对 running task 标记 cancel requested；对 completed/cancelled 等 terminal task 返回其 terminal state，不描述成新取消。
 - `task(operation="output")` 的 payload 应包含 `retrieval_instruction` 与 compact `handoff_summary`，至少表达 objective、completed work、open questions、files touched、verification、blocked/error reason；未知项用空值或空列表表达，不能要求客户端推断。
 
@@ -636,11 +636,11 @@ clients、hooks 与未来 async orchestration 可以选择其一或同时使用�
 
 这层 baseline 只有在以下条件全部成立时才算保持有效：
 
-1. leader 能启动一个带 notification target 的后台任务。
+1. 顶层 `default` 能启动一个带 notification target 的后台任务。
 2. 当 child task 完成、失败、取消或进入 approval-blocked 状态时，parent session 会收到且只收到一条对应的 runtime-owned notification event。
 3. 调用方可以读取结构化后台任务结果，而不是靠 prompt 文本 scraping。
 4. 调用方可以通过 `resume(child_session_id)` 恢复完整 child transcript。
-5. 重启 / reconciliation 不会重复投递 leader 通知。
+5. 重启 / reconciliation 不会重复投递 parent 通知。
 6. parent session 中的通知顺序是确定性的、可 replay 的。
 7. CLI 和 HTTP task surfaces 暴露一致的 delegated correlation 字段。
 8. fake provider 与 fake MCP 测试覆盖 routing、tool guardrail、skill force-load、MCP lifecycle、result、explicit retry 和 cancel paths。
@@ -662,7 +662,7 @@ mise run check
 本文档只覆盖 runtime-owned delegated baseline 的 routing、retrieval、notification、retry/cancel 与测试立场。以下内容仍然属于单独 follow-up：
 
 - 更丰富的 child-session lineage / topology 设计
-- 完整的 async leader/worker orchestration 语义
+- 完整的 async parent/worker orchestration 语义
 - scheduler integration
 - UI-specific presentation choices
 - workspace-scoped MCP、marketplace、dynamic agents、peer-to-peer agent bus

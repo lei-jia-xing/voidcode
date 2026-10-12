@@ -801,23 +801,6 @@ class PolicyHookPolicyPayload(_PayloadModel):
         return _parse_string_list(value, field_path=f"policy.hook_policy.{info.field_name}")
 
 
-class PolicyPromptActivationPayload(_PayloadModel):
-    enabled: bool | None = None
-    profile_refs: tuple[NonEmptyItem, ...] | None = None
-
-    @field_validator("enabled", mode="before")
-    @classmethod
-    def _validate_enabled(cls, value: object) -> bool | None:
-        return _parse_optional_bool(value, field_path="policy.prompt_activation.enabled")
-
-    @field_validator("profile_refs", mode="before")
-    @classmethod
-    def _validate_profile_refs(cls, value: object) -> tuple[str, ...] | None:
-        if value is None:
-            return None
-        return _parse_string_list(value, field_path="policy.prompt_activation.profile_refs")
-
-
 class PolicyPayload(_PayloadModel):
     #: ``version`` is required; the remaining keys reject an explicit ``null`` in
     #: the published contract (``runtime/policy.py`` requires the version and
@@ -828,7 +811,6 @@ class PolicyPayload(_PayloadModel):
     tool_policy: PolicyToolPolicyPayload | None = None
     delegation_policy: PolicyDelegationPolicyPayload | None = None
     hook_policy: PolicyHookPolicyPayload | None = None
-    prompt_activation: PolicyPromptActivationPayload | None = None
 
     @field_validator("enabled", mode="before")
     @classmethod
@@ -2063,7 +2045,7 @@ class RuntimeConfigPayload(_PayloadModel):
             if not isinstance(raw_key, str):
                 raise ValueError("runtime config field 'agents' keys must be strings")
             # A per-entry context path makes a defect report under the entry key
-            # (``agents.worker.model``), matching the loader's contract.
+            # (`agents.<id>.model`), matching the loader's contract.
             parsed[raw_key] = validate_config_section(AgentPayload, entry, field_path=f"agents.{raw_key}")
         return parsed
 
@@ -2233,7 +2215,6 @@ SCHEMA_DEFINITION_NAMES: Mapping[str, str] = {
     "PolicyToolPolicyPayload": "runtimePolicyToolPolicyConfig",
     "PolicyDelegationPolicyPayload": "runtimePolicyDelegationPolicyConfig",
     "PolicyHookPolicyPayload": "runtimePolicyHookPolicyConfig",
-    "PolicyPromptActivationPayload": "runtimePolicyPromptActivationConfig",
     "HooksPayload": "hooksConfig",
     "FormatterPayload": "formatterConfig",
     "FormatterPresetPayload": "formatterPresetConfig",

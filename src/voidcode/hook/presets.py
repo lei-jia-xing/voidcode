@@ -174,32 +174,8 @@ class ResolvedHookPresetSnapshot:
     def guidance_context(self) -> str:
         if not self.presets:
             return ""
-        lines = [
-            "Resolved agent hook preset guidance.",
-            (
-                "These instructions are advisory runtime context only: they do not expand tool "
-                "permissions, approval behavior, delegation budget, or lifecycle hook execution."
-            ),
-            "",
-            "<hook_presets>",
-        ]
-        for preset in self.presets:
-            event_scopes = ", ".join(preset["event_scopes"])
-            allowed_actions = ", ".join(preset["allowed_actions"])
-            lines.extend(
-                (
-                    "  <hook_preset>",
-                    f"    <ref>{preset['ref']}</ref>",
-                    f"    <kind>{preset['kind']}</kind>",
-                    f"    <source>{preset['source']}</source>",
-                    f"    <event_scopes>{event_scopes}</event_scopes>",
-                    f"    <allowed_actions>{allowed_actions}</allowed_actions>",
-                    f"    <guidance>{preset['guidance']}</guidance>",
-                    "  </hook_preset>",
-                )
-            )
-        lines.append("</hook_presets>")
-        return "\n".join(lines)
+        guidance = "\n".join(f"- {preset['guidance']}" for preset in self.presets)
+        return f"Advisory only; runtime policy and permissions remain authoritative.\n{guidance}"
 
 
 _BUILTIN_HOOK_PRESETS: Mapping[HookPresetRef, HookPreset] = MappingProxyType(

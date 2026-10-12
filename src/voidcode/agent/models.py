@@ -5,12 +5,12 @@ from dataclasses import dataclass
 from typing import Literal, cast
 
 type AgentManifestId = Literal[
-    "leader",
-    "worker",
-    "advisor",
+    "default",
+    "execute",
+    "review",
     "explore",
-    "researcher",
-    "product",
+    "research",
+    "plan",
 ]
 type AgentManifestKey = AgentManifestId | str
 type AgentMode = Literal["primary", "subagent", "all"]
@@ -56,7 +56,7 @@ class AgentPromptMaterialization:
 
     The fields are intentionally narrow today: every builtin manifest renders a
     static text profile owned by `src/voidcode/agent/<profile>/base.txt`. The
-    `version` integer is bumped whenever the persona text or its materialization
+    `version` integer is bumped whenever the prompt text or its materialization
     semantics change so external consumers can compare prompts deterministically.
     """
 

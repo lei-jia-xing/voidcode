@@ -53,10 +53,12 @@
 
 当前实际进入 execution path 的 agent preset。对于当前仓库，这意味着：
 
-- 顶层 active run 仅接受 `leader`；`product` 不能作为 top-level active agent
-- runtime-owned delegated child run 可执行 `advisor`、`explore`、`researcher`、`worker`、`product`
+- 顶层 active run 的唯一可选 builtin preset 是 `default`；`plan` 不能作为 top-level active agent
+- runtime-owned delegated child run 可执行 builtin `execute`、`review`、`explore`、`research`、`plan`
 
-这份契约不定义 delegation routing 本身，但一旦 child preset 已经被 runtime 选中进入真实执行路径，它与顶层 `leader` 一样要服从同一套 tool boundary enforcement。
+这些 builtin IDs 分别替代旧 `leader`、`worker`、`advisor`、`researcher`、`product`；旧 ID 和 prompt-profile keys 没有 aliases 或迁移，旧存储 routes 可能自然失败。Custom namespace 仍不受限：custom id `leader` 是独立 custom agent，不是兼容 alias。`mode=primary/subagent` 保留为路由资格声明；`plan` 是 delegated read-only child。实际 tool/delegation authority 仍由 runtime policy 与 tool boundaries 决定。
+
+这份契约不定义 delegation routing 本身；被 runtime 选中进入真实执行路径的 child preset 与顶层 `default` 一样服从同一套 tool boundary enforcement。
 
 ### Tool Registry
 
@@ -194,7 +196,7 @@ tool allowlist enforcement 发生在 approval 之前。
 - 不得静默降级为“工具不存在但继续猜测”
 - 不得把该工具重新注入 `available_tools`
 - deny reason 必须通过 runtime-owned machine-readable surfaces 保持可见：`runtime.request_received.payload.runtime_policy.tool_policy.denied` / `delegation_policy.denied`、`runtime.failed` 或 denied `runtime.tool_completed` payload、session replay/debug JSON。payload 必须是 bounded/redacted，不能包含 raw prompt、skill body、secret 或 env value。
-- prompt 文本、hook output、prompt activation 或客户端请求不能把 denied tool/delegation 目标重新变成可调用能力。
+- prompt 文本、hook output 或客户端请求不能把 denied tool/delegation 目标重新变成可调用能力。
 
 这类失败应被视为 runtime-owned governance failure，而不是 client rendering concern。
 

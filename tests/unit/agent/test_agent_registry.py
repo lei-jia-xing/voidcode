@@ -109,12 +109,27 @@ def test_registry_project_scope_overrides_user_scope(tmp_path: Path) -> None:
 def test_registry_rejects_custom_builtin_id(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     _write_agent(
-        workspace / ".voidcode" / "agents" / "leader.md",
-        "id: leader\nname: Fake Leader\ndescription: nope\nmode: primary",
+        workspace / ".voidcode" / "agents" / "default.md",
+        "id: default\nname: Fake Default\ndescription: nope\nmode: primary",
     )
 
-    with pytest.raises(ValueError, match="builtin id 'leader'.*cannot be replaced"):
+    with pytest.raises(ValueError, match="builtin id 'default'.*cannot be replaced"):
         _ = load_agent_manifest_registry(workspace, env={})
+
+
+def test_registry_allows_custom_markdown_ids_matching_old_builtin_ids(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    _write_agent(
+        workspace / ".voidcode" / "agents" / "leader.md",
+        "id: leader\nname: Custom Leader\ndescription: user-defined\nmode: subagent",
+    )
+
+    manifest = load_agent_manifest_registry(workspace, env={}).get("leader")
+
+    assert manifest is not None
+    assert manifest.source_scope == "project"
+    assert manifest.prompt_materialization is not None
+    assert manifest.prompt_materialization.source == "custom_markdown"
 
 
 def test_actual_installed_markdown_layer_and_reserved_collisions(tmp_path: Path) -> None:
@@ -124,7 +139,7 @@ def test_actual_installed_markdown_layer_and_reserved_collisions(tmp_path: Path)
     contents = {
         "agent_consumer_fixture/__init__.py": "",
         "agent_consumer_fixture/agent.md": body,
-        "agent_consumer_fixture/collision.md": body.replace("id: helper", "id: leader"),
+        "agent_consumer_fixture/collision.md": body.replace("id: helper", "id: default"),
         f"{dist_info}/METADATA": f"Metadata-Version: 2.1\nName: {package_name}\nVersion: 1.0.0\n",
         f"{dist_info}/WHEEL": "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
     }
@@ -168,7 +183,7 @@ def test_actual_installed_markdown_layer_and_reserved_collisions(tmp_path: Path)
     collision = manifest_from_markdown_file(
         site / "agent_consumer_fixture" / "collision.md",
         scope="package",
-        source_id=f"{distribution.metadata['Name']}/agent/leader",
+        source_id=f"{distribution.metadata['Name']}/agent/default",
     )
     with pytest.raises(ValueError):
         load_agent_manifest_registry(workspace, env=env, installed_manifests=(collision,))
@@ -177,6 +192,6 @@ def test_actual_installed_markdown_layer_and_reserved_collisions(tmp_path: Path)
 @pytest.mark.parametrize("version", [True, 1.0, 0, "", None])
 def test_prompt_payload_refuses_noninteger_or_missing_version(version: object) -> None:
     with pytest.raises(ValueError):
-        AgentPromptMaterialization.from_payload({"profile": "leader", "source": "builtin", "format": "text", "version": version})
+        AgentPromptMaterialization.from_payload({"profile": "default", "source": "builtin", "format": "text", "version": version})
     with pytest.raises(ValueError):
-        AgentPromptMaterialization.from_payload({"profile": "leader", "source": "builtin", "format": "text"})
+        AgentPromptMaterialization.from_payload({"profile": "default", "source": "builtin", "format": "text"})

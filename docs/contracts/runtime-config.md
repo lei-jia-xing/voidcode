@@ -118,7 +118,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
     "paths": [".voidcode/skills"]
   },
   "agent": {
-    "preset": "leader",
+    "preset": "default",
     "model": "opencode-zen/gpt-5.4",
     "execution_engine": "provider"
   },
@@ -143,7 +143,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `mcp`：当前已解析的 runtime-managed MCP 配置容器
 - `provider_fallback`：provider fallback 链的配置入口
 - `providers`：provider 级配置对象；当未提供仓库本地 `providers` block 时，runtime 也会从标准 provider 凭据环境变量构造最小 provider 配置（例如 `OPENCODE_API_KEY`）
-- `agent`：agent preset 的 runtime 消费入口。当前顶层 active run 仅使用 builtin `leader`（默认或显式选择）；runtime-owned delegation path 上的 child run 可执行 builtin child preset（包括只读 plan subagent `product`）或本地自定义 `mode: subagent` manifest。`product` 不能作为 top-level active agent。
+- `agent`：agent preset 的 runtime 消费入口。当前顶层 active run 仅使用 builtin `default`（默认或显式选择）；runtime-owned delegation path 上的 child run 可执行 builtin child preset（包括只读 plan subagent `plan`）或本地自定义 `mode: subagent` manifest。`plan` 不能作为 top-level active agent。
 - `policy`：Runtime Harness Policy v1 配置入口，只能提供 schema-bounded narrowing/default intent；runtime hard denials、persisted snapshot、agent manifest 与 request/session 边界仍按固定优先级收口。
 - `agents`：按 agent preset 配置 model / fallback defaults。这里是“已发现 preset 的配置覆盖/别名入口”，不是 manifest 定义入口；内置 preset key 与已发现本地 manifest key 可省略 `preset`，其他 alias key 必须显式声明 `preset`。
 - `reasoning_effort`：可选的 runtime-owned reasoning-effort hint（例如 `low` / `medium` / `high`）。能力判定**只**以 model 自身的 catalog metadata（`supports_reasoning_effort` / `supported_effort_levels` / `default_reasoning_effort`）为准，没有 provider 级判定：model metadata 显式 `supports_reasoning_effort=false` 时 runtime 在请求早期 fail-fast，显式 `true` 时通过；metadata 缺省的 model 一律按 best-effort 透传，并在 readiness 中标记为 `status="forwarded_unverified"`（`reason="model_capability_unknown"`），不静默当作已支持。这条判定对所有 provider（含多上游网关 `opencode-go`）一致：model metadata 是唯一权威，provider 名不再参与能力结论。`supported_effort_levels` 同时决定 clamp：转发前会向下对齐到该 model 真实支持的档位。`off` 是「关闭推理」的请求状态而不是 ladder 档位：它仍是 CLI / config / frontend 接受的输入，转发形态由 `provider/thinking_rules.json` 中该 provider/model 行的 `disable_mode` 数据解析（实现见 `src/voidcode/provider/reasoning_effort.py::disabled_reasoning_kwargs`）。
@@ -218,7 +218,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `compacted` 仅在**实际发生缩减**时为 true；`RuntimeContextWindow` 的 `original` / `retained` / `dropped` / `truncated` 计数与 `runtime.context_compacted` payload 都是真实计数
 - catalog 未描述该 model（`context_window` 无法解析）时**不裁剪**，并以明确的 `compaction_reason`（`compaction_unsized:...`）暴露该边界，不静默返回无界视图
 - `context_limit` 恢复：provider 报 `context_limit` 时**不再由解析层硬判终态**（`retryable=None`，与 `rate_limit` 同属 runtime-owned lane），由 run loop 按顺序处理：
-  1. **一次性本地裁剪重试**：用 `context_window.compaction.*` 的 knob 重新组装 provider view，恢复目标比常规触发更狠——整个 view 要落回 `catalog window − reserve`（等价于临时把 tool 预算压到「阈值 − 指令与 prompt 的估算」）；若实际发生缩减，则重试**同一次** provider 调用一次。每个 turn 最多一次（run-local 状态，不写入会话元数据、不影响 resume）。
+  1. **一次性本地裁剪重试**：用 `context_window.compaction.*` 的 knob 重新组装 provider view，恢复目标比常规触发更狠——整个 view 要落回 `catalog window − reserve`（等价于临时把 tool 预算压到「阈值 − 指令与 prompt 的估算」）；若实际发生缩减，则重试**同一次** provider 调用一次。provider 已明确拒绝请求时，即使估算预算认为无需裁剪，也至少裁掉一条符合保护规则和单条下限的结果再尝试；如果无可裁剪结果则继续升级/失败。每个 turn 最多一次（run-local 状态，不写入会话元数据、不影响 resume）。
   2. **升级窗口（窗口感知）**：本地裁剪不可行或重试后仍 `context_limit` 时，走**既有** provider fallback 机制（同一 target 链解析、`runtime.provider_fallback` 事件与决策形状）切换目标后重试，但候选按**有效窗口**排序：用 catalog 的 `max_input_tokens`（缺失且不可由 `context_window - max_output_tokens` 推导时为未知，不参与比较）与失败模型自己的窗口比较，只挑**严格更大**的候选；同窗或更小的候选不会因「链上在前」而被选。无严格更大候选时保持既有链顺序，并在 `runtime.provider_context_recovery` 的 `promotion_reason`（`larger_window` / `no_larger_candidate`）与 `window_tokens_before`/`window_tokens_after` 里如实记录。该偏好仅作用于 `context_limit` lane，其它 provider 错误的 fallback 顺序不变。本 turn 同样最多升级一次。
   3. **可恢复失败**：两者都不可行时以 `runtime.failed` 结束，payload 带 `provider_error_kind=context_limit`、`resumable=true`、`context_limit_recovery`（`prune` / `unavailable`）与可执行 `guidance`（缩减上下文或配置更大窗口的模型后 `voidcode sessions resume`）。该失败**保持可 resume**（`provider_failure_retryable` checkpoint 的 kind 判定已包含 `context_limit`），失败态不会被 seal 成不可恢复。
 - 裁剪本身仍是可判定函数（给定预算 + 结果顺序 → 确定结果），恢复只在其上叠加「一次性」与「升级」两条有界策略。
@@ -259,10 +259,10 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `providers.opencode-zen` / `providers.opencode-go` 是「一个 host、多种 wire」的网关：实际 wire 由模型决定，不由 provider 名决定；解析链为 catalog 行的 `api` → `provider/api_routes.json` 的 pin → provider table 的 wire（`api_routes.json` 按 provider 分组、声明序 first-match-wins，matcher 为 `exact` / `prefix` / `substring` / `token` / `glob`，可带 `strip_prefix`）。默认路由是 OpenAI-compatible chat-completions（`opencode-go` 的默认 base URL 归一化为 `https://opencode.ai/zen/go/v1`，Zen 为 `https://opencode.ai/zen/v1`）；解析 wire 为 `anthropic-messages` 的模型走 Anthropic Messages（host root，凭据以 `x-api-key` 发送）；解析 wire 为 `google-generative-ai` 的模型走 Google wire（`<base>/models/<model>:generateContent`，凭据以 `x-goog-api-key` 发送）；`opencode-go/minimax-m3` 解析为 chat-completions（此前误判为 Anthropic）。wire 为 OpenAI Responses API 的模型 VoidCode 未实现，会以 `unsupported_feature`（不可重试、允许 fallback）失败，不会降级到 chat-completions。没有 routing 条目的模型使用该 provider 的默认路由；`model_map` 别名先解析再选 wire，别名指向被路由的模型时走该模型的 wire（并把解析后的模型名发给上游）；`providers.<name>.base_url` 对默认路由与 Zen 的 Google 路由仍然优先。
 - 两个 OpenCode 网关按会话路由：每条 wire 的每个请求都必须带 `x-opencode-session: <conversation id>`（缺失时网关返回 HTTP 400 `MissingSessionID`）与 `x-opencode-client`；runtime 在请求时从 runtime session id 解析 `x-opencode-session`（wire client 跨 turn 复用），请求没有 session id 时该 header 不发送。
 - `providers.google` 的 auth 同时决定 endpoint surface：`api_key` / `oauth` 沿用原语义（只有 auth 未提供凭据时才回退到 `GOOGLE_API_KEY`）；`service_account` 会把 `auth.service_account_json_path` 指向的文件加载为 cloud-platform ADC 凭据并选择 Vertex AI surface（不会静默替换成 `GOOGLE_API_KEY`；文件缺失或无法解析时产生 `missing_auth`，不可重试、允许 fallback）。未配置 auth block 且没有 API key 的纯 ADC 用户，只要提供 `project` 和/或 `region` 也会选择 Vertex；`api_key` + `project`（无 `region`）保持原有 Gemini API endpoint。`providers.google.base_url` 是完整的 endpoint root（含版本段），SDK 不会再追加自己的 `v1beta` / `v1beta1`，并在设置自定义 base URL 时跳过自身的 ADC project 解析。
-- `agent.preset`：agent preset id。可解析 builtin `leader`、`worker`、`advisor`、`explore`、`researcher`、`product`，以及本地发现的 markdown manifest id（见下方“本地 markdown agent manifest”）。
-- `agent.prompt_profile`：字符串；省略时从内置 manifest 回填
+- `agent.preset`：agent preset id。可解析 builtin `default`、`execute`、`review`、`explore`、`research`、`plan`，以及本地发现的 markdown manifest id（见下方“本地 markdown agent manifest”）。旧 builtin id `leader`、`worker`、`advisor`、`researcher`、`product` 及旧 prompt-profile keys 已移除，不提供 aliases 或迁移；旧存储 routes 可能自然失败。Custom manifest namespace 不受 builtin 旧名称约束：custom id `leader` 是独立 custom agent，不是兼容 alias。
+- Builtin display labels are `default` → Default, `execute` → Execute, `review` → Review, `explore` → Explore, `research` → Research, and `plan` → Planning.
 - `agent.model`：字符串；对 active agent 覆盖顶层 `model`
-- `agent.execution_engine`：`deterministic` 或 `provider`；`leader` 省略时从内置 manifest 回填为 `provider`
+- `agent.execution_engine`：`deterministic` 或 `provider`；`default` 省略时从内置 manifest 回填为 `provider`
 - `agent.tools`：与顶层 `tools` 相同的配置 shape；当前作为 active agent tool boundary 解析、序列化和持久化
 - `agent.tools.allowlist`：字符串数组；与 manifest allowlist 一起收窄 active agent 可见/可调用工具集合
 - `agent.tools.default`：字符串数组；在 allowlist 允许范围内进一步收窄默认暴露工具
@@ -402,30 +402,26 @@ Runtime Harness Policy v1 的仓库本地配置面必须保持 schema-bounded。
     },
     "delegation_policy": {
       "default": "runtime_default",
-      "deny": ["product"]
+      "deny": ["plan"]
     },
     "hook_policy": {
       "allowed_event_scopes": ["session_start", "pre_tool", "post_tool", "delegated_result_available"]
-    },
-    "prompt_activation": {
-      "enabled": true
     }
   }
-}
 ```
 
-配置只能选择、收窄或记录 policy intent；不能授予 hard-denied tool、delegation target、hook authority、MCP server、approval 或 product delegation。未知 policy key、未知 hook event scope、无效 tool policy shape、`metadata` 这类无界 escape hatch、以及任何试图把 `product` 加入 delegated child allowlist 的配置都必须 fail fast。
+配置只能选择、收窄或记录 policy intent；不能授予 hard-denied tool、delegation target、hook authority、MCP server 或 approval。未知 policy key（包括已移除且会被拒绝的 `policy.prompt_activation`）、未知 hook event scope、无效 tool policy shape、`metadata` 这类无界 escape hatch、以及任何试图把 `plan` 加入 delegated child allowlist 的配置都必须 fail fast。配置版本仍为 `policy.version: "v1"`。
 
-当 fresh run materialize policy 后，`RuntimePolicySnapshot` 会进入 session truth，并通过 `runtime.request_received.payload.runtime_policy` 暴露有界、脱敏的 debug projection。resume/replay 必须读取完整的已持久化 v1 snapshot；snapshot 缺失、版本不匹配或 shape 不完整都会立即失败。未知 policy key、unsupported policy version、无界 diagnostics 入口和 product delegation allow 同样是 fail-fast 配置错误。
+当 fresh run materialize policy 后，schema v2 的 `RuntimePolicySnapshot` 会进入 session truth，并通过 `runtime.request_received.payload.runtime_policy` 暴露有界、脱敏的 debug projection。移除 dead `prompt_activation` 改变了 snapshot schema；resume/replay 必须读取完整的已持久化 v2 snapshot，旧 v1 snapshot 不支持、会自然 fail-fast，且没有迁移。snapshot 缺失、版本不匹配或 shape 不完整也会立即失败。未知 policy key、unsupported policy version、无界 diagnostics 入口和 plan delegation allow 同样是 fail-fast 配置错误。
 
 ## Agent preset runtime consumption 边界
 
 当前 runtime 已经能够解析内置 agent preset，但会区分“顶层 active agent”与“delegated child agent”两条执行边界：
 
-- 顶层 active run 的唯一 builtin preset 是 `leader`；`product` 不能作为 top-level active agent
-- runtime-owned delegation path 上的 child run 可执行 builtin `advisor`、`explore`、`researcher`、`worker`、`product`，以及本地自定义 `mode: subagent` manifest
+- 顶层 active run 的唯一 builtin preset 是 `default`；`plan` 不能作为 top-level active agent
+- runtime-owned delegation path 上的 child run 可执行 builtin `execute`、`review`、`explore`、`research`、`plan`，以及本地自定义 `mode: subagent` manifest
 
-这个限制是有意的：`product` 是 delegated read-only plan child，只有在 delegation path（例如带 `parent_session_id` 且通过 subagent routing 校验的请求）中才会进入真实执行路径。
+这个限制是有意的：`plan` 是 delegated read-only plan child，只有在 delegation path（例如带 `parent_session_id` 且通过 subagent routing 校验的请求）中才会进入真实执行路径。Builtin manifest 的 `mode=primary/subagent` 决定其路由资格；runtime delegation 与 tool policy 仍是执行权限的唯一权威。
 
 ### 本地 markdown agent manifest
 
@@ -452,24 +448,24 @@ You are a focused reviewer. Stay within the runtime-provided tools and report ri
 
 必需字段：`name`、`description`、`mode`（`primary` 或 `subagent`）。支持字段：`id`、`name`、`description`、`mode`、`model`、`fallback_models`、`tool_allowlist`、`skill_refs`、`preset_hook_refs`、`mcp_binding`、`prompt_append`。字段类型仍是 manifest 校验职责：字符串字段必须是非空字符串（YAML 隐式类型如未加引号的 `yes`、日期会被拒绝，不会被静默 `str()`），`fallback_models` / `tool_allowlist` / `skill_refs` / `preset_hook_refs` 必须是字符串数组，`mcp_binding` 必须是只含 `profile` / `servers` 的对象。正文是 primary prompt；`prompt_append` 会作为附加本地 guidance 单独持久化，并在 provider context 中追加一次。未声明 `id` 时，runtime 使用 `name` 的 lowercase-kebab 形式作为稳定 id；显式 / 派生 id 必须匹配现有 agents key 风格 `^[a-z][a-z0-9_-]*$`。
 
-发现优先级：同一 custom id 下 project scope 覆盖 user scope；同一 scope 内重复 id 会 fail-fast；custom manifest 不允许使用 builtin id（例如 `leader` 或 `worker`）替换 builtin preset。错误会包含具体文件路径，便于修复。
+发现优先级：同一 custom id 下 project scope 覆盖 user scope；同一 scope 内重复 id 会 fail-fast；custom manifest 不允许使用当前 builtin id 替换 builtin preset。旧 builtin id 不作为 alias 或迁移入口；例如 custom id `leader` 是独立 custom agent，不是 `default` 的兼容 alias。错误会包含具体文件路径，便于修复。
 
 frontmatter 是标准 YAML：未加引号的标量中 ` #` 会开始注释（`description: Fix bug #42` 实际读作 `Fix bug`），需要保留字面文本时必须加引号（`description: "Fix bug #42"`）；值中间出现 `: ` 或以 YAML 指示符（`&`、`*`、`!`、`%`、`@`、反引号）开头时同样要加引号。声明了 frontmatter 的 manifest 必须同时提供非空的正文 prompt。
 
 本地 manifest 只声明 prompt 和默认 capability intent。它不会绕过 runtime tool allowlist、approval、MCP lifecycle、hook execution、skill loading 或 delegated child session contract。正文 prompt 与可选 `prompt_append` 仅作为 runtime-owned 的 `runtime_internal` persisted structure 写入 session metadata（不属于 public runtime config 或 provider-visible contract），用于 resume / replay 固定历史 session 的解释上下文；manifest 文件后续变更不会静默改变历史 session。
 
-`.voidcode.json` 的 `agent` / `agents.<key>` 也可声明 `prompt` 与 `prompt_append`：`prompt` 明确替换/定义 profile text，`prompt_append` 在 resolved base prompt 后追加本地 guidance。resolved prompt materialization 只保存在 runtime_internal persisted structure 中，渲染时只追加一次。
+`.voidcode.json` 的 `agent` / `agents.<key>` 也可声明 `prompt` 与 `prompt_append`：`prompt` 明确替换/定义所选 manifest 的 prompt body，`prompt_append` 在该 body 后追加本地 guidance。Builtin 与 custom prompt 都由所选 manifest 的普通 prompt body 提供；不再使用 prompt-profile keys。resolved prompt materialization 只保存在 runtime_internal persisted structure 中，渲染时只追加一次。
 
 `voidcode run --agent <id>` 不再使用 argparse 静态 choices；它会在加载 runtime config 与本地 manifest 后验证 `<id>` 是否为可顶层执行的 builtin/custom primary agent。
 
 `voidcode agents list --workspace <path> [--json]` 会列出 builtin 与本地 custom primary agents，并在 custom agents 上显示 `source_scope` / `source_path`。
 
-`leader` 顶层 preset 与 `product` delegated child preset 当前进入 runtime truth 的字段是：
+`default` 顶层 preset 与 `plan` delegated child preset 当前进入 runtime truth 的字段是：
 
 - `preset`
-- `prompt_profile`：注入 provider turn 的 agent profile system message
+- `prompt` / manifest body：作为所选 agent 的 system prompt
 - `model`：覆盖本次运行的 resolved provider model
-- `execution_engine`：`leader` 与 `product` 默认进入 runtime-managed `provider` 路径
+- `execution_engine`：`default` 与 `plan` 默认进入 runtime-managed `provider` 路径
 - `tools`：收窄 provider 可见工具与实际 tool lookup / invocation 边界；manifest allowlist、`agent.tools.allowlist`、`agent.tools.default` 按交集生效，`agent.tools.builtin.enabled=false` 只移除内置工具名集合，仍保留已通过 allowlist 的 runtime-managed MCP / 注入工具
 - `skills`：覆盖本次运行的 skill registry discovery 与 applied skill payload / prompt context；active manifest 的 `skill_refs` 会作为默认 skill selection 进入 application，并与 request metadata `skills` 去重合并
 - `provider_fallback`：runtime 内部解析后的 fallback model chain
@@ -477,17 +473,7 @@ frontmatter 是标准 YAML：未加引号的标量中 ` #` 会开始注释（`de
 
 这些字段影响当前 runtime-managed provider 主路径；其中 resolved prompt materialization 仅作为 runtime_internal persisted structure 持久化，不是 public runtime config 或 provider-visible metadata，以保证 resume / replay 不被新的 runtime 默认值污染。
 
-以下字段当前仍只作为声明层 metadata 保留，不代表 runtime 已经实现相应能力语义：
-
-- 把 `worker` / `advisor` / `explore` / `researcher` 作为任意顶层 active preset 的 config intent：runtime 仍不会把它们当作普通顶层会话直接执行。
-
-如果运行时在顶层 active run 中收到非 top-level-selectable preset，例如：
-
-```json
-{"agent": {"preset": "worker"}}
-```
-
-则 runtime 会拒绝执行，而不是把 child role 悄悄映射到普通顶层 deterministic/provider 路径。这保持了 `agent/` declaration layer 与 `runtime/` execution truth 的边界；这些 preset 只能通过 runtime-owned delegation path 进入真实 child execution。
+Builtin `mode=primary/subagent` 保留为路由资格声明：仅 `default` 可作为顶层 active agent，`execute`、`review`、`explore`、`research` 与 `plan` 通过 runtime-owned delegation path 作为 child 运行；`plan` child 保持只读。运行权限仍由 runtime delegation policy 与 tool boundaries 决定。
 
 ## TUI 配置优先级与持久化语义
 

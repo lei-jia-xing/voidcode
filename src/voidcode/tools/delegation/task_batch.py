@@ -9,12 +9,7 @@ MAX_BATCH_SIZE = 100
 class TaskBatchTool:
     definition = ToolDefinition(
         name="task_batch",
-        description=(
-            "Dispatch a bounded batch of independent child sessions in the background under one "
-            "runtime-owned parallel group. Each item must declare prompt, load_skills, and "
-            "subagent_type. The runtime supplies parent ownership and group metadata; nested "
-            "graphs, dependencies, retries, cancellation, and keep-alive are not supported."
-        ),
+        description="Start independent child sessions together as a bounded runtime-owned background group.",
         input_schema={
             "type": "object",
             "additionalProperties": False,
@@ -41,7 +36,11 @@ class TaskBatchTool:
                             "subagent_type": {
                                 "type": "string",
                                 "minLength": 1,
-                                "description": "Explicit child preset: advisor, explore, researcher, worker, or product.",
+                                "description": (
+                                    "Explicit child preset ID: review, explore, research, execute, or plan. "
+                                    "Use review for evidence review, explore for workspace discovery, "
+                                    "research for external research, execute for delegated execution, and plan for read-only planning."
+                                ),
                             },
                             "description": {"type": "string", "minLength": 1},
                             "command": {"type": "string", "minLength": 1},
@@ -64,14 +63,14 @@ class TaskBatchTool:
                 {
                     "tasks": [
                         {
-                            "prompt": "Inspect the auth flow",
+                            "prompt": "Find the visitor center's opening hours.",
                             "load_skills": [],
                             "subagent_type": "explore",
                         },
                         {
-                            "prompt": "Review the storage boundary",
+                            "prompt": "Summarize transport options from the visitor guide.",
                             "load_skills": [],
-                            "subagent_type": "researcher",
+                            "subagent_type": "research",
                         },
                     ]
                 }

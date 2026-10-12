@@ -7,13 +7,7 @@ from ..contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
 class TaskTool:
     definition = ToolDefinition(
         name="task",
-        description=(
-            "Delegate work to a child runtime session. Always include prompt, "
-            "run_in_background, load_skills, and subagent_type. Prefer run_in_background=true "
-            "for delegated work that can run independently. Each background task emits a "
-            "completion event to its parent; when launching several tasks for one deliverable, "
-            "wait for all known tasks to finish before synthesizing the final answer."
-        ),
+        description="Start a child runtime session or control an existing delegated task.",
         input_schema={
             "type": "object",
             "additionalProperties": False,
@@ -41,7 +35,11 @@ class TaskTool:
                 },
                 "subagent_type": {
                     "type": "string",
-                    "description": ("Required. Explicit child preset: advisor, explore, researcher, worker, or product."),
+                    "description": (
+                        "Required child preset ID: review, explore, research, execute, or plan. "
+                        "Use review for evidence review, explore for workspace discovery, "
+                        "research for external research, execute for delegated execution, and plan for read-only planning."
+                    ),
                     "minLength": 1,
                 },
                 "description": {
@@ -74,7 +72,7 @@ class TaskTool:
                     "description": (
                         "Optional. true keeps the delegated child session alive across steer "
                         "turns: after each turn without a handoff the task parks as idle "
-                        "(awaiting_steer) and the leader resumes it with task(operation=steer). Requires "
+                        "(awaiting_steer) and the parent resumes it with task(operation=steer). Requires "
                         "run_in_background=true."
                     ),
                 },
@@ -112,16 +110,16 @@ class TaskTool:
             ],
             "examples": [
                 {
-                    "prompt": "Find where background task cancellation is implemented.",
+                    "prompt": "Find the opening hours in the visitor information documents.",
                     "run_in_background": True,
                     "load_skills": [],
                     "subagent_type": "explore",
                 },
                 {
-                    "prompt": "Review the architecture tradeoffs and summarize them.",
+                    "prompt": "Assess the visitor information and summarize key risks and options.",
                     "run_in_background": False,
                     "load_skills": [],
-                    "subagent_type": "advisor",
+                    "subagent_type": "review",
                 },
             ],
         },

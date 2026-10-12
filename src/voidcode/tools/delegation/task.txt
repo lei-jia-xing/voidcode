@@ -3,7 +3,7 @@ Delegate work to a child runtime session, start independent work in the backgrou
 Delegation usage:
 - Always include `prompt`, `run_in_background`, `load_skills`, and `subagent_type` on every delegation call.
 - `load_skills` must be an array of strings. Pass `[]` when no extra skills are needed.
-- `subagent_type` is required: one of `advisor`, `explore`, `researcher`, `worker`, or `product`.
+- `subagent_type` is required: `review` (evidence review), `explore` (workspace discovery), `research` (external research), `execute` (delegated execution), or `plan` (read-only planning).
 - Prefer `run_in_background=true` for delegated work unless you intentionally need a synchronous child session result.
 - When `run_in_background` is true, this tool starts a real background task and returns a `task_id`.
 

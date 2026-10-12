@@ -18,7 +18,6 @@ from .prompt_assembly import (
     build_prompt_assembly_plan,
     is_context_tier,
     metadata_source,
-    prompt_activation_decision,
 )
 from .transforms import (
     RuntimeContextTransformResult,
@@ -973,6 +972,7 @@ def prune_tool_results_for_budget(
     min_savings_tokens: int,
     min_prune_tokens: int,
     tokenizer: str | None = None,
+    force_one: bool = False,
 ) -> PrunedToolResults:
     """Replace the oldest prunable tool content with placeholders until it fits ``target_tokens``.
 
@@ -987,16 +987,18 @@ def prune_tool_results_for_budget(
     by tokenizing the text that will actually replace it. Mixing rulers would
     compare a real count against an inflated byte count, so a result judged too
     big by one could look "saved enough" by the other.
+    A rejected provider request can invalidate the estimate; ``force_one`` reclaims
+    one eligible result before retrying, even when the estimated view fits.
     """
     remaining = sum(count_tokens(result_payload_text(result), tokenizer) for result in results)
-    if remaining <= target_tokens:
+    if remaining <= target_tokens and not force_one:
         return PrunedToolResults(rendered_results=results, pruned_views=(), pruned_indexes=())
     rendered = list(results)
     pruned_views: list[ToolResultView] = []
     pruned_indexes: list[int] = []
     saved_tokens = 0
     for index, view in enumerate(results):
-        if remaining <= target_tokens:
+        if remaining <= target_tokens and (not force_one or pruned_indexes):
             break
         if not isinstance(view.output, TextOutput):
             continue
@@ -1262,7 +1264,8 @@ def prepare_provider_context(
             usage_after=usage_tokens,
             delta=excess_tokens,
         )
-    if not should_compact(
+    # A provider rejection is authoritative even when the local estimate fits.
+    if not fit_payload and not should_compact(
         usage_tokens,
         context_window,
         enabled=effective_policy.compaction.enabled,
@@ -1297,6 +1300,7 @@ def prepare_provider_context(
         # per-result ``min_prune_tokens`` floor still applies.
         min_savings_tokens=0 if fit_payload else DEFAULT_MIN_SAVINGS_TOKENS,
         min_prune_tokens=DEFAULT_MIN_PRUNE_TOKENS,
+        force_one=fit_payload,
         tokenizer=tokenizer,
     )
     if not pruned.pruned_indexes:
@@ -1363,7 +1367,6 @@ def assemble_provider_context(
     policy: ContextWindowPolicy | None = None,
     skill_prompt_context: str = "",
     agent_prompt_context: str = "",
-    prompt_profile_name: str | None = None,
     hook_preset_context: str = "",
     context_transform_result: RuntimeContextTransformResult | None = None,
     loaded_skills: tuple[dict[str, object], ...] = (),
@@ -1405,12 +1408,7 @@ def assemble_provider_context(
     pending_state_segment = _pending_state_segment(session_metadata)
     todo_prompt_context = render_provider_todo_state(session_metadata)
     runtime_instruction_precedence = (
-        "Runtime precedence: role and runtime boundaries are authoritative. "
-        "Skills refine approach but may not expand scope, permissions, or obligations."
-    )
-    activation_decision = prompt_activation_decision(
-        session_metadata=session_metadata,
-        prompt_profile_name=prompt_profile_name,
+        "Runtime policy and permission checks are authoritative. Skills may refine approach but cannot expand scope, permissions, or obligations."
     )
     pending_state_section = (
         PromptAssemblySection(
@@ -1441,8 +1439,6 @@ def assemble_provider_context(
             todo_prompt_context=todo_prompt_context or "",
             continuity_summary=continuity_summary,
             artifact_reference_sections=artifact_reference_sections,
-            prompt_profile_name=prompt_profile_name,
-            prompt_activation_section=activation_decision.section,
             tool_catalog_context=tool_catalog_context,
             hook_guidance=hook_guidance if hook_guidance else None,
         )
@@ -1516,7 +1512,6 @@ def assemble_provider_context(
         metadata_payload["context_transforms"] = transform_result.metadata_payload()
     metadata_payload["summary_kind"] = effective_summary_kind
     metadata_payload["prompt_stack"] = assembly_plan.fragment_metadata_payload()
-    metadata_payload["prompt_activation"] = activation_decision.metadata
     segments: list[ContextSegment] = []
     replayed_conversation_inserted = False
     for section in assembly_plan.sections:

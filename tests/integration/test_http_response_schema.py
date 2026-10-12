@@ -136,11 +136,11 @@ def _session_state_json(rich: bool) -> dict[str, object]:
 def _runtime_policy_snapshot() -> dict[str, object]:
     """A persisted ``runtime_policy`` blob as ``runtime.policy`` writes it."""
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "policy_version": "2026.04",
         "read_only": True,
-        "agent_preset": "leader",
-        "agent_manifest_id": "leader",
+        "agent_preset": "default",
+        "agent_manifest_id": "default",
         "intent": {
             "label": "refactor",
             "confidence": 0.5,
@@ -148,14 +148,8 @@ def _runtime_policy_snapshot() -> dict[str, object]:
             "matched_rule_ids": ["rule-1"],
         },
         "tool_policy": {"allowed": ["read"], "denied": [{"target": "write", "reason": "read-only"}], "source": "runtime_config"},
-        "delegation_policy": {"allowed_presets": ["worker"], "denied": [{"target": "advisor", "reason": "read-only"}]},
+        "delegation_policy": {"allowed_presets": ["execute"], "denied": [{"target": "review", "reason": "read-only"}]},
         "hook_policy": {"allowed_event_scopes": ["runtime"], "actions": ["notification"], "authoritative": True},
-        "prompt_activation": {
-            "enabled": True,
-            "raw_prompt_stored": True,
-            "activated_this_turn": True,
-            "activated_refs": ["profile-1"],
-        },
         "precedence_trace": [
             {"source": "intent_metadata", "applied": False, "authoritative": False, "label": "refactor", "confidence": 0.5, "reason": None},
         ],
@@ -173,8 +167,8 @@ def _delegated_event(rich: bool, sequence: int) -> EventEnvelope:
             "delegated_task_id": "task-1",
             "approval_request_id": "req-1",
             "question_request_id": None,
-            "routing": {"mode": "background", "subagent_type": "worker", "description": "do work", "command": "task"},
-            "selected_preset": "worker",
+            "routing": {"mode": "background", "subagent_type": "execute", "description": "do work", "command": "task"},
+            "selected_preset": "execute",
             "selected_execution_engine": "provider",
             "lifecycle_status": "completed",
             "approval_blocked": False,
@@ -224,7 +218,7 @@ def _background_task_state(rich: bool) -> BackgroundTaskState:
             prompt="delegate this",
             session_id="sess-1",
             parent_session_id="parent-1",
-            metadata={"delegation": {"mode": "background", "subagent_type": "worker", "description": "do work", "command": "task"}} if rich else {},
+            metadata={"delegation": {"mode": "background", "subagent_type": "execute", "description": "do work", "command": "task"}} if rich else {},
             allocate_session_id=rich,
         ),
         session_id="sess-1",
@@ -301,7 +295,7 @@ def _background_task_result(rich: bool) -> BackgroundTaskResult:
         status="completed",
         requested_child_session_id="sess-1",
         delegated_prompt="delegate this" if rich else None,
-        routing=SubagentRoutingIdentity(mode="background", subagent_type="worker", description="do work", command="task") if rich else None,
+        routing=SubagentRoutingIdentity(mode="background", subagent_type="execute", description="do work", command="task") if rich else None,
         approval_request_id="req-1" if rich else None,
         question_request_id=None,
         approval_blocked=rich,
@@ -753,8 +747,8 @@ class _FixtureRuntime:
     def list_agent_summaries(self) -> tuple[AgentSummary, ...]:
         return (
             AgentSummary(
-                id="leader",
-                label="Leader",
+                id="default",
+                label="Default",
                 description="Primary agent" if self.rich else None,
                 mode="primary" if self.rich else None,
                 selectable=True,
@@ -765,7 +759,7 @@ class _FixtureRuntime:
                 provider=_OPENCODE if self.rich else None,
                 fallback_chain=("gpt-5.3",) if self.rich else (),
                 source_scope="workspace" if self.rich else None,
-                source_path="agents/leader.json" if self.rich else None,
+                source_path="agents/default.json" if self.rich else None,
             ),
         )
 
@@ -788,7 +782,7 @@ class _FixtureRuntime:
                 source="markdown",
                 enabled=True,
                 hidden=False,
-                agent="worker" if self.rich else None,
+                agent="execute" if self.rich else None,
                 model="gpt-5.4" if self.rich else None,
                 subtask=self.rich,
                 path=".voidcode/commands/fix.md" if self.rich else None,

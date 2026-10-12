@@ -228,12 +228,12 @@ executor 错误（`OSError` / `CalledProcessError` / `TimeoutExpired`）在该 s
 
 触发点：
 
-- delegated/background result 已经作为 runtime truth 可被 leader-facing retrieval 消费时
+- delegated/background result 已经作为 runtime truth 可被 parent-facing retrieval 消费时
 
 语义：
 
 - 它不是“child session 有输出”这么宽泛
-- 它表示 leader-facing 结果可见性已经成立
+- 它表示 parent-facing 结果可见性已经成立
 
 ## Failure 语义
 
