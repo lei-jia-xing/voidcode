@@ -76,6 +76,7 @@ Runtime hook surface 与其事件名称的内部对应关系由
 - 上下文变换：`runtime.context_compacted`、`runtime.context_transform_applied`（正式事件，由 `run_loop.py` 发射；payload 见下文）
 - 每轮提醒：`runtime.reminder_injected`（terminal 回合发出的 reminder 已通过 per-call 通道注入；payload 见下文）
 - provider context 恢复：`runtime.provider_context_recovery`（`context_limit` 的一次性本地裁剪/升级决策；payload 见下文）
+- 请求准备：`runtime.before_agent_start` 持久化有界 handler/version、状态与 changed 标记，不包含提示词正文；它发生在 `command.resolved` 之后、provider context/tool startup 之前。
 
 ## 已交付的 delegated/background-task 事件
 
@@ -172,6 +173,11 @@ Runtime hook surface 与其事件名称的内部对应关系由
 - 同一 run 内，如果某个 transform trace 未发生变化，runtime 不应重复发出该事件；只有首次观察到或 trace 发生变化时才发出新的 event。
 - `hook_preset_guidance` transform 已通过 `runtime.hook_presets_loaded` 表达，不重复发出该事件。
 
+### `runtime.before_agent_start`
+- source: `runtime`
+- payload: `status` (`ready`, `blocked`, or `failed`), `changed: bool`, bounded `handlers: [{name, version}]`, and `omitted_handler_count`; blocked/failed traces carry a bounded reason or handler name.
+- This event records request preparation only. It has no prompt-body field; callback-supplied block reasons MUST NOT contain prompt text or secrets.
+- The event grants no runtime authority and is not a sandbox boundary for trusted installed Python callbacks.
 ## 当前 Payload 预期
 
 ### `runtime.request_received`

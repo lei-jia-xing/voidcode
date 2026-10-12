@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-CommandSource = Literal["builtin", "user", "project", "skill", "mcp"]
+CommandSource = Literal["builtin", "extension", "user", "project", "skill", "mcp"]
 
 
 @dataclass(frozen=True, slots=True)

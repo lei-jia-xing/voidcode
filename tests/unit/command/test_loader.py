@@ -2,11 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from voidcode.command.loader import builtin_commands, load_markdown_commands
-
-
-def test_builtin_commands_have_no_runtime_plan_mode() -> None:
-    assert [command.name for command in builtin_commands()] == ["init"]
+from voidcode.command.loader import load_markdown_commands
 
 
 def test_markdown_commands_reject_runtime_mode_frontmatter(tmp_path: Path) -> None:

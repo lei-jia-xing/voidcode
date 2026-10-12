@@ -95,6 +95,7 @@ type RuntimeEventType = Literal[
     "runtime.provider_context_policy",
     "runtime.reminder_injected",
     "runtime.provider_context_recovery",
+    "runtime.before_agent_start",
 ]
 type DelegatedBackgroundTaskEventType = Literal[
     "runtime.background_task_progress",
@@ -206,6 +207,7 @@ RUNTIME_TOOL_TIMEOUT: Final[RuntimeEventType] = "runtime.tool_timeout"
 RUNTIME_PROVIDER_CONTEXT_POLICY: Final[RuntimeEventType] = "runtime.provider_context_policy"
 RUNTIME_REMINDER_INJECTED: Final[RuntimeEventType] = "runtime.reminder_injected"
 RUNTIME_PROVIDER_CONTEXT_RECOVERY: Final[RuntimeEventType] = "runtime.provider_context_recovery"
+RUNTIME_BEFORE_AGENT_START: Final[RuntimeEventType] = "runtime.before_agent_start"
 
 REASONING_PREVIEW_LIMIT_CHARS: Final[int] = 240
 # Upper bound for the aggregated reasoning text persisted per streamed turn.
@@ -291,6 +293,7 @@ RUNTIME_EVENT_TYPES: Final[tuple[RuntimeEventType, ...]] = (
     RUNTIME_PROVIDER_CONTEXT_POLICY,
     RUNTIME_PROVIDER_CONTEXT_RECOVERY,
     RUNTIME_REMINDER_INJECTED,
+    RUNTIME_BEFORE_AGENT_START,
 )
 
 

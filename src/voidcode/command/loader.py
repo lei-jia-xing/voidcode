@@ -10,30 +10,23 @@ from .registry import CommandRegistry
 _BUILTIN_COMMANDS: tuple[CommandDefinition, ...] = (
     CommandDefinition(
         name="init",
-        description="Generate or refresh a structured AGENTS.md project knowledge base.",
+        description="Generate or refresh repository-specific AGENTS.md guidance.",
         template=(
-            "Generate or refresh the project knowledge base (AGENTS.md) at the workspace root.\n"
-            "\n"
-            "Steps:\n"
-            "1. Inspect the repository: structure, existing AGENTS.md, README/docs, build and test commands, and conventions.\n"
-            "2. Write or update AGENTS.md with stable project knowledge only. Required sections: OVERVIEW, STRUCTURE, WHERE TO LOOK, "
-            "CODE MAP, CONVENTIONS, ANTI-PATTERNS, UNIQUE STYLES, COMMANDS, NOTES.\n"
-            "3. Preserve useful existing content; drop stale or duplicate guidance.\n"
-            "\n"
-            "Constraints:\n"
-            "- Never store secrets, transient task plans, chat history, or unverified guesses.\n"
-            "- Prefer concise tables and bullets over prose.\n"
-            "\n"
-            "Verify: read the final AGENTS.md and confirm it reflects the current repository without claiming unsupported capabilities.\n"
-            "\n"
-            "Focus notes: $ARGUMENTS"
+            "Inspect this repository using its actual files, documentation, tests, and configuration. "
+            "Generate concise, stable AGENTS.md guidance for this workspace.\n\n"
+            "Preserve and merge useful existing guidance; remove only information shown to be stale or contradictory. "
+            "Do not include secrets, transient task plans, chat history, or unsupported claims. "
+            "Do not impose a fixed section list or generic coding persona.\n\n"
+            "Write AGENTS.md through the normal runtime tools and respect approval. "
+            "Read the final file back and verify that it reflects repository evidence.\n\n"
+            "Focus: $ARGUMENTS"
         ),
         source="builtin",
     ),
 )
 
 
-_SOURCE_PRECEDENCE: tuple[CommandSource, ...] = ("builtin", "user", "project", "skill", "mcp")
+_SOURCE_PRECEDENCE: tuple[CommandSource, ...] = ("builtin", "extension", "user", "project", "skill", "mcp")
 
 
 def builtin_commands() -> tuple[CommandDefinition, ...]:
@@ -44,9 +37,14 @@ def load_command_registry(
     *,
     workspace: Path,
     user_commands_dir: Path | None = None,
+    extension_commands: Iterable[CommandDefinition] = (),
 ) -> CommandRegistry:
     registry = CommandRegistry()
-    for command in _commands_by_precedence(workspace=workspace, user_commands_dir=user_commands_dir):
+    for command in _commands_by_precedence(
+        workspace=workspace,
+        user_commands_dir=user_commands_dir,
+        extension_commands=extension_commands,
+    ):
         registry.register(command)
     return registry
 
@@ -55,8 +53,10 @@ def _commands_by_precedence(
     *,
     workspace: Path,
     user_commands_dir: Path | None,
+    extension_commands: Iterable[CommandDefinition],
 ) -> Iterable[CommandDefinition]:
     yield from builtin_commands()
+    yield from extension_commands
     if user_commands_dir is not None:
         yield from load_markdown_commands(user_commands_dir, source="user")
     yield from load_markdown_commands(workspace / "commands", source="project")

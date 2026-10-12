@@ -37,7 +37,7 @@ from ..security.json_values import json_wire_object, own_json_object
 from ..tools.contracts import ToolCall
 
 MANIFEST_NAME = "voidcode-components.json"
-type ComponentSlot = Literal["provider", "tool", "agent", "context", "typed-input"]
+type ComponentSlot = Literal["provider", "tool", "agent", "context", "typed-input", "command", "before-agent-start"]
 type LifecycleScope = Literal["session", "run", "turn", "tool"]
 
 VALID_PHASE_TRIGGERS: Mapping[LifecycleScope, frozenset[str]] = {

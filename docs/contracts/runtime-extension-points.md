@@ -80,7 +80,7 @@ Lower-precedence inputs may narrow or annotate higher-precedence decisions, but 
 
 ### Bounded observability
 
-Runtime attaches a `runtime_policy` object to `runtime.request_received`; that object carries a nested `materialization` marker (`materialization.kind == "runtime_policy_materialized"`, `source == "runtime_control_plane"`) recording that the runtime control plane has materialized policy for this turn. There is no standalone `runtime.policy_materialized` event in the event vocabulary. This payload is a bounded projection of the persisted `RuntimePolicySnapshot`, not a second policy source. It exposes schema/policy version, mode/read-only state, agent ids, neutral intent metadata, allowed/denied tool and delegation ids, hook policy actions/scopes, precedence trace, and diagnostics. Lists are capped, strings are preview-sized, and the projection does not expose prompt bodies.
+Runtime attaches a `runtime_policy` object to `runtime.request_received`; that object carries a nested `materialization` marker (`materialization.kind == "runtime_policy_materialized"`, `source == "runtime_control_plane"`) recording that the runtime control plane has materialized policy for this turn. There is no standalone `runtime.policy_materialized` event in the event vocabulary. This payload is a bounded projection of the persisted `RuntimePolicySnapshot`, not a second policy source. It exposes schema/policy version, read-only state, agent ids, neutral intent metadata, allowed/denied tool and delegation ids, hook policy actions/scopes, precedence trace, and diagnostics. Lists are capped, strings are preview-sized, and the projection does not expose raw prompt bodies, skill bodies, secrets, env values, or unbounded policy inputs.
 
 Tool allow/deny and approval decisions remain observable through `runtime.tool_lookup_succeeded`, `runtime.permission_resolved`, `runtime.approval_requested`, `runtime.approval_resolved`, `runtime.tool_started`, `runtime.tool_completed`, and `runtime.failed` denial payloads. Delegation allow/deny remains observable through background/delegated lifecycle events and explicit runtime failure payloads for policy denials. Hook decisions remain observable through `runtime.tool_hook_pre` / `runtime.tool_hook_post` with `hook_policy.authoritative=false`.
 
@@ -125,6 +125,20 @@ registry 负责按 `(priority, provider_id)` 排序、校验唯一 id，并将 p
 分别保留 provider 声明的 `failure_policy` 与 request policy 的 `request_failure_policy`，
 不能用 provider metadata 覆盖 runtime request policy。
 
+### Prompt command registry
+
+Prompt commands use the runtime-owned authoritative discovery path for both request resolution and `voidcode commands list/show`. Precedence is builtin, admitted/injected extension, user, `commands/`, then `.voidcode/commands/`; later sources replace earlier commands by normalized name. The default user directory is `$XDG_CONFIG_HOME/voidcode/commands`, or `~/.config/voidcode/commands` when `XDG_CONFIG_HOME` is unset. The CLI's explicit `--user-commands-dir` overrides only that user source.
+
+Commands expand prompt text; they do not own policy, tools, session truth, or execution. Extensions provide typed `CommandDefinition` values and runtime assigns their source as `extension`.
+
+### `before_agent_start`
+
+The runtime dispatches admitted `before-agent-start` bindings once for each new request, after command expansion and before provider-context assembly or tool startup. They receive only the original prompt, current effective prompt, and resolved command metadata. Bindings run by ascending `(priority, name)`; transformations may replace only the effective prompt, while a block or callback error fails the request closed. This callback is distinct from `typed-input`, which remains a pre-tool input hook.
+
+These are trusted installed Python callbacks, not sandboxed code; no runtime authority is handed through their ABI. Keep handlers pure/idempotent: the runtime does not promise exactly-once external side effects across an unpersisted crash window.
+
+`runtime.before_agent_start` persists bounded handler name/version and status metadata, not a prompt body field. A block reason is callback-supplied and MUST NOT include prompt text or secrets. At most 32 handler records are exposed; names, versions, and reasons are capped at 240 characters, with an omitted count. The full effective prompt is stored only in existing session/checkpoint metadata for provider input. Approval, question, and interrupted-run continuations resume from that prepared prompt without re-dispatching the callback; a later fresh request in the same session dispatches it for that new request.
+
 ### Provider message validation（未实现）
 
 Provider message validation **不属于**当前实现：代码库中不存在 provider message validator（无 `message_validator` / `ProviderMessageValidator` / `validate_provider_message` 符号）。这是显式非目标，而不是延后的 permissive contract；在出现经过验证的实现前，不定义该 family 的 input/output shape。
@@ -137,10 +151,10 @@ declaration 可以选择或收窄 capability，但不能授予 permission、绕�
 
 ### Package Composition & Lifecycle Phases
 
-已安装包组件支持 5 种 slots（`provider`、`tool`、`agent`、`context`、`typed-input`）与 8 种生命周期 triggers。
+已安装包组件支持 7 种 slots（`provider`、`tool`、`agent`、`context`、`typed-input`、`command`、`before-agent-start`）与 8 种生命周期 triggers。`command` 在 admission/preflight 中验证为 `CommandDefinition`，不会执行 factory；`before-agent-start` factory 只在 composition activation 后构造并绑定已声明的 handler。
 
 1. **Factory 窄上下文 (Narrow Context Boundary)**:
-   组件 factory ABI 统一为 `factory(value, context)`。`context` 必须是不可变窄上下文 `CompositionRef`（仅包含 `workspace`、`owner` [SessionCompositionOwner | TaskCompositionOwner]、`binding_id` 和 `plan_id`），绝不传递 `VoidCodeRuntime` 实例或内部能力句柄，插件无法访问运行时内部治理、状态仓库或权限。
+   组件 factory ABI 统一为 `factory(value, context)`。`context` 必须是不可变窄上下文 `CompositionRef`（仅包含 `workspace`、`owner` [SessionCompositionOwner | TaskCompositionOwner]、`binding_id` 和 `plan_id`）；绝不通过 ABI 传递 `VoidCodeRuntime` 实例或内部能力句柄，也不将运行时治理、状态仓库或权限移交给插件。已安装 Python 本身是进程特权代码，此窄 ABI 不是 sandbox，不能限制该代码绕过 ABI 直接访问进程能力。
 
 2. **Typed-Input 强约束**:
    仅接受规范的 `ToolInputHandlerBinding`（校验 declaration name 与 handler 匹配），彻底切除 historical plain callable fallback。非规范对象在物化绑定阶段直接拒绝。

@@ -1885,7 +1885,7 @@ class InstalledComponentSelectionPayload(_PayloadModel):
     """One installed component explicitly selected for runtime composition."""
 
     distribution: str = Field(min_length=1)
-    slot: Literal["provider", "tool", "agent", "context", "typed-input"]
+    slot: Literal["provider", "tool", "agent", "context", "typed-input", "command", "before-agent-start"]
     name: str = Field(min_length=1)
     configuration: dict[str, object] = Field(default_factory=dict)
 

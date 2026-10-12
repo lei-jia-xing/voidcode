@@ -21,6 +21,7 @@ from ..agent import (
 )
 from ..agent.prompts import render_agent_prompt
 from ..command import (
+    CommandRegistry,
     is_prompt_command,
     load_command_registry,
     resolve_prompt_command,
@@ -30,6 +31,12 @@ from ..core.questions import QuestionAnswer
 from ..core.tool_context import ArtifactRead, EditSchema, TranscriptRead
 from ..core.transcript import ContextSegment, ToolResultView, project_report
 from ..core.turns import ReportedCall, TurnProducer, TurnRequest
+from ..hook.before_agent_start import (
+    BeforeAgentStartBinding,
+    BeforeAgentStartDeclaration,
+    BeforeAgentStartRegistry,
+    BeforeAgentStartRequest,
+)
 from ..hook.plan import ResolvedHookPlan, hook_plan_from_session_metadata, materialize_hook_plan
 from ..hook.presets import (
     ResolvedHookPresetSnapshot,
@@ -227,6 +234,7 @@ from .event_envelopes import (
 )
 from .events import (
     COMMAND_RESOLVED,
+    RUNTIME_BEFORE_AGENT_START,
     RUNTIME_HOOK_PRESETS_LOADED,
     RUNTIME_REASONING_DIAGNOSTIC,
     RUNTIME_SKILLS_APPLIED,
@@ -633,6 +641,8 @@ def _builtin_runtime_package(root: Path, provider_names: Iterable[str]) -> Built
             schema_version=1,
             files=(
                 "voidcode/agent/builtin.py",
+                "voidcode/command/models.py",
+                "voidcode/hook/before_agent_start.py",
                 "voidcode/hook/typed.py",
                 "voidcode/provider/registry.py",
                 "voidcode/runtime/context/transforms.py",
@@ -680,6 +690,9 @@ class VoidCodeRuntime(RuntimeSurface):
     _background_task_supervisor: RuntimeBackgroundTaskSupervisor
     _background_process_manager: BackgroundProcessManager
     _context_transform_registry: RuntimeContextTransformRegistry
+    _installed_command_definitions: tuple[CommandDefinition, ...]
+    _before_agent_start_registry: BeforeAgentStartRegistry
+    _activated_before_agent_start_registries: dict[CompositionRef, BeforeAgentStartRegistry]
     _default_context_window_policy = ContextWindowPolicy()
 
     def __init__(
@@ -699,6 +712,8 @@ class VoidCodeRuntime(RuntimeSurface):
         context_window_policy: ContextWindowPolicy | None = None,
         context_transform_registry: RuntimeContextTransformRegistry | None = None,
         tool_input_handler_registry: ToolInputHandlerRegistry | None = None,
+        command_registry: CommandRegistry | None = None,
+        before_agent_start_registry: BeforeAgentStartRegistry | None = None,
         composition_owner: CompositionOwner | None = None,
     ) -> None:
         self._workspace = workspace.resolve()
@@ -725,6 +740,13 @@ class VoidCodeRuntime(RuntimeSurface):
         self._installed_tool_definitions: list[ToolDefinition] = []
         installed_context_transforms: list[RuntimeContextTransformDeclaration] = []
         installed_typed_inputs: list[ToolInputHandlerDeclaration] = []
+        installed_commands: list[CommandDefinition] = []
+        installed_before_agent_start: list[BeforeAgentStartDeclaration] = []
+        injected_commands = (
+            tuple(replace(command, source="extension") for command in command_registry.list(include_hidden=True, include_disabled=True))
+            if command_registry is not None
+            else ()
+        )
         if self._config.components:
             preflight = self._composition_owner.prepare(self._config.components, intent={"component_preflight": True})
             for component in preflight.binding.components:
@@ -751,13 +773,26 @@ class VoidCodeRuntime(RuntimeSurface):
                     if not isinstance(validated, ToolInputHandlerDeclaration) or validated.name != component.name:
                         raise ValueError("installed typed-input component validator returned a mismatched declaration")
                     installed_typed_inputs.append(validated)
+                elif component.slot == "command":
+                    if not isinstance(validated, CommandDefinition) or validated.name != component.name:
+                        raise ValueError("installed command component validator returned a mismatched definition")
+                    installed_commands.append(replace(validated, source="extension"))
+                elif component.slot == "before-agent-start":
+                    if not isinstance(validated, BeforeAgentStartDeclaration) or validated.name != component.name:
+                        raise ValueError("installed before-agent-start component validator returned a mismatched declaration")
+                    installed_before_agent_start.append(validated)
         self._agent_registry = self._runtime_agent_registry(installed_manifests=installed_agent_manifests)
         self._installed_context_transforms = tuple(installed_context_transforms)
         self._installed_typed_inputs = tuple(installed_typed_inputs)
+        self._installed_command_definitions = (*injected_commands, *installed_commands)
+        self._before_agent_start_registry = before_agent_start_registry or BeforeAgentStartRegistry()
+        for declaration in installed_before_agent_start:
+            self._before_agent_start_registry.register(declaration)
         self._activated_provider_bindings: dict[CompositionRef, tuple[ResolvedProviderConfig, BoundProviderConfig]] = {}
         self._active_compositions: dict[CompositionRef, ActiveComposition] = {}
         self._activated_context_transform_registries: dict[CompositionRef, RuntimeContextTransformRegistry] = {}
         self._activated_tool_input_registries: dict[CompositionRef, ToolInputHandlerRegistry] = {}
+        self._activated_before_agent_start_registries: dict[CompositionRef, BeforeAgentStartRegistry] = {}
         self._bind_provider_catalog_collaborators()
         self._provider_summary_projector = ProviderSummaryProjector()
         self._hydrate_provider_model_catalog_cache()
@@ -1289,6 +1324,10 @@ class VoidCodeRuntime(RuntimeSurface):
         component_keys: dict[str, str] = {}
         context_providers = list(self._context_transform_registry.providers)
         tool_input_bindings = list(self._tool_input_handler_registry.bindings)
+        before_agent_start_registry = BeforeAgentStartRegistry(
+            bindings=self._before_agent_start_registry.bindings,
+            declarations=self._before_agent_start_registry.declarations.values(),
+        )
         for component in frozen.binding.components:
             if component.slot == "provider":
                 descriptor = active.admitted_value(component.key)
@@ -1296,6 +1335,8 @@ class VoidCodeRuntime(RuntimeSurface):
                     raise ValueError("activated provider component does not match its frozen declaration")
                 descriptors[component.name] = descriptor
                 component_keys[component.name] = component.key
+            elif component.slot == "command":
+                continue
             elif component.distribution != "voidcode":
                 instance = active.construct(component.key, context=composition_ref)
                 if component.slot == "tool":
@@ -1309,6 +1350,10 @@ class VoidCodeRuntime(RuntimeSurface):
                     if not isinstance(instance, ToolInputHandlerBinding) or instance.declaration.name != component.name:
                         raise ValueError(f"activated typed-input component must be a ToolInputHandlerBinding for {component.name}")
                     tool_input_bindings.append(instance)
+                elif component.slot == "before-agent-start":
+                    if not isinstance(instance, BeforeAgentStartBinding) or instance.declaration.name != component.name:
+                        raise ValueError(f"activated before-agent-start component must bind {component.name}")
+                    before_agent_start_registry.bind_handler(instance)
         self._activated_context_transform_registries[composition_ref] = RuntimeContextTransformRegistry(
             providers=context_providers,
             declarations=self._context_transform_registry.declarations.values(),
@@ -1317,6 +1362,7 @@ class VoidCodeRuntime(RuntimeSurface):
             bindings=tool_input_bindings,
             declarations=self._tool_input_handler_registry.declarations.values(),
         )
+        self._activated_before_agent_start_registries[composition_ref] = before_agent_start_registry
         self._tool_materialization = self._tool_materializer.base()
         resolved = self._resolved_provider_from_composition(frozen, descriptors)
 
@@ -2225,6 +2271,10 @@ class VoidCodeRuntime(RuntimeSurface):
             session,
             0,
         )
+        before_agent_start = yield from self._prepare_before_agent_start(prepared, session, sequence)
+        if before_agent_start is None:
+            return
+        prepared, session, sequence = before_agent_start
         tooling = yield from self._start_stream_mcp_and_tooling(
             prepared,
             session,
@@ -2251,7 +2301,11 @@ class VoidCodeRuntime(RuntimeSurface):
         # that cannot be resumed. Refresh it now that both records exist — this
         # is the last point before any tool call, so every execution window is
         # covered. See docs/contracts/execution-lifecycle.md → (b).
-        self._refresh_run_checkpoint(session=session, prompt=prepared.request.prompt, sequence=sequence)
+        self._refresh_run_checkpoint(
+            session=session,
+            prompt=prepared.provider_prompt if prepared.provider_prompt is not None else prepared.request.prompt,
+            sequence=sequence,
+        )
         loop = yield from self._run_stream_turn_engine(
             producer=producer,
             tool_registry=tool_registry,
@@ -2534,6 +2588,69 @@ class VoidCodeRuntime(RuntimeSurface):
             )
         return session, sequence
 
+    def _prepare_before_agent_start(
+        self,
+        prep: _PreparedStreamSession,
+        session: SessionState,
+        sequence: int,
+    ) -> Generator[RuntimeStreamChunk, None, tuple[_PreparedStreamSession, SessionState, int] | None]:
+        registry = self._activated_before_agent_start_registries[prep.composition_ref]
+        if not registry.declarations:
+            return prep, session, sequence
+        raw_command = prep.request_metadata.get("command")
+        command = raw_command if isinstance(raw_command, dict) else {}
+        original_prompt = command.get("original_prompt")
+        if not isinstance(original_prompt, str):
+            original_prompt = prep.request.prompt
+        outcome = registry.apply(
+            BeforeAgentStartRequest(
+                original_prompt=original_prompt,
+                effective_prompt=prep.request.prompt,
+                command=command,
+            )
+        )
+        trace = outcome.trace_payload()
+        if outcome.blocked_reason is None and outcome.failed_handler is None:
+            metadata = dict(session.metadata)
+            metadata["before_agent_start"] = {"effective_prompt": outcome.prompt, "trace": trace}
+            session = replace(session, metadata=metadata)
+            prep = replace(prep, provider_prompt=outcome.prompt)
+        event = self._persist_emitted_event(
+            session_id=session.session.id,
+            event_type=RUNTIME_BEFORE_AGENT_START,
+            source="runtime",
+            payload=trace,
+        )
+        sequence = event.sequence
+        if outcome.blocked_reason is not None or outcome.failed_handler is not None:
+            blocked = outcome.blocked_reason is not None
+            failed = self._persist_emitted_chunk(
+                chunk_builders.failed_chunk(
+                    session=session,
+                    sequence=sequence + 1,
+                    error=(
+                        f"request blocked by before-agent-start handler: {outcome.blocked_reason}"
+                        if blocked
+                        else f"before-agent-start handler failed: {outcome.failed_handler}"
+                    ),
+                    payload={"kind": "before_agent_start_blocked" if blocked else "before_agent_start_failed"},
+                )
+            )
+            failed_event = failed.require_event()
+            self._finalize_coordinator.persist_response(
+                request=prep.request,
+                response=RuntimeResponse(
+                    session=failed.session,
+                    events=(event, failed_event),
+                ),
+            )
+            yield RuntimeStreamChunk(kind="event", session=session, event=event)
+            yield failed
+            return None
+        self._refresh_run_checkpoint(session=session, prompt=outcome.prompt, sequence=sequence)
+        yield RuntimeStreamChunk(kind="event", session=session, event=event)
+        return prep, session, sequence
+
     def _start_stream_mcp_and_tooling(
         self, prep: _PreparedStreamSession, session: SessionState, sequence: int
     ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, int, ToolRegistry, SkillRegistry, tuple[str, ...]] | None]:
@@ -2660,6 +2777,7 @@ class VoidCodeRuntime(RuntimeSurface):
         request = prep.request
         effective_config = prep.effective_config
         request_metadata = prep.request_metadata
+        provider_prompt = prep.provider_prompt if prep.provider_prompt is not None else request.prompt
         rehydrated_conversation_segments = prep.rehydrated_conversation_segments
         rehydrated_tool_results = prep.rehydrated_tool_results
         loaded_skill_names = skills.loaded_skill_names(skill_registry)
@@ -2770,7 +2888,7 @@ class VoidCodeRuntime(RuntimeSurface):
             )
 
         assembled_context = self.assemble_provider_context(
-            prompt=request.prompt,
+            prompt=provider_prompt,
             tool_results=rehydrated_tool_results,
             session_metadata=session.metadata,
             skill_prompt_context=skill_prompt_context,
@@ -2785,11 +2903,11 @@ class VoidCodeRuntime(RuntimeSurface):
         turn_request = turn_request_for_session(
             TurnRequest(
                 session=turn_session_snapshot(session),
-                prompt=request.prompt,
+                prompt=provider_prompt,
                 available_tools=self.provider_tool_definitions(tool_registry, effective_config),
                 context_window=assembled_context.context_window
                 or self.prepare_provider_context_window(
-                    prompt=request.prompt,
+                    prompt=provider_prompt,
                     tool_results=rehydrated_tool_results,
                     session_metadata=session.metadata,
                     abort_signal=abort_signal,
@@ -4521,6 +4639,16 @@ class VoidCodeRuntime(RuntimeSurface):
 
         return inherited
 
+    def command_registry(self, *, user_commands_dir: Path | None = None) -> CommandRegistry:
+        if user_commands_dir is None:
+            config_home = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config").expanduser()
+            user_commands_dir = config_home / "voidcode" / "commands"
+        return load_command_registry(
+            workspace=self._workspace,
+            user_commands_dir=user_commands_dir,
+            extension_commands=self._installed_command_definitions,
+        )
+
     def _resolve_prompt_command_for_request(
         self,
         *,
@@ -4533,7 +4661,7 @@ class VoidCodeRuntime(RuntimeSurface):
         try:
             resolution = resolve_prompt_command(
                 prompt,
-                load_command_registry(workspace=self._workspace),
+                self.command_registry(),
             )
         except ValueError as exc:
             raise RuntimeRequestError(str(exc)) from exc
@@ -5817,3 +5945,4 @@ class _PreparedStreamSession:
     rehydrated_tool_results: tuple[ReportedCall, ...]
     resolved_hook_presets: ResolvedHookPresetSnapshot
     resolved_hook_plan: ResolvedHookPlan
+    provider_prompt: str | None = None

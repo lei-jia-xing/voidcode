@@ -1012,7 +1012,9 @@
             "tool",
             "agent",
             "context",
-            "typed-input"
+            "typed-input",
+            "command",
+            "before-agent-start"
           ],
           "type": "string"
         },

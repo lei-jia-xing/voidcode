@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -111,6 +111,15 @@ def _require_recorded_capability_snapshot(session_metadata: dict[str, object]) -
         "session cannot be resumed: its checkpoint records no agent capability snapshot, "
         "so the runtime cannot replay the capabilities (provider, model, tools, skills) that run was bound to"
     )
+
+
+def _prepared_prompt_for_resume(prompt: str, metadata: Mapping[str, object]) -> str:
+    preparation = metadata.get("before_agent_start")
+    if isinstance(preparation, Mapping):
+        effective_prompt = preparation.get("effective_prompt")
+        if isinstance(effective_prompt, str) and effective_prompt.strip():
+            return effective_prompt
+    return prompt
 
 
 class RuntimeResumeCoordinator:
@@ -321,7 +330,7 @@ class RuntimeResumeCoordinator:
             pending=pending,
             stored_metadata=stored.session.metadata,
         )
-        prompt = checkpoint_state.prompt
+        prompt = _prepared_prompt_for_resume(checkpoint_state.prompt, checkpoint_state.session_metadata)
         session = SessionState(
             session=stored.session.session,
             status="running",
@@ -697,7 +706,7 @@ class RuntimeResumeCoordinator:
             )
             if mismatch_payload["mismatch"] is True:
                 binding_mismatch_payload = mismatch_payload
-        prompt = checkpoint_state.prompt
+        prompt = _prepared_prompt_for_resume(checkpoint_state.prompt, checkpoint_state.session_metadata)
         session = SessionState(
             session=stored.session.session,
             status="running",
@@ -1291,6 +1300,7 @@ class RuntimeResumeCoordinator:
         if not isinstance(raw_session_metadata, dict):
             raise ValueError("persisted resume checkpoint session_metadata must be an object")
         session_metadata: dict[str, object] = raw_session_metadata
+        prompt = _prepared_prompt_for_resume(prompt, session_metadata)
         if not isinstance(raw_tool_results, list):
             raise ValueError("persisted resume checkpoint tool_results must be a list")
         # A resume replays the capability binding the recorded run was bound to,

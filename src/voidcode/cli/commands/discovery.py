@@ -11,7 +11,6 @@ from ...cli_support import (
     serialize_command_definition,
     serialize_command_summary,
 )
-from ...command.loader import load_command_registry
 from ...command.registry import CommandRegistry
 from ...runtime.contracts import AgentSummary
 from ..errors import CliError, require_workspace
@@ -187,9 +186,8 @@ def _handle_commands_show_command(args: CommandsArgs) -> int:
 
 
 def _load_cli_command_registry(args: CommandsArgs, *, workspace: Path) -> CommandRegistry:
-    user_commands_dir = args.user_commands_dir
-    with runtime_error_boundary():
-        return load_command_registry(workspace=workspace, user_commands_dir=user_commands_dir)
+    with runtime_error_boundary(), open_runtime(workspace) as runtime:
+        return runtime.command_registry(user_commands_dir=args.user_commands_dir)
 
 
 @click.group(help="Discover prompt commands available to runtime requests.")
