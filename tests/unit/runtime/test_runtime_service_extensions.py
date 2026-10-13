@@ -16,7 +16,7 @@ from unittest.mock import Mock
 
 import pytest
 
-import voidcode.runtime.config_materializer as runtime_config_materializer_module
+import voidcode.runtime.config.materializer as runtime_config_materializer_module
 import voidcode.runtime.service as runtime_service_module
 from tests.runtime_composition import create_task, save_checkpoint
 from voidcode.core.questions import QuestionResponse
@@ -37,7 +37,7 @@ from voidcode.runtime.background.models import (
     BackgroundTaskState,
 )
 from voidcode.runtime.composition import CompositionOwner, CompositionRef, FrozenComposition, TaskCompositionOwner
-from voidcode.runtime.config import (
+from voidcode.runtime.config.loading import (
     RuntimeAgentConfig,
     RuntimeBackgroundTaskConfig,
     RuntimeConfig,
@@ -71,14 +71,14 @@ from voidcode.runtime.mcp import (
     McpToolDescriptor,
 )
 from voidcode.runtime.paths import sessions_db_path
-from voidcode.runtime.permission import (
+from voidcode.runtime.permissions.context import RuntimePermissionContextResolver
+from voidcode.runtime.permissions.patch_paths import extract_paths_from_patch
+from voidcode.runtime.permissions.policy import (
     ExternalDirectoryPermissionConfig,
     ExternalDirectoryPolicy,
     PatternPermissionRule,
     PermissionPolicy,
 )
-from voidcode.runtime.permission_context import RuntimePermissionContextResolver
-from voidcode.runtime.permission_path_helpers import extract_paths_from_patch
 from voidcode.runtime.policy import RuntimePolicyConfig, RuntimePolicyToolPolicyConfig
 from voidcode.runtime.service import (
     RuntimeRequest,
@@ -92,7 +92,7 @@ from voidcode.runtime.session_metadata_helpers import (
     continuity_state_from_session_metadata,
 )
 from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.runtime.tool_registry import ToolRegistry
+from voidcode.runtime.tools.registry import ToolRegistry
 from voidcode.tools.contracts import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess
 from voidcode.tools.shell_exec import ShellExecTool
 
@@ -130,7 +130,7 @@ pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
 @pytest.fixture
 def force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
-    config_module = importlib.import_module("voidcode.runtime.config")
+    config_module = importlib.import_module("voidcode.runtime.config.loading")
     monkeypatch.setattr(config_module, "_default_runtime_mcp_servers", lambda: {})
 
 

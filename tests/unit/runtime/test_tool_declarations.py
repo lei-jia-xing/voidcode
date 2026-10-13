@@ -7,14 +7,14 @@ from pathlib import Path
 import pytest
 
 from voidcode.core.tool_context import ToolContext
-from voidcode.runtime.config import RuntimeMcpConfig, RuntimeMcpServerConfig
+from voidcode.formats.json_values import json_wire_object
+from voidcode.runtime.config.loading import RuntimeMcpConfig, RuntimeMcpServerConfig
 from voidcode.runtime.mcp import ManagedMcpManager
-from voidcode.runtime.permission import PermissionPolicy, resolve_permission
-from voidcode.runtime.permission_context import operation_class_for_tool
-from voidcode.runtime.tool_materializer import RuntimeToolMaterializer
-from voidcode.runtime.tool_provider import builtin_tool_definitions
-from voidcode.runtime.tool_registry import ToolRegistry
-from voidcode.security.json_values import json_wire_object
+from voidcode.runtime.permissions.context import operation_class_for_tool
+from voidcode.runtime.permissions.policy import PermissionPolicy, resolve_permission
+from voidcode.runtime.tools.builtins import builtin_tool_definitions
+from voidcode.runtime.tools.materializer import RuntimeToolMaterializer
+from voidcode.runtime.tools.registry import ToolRegistry
 from voidcode.tools.contracts import TextOutput, ToolCall, ToolSuccess
 from voidcode.tools.local_custom import LocalCustomTool, discover_local_custom_tool_manifests
 from voidcode.tools.mcp import McpTool

@@ -21,14 +21,14 @@ from tests.runtime_storage import repositories_for_test_store
 from voidcode.core.turns import FinalTurn, ToolTurn
 from voidcode.provider.config import ProviderConfigs, ProviderEndpointConfig
 from voidcode.runtime.background.models import BackgroundTaskRef, StoredBackgroundTaskSummary
-from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig, RuntimeRemindersConfig
+from voidcode.runtime.config.loading import RuntimeConfig, RuntimeMcpConfig, RuntimeRemindersConfig
 from voidcode.runtime.context.continuity import (
     replayed_conversation_segments_from_segments,
     verified_checkpoint_session_metadata,
 )
 from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.events import RUNTIME_REMINDER_INJECTED
-from voidcode.runtime.permission import PermissionPolicy
+from voidcode.runtime.permissions.policy import PermissionPolicy
 from voidcode.runtime.reminders import (
     REMINDERS_RUNTIME_STATE_KEY,
     TODO_REMINDER_SOURCE,

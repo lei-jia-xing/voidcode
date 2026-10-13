@@ -26,8 +26,8 @@ from .contracts import (
     is_routing_mode,
     is_schema_mode,
 )
-from .permission import DelegationGovernance
-from .permission_policy import (
+from .permissions.policy import DelegationGovernance
+from .permissions.responses import (
     pending_approval_from_response,
     pending_question_from_response,
 )

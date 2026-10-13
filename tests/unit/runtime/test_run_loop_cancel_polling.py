@@ -4,9 +4,9 @@ import threading
 from pathlib import Path
 
 from voidcode.core.tool_context import ToolContext
-from voidcode.runtime.config import RuntimeConfig
+from voidcode.runtime.config.loading import RuntimeConfig
+from voidcode.runtime.execution.tool_executor import RuntimeToolExecutor
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
-from voidcode.runtime.tool_execution import RuntimeToolExecutor
 from voidcode.tools.contracts import (
     TextOutput,
     ToolCall,

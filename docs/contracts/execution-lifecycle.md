@@ -30,10 +30,10 @@
 | run 入口注册 / 注销 | `src/voidcode/runtime/service.py::_register_active_session_id` / `_unregister_active_session_id` |
 | 用户中断取消 run 信号 | `src/voidcode/runtime/active_session.py::ActiveSessionRegistry.interrupt` |
 | core request / engine 观察 abort | `src/voidcode/core/turns.py::TurnRequest.abort_signal` → `src/voidcode/core/engine.py::EngineState.cancelled` |
-| invocation 取消视图 | `src/voidcode/runtime/tool_execution.py::_InvocationCancelSignal`；`_invoke_tool` 通过显式 `ToolContext` 传入，未使用 tool-identity ContextVar |
+| invocation 取消视图 | `src/voidcode/runtime/execution/tool_executor.py::_InvocationCancelSignal`；`_invoke_tool` 通过显式 `ToolContext` 传入，未使用 tool-identity ContextVar |
 | 工具侧读取取消槽位 | `src/voidcode/core/tool_context.py::ToolContext.abort_signal` |
-| invocation timeout 置位（停止等待之前） | `src/voidcode/runtime/tool_execution.py::_invoke_with_progress` |
-| 超时/中断有界回收与迟到结果处理 | `src/voidcode/runtime/tool_execution.py::RuntimeToolExecutor._invoke_with_progress` |
+| invocation timeout 置位（停止等待之前） | `src/voidcode/runtime/execution/tool_executor.py::_invoke_with_progress` |
+| 超时/中断有界回收与迟到结果处理 | `src/voidcode/runtime/execution/tool_executor.py::RuntimeToolExecutor._invoke_with_progress` |
 | 用户中断终结 | `src/voidcode/runtime/run_loop.py::RuntimeHost.execute` / `RuntimeRunLoopCoordinator._execute_invoked_tool`（先写 `runtime.tool_completed`，再写中断终态） |
 | 超时不得把 run 变成 interrupted | 仅 active-session interrupt 写 run signal；工具超时只写 invocation signal |
 
@@ -65,7 +65,7 @@ dispatch 前拒绝已取消的调用，调用者换一个 context 或清掉 abor
 
 | 规范 | 执行点 |
 | --- | --- |
-| 有界回收 + 事实判定 | `src/voidcode/runtime/tool_execution.py::RuntimeToolExecutor._invoke_with_progress`、`src/voidcode/runtime/tool_execution.py::_TOOL_TIMEOUT_REAP_SECONDS`（timeout signal 先置位，回收后判定 execution/side-effect 事实，late result 不提交） |
+| 有界回收 + 事实判定 | `src/voidcode/runtime/execution/tool_executor.py::RuntimeToolExecutor._invoke_with_progress`、`src/voidcode/runtime/execution/tool_executor.py::_TOOL_TIMEOUT_REAP_SECONDS`（timeout signal 先置位，回收后判定 execution/side-effect 事实，late result 不提交） |
 | 提交超时结果（含诚实措辞） | `src/voidcode/runtime/run_loop.py::RuntimeRunLoopCoordinator._execute_tool_and_recover`、`src/voidcode/runtime/run_loop.py::_tool_timeout_execution_facts` |
 | 提交正常工具结果 + 清除 intent | `src/voidcode/runtime/run_loop.py::RuntimeRunLoopCoordinator._emit_tool_completed_events` → `src/voidcode/runtime/session_metadata_helpers.py::clear_tool_execution_intent` |
 | 工具完成后再终结用户中断 | `src/voidcode/runtime/run_loop.py::RuntimeRunLoopCoordinator._execute_invoked_tool` → `chunk_builders.user_interrupted_payload` |
@@ -93,7 +93,7 @@ dispatch 前拒绝已取消的调用，调用者换一个 context 或清掉 abor
 3. **撤销后可提交的内容：无。** 任务状态提交、生命周期通知、以及任何 session / background-task 存储写入都会被拒；工具自己的提交同样被拒——工具执行线程继承调用方的 lease。
 4. **前 owner 仍可做**：把每次拒绝记录为 `late_write` 诊断并输出一条 `logger.warning`。诊断按 `task + generation + operation + 拒绝线程` 去重计数，因此条目里的线程与计数同每条 warning 一致（绝不把一次拒绝归因到没做这次写入的线程）；诊断只记录事实，绝不变更 truth；它不是 resume。
 5. **`interrupted` 仍是可恢复断点**：resume 由 runtime 拥有（`interrupted -> running`）并授予**新** generation；旧 lease 永久撤销，后来者取得同一 task 不会重新授权旧 execution。
-6. **边界（可检查）**：lease 绑定在线程上，网关只校验当前线程的绑定。工具执行线程（`tool-executor`）**在**保证范围内——它继承调用方的 lease（`tool_execution.py:334-337`），因此工具自身的 runtime-owned 提交同样被拒；不在保证范围内的是**工具自己 spawn 的**线程/进程（工具派生并自行持久化的写者）。新增这类会自行持久化的线程前，必须把 lease 传播给它，或在 execution 线程上提交。
+6. **边界（可检查）**：lease 绑定在线程上，网关只校验当前线程的绑定。工具执行线程（`tool-executor`）**在**保证范围内——它继承调用方的 lease（`src/voidcode/runtime/execution/tool_executor.py:334-337`），因此工具自身的 runtime-owned 提交同样被拒；不在保证范围内的是**工具自己 spawn 的**线程/进程（工具派生并自行持久化的写者）。新增这类会自行持久化的线程前，必须把 lease 传播给它，或在 execution 线程上提交。
 7. 该保证是**进程内**的：执行体是活线程，registry 与之同生命周期。
 
 执行点：
@@ -109,7 +109,7 @@ dispatch 前拒绝已取消的调用，调用者换一个 context 或清掉 abor
 | 任务状态提交被拒 | `src/voidcode/runtime/background/supervisor.py:2549`、`:3352` |
 | 生命周期通知被拒 | `src/voidcode/runtime/background/supervisor.py:2738` |
 | 存储写入被拒（抛 `ExecutionOwnershipRevokedError`） | `src/voidcode/runtime/storage/sqlite.py:576` |
-| 工具线程继承 lease（工具提交同被拒） | `src/voidcode/runtime/tool_execution.py:334` → `:337` |
+| 工具线程继承 lease（工具提交同被拒） | `src/voidcode/runtime/execution/tool_executor.py:334` → `:337` |
 | 拒绝被记录为诊断（每条诊断含拒绝线程） | `src/voidcode/runtime/execution_ownership.py:269`（`_record_late_write`）、`:277-278`（线程属于诊断身份）、`:264`（`late_writes`） |
 | 新 generation（resume） | `src/voidcode/runtime/execution_ownership.py:184`（`acquire`） |
 
@@ -152,7 +152,7 @@ dispatch 前拒绝已取消的调用，调用者换一个 context 或清掉 abor
 
 | 主题 | 代码 | 测试 |
 | --- | --- | --- |
-| 工具超时取消 / 回收 / 事实 | `runtime/tool_execution.py`、`tools/contracts.py` | `tests/unit/runtime/test_tool_execution_timeout.py` |
-| 执行所有权 / late write（含诊断按拒绝线程归属） | `runtime/execution_ownership.py`、`runtime/background/supervisor.py`、`runtime/storage/sqlite.py`、`runtime/tool_execution.py` | `tests/unit/runtime/test_tool_execution_ownership.py`、`tests/unit/runtime/test_late_writes_after_seizure.py`、`tests/integration/test_keep_alive_subagent.py` |
+| 工具超时取消 / 回收 / 事实 | `runtime/execution/tool_executor.py`、`tools/contracts.py` | `tests/unit/runtime/test_tool_execution_timeout.py` |
+| 执行所有权 / late write（含诊断按拒绝线程归属） | `runtime/execution_ownership.py`、`runtime/background/supervisor.py`、`runtime/storage/sqlite.py`、`runtime/execution/tool_executor.py` | `tests/unit/runtime/test_tool_execution_ownership.py`、`tests/unit/runtime/test_late_writes_after_seizure.py`、`tests/integration/test_keep_alive_subagent.py` |
 | 进程崩溃 / resume（含首个工具调用中崩溃、无绑定记录时的具名拒绝） | `runtime/resume.py`、`runtime/run_loop.py`、`runtime/service.py` | `tests/integration/test_process_crash_tool_resume.py`、`tests/integration/test_read_only_slice.py`（crash / orphan tail） |
 | 同 session re-entry | `runtime/resume.py`、`runtime/service.py` | `tests/unit/runtime/test_same_session_reentry.py`、`tests/unit/runtime/test_session_lifecycle_seal.py` |

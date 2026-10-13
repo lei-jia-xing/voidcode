@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, runtime_checkable
 
-from ..security.json_values import json_wire_object, own_json_object, own_json_value
+from ..formats.json_values import json_wire_object, own_json_object, own_json_value
 from ..security.redaction import (
     DIAGNOSTIC_DEPTH as _MAX_DIAGNOSTIC_DEPTH,
 )

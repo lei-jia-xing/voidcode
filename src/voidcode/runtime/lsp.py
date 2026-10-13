@@ -26,7 +26,7 @@ from ..lsp import (
     match_lsp_servers_for_path,
     resolve_lsp_server_configs,
 )
-from .config import RuntimeLspConfig, runtime_capability_enabled
+from .config.loading import RuntimeLspConfig, runtime_capability_enabled
 
 logger = logging.getLogger(__name__)
 

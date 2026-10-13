@@ -3,10 +3,10 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
-from ..tools.contracts import Tool, ToolCall, ToolDefinition, ToolEffect, is_read_tier
-from ..tools.local_custom import LocalCustomTool
-from ..tools.mcp import McpTool
-from .permission import OperationClass, PathScope
+from ...tools.contracts import Tool, ToolCall, ToolDefinition, ToolEffect, is_read_tier
+from ...tools.local_custom import LocalCustomTool
+from ...tools.mcp import McpTool
+from .policy import OperationClass, PathScope
 
 #: Builtin tools that mutate workspace/session state without executing code:
 #: VoidCode's ``write`` tier. Everything else a non-read-only tool can be — a

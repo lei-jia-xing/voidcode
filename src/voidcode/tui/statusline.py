@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
-from ..runtime.config_models import (
+from ..runtime.config.models import (
     VALID_TUI_STATUSLINE_SEGMENTS,
     TuiStatuslineLayout,
     TuiStatuslineSegment,
@@ -17,7 +17,7 @@ from .term import clamp_row, crop_row_right, escape_terminal_controls, format_nu
 from .theme import Theme
 
 if TYPE_CHECKING:
-    from ..runtime.config import RuntimeTuiStatuslineConfig
+    from ..runtime.config.loading import RuntimeTuiStatuslineConfig
 
 __all__ = [
     "STATUS_LINE_SEGMENT_IDS",

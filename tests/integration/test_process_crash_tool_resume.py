@@ -50,9 +50,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
+from voidcode.runtime.config.loading import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import RuntimeRequest
-from voidcode.runtime.permission import PermissionPolicy
+from voidcode.runtime.permissions.policy import PermissionPolicy
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.tools.read import ReadTool
 from voidcode.tools.contracts import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess

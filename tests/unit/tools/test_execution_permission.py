@@ -3,15 +3,15 @@ from typing import Any
 
 import pytest
 
-from voidcode.runtime.permission import (
+from voidcode.runtime.permissions.context import RuntimePermissionContextResolver
+from voidcode.runtime.permissions.engine import PermissionEngine
+from voidcode.runtime.permissions.policy import (
     ExternalDirectoryPermissionConfig,
     PatternPermissionRule,
     PermissionPolicy,
     approval_decision,
     resolve_permission,
 )
-from voidcode.runtime.permission_context import RuntimePermissionContextResolver
-from voidcode.runtime.permission_engine import PermissionEngine
 from voidcode.tools.contracts import ToolCall
 from voidcode.tools.process.background_process import BackgroundProcessTool
 from voidcode.tools.shell_exec import ShellExecTool

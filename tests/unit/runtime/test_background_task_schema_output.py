@@ -15,17 +15,17 @@ from tests.runtime_composition import create_task, save_checkpoint
 from tests.runtime_storage import repositories_for_test_store
 from voidcode.core.tool_context import ToolContext
 from voidcode.core.turns import ReportedCall
+from voidcode.formats.json_values import json_wire_object
 from voidcode.runtime import VoidCodeRuntime
 from voidcode.runtime.background.models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
 )
-from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
+from voidcode.runtime.config.loading import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.execution.delegation.task_output import TaskOutputBody, TaskOutputTool
 from voidcode.runtime.execution.report_codec import report_payload
 from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.security.json_values import json_wire_object
 from voidcode.tools.contracts import OpaqueToolBody, TerminalYield, ToolCall, ToolSuccess
 
 DECLARED_SCHEMA: dict[str, object] = {

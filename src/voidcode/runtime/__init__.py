@@ -31,13 +31,13 @@ from .events import (
     EventEnvelope,
     EventSource,
 )
-from .permission import ApprovalMode, PendingApproval, PermissionDecision, PermissionPolicy, PermissionResolution
+from .permissions.policy import ApprovalMode, PendingApproval, PermissionDecision, PermissionPolicy, PermissionResolution
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
 from .storage import RuntimeRepositories
 
 if TYPE_CHECKING:
     from .service import VoidCodeRuntime
-    from .tool_registry import ToolRegistry
+    from .tools.registry import ToolRegistry
     from .transport.http import RuntimeTransportApp, create_runtime_app
 
 __all__ = [
@@ -82,7 +82,7 @@ __all__ = [
 
 def __getattr__(name: str) -> Any:
     if name == "ToolRegistry":
-        tool_registry_module = import_module(".tool_registry", __name__)
+        tool_registry_module = import_module(".tools.registry", __name__)
         return getattr(tool_registry_module, name)
     if name == "VoidCodeRuntime":
         service_module = import_module(".service", __name__)

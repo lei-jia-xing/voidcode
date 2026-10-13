@@ -26,8 +26,8 @@ from ..mcp import McpToolDescriptor
 from ..provider.protocol import ProviderAbortSignal
 from ..skills.registry import SkillRegistry
 from ..tools.contracts import Tool, ToolCall, ToolDefinition
-from .config import RuntimeAgentConfig
-from .config_materializer import EffectiveRuntimeConfig
+from .config.loading import RuntimeAgentConfig
+from .config.materializer import EffectiveRuntimeConfig
 from .context.window import (
     BeforeCompactInput,
     CompactionBudget,
@@ -42,11 +42,11 @@ from .contracts import (
     RuntimeResponse,
     RuntimeStreamChunk,
 )
-from .permission import PendingApproval, PermissionPolicy, PermissionResolution
-from .provider_metadata import ReasoningEffortCapability
+from .permissions.policy import PendingApproval, PermissionPolicy, PermissionResolution
+from .providers.metadata import ReasoningEffortCapability
 from .session import SessionState
 from .skills import SkillExecutionSnapshot
-from .tool_registry import ToolPolicyDecision, ToolRegistry
+from .tools.registry import ToolPolicyDecision, ToolRegistry
 
 
 @dataclass(frozen=True, slots=True)

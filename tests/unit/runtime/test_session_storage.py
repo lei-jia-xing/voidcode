@@ -22,7 +22,7 @@ from voidcode.runtime.background.models import (
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse, UnknownSessionError
 from voidcode.runtime.events import EventEnvelope
 from voidcode.runtime.paths import sessions_db_path, state_home
-from voidcode.runtime.permission import READ_ONLY_DENIAL_REASON, PendingApproval
+from voidcode.runtime.permissions.policy import READ_ONLY_DENIAL_REASON, PendingApproval
 from voidcode.runtime.question import PendingQuestion
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.storage import SCHEMA_VERSION, SessionSealedError, SqliteSessionStore

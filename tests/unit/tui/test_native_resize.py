@@ -11,7 +11,7 @@ from typing import get_args
 
 import pytest
 
-from voidcode.runtime.config_models import (
+from voidcode.runtime.config.models import (
     VALID_TUI_COMPOSER_CURSOR_SHAPES,
     VALID_TUI_COMPOSER_STYLES,
     VALID_TUI_THEME_MODES,
@@ -43,7 +43,7 @@ import os
 from pathlib import Path
 
 from voidcode.core.turns import FinalTurn, ToolTurn
-from voidcode.runtime.config import RuntimeConfig
+from voidcode.runtime.config.loading import RuntimeConfig
 from voidcode.runtime.service import VoidCodeRuntime
 from voidcode.tools.contracts import ToolCall
 from voidcode.tui.app import TuiApp
@@ -378,7 +378,7 @@ def test_native_tui_survives_small_terminal_sizes_and_restores_input(
         _tmux(socket, "send-keys", "-t", f"{session}:0.0", "Enter", env=env)
 
         from voidcode.core.tool_context import ArtifactMissing, ArtifactPage, NextPage
-        from voidcode.runtime.config import load_runtime_config
+        from voidcode.runtime.config.loading import load_runtime_config
         from voidcode.runtime.contracts import RuntimeRequest
         from voidcode.runtime.service import VoidCodeRuntime
 
@@ -1072,7 +1072,7 @@ def test_native_tui_persists_active_steering_through_cancel_and_reentry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from voidcode.command.resolver import UNSUPPORTED_TOOL_COMMAND_MESSAGE
-    from voidcode.runtime.config import load_runtime_config
+    from voidcode.runtime.config.loading import load_runtime_config
     from voidcode.runtime.service import VoidCodeRuntime
 
     root = tmp_path
@@ -1418,7 +1418,7 @@ def test_native_tui_resume_preserves_completed_session_without_duplicate_events(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from voidcode.runtime.config import load_runtime_config
+    from voidcode.runtime.config.loading import load_runtime_config
     from voidcode.runtime.contracts import RuntimeRequest
     from voidcode.runtime.service import VoidCodeRuntime
 
@@ -1598,7 +1598,7 @@ def test_native_ctrl_t_tree_filter_moves_native_caret_and_cancels(
         _tmux(socket, "send-keys", "-t", f"{session}:0.0", "Enter", env=env)
         wait_for_screen("tree_Native_READY", timeout=30)
 
-        from voidcode.runtime.config import load_runtime_config
+        from voidcode.runtime.config.loading import load_runtime_config
         from voidcode.runtime.service import VoidCodeRuntime
 
         with VoidCodeRuntime(workspace=workspace, config=load_runtime_config(workspace)) as runtime:
@@ -1752,7 +1752,7 @@ def test_native_question_escape_cancels_through_the_public_runtime(
         scrollback = _tmux(socket, "capture-pane", "-p", "-S", "-", "-t", f"{session}:0.0", env=env)
         pytest.fail(f"native question screen omitted {text!r}:\n{pane}\nscrollback:\n{scrollback}")
 
-    from voidcode.runtime.config import RuntimeConfig
+    from voidcode.runtime.config.loading import RuntimeConfig
     from voidcode.runtime.service import VoidCodeRuntime
 
     def resize(width: int, height: int) -> None:

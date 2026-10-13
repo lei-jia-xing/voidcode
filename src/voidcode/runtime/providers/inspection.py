@@ -4,25 +4,25 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Literal
 
-from ..provider.auth import (
+from ...provider.auth import (
     ProviderAuthAuthorizeRequest,
     ProviderAuthResolutionError,
     ProviderAuthResolver,
 )
-from ..provider.config import (
+from ...provider.config import (
     PROVIDER_CONFIG_PAYLOAD_KEYS,
     PROVIDER_WIRES,
     ProviderConfigEntry,
     ProviderConfigs,
     ProviderEndpointConfig,
 )
-from ..provider.errors import guidance_for_provider_error_kind
-from ..provider.naming import canonical_provider_id
-from ..provider.openai_native import normalize_openai_base_url
-from ..provider.provider_config import DEFAULT_ENDPOINT_BASE_URL
-from ..provider.registry import ModelProviderRegistry
-from .config import MODEL_ENV_VAR, RUNTIME_CONFIG_FILE_NAME
-from .contracts import (
+from ...provider.errors import guidance_for_provider_error_kind
+from ...provider.naming import canonical_provider_id
+from ...provider.openai_native import normalize_openai_base_url
+from ...provider.provider_config import DEFAULT_ENDPOINT_BASE_URL
+from ...provider.registry import ModelProviderRegistry
+from ..config.loading import MODEL_ENV_VAR, RUNTIME_CONFIG_FILE_NAME
+from ..contracts import (
     ProviderModelsResult,
     ProviderReadinessResult,
     ProviderSummary,

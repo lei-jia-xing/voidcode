@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from voidcode.frontmatter import (
+from voidcode.formats.frontmatter import (
     FrontmatterError,
     load_frontmatter_mapping,
     split_frontmatter,

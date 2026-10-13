@@ -22,7 +22,7 @@ pytestmark = pytest.mark.usefixtures("_force_deterministic_engine_default")
 @pytest.fixture
 def _force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
-    config_module = importlib.import_module("voidcode.runtime.config")
+    config_module = importlib.import_module("voidcode.runtime.config.loading")
     monkeypatch.setattr(
         config_module,
         "_default_runtime_mcp_config",
@@ -922,7 +922,7 @@ def test_transport_background_task_output_redacts_reasoning_until_query_opt_in()
 def test_transport_resolves_pending_approval_allow_over_http(tmp_path: Path) -> None:
     runtime_request, runtime_class = _load_runtime_types()
     create_runtime_app = _load_transport_app_factory()
-    permission_module = importlib.import_module("voidcode.runtime.permission")
+    permission_module = importlib.import_module("voidcode.runtime.permissions.policy")
     permission_policy = cast(object, permission_module.PermissionPolicy(mode="ask"))
 
     runtime = runtime_class(workspace=tmp_path, permission_policy=permission_policy)
@@ -1061,7 +1061,7 @@ def test_transport_stream_preserves_tool_display_metadata(tmp_path: Path) -> Non
 def test_transport_resolves_pending_approval_deny_over_http(tmp_path: Path) -> None:
     runtime_request, runtime_class = _load_runtime_types()
     create_runtime_app = _load_transport_app_factory()
-    permission_module = importlib.import_module("voidcode.runtime.permission")
+    permission_module = importlib.import_module("voidcode.runtime.permissions.policy")
     permission_policy = cast(object, permission_module.PermissionPolicy(mode="ask"))
 
     runtime = runtime_class(workspace=tmp_path, permission_policy=permission_policy)
@@ -1121,7 +1121,7 @@ def test_transport_resolves_pending_approval_deny_over_http(tmp_path: Path) -> N
 
 def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_path: Path) -> None:
     _ = (tmp_path / "source.txt").write_text("alpha\nbeta alpha\n", encoding="utf-8")
-    config_module = importlib.import_module("voidcode.runtime.config")
+    config_module = importlib.import_module("voidcode.runtime.config.loading")
     create_runtime_app = _load_transport_app_factory()
     app = create_runtime_app(workspace=tmp_path, config=cast(Any, config_module).RuntimeConfig(approval_mode="ask", execution_engine="deterministic"))
     waiting_response = _run_app(

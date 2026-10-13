@@ -19,10 +19,10 @@ from voidcode.provider.config import ProviderConfigs, ProviderEndpointConfig, Pr
 from voidcode.provider.openai_native import OpenAIChatCompletionsProvider, OpenAITransportError
 from voidcode.provider.protocol import ProviderExecutionError
 from voidcode.provider.registry import ModelProviderRegistry
-from voidcode.runtime.config import RuntimeCompactionConfig, RuntimeConfig, RuntimeContextWindowConfig, RuntimeMcpConfig
+from voidcode.runtime.config.loading import RuntimeCompactionConfig, RuntimeConfig, RuntimeContextWindowConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.events import RUNTIME_PROVIDER_CONTEXT_RECOVERY, RUNTIME_PROVIDER_FALLBACK
-from voidcode.runtime.permission import PermissionPolicy
+from voidcode.runtime.permissions.policy import PermissionPolicy
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.runtime.storage import SqliteSessionStore
 from voidcode.tools.contracts import ToolCall

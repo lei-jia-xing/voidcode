@@ -12,10 +12,10 @@ import pytest
 from voidcode.core.tool_context import ToolContext
 from voidcode.core.turns import FinalTurn, ToolTurn
 from voidcode.runtime.background.process import BackgroundProcessManager
-from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
+from voidcode.runtime.config.loading import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.execution.process.background_process import BackgroundProcessCommand
-from voidcode.runtime.permission import PermissionPolicy
+from voidcode.runtime.permissions.policy import PermissionPolicy
 from voidcode.runtime.service import VoidCodeRuntime
 from voidcode.tools.contracts import TextOutput, ToolCall, ToolFailure, ToolSuccess
 

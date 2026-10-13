@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from ..tools.contracts import ToolCall, ToolDefinition, is_read_tier
+from ...tools.contracts import ToolCall, ToolDefinition, is_read_tier
 
 type PermissionDecision = Literal["allow", "deny", "ask"]
 type PermissionResolution = Literal["allow", "deny"]

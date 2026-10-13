@@ -4,8 +4,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..tools.contracts import Tool, ToolCall, ToolDefinition
-from .permission import (
+from ...tools.contracts import Tool, ToolCall, ToolDefinition
+from .context import RuntimePermissionContextResolver
+from .policy import (
     ExternalDirectoryPermissionConfig,
     OperationClass,
     PathScope,
@@ -14,7 +15,6 @@ from .permission import (
     evaluate_external_directory_policy,
     evaluate_pattern_permission_rules,
 )
-from .permission_context import RuntimePermissionContextResolver
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,11 +86,11 @@ class PermissionEngine:
             uses_write_policy = operation_class in ("write", "execute")
             policy_surface = "external_directory_write" if uses_write_policy else "external_directory_read"
             policy_config = permission_config or self._permission_config
-            rw = policy_config.write if uses_write_policy else policy_config.read
+            directory_policy = policy_config.write if uses_write_policy else policy_config.read
             decisions: list[tuple[PermissionDecision, str, str]] = []
             for external_path in external_paths:
                 decision, rule = evaluate_external_directory_policy(
-                    policy=rw,
+                    policy=directory_policy,
                     canonical_path=Path(external_path),
                 )
                 decisions.append((decision, rule, external_path))

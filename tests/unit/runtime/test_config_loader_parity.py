@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from voidcode.runtime.config import (
+from voidcode.runtime.config.loading import (
     _load_user_config,
     load_runtime_config,
 )

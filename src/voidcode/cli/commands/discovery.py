@@ -6,11 +6,6 @@ from pathlib import Path
 
 import click
 
-from ...cli_support import (
-    EXIT_INVALID_COMMAND,
-    serialize_command_definition,
-    serialize_command_summary,
-)
 from ...command.registry import CommandRegistry
 from ...runtime.contracts import AgentSummary
 from ..errors import CliError, require_workspace
@@ -18,6 +13,11 @@ from ..handler_args import AgentsArgs, CommandsArgs, McpArgs
 from ..options import command_discovery_options, json_option, workspace_option
 from ..output import emit_output, format_named_record, mcp_status_payload
 from ..runtime_gateway import open_runtime, runtime_error_boundary
+from ..support import (
+    EXIT_INVALID_COMMAND,
+    serialize_command_definition,
+    serialize_command_summary,
+)
 
 
 def _serialize_agent_summary(summary: AgentSummary) -> dict[str, object]:

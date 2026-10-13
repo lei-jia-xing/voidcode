@@ -17,7 +17,7 @@
 - 当前 payload 包含：
   - `tool`
   - `decision`
-- `(mode, tier) → decision` 的**唯一**求值点是 `src/voidcode/runtime/permission.py::approval_decision`；其他模块只传递 mode 与每次调用的 tier，不得重新推导该矩阵。
+- `(mode, tier) → decision` 的**唯一**求值点是 `src/voidcode/runtime/permissions/policy.py::approval_decision`；其他模块只传递 mode 与每次调用的 tier，不得重新推导该矩阵。
 
 ## 审批模型：tier × mode
 
@@ -25,7 +25,7 @@
 
 ### 工具 tier（`OperationClass`）
 
-工具 tier 由 `src/voidcode/runtime/permission_context.py::operation_class_for_tool` 按调用计算，取值与语义：
+工具 tier 由 `src/voidcode/runtime/permissions/context.py::operation_class_for_tool` 按调用计算，取值与语义：
 
 | tier | 含义 | 当前判定 |
 | --- | --- | --- |

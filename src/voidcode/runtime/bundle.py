@@ -36,7 +36,7 @@ from .events import EventEnvelope, EventSource
 from .execution.resume_checkpoint import tool_results_from_checkpoint, validated_resume_checkpoint_envelope
 from .fact_codec import decode_fact
 from .paths import session_artifacts_dir
-from .permission import PendingApproval
+from .permissions.policy import PendingApproval
 from .storage import BackgroundTaskRepository, SessionEventRepository, SessionRecoveryRepository, SessionRepository, SessionRunWriter
 from .storage.shared import _pending_operation_class, _pending_path_scope, _pending_permission_decision
 

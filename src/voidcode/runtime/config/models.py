@@ -9,7 +9,7 @@ Pydantic payload model plus the raw-value validators those models share:
 * request-metadata overrides and the persisted session ``runtime_config``
   snapshot (the same section payloads, plus :class:`PersistedAgentPayload`).
 
-``runtime/config_schema.py`` generates the shipped
+``runtime/config/schema.py`` generates the shipped
 ``schema/voidcode.config.schema.json`` from these models, so the published
 artifact cannot drift from the boundary it documents (see
 ``tests/unit/runtime/test_config_schema.py`` and
@@ -22,7 +22,7 @@ sources and they do not interpret values. Precedence
 (environment -> user -> repo -> request -> persisted session), merge rules,
 default-vs-unset resolution, which values are recovery-critical and persisted
 into the session snapshot, plus provider and policy semantics, all stay in
-their current owners: ``runtime/config.py``, ``runtime/config_materializer.py``,
+their current owners: ``runtime/config/loading.py``, ``runtime/config/materializer.py``,
 ``runtime/policy.py`` and ``provider/config.py``. If a rule picks between
 sources or decides what a value means, it does not belong in this module.
 """
@@ -39,15 +39,15 @@ from typing import Annotated, Literal, TypeIs, get_args, overload
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from ..agent.prompts import BUILTIN_PROMPT_PROFILES
-from ..formatter import FormatterCwdPolicy
-from ..mcp.builtin import get_builtin_mcp_descriptor
-from ..provider.config import ProviderConfigsPayload, format_runtime_config_field_error
-from ..provider.reasoning_effort import ALL_EFFORTS, normalize_reasoning_effort
-from .context.window import DEFAULT_KEEP_RECENT_TOOL_TOKENS
-from .permission import APPROVAL_MODES, ApprovalMode, PermissionDecision
-from .policy import runtime_policy_allowed_hook_scopes
-from .reminders import DEFAULT_TODO_REMINDER_MAX_PER_CYCLE
+from ...agent.prompts import BUILTIN_PROMPT_PROFILES
+from ...formatter import FormatterCwdPolicy
+from ...mcp.builtin import get_builtin_mcp_descriptor
+from ...provider.config import ProviderConfigsPayload, format_runtime_config_field_error
+from ...provider.reasoning_effort import ALL_EFFORTS, normalize_reasoning_effort
+from ..context.window import DEFAULT_KEEP_RECENT_TOOL_TOKENS
+from ..permissions.policy import APPROVAL_MODES, ApprovalMode, PermissionDecision
+from ..policy import runtime_policy_allowed_hook_scopes
+from ..reminders import DEFAULT_TODO_REMINDER_MAX_PER_CYCLE
 
 #: The ``runtime_internal`` sub-object of a persisted agent payload.
 AGENT_RUNTIME_INTERNAL_CONFIG_KEY = "runtime_internal"
@@ -70,7 +70,7 @@ TOOL_TIMEOUT_ENV_VAR = "VOIDCODE_TOOL_TIMEOUT_SECONDS"
 REASONING_EFFORT_ENV_VAR = "VOIDCODE_REASONING_EFFORT"
 
 #: The ``.voidcode.json`` ``approval_mode`` vocabulary, shared with
-#: ``runtime/permission.py`` so the config surface and the resolver cannot drift.
+#: ``runtime/permissions/policy.py`` so the config surface and the resolver cannot drift.
 VALID_APPROVAL_MODES: tuple[ApprovalMode, ...] = APPROVAL_MODES
 #: The decision tri-state used by ``permission.rules`` and external-directory
 #: maps; distinct from the mode, and never accepted for ``approval_mode``.
@@ -849,7 +849,7 @@ def validate_formatter_preset_map(
 # Shape-only preset: built-in preset defaults are merged by the loader.
 # ``command``/``extensions`` require at least one entry only for presets that are
 # not built-ins, so the minimum is declared on the artifact while the per-preset
-# rule stays in ``voidcode.runtime.config``.
+# rule stays in ``voidcode.runtime.config.loading``.
 class FormatterPresetPayload(_PayloadModel):
     command: tuple[str, ...] | None = Field(default=None, json_schema_extra={"items": {"type": "string"}, "minItems": 1})
     #: No minimum: ``extensions`` may be empty for a builtin preset, which the
@@ -2121,7 +2121,7 @@ class UserConfigPayload(_PayloadModel):
     components: tuple[InstalledComponentSelectionPayload, ...] | None = None
     #: Machine-wide baseline for the same resolution chain as the workspace file:
     #: ``explicit > repo-local > environment > user > default`` (see
-    #: ``runtime/config.py``). The user layer is the least specific, so a project
+    #: ``runtime/config/loading.py``). The user layer is the least specific, so a project
     #: file and the environment both override it.
     approval_mode: ApprovalMode | None = Field(
         default=None,

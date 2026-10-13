@@ -8,22 +8,22 @@ from typing import cast
 
 import click
 
-from ...cli_support import EXIT_CONFIG_ERROR, EXIT_SUCCESS, print_json
 from ...provider.snapshot import resolved_provider_snapshot
-from ...runtime.config import RUNTIME_CONFIG_FILE_NAME, serialize_runtime_agent_config
-from ...runtime.config_schema import (
+from ...runtime.config.loading import RUNTIME_CONFIG_FILE_NAME, serialize_runtime_agent_config
+from ...runtime.config.schema import (
     format_starter_runtime_config_json,
     generate_starter_runtime_config,
     runtime_config_json_schema,
     write_runtime_config_payload,
 )
-from ...runtime.permission import DEFAULT_APPROVAL_MODE, ApprovalMode
+from ...runtime.permissions.policy import DEFAULT_APPROVAL_MODE, ApprovalMode
 from ..errors import CliError, require_workspace
 from ..handler_args import ConfigArgs
 from ..options import APPROVAL_MODES, workspace_option
 from ..output import mcp_status_payload
 from ..provider_view import provider_readiness_payload
 from ..runtime_gateway import open_runtime, runtime_error_boundary
+from ..support import EXIT_CONFIG_ERROR, EXIT_SUCCESS, print_json
 
 
 def _handle_config_show_command(args: ConfigArgs) -> int:

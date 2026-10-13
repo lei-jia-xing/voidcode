@@ -9,11 +9,11 @@ from ...core.provider_turns import ProviderTurnProducer
 from ...core.turns import TurnProducer
 from ...provider.errors import ProviderExecutionError
 from ...provider.models import BoundProviderModel, ResolvedProviderChain, ResolvedProviderModel
-from ..config import MODEL_ENV_VAR, RUNTIME_CONFIG_FILE_NAME, ExecutionEngineName, serialize_runtime_agent_config
+from ..config.loading import MODEL_ENV_VAR, RUNTIME_CONFIG_FILE_NAME, ExecutionEngineName, serialize_runtime_agent_config
 from .provider_fallback import fallback_allowed
 
 if TYPE_CHECKING:
-    from ..config_materializer import EffectiveRuntimeConfig
+    from ..config.materializer import EffectiveRuntimeConfig
     from ..contracts import RuntimeRequest
 
 

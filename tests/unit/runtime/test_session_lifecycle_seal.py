@@ -36,7 +36,7 @@ from voidcode.runtime.background.models import (
     BackgroundTaskStatus,
     is_background_task_terminal,
 )
-from voidcode.runtime.config import RuntimeBackgroundTaskConfig, RuntimeConfig
+from voidcode.runtime.config.loading import RuntimeBackgroundTaskConfig, RuntimeConfig
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse
 from voidcode.runtime.events import (
     RUNTIME_BACKGROUND_TASK_COMPLETED,
@@ -46,7 +46,7 @@ from voidcode.runtime.events import (
     EventSource,
 )
 from voidcode.runtime.execution.report_codec import parse_report_payload, report_payload
-from voidcode.runtime.permission import PendingApproval, PermissionPolicy
+from voidcode.runtime.permissions.policy import PendingApproval, PermissionPolicy
 from voidcode.runtime.question import PendingQuestion
 from voidcode.runtime.service import (
     RuntimeStreamChunk,
@@ -55,7 +55,7 @@ from voidcode.runtime.service import (
 )
 from voidcode.runtime.session import SessionRef
 from voidcode.runtime.storage import SessionSealedError, SqliteSessionStore
-from voidcode.runtime.tool_registry import ToolRegistry
+from voidcode.runtime.tools.registry import ToolRegistry
 from voidcode.tools.contracts import (
     ConfirmedStop,
     TerminalYield,
@@ -76,7 +76,7 @@ pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
 @pytest.fixture
 def force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
-    config_module = importlib.import_module("voidcode.runtime.config")
+    config_module = importlib.import_module("voidcode.runtime.config.loading")
     monkeypatch.setattr(
         config_module,
         "_default_runtime_mcp_config",

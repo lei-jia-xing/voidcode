@@ -10,7 +10,7 @@ import pytest
 
 from voidcode.hook.config import RuntimeHooksConfig
 from voidcode.provider.config import parse_provider_configs_payload
-from voidcode.runtime.config import (
+from voidcode.runtime.config.loading import (
     RuntimeAgentConfig,
     RuntimeBackgroundTaskConfig,
     RuntimeConfig,
@@ -23,12 +23,12 @@ from voidcode.runtime.config import (
     RuntimeTuiConfig,
     load_runtime_config,
 )
-from voidcode.runtime.config_models import (
+from voidcode.runtime.config.models import (
     SCHEMA_DEFINITION_NAMES,
     RuntimeConfigPayload,
     config_model_keys,
 )
-from voidcode.runtime.config_schema import (
+from voidcode.runtime.config.schema import (
     RUNTIME_CONFIG_SCHEMA_ID,
     format_runtime_config_schema_json,
     format_starter_runtime_config_json,

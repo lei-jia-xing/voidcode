@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from .config import RuntimeAgentConfig
+from .config.loading import RuntimeAgentConfig
 from .contracts import _parse_string_list
 from .session_metadata_helpers import parse_skill_snapshot_metadata
 from .skills import (

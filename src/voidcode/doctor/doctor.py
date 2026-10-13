@@ -18,7 +18,7 @@ from .checker import (
 
 if TYPE_CHECKING:
     from ..hook.config import RuntimeHooksConfig
-    from ..runtime.config import RuntimeConfig, RuntimeMcpServerConfig
+    from ..runtime.config.loading import RuntimeConfig, RuntimeMcpServerConfig
 
 
 @dataclass

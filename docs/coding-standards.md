@@ -15,6 +15,8 @@ VoidCode 当前更重视代码的清晰性、小规模变更以及可重复的�
 - 中立 transcript 类型从 `voidcode.core.transcript` 导入；provider/tool 类与 helper 从定义模块导入，不使用 package facade。raw history、预算、redaction、policy 和持久化仍由 runtime owner 处理。
 - 在可行的情况下保持函数短小且确定性。
 - Runtime changes must follow the current contracts in `docs/contracts/`; implementation ownership remains in `src/voidcode/runtime/`.
+- 模块放在职责所属的 package 中（例如 CLI 专属 helper 放在 `voidcode.cli`），不要仅为便利散落到 package root。
+- 名称优先使用清晰的名词和动词，删去不增加语义的修饰词；保留领域、状态和安全等必要限定，不做机械缩写。
 - 使用 Ruff 进行格式化/代码检查，并保持 ty 类型检查清理。
 - 当行为改变时增加或更新测试。
 - 除非必要，避免引入新的依赖。

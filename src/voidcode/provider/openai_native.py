@@ -12,7 +12,7 @@ from openai import APIError as OpenAIAPIError
 from openai import OpenAI, omit
 
 from ..core.transcript import tool_result_output
-from ..security.json_values import json_wire_object
+from ..formats.json_values import json_wire_object
 from ..tools.contracts import AttachmentOutput, ToolCall
 from ..tools.output import redacted_argument_keys_for_tool, sanitize_tool_arguments, sanitize_tool_result_data, strip_redaction_sentinels_from_mapping
 from ._wire_common import (

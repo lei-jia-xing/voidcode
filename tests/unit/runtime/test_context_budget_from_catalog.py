@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from voidcode.core.transcript import ToolResultView
 from voidcode.provider.model_catalog import static_catalog_metadata
-from voidcode.runtime.config import RuntimeCompactionConfig
+from voidcode.runtime.config.loading import RuntimeCompactionConfig
 from voidcode.runtime.context.window import ContextWindowPolicy, prepare_provider_context
 from voidcode.runtime.coordinators.stream_prep import StreamPrepCoordinator
 from voidcode.tools.contracts import TextOutput

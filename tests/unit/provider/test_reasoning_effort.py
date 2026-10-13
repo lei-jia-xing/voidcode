@@ -14,7 +14,7 @@ from voidcode.provider.reasoning_effort import (
     reasoning_kwargs,
 )
 from voidcode.provider.thinking_rules import thinking_rule_for
-from voidcode.runtime.provider_metadata import resolve_reasoning_effort_capability
+from voidcode.runtime.providers.metadata import resolve_reasoning_effort_capability
 
 
 @pytest.mark.parametrize(

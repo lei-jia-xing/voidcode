@@ -6,8 +6,8 @@ from dataclasses import dataclass, field, replace
 from typing import Literal, Protocol
 from uuid import uuid4
 
+from ..formats.json_values import json_wire_object
 from ..provider.protocol import ProviderTokenUsage
-from ..security.json_values import json_wire_object
 from ..tools.contracts import AttachmentOutput, ToolCall
 from . import turns
 from .transcript import ContextSegment, ToolResultView, project_report, tool_result_output

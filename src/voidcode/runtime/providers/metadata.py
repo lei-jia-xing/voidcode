@@ -3,10 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, fields
 from typing import Literal
 
-from ..provider.model_catalog import ProviderModelMetadata as CatalogProviderModelMetadata
-from ..provider.model_catalog import tool_feedback_mode
-from .config_materializer import EffectiveRuntimeConfig
-from .contracts import ProviderModelMetadata
+from ...provider.model_catalog import ProviderModelMetadata as CatalogProviderModelMetadata
+from ...provider.model_catalog import tool_feedback_mode
+from ..config.materializer import EffectiveRuntimeConfig
+from ..contracts import ProviderModelMetadata
 
 
 def optional_positive_int(value: object) -> int | None:

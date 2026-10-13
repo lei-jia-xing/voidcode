@@ -11,7 +11,7 @@ from ...provider.config import (
 )
 from ...provider.errors import ProviderExecutionError
 from ...provider.naming import canonical_provider_id
-from ..config import RuntimeProvidersConfig
+from ..config.loading import RuntimeProvidersConfig
 
 #: The kinds the provider's own transient-retry lane owns. ``rate_limit`` is
 #: deliberately absent: a usage/limit answer is decided by the rate-limit branch in

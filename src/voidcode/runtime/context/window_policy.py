@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..config import RuntimeCompactionConfig, RuntimeContextWindowConfig
+from ..config.loading import RuntimeCompactionConfig, RuntimeContextWindowConfig
 from .window import CompactionBudget, ContextWindowPolicy
 
 

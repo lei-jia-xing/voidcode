@@ -44,7 +44,7 @@
 
 - `src/voidcode/agent/models.py`
 - `src/voidcode/runtime/service.py`
-- `src/voidcode/runtime/tool_provider.py`
+- `src/voidcode/runtime/tools/builtins.py`
 - `src/voidcode/tools/contracts.py`
 
 ## 核心术语

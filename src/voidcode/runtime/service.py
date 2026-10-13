@@ -31,6 +31,7 @@ from ..core.questions import QuestionAnswer
 from ..core.tool_context import ArtifactRead, EditSchema, TranscriptRead
 from ..core.transcript import ContextSegment, ToolResultView, project_report
 from ..core.turns import ReportedCall, TurnProducer, TurnRequest
+from ..formats.json_values import json_wire_object
 from ..hook.before_agent_start import (
     BeforeAgentStartBinding,
     BeforeAgentStartDeclaration,
@@ -75,7 +76,6 @@ from ..provider.snapshot import (
     parse_resolved_provider_snapshot,
     resolved_provider_snapshot,
 )
-from ..security.json_values import json_wire_object
 from ..skills import SkillRegistry
 from ..tools.contracts import (
     Tool,
@@ -143,7 +143,7 @@ from .composition import (
     SessionCompositionOwner,
     ValidatedConfig,
 )
-from .config import (
+from .config.loading import (
     ExecutionEngineName,
     RuntimeAgentConfig,
     RuntimeAgentInternalState,
@@ -157,7 +157,7 @@ from .config import (
     serialize_runtime_agent_config,
     serialize_runtime_agents_config,
 )
-from .config_materializer import (
+from .config.materializer import (
     EffectiveRuntimeConfig,
     parse_persisted_runtime_config,
     serialize_runtime_config_core,
@@ -256,6 +256,7 @@ from .execution.seams import (
     resolve_runtime_session_routing,
     select_turn_producer_for_effective_config,
 )
+from .execution.tool_executor import RuntimeToolExecutor
 from .execution.tool_resources import ToolCatalogReader, WorkspaceDiagnostics
 from .execution.turn_adapter import turn_request_for_session, turn_session_snapshot
 from .hook_preset_metadata import (
@@ -272,7 +273,10 @@ from .lsp import LspManager, LspManagerState, LspRequestResult, build_lsp_manage
 from .mcp import McpManager, build_mcp_manager
 from .mcp_tool_cache import McpToolCatalogCache
 from .paths import mcp_tool_catalog_cache_path, provider_catalog_cache_path
-from .permission import (
+from .permissions.context import RuntimePermissionContextResolver
+from .permissions.engine import PermissionEngine
+from .permissions.patch_paths import extract_paths_from_patch
+from .permissions.policy import (
     ApprovalMode,
     PendingApproval,
     PermissionPolicy,
@@ -280,22 +284,19 @@ from .permission import (
     resolve_permission,
     runtime_read_only_from_metadata,
 )
-from .permission_context import RuntimePermissionContextResolver
-from .permission_engine import PermissionEngine
-from .permission_path_helpers import extract_paths_from_patch
-from .permission_policy import (
+from .permissions.responses import (
     waiting_request_id_from_response,
 )
 from .policy import (
     materialize_runtime_policy_snapshot,
 )
-from .provider_catalog_cache import RuntimeProviderCatalogCache
-from .provider_catalog_query import RuntimeProviderCatalogQuery
-from .provider_inspection import (
+from .providers.catalog_cache import RuntimeProviderCatalogCache
+from .providers.catalog_query import RuntimeProviderCatalogQuery
+from .providers.inspection import (
     ProviderSummaryProjector,
     RuntimeProviderAuthInspector,
 )
-from .provider_metadata import (
+from .providers.metadata import (
     ReasoningEffortCapability,
 )
 from .question import PendingQuestion
@@ -353,12 +354,11 @@ from .skills import (
 )
 from .status_projection import project_acp_status
 from .storage import RuntimeRepositories, SessionSealedError, SqliteSessionStore
-from .tool_execution import RuntimeToolExecutor
-from .tool_materialization import materialize, materialize_unscoped, workspace_local_tool_manifests_provider
-from .tool_materializer import RuntimeToolMaterialization, RuntimeToolMaterializer, tool_provenance
-from .tool_provider import BUILTIN_TOOL_NAMES, builtin_tool_definitions, materialize_builtin_tool
-from .tool_registry import ToolPolicyDecision, ToolRegistry, agent_required_tool_patterns
-from .tool_scope import RuntimeToolScopeResolver
+from .tools.builtins import BUILTIN_TOOL_NAMES, builtin_tool_definitions, materialize_builtin_tool
+from .tools.materialization import materialize, materialize_unscoped, workspace_local_tool_manifests_provider
+from .tools.materializer import RuntimeToolMaterialization, RuntimeToolMaterializer, tool_provenance
+from .tools.registry import ToolPolicyDecision, ToolRegistry, agent_required_tool_patterns
+from .tools.scope import RuntimeToolScopeResolver
 
 if TYPE_CHECKING:
     pass
@@ -647,7 +647,7 @@ def _builtin_runtime_package(root: Path, provider_names: Iterable[str]) -> Built
                 "voidcode/provider/registry.py",
                 "voidcode/runtime/context/transforms.py",
                 "voidcode/runtime/service.py",
-                "voidcode/runtime/tool_provider.py",
+                "voidcode/runtime/tools/builtins.py",
             ),
             components=tuple(components),
         ),

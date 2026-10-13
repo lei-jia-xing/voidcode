@@ -13,10 +13,10 @@ from voidcode.core.transcript import output_text
 from voidcode.core.turns import ReportedCall
 from voidcode.formatter.config import RuntimeFormatterPresetConfig
 from voidcode.hook.config import RuntimeHooksConfig
-from voidcode.runtime.config import RuntimeLspConfig, RuntimeLspServerConfig
+from voidcode.runtime.config.loading import RuntimeLspConfig, RuntimeLspServerConfig
+from voidcode.runtime.execution.tool_executor import RuntimeToolExecutor
 from voidcode.runtime.lsp import LspRequest, ManagedLspManager
-from voidcode.runtime.tool_execution import RuntimeToolExecutor
-from voidcode.runtime.tool_provider import materialize_builtin_tool
+from voidcode.runtime.tools.builtins import materialize_builtin_tool
 from voidcode.tools.contracts import Tool, ToolCall, ToolInvocation, ToolResult
 from voidcode.tools.guards import read_tracking_for_tool_results
 from voidcode.tools.output import read_tool_output_artifact

@@ -10,7 +10,7 @@ from contextlib import closing, contextmanager
 from importlib.resources.abc import Traversable
 from pathlib import Path
 
-from .runtime.config import RuntimeConfig
+from .runtime.config.loading import RuntimeConfig
 from .runtime.transport.http import create_runtime_app
 
 

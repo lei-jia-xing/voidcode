@@ -82,8 +82,8 @@ from ..tools.skill import SkillResultBody
 from ..tools.todo import TodoResultBody
 from .agent_capability import composition_ref_from_session_metadata
 from .composition import LifecycleScope, PhaseContext
-from .config import RuntimeConfig
-from .config_materializer import EffectiveRuntimeConfig
+from .config.loading import RuntimeConfig
+from .config.materializer import EffectiveRuntimeConfig
 from .context.continuity import replayed_conversation_segments_from_segments
 from .context.transforms import context_transform_applied_payloads
 from .context.window import (
@@ -144,6 +144,7 @@ from .execution.seams import (
     fallback_turn_producer_for_provider_error,
     select_turn_producer_for_effective_config,
 )
+from .execution.tool_executor import RuntimeToolExecutor
 from .execution.tool_replay import ToolExecutionIntent
 from .execution.tool_result_projection import (
     _fit_numbered_progress_payload,
@@ -168,7 +169,7 @@ from .hook_runtime import (
     run_lifecycle_hooks_for_session,
     run_tool_hooks_for_session,
 )
-from .permission import PendingApproval, PermissionPolicy, runtime_read_only_from_metadata
+from .permissions.policy import PendingApproval, PermissionPolicy, runtime_read_only_from_metadata
 from .question import PendingQuestion
 from .reminders import (
     TODO_MID_RUN_KIND,
@@ -211,16 +212,15 @@ from .storage import SessionEventRepository, SessionRecoveryRepository, SessionR
 from .todos import runtime_todo_phases_from_payload, todo_state_from_session_metadata
 from .tool_call_preview import PREVIEW_SNAPSHOT_MAX_BYTES, WRITE_PREVIEW_TOOLS, build_partial_tool_call_preview, build_tool_call_preview
 from .tool_display import build_tool_display, build_tool_status
-from .tool_execution import RuntimeToolExecutor
-from .tool_scope import tool_policy_error
+from .tools.scope import tool_policy_error
 
 if TYPE_CHECKING:
     from .acp import AcpAdapter
     from .lsp import LspManager
     from .mcp import McpManager
-    from .provider_catalog_query import RuntimeProviderCatalogQuery
+    from .providers.catalog_query import RuntimeProviderCatalogQuery
     from .runtime_surface import RuntimeSurface
-    from .tool_registry import ToolRegistry
+    from .tools.registry import ToolRegistry
 
 from .execution import chunk_builders
 

@@ -19,7 +19,7 @@ from ...tools.contracts import ProgressYield, TerminalYield, TerminalYieldFailur
 from ..acp import append_parent_acp_delegated_lifecycle_event, publish_delegated_acp_event
 from ..active_session import ACTIVE_SESSION_REGISTRY
 from ..composition import CompositionRef, FrozenComposition, TaskCompositionOwner
-from ..config import RuntimeConfig
+from ..config.loading import RuntimeConfig
 from ..contracts import (
     BackgroundTaskGroupResult,
     BackgroundTaskResult,
@@ -49,7 +49,7 @@ from ..execution.seams import resolve_runtime_session_routing
 from ..execution_ownership import EXECUTION_OWNERSHIP, ExecutionLease, ExecutionOwnershipRevokedError
 from ..fact_codec import reported_call_from_event
 from ..hook_runtime import HOOK_RECURSION_ENV_VAR, hook_execution_policy_from_metadata
-from ..permission_policy import approval_request_id_from_waiting_response
+from ..permissions.responses import approval_request_id_from_waiting_response
 from ..runtime_debug import prompt_from_events
 from ..schema_validation import validate_structured_output
 from ..session import SessionState, reload_persisted_session, validate_session_workspace

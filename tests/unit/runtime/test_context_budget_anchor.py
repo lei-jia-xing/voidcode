@@ -10,7 +10,7 @@ excess over the anchor (0 when the anchor wins).
 from __future__ import annotations
 
 from voidcode.core.transcript import ToolResultView
-from voidcode.runtime.config import RuntimeCompactionConfig
+from voidcode.runtime.config.loading import RuntimeCompactionConfig
 from voidcode.runtime.context.window import (
     ContextWindowPolicy,
     prepare_provider_context,

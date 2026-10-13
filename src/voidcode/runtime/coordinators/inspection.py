@@ -67,7 +67,7 @@ from ..bundle import (
     read_session_bundle,
 )
 from ..composition import FrozenComposition
-from ..config import (
+from ..config.loading import (
     RuntimeAgentConfig,
     RuntimeConfig,
     RuntimeContextWindowConfig,
@@ -76,7 +76,7 @@ from ..config import (
     parse_runtime_agents_payload,
     serialize_runtime_agent_config,
 )
-from ..config_materializer import (
+from ..config.materializer import (
     EffectiveRuntimeConfig,
     parse_persisted_runtime_config,
 )
@@ -128,10 +128,10 @@ from ..execution.provider_execution_metadata import run_id_from_session_metadata
 from ..hook_preset_metadata import debug_hook_preset_snapshot
 from ..lsp import LspManager, LspManagerState, LspRequest, LspRequestResult
 from ..mcp import McpManager
-from ..permission import PendingApproval
-from ..provider_catalog_cache import RuntimeProviderCatalogCache
-from ..provider_catalog_query import RuntimeProviderCatalogQuery
-from ..provider_inspection import (
+from ..permissions.policy import PendingApproval
+from ..providers.catalog_cache import RuntimeProviderCatalogCache
+from ..providers.catalog_query import RuntimeProviderCatalogQuery
+from ..providers.inspection import (
     ProviderReadinessFacts,
     ProviderSummaryProjector,
     ProviderValidationFacts,
@@ -139,7 +139,7 @@ from ..provider_inspection import (
     RuntimeProviderReadinessProjector,
     RuntimeProviderValidationProjector,
 )
-from ..provider_metadata import (
+from ..providers.metadata import (
     ReasoningEffortCapability,
     resolve_reasoning_effort_capability,
 )

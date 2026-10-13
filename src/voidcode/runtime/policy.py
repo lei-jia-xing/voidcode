@@ -19,7 +19,7 @@ from ..security.redaction import (
     REDACTED_PLACEHOLDER as _REDACTED,
 )
 from .background.routing import CALLABLE_SUBAGENT_PRESETS
-from .permission import runtime_read_only_from_metadata
+from .permissions.policy import runtime_read_only_from_metadata
 
 POLICY_SCHEMA_VERSION = 2
 POLICY_VERSION = "v1"

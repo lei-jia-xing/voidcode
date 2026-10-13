@@ -6,8 +6,8 @@ from fnmatch import fnmatchcase
 from types import MappingProxyType
 from typing import Literal
 
-from ..tools.contracts import Tool, ToolDefinition, ToolEffect, is_read_tier
-from .config import RuntimeAgentConfig
+from ...tools.contracts import Tool, ToolDefinition, ToolEffect, is_read_tier
+from ..config.loading import RuntimeAgentConfig
 
 #: Tools always shown top-level in the provider tools array when the
 #: essential/discoverable split is enabled. Everything not in this set is

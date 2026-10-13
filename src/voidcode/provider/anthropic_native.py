@@ -12,7 +12,7 @@ from anthropic import Anthropic
 from anthropic import APIError as AnthropicAPIError
 from anthropic import Omit as AnthropicAPIKeyOmit
 
-from ..security.json_values import json_wire_object
+from ..formats.json_values import json_wire_object
 from ..tools.contracts import ToolCall
 from ..tools.output import (
     redacted_argument_keys_for_tool,

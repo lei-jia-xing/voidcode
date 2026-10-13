@@ -8,7 +8,7 @@ from typing import Literal, Protocol
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ....core.tool_context import ToolContext
-from ....security.json_values import json_wire_object, own_json_object
+from ....formats.json_values import json_wire_object, own_json_object
 from ....tools._pydantic_args import NonEmptyPrompt, parse_tool_args
 from ....tools.contracts import EmptyOutput, TextOutput, ToolCall, ToolResult, ToolSuccess
 from ....tools.delegation.task import TaskTool

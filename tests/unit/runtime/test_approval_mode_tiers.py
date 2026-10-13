@@ -17,16 +17,16 @@ from typing import Any
 import pytest
 
 from voidcode.core.turns import FinalTurn, ToolTurn
-from voidcode.runtime.config import RuntimeConfig
+from voidcode.runtime.config.loading import RuntimeConfig
 from voidcode.runtime.contracts import RuntimeRequest
-from voidcode.runtime.permission import (
+from voidcode.runtime.permissions.context import operation_class_for_tool
+from voidcode.runtime.permissions.policy import (
     APPROVAL_MODES,
     ApprovalMode,
     OperationClass,
     PermissionPolicy,
     resolve_permission,
 )
-from voidcode.runtime.permission_context import operation_class_for_tool
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolEffect
 from voidcode.tools.glob import GlobTool

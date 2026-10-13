@@ -6,7 +6,7 @@ from typing import ClassVar
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..core.tool_context import ToolContext
-from ..security.json_values import json_wire_object, own_json_object
+from ..formats.json_values import json_wire_object, own_json_object
 from ._pydantic_args import parse_tool_args
 from .contracts import (
     EmptyOutput,

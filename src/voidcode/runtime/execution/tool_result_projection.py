@@ -12,7 +12,7 @@ from collections.abc import Mapping, Sequence
 from ...core.questions import QuestionCancellation
 from ...core.transcript import output_text
 from ...core.turns import ReportedCall
-from ...security.json_values import json_wire_object
+from ...formats.json_values import json_wire_object
 from ...security.redaction import TOOL_OUTPUT_BYTES as MAX_TOOL_OUTPUT_BYTES
 from ...tools.contracts import (
     ProgressYield,

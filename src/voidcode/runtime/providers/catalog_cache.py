@@ -6,9 +6,9 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal, TypeIs
 
-from ..provider.model_catalog import ProviderModelCatalog
-from ..provider.registry import ModelProviderRegistry
-from .provider_metadata import catalog_metadata_from_payload
+from ...provider.model_catalog import ProviderModelCatalog
+from ...provider.registry import ModelProviderRegistry
+from .metadata import catalog_metadata_from_payload
 
 logger = logging.getLogger(__name__)
 

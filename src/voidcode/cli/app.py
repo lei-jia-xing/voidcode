@@ -10,7 +10,6 @@ from pathlib import Path
 import click
 
 from .. import __version__
-from ..cli_support import EXIT_RUNTIME_ERROR, EXIT_SUCCESS
 from .commands.config import config
 from .commands.discovery import agents, commands, mcp
 from .commands.doctor import doctor
@@ -23,6 +22,7 @@ from .commands.storage import stats, storage
 from .commands.tasks import tasks
 from .commands.tui import tui as tui_command
 from .errors import CliError
+from .support import EXIT_RUNTIME_ERROR, EXIT_SUCCESS
 
 EXAMPLES = """
 Examples:

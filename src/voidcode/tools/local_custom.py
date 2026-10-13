@@ -14,7 +14,7 @@ from string import Template
 from typing import final
 
 from ..core.tool_context import ToolContext
-from ..security.json_values import json_wire_object, own_json_object
+from ..formats.json_values import json_wire_object, own_json_object
 from .contracts import (
     EmptyOutput,
     OutputBounds,

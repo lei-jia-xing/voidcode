@@ -58,14 +58,14 @@ from ..core.tool_context import (
     NextPage,
     TranscriptPage,
 )
-from ..runtime.config import (
+from ..runtime.config.loading import (
     RuntimeConfig,
     RuntimeTuiResolvedConfig,
     RuntimeTuiThemeConfig,
     load_runtime_config,
     save_tui_appearance_config,
 )
-from ..runtime.config_models import (
+from ..runtime.config.models import (
     VALID_TUI_COMMANDS,
     VALID_TUI_COMPOSER_CURSOR_SHAPES,
     VALID_TUI_COMPOSER_STYLES,
@@ -73,7 +73,7 @@ from ..runtime.config_models import (
 )
 from ..runtime.contracts import RuntimeRequest, RuntimeStreamChunk
 from ..runtime.events import EventEnvelope
-from ..runtime.permission import ApprovalMode
+from ..runtime.permissions.policy import ApprovalMode
 from ..runtime.service import VoidCodeRuntime
 from ..runtime.session_metadata_helpers import session_model_identity
 from .composer import Composer, ComposerAction

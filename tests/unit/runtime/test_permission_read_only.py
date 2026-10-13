@@ -10,7 +10,9 @@ from voidcode.runtime.contracts import (
     RuntimeRequestError,
     validate_runtime_request_metadata,
 )
-from voidcode.runtime.permission import (
+from voidcode.runtime.permissions.context import RuntimePermissionContextResolver, operation_class_for_tool
+from voidcode.runtime.permissions.engine import PermissionEngine
+from voidcode.runtime.permissions.policy import (
     DEFAULT_APPROVAL_MODE,
     READ_ONLY_DENIAL_REASON,
     ExternalDirectoryPermissionConfig,
@@ -23,8 +25,6 @@ from voidcode.runtime.permission import (
     resolve_permission,
     runtime_read_only_from_metadata,
 )
-from voidcode.runtime.permission_context import RuntimePermissionContextResolver, operation_class_for_tool
-from voidcode.runtime.permission_engine import PermissionEngine
 from voidcode.tools.apply_workspace_edit import ApplyWorkspaceEditTool
 from voidcode.tools.ast_grep import AstGrepTool
 from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolEffect

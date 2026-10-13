@@ -12,7 +12,7 @@ from typing import Literal, cast
 
 from pydantic import BaseModel, ValidationError
 
-from ..agent import (
+from ...agent import (
     AgentManifest,
     AgentManifestRegistry,
     AgentMcpBindingIntent,
@@ -23,21 +23,32 @@ from ..agent import (
     list_builtin_agent_manifests,
     load_agent_manifest_registry,
 )
-from ..agent.prompts import has_builtin_prompt_profile, render_builtin_prompt_profile
-from ..formatter import RuntimeFormatterPresetConfig
-from ..hook.config import RuntimeHooksConfig
-from ..hook.presets import validate_hook_preset_refs
-from ..lsp import LspServerConfigOverride as RuntimeLspServerConfig
-from ..lsp import derive_workspace_lsp_defaults, has_builtin_lsp_server_preset
-from ..mcp.builtin import list_builtin_mcp_descriptors
-from ..provider import config as provider_config
-from ..provider.naming import (
+from ...agent.prompts import has_builtin_prompt_profile, render_builtin_prompt_profile
+from ...formatter import RuntimeFormatterPresetConfig
+from ...hook.config import RuntimeHooksConfig
+from ...hook.presets import validate_hook_preset_refs
+from ...lsp import LspServerConfigOverride as RuntimeLspServerConfig
+from ...lsp import derive_workspace_lsp_defaults, has_builtin_lsp_server_preset
+from ...mcp.builtin import list_builtin_mcp_descriptors
+from ...provider import config as provider_config
+from ...provider.naming import (
     BUILTIN_PROVIDER_IDS,
     UnknownProviderIdError,
     canonical_provider_id,
 )
-from .composition import ComponentSelection
-from .config_models import (
+from ..composition import ComponentSelection
+from ..context.transforms import validate_runtime_context_transform_refs
+from ..context.window import DEFAULT_KEEP_RECENT_TOOL_TOKENS
+from ..permissions.policy import (
+    DEFAULT_APPROVAL_MODE,
+    ApprovalMode,
+    ExternalDirectoryPermissionConfig,
+    ExternalDirectoryPolicy,
+    PatternPermissionRule,
+)
+from ..policy import RuntimePolicyConfig, validate_runtime_policy_config_payload
+from ..reminders import DEFAULT_TODO_REMINDER_MAX_PER_CYCLE
+from .models import (
     AGENT_PRESET_ID_PATTERN,
     AGENT_RUNTIME_INTERNAL_CONFIG_KEY,
     DEFAULT_HOOK_TIMEOUT_SECONDS,
@@ -96,32 +107,21 @@ from .config_models import (
     validate_config_model,
     validate_config_section,
 )
-from .config_models import (
+from .models import (
     APPROVAL_MODE_ENV_VAR as APPROVAL_MODE_ENV_VAR,
 )
-from .config_models import (
+from .models import (
     EXECUTION_ENGINE_ENV_VAR as EXECUTION_ENGINE_ENV_VAR,
 )
-from .config_models import (
+from .models import (
     MODEL_ENV_VAR as MODEL_ENV_VAR,
 )
-from .config_models import (
+from .models import (
     REASONING_EFFORT_ENV_VAR as REASONING_EFFORT_ENV_VAR,
 )
-from .config_models import (
+from .models import (
     TOOL_TIMEOUT_ENV_VAR as TOOL_TIMEOUT_ENV_VAR,
 )
-from .context.transforms import validate_runtime_context_transform_refs
-from .context.window import DEFAULT_KEEP_RECENT_TOOL_TOKENS
-from .permission import (
-    DEFAULT_APPROVAL_MODE,
-    ApprovalMode,
-    ExternalDirectoryPermissionConfig,
-    ExternalDirectoryPolicy,
-    PatternPermissionRule,
-)
-from .policy import RuntimePolicyConfig, validate_runtime_policy_config_payload
-from .reminders import DEFAULT_TODO_REMINDER_MAX_PER_CYCLE
 
 RuntimeProviderFallbackConfig = provider_config.ProviderFallbackConfig
 RuntimeProvidersConfig = provider_config.ProviderConfigs
@@ -1825,7 +1825,7 @@ def save_tui_appearance_config(scope: Literal["user", "workspace"], workspace: P
     tui_payload = dict(raw_tui) if isinstance(raw_tui, dict) else {}
     tui_payload.update(_tui_appearance_payload(config))
     payload["tui"] = tui_payload
-    from .config_schema import write_runtime_config_payload, write_user_runtime_config_payload
+    from .schema import write_runtime_config_payload, write_user_runtime_config_payload
 
     return write_user_runtime_config_payload(payload) if scope == "user" else write_runtime_config_payload(workspace, payload)
 

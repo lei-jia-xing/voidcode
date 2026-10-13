@@ -6,8 +6,8 @@ import pytest
 
 from voidcode.provider.naming import BUILTIN_PROVIDER_IDS
 from voidcode.provider.protocol import ProviderTokenUsage
-from voidcode.runtime.config import RuntimeConfig, RuntimeContextWindowConfig, RuntimeRemindersConfig, RuntimeTodoReminderConfig
-from voidcode.runtime.config_materializer import (
+from voidcode.runtime.config.loading import RuntimeConfig, RuntimeContextWindowConfig, RuntimeRemindersConfig, RuntimeTodoReminderConfig
+from voidcode.runtime.config.materializer import (
     PERSISTED_RUNTIME_CONFIG_KEYS,
     EffectiveRuntimeConfig,
     parse_persisted_runtime_config,

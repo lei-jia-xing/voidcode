@@ -7,7 +7,7 @@ from typing import cast
 
 import click
 
-from ...runtime.permission import ApprovalMode
+from ...runtime.permissions.policy import ApprovalMode
 from ..handler_args import TuiArgs
 from ..options import APPROVAL_MODES, workspace_option
 

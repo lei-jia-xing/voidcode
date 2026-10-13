@@ -1,6 +1,6 @@
 from copy import deepcopy
 
-from voidcode.cli_support import serialize_session_state
+from voidcode.cli.support import serialize_session_state
 from voidcode.runtime.contracts import RuntimeResponse, RuntimeSessionDebugSnapshot, RuntimeStreamChunk
 from voidcode.runtime.serialization import serialize_session_debug_snapshot
 from voidcode.runtime.session import SessionRef, SessionState, session_metadata_for_persistence

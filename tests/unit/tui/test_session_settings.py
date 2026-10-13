@@ -2,7 +2,7 @@ import os
 import time
 from pathlib import Path
 
-from voidcode.runtime.config import RuntimeConfig
+from voidcode.runtime.config.loading import RuntimeConfig
 from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.service import VoidCodeRuntime
 from voidcode.tui.app import TuiApp

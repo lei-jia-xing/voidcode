@@ -4,9 +4,9 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from .command.models import CommandDefinition
-from .runtime.events import EventEnvelope, redact_reasoning_payload
-from .runtime.session import SessionState, StoredSessionSummary, session_metadata_for_public
+from ..command.models import CommandDefinition
+from ..runtime.events import EventEnvelope, redact_reasoning_payload
+from ..runtime.session import SessionState, StoredSessionSummary, session_metadata_for_public
 
 EXIT_SUCCESS = 0
 EXIT_GENERAL_ERROR = 1
@@ -24,7 +24,7 @@ EXIT_INVALID_RESOURCE = 16
 
 
 @dataclass(frozen=True, slots=True)
-class RuntimeStreamResult:
+class StreamResult:
     output: str | None
     session: SessionState
     events: tuple[EventEnvelope, ...]
@@ -61,12 +61,12 @@ def serialize_event(event: EventEnvelope, *, show_thinking: bool = False) -> dic
 
 
 def serialize_session_state(session: SessionState) -> dict[str, object]:
-    session_payload: dict[str, object] = {"id": session.session.id}
+    session_ref: dict[str, object] = {"id": session.session.id}
     parent_id = session.session.parent_id
     if parent_id is not None:
-        session_payload["parent_id"] = parent_id
+        session_ref["parent_id"] = parent_id
     return {
-        "session": session_payload,
+        "session": session_ref,
         "status": session.status,
         "turn": session.turn,
         "metadata": session_metadata_for_public(session.metadata),
@@ -74,12 +74,12 @@ def serialize_session_state(session: SessionState) -> dict[str, object]:
 
 
 def serialize_stored_session_summary(session: StoredSessionSummary) -> dict[str, object]:
-    session_payload: dict[str, object] = {"id": session.session.id}
+    session_ref: dict[str, object] = {"id": session.session.id}
     parent_id = session.session.parent_id
     if parent_id is not None:
-        session_payload["parent_id"] = parent_id
+        session_ref["parent_id"] = parent_id
     payload: dict[str, object] = {
-        "session": session_payload,
+        "session": session_ref,
         "status": session.status,
         "turn": session.turn,
         "updated_at": session.updated_at,

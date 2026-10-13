@@ -11,7 +11,7 @@ import pytest
 from voidcode.runtime.composition import (
     ComponentSelection,
 )
-from voidcode.runtime.config import RuntimeAgentConfig, RuntimeConfig
+from voidcode.runtime.config.loading import RuntimeAgentConfig, RuntimeConfig
 from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.service import VoidCodeRuntime
 

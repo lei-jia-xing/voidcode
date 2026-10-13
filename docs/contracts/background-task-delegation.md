@@ -447,7 +447,7 @@ runtime 从执行者手中**夺取**所有权时撤销，且撤销先于状态�
 
 该保证是**进程内**的：进程退出后 execution 线程已死，late write 只能来自另一个进程对同一数据库的写入，属于现有 SQLite 并发模型，不在本契约范围内。
 
-边界（可检查的不变式）：lease 绑定在线程上，网关只校验当前线程的绑定，因此 runtime-owned 的提交**必须发生在 execution 自己的线程（或继承了该 lease 的线程）上**。工具执行线程已经在保证内：`tool_executor` 的 worker 继承调用方的 lease（`src/voidcode/runtime/tool_execution.py:334-337`），所以工具自身发起的 runtime-owned 写（例如 `background_process op="start"` 注册进程行）在撤销后同样被拒。走出本保证的只有**工具自己 spawn 的**写者线程/进程（以及任何未来 spawn 自己线程、又从该线程持久化的 manager）：新增这类持久化线程前，必须把 lease 传播到该线程或改为在 execution 线程上提交。
+边界（可检查的不变式）：lease 绑定在线程上，网关只校验当前线程的绑定，因此 runtime-owned 的提交**必须发生在 execution 自己的线程（或继承了该 lease 的线程）上**。工具执行线程已经在保证内：`tool_executor` 的 worker 继承调用方的 lease（`src/voidcode/runtime/execution/tool_executor.py:334-337`），所以工具自身发起的 runtime-owned 写（例如 `background_process op="start"` 注册进程行）在撤销后同样被拒。走出本保证的只有**工具自己 spawn 的**写者线程/进程（以及任何未来 spawn 自己线程、又从该线程持久化的 manager）：新增这类持久化线程前，必须把 lease 传播到该线程或改为在 execution 线程上提交。
 
 ## v1 delegated/background idle reminder
 

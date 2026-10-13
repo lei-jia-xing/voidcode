@@ -13,10 +13,10 @@ from pathlib import Path
 from typing import Any
 
 from voidcode.core.turns import FinalTurn, ToolTurn
-from voidcode.runtime.config import RuntimeRemindersConfig
+from voidcode.runtime.config.loading import RuntimeRemindersConfig
 from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.events import RUNTIME_REMINDER_INJECTED
-from voidcode.runtime.permission import PermissionPolicy
+from voidcode.runtime.permissions.policy import PermissionPolicy
 from voidcode.runtime.reminders import (
     TODO_MID_RUN_KIND,
     TODO_MID_RUN_MUTATION_THRESHOLD,

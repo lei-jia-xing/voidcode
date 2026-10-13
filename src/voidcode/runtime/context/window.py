@@ -25,7 +25,7 @@ from .transforms import (
 )
 
 if TYPE_CHECKING:
-    from ..config import RuntimeCompactionConfig
+    from ..config.loading import RuntimeCompactionConfig
 
 _CONTINUITY_OBJECTIVE_PREVIEW_CHARS = 160
 _COMPACTION_PREVIEW_ITEM_LIMIT = 8
@@ -63,8 +63,8 @@ def _empty_tool_limits() -> dict[str, int]:
 
 
 def _default_compaction_config() -> RuntimeCompactionConfig:
-    # Local import: ``runtime.config`` imports this module's defaults (cycle).
-    from ..config import RuntimeCompactionConfig
+    # Local import: ``runtime.config.loading`` imports this module's defaults (cycle).
+    from ..config.loading import RuntimeCompactionConfig
 
     return RuntimeCompactionConfig()
 

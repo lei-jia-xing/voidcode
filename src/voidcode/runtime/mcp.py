@@ -28,6 +28,7 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.exceptions import MCPError
 from mcp.types import CallToolResult, Implementation, ListToolsResult, Tool
 
+from ..formats.json_values import json_wire_object, own_json_object
 from ..mcp import (
     MCP_CLIENT_NAME,
     MCP_CLIENT_VERSION,
@@ -47,8 +48,7 @@ from ..mcp import (
     create_diagnostic,
     redact_mcp_command,
 )
-from ..security.json_values import json_wire_object, own_json_object
-from .config import RuntimeMcpConfig, RuntimeMcpServerConfig
+from .config.loading import RuntimeMcpConfig, RuntimeMcpServerConfig
 from .events import (
     RUNTIME_MCP_SERVER_ACQUIRED,
     RUNTIME_MCP_SERVER_FAILED,

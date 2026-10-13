@@ -6,8 +6,8 @@ from typing import Literal
 from ...core.turns import ReportedCall
 from ..context.continuity import verified_checkpoint_session_metadata
 from ..contracts import RuntimeResponse
-from ..permission import PendingApproval
-from ..permission_policy import request_event_and_resolution_state
+from ..permissions.policy import PendingApproval
+from ..permissions.responses import request_event_and_resolution_state
 from ..question import PendingQuestion
 from .report_codec import parse_report_payload
 

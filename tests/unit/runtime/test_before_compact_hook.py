@@ -10,7 +10,7 @@ from typing import Literal
 
 from voidcode.core.transcript import ToolResultView
 from voidcode.runtime import EventEnvelope, RuntimeStreamChunk, SessionRef, SessionState
-from voidcode.runtime.config import RuntimeCompactionConfig
+from voidcode.runtime.config.loading import RuntimeCompactionConfig
 from voidcode.runtime.context.window import (
     ContextWindowPolicy,
     prepare_provider_context,

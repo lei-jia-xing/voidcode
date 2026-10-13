@@ -16,7 +16,7 @@ from ..contracts import RuntimeRequest, RuntimeResponse, RuntimeSessionResult
 from ..effectiveness import ToolEffectivenessReport
 from ..events import EventEnvelope, EventSource
 from ..interaction_queue import QueuedMessageKind, QueuedRuntimeMessage
-from ..permission import PendingApproval
+from ..permissions.policy import PendingApproval
 from ..question import PendingQuestion
 from ..session import (
     SessionEntrySummary,

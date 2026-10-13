@@ -21,9 +21,9 @@ from typing import Any
 
 from tests.runtime_composition import save_checkpoint
 from voidcode.core.tool_context import ToolContext
+from voidcode.runtime.execution.tool_executor import RuntimeToolExecutor
 from voidcode.runtime.execution_ownership import EXECUTION_OWNERSHIP, ExecutionOwnershipRevokedError
 from voidcode.runtime.storage.sqlite import SqliteSessionStore
-from voidcode.runtime.tool_execution import RuntimeToolExecutor
 from voidcode.tools.contracts import TextOutput, ToolCall, ToolDefinition, ToolInvocation, ToolResult, ToolSuccess
 
 TASK_ID = "task-tool-thread-ownership"

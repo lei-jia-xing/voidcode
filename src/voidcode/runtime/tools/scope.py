@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from fnmatch import fnmatchcase
 
-from ..tools.contracts import is_read_tier
-from .config import RuntimeAgentConfig
-from .permission import READ_ONLY_DENIAL_REASON, runtime_read_only_from_metadata
-from .tool_provider import scoped_tool_registry_for_agent
-from .tool_registry import ToolPolicyDecision, ToolRegistry
+from ...tools.contracts import is_read_tier
+from ..config.loading import RuntimeAgentConfig
+from ..permissions.policy import READ_ONLY_DENIAL_REASON, runtime_read_only_from_metadata
+from .builtins import scoped_tool_registry_for_agent
+from .registry import ToolPolicyDecision, ToolRegistry
 
 
 class RuntimeToolScopeResolver:

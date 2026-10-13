@@ -83,7 +83,7 @@ from voidcode.runtime.contracts import (
     WorkspaceReviewSnapshot,
 )
 from voidcode.runtime.events import EventEnvelope
-from voidcode.runtime.permission import PermissionResolution
+from voidcode.runtime.permissions.policy import PermissionResolution
 from voidcode.runtime.session import SessionEntrySummary, SessionRef, SessionState, StoredSessionForestEntry, StoredSessionSummary
 from voidcode.runtime.transport import http_models
 from voidcode.runtime.transport.http_models import ResponseModel
@@ -95,7 +95,7 @@ pytestmark = pytest.mark.usefixtures("_deterministic_engine")
 @pytest.fixture
 def _deterministic_engine(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
-    config_module = importlib.import_module("voidcode.runtime.config")
+    config_module = importlib.import_module("voidcode.runtime.config.loading")
     monkeypatch.setattr(
         config_module,
         "_default_runtime_mcp_config",

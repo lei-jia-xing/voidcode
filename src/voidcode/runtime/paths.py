@@ -9,7 +9,7 @@ VoidCode separates four kinds of filesystem state:
 - **User data** (persistent user assets, e.g. exported bundles): resolved via
   ``$XDG_DATA_HOME``. Currently unused by the runtime; reserved for future use.
 - **User configuration** (hand-editable global config): resolved via
-  ``$XDG_CONFIG_HOME``. Owned by ``runtime/config.py``.
+  ``$XDG_CONFIG_HOME``. Owned by ``runtime/config/loading.py``.
 
 Workspace-local artifacts (``.voidcode.json`` config files,
 ``.voidcode/agents/skills/tools/commands/`` directories) remain per-project

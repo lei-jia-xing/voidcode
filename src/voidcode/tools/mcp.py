@@ -7,8 +7,8 @@ import re
 from collections.abc import Mapping
 
 from ..core.tool_context import McpCallResult, ToolContext
+from ..formats.json_values import json_wire_object, own_json_object
 from ..mcp import McpToolDescriptor
-from ..security.json_values import json_wire_object, own_json_object
 from .contracts import (
     AttachmentOutput,
     EmptyOutput,

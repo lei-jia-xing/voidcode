@@ -20,7 +20,7 @@ from voidcode.core.turns import FinalTurn, ToolTurn, TurnSession
 from voidcode.runtime.execution.report_codec import parse_report_payload
 from voidcode.runtime.paths import sessions_db_path
 from voidcode.runtime.storage import RuntimeRepositories, SqliteSessionStore
-from voidcode.runtime.tool_registry import ToolRegistry
+from voidcode.runtime.tools.registry import ToolRegistry
 from voidcode.tools.contracts import ToolCall, ToolResult
 from voidcode.tools.read import ReadTool
 
@@ -65,7 +65,7 @@ _LEADER_HOOK_PRESET_SNAPSHOT = {
 @pytest.fixture
 def force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
-    config_module = importlib.import_module("voidcode.runtime.config")
+    config_module = importlib.import_module("voidcode.runtime.config.loading")
     monkeypatch.setattr(
         config_module,
         "_default_runtime_mcp_config",
@@ -439,7 +439,7 @@ def _approval_runtime(
     graph: object | None = None,
 ) -> tuple[RuntimeRequestFactory, RuntimeRunner]:
     runtime_request, runtime_class = _load_runtime_types()
-    permission_module = importlib.import_module("voidcode.runtime.permission")
+    permission_module = importlib.import_module("voidcode.runtime.permissions.policy")
     permission_policy = cast(Callable[..., object], permission_module.PermissionPolicy)
     policy = permission_policy(mode=mode)
     runtime_kwargs: dict[str, object] = {
@@ -1064,7 +1064,7 @@ def test_runtime_background_task_cancel_reconciles_orphaned_task_from_fresh_runt
 
 def test_runtime_persists_pending_approval_until_single_resume_resolution(tmp_path: Path) -> None:
     runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
-    permission_module = importlib.import_module("voidcode.runtime.permission")
+    permission_module = importlib.import_module("voidcode.runtime.permissions.policy")
     policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="ask")
 
     waiting = runtime.run(runtime_request(prompt="write danger.txt persisted approval", session_id="persisted-approval"))
@@ -1223,8 +1223,8 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
         encoding="utf-8",
     )
     runtime_request, runtime_class = _load_runtime_types()
-    permission_module = importlib.import_module("voidcode.runtime.permission")
-    config_module = importlib.import_module("voidcode.runtime.config")
+    permission_module = importlib.import_module("voidcode.runtime.permissions.policy")
+    config_module = importlib.import_module("voidcode.runtime.config.loading")
     load_runtime_config = cast(Callable[..., object], config_module.load_runtime_config)
     runtime_config = cast(Callable[..., object], config_module.RuntimeConfig)
 
@@ -1268,7 +1268,7 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
 
 def test_runtime_preserves_pending_request_when_resumed_finalize_raises(tmp_path: Path) -> None:
     runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
-    permission_module = importlib.import_module("voidcode.runtime.permission")
+    permission_module = importlib.import_module("voidcode.runtime.permissions.policy")
     policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="ask")
 
     waiting = runtime.run(runtime_request(prompt="write danger.txt finalize failure", session_id="approval-session"))
@@ -1332,7 +1332,7 @@ def test_runtime_preserves_pending_request_when_resumed_finalize_raises(tmp_path
 
 def test_runtime_preserves_pending_approval_when_terminal_save_fails(tmp_path: Path) -> None:
     runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
-    permission_module = importlib.import_module("voidcode.runtime.permission")
+    permission_module = importlib.import_module("voidcode.runtime.permissions.policy")
     policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="ask")
 
     waiting = runtime.run(runtime_request(prompt="write danger.txt save failure", session_id="approval-session"))
@@ -1461,7 +1461,7 @@ def test_runtime_crash_mid_run_marks_interrupted_and_resumes_to_completion(tmp_p
     _ = first_file.write_text("first\n", encoding="utf-8")
     _ = second_file.write_text("second\n", encoding="utf-8")
     runtime_request, runtime_class = _load_runtime_types()
-    permission_module = importlib.import_module("voidcode.runtime.permission")
+    permission_module = importlib.import_module("voidcode.runtime.permissions.policy")
     policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="yolo")
     calls = (
         ("read", {"path": str(first_file)}),
@@ -1522,7 +1522,7 @@ def test_runtime_resume_restores_leaf_and_keeps_orphaned_tail_rows(tmp_path: Pat
     _ = first_file.write_text("first\n", encoding="utf-8")
     _ = second_file.write_text("second\n", encoding="utf-8")
     runtime_request, runtime_class = _load_runtime_types()
-    permission_module = importlib.import_module("voidcode.runtime.permission")
+    permission_module = importlib.import_module("voidcode.runtime.permissions.policy")
     policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="yolo")
     calls = (
         ("read", {"path": str(first_file)}),
@@ -1592,7 +1592,7 @@ def test_runtime_multi_tool_call_crash_requeries_provider_from_durable_tool_resu
     _ = (tmp_path / "b.txt").write_text("b\n", encoding="utf-8")
     _ = (tmp_path / "c.txt").write_text("c\n", encoding="utf-8")
     runtime_request, runtime_class = _load_runtime_types()
-    permission_module = importlib.import_module("voidcode.runtime.permission")
+    permission_module = importlib.import_module("voidcode.runtime.permissions.policy")
     policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="yolo")
     provider_turns_module = importlib.import_module("voidcode.core.provider_turns")
     resolution_module = importlib.import_module("voidcode.provider.resolution")

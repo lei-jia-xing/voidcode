@@ -25,7 +25,7 @@ from voidcode.runtime.events import (
     EventEnvelope,
 )
 from voidcode.runtime.paths import sessions_db_path
-from voidcode.runtime.permission import PendingApproval
+from voidcode.runtime.permissions.policy import PendingApproval
 from voidcode.runtime.question import PendingQuestion
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.storage import SqliteSessionStore

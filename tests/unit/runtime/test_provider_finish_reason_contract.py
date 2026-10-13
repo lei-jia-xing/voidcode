@@ -35,7 +35,7 @@ from voidcode.provider.protocol import (
     TurnProvider,
 )
 from voidcode.provider.registry import ModelProviderRegistry
-from voidcode.runtime.config import (
+from voidcode.runtime.config.loading import (
     RuntimeConfig,
     RuntimeProviderFallbackConfig,
     RuntimeProvidersConfig,

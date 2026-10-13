@@ -21,7 +21,7 @@ from .acp import (
 )
 from .active_session import ACTIVE_SESSION_REGISTRY
 from .agent_capability import composition_ref_from_session_metadata
-from .config import RuntimeConfig, serialize_runtime_agent_config
+from .config.loading import RuntimeConfig, serialize_runtime_agent_config
 from .contracts import (
     NoPendingApprovalError,
     NoPendingQuestionError,
@@ -60,9 +60,9 @@ from .hook_runtime import (
     hook_execution_policy_from_metadata,
     run_lifecycle_hooks_for_session,
 )
-from .permission import PendingApproval, PermissionResolution
-from .permission_policy import permission_policy_for_session
-from .provider_metadata import validate_reasoning_effort_capability
+from .permissions.policy import PendingApproval, PermissionResolution
+from .permissions.responses import permission_policy_for_session
+from .providers.metadata import validate_reasoning_effort_capability
 from .question import PendingQuestion
 from .runtime_debug import prompt_and_tool_results_from_debug_events
 from .session import (
@@ -89,7 +89,7 @@ if TYPE_CHECKING:
     from .acp import AcpAdapter
     from .background.supervisor import RuntimeBackgroundTaskSupervisor
     from .mcp import McpManager
-    from .permission import PermissionPolicy
+    from .permissions.policy import PermissionPolicy
     from .run_loop import RuntimeRunLoopCoordinator
     from .runtime_surface import RuntimeSurface
 

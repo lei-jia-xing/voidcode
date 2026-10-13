@@ -13,7 +13,7 @@ from ..contracts import (
     UnknownSessionError,
 )
 from ..events import EventEnvelope
-from ..permission import PendingApproval
+from ..permissions.policy import PendingApproval
 from ..question import PendingQuestion
 from ..session import session_metadata_for_persistence
 from ..session_metadata_helpers import parse_runtime_state_metadata

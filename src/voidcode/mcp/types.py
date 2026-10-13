@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if TYPE_CHECKING:
-    from ..runtime.config import RuntimeMcpConfig, RuntimeMcpServerConfig
+    from ..runtime.config.loading import RuntimeMcpConfig, RuntimeMcpServerConfig
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,7 +1,7 @@
 """before_compact seam: cancel skips compaction, non-cancel input is inert."""
 
 from voidcode.core.transcript import ToolResultView, output_text
-from voidcode.runtime.config import RuntimeCompactionConfig
+from voidcode.runtime.config.loading import RuntimeCompactionConfig
 from voidcode.runtime.context.window import (
     BeforeCompactInput,
     ContextWindowPolicy,

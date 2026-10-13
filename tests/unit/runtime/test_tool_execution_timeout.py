@@ -17,7 +17,7 @@ from voidcode.core.tool_context import ArtifactPage, ArtifactUnavailable, ToolCo
 from voidcode.core.transcript import ToolResultView
 from voidcode.core.turns import FinalTurn, ToolTurn, TurnRequest, TurnSession
 from voidcode.runtime.active_session import ActiveSessionRegistry
-from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
+from voidcode.runtime.config.loading import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import (
     RuntimeRequest,
     RuntimeResponse,

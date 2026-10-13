@@ -7,7 +7,7 @@ from pathlib import Path
 
 import click
 
-from ..runtime.permission import APPROVAL_MODES as APPROVAL_MODES
+from ..runtime.permissions.policy import APPROVAL_MODES as APPROVAL_MODES
 
 APPROVAL_DECISIONS = ("allow", "deny")
 

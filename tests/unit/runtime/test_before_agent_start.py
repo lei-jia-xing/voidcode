@@ -14,10 +14,10 @@ from voidcode.hook.before_agent_start import (
     BeforeAgentStartRequest,
     BeforeAgentStartTransform,
 )
-from voidcode.runtime.config import RuntimeConfig
-from voidcode.runtime.permission import PermissionPolicy
+from voidcode.runtime.config.loading import RuntimeConfig
+from voidcode.runtime.permissions.policy import PermissionPolicy
 from voidcode.runtime.service import RuntimeRequest, VoidCodeRuntime
-from voidcode.runtime.tool_registry import ToolRegistry
+from voidcode.runtime.tools.registry import ToolRegistry
 from voidcode.tools.contracts import ToolCall
 from voidcode.tools.question import QuestionTool
 

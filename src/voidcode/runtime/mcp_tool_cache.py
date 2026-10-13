@@ -20,7 +20,7 @@ from hashlib import sha256
 from pathlib import Path
 
 from ..mcp import McpToolDescriptor, McpToolSafety
-from .config import RuntimeMcpServerConfig
+from .config.loading import RuntimeMcpServerConfig
 
 logger = logging.getLogger(__name__)
 

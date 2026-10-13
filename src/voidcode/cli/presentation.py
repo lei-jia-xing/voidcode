@@ -7,10 +7,10 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..cli_support import RuntimeStreamResult, format_event, serialize_event, serialize_session_state
 from ..runtime.events import EventEnvelope
 from .output import print_runtime_output, safe_detail
 from .runtime_gateway import approval_request_id, last_event, pending_blocked_event
+from .support import StreamResult, format_event, serialize_event, serialize_session_state
 
 if TYPE_CHECKING:
     # Annotation-only: the CLI never constructs or reaches into the runtime service
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 
 def print_runtime_response(
-    result: RuntimeStreamResult,
+    result: StreamResult,
     *,
     show_thinking: bool = False,
 ) -> int:
@@ -40,7 +40,7 @@ def print_runtime_response(
 
 def print_runtime_failure_footer(
     runtime: VoidCodeRuntime,
-    result: RuntimeStreamResult,
+    result: StreamResult,
     *,
     workspace: Path,
 ) -> None:
@@ -91,7 +91,7 @@ def print_runtime_failure_footer(
 
 
 def runtime_stream_payload(
-    result: RuntimeStreamResult,
+    result: StreamResult,
     *,
     workspace: Path,
     show_thinking: bool = False,
@@ -113,7 +113,7 @@ def runtime_stream_payload(
     return payload
 
 
-def runtime_failed_error(result: RuntimeStreamResult) -> str | None:
+def runtime_failed_error(result: StreamResult) -> str | None:
     failed_event = next(
         (event for event in reversed(result.events) if event.event_type == "runtime.failed"),
         None,
@@ -141,7 +141,7 @@ def format_runtime_error_summary(error: str) -> str:
     return cleaned or error
 
 
-def blocked_payload(result: RuntimeStreamResult, event: EventEnvelope) -> dict[str, object]:
+def blocked_payload(result: StreamResult, event: EventEnvelope) -> dict[str, object]:
     if event.event_type == "runtime.approval_requested":
         return {
             "kind": "approval_required",
@@ -161,7 +161,7 @@ def blocked_payload(result: RuntimeStreamResult, event: EventEnvelope) -> dict[s
 
 
 def print_noninteractive_blocked(
-    result: RuntimeStreamResult,
+    result: StreamResult,
     event: EventEnvelope,
     *,
     workspace: Path | None = None,

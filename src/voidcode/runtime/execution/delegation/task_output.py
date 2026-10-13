@@ -9,7 +9,7 @@ from typing import Protocol
 from pydantic import BaseModel, field_validator, model_validator
 
 from ....core.tool_context import ArtifactBinary, ArtifactRead, ToolContext
-from ....security.json_values import json_wire_object, own_json_object
+from ....formats.json_values import json_wire_object, own_json_object
 from ....tools._pydantic_args import MessageLimit, TimeoutMs, parse_tool_args
 from ....tools.contracts import OutputBounds, OutputReference, TerminalYield, TextOutput, ToolCall, ToolResult, ToolSuccess
 from ....tools.output import create_tool_output_artifact

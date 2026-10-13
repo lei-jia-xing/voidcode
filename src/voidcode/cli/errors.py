@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..cli_support import EXIT_INVALID_RESOURCE
+from .support import EXIT_INVALID_RESOURCE
 
 
 class CliError(Exception):

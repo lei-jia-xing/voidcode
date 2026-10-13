@@ -1,4 +1,4 @@
-from voidcode.runtime.config import RuntimeTuiStatuslineConfig
+from voidcode.runtime.config.loading import RuntimeTuiStatuslineConfig
 from voidcode.tui.statusline import StatusLine, StatusSegmentData, statusline_profile_segments, statusline_profiles
 from voidcode.tui.term import visible_width
 from voidcode.tui.theme import resolve_theme

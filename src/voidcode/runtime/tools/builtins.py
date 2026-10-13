@@ -3,30 +3,30 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING
 
-from ..hook.config import RuntimeHooksConfig
-from ..tools.apply_workspace_edit import ApplyWorkspaceEditTool
-from ..tools.ast_grep import AstGrepTool
-from ..tools.contracts import Tool, ToolDefinition
-from ..tools.delegation import TaskBatchTool, TaskTool
-from ..tools.edit import EditTool
-from ..tools.glob import GlobTool
-from ..tools.grep import GrepTool
-from ..tools.invoke_tool import InvokeTool
-from ..tools.lsp import LspTool
-from ..tools.process.background_process import BackgroundProcessTool
-from ..tools.question import QuestionTool
-from ..tools.read import ReadTool
-from ..tools.shell_exec import ShellExecTool
-from ..tools.skill import SkillTool
-from ..tools.todo import TodoTool
-from ..tools.web_fetch import WebFetchTool
-from ..tools.web_search import WebSearchTool
-from ..tools.write import WriteTool
-from ..tools.yield_tool import YieldTool
-from .config import RuntimeAgentConfig
+from ...hook.config import RuntimeHooksConfig
+from ...tools.apply_workspace_edit import ApplyWorkspaceEditTool
+from ...tools.ast_grep import AstGrepTool
+from ...tools.contracts import Tool, ToolDefinition
+from ...tools.delegation import TaskBatchTool, TaskTool
+from ...tools.edit import EditTool
+from ...tools.glob import GlobTool
+from ...tools.grep import GrepTool
+from ...tools.invoke_tool import InvokeTool
+from ...tools.lsp import LspTool
+from ...tools.process.background_process import BackgroundProcessTool
+from ...tools.question import QuestionTool
+from ...tools.read import ReadTool
+from ...tools.shell_exec import ShellExecTool
+from ...tools.skill import SkillTool
+from ...tools.todo import TodoTool
+from ...tools.web_fetch import WebFetchTool
+from ...tools.web_search import WebSearchTool
+from ...tools.write import WriteTool
+from ...tools.yield_tool import YieldTool
+from ..config.loading import RuntimeAgentConfig
 
 if TYPE_CHECKING:
-    from .tool_registry import ToolRegistry
+    from .registry import ToolRegistry
 
 # Each row references the real definition owner and defers genuine construction.
 _BUILTIN_TOOLS: tuple[tuple[ToolDefinition, Callable[[RuntimeHooksConfig | None], Tool]], ...] = (

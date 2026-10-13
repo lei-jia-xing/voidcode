@@ -28,7 +28,7 @@ from ..core.tool_context import (
     TranscriptInaccessible,
     TranscriptPage,
 )
-from ..security.json_values import json_wire_object
+from ..formats.json_values import json_wire_object
 from ._pydantic_args import parse_tool_args, validate_non_empty
 from .contracts import (
     AttachmentOutput,

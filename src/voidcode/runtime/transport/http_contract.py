@@ -25,7 +25,7 @@ from starlette.responses import JSONResponse, PlainTextResponse, Response, Strea
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from ...provider.errors import validation_reason_from_error
-from ..permission import PermissionResolution
+from ..permissions.policy import PermissionResolution
 
 logger = logging.getLogger(__name__)
 

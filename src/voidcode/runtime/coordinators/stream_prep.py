@@ -25,8 +25,8 @@ from ...provider.model_catalog import static_catalog_metadata
 from ...provider.protocol import ProviderAbortSignal
 from ...skills import SkillRegistry, skill_registry_with_builtins
 from ...tools.contracts import Tool
-from ..config import RuntimeSkillsConfig
-from ..config_materializer import (
+from ..config.loading import RuntimeSkillsConfig
+from ..config.materializer import (
     EffectiveRuntimeConfig,
     apply_request_runtime_config_overrides,
 )
@@ -46,7 +46,7 @@ from ..contracts import (
 )
 from ..lsp import LspManager
 from ..mcp import McpManager
-from ..provider_metadata import validate_reasoning_effort_capability
+from ..providers.metadata import validate_reasoning_effort_capability
 
 if TYPE_CHECKING:
     from ..context.transforms import RuntimeContextTransformRegistry

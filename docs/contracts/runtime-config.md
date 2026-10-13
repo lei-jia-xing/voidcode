@@ -13,16 +13,16 @@
 用户级 `~/.config/voidcode/config.json`（`UserConfigPayload`）不属于随包发布的 `schema/voidcode.config.schema.json`，因此它没有对应的 artifact，也没有 loader-vs-artifact 语料行；这是**已接受的限制而非遗漏**。用户级文件当前接受的键为 `$schema`、`approval_mode`、`model`、`tui`、`web`、`providers`、`hooks`；其中 `approval_mode` / `model` 是该链中**最不具体**的一层（机器级基线，见下），其余键的语义各自独立。它的 loader 行为由 `tests/unit/runtime/test_config_loader_parity.py`（`$schema` 容忍、`web` 容忍、providers 解析先于模型）与 `tests/unit/runtime/test_runtime_config.py` 中的 XDG/用户配置用例固定。若将来需要用户级 schema，应单独决策并单独生成 artifact。
 
 
-配置输入的**形状**只在一个模块中定义：`src/voidcode/runtime/config_models.py`（payload 模型 + 共享的取值校验器）。仓库本地 `.voidcode.json`、用户级 `config.json`、环境变量、请求 metadata 覆盖与持久化的 `runtime_config` 快照都通过这些模型校验与类型化。
+配置输入的**形状**只在一个模块中定义：`src/voidcode/runtime/config/models.py`（payload 模型 + 共享的取值校验器）。仓库本地 `.voidcode.json`、用户级 `config.json`、环境变量、请求 metadata 覆盖与持久化的 `runtime_config` 快照都通过这些模型校验与类型化。
 
 维护者须知：**模型拥有形状，不拥有策略。** 配置来源包括环境变量、用户级文件、仓库本地文件、请求 metadata 覆盖与持久化的会话快照，但**哪个来源覆盖哪个**不属于本模块：`approval_mode` / `model` 的唯一有序链见下文「推荐优先级」（其余字段各自的合并/覆盖规则由各自的 owner 定义，例如 hooks 为拼接语义）。此外还有合并规则、默认值与“未设置”的解析、哪些值属于 recovery-critical 必须写入会话快照，以及 provider / policy 语义，全部留在原有 owner：
 
-- `src/voidcode/runtime/config.py`：加载顺序、优先级、合并、默认应用与文件读写
-- `src/voidcode/runtime/config_materializer.py`：持久化快照的序列化/解析边界
+- `src/voidcode/runtime/config/loading.py`：加载顺序、优先级、合并、默认应用与文件读写
+- `src/voidcode/runtime/config/materializer.py`：持久化快照的序列化/解析边界
 - `src/voidcode/runtime/policy.py`：policy 语义与错误消息
 - `src/voidcode/provider/config.py`：provider payload 边界模型与解析
 
-因此，如果需要新增“在多个来源之间选择”或“解释某个值含义”的规则，它不属于 `config_models.py`。
+因此，如果需要新增“在多个来源之间选择”或“解释某个值含义”的规则，它不属于 `src/voidcode/runtime/config/models.py`。
 
 随包发布的编辑器 schema `schema/voidcode.config.schema.json` 由上述模型生成，不再是手写产物：
 
@@ -430,7 +430,7 @@ MVP 支持 true local manifest，而不是 marketplace / plugin distribution。�
 - project scope：`<workspace>/.voidcode/agents/*.md`
 - user scope：Linux/macOS 使用 `$XDG_CONFIG_HOME/voidcode/agents/*.md`，未设置 `XDG_CONFIG_HOME` 时为 `~/.config/voidcode/agents/*.md`；Windows 使用 `%APPDATA%\voidcode\agents`，缺失时回退到 `%LOCALAPPDATA%\voidcode\agents`。
 
-每个 markdown 文件必须以 YAML frontmatter 开头（共享实现见 `src/voidcode/frontmatter.py`，使用标准 YAML 语义：隐式类型、引号、flow sequence/mapping、`|`/`>` block scalar；重复 key、非字符串 key、非法 YAML 与超过 64 KiB 的 frontmatter 都会 fail-fast），随后正文作为 prompt material：
+每个 markdown 文件必须以 YAML frontmatter 开头（共享实现见 `src/voidcode/formats/frontmatter.py`，使用标准 YAML 语义：隐式类型、引号、flow sequence/mapping、`|`/`>` block scalar；重复 key、非字符串 key、非法 YAML 与超过 64 KiB 的 frontmatter 都会 fail-fast），随后正文作为 prompt material：
 
 ```markdown
 ---

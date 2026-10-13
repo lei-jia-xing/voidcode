@@ -8,7 +8,6 @@ from pathlib import Path
 
 import click
 
-from ...cli_support import EXIT_CONFIG_ERROR, EXIT_RUNTIME_ERROR, EXIT_SUCCESS, EXIT_USAGE_ERROR
 from ...doctor import (
     CapabilityCheckResult,
     CapabilityCheckStatus,
@@ -19,11 +18,12 @@ from ...doctor import (
     format_report,
     format_report_json,
 )
-from ...runtime.config import RUNTIME_CONFIG_FILE_NAME, RuntimeConfig, load_runtime_config
-from ...runtime.config_schema import generate_starter_runtime_config, write_runtime_config_payload
+from ...runtime.config.loading import RUNTIME_CONFIG_FILE_NAME, RuntimeConfig, load_runtime_config
+from ...runtime.config.schema import generate_starter_runtime_config, write_runtime_config_payload
 from ..errors import CliError
 from ..handler_args import DoctorArgs
 from ..options import json_option, workspace_option
+from ..support import EXIT_CONFIG_ERROR, EXIT_RUNTIME_ERROR, EXIT_SUCCESS, EXIT_USAGE_ERROR
 
 
 def _handle_doctor_command(args: DoctorArgs) -> int:

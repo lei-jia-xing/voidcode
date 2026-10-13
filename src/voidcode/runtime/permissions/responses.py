@@ -2,15 +2,16 @@ from __future__ import annotations
 
 from typing import Literal
 
-from ..tools.question import QuestionTool
-from .contracts import RuntimeResponse
-from .events import (
+from ...tools.question import QuestionTool
+from ..contracts import RuntimeResponse
+from ..events import (
     RUNTIME_APPROVAL_REQUESTED,
     RUNTIME_QUESTION_ANSWERED,
     RUNTIME_QUESTION_REQUESTED,
     EventEnvelope,
 )
-from .permission import (
+from ..question import PendingQuestion
+from .policy import (
     APPROVAL_MODES,
     ApprovalMode,
     OperationClass,
@@ -19,7 +20,6 @@ from .permission import (
     PermissionDecision,
     PermissionPolicy,
 )
-from .question import PendingQuestion
 
 
 def permission_decision_or_none(value: object) -> PermissionDecision | None:

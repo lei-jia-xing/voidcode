@@ -20,8 +20,8 @@ import shlex
 from pathlib import Path
 from typing import TypeGuard
 
-from ..cli_support import RuntimeStreamResult
 from ..runtime.events import EventEnvelope, redact_reasoning_payload
+from .support import StreamResult
 
 _PROVIDER_RESTART_EVENTS = frozenset({"runtime.provider_transient_retry", "runtime.provider_fallback"})
 _PROVIDER_FALLBACK_EVENT = "runtime.provider_fallback"
@@ -209,7 +209,7 @@ def _print_trace_todos(payload: dict[str, object]) -> None:
             print(f"    [{marker}] {content}{suffix}", flush=True)
 
 
-def print_trace_final(result: RuntimeStreamResult) -> None:
+def print_trace_final(result: StreamResult) -> None:
     print(f"Session id: {result.session.session.id}", flush=True)
     if result.output is None:
         return
@@ -220,7 +220,7 @@ def print_trace_final(result: RuntimeStreamResult) -> None:
 
 
 def print_trace_blocked(
-    result: RuntimeStreamResult,
+    result: StreamResult,
     event: EventEnvelope,
     *,
     workspace: Path,

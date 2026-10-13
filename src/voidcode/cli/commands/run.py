@@ -9,9 +9,8 @@ from typing import TYPE_CHECKING, cast
 
 import click
 
-from ...cli_support import EXIT_INVALID_RESOURCE, EXIT_RUNTIME_ERROR, EXIT_SUCCESS, EXIT_USAGE_ERROR, print_json
 from ...runtime.contracts import RuntimeRequest, RuntimeSessionDebugSnapshot, validate_runtime_request_metadata
-from ...runtime.permission import ApprovalMode
+from ...runtime.permissions.policy import ApprovalMode
 from ..errors import CliError
 from ..handler_args import RunArgs
 from ..options import APPROVAL_MODES, json_option, show_thinking_option, workspace_option
@@ -29,6 +28,7 @@ from ..runtime_gateway import (
     run_with_inline_approval,
     runtime_error_boundary,
 )
+from ..support import EXIT_INVALID_RESOURCE, EXIT_RUNTIME_ERROR, EXIT_SUCCESS, EXIT_USAGE_ERROR, print_json
 from ..trace import print_trace_blocked, print_trace_final
 
 if TYPE_CHECKING:

@@ -12,14 +12,14 @@ from voidcode.core.transcript import ToolResultView, tool_result_output
 from voidcode.core.turns import FinalTurn, ToolTurn, TurnSession
 from voidcode.runtime import VoidCodeRuntime
 from voidcode.runtime.bundle import write_session_bundle
-from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
+from voidcode.runtime.config.loading import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse
 from voidcode.runtime.execution.delegation.task_batch import TaskBatchCommand
 from voidcode.runtime.execution.delegation.task_control import TaskControlTool
 from voidcode.runtime.execution.delegation.task_output import TaskOutputTool
 from voidcode.runtime.execution.report_codec import report_payload
 from voidcode.runtime.fact_codec import reported_call_from_event
-from voidcode.runtime.permission import PermissionPolicy
+from voidcode.runtime.permissions.policy import PermissionPolicy
 from voidcode.tools.contracts import ToolCall
 
 PARENT = "task-artifact-parent"

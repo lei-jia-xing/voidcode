@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from ..hook.presets import ResolvedHookPresetSnapshot, hook_preset_snapshot_from_payload
-from .config import RuntimeAgentConfig
+from .config.loading import RuntimeAgentConfig
 from .contracts import RuntimeHookPresetSnapshot
 
 

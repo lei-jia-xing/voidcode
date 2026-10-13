@@ -19,7 +19,7 @@ from ..hook.plan import ResolvedHookPlan, hook_plan_from_session_metadata
 from .context.window import BeforeCompactInput
 from .contracts import RuntimeStreamChunk
 from .events import EventEnvelope
-from .permission import runtime_read_only_from_metadata
+from .permissions.policy import runtime_read_only_from_metadata
 from .session import SessionState
 
 HOOK_RECURSION_ENV_VAR = "VOIDCODE_RUNNING_TOOL_HOOK"

@@ -12,30 +12,33 @@ Runtime control plane for execution, persistence, approvals, hooks, capability m
 |------|----------|-------|
 | Public runtime exports | `__init__.py` | lazy-loads `VoidCodeRuntime` and `ToolRegistry` via `__getattr__` |
 | Main control plane | `service.py`, `run_loop.py::RuntimeHost` | resolved governance, tool execution, approvals, durable resume, background tasks; delegates turn/batch progression to `core.engine.TurnEngine` |
-| Runtime config loading | `config.py` | merges env, user, repo-local, and request overrides |
-| Config data boundary | `config_models.py` | one Pydantic definition source for every config input shape; `config_schema.py` generates `schema/voidcode.config.schema.json` from it (`mise run schema:check`). Models own shape only — precedence/merge/snapshot/policy stay in `config.py`, `config_materializer.py`, `policy.py`, `provider/config.py` |
+| Runtime config loading | `config/loading.py` | merges env, user, repo-local, and request overrides |
+| Config data boundary | `config/models.py`, `config/schema.py` | one Pydantic definition source for every config input shape; `schema.py` generates `schema/voidcode.config.schema.json` from it (`mise run schema:check`). Models own shape only — precedence/merge/snapshot/policy stay in `config/loading.py`, `config/materializer.py`, `policy.py`, `provider/config.py` |
 | Session persistence | `storage/` | SQLite schema, pending approval, background task state |
-| Permission defaults | `permission.py` | read-only tools auto-allow; write tools create pending approvals |
+| Permission policy | `permissions/policy.py`, `permissions/context.py`, `permissions/engine.py` | approval defaults, per-call context, and permission resolution |
 | Runtime boundary contracts | `contracts.py` | request/response/session validation, metadata rules |
 | Event envelope surface | `events.py` | runtime event names emitted to clients |
 | HTTP transport integration | `transport/http.py` | runtime-backed transport app |
 | LSP/MCP capability managers | `lsp.py`, `mcp.py` | runtime-managed lifecycle, not pure capability schema |
 | Skill runtime bridge | `skills.py` | converts pure skill metadata into runtime contexts |
-| Session state types | `session.py`, `task.py`, `background/` | session refs/status plus background task types |
+| Session state types | `session.py`, `background/models.py` | session refs/status plus background task types |
 | Context assembly | `context/` | provider context projection, transformations, rules, and continuity |
 | Execution support | `execution/` | core/runtime execution seams, provider fallback, chunk builders, and recovery metadata |
-| Background task contract | `../../docs/contracts/background-task-delegation.md` | parent/child linkage, result output, retry/cancel semantics |
+| Background task contract | `../../../docs/contracts/background-task-delegation.md` | parent/child linkage, result output, retry/cancel semantics |
 
 ## STRUCTURE
 ```text
 runtime/
-├── service.py        # VoidCodeRuntime + ToolRegistry
-├── config.py         # effective runtime config resolution
+├── service.py        # VoidCodeRuntime + composition
+├── run_loop.py       # core turn orchestration adapter
+├── config/           # runtime config loading, payload models, schema, materialization
+├── permissions/      # policy, operation context, resolution, response decoding
+├── providers/        # catalog cache/query, inspection, and metadata
+├── tools/            # declarations, builtin binding, scope, materialization
 ├── storage/          # SQLite-backed session/task store and storage mixins
 ├── background/       # task/process execution, routing, and child completion
 ├── context/          # provider context assembly and projection
-├── execution/        # core/runtime execution seams and recovery helpers
-├── permission.py     # approval policy and PendingApproval
+├── execution/        # tool executor, core/runtime seams, provider fallback, recovery
 ├── transport/        # HTTP transport integration
 │   └── http.py       # runtime transport app
 └── skills.py         # runtime-facing skill context bridge
@@ -46,7 +49,7 @@ runtime/
 - Keep `runtime/__init__.py` lazy-import behavior for `VoidCodeRuntime`, `ToolRegistry`, and HTTP exports to avoid import cycles.
 - Treat `load_runtime_config()` precedence as load-bearing: environment, user config, repo-local config, request metadata, and persisted session metadata each have distinct roles.
 - `ToolDefinition.effects` supplies behavior facts; shared static read-tier classification and actual per-call operation class feed runtime permission policy. Effects never grant execution authority.
-- Background task IDs and session IDs are validated as runtime boundary inputs; do not bypass validators in `contracts.py` / `task.py`.
+- IDs are validated by `contracts.py::validate_id`; `background/models.py::validate_background_task_id` is the task-specific wrapper.
 - Delegated child execution must enter through runtime-owned routing and background task/session contracts. CLI, HTTP, and ACP are adapters, not alternate subagent execution paths.
 - Manifest `skill_refs` are catalog/default selection metadata. `force_load_skills` and delegated `load_skills` force full skill-body injection for that request or child session without leaking parent-only skill bodies.
 - MCP servers are managed at runtime scope through `runtime/mcp.py`; do not document or implement workspace-scoped MCP lifecycle without a separate explicit task.

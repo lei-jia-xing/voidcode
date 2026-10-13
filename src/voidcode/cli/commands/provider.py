@@ -8,12 +8,12 @@ from pathlib import Path
 
 import click
 
-from ...cli_support import EXIT_PROVIDER_ERROR, EXIT_SUCCESS
-from ...runtime.provider_inspection import ProviderEndpointFacts, RuntimeProviderEndpointInspector
+from ...runtime.providers.inspection import ProviderEndpointFacts, RuntimeProviderEndpointInspector
 from ..handler_args import ProviderArgs
 from ..options import workspace_option
 from ..provider_view import provider_inspect_payload, provider_model_metadata_payload
 from ..runtime_gateway import load_cli_config, open_runtime, runtime_error_boundary
+from ..support import EXIT_PROVIDER_ERROR, EXIT_SUCCESS
 
 
 def _handle_provider_models_command(args: ProviderArgs) -> int:

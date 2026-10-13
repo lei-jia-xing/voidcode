@@ -5,10 +5,10 @@ from collections.abc import Mapping
 from ..agent.models import AgentManifest
 from .background.routing import CALLABLE_SUBAGENT_PRESETS
 from .composition import CompositionRef
-from .config import RuntimeAgentConfig
+from .config.loading import RuntimeAgentConfig
 from .session_metadata_helpers import parse_delegation_metadata
-from .tool_provider import BUILTIN_TOOL_NAMES
-from .tool_registry import ToolRegistry
+from .tools.builtins import BUILTIN_TOOL_NAMES
+from .tools.registry import ToolRegistry
 
 AGENT_CAPABILITY_SNAPSHOT_VERSION = 4
 

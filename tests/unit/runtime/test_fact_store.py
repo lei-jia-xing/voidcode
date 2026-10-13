@@ -28,6 +28,7 @@ from voidcode.core.turns import (
     TurnRequest,
     TurnSession,
 )
+from voidcode.formats.json_values import json_wire_object
 from voidcode.provider.protocol import ProviderStreamEvent
 from voidcode.runtime.bundle import (
     SESSION_BUNDLE_SCHEMA_VERSION,
@@ -48,7 +49,6 @@ from voidcode.runtime.fact_codec import decode_fact, encode_fact
 from voidcode.runtime.fact_store import SqliteFactStore
 from voidcode.runtime.session_metadata_helpers import session_metadata_with_runtime_state_updates
 from voidcode.runtime.storage import SCHEMA_VERSION, SqliteSessionStore
-from voidcode.security.json_values import json_wire_object
 from voidcode.tools.contracts import (
     AttachmentOutput,
     EmptyOutput,

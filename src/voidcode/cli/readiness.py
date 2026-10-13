@@ -6,7 +6,6 @@ import shlex
 import sys
 from pathlib import Path
 
-from ..cli_support import EXIT_PROVIDER_ERROR, print_json
 from ..doctor import (
     CapabilityCheckResult,
     CapabilityCheckStatus,
@@ -16,12 +15,13 @@ from ..doctor import (
 )
 from ..doctor.reporter import FirstTaskReadiness
 from ..runtime.contracts import ProviderReadinessResult
-from ..runtime.provider_inspection import (
+from ..runtime.providers.inspection import (
     guidance_for_provider_error_kind,
     missing_credentials_guidance,
     missing_model_guidance,
     unconfigured_provider_guidance,
 )
+from .support import EXIT_PROVIDER_ERROR, print_json
 
 
 def _readiness_check_result(

@@ -5,11 +5,11 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
-from ..tools.local_custom import LocalCustomToolManifest, discover_local_custom_tool_manifests
-from .config import RuntimeToolsLocalConfig
-from .config_materializer import EffectiveRuntimeConfig
-from .tool_materializer import RuntimeToolMaterialization, RuntimeToolMaterializer
-from .tool_scope import RuntimeToolScopeResolver
+from ...tools.local_custom import LocalCustomToolManifest, discover_local_custom_tool_manifests
+from ..config.loading import RuntimeToolsLocalConfig
+from ..config.materializer import EffectiveRuntimeConfig
+from .materializer import RuntimeToolMaterialization, RuntimeToolMaterializer
+from .scope import RuntimeToolScopeResolver
 
 type LocalToolManifestsProvider = Callable[[RuntimeToolsLocalConfig | None], tuple[LocalCustomToolManifest, ...]]
 

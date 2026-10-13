@@ -17,10 +17,10 @@ from voidcode.core.tool_context import ArtifactBinary, ArtifactPage, ToolContext
 from voidcode.core.transcript import ToolResultView, project_report
 from voidcode.core.turns import FinalTurn, ToolTurn
 from voidcode.mcp.types import McpToolCallResult, McpToolDescriptor
-from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig, RuntimeMcpServerConfig
+from voidcode.runtime.config.loading import RuntimeConfig, RuntimeMcpConfig, RuntimeMcpServerConfig
 from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.fact_codec import reported_call_from_event
-from voidcode.runtime.permission import PermissionPolicy
+from voidcode.runtime.permissions.policy import PermissionPolicy
 from voidcode.runtime.service import VoidCodeRuntime
 from voidcode.security.redaction import TOOL_OUTPUT_BYTES
 from voidcode.tools.contracts import AttachmentOutput, TextOutput, ToolCall, ToolFailure, ToolSuccess

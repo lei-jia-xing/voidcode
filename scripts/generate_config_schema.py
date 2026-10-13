@@ -2,8 +2,8 @@
 
 Dev-time generator only; never imported by the runtime. Writes
 `schema/voidcode.config.schema.json` from
-`voidcode.runtime.config_schema.runtime_config_json_schema()`, which is itself
-generated from the payload models in `voidcode.runtime.config_models` (plus the
+`voidcode.runtime.config.schema.runtime_config_json_schema()`, which is itself
+generated from the payload models in `voidcode.runtime.config.models` (plus the
 provider boundary models in `voidcode.provider.config`). Adding a config field
 therefore means regenerating this artifact:
 
@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from voidcode.runtime.config_schema import format_runtime_config_schema_json  # noqa: E402
+from voidcode.runtime.config.schema import format_runtime_config_schema_json  # noqa: E402
 
 OUTPUT_PATH = Path(__file__).resolve().parent.parent / "schema" / "voidcode.config.schema.json"
 

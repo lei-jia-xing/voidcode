@@ -16,7 +16,7 @@ from voidcode.core.tool_context import ArtifactBinary, ToolContext
 from voidcode.core.transcript import ToolResultView
 from voidcode.core.turns import FinalTurn, ResponseReadyFact, StreamFact, ToolTurn, TurnRequest
 from voidcode.provider.protocol import ProviderStreamEvent
-from voidcode.runtime.config import RuntimeConfig
+from voidcode.runtime.config.loading import RuntimeConfig
 from voidcode.runtime.events import EventEnvelope
 from voidcode.runtime.service import RuntimeRequest, RuntimeStreamChunk, SessionState, ToolRegistry, VoidCodeRuntime
 from voidcode.runtime.session import SessionRef

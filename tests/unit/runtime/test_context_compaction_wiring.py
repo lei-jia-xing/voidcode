@@ -20,7 +20,7 @@ from voidcode.hook.config import RuntimeHooksConfig
 from voidcode.provider.config import ProviderConfigs, ProviderEndpointConfig
 from voidcode.provider.protocol import ProviderTurnRequest, ProviderTurnResult
 from voidcode.provider.registry import ModelProviderRegistry
-from voidcode.runtime.config import RuntimeCompactionConfig, RuntimeConfig, RuntimeContextWindowConfig, RuntimeMcpConfig
+from voidcode.runtime.config.loading import RuntimeCompactionConfig, RuntimeConfig, RuntimeContextWindowConfig, RuntimeMcpConfig
 from voidcode.runtime.context.window import (
     CompactionBudget,
     ContextWindowPolicy,
@@ -28,7 +28,7 @@ from voidcode.runtime.context.window import (
     prepare_provider_context,
 )
 from voidcode.runtime.contracts import RuntimeRequest
-from voidcode.runtime.permission import PermissionPolicy
+from voidcode.runtime.permissions.policy import PermissionPolicy
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.tools.contracts import OpaqueToolBody, OutputBounds, OutputReference, TextOutput, ToolCall, ToolResult, ToolSuccess
 from voidcode.tools.read import ReadTool

@@ -6,7 +6,7 @@ import pytest
 
 from voidcode.core.questions import QuestionCancellation
 from voidcode.core.turns import FinalTurn, ToolTurn, TurnRequest, TurnSession
-from voidcode.runtime.config import RuntimeConfig
+from voidcode.runtime.config.loading import RuntimeConfig
 from voidcode.runtime.contracts import NoPendingQuestionError
 from voidcode.runtime.service import VoidCodeRuntime
 from voidcode.tools.contracts import ToolCall

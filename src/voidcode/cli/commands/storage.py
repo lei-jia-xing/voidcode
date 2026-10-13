@@ -6,12 +6,12 @@ from pathlib import Path
 
 import click
 
-from ...cli_support import EXIT_SUCCESS, print_json
 from ...runtime.storage import SqliteSessionStore
 from ..handler_args import StatsArgs, StorageArgs
 from ..options import json_option, workspace_option
 from ..output import emit_output, format_rate
 from ..runtime_gateway import open_runtime, runtime_error_boundary
+from ..support import EXIT_SUCCESS, print_json
 
 
 def _handle_storage_diagnostics_command(args: StorageArgs) -> int:

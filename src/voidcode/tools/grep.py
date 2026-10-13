@@ -12,7 +12,7 @@ from typing import ClassVar
 from pydantic import BaseModel, field_validator
 
 from ..core.tool_context import ToolContext
-from ..security.json_values import json_wire_object, own_json_object
+from ..formats.json_values import json_wire_object, own_json_object
 from ._gitignore import GitIgnoreMatcher
 from ._pydantic_args import parse_tool_args, validate_non_empty
 from ._repair import raise_tool_diagnostic

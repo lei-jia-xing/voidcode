@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..runtime.permission import DEFAULT_APPROVAL_MODE
+from ..runtime.permissions.policy import DEFAULT_APPROVAL_MODE
 
 
 @dataclass(frozen=True, slots=True)

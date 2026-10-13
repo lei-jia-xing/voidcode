@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Protocol, cast
 
 from ....core.tool_context import ToolContext
-from ....security.json_values import json_wire_object, own_json_object
+from ....formats.json_values import json_wire_object, own_json_object
 from ....tools.contracts import TextOutput, ToolCall, ToolResult, ToolSuccess
 from ...background.substrate import TaskSubstrate
 

@@ -36,7 +36,7 @@ from voidcode.runtime.background.models import (
     BackgroundTaskState,
     is_background_task_terminal,
 )
-from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
+from voidcode.runtime.config.loading import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse
 from voidcode.runtime.events import (
     RUNTIME_BACKGROUND_TASK_FAILED,
@@ -44,7 +44,7 @@ from voidcode.runtime.events import (
     EventEnvelope,
 )
 from voidcode.runtime.execution.report_codec import report_payload
-from voidcode.runtime.permission import PendingApproval
+from voidcode.runtime.permissions.policy import PendingApproval
 from voidcode.runtime.service import SessionState, VoidCodeRuntime
 from voidcode.runtime.session import SessionRef
 from voidcode.runtime.storage import SqliteSessionStore

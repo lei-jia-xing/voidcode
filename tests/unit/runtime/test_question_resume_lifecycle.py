@@ -10,14 +10,14 @@ import pytest
 from voidcode.core.questions import QuestionCancellation, QuestionResponse
 from voidcode.core.tool_context import ToolContext
 from voidcode.core.turns import FinalTurn, ToolTurn, TurnRequest, TurnSession
-from voidcode.runtime.config import RuntimeConfig, RuntimeHooksConfig
+from voidcode.runtime.config.loading import RuntimeConfig, RuntimeHooksConfig
 from voidcode.runtime.fact_store import SqliteFactStore
 from voidcode.runtime.paths import sessions_db_path
-from voidcode.runtime.permission import PermissionPolicy
+from voidcode.runtime.permissions.policy import PermissionPolicy
 from voidcode.runtime.service import RuntimeRequest, VoidCodeRuntime
 from voidcode.runtime.storage import SqliteSessionStore
 from voidcode.runtime.storage.ports import RuntimeRepositories
-from voidcode.runtime.tool_registry import ToolRegistry
+from voidcode.runtime.tools.registry import ToolRegistry
 from voidcode.tools.contracts import ToolCall, ToolResult
 from voidcode.tools.question import QuestionTool
 from voidcode.tools.write import WriteTool

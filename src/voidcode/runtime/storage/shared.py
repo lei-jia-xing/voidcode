@@ -31,7 +31,7 @@ from ..events import (
     EventEnvelope,
     EventSource,
 )
-from ..permission import (
+from ..permissions.policy import (
     OperationClass,
     PathScope,
     PendingApproval,

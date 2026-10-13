@@ -38,9 +38,9 @@ from typing import Any
 import jsonschema
 from pydantic import BaseModel
 
-from voidcode.runtime.config import load_runtime_config
-from voidcode.runtime.config_models import RuntimeConfigPayload
-from voidcode.runtime.config_schema import runtime_config_json_schema
+from voidcode.runtime.config.loading import load_runtime_config
+from voidcode.runtime.config.models import RuntimeConfigPayload
+from voidcode.runtime.config.schema import runtime_config_json_schema
 
 #: ``$schema`` is deliberately absent from the corpus: it is an unread editor
 #: hint whose published ``type: string`` no corpus row exercises. Its loader

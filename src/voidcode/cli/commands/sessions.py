@@ -9,7 +9,23 @@ from typing import TYPE_CHECKING, Annotated, TypedDict, cast
 import click
 from pydantic import AfterValidator, BaseModel, Field, TypeAdapter, ValidationError
 
-from ...cli_support import (
+from ...core.questions import QuestionAnswer, QuestionCancellation, QuestionResponse
+from ...runtime.bundle import (
+    SessionBundleFormat,
+    preview_session_bundle_import_file,
+    write_session_bundle,
+)
+from ...runtime.contracts import NoPendingQuestionError
+from ...runtime.permissions.policy import PermissionResolution
+from ...runtime.serialization import serialize_session_debug_snapshot, serialize_session_entry_summary
+from ...runtime.session import StoredSessionForestEntry, StoredSessionLineageEntry, StoredSessionSummary
+from ..errors import CliError
+from ..handler_args import SessionsArgs
+from ..options import APPROVAL_DECISIONS, BUNDLE_FORMATS, json_option, show_thinking_option, workspace_option
+from ..output import emit_output
+from ..presentation import print_runtime_response
+from ..runtime_gateway import consume_session_stream, open_runtime, runtime_error_boundary, session_result_exit_code
+from ..support import (
     EXIT_INVALID_RESOURCE,
     EXIT_RUNTIME_ERROR,
     EXIT_SUCCESS,
@@ -19,22 +35,6 @@ from ...cli_support import (
     serialize_session_state,
     serialize_stored_session_summary,
 )
-from ...core.questions import QuestionAnswer, QuestionCancellation, QuestionResponse
-from ...runtime.bundle import (
-    SessionBundleFormat,
-    preview_session_bundle_import_file,
-    write_session_bundle,
-)
-from ...runtime.contracts import NoPendingQuestionError
-from ...runtime.permission import PermissionResolution
-from ...runtime.serialization import serialize_session_debug_snapshot, serialize_session_entry_summary
-from ...runtime.session import StoredSessionForestEntry, StoredSessionLineageEntry, StoredSessionSummary
-from ..errors import CliError
-from ..handler_args import SessionsArgs
-from ..options import APPROVAL_DECISIONS, BUNDLE_FORMATS, json_option, show_thinking_option, workspace_option
-from ..output import emit_output
-from ..presentation import print_runtime_response
-from ..runtime_gateway import consume_session_stream, open_runtime, runtime_error_boundary, session_result_exit_code
 
 if TYPE_CHECKING:
     from ...runtime.service import VoidCodeRuntime

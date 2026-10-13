@@ -25,7 +25,7 @@ from voidcode.provider.naming import (
 )
 from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.provider.resolution import resolve_provider_config
-from voidcode.runtime.provider_inspection import ProviderSummaryProjector, provider_credentials_config_path
+from voidcode.runtime.providers.inspection import ProviderSummaryProjector, provider_credentials_config_path
 
 _MINI_MAX_SPELLINGS = (
     "minimax/minimax-m2.5",

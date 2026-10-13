@@ -14,7 +14,7 @@
 
 - `src/voidcode/hook/presets.py` 负责声明 builtin hook preset catalog；
 - `src/voidcode/agent/builtin.py` 负责校验 builtin agent manifest 的 `preset_hook_refs`；
-- `src/voidcode/runtime/config.py` 负责校验用户/runtime config 中的 `agent.hook_refs`；
+- `src/voidcode/runtime/config/loading.py` 负责校验用户/runtime config 中的 `agent.hook_refs`；
 - runtime 仍然拥有是否、何时、如何 materialize 或执行这些 preset 的最终控制权。
 
 ## 当前 builtin presets
@@ -106,7 +106,7 @@ Hook policy cannot grant tools, widen tool defaults, create child sessions, rewr
 - `src/voidcode/hook/presets.py`
 - `src/voidcode/hook/__init__.py`
 - `src/voidcode/agent/builtin.py`
-- `src/voidcode/runtime/config.py`
+- `src/voidcode/runtime/config/loading.py`
 - `tests/unit/hook/test_preset_forbidden_actions.py`
 - `tests/unit/agent/test_builtin.py`
 - `tests/unit/runtime/test_runtime_config.py`

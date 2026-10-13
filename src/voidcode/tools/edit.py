@@ -11,6 +11,7 @@ from typing import ClassVar
 from rapidfuzz.distance import Levenshtein
 
 from ..core.tool_context import EditSchema, ToolContext
+from ..formats.json_values import json_wire_object, own_json_object
 from ..formatter import (
     FormatterExecutionResult,
     FormatterExecutor,
@@ -18,7 +19,6 @@ from ..formatter import (
     formatter_payload,
 )
 from ..hook.config import RuntimeHooksConfig
-from ..security.json_values import json_wire_object, own_json_object
 from ._post_edit_diagnostics import post_edit_lsp_diagnostics
 from ._repair import (
     ToolDiagnosticError,

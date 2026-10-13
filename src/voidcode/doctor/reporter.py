@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from ..provider.naming import provider_label
-from ..runtime.config import RUNTIME_CONFIG_FILE_NAME
-from ..runtime.provider_inspection import provider_credentials_config_path
+from ..runtime.config.loading import RUNTIME_CONFIG_FILE_NAME
+from ..runtime.providers.inspection import provider_credentials_config_path
 from .checker import CapabilityCheckResult, CapabilityCheckStatus
 
 

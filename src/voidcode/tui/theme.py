@@ -54,8 +54,8 @@ from rich.style import Style
 from rich.syntax import SyntaxTheme
 from rich.theme import Theme as RichTheme
 
-from ..runtime.config import RuntimeTuiThemeConfig
-from ..runtime.config_models import (
+from ..runtime.config.loading import RuntimeTuiThemeConfig
+from ..runtime.config.models import (
     TuiCustomThemePayload,
     TuiForegroundToken,
     _contains_terminal_controls,

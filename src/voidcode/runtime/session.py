@@ -6,10 +6,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from ..security.json_values import json_wire_object, own_json_object
+from ..formats.json_values import json_wire_object, own_json_object
 from .composition import FrozenComposition, PhaseRecord
 from .events import EventEnvelope
-from .permission import runtime_read_only_from_metadata
+from .permissions.policy import runtime_read_only_from_metadata
 from .policy import runtime_policy_snapshot_from_session_metadata
 
 if TYPE_CHECKING:

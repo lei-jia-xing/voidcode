@@ -50,7 +50,7 @@ pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
 @pytest.fixture
 def force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
-    config_module = importlib.import_module("voidcode.runtime.config")
+    config_module = importlib.import_module("voidcode.runtime.config.loading")
     monkeypatch.setattr(
         config_module,
         "_default_runtime_mcp_config",
@@ -392,7 +392,7 @@ def _blocking_keep_alive_runtime(
     blocks: tuple[tuple[threading.Event, threading.Event], ...] = (),
 ) -> tuple[RuntimeRequestFactory, RuntimeRunner]:
     runtime_request, runtime_class = _load_runtime_types()
-    permission_module = importlib.import_module("voidcode.runtime.permission")
+    permission_module = importlib.import_module("voidcode.runtime.permissions.policy")
     permission_policy = cast(Callable[..., object], permission_module.PermissionPolicy)
     runtime = cast(
         RuntimeRunner,
@@ -625,7 +625,7 @@ def _keep_alive_runtime(
     child_requests: list[object],
 ) -> tuple[RuntimeRequestFactory, RuntimeRunner]:
     runtime_request, runtime_class = _load_runtime_types()
-    permission_module = importlib.import_module("voidcode.runtime.permission")
+    permission_module = importlib.import_module("voidcode.runtime.permissions.policy")
     permission_policy = cast(Callable[..., object], permission_module.PermissionPolicy)
     runtime = cast(
         RuntimeRunner,
@@ -799,7 +799,7 @@ def test_keep_alive_shutdown_parks_interrupted_and_fresh_runtime_resumes_same_ta
     # A fresh runtime (process restart) resumes the same task id on the same
     # child session; the steered turn rehydrates the prior transcript.
     _, fresh = _load_runtime_types()
-    permission_module = importlib.import_module("voidcode.runtime.permission")
+    permission_module = importlib.import_module("voidcode.runtime.permissions.policy")
     permission_policy = cast(Callable[..., object], permission_module.PermissionPolicy)
     fresh_runtime = cast(
         RuntimeRunner,

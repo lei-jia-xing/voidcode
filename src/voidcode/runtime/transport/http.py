@@ -38,7 +38,7 @@ from ..background.models import (
 from ..background.routing import (
     SubagentRoutingIdentity,
 )
-from ..config import RuntimeConfig
+from ..config.loading import RuntimeConfig
 from ..contracts import (
     AgentSummary,
     BackgroundTaskResult,
@@ -77,7 +77,7 @@ from ..events import (
     EventEnvelope,
     redact_reasoning_payload,
 )
-from ..permission import PermissionResolution
+from ..permissions.policy import PermissionResolution
 from ..serialization import (
     _serialize_session_ref,
     _serialize_session_state,

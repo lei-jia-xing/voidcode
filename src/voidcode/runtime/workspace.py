@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .background.models import StoredBackgroundTaskSummary
-from .config import RuntimeConfig, user_runtime_config_path
+from .config.loading import RuntimeConfig, user_runtime_config_path
 from .contracts import WorkspaceRegistrySnapshot, WorkspaceSummary
 from .session import StoredSessionSummary
 

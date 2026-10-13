@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from voidcode.core.turns import FinalTurn, ToolTurn, TurnRequest, TurnSession
-from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
+from voidcode.runtime.config.loading import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.tools.contracts import ToolCall

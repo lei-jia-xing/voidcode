@@ -14,10 +14,10 @@ import pytest
 
 from tests.runtime_storage import repositories_for_test_store
 from voidcode.runtime.composition import ComponentSelection
-from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
+from voidcode.runtime.config.loading import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.execution_ownership import EXECUTION_OWNERSHIP, ExecutionOwnershipRevokedError
-from voidcode.runtime.permission import ExternalDirectoryPermissionConfig, PatternPermissionRule
+from voidcode.runtime.permissions.policy import ExternalDirectoryPermissionConfig, PatternPermissionRule
 from voidcode.runtime.service import VoidCodeRuntime
 from voidcode.runtime.storage.sqlite import SqliteSessionStore
 

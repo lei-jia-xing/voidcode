@@ -16,11 +16,11 @@ from voidcode.hook.typed import (
     ToolInputHandlerDeclaration,
     ToolInputHandlerRegistry,
 )
-from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
+from voidcode.runtime.config.loading import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import RuntimeRequest
-from voidcode.runtime.permission import ApprovalMode, PermissionPolicy
+from voidcode.runtime.permissions.policy import ApprovalMode, PermissionPolicy
 from voidcode.runtime.service import VoidCodeRuntime
-from voidcode.runtime.tool_registry import ToolRegistry
+from voidcode.runtime.tools.registry import ToolRegistry
 from voidcode.tools.contracts import (
     RuntimeToolTimeoutError,
     StaticTool,

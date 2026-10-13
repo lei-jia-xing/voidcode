@@ -8,7 +8,7 @@ from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from ..core.tool_context import (
+from ...core.tool_context import (
     ArtifactRead,
     EditSchema,
     LspDiagnostics,
@@ -20,9 +20,9 @@ from ..core.tool_context import (
     ToolCommandHandler,
     TranscriptRead,
 )
-from ..provider.protocol import ProviderAbortSignal
-from ..skills.models import SkillMetadata
-from ..tools.contracts import (
+from ...provider.protocol import ProviderAbortSignal
+from ...skills.models import SkillMetadata
+from ...tools.contracts import (
     ConfirmedStop,
     RuntimeTimeoutAwareTool,
     RuntimeToolTimeoutError,
@@ -33,7 +33,8 @@ from ..tools.contracts import (
     ToolResult,
     UnconfirmedStop,
 )
-from .execution.tool_resources import (
+from ..execution_ownership import EXECUTION_OWNERSHIP
+from .tool_resources import (
     SessionArtifactReader,
     SessionTranscriptReader,
     bind_lsp_request,
@@ -41,7 +42,6 @@ from .execution.tool_resources import (
     bind_rule_reader,
     bind_tool_command,
 )
-from .execution_ownership import EXECUTION_OWNERSHIP
 
 logger = logging.getLogger(__name__)
 

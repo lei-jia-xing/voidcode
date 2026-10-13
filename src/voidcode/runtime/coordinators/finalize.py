@@ -32,13 +32,13 @@ from ..hook_runtime import (
     hook_execution_policy_from_metadata,
     run_lifecycle_hooks_for_session,
 )
-from ..permission_policy import pending_approval_from_response, pending_question_from_response
+from ..permissions.responses import pending_approval_from_response, pending_question_from_response
 from ..session import SessionState, SessionStatus, is_session_status_terminal
 from ..session_metadata_helpers import session_without_tool_intent, waiting_reason_from_session
 
 if TYPE_CHECKING:
     from ..background.supervisor import RuntimeBackgroundTaskSupervisor
-    from ..config import RuntimeConfig
+    from ..config.loading import RuntimeConfig
     from ..mcp import McpManager
     from ..runtime_surface import RuntimeSurface
     from ..storage import SessionEventRepository, SessionRecoveryRepository, SessionRepository, SessionRunWriter

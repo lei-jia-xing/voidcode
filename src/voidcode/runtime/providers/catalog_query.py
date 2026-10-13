@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from ..provider.registry import ModelProviderRegistry
-from .contracts import ProviderModelMetadata, ProviderModelsResult
-from .provider_metadata import contract_metadata_from_catalog
+from ...provider.registry import ModelProviderRegistry
+from ..contracts import ProviderModelMetadata, ProviderModelsResult
+from .metadata import contract_metadata_from_catalog
 
 
 class RuntimeProviderCatalogQuery:

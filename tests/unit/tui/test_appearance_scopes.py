@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from voidcode.runtime.config import runtime_config_path, user_runtime_config_path
+from voidcode.runtime.config.loading import runtime_config_path, user_runtime_config_path
 from voidcode.tui.app import TuiApp
 from voidcode.tui.keys import Key
 from voidcode.tui.overlay import AppearanceOverlay

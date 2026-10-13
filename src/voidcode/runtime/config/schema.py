@@ -1,7 +1,7 @@
 """Schema-backed config UX for the VoidCode runtime.
 
 ``runtime_config_json_schema()`` is generated from the payload models in
-``runtime/config_models.py`` (plus the provider boundary models in
+``runtime/config/models.py`` (plus the provider boundary models in
 ``provider/config.py``), so ``schema/voidcode.config.schema.json`` cannot drift
 from the boundary the runtime actually accepts. Regenerate the artifact with
 ``uv run python scripts/generate_config_schema.py`` and gate it with
@@ -9,7 +9,7 @@ from the boundary the runtime actually accepts. Regenerate the artifact with
 ``tests/unit/runtime/test_config_schema.py``.
 
 The models own shape; they do not own policy. Precedence, merge rules and
-persistence decisions stay in ``runtime/config.py``; this module only publishes
+persistence decisions stay in ``runtime/config/loading.py``; this module only publishes
 the input contract.
 """
 
@@ -27,10 +27,11 @@ from typing import cast
 from pydantic.json_schema import GenerateJsonSchema, JsonSchemaValue
 from pydantic_core import core_schema
 
-from ..agent import list_builtin_agent_manifests
-from ..provider.naming import canonical_model_reference
-from .config import RUNTIME_CONFIG_FILE_NAME, runtime_config_path, user_runtime_config_path
-from .config_models import (
+from ...agent import list_builtin_agent_manifests
+from ...provider.naming import canonical_model_reference
+from ..permissions.policy import APPROVAL_MODES, DEFAULT_APPROVAL_MODE, ApprovalMode
+from .loading import RUNTIME_CONFIG_FILE_NAME, runtime_config_path, user_runtime_config_path
+from .models import (
     AGENT_PRESET_ID_PATTERN,
     APPROVAL_MODE_ENV_VAR,
     MODEL_ENV_VAR,
@@ -40,7 +41,6 @@ from .config_models import (
     TOOL_TIMEOUT_ENV_VAR,
     RuntimeConfigPayload,
 )
-from .permission import APPROVAL_MODES, DEFAULT_APPROVAL_MODE, ApprovalMode
 
 RUNTIME_CONFIG_SCHEMA_ID = "https://raw.githubusercontent.com/lei-jia-xing/voidcode/master/schema/voidcode.config.schema.json"
 RUNTIME_CONFIG_SCHEMA_URI = RUNTIME_CONFIG_SCHEMA_ID
@@ -63,8 +63,8 @@ class _RuntimeConfigSchemaGenerator(GenerateJsonSchema):
     def default_schema(self, schema: core_schema.WithDefaultSchema) -> JsonSchemaValue:
         """Emit the accepted shape only.
 
-        Defaults belong to the resolution path in ``runtime/config.py`` (and to
-        ``config_models``), not to the published input contract.
+        Defaults belong to the resolution path in ``runtime/config/loading.py`` (and to
+        ``runtime/config/models.py``), not to the published input contract.
         """
         return self.generate_inner(schema["schema"])
 
@@ -243,7 +243,7 @@ def _publish_definitions(
     unmapped = sorted(name for name in generated_definitions if name not in SCHEMA_DEFINITION_NAMES)
     if unmapped:
         raise ValueError(
-            f"config schema definition(s) missing a published name in runtime/config_models.py SCHEMA_DEFINITION_NAMES: {', '.join(unmapped)}"
+            f"config schema definition(s) missing a published name in runtime/config/models.py SCHEMA_DEFINITION_NAMES: {', '.join(unmapped)}"
         )
     reference_map = {f"#/$defs/{name}": f"#/$defs/{SCHEMA_DEFINITION_NAMES[name]}" for name in generated_definitions}
     published = {SCHEMA_DEFINITION_NAMES[name]: definition for name, definition in generated_definitions.items()}

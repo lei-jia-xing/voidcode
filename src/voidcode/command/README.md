@@ -17,7 +17,7 @@ The MVP loader merges commands in this order, with later sources overriding earl
 3. project-local `commands/**/*.md`
 4. project-local `.voidcode/commands/**/*.md`
 
-Markdown command files may include a YAML frontmatter block. The block syntax — delimiters, safe YAML loading, duplicate-key rejection, key/field whitelist boundaries, and the frontmatter size bound — is shared through `voidcode/frontmatter.py`; this loader owns only the command fields:
+Markdown command files may include a YAML frontmatter block. The block syntax — delimiters, safe YAML loading, duplicate-key rejection, key/field whitelist boundaries, and the frontmatter size bound — is shared through `voidcode.formats.frontmatter`; this loader owns only the command fields:
 
 ```md
 ---

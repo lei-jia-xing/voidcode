@@ -14,7 +14,7 @@ from ..acp import (
     AcpRequestHandler,
     AcpResponseEnvelope,
 )
-from .config import RuntimeAcpConfig
+from .config.loading import RuntimeAcpConfig
 from .contracts import RuntimeStreamChunk, UnknownSessionError
 from .event_envelopes import envelopes_for_acp_events
 from .events import RUNTIME_ACP_DELEGATED_LIFECYCLE

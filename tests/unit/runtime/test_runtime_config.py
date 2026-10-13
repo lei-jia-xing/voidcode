@@ -8,6 +8,7 @@ from typing import Literal, cast
 
 import pytest
 
+import voidcode.runtime.config.loading as runtime_config
 from voidcode.agent import AgentPromptMaterialization, get_builtin_agent_manifest
 from voidcode.agent.models import AgentMcpBindingIntent
 from voidcode.formatter import RuntimeFormatterPresetConfig, default_formatter_presets
@@ -21,8 +22,7 @@ from voidcode.provider.config import (
     OpenAIProviderConfig,
     ProviderEndpointConfig,
 )
-from voidcode.runtime import config as runtime_config
-from voidcode.runtime.config import (
+from voidcode.runtime.config.loading import (
     APPROVAL_MODE_ENV_VAR,
     EXECUTION_ENGINE_ENV_VAR,
     MODEL_ENV_VAR,
@@ -61,7 +61,7 @@ from voidcode.runtime.config import (
     serialize_runtime_context_window_config,
     user_runtime_config_path,
 )
-from voidcode.runtime.permission import PatternPermissionRule
+from voidcode.runtime.permissions.policy import PatternPermissionRule
 from voidcode.runtime.service import RuntimeRequest, VoidCodeRuntime
 from voidcode.tui.theme import validate_theme_configuration
 

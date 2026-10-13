@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Protocol
 
-from ..security.json_values import own_json_object
+from ..formats.json_values import own_json_object
 
 _MAX_HANDLER_NAMES = 32
 _MAX_TRACE_TEXT_CHARS = 240

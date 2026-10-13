@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 
 from voidcode.core.tool_context import ArtifactMissing
-from voidcode.runtime.config import load_runtime_config
+from voidcode.runtime.config.loading import load_runtime_config
 from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.service import VoidCodeRuntime
 from voidcode.tui.app import TuiApp

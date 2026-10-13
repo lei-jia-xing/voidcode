@@ -6,7 +6,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from ..runtime.contracts import ProviderInspectResult, ProviderModelMetadata, ProviderReadinessResult
-from ..runtime.provider_inspection import ProviderEndpointFacts
+from ..runtime.providers.inspection import ProviderEndpointFacts
 
 
 def provider_model_metadata_payload(

@@ -14,9 +14,9 @@ from voidcode.core.transcript import ToolResultView
 from voidcode.core.turns import FinalTurn, ToolTurn, TurnRequest, TurnSession
 from voidcode.provider.config import OpenAICompatibleProviderConfig, ProviderConfigs
 from voidcode.runtime.composition import CompositionRef, FrozenComposition
-from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
+from voidcode.runtime.config.loading import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import RuntimeRequest
-from voidcode.runtime.permission import PermissionPolicy
+from voidcode.runtime.permissions.policy import PermissionPolicy
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.runtime.storage import SqliteSessionStore
 from voidcode.runtime.storage.ports import RuntimeRepositories

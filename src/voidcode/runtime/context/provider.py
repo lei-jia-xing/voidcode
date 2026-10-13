@@ -22,7 +22,7 @@ from ...tools.output import (
     sanitize_tool_result_data,
     strip_redaction_sentinels_from_mapping,
 )
-from ..config_models import DEFAULT_PROVIDER_CONTEXT_OVERSIZED_FEEDBACK_CHARS
+from ..config.models import DEFAULT_PROVIDER_CONTEXT_OVERSIZED_FEEDBACK_CHARS
 from ..contracts import (
     RuntimeProviderContextDiagnostic,
     RuntimeProviderContextDiagnosticPolicyAction,

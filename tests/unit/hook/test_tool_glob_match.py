@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from voidcode.hook.config import hook_tool_matches
-from voidcode.runtime.config import load_runtime_config
+from voidcode.runtime.config.loading import load_runtime_config
 
 
 def test_hook_tool_matches_empty_matches_all() -> None:

@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import Protocol
 
-from ..cli_support import EXIT_SUCCESS, print_json
 from ..runtime.contracts import CapabilityStatusSnapshot
+from .support import EXIT_SUCCESS, print_json
 
 
 def safe_detail(value: object, *, limit: int = 160) -> str:

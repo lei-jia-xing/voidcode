@@ -11,7 +11,7 @@ from .contracts import (
 )
 from .events import EventEnvelope
 from .fact_codec import reported_call_from_event
-from .permission import PendingApproval
+from .permissions.policy import PendingApproval
 from .question import PendingQuestion
 
 

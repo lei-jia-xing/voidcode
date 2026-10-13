@@ -8,12 +8,12 @@ from typing import cast
 import click
 
 from ...acp.stdio import StdioAcpServer
-from ...cli_support import EXIT_SUCCESS
-from ...runtime.permission import ApprovalMode
+from ...runtime.permissions.policy import ApprovalMode
 from ...server import serve, web
 from ..handler_args import AcpArgs
 from ..options import APPROVAL_MODES, workspace_option
 from ..runtime_gateway import load_cli_config, open_runtime
+from ..support import EXIT_SUCCESS
 
 
 def _handle_acp_command(args: AcpArgs) -> int:

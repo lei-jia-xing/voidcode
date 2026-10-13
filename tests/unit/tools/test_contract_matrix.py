@@ -6,7 +6,7 @@ from typing import cast
 
 import pytest
 
-from voidcode.runtime.tool_provider import builtin_tool_definitions
+from voidcode.runtime.tools.builtins import builtin_tool_definitions
 from voidcode.tools.contracts import ToolDefinition
 
 

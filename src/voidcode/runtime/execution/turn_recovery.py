@@ -5,11 +5,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from ...core.turns import CallSeed, ReportedCall
-from ...security.json_values import json_wire_object
+from ...formats.json_values import json_wire_object
 from ...security.redaction import REDACTED_PLACEHOLDER, redact_mapping
 from ...tools.contracts import ToolCall
 from ..events import REASONING_PERSISTED_LIMIT_CHARS
-from ..permission import PendingApproval, PermissionResolution
+from ..permissions.policy import PendingApproval, PermissionResolution
 from ..question import PendingQuestion
 from ..session_metadata_helpers import runtime_state_value
 

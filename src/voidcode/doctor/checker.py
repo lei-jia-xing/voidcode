@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from ..formatter import RuntimeFormatterPresetConfig
     from ..lsp.presets import LspServerPreset
-    from ..runtime.config import RuntimeMcpServerConfig
+    from ..runtime.config.loading import RuntimeMcpServerConfig
 
 from ..mcp.redaction import format_redacted_mcp_command, redact_mcp_command
 

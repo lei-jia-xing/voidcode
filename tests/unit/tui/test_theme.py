@@ -1,7 +1,7 @@
 import pytest
 
-from voidcode.runtime.config import RuntimeTuiThemeConfig
-from voidcode.runtime.config_models import TuiCustomThemePayload
+from voidcode.runtime.config.loading import RuntimeTuiThemeConfig
+from voidcode.runtime.config.models import TuiCustomThemePayload
 from voidcode.tui.theme import validate_theme_configuration
 
 

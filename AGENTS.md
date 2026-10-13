@@ -47,7 +47,7 @@ voidcode/
 | `main` | function | `src/voidcode/cli/app.py` | CLI process entry |
 | `root_cli` | function | `src/voidcode/cli/app.py` | Click command group root |
 | `VoidCodeRuntime` | class | `src/voidcode/runtime/service.py` | runtime boundary for requests/sessions |
-| `ToolRegistry` | class | `src/voidcode/runtime/service.py` | current built-in tool registry |
+| `ToolRegistry` | class | `src/voidcode/runtime/tools/registry.py` | current built-in tool registry |
 
 ## CONVENTIONS
 - Python is pinned to 3.14 only.

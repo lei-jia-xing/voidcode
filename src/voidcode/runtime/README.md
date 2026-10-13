@@ -27,6 +27,7 @@
 - `voidcode.core.engine.TurnEngine` 推进 producer turns 与 tool batches，不负责产品治理。
 - `runtime.run_loop.RuntimeHost` 把 core engine 接入 runtime context、受治理的工具执行、审批、hooks、持久化与恢复。
 - `voidcode.tools`、`voidcode.hook` 以及 capability-layer 目录都通过 runtime 进入真实执行路径；客户端只消费 runtime contracts、events 和 session state。
+- 配置、权限、provider catalog 与工具装配分别位于 `config/`、`permissions/`、`providers/`、`tools/`；`execution/` 承载工具执行与 runtime-to-core seams，具体源码归属见 [`AGENTS.md`](./AGENTS.md)。
 
 ## 当前状态
 

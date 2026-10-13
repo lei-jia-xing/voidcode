@@ -9,7 +9,7 @@ from google import genai
 from google.genai import types
 from google.oauth2 import service_account
 
-from ..security.json_values import json_wire_object
+from ..formats.json_values import json_wire_object
 from ..tools.contracts import ToolCall
 from ..tools.output import redacted_argument_keys_for_tool, sanitize_tool_arguments, strip_redaction_sentinels_from_mapping
 from ._wire_common import resolve_extra_request_headers

@@ -91,7 +91,7 @@ Snapshot v4 is a closed JSON shape: the root and each fixed section reject missi
 
 - `src/voidcode/agent/models.py`
 - `src/voidcode/agent/builtin.py`
-- `src/voidcode/runtime/config.py`
+- `src/voidcode/runtime/config/loading.py`
 - `src/voidcode/runtime/service.py`
 - `src/voidcode/runtime/skills.py`
 - `src/voidcode/runtime/mcp.py`

@@ -13,25 +13,25 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TypedDict, Unpack
 
-from ..cli_support import (
-    EXIT_APPROVAL_DENIED,
-    EXIT_APPROVAL_REQUIRED,
-    EXIT_CONFIG_ERROR,
-    EXIT_RUNTIME_ERROR,
-    EXIT_SUCCESS,
-    RuntimeStreamResult,
-    format_event,
-)
 from ..core.questions import QuestionResponse
-from ..runtime.config import RuntimeConfig, load_runtime_config
+from ..runtime.config.loading import RuntimeConfig, load_runtime_config
 from ..runtime.contracts import RuntimeRequest, RuntimeStreamChunk
 from ..runtime.events import EventEnvelope
-from ..runtime.permission import ApprovalMode, PermissionResolution
+from ..runtime.permissions.policy import ApprovalMode, PermissionResolution
 from ..runtime.service import VoidCodeRuntime
 from ..runtime.session import SessionState
 from ..runtime.session_metadata_helpers import runtime_state_run_id
 from .errors import CliError
 from .output import print_runtime_output, safe_detail
+from .support import (
+    EXIT_APPROVAL_DENIED,
+    EXIT_APPROVAL_REQUIRED,
+    EXIT_CONFIG_ERROR,
+    EXIT_RUNTIME_ERROR,
+    EXIT_SUCCESS,
+    StreamResult,
+    format_event,
+)
 from .trace import TracePrinter, discarded_output_notice
 
 
@@ -88,7 +88,7 @@ def run_with_inline_approval(
     emit_events: bool,
     trace_events: bool = False,
     show_thinking: bool = False,
-) -> RuntimeStreamResult:
+) -> StreamResult:
     trace_printer = TracePrinter(show_thinking=show_thinking) if trace_events else None
     result = consume_runtime_stream(
         runtime.run_stream(request),
@@ -131,7 +131,7 @@ def run_with_inline_approval(
                 reason="cli KeyboardInterrupt",
             ),
         )
-        result = RuntimeStreamResult(
+        result = StreamResult(
             output=resumed_result.output,
             session=resumed_result.session,
             events=(*result.events, *resumed_result.events),
@@ -172,7 +172,7 @@ def consume_runtime_stream(
     trace_printer: TracePrinter | None = None,
     show_thinking: bool = False,
     on_interrupt: Callable[[str, str | None], object] | None = None,
-) -> RuntimeStreamResult:
+) -> StreamResult:
     output: str | None = None
     final_session: SessionState | None = None
     events: list[EventEnvelope] = []
@@ -199,10 +199,10 @@ def consume_runtime_stream(
     if final_session is None:
         raise ValueError("runtime stream emitted no chunks")
 
-    return RuntimeStreamResult(output=output, session=final_session, events=tuple(events))
+    return StreamResult(output=output, session=final_session, events=tuple(events))
 
 
-def incomplete_runtime_stream_message(result: RuntimeStreamResult) -> str | None:
+def incomplete_runtime_stream_message(result: StreamResult) -> str | None:
     if result.session.status in {"completed", "failed", "waiting"}:
         return None
     if has_permission_denied_tool_result(result.events):
@@ -230,7 +230,7 @@ def run_id_from_session_metadata(metadata: dict[str, object]) -> str | None:
     return run_id if run_id else None
 
 
-def last_event(result: RuntimeStreamResult) -> EventEnvelope | None:
+def last_event(result: StreamResult) -> EventEnvelope | None:
     return result.events[-1] if result.events else None
 
 
@@ -304,7 +304,7 @@ def prompt_for_question(event: EventEnvelope) -> tuple[QuestionResponse, ...]:
     return tuple(responses)
 
 
-def session_result_exit_code(result: RuntimeStreamResult) -> int:
+def session_result_exit_code(result: StreamResult) -> int:
     blocked_event = pending_blocked_event(result.session, last_event(result))
     if blocked_event is not None:
         return blocked_exit_code(blocked_event)
@@ -322,7 +322,7 @@ def consume_session_stream(
     *,
     show_thinking: bool,
     on_interrupt: Callable[[str, str | None], object] | None = None,
-) -> RuntimeStreamResult:
+) -> StreamResult:
     return consume_runtime_stream(
         chunks,
         emit_events=True,
