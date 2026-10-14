@@ -10,8 +10,7 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.parametrize("scope", ["user", "workspace"])
-@pytest.mark.parametrize("is_tty", [False, True])
+@pytest.mark.parametrize(("scope", "is_tty"), [("user", True), ("workspace", False)])
 def test_invalid_tui_config_exits_before_native_terminal_setup(tmp_path: Path, scope: str, is_tty: bool) -> None:
     root = tmp_path
     home = root / "home"

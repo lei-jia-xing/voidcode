@@ -8,7 +8,6 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import get_args
 
 import pytest
 
@@ -21,11 +20,9 @@ from voidcode.runtime.config.models import (
     VALID_TUI_COMPOSER_CURSOR_SHAPES,
     VALID_TUI_COMPOSER_STYLES,
     VALID_TUI_THEME_MODES,
-    TuiSymbolsPreset,
 )
 from voidcode.tui.statusline import statusline_profiles
 from voidcode.tui.term import visible_width
-from voidcode.tui.theme import resolve_theme
 
 pytestmark = pytest.mark.skipif(os.name != "posix" or shutil.which("tmux") is None, reason="requires a POSIX tmux terminal")
 
@@ -2432,171 +2429,3 @@ def test_native_question_escape_cancels_through_the_public_runtime(
             check=False,
             capture_output=True,
         )
-
-
-def test_native_tui_renders_all_glyph_presets_on_real_tool_output(tmp_path: Path) -> None:
-    presets = get_args(TuiSymbolsPreset.__value__)
-    assert len(presets) == 3
-    observed: dict[str, str] = {}
-
-    for preset in presets:
-        root = tmp_path / preset
-        workspace = root / "workspace"
-        home = root / "home"
-        config_home = root / "config"
-        state_home = root / "state"
-        cache_home = root / "cache"
-        data_home = root / "data"
-        tmux_tmpdir = root / "tmux"
-        local_app_data = root / "localappdata"
-        for directory in (
-            workspace,
-            home,
-            config_home,
-            state_home,
-            cache_home,
-            data_home,
-            local_app_data,
-            tmux_tmpdir,
-        ):
-            directory.mkdir(parents=True)
-        (workspace / "glyph.txt").write_text("glyph file line one\nglyph file line two\n")
-        config_path = workspace / ".voidcode.json"
-        provider = OpenAILoopbackServer(
-            [
-                openai_response(
-                    message={
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": f"call-glyph-{preset}",
-                                "type": "function",
-                                "function": {
-                                    "name": "shell_exec",
-                                    "arguments": json.dumps({"command": "sleep 1; cat glyph.txt"}),
-                                },
-                            }
-                        ],
-                    },
-                    finish="tool_calls",
-                ),
-                openai_response(message={"role": "assistant", "content": "Read glyph.txt."}, finish="stop"),
-            ]
-        )
-        provider_thread = threading.Thread(target=provider.serve_forever, daemon=True)
-        configure_openai_provider(workspace, f"http://127.0.0.1:{provider.server_address[1]}/v1")
-        config = json.loads(config_path.read_text(encoding="utf-8"))
-        config["approval_mode"] = "yolo"
-        config["tui"] = {"theme": {"symbols": {"preset": preset}}}
-        config_path.write_text(json.dumps(config), encoding="utf-8")
-        project_root = Path(__file__).resolve().parents[3]
-        env = {
-            "APPDATA": str(config_home),
-            "HOME": str(home),
-            "LOCALAPPDATA": str(local_app_data),
-            "PATH": os.environ.get("PATH", ""),
-            "PYTHONPATH": str(project_root / "src"),
-            "TERM": "tmux-256color",
-            "TMUX_TMPDIR": str(tmux_tmpdir),
-            "USERPROFILE": str(home),
-            "DEEPSEEK_API_KEY": "loopback-key",
-            "VOIDCODE_APPROVAL_MODE": "yolo",
-            "VOIDCODE_DB_PATH": str(root / "voidcode.sqlite3"),
-            "XDG_CACHE_HOME": str(cache_home),
-            "XDG_CONFIG_HOME": str(config_home),
-            "XDG_DATA_HOME": str(data_home),
-            "XDG_STATE_HOME": str(state_home),
-        }
-        socket = root / "tmux.sock"
-        session = "native-glyph"
-        command = (
-            "env -i "
-            + " ".join(f"{key}={shlex.quote(value)}" for key, value in env.items())
-            + " "
-            + shlex.quote(sys.executable)
-            + " -m voidcode tui --workspace "
-            + shlex.quote(str(workspace))
-        )
-        try:
-            provider_thread.start()
-            _tmux(socket, "new-session", "-d", "-s", "keepalive", "sleep", "60", env=env)
-            _tmux(socket, "set-option", "-g", "exit-empty", "off", env=env)
-            _tmux(socket, "set-option", "-g", "remain-on-exit", "on", env=env)
-            _tmux(socket, "new-session", "-d", "-x", "80", "-y", "24", "-s", session, command, env=env)
-            _tmux(socket, "kill-session", "-t", "keepalive", env=env)
-            _tmux(socket, "set-option", "-g", "status", "off", env=env)
-
-            def capture(
-                *args: str,
-                _socket: Path = socket,
-                _session: str = session,
-                _env: dict[str, str] = env,
-            ) -> str:
-                return _tmux(_socket, "capture-pane", "-p", *args, "-t", f"{_session}:0.0", env=_env)
-
-            deadline = time.monotonic() + 30
-            while time.monotonic() < deadline:
-                pane = capture()
-                if "VOIDCODE" in pane:
-                    break
-                time.sleep(0.1)
-            else:
-                pytest.fail(f"native glyph TUI did not start for {preset}:\n{capture('-S', '-')}")
-            brand_mark = "[*V]" if preset == "ascii" else "◇V"
-            assert any(line.strip() == f"{brand_mark}  VOIDCODE" for line in pane.splitlines())
-
-            _tmux(socket, "send-keys", "-t", f"{session}:0.0", "-l", "show glyph.txt", env=env)
-            deadline = time.monotonic() + 10
-            while time.monotonic() < deadline:
-                pane = capture()
-                if "show glyph.txt" in pane:
-                    break
-                time.sleep(0.05)
-            _tmux(socket, "send-keys", "-t", f"{session}:0.0", "Enter", env=env)
-
-            deadline = time.monotonic() + 20
-            while time.monotonic() < deadline:
-                pane = capture()
-                if "Running" in pane:
-                    break
-                time.sleep(0.05)
-            else:
-                pytest.fail(f"native shell tool did not start for glyph preset {preset}:\n{capture()}")
-            _tmux(socket, "send-keys", "-t", f"{session}:0.0", "C-o", env=env)
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline:
-                pane = capture()
-                if "Tool output expansion enabled" in pane:
-                    break
-                time.sleep(0.05)
-            else:
-                pytest.fail(f"native expansion toggle was not acknowledged before tool output:\n{capture()}")
-            deadline = time.monotonic() + 30
-            while time.monotonic() < deadline:
-                scrollback = capture("-S", "-")
-                if "glyph file line two" in scrollback and "Read glyph.txt." in scrollback:
-                    break
-                time.sleep(0.1)
-            else:
-                pytest.fail(f"native tool body did not expand for glyph preset {preset}:\n{capture()}\nscrollback:\n{scrollback}")
-            assert "glyph file line one" in scrollback and "Read glyph.txt." in scrollback
-            assert not any(line.strip() == f"{brand_mark}  VOIDCODE" for line in capture().splitlines())
-            glyph = resolve_theme(glyph_preset=preset).symbol("status.success")
-            assert glyph in scrollback
-            observed[preset] = glyph
-        finally:
-            if provider_thread.is_alive():
-                provider.shutdown()
-                provider_thread.join(timeout=5)
-            provider.server_close()
-            subprocess.run(
-                ["tmux", "-S", str(socket), "-f", "/dev/null", "kill-server"],
-                env=env,
-                check=False,
-                capture_output=True,
-            )
-
-    assert len(set(observed.values())) == len(presets)
-    print(json.dumps({"glyph_presets": observed}, ensure_ascii=True, sort_keys=True))

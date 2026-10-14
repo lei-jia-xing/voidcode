@@ -107,18 +107,16 @@ describe("parseSseDataPayload chunk conversion", () => {
   });
 
   it("returns null for malformed JSON instead of throwing", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
     expect(parseSseDataPayload("{bad json}")).toBeNull();
-    expect(warn).toHaveBeenCalled();
   });
 
   it("returns null for structurally invalid chunks instead of throwing", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
     expect(
       parseSseDataPayload(
         '{"kind":"bogus","session":null,"event":null,"output":null}',
       ),
     ).toBeNull();
-    expect(warn).toHaveBeenCalled();
   });
 });

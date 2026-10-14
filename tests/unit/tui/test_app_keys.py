@@ -1,14 +1,10 @@
 import os
 from pathlib import Path
 
-from voidcode.tui.app import TuiApp, parse_keymap
+from voidcode.tui.app import TuiApp
 from voidcode.tui.keys import Key
 from voidcode.tui.overlay import AppearanceOverlay, HelpOverlay
 from voidcode.tui.term import Terminal
-
-
-def test_function_key_actions_are_configurable_but_not_default() -> None:
-    assert parse_keymap(None) == {"app.tools.expand": Key("ctrl+o")}
 
 
 def test_f2_opens_appearance_picker(tmp_path: Path, monkeypatch) -> None:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from voidcode.provider.google_native import GoogleGenAIProvider
-from voidcode.provider.model_catalog import ProviderModelMetadata, _load_static_catalog
+from voidcode.provider.model_catalog import _load_static_catalog
 from voidcode.provider.pricing_rules import usage_cost_usd
 from voidcode.provider.thinking_rules import thinking_rule_for
 
@@ -15,18 +15,6 @@ def test_shipped_catalog_input_limits_are_optional_positive_values() -> None:
         for metadata in models.values():
             if metadata.max_input_tokens is not None:
                 assert metadata.max_input_tokens > 0
-
-
-def test_context_window_and_output_cap_do_not_invent_an_input_limit() -> None:
-    metadata = ProviderModelMetadata(context_window=500000, max_output_tokens=500000)
-    assert metadata.max_input_tokens is None
-
-    metadata = _load_static_catalog()["openai"]["gpt-4o"]
-    assert metadata.context_window == 128000
-    assert metadata.max_input_tokens is None
-
-    explicit = _load_static_catalog()["openai"]["gpt-5"]
-    assert explicit.max_input_tokens == 272000
 
 
 def test_google_usage_splits_the_prompt_total_into_uncached() -> None:

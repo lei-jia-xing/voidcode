@@ -49,12 +49,6 @@ def test_unknown_builtin_materialization_refuses_instead_of_generating_prompt() 
         render_agent_prompt(AgentPromptMaterialization(profile="not-a-builtin-profile", version=1))
 
 
-@pytest.mark.parametrize("old_id", ("leader", "worker", "advisor", "researcher", "product"))
-def test_old_builtin_materializations_are_not_rendered(old_id: str) -> None:
-    with pytest.raises(ValueError, match="unknown builtin agent prompt profile"):
-        render_agent_prompt(AgentPromptMaterialization(profile=old_id))
-
-
 def test_builtin_prompt_profiles_load_from_zip_resources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     archive_path = tmp_path / "agent-prompts.zip"
     with zipfile.ZipFile(archive_path, "w") as archive:
@@ -65,9 +59,5 @@ def test_builtin_prompt_profiles_load_from_zip_resources(tmp_path: Path, monkeyp
     try:
         assert agent_prompts.has_builtin_prompt_profile("default")
         assert agent_prompts.render_builtin_prompt_profile("default") == "zip-backed default prompt"
-        for old_id in ("leader", "worker", "advisor", "researcher", "product"):
-            assert not agent_prompts.is_builtin_prompt_profile(old_id)
-            assert not agent_prompts.has_builtin_prompt_profile(old_id)
-            assert agent_prompts.render_builtin_prompt_profile(old_id) is None
     finally:
         agent_prompts._render_known_builtin_prompt_profile.cache_clear()

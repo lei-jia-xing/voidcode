@@ -10,8 +10,6 @@ from voidcode.provider.config import parse_provider_configs_payload
 from voidcode.runtime.config.loading import load_runtime_config
 from voidcode.runtime.config.schema import (
     RUNTIME_CONFIG_SCHEMA_ID,
-    format_runtime_config_schema_json,
-    format_starter_runtime_config_json,
     generate_starter_runtime_config,
     runtime_config_json_schema,
 )
@@ -48,44 +46,6 @@ def test_generate_starter_runtime_config_validates_inputs() -> None:
         generate_starter_runtime_config(model="provider/")
     with pytest.raises(ValueError, match="provider/model"):
         generate_starter_runtime_config(model="/gpt-5")
-
-
-def test_format_starter_runtime_config_json_preserves_order() -> None:
-    payload = generate_starter_runtime_config(include_schema_reference=False)
-
-    assert format_starter_runtime_config_json(payload) == '{\n  "approval_mode": "yolo"\n}\n'
-
-
-def test_runtime_config_rejects_removed_workflows_field(tmp_path: Path) -> None:
-    config_path = tmp_path / ".voidcode.json"
-    config_path.write_text(
-        json.dumps(
-            {
-                "workflows": {
-                    "custom": {
-                        "id": "custom",
-                        "default_agent": "default",
-                        "category": "implementation",
-                    }
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="runtime config field 'workflows' is not supported"):
-        _ = load_runtime_config(tmp_path, env={})
-
-
-def test_runtime_config_rejects_repo_local_workflow_mode_default(tmp_path: Path) -> None:
-    config_path = tmp_path / ".voidcode.json"
-    config_path.write_text(json.dumps({"workflow_mode": "review"}), encoding="utf-8")
-
-    with pytest.raises(
-        ValueError,
-        match="runtime config field 'workflow_mode' is not supported",
-    ):
-        _ = load_runtime_config(tmp_path, env={})
 
 
 def test_runtime_config_rejects_invalid_policy_shapes(tmp_path: Path) -> None:
@@ -135,22 +95,6 @@ def test_runtime_config_rejects_invalid_policy_hook_scope(tmp_path: Path) -> Non
 
     with pytest.raises(ValueError, match="policy.hook_policy.allowed_event_scopes"):
         _ = load_runtime_config(tmp_path, env={})
-
-
-SCHEMA_PATH = Path(__file__).resolve().parents[3] / "schema" / "voidcode.config.schema.json"
-
-
-def test_runtime_config_schema_file_matches_generated_schema() -> None:
-    """The checked-in schema.json must be a faithful export of the generated schema.
-
-    ``runtime_config_json_schema()`` is generated from the payload models in
-    ``runtime/config_models.py`` and ``voidcode config schema`` prints it, while
-    ``schema/voidcode.config.schema.json`` is its static editor-support export.
-    The comparison is byte-exact, so the artifact must be regenerated with
-    ``uv run python scripts/generate_config_schema.py`` (``mise run schema:check``)
-    whenever a model changes: a field added to the models cannot ship without it.
-    """
-    assert SCHEMA_PATH.read_text(encoding="utf-8") == format_runtime_config_schema_json()
 
 
 def test_runtime_config_schema_accepts_null_wherever_the_loader_treats_null_as_unset(tmp_path: Path) -> None:

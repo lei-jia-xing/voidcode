@@ -76,14 +76,14 @@ class _OverflowScript:
         return replace(nxt, facts=(*nxt.facts, fact))
 
 
-#: Enough read payload that pruning clears the policy's savings floor (the
-#: ``min_savings_tokens`` knob is no longer a config key).
-READ_COUNT = 30
+#: ReadTool's bounded view is about 6,000 chars (~1,230 tokens) per file;
+#: 17 authentic results clear the fixed 20,000-token savings floor.
+READ_COUNT = 17
 READ_LINES = 120
 
 
 def _workspace(tmp_path: Path) -> None:
-    body = "".join(f"line {index:03d} " + "y" * 20 + "\n" for index in range(READ_LINES))
+    body = "".join(f"line {index:03d} " + "y" * 200 + "\n" for index in range(READ_LINES))
     for index in range(READ_COUNT):
         (tmp_path / f"big-{index}.txt").write_text(body, encoding="utf-8")
 

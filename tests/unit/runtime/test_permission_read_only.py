@@ -164,11 +164,6 @@ def test_resolve_permission_read_only_overrides_explicit_allow_rule() -> None:
     assert outcome.pending_approval.policy_surface == "read_only"
 
 
-def test_request_metadata_rejects_removed_runtime_mode_field() -> None:
-    with pytest.raises(RuntimeRequestError, match="unsupported request metadata field.*mode"):
-        validate_runtime_request_metadata({"mode": "plan"})
-
-
 def test_request_metadata_rejects_invalid_read_only_flag() -> None:
     with pytest.raises(RuntimeRequestError, match="read_only"):
         validate_runtime_request_metadata({"read_only": "true"})

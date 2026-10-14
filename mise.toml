@@ -34,9 +34,7 @@ run = "bun run test"
 dir = "frontend"
 
 [tasks."frontend:e2e"]
-depends = ["frontend:build", "frontend:test:e2e:run"]
-
-[tasks."frontend:test:e2e:run"]
+depends = ["frontend:build"]
 run = "bun run test:e2e"
 dir = "frontend"
 

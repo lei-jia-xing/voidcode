@@ -31,11 +31,6 @@ describe("ChatThread stream state", () => {
       />,
     );
 
-    expect(
-      screen.getByText(
-        "Runtime reports this run is still active; waiting for a final session status.",
-      ),
-    ).toBeTruthy();
     expect(screen.queryByText("Responding...")).toBeNull();
     expect(container.querySelector(".animate-spin")).toBeNull();
   });

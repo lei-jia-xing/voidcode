@@ -25,7 +25,7 @@ VoidCode enforces clean boundaries across its backend layers:
 - Target Python 3.14. Prefer standard library solutions and existing dependencies.
 - Code formatting and linting are enforced by Ruff (`mise run lint`, `mise run format`).
 - Static type checking is enforced by ty (`mise run typecheck`).
-- Add or update tests whenever observable behavior changes.
+- **Tests**: Add or update tests when observable behavior changes. Assert meaningful outcomes, bounds, state transitions, and persisted effects. Use local loopback providers for real protocol paths, keeping routine verification deterministic and credential-free.
 
 ## Frontend Standards
 

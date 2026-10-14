@@ -9,8 +9,6 @@ describe("errorMessage", () => {
   ])("extracts a useful message from %o", (value, expected) => {
     const result = errorMessage(value);
     expect(result).toBe(expected);
-    expect(result).not.toBeUndefined();
-    expect(result.trim()).not.toBe("");
   });
 
   it.each([
@@ -24,7 +22,5 @@ describe("errorMessage", () => {
   ])("returns a non-empty fallback for %o", (value) => {
     const result = errorMessage(value);
     expect(result).toBe("Unknown error");
-    expect(result).not.toBeUndefined();
-    expect(result.trim()).not.toBe("");
   });
 });

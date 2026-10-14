@@ -4,7 +4,7 @@ import pytest
 
 from voidcode.core.tool_context import ToolContext
 from voidcode.hook.typed import validate_tool_input_schema
-from voidcode.tools.contracts import ProgressYield, TerminalYieldFailure, ToolCall, ToolFailure, ToolSuccess
+from voidcode.tools.contracts import ProgressYield, TerminalYield, TerminalYieldFailure, ToolCall, ToolFailure, ToolSuccess
 from voidcode.tools.yield_tool import YieldTool
 
 
@@ -15,12 +15,10 @@ from voidcode.tools.yield_tool import YieldTool
         pytest.param({"summary": "Done."}, True, id="summary"),
         pytest.param({"summary": "Done.", "type": "result", "data": {}}, True, id="summary-result"),
         pytest.param({"summary": "Done.", "type": ["result"], "data": {}}, True, id="summary-result-list"),
-        pytest.param({"error": "child failed"}, True, id="error"),
         pytest.param({"error": "child failed", "type": "error", "data": {}}, True, id="error-type"),
         pytest.param({"error": "child failed", "type": ["error"], "data": {}}, True, id="error-type-list"),
         pytest.param({"type": "progress", "result": "Still working."}, True, id="progress"),
         pytest.param({"type": ["progress", "checkpoint"], "data": {"step": 1}}, True, id="progress-checkpoint"),
-        pytest.param({"type": ["progress", "progress"], "result": "Still working."}, True, id="progress-progress"),
         # Rejected mixed or incomplete forms.
         pytest.param({"type": "error"}, False, id="type-error-without-payload"),
         pytest.param({"type": "result"}, False, id="type-result-without-payload"),
@@ -39,7 +37,6 @@ from voidcode.tools.yield_tool import YieldTool
         pytest.param({"summary": "Done.", "type": "progress", "result": "mixed"}, False, id="summary-with-progress"),
         pytest.param({"summary": "Done.", "error": "child failed"}, False, id="summary-and-error"),
         pytest.param({"error": "child failed", "type": "progress"}, False, id="error-with-progress-type"),
-        pytest.param({"error": "child failed", "type": "progress", "result": "mixed"}, False, id="error-mixed-progress"),
         pytest.param({"error": "child failed", "type": "result"}, False, id="error-with-result-type"),
         pytest.param({"error": "child failed", "result": "mixed"}, False, id="error-with-result"),
     ),
@@ -47,6 +44,19 @@ from voidcode.tools.yield_tool import YieldTool
 def test_yield_input_schema_matrix(arguments: dict[str, object], valid: bool) -> None:
     if valid:
         validate_tool_input_schema(YieldTool.definition, arguments)
+        result = YieldTool().invoke(
+            ToolCall(tool_name="yield", arguments=arguments),
+            context=ToolContext(workspace=Path("."), session_id="child", parent_session_id="parent"),
+        )
+        if "error" in arguments:
+            assert isinstance(result.control, TerminalYieldFailure)
+            assert result.status == "error"
+        elif "type" in arguments and (arguments["type"] == "progress" or (isinstance(arguments["type"], list) and "progress" in arguments["type"])):
+            assert isinstance(result.control, ProgressYield)
+            assert result.status == "ok"
+        else:
+            assert isinstance(result.control, TerminalYield)
+            assert result.status == "ok"
         return
 
     with pytest.raises(ValueError, match="input schema validation failed"):

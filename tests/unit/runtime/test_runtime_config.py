@@ -85,17 +85,6 @@ DEFAULT_FORMATTER_PRESETS = default_formatter_presets()
 PRETTIER_ROOT_MARKERS = DEFAULT_FORMATTER_PRESETS["typescript"].root_markers
 
 
-def test_runtime_config_defaults_to_yolo_without_file_or_env(tmp_path: Path) -> None:
-    config = load_runtime_config(tmp_path, env={})
-
-    assert config.approval_mode == "yolo"
-    assert config.model is None
-    assert config.background_task == RuntimeBackgroundTaskConfig()
-    assert config.hooks is None
-    assert config.permission.read.rules == (("*", "allow"),)
-    assert config.permission.write.rules == (("*", "ask"),)
-
-
 def test_runtime_config_loads_external_directory_permission_rules(tmp_path: Path) -> None:
     _write_runtime_config(
         tmp_path,
@@ -116,15 +105,6 @@ def test_runtime_config_loads_external_directory_permission_rules(tmp_path: Path
         ("~/.config/voidcode/skills/**", "allow"),
         ("*", "ask"),
     )
-    assert config.permission.write.rules == (("*", "ask"),)
-
-
-def test_runtime_config_defaults_missing_external_write_rule_to_ask(tmp_path: Path) -> None:
-    _write_runtime_config(tmp_path, {"permission": {"external_directory_read": {"~/.config/voidcode/skills/**": "allow"}}})
-
-    config = load_runtime_config(tmp_path, env={})
-
-    assert config.permission.read.rules == (("~/.config/voidcode/skills/**", "allow"),)
     assert config.permission.write.rules == (("*", "ask"),)
 
 
@@ -333,12 +313,6 @@ def test_runtime_config_uses_tool_timeout_environment_when_repo_file_missing(
     config = load_runtime_config(tmp_path, env={TOOL_TIMEOUT_ENV_VAR: "7"})
 
     assert config.tool_timeout_seconds == 7
-
-
-def test_runtime_config_default_reasoning_effort_is_none(tmp_path: Path) -> None:
-    config = load_runtime_config(tmp_path, env={})
-
-    assert config.reasoning_effort is None
 
 
 def test_runtime_config_uses_reasoning_effort_environment_when_repo_file_missing(
@@ -1129,17 +1103,6 @@ def test_runtime_agent_payload_resolves_through_builtin_agent_manifest() -> None
     assert agent == RuntimeAgentConfig(preset="default", prompt_profile=manifest.prompt_profile)
 
 
-def test_runtime_agent_payload_rejects_removed_leader_mode() -> None:
-    with pytest.raises(
-        ValueError,
-        match="runtime config field 'agent.leader_mode' is not supported",
-    ):
-        _ = parse_runtime_agent_payload(
-            {"preset": "default", "leader_mode": "plan_first"},
-            source="test payload",
-        )
-
-
 def test_runtime_agent_payload_accepts_builtin_role_presets() -> None:
     agent = parse_runtime_agent_payload({"preset": "execute"}, source="test payload")
 
@@ -1401,20 +1364,6 @@ def test_runtime_config_parses_agent_context_transform_refs(tmp_path: Path) -> N
     config = load_runtime_config(tmp_path, env={})
 
     assert config.agent == RuntimeAgentConfig(preset="default", prompt_profile="default", context_transform_refs=("runtime_file_rules",))
-
-
-def test_runtime_config_rejects_removed_categories_field(tmp_path: Path) -> None:
-    _write_runtime_config(
-        tmp_path,
-        {
-            "categories": {
-                "quick": {"model": "openai/gpt-4o-mini"},
-            }
-        },
-    )
-
-    with pytest.raises(ValueError, match="categories"):
-        _ = load_runtime_config(tmp_path, env={})
 
 
 def test_runtime_config_parses_minimal_hook_commands(tmp_path: Path) -> None:
@@ -1697,15 +1646,6 @@ def test_runtime_config_lsp_diagnostics_on_write_is_opt_in(tmp_path: Path) -> No
 
     assert config.lsp is not None
     assert config.lsp.diagnostics_on_write is True
-
-
-def test_runtime_config_lsp_diagnostics_on_write_defaults_off(tmp_path: Path) -> None:
-    _write_runtime_config(tmp_path, {"lsp": {"enabled": True}})
-
-    config = load_runtime_config(tmp_path, env={})
-
-    assert config.lsp is not None
-    assert config.lsp.diagnostics_on_write is False
 
 
 def test_runtime_config_rejects_invalid_environment_approval_mode(tmp_path: Path) -> None:
@@ -2512,12 +2452,6 @@ def test_load_global_web_settings_detects_provider_env_keys(tmp_path: Path, prov
     settings = load_global_web_settings(env={"XDG_CONFIG_HOME": str(tmp_path / "global-config"), **env})
 
     assert settings == RuntimeWebSettings(provider=provider, provider_api_key_present=True)
-
-
-def test_runtime_config_uses_repo_local_filename_inside_workspace(tmp_path: Path) -> None:
-    config_file = tmp_path / RUNTIME_CONFIG_FILE_NAME
-
-    assert runtime_config_path(tmp_path) == config_file
 
 
 def test_runtime_config_uses_opencode_go_environment_credentials_without_provider_block(

@@ -33,3 +33,5 @@ htmlcov/
 .voidcode.json
 .claude/
 playwright-report/
+.codegraph/
+frontend/test-results/

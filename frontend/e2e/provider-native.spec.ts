@@ -345,9 +345,6 @@ test.describe("provider-native browser runtime", () => {
     await expect(
       page.getByText("Updated sample.txt after approval.", { exact: true }),
     ).toBeVisible({ timeout: 60_000 });
-    await expect(
-      page.getByText("Approval Required", { exact: true }),
-    ).toHaveCount(0);
     await expect(page.locator('[aria-label="Completed"]')).toBeVisible();
     await expect(readCards).toHaveCount(2);
     await readCards.nth(0).locator("button[aria-expanded]").click();

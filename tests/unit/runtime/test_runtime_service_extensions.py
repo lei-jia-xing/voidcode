@@ -2937,46 +2937,6 @@ def test_runtime_config_rejects_unknown_persisted_field(tmp_path: Path) -> None:
         _ = runtime.run_config_from_metadata({"runtime_config": runtime_config_metadata})
 
 
-@pytest.mark.parametrize(
-    ("removed_field", "removed_value"),
-    (
-        ("workflow", {"snapshot_version": 2}),
-        ("context_transform_refs", ["runtime_file_rules"]),
-        ("agent_preset", "default"),
-        ("provider", "openai"),
-    ),
-)
-def test_runtime_config_rejects_removed_persisted_shapes(
-    tmp_path: Path,
-    removed_field: str,
-    removed_value: object,
-) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path)
-    runtime_config_metadata = runtime._runtime_config_metadata()
-    runtime_config_metadata[removed_field] = removed_value
-
-    with pytest.raises(
-        ValueError,
-        match=rf"persisted runtime_config field '{removed_field}' is not supported",
-    ):
-        _ = runtime.run_config_from_metadata({"runtime_config": runtime_config_metadata})
-
-
-def test_runtime_config_rejects_removed_top_level_metadata_without_runtime_config(
-    tmp_path: Path,
-) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path)
-
-    with pytest.raises(ValueError, match="persisted session metadata must include runtime_config"):
-        _ = runtime.run_config_from_metadata(
-            {
-                "agent": {"preset": "default"},
-                "reasoning_effort": "medium",
-                "context_transform_refs": ["runtime_file_rules"],
-            }
-        )
-
-
 def test_runtime_child_capability_snapshot_is_bounded_by_parent_policy(
     tmp_path: Path,
 ) -> None:

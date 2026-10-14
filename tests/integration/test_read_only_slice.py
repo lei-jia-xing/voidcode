@@ -32,35 +32,6 @@ _DEFAULT_PERMISSION_METADATA = {
     "external_directory_read": {"*": "allow"},
     "external_directory_write": {"*": "ask"},
 }
-_LEADER_HOOK_PRESET_SNAPSHOT = {
-    "refs": [
-        "role_reminder",
-        "delegation_guard",
-        "background_output_quality_guidance",
-        "delegated_retry_guidance",
-        "todo_continuation_guidance",
-    ],
-    "kinds": ["guidance", "guard", "guidance", "guard", "continuation"],
-    "event_scopes": [
-        "core.model_turn",
-        "core.tool_request_created",
-        "runtime.background_task_cancelled",
-        "runtime.background_task_completed",
-        "runtime.background_task_failed",
-        "runtime.background_task_interrupted",
-        "runtime.background_task_result_read",
-        "runtime.delegated_result_available",
-        "runtime.permission_resolved",
-        "runtime.request_received",
-        "runtime.todo_updated",
-        "runtime.tool_started",
-        "runtime.turn_progress",
-    ],
-    "allowed_actions": ["cancel", "guidance", "observe", "report"],
-    "authority": "non_authoritative",
-    "source": "builtin",
-    "count": 5,
-}
 
 
 @pytest.fixture

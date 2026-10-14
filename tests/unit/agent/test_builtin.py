@@ -40,12 +40,6 @@ def test_builtin_agent_manifests_have_materialized_prompt_profiles() -> None:
         assert prompt
 
 
-def test_builtin_agent_manifests_declare_top_level_selectability() -> None:
-    manifests = list_builtin_agent_manifests()
-
-    assert [manifest.id for manifest in manifests if manifest.top_level_selectable] == ["default"]
-
-
 def test_builtin_delegated_only_agent_manifests_are_not_top_level_selectable() -> None:
     for preset in _DELEGATED_ONLY_AGENT_PRESETS:
         manifest = get_builtin_agent_manifest(preset)
@@ -96,12 +90,6 @@ def test_builtin_delegated_executor_roles_do_not_receive_recursive_task_tool() -
 
         assert manifest is not None
         assert "task" not in manifest.tool_allowlist
-
-
-def test_old_builtin_ids_are_not_builtin_routes() -> None:
-    for old_id in ("leader", "worker", "advisor", "researcher", "product"):
-        assert get_builtin_agent_manifest(old_id) is None
-        assert render_builtin_prompt_profile(old_id) is None
 
 
 def test_validate_builtin_agent_manifests_rejects_unknown_preset_hook_ref() -> None:

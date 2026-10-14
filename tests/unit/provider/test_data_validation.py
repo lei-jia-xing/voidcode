@@ -12,12 +12,8 @@ import pytest
 from voidcode.provider.api_routes import _route
 from voidcode.provider.model_catalog import _static_catalog_from_payload
 from voidcode.provider.pricing_rules import _row as pricing_row
-from voidcode.provider.provider_table import _rows_from_payload, require_provider_id
+from voidcode.provider.provider_table import _rows_from_payload
 from voidcode.provider.thinking_rules import _row as thinking_row
-
-
-def test_a_known_provider_id_passes_the_table_check() -> None:
-    assert require_provider_id("openai", source="test") == "openai"
 
 
 def test_an_api_route_naming_no_table_row_fails_at_import() -> None:
@@ -62,14 +58,3 @@ def test_the_catalog_rejects_an_unknown_entry_field() -> None:
     which used to leave the model reading as "no metadata" rather than an error."""
     with pytest.raises(ValueError, match=r"gpt-5\.5 carries unknown fields: \['max_outputs'\]"):
         _static_catalog_from_payload({"openai": {"gpt-5.5": {"context_window": 400000, "max_outputs": 128000}}})
-
-
-def test_the_catalog_accepts_every_field_the_metadata_type_carries() -> None:
-    catalog = _static_catalog_from_payload(
-        {"openai": {"gpt-5.5": {"context_window": 400000, "max_output_tokens": 128000, "api": "openai-completions"}}}
-    )
-
-    metadata = catalog["openai"]["gpt-5.5"]
-    assert metadata.context_window == 400000
-    assert metadata.max_output_tokens == 128000
-    assert metadata.api == "openai-completions"

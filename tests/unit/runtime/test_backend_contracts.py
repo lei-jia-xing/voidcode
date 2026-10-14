@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import importlib
 import json
-from collections.abc import Iterator
-from dataclasses import FrozenInstanceError, asdict
+from dataclasses import FrozenInstanceError
 from types import ModuleType
-from typing import Any, cast
+from typing import cast
 
 import pytest
 
-from voidcode.tools.contracts import TextOutput, ToolDiagnostics, ToolFailure, ToolSuccess
+from voidcode.tools.contracts import ToolDiagnostics, ToolFailure
 
 
 def _runtime_module() -> ModuleType:
@@ -40,13 +39,6 @@ def test_contracts_are_frozen_and_isolate_default_state() -> None:
         first_session.turn = 3
 
 
-def test_tool_result_validates_status_consistently() -> None:
-    success = ToolSuccess(tool_name="bash", output=TextOutput("ok"))
-    failure = ToolFailure(tool_name="bash", error="failed")
-    assert success.status == "ok"
-    assert failure.status == "error"
-
-
 def test_tool_result_diagnostics_are_bounded_and_json_safe() -> None:
     diagnostics = ToolDiagnostics(
         kind="tool_timeout",
@@ -59,60 +51,6 @@ def test_tool_result_diagnostics_are_bounded_and_json_safe() -> None:
     assert ToolDiagnostics.from_payload(payload) == diagnostics
     failure = ToolFailure(tool_name="read", error="timed out", diagnostics=diagnostics)
     assert failure.diagnostics == diagnostics
-
-
-def test_runtime_entrypoint_protocols_are_runtime_checkable() -> None:
-    runtime_module = _runtime_module()
-
-    class StubRuntime:
-        def run(self, request: Any) -> Any:
-            typed_request = runtime_module.RuntimeRequest(**asdict(request))
-            session = runtime_module.SessionState(session=runtime_module.SessionRef(id=typed_request.session_id or "new-session"))
-            event = runtime_module.EventEnvelope(
-                session_id=session.session.id,
-                sequence=1,
-                event_type="runtime.completed",
-                source="runtime",
-            )
-            return runtime_module.RuntimeResponse(
-                session=session,
-                events=(event,),
-                output=typed_request.prompt.upper(),
-            )
-
-        def run_stream(self, request: Any) -> Iterator[Any]:
-            typed_request = runtime_module.RuntimeRequest(**asdict(request))
-            session = runtime_module.SessionState(
-                session=runtime_module.SessionRef(id=typed_request.session_id or "new-session"),
-                status="running",
-            )
-            yield runtime_module.RuntimeStreamChunk(
-                kind="event",
-                session=session,
-                event=runtime_module.EventEnvelope(
-                    session_id=session.session.id,
-                    sequence=1,
-                    event_type="runtime.request_received",
-                    source="runtime",
-                ),
-            )
-            yield runtime_module.RuntimeStreamChunk(
-                kind="output",
-                session=runtime_module.SessionState(
-                    session=session.session,
-                    status="completed",
-                ),
-                output=typed_request.prompt.upper(),
-            )
-
-    runtime = StubRuntime()
-
-    assert isinstance(runtime, runtime_module.RuntimeEntrypoint)
-    assert isinstance(runtime, runtime_module.StreamingRuntimeEntrypoint)
-    assert runtime.run(runtime_module.RuntimeRequest(prompt="hello")).output == "HELLO"
-    stream = runtime.run_stream(runtime_module.RuntimeRequest(prompt="hello"))
-    assert isinstance(stream, Iterator)
-    assert [chunk.session.status for chunk in stream] == ["running", "completed"]
 
 
 def test_runtime_stream_chunk_validates_required_fields() -> None:

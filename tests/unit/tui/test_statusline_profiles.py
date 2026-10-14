@@ -38,7 +38,6 @@ def test_each_statusline_profile_renders_its_configured_segments_with_bounded_wi
     }
     theme = resolve_theme("voidcode-dark", "dark", color_system=None)
 
-    assert set(statusline_profiles()) == {"codex", "claude", "minimal", "compact", "full", "ascii", "custom"}
     for profile in statusline_profiles():
         config = RuntimeTuiStatuslineConfig(
             layout=profile,

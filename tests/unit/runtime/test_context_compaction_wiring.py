@@ -384,13 +384,13 @@ def test_blank_override_degrades_to_the_deterministic_summary() -> None:
 
 _SUMMARY_PROMPT = "summarize the workspace"
 _SUMMARY_TEXT = "MODEL SUMMARY: the parser is patched and the migration must be rerun."
-_READ_COUNT = 30
+_READ_COUNT = 17
 _READ_LINES = 120
 _CONTEXT_COMPACTED = "runtime.context_compacted"
 
 
 def _big_workspace(tmp_path: Path) -> None:
-    body = "".join(f"line {index:03d} " + "y" * 20 + "\n" for index in range(_READ_LINES))
+    body = "".join(f"line {index:03d} " + "y" * 200 + "\n" for index in range(_READ_LINES))
     for index in range(_READ_COUNT):
         (tmp_path / f"big-{index}.txt").write_text(body, encoding="utf-8")
 

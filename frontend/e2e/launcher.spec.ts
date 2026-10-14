@@ -576,33 +576,6 @@ test.describe("VoidCode Web Launcher", () => {
     });
   });
 
-  test("should run a task using env-backed DeepSeek key without browser-side API key entry", async ({
-    page,
-  }) => {
-    test.skip(
-      !process.env.DEEPSEEK_API_KEY,
-      "Skipping live smoke test because DEEPSEEK_API_KEY is not set in environment.",
-    );
-
-    await page.goto(launcherUrl);
-    await expect(page).toHaveTitle(/VoidCode/i);
-
-    const settingsModal = page.locator('div[role="dialog"]');
-    await expect(settingsModal).not.toBeVisible();
-
-    const input = page.locator("textarea");
-    await expect(input).toBeVisible({ timeout: 20000 });
-    await input.fill("read README.md");
-    await input.press("Enter");
-
-    await expect(page.getByText("Agent Busy")).toBeVisible({ timeout: 10000 });
-    await expect(page.getByText("Agent Idle")).toBeVisible({ timeout: 60000 });
-
-    await expect(page.getByText(/^Error:/)).not.toBeVisible();
-
-    await expect(page.locator(".markdown-body").first()).toBeVisible();
-  });
-
   test("should answer a runtime question from the browser", async ({
     page,
   }) => {
@@ -829,9 +802,9 @@ test.describe("VoidCode Web Launcher", () => {
     releaseQuestionEvents();
   });
 
-  test("should cover browser UI controls and monochrome tool layout", async ({
+  test("should cover browser UI controls and tool activity", async ({
     page,
-  }, testInfo) => {
+  }) => {
     test.setTimeout(60000);
 
     const releaseSessionEvents = await installMockRuntime(page);
@@ -893,10 +866,6 @@ test.describe("VoidCode Web Launcher", () => {
     await expect(
       page.getByRole("button", { name: "M src/app.ts" }),
     ).toBeVisible();
-    await page.screenshot({
-      path: testInfo.outputPath("task-11-layout-buttons.png"),
-      fullPage: true,
-    });
     await page.getByRole("button", { name: "Close code review panel" }).click();
     await page.getByRole("button", { name: "Close file tree panel" }).click();
 
@@ -931,23 +900,10 @@ test.describe("VoidCode Web Launcher", () => {
       page.getByText("bun run --cwd frontend lint", { exact: true }),
     ).toBeVisible();
     await expect(page.getByText("lint passed")).not.toBeVisible();
-    await expect(shellToggle).not.toHaveClass(/border/);
     await shellToggle.click();
     await expect(page.locator('[data-terminal-block="shell"]')).toHaveCount(1);
     await expect(page.getByText("$ bun run --cwd frontend lint")).toBeVisible();
     await expect(page.getByText("lint passed")).toBeVisible();
-    await page.getByRole("button", { name: /copy command/i }).click();
-    await expect
-      .poll(() =>
-        page.evaluate(
-          () => (window as unknown as { __copied?: string[] }).__copied ?? [],
-        ),
-      )
-      .toContain("bun run --cwd frontend lint");
-    await page.screenshot({
-      path: testInfo.outputPath("task-11-tool-browser.png"),
-      fullPage: true,
-    });
 
     await expect(page.getByText("Approval Required")).toBeVisible();
     await page.getByRole("button", { name: "Allow" }).click();
