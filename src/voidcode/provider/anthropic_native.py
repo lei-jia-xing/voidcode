@@ -9,17 +9,15 @@ from typing import Any, Protocol, cast
 
 import httpx2
 from anthropic import Anthropic
+from anthropic import APIConnectionError as AnthropicAPIConnectionError
 from anthropic import APIError as AnthropicAPIError
+from anthropic import APITimeoutError as AnthropicAPITimeoutError
 from anthropic import Omit as AnthropicAPIKeyOmit
 
 from ..formats.json_values import json_wire_object
+from ..security.redaction import redact_mapping
 from ..tools.contracts import ToolCall
-from ..tools.output import (
-    redacted_argument_keys_for_tool,
-    sanitize_tool_arguments,
-    sanitize_tool_result_data,
-    strip_redaction_sentinels_from_mapping,
-)
+from ..tools.output import sanitize_tool_result_data
 from ._wire_common import (
     DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS,
     OwnedTransport,
@@ -33,8 +31,6 @@ from .config import AnthropicProviderConfig
 from .errors import (
     provider_execution_error_from_api_payload,
     provider_execution_error_from_stream_payload,
-    redact_provider_error_details,
-    redact_provider_error_message,
 )
 from .protocol import (
     ProviderDoneReason,
@@ -152,6 +148,9 @@ class AnthropicMessagesTransport:
         headers = getattr(response, "headers", None)
         if isinstance(headers, Mapping):
             payload.setdefault("headers", dict(headers))
+        if isinstance(exc, (AnthropicAPITimeoutError, AnthropicAPIConnectionError)):
+            payload["network_failure"] = True
+            payload["exception_type"] = type(exc).__name__
         payload.setdefault("message", str(exc))
         return payload
 
@@ -212,7 +211,9 @@ def _done_reason(value: object) -> ProviderDoneReason:
         return "tool_calls"
     if value in {"max_tokens", "length"}:
         return "length"
-    if value in {"refusal", "error", "model_context_window_exceeded"}:
+    if value in {"refusal"}:
+        return "content_filter"
+    if value in {"error", "model_context_window_exceeded"}:
         return "error"
     return "unknown"
 
@@ -272,6 +273,7 @@ class _ToolAccumulator:
     tool_name: str | None = None
     fragments: tuple[str, ...] = ()
     started: bool = False
+    initial_input: dict[str, object] | None = None
 
     @property
     def arguments(self) -> str:
@@ -345,9 +347,8 @@ class AnthropicMessagesProvider:
         return original, reverse
 
     @staticmethod
-    def _visible_arguments(tool_name: str | None, arguments: Mapping[str, object]) -> dict[str, object]:
-        sanitized = sanitize_tool_arguments(arguments)
-        return strip_redaction_sentinels_from_mapping(sanitized, redacted_keys=redacted_argument_keys_for_tool(tool_name))
+    def _visible_arguments(_tool_name: str | None, arguments: Mapping[str, object]) -> dict[str, object]:
+        return redact_mapping(json_wire_object(arguments))
 
     def _messages_and_system(self, request: ProviderTurnRequest) -> tuple[str | None, list[dict[str, object]]]:
         original_to_provider, _ = self._tool_maps(request)
@@ -509,23 +510,26 @@ class AnthropicMessagesProvider:
         if isinstance(exc, AnthropicTransportError):
             factory = provider_execution_error_from_stream_payload if source == "stream" else provider_execution_error_from_api_payload
             return factory(provider_name=provider_name, model_name=model_name, payload=exc.payload)
-        message = redact_provider_error_message(str(exc)) or "provider request failed"
-        details = redact_provider_error_details({"exception_type": type(exc).__name__, "exception_message": message})
+        known_network_failure = isinstance(exc, (httpx2.TransportError, AnthropicAPITimeoutError, AnthropicAPIConnectionError))
         return ProviderExecutionError(
-            kind="transient_failure",
+            kind="provider_error",
             provider_name=provider_name,
             model_name=model_name,
-            message=message,
-            retryable=True,
+            message="provider request failed",
+            retryable=known_network_failure,
             fallback_allowed=True,
-            details=details,
+            details={
+                "source": source,
+                "exception_type": type(exc).__name__,
+                **({"network_failure": True} if known_network_failure else {}),
+            },
         )
 
     @staticmethod
     def _blocks(response: Mapping[str, object]) -> tuple[str, str | None, tuple[ToolCall, ...]]:
         content = response.get("content")
         if not isinstance(content, list):
-            return "", None, ()
+            raise ValueError("provider response content must be an array")
         text_parts: list[str] = []
         thinking_parts: list[str] = []
         calls: list[ToolCall] = []
@@ -537,15 +541,14 @@ class AnthropicMessagesProvider:
                 text_parts.append(raw["text"])
             elif block_type == "thinking" and isinstance(raw.get("thinking"), str):
                 thinking_parts.append(raw["thinking"])
-            elif block_type == "tool_use" and isinstance(raw.get("name"), str):
-                try:
-                    args = _parse_arguments(raw.get("input"))
-                except ValueError, json.JSONDecodeError:
-                    args = {}
+            elif block_type == "tool_use":
+                name = raw.get("name")
+                if not isinstance(name, str) or not name:
+                    raise ValueError("provider tool call name must be a non-empty string")
                 calls.append(
                     ToolCall(
-                        tool_name=raw["name"],
-                        arguments=args,
+                        tool_name=name,
+                        arguments=_parse_arguments(raw.get("input")),
                         tool_call_id=normalize_tool_call_id(
                             raw.get("id") if isinstance(raw.get("id"), str) else None, fallback=f"tool_call_{index + 1}"
                         ),
@@ -562,10 +565,9 @@ class AnthropicMessagesProvider:
             if response.get("type") == "error" or response.get("error") is not None:
                 raise AnthropicTransportError(response)
             stop_reason = response.get("stop_reason")
-            # An omitted/empty stop_reason on an otherwise well-formed response is a
-            # completed turn (the graph maps ``unknown`` to a stop-equivalent state);
-            # it is recorded as not-reported so silent truncation stays visible.
-            finish_reason_reported = isinstance(stop_reason, str) and stop_reason != ""
+            # Missing/empty reasons close the model turn as unknown; only this
+            # turn is known to have ended, not the user turn or session.
+            finish_reason_reported = isinstance(stop_reason, str) and bool(stop_reason.strip())
             text, reasoning, calls = self._blocks(response)
             _original_to_provider, reverse = self._tool_maps(request)
             calls = tuple(
@@ -579,8 +581,7 @@ class AnthropicMessagesProvider:
             metadata = _response_metadata(response)
             done_reason = _done_reason(stop_reason)
             if done_reason == "unknown" and finish_reason_reported:
-                # The token was reported but is not one we map; keep it for the
-                # graph's debug resolution.
+                # The token is reported but unmapped; preserve it for core diagnostics.
                 metadata["finish_reason_raw"] = stop_reason
             write_provider_trace(
                 request=payload,
@@ -654,20 +655,23 @@ class AnthropicMessagesProvider:
                     index = index_obj if isinstance(index_obj, int) else 0
                     block = chunk.get("content_block")
                     if isinstance(block, Mapping) and block.get("type") == "tool_use":
-                        name = block.get("name") if isinstance(block.get("name"), str) else None
+                        name = block.get("name")
+                        raw_input = block.get("input")
+                        if not isinstance(name, str) or not name or not isinstance(raw_input, Mapping):
+                            raise ValueError("provider tool call requires a name and object input")
                         tool_id = normalize_tool_call_id(
                             block.get("id") if isinstance(block.get("id"), str) else None, fallback=f"tool_call_{index + 1}"
                         )
-                        accumulators[index] = _ToolAccumulator(tool_id, name, (), True)
-                        if name:
-                            reverse = self._tool_maps(request)[1]
-                            yield ProviderStreamEvent(
-                                kind="tool_call_start",
-                                channel="tool",
-                                tool_call_id=tool_id,
-                                tool_name=reverse.get(name, name),
-                                tool_call_ordinal=index,
-                            )
+                        accumulators[index] = _ToolAccumulator(tool_id, name, (), True, dict(raw_input))
+                        reverse = self._tool_maps(request)[1]
+                        yield ProviderStreamEvent(
+                            kind="tool_call_start",
+                            channel="tool",
+                            tool_call_id=tool_id,
+                            tool_name=reverse.get(name, name),
+                            tool_call_ordinal=index,
+                        )
+
                 elif event_type == "content_block_delta":
                     index_obj = chunk.get("index")
                     index = index_obj if isinstance(index_obj, int) else 0
@@ -682,7 +686,9 @@ class AnthropicMessagesProvider:
                     elif delta_type == "input_json_delta" and isinstance(delta.get("partial_json"), str):
                         fragment = delta["partial_json"]
                         prior = accumulators.get(index, _ToolAccumulator())
-                        accumulators[index] = _ToolAccumulator(prior.tool_call_id, prior.tool_name, prior.fragments + (fragment,), prior.started)
+                        accumulators[index] = _ToolAccumulator(
+                            prior.tool_call_id, prior.tool_name, prior.fragments + (fragment,), prior.started, prior.initial_input
+                        )
                         if prior.tool_call_id:
                             yield ProviderStreamEvent(
                                 kind="tool_call_delta",
@@ -705,7 +711,7 @@ class AnthropicMessagesProvider:
                     continue
             if not message_stopped:
                 raise ProviderExecutionError(
-                    kind="transient_failure",
+                    kind="provider_error",
                     provider_name=provider_name,
                     model_name=model_name,
                     message="provider stream ended without terminal message_stop",
@@ -713,24 +719,32 @@ class AnthropicMessagesProvider:
                     fallback_allowed=True,
                     details={"source": "stream", "reason": "missing_terminal_event"},
                 )
-            # ``message_stop`` is the terminal transport event. An omitted stop_reason
-            # on that terminal event still resolves to the canonical ``unknown`` reason,
-            # which the graph treats as a completed, stop-equivalent state.
+            # message_stop is terminal; without deltas the wire's explicit input object is complete.
             reverse = self._tool_maps(request)[1]
             for index, accumulator in sorted(accumulators.items()):
                 if accumulator.tool_name is None:
-                    continue
-                try:
-                    parsed = _parse_arguments(accumulator.arguments)
-                except (ValueError, json.JSONDecodeError) as exc:
                     raise ProviderExecutionError(
-                        kind="stream_tool_feedback_shape",
+                        kind="provider_error",
                         provider_name=provider_name,
                         model_name=model_name,
-                        message="provider stream ended with incomplete tool-call arguments",
+                        message="provider stream contained a malformed tool call",
                         retryable=False,
                         fallback_allowed=True,
-                        details={"tool_name": accumulator.tool_name, "tool_call_id": accumulator.tool_call_id},
+                        details={"source": "stream", "reason": "malformed_tool_call"},
+                    )
+                try:
+                    parsed = _parse_arguments(accumulator.arguments) if accumulator.fragments else accumulator.initial_input
+                    if parsed is None:
+                        raise ValueError("provider stream tool call arguments were missing")
+                except (ValueError, json.JSONDecodeError) as exc:
+                    raise ProviderExecutionError(
+                        kind="provider_error",
+                        provider_name=provider_name,
+                        model_name=model_name,
+                        message="provider stream ended with malformed tool-call arguments",
+                        retryable=False,
+                        fallback_allowed=True,
+                        details={"source": "stream", "reason": "malformed_tool_call_arguments"},
                     ) from exc
                 yield ProviderStreamEvent(
                     kind="tool_call_end",
@@ -741,9 +755,8 @@ class AnthropicMessagesProvider:
                     parsed_arguments=self._visible_arguments(reverse.get(accumulator.tool_name, accumulator.tool_name), parsed),
                 )
             done_reason = _done_reason(stop_reason)
-            if done_reason == "unknown" and isinstance(stop_reason, str) and stop_reason:
-                # Reported but unrecognized: carry the token so the graph's
-                # finish_reason_reported diagnostics read it as reported.
+            if done_reason == "unknown" and isinstance(stop_reason, str) and stop_reason.strip():
+                # Preserve reported but unmapped values for core diagnostics.
                 metadata["finish_reason_raw"] = stop_reason
             yield ProviderStreamEvent(kind="done", done_reason=done_reason, metadata=metadata or None, usage=latest_usage)
             write_provider_trace(

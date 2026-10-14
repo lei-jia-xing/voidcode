@@ -10,8 +10,8 @@ moved from Textual widgets to transcript blocks.
 
 Load-bearing invariants kept here:
 
-* Live-only provider events (``graph.provider_stream`` and the tool-call
-  deltas) reuse the *persisted* sequence cursor, so they bypass the
+* Live-only provider stream facts (``provider_stream``) and tool-call deltas
+  reuse the *persisted* sequence cursor, so they bypass the
   persisted-sequence dedupe -- a naive ``sequence > last`` filter silently
   drops streamed text.
 * A provider retry/fallback that sets ``discarded_streamed_output`` retracts the
@@ -67,10 +67,10 @@ __all__ = [
 #: retractable when the attempt restarts).
 LIVE_ONLY_EVENT_TYPES: Final[frozenset[str]] = frozenset(
     {
-        "graph.provider_stream",
-        "graph.tool_call_start",
-        "graph.tool_call_delta",
-        "graph.tool_call_end",
+        "core.provider_stream",
+        "core.tool_call_start",
+        "core.tool_call_delta",
+        "core.tool_call_end",
     }
 )
 
@@ -284,7 +284,6 @@ class SessionView:
         "_approval_context",
         "_last_sequence",
         "_pending",
-        "_pending_dispatched",
         "_pending_taken",
         "_session_id",
         "_state",
@@ -295,6 +294,7 @@ class SessionView:
         "_tool_blocks",
         "_tool_display",
         "_tool_progress",
+        "_tool_activity_by_call_id",
         "_transcript",
         "_width",
     )
@@ -305,10 +305,6 @@ class SessionView:
         self._state = "Idle"
         self._pending: ApprovalRequest | QuestionRequest | None = None
         self._pending_taken = False
-        # True once an answer was handed to the runtime (``resolve_overlay``).
-        # Only a dispatched answer can fail to reach the runtime, so only then may
-        # ``finish_stream("failed")`` re-arm the request for another attempt.
-        self._pending_dispatched = False
         self._session_id: str | None = None
         self._last_sequence: dict[str, int] = {}
         self._stream_output = ""
@@ -319,6 +315,7 @@ class SessionView:
         self._tool_blocks: dict[str, ToolBlock] = {}
         self._tool_display: dict[str, dict[str, object]] = {}
         self._tool_progress: dict[str, dict[str, list[str]]] = {}
+        self._tool_activity_by_call_id: dict[str, str] = {}
         self._approval_context: dict[str, dict[str, object]] = {}
 
     # -- accessors ---------------------------------------------------------
@@ -364,11 +361,10 @@ class SessionView:
         """
         self._pending = None
         self._pending_taken = False
-        self._pending_dispatched = False
         self._approval_context.clear()
         self._tool_progress.clear()
         self._tool_display.clear()
-        self._tool_blocks.clear()
+        self._tool_activity_by_call_id.clear()
         self._last_sequence.clear()
         self._stream_output = ""
         self._thinking = ""
@@ -380,39 +376,59 @@ class SessionView:
         self._transcript.blocks.clear()
 
     def finish_stream(self, final_status: str, *, error: object | None = None) -> None:
-        """Settle one stream: the old ``on_stream_completed``/``on_stream_failed``.
-
-        ``final_status`` is the last chunk's session status.  ``waiting`` returns
-        early: the pending overlay owns the view (the old app also refused to
-        touch the transcript while its modal was up).  ``error`` is the transport
-        exception the app caught, if any.
-        """
-        if error is not None:
-            self._transcript.add(ErrorBlock(text=format_runtime_error(error)))
+        """Finish a stream without treating closure as a terminal run outcome."""
+        if error is not None and final_status not in {"completed", "failed", "interrupted"}:
+            self._transcript.add(ErrorBlock(text=format_runtime_error(str(error))))
+            self._stop_stream_animations()
+            self._transcript.add(NoticeBlock(text=f"Stream disconnected after last observed runtime status {final_status!r}; outcome is unknown."))
+            self._clear_stream_buffers()
+            self._state = "Stream disconnected"
+            return
         if final_status == "waiting":
             return
+        if final_status not in {"completed", "failed", "interrupted"}:
+            self._stop_stream_animations()
+            self._transcript.add(NoticeBlock(text=f"Runtime stream closed while session status was {final_status!r}; outcome is unknown."))
+            self._clear_stream_buffers()
+            self._state = "Outcome unknown"
+            return
+        if error is not None and final_status == "failed" and self._state != "Failed":
+            self._transcript.add(ErrorBlock(text=format_runtime_error(str(error))))
         if self._thinking_block is not None:
             self._thinking_block.expanded = False
+        if final_status == "interrupted":
+            self._transcript.add(NoticeBlock(text="Run interrupted."))
         self._transcript.mark_settled()
+        self._clear_stream_buffers()
+        if final_status == "failed":
+            self._state = "Failed"
+        elif final_status == "interrupted":
+            self._state = "Interrupted"
+        else:
+            self._state = "Idle"
+
+    def resolve_overlay(self, request_id: str) -> None:
+        """Record an answer dispatch; keep it pending until its resolution event."""
+        if self._pending is None or self._pending.request_id != request_id:
+            return
+        self._set_state("Running")
+
+    def _clear_stream_buffers(self) -> None:
         self._assistant = None
         self._thinking_block = None
         self._stream_output = ""
         self._thinking = ""
         self._streamed_provider_text = False
-        if final_status == "failed":
-            # Re-arm only a request whose answer was dispatched but never reached
-            # the runtime. A failure while the overlay is still open and
-            # unanswered must not reset the hand-out flag, or the user's own
-            # answer would re-open the same request and send it twice.
-            if self._pending_dispatched:
-                self._pending_taken = False
-                self._pending_dispatched = False
-            self._state = "Failed"
-        else:
-            # A non-failed finish means any in-flight answer reached the runtime,
-            # so a later failure must not re-open it.
-            self._pending_dispatched = False
-            self._state = "Idle"
+
+    def _stop_stream_animations(self) -> None:
+        for block in self._transcript.blocks:
+            if block.settled:
+                continue
+            if isinstance(block, AssistantBlock):
+                block.streaming = False
+                block.pulse_frame = None
+            elif isinstance(block, ToolBlock):
+                block.streaming = False
 
     def take_pending_overlay(self) -> ApprovalRequest | QuestionRequest | None:
         """Hand the pending request out once (the app then opens its overlay).
@@ -424,21 +440,6 @@ class SessionView:
             return None
         self._pending_taken = True
         return self._pending
-
-    def resolve_overlay(self, request_id: str) -> None:
-        """Record that an answer is being handed to the runtime.
-
-        The request stays pending until ``runtime.question_answered`` /
-        ``runtime.approval_resolved`` arrives, so an answer round trip that never
-        reaches the runtime can still be re-armed -- the persisted
-        ``runtime.question_requested`` event cannot re-deliver, because the
-        sequence dedupe has already consumed it. ``_pending_dispatched`` marks
-        that this attempt is in flight; only such an attempt may be re-armed.
-        """
-        if self._pending is None or self._pending.request_id != request_id:
-            return
-        self._pending_dispatched = True
-        self._set_state("Running")
 
     # -- event projection --------------------------------------------------
 
@@ -463,22 +464,30 @@ class SessionView:
                 return True
             return False
 
-        if event_type == "graph.provider_stream":
-            return self._apply_provider_stream(payload)
+        if event_type == "core.model_turn":
+            self._apply_model_turn(event)
+            return False
 
+        if event_type == "runtime.request_received":
+            self._tool_activity_by_call_id.clear()
+            return self._set_state("Running")
+
+        if event_type == "core.provider_stream":
+            return self._apply_provider_stream(payload)
         tool_call_id = payload.get("tool_call_id")
         raw_tool_name = payload.get("tool", "unknown_tool")
         tool_name = raw_tool_name if isinstance(raw_tool_name, str) else "unknown_tool"
         display = _extract_display(payload)
 
-        if event_type == "graph.tool_request_created":
-            return self._apply_tool_request_created(tool_name, display, tool_call_id)
+        activity_id = self._tool_activity_id(tool_call_id, event.sequence)
+        if event_type == "core.tool_request_created":
+            return self._apply_tool_request_created(tool_name, display, tool_call_id, activity_id)
         if event_type == "runtime.tool_started":
-            return self._apply_tool_started(tool_name, display, tool_call_id)
+            return self._apply_tool_started(tool_name, display, tool_call_id, activity_id)
         if event_type == "runtime.tool_progress":
-            return self._apply_tool_progress(tool_name, display, tool_call_id, payload)
+            return self._apply_tool_progress(tool_name, display, tool_call_id, activity_id, payload)
         if event_type == "runtime.tool_completed":
-            return self._apply_tool_completed(tool_name, display, tool_call_id, payload)
+            return self._apply_tool_completed(tool_name, display, tool_call_id, activity_id, payload)
         if event_type == "runtime.approval_requested":
             return self._apply_approval_requested(tool_name, payload)
         if event_type == "runtime.approval_resolved":
@@ -494,9 +503,9 @@ class SessionView:
             return True
         # Turn state the old app took from ``chunk.session.status``; these events
         # are the live carriers of those statuses and render no rows.
-        if event_type == "runtime.request_received":
-            return self._set_state("Running")
-        if event_type == "graph.response_ready":
+        # Request receipt is handled above so a reused provider ID cannot bind to
+        # the prior request's activity identity.
+        if event_type == "core.response_ready":
             return self._set_state("Completed")
         return False
 
@@ -546,65 +555,89 @@ class SessionView:
             self._thinking_block.text = ""
 
     # -- tools -------------------------------------------------------------
+    def _apply_model_turn(self, event: EventEnvelope) -> None:
+        self._tool_activity_by_call_id.clear()
+        calls = event.payload.get("tool_batch_calls")
+        if not isinstance(calls, list):
+            return
+        for ordinal, call in enumerate(calls):
+            if not isinstance(call, dict):
+                continue
+            tool_call_id = call.get("tool_call_id")
+            if isinstance(tool_call_id, str) and tool_call_id and tool_call_id not in self._tool_activity_by_call_id:
+                self._tool_activity_by_call_id[tool_call_id] = f"{event.session_id}:{event.sequence}:{ordinal}"
 
-    def _tool_block(self, tool_call_id: str, tool_name: str) -> ToolBlock:
-        block = self._tool_blocks.get(tool_call_id)
+    def _tool_activity_id(self, tool_call_id: object, sequence: int) -> str | None:
+        if not isinstance(tool_call_id, str) or not tool_call_id:
+            return None
+        activity_id = self._tool_activity_by_call_id.get(tool_call_id)
+        if activity_id is None:
+            activity_id = f"{self._session_id or 'session'}:{sequence}"
+            self._tool_activity_by_call_id[tool_call_id] = activity_id
+        return activity_id
+
+    def _tool_block(self, activity_id: str, tool_call_id: str, tool_name: str) -> ToolBlock:
+        block = self._tool_blocks.get(activity_id)
         if block is None:
-            block = ToolBlock(tool=tool_name, tool_call_id=tool_call_id, settled=False)
-            self._tool_blocks[tool_call_id] = block
+            block = ToolBlock(tool=tool_name, tool_call_id=tool_call_id, activity_id=activity_id, settled=False)
+            self._tool_blocks[activity_id] = block
             self._transcript.add(block)
         return block
 
-    def _apply_tool_request_created(self, tool_name: str, display: Mapping[str, object] | None, tool_call_id: object) -> bool:
-        if not isinstance(tool_call_id, str) or not tool_call_id:
-            # The graph omitted an id, so there is nothing to key an updatable
-            # block on: the old app wrote a bare line.
+    def _apply_tool_request_created(
+        self, tool_name: str, display: Mapping[str, object] | None, tool_call_id: object, activity_id: str | None
+    ) -> bool:
+        if not isinstance(tool_call_id, str) or not tool_call_id or activity_id is None:
             self._transcript.add(NoticeBlock(text=_request_line_text(tool_name, display)))
             return True
         if display is not None:
-            self._tool_display[tool_call_id] = dict(display)
+            self._tool_display[activity_id] = dict(display)
         title, summary = _tool_header(display, tool_name)
-        block = self._tool_block(tool_call_id, tool_name)
+        block = self._tool_block(activity_id, tool_call_id, tool_name)
         block.title = title
         block.summary = summary
         block.body = _tool_detail_lines(display)
         block.state = "pending"
         return True
 
-    def _apply_tool_started(self, tool_name: str, display: Mapping[str, object] | None, tool_call_id: object) -> bool:
+    def _apply_tool_started(self, tool_name: str, display: Mapping[str, object] | None, tool_call_id: object, activity_id: str | None) -> bool:
         title, summary = _tool_header(display, tool_name)
-        if not isinstance(tool_call_id, str) or not tool_call_id:
-            # No id to update: the old app wrote "◐ <title>: <summary>" as one line.
+        if not isinstance(tool_call_id, str) or not tool_call_id or activity_id is None:
             self._transcript.add(NoticeBlock(text=f"{title}: {summary}" if summary else title))
             return True
         if display is not None:
-            self._tool_display[tool_call_id] = dict(display)
-        block = self._tool_block(tool_call_id, tool_name)
+            self._tool_display[activity_id] = dict(display)
+        block = self._tool_block(activity_id, tool_call_id, tool_name)
         block.title = title
         block.summary = summary
         block.state = "running"
         block.streaming = True
         return True
 
-    def _apply_tool_progress(self, tool_name: str, display: Mapping[str, object] | None, tool_call_id: object, payload: Mapping[str, object]) -> bool:
-        if not isinstance(tool_call_id, str) or not tool_call_id:
+    def _apply_tool_progress(
+        self,
+        tool_name: str,
+        display: Mapping[str, object] | None,
+        tool_call_id: object,
+        activity_id: str | None,
+        payload: Mapping[str, object],
+    ) -> bool:
+        if not isinstance(tool_call_id, str) or not tool_call_id or activity_id is None:
             return False
         chunk = payload.get("chunk")
         if not isinstance(chunk, str) or not chunk:
             return False
         stream = payload.get("stream")
         stream_name = stream if isinstance(stream, str) and stream else "stdout"
-        streams = self._tool_progress.setdefault(tool_call_id, {})
+        streams = self._tool_progress.setdefault(activity_id, {})
         buffer = streams.setdefault(stream_name, [])
         if buffer:
             buffer[-1] = buffer[-1] + chunk
         else:
             buffer.append(chunk)
 
-        block = self._tool_block(tool_call_id, tool_name)
-        # A progress payload carries no display; fall back to the tool's own
-        # display so the header does not degrade to the bare tool name mid-run.
-        resolved = display if display is not None else self._tool_display.get(tool_call_id)
+        block = self._tool_block(activity_id, tool_call_id, tool_name)
+        resolved = display if display is not None else self._tool_display.get(activity_id)
         block.title, block.summary = _tool_header(resolved, tool_name)
         block.body = _progress_lines(streams)
         block.state = "running"
@@ -612,36 +645,41 @@ class SessionView:
         return True
 
     def _apply_tool_completed(
-        self, tool_name: str, display: Mapping[str, object] | None, tool_call_id: object, payload: Mapping[str, object]
+        self,
+        tool_name: str,
+        display: Mapping[str, object] | None,
+        tool_call_id: object,
+        activity_id: str | None,
+        payload: Mapping[str, object],
     ) -> bool:
-        if display is None and isinstance(tool_call_id, str):
-            display = self._tool_display.get(tool_call_id)
+        if display is None and activity_id is not None:
+            display = self._tool_display.get(activity_id)
         is_error = payload.get("status") == "error"
         title, summary = _tool_header(display, tool_name)
-        streams = self._tool_progress.pop(tool_call_id, None) if isinstance(tool_call_id, str) else None
+        streams = self._tool_progress.pop(activity_id, None) if activity_id is not None else None
         kind = _display_field(display, "kind") or ""
         content = payload.get("content")
         body: list[str] = []
         language: str | None = None
+        # A write's ``content`` is the whole file; the old app never showed it.
         if isinstance(content, str) and content and kind != "write":
-            # A write's ``content`` is the whole file; the old app never showed it.
             language = _content_language(kind, display, content)
             body = content.splitlines()
         if streams:
             body = [*_progress_lines(streams), *body]
 
         state = "error" if is_error else "success"
-        if not isinstance(tool_call_id, str) or not tool_call_id:
+        if not isinstance(tool_call_id, str) or not tool_call_id or activity_id is None:
             self._transcript.add(ToolBlock(tool=tool_name, title=title, summary=summary, body=body, language=language, state=state))
             return True
-        block = self._tool_block(tool_call_id, tool_name)
+        block = self._tool_block(activity_id, tool_call_id, tool_name)
         artifact_id = _artifact_id(payload)
         block.title = title
         block.summary = summary
         block.body = body
         block.language = language
-        block.state = state
         block.streaming = False
+        block.state = state
         block.tool_call_id = tool_call_id
         block.session_id = self._session_id
         block.artifact_id = artifact_id
@@ -670,7 +708,6 @@ class SessionView:
                 arguments=_format_arguments(payload.get("arguments")),
             )
             self._pending_taken = False
-            self._pending_dispatched = False
         # The old app noticed and switched state even without a usable id.
         self._transcript.add(NoticeBlock(text=f"⚠ Approval requested for tool: {tool_name}"))
         self._state = "Waiting approval"
@@ -689,7 +726,6 @@ class SessionView:
         if isinstance(request_id, str) and self._pending is not None and self._pending.request_id == request_id:
             self._pending = None
             self._pending_taken = False
-            self._pending_dispatched = False
         self._state = "Running"
         return True
 
@@ -703,7 +739,6 @@ class SessionView:
                 questions=tuple(questions) if isinstance(questions, list) else (),
             )
             self._pending_taken = False
-            self._pending_dispatched = False
         self._transcript.add(NoticeBlock(text=f"? Agent requested input ({count})"))
         self._state = "Waiting input"
         return True
@@ -714,13 +749,15 @@ class SessionView:
         if isinstance(request_id, str) and self._pending is not None and self._pending.request_id == request_id:
             self._pending = None
             self._pending_taken = False
-            self._pending_dispatched = False
         self._state = "Running"
         return True
 
     # -- failures and background notices -----------------------------------
 
     def _apply_failed(self, payload: Mapping[str, object]) -> bool:
+        if payload.get("kind") == "interrupted" or payload.get("cancelled") is True:
+            self._state = "Interrupted"
+            return True
         diagnostics = payload.get("diagnostics")
         summary = diagnostics.get("summary") if isinstance(diagnostics, dict) else None
         error_msg = summary if isinstance(summary, str) else payload.get("error", "Unknown error")

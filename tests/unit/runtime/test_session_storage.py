@@ -132,8 +132,8 @@ def test_session_storage_persists_parent_lineage_across_read_surfaces(tmp_path: 
             EventEnvelope(
                 session_id="child-session",
                 sequence=1,
-                event_type="graph.response_ready",
-                source="graph",
+                event_type="core.response_ready",
+                source="core",
             ),
         ),
         output="done",
@@ -157,7 +157,7 @@ def test_session_storage_persists_parent_lineage_across_read_surfaces(tmp_path: 
     store.append_session_events(
         workspace=tmp_path,
         session_id="child-session",
-        events=(("graph.response_ready", "graph", {"summary": "child done"}, None),),
+        events=(("core.response_ready", "core", {"summary": "child done"}, None),),
     )
     save_composition_run(store, workspace=tmp_path, request=request, response=response)
 
@@ -254,8 +254,8 @@ def test_session_storage_reads_events_after_cursor_once_and_honors_active_revert
             EventEnvelope(
                 session_id="events-after-session",
                 sequence=sequence,
-                event_type="graph.provider_stream",
-                source="graph",
+                event_type="core.provider_stream",
+                source="core",
                 payload={"sequence": sequence},
             )
             for sequence in (1, 2, 3)
@@ -373,8 +373,8 @@ def test_session_storage_newest_sequence_before_is_the_revert_target(tmp_path: P
             EventEnvelope(
                 session_id="multi-turn-session",
                 sequence=2,
-                event_type="graph.response_ready",
-                source="graph",
+                event_type="core.response_ready",
+                source="core",
             ),
             EventEnvelope(
                 session_id="multi-turn-session",
@@ -386,8 +386,8 @@ def test_session_storage_newest_sequence_before_is_the_revert_target(tmp_path: P
             EventEnvelope(
                 session_id="multi-turn-session",
                 sequence=4,
-                event_type="graph.response_ready",
-                source="graph",
+                event_type="core.response_ready",
+                source="core",
             ),
         ),
         output="second output",
@@ -420,7 +420,7 @@ def test_session_storage_preserves_prior_events_when_same_session_continues(
         session_id=session_id,
         events=(
             ("runtime.request_received", "runtime", {"prompt": "first"}, None),
-            ("graph.response_ready", "graph", {"output": "first output"}, None),
+            ("core.response_ready", "core", {"output": "first output"}, None),
         ),
     )
     store.append_session_events(
@@ -428,7 +428,7 @@ def test_session_storage_preserves_prior_events_when_same_session_continues(
         session_id=session_id,
         events=(
             ("runtime.request_received", "runtime", {"prompt": "second"}, None),
-            ("graph.response_ready", "graph", {"output": "second output"}, None),
+            ("core.response_ready", "core", {"output": "second output"}, None),
         ),
     )
     with store._connect(tmp_path) as connection:
@@ -503,8 +503,8 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
             EventEnvelope(
                 session_id="fresh-session",
                 sequence=1,
-                event_type="graph.response_ready",
-                source="graph",
+                event_type="core.response_ready",
+                source="core",
             ),
         ),
         output="done",
@@ -557,8 +557,8 @@ def test_session_storage_bootstraps_sequences_from_existing_timestamps(tmp_path:
             EventEnvelope(
                 session_id="old-session",
                 sequence=1,
-                event_type="graph.response_ready",
-                source="graph",
+                event_type="core.response_ready",
+                source="core",
             ),
         ),
         output="old output",
@@ -591,8 +591,8 @@ def test_session_storage_bootstraps_sequences_from_existing_timestamps(tmp_path:
             EventEnvelope(
                 session_id="new-session",
                 sequence=1,
-                event_type="graph.response_ready",
-                source="graph",
+                event_type="core.response_ready",
+                source="core",
             ),
         ),
         output="new output",
@@ -1109,8 +1109,8 @@ def test_session_storage_append_session_event_assigns_sequence_and_dedupes(
             EventEnvelope(
                 session_id="leader-session",
                 sequence=1,
-                event_type="graph.response_ready",
-                source="graph",
+                event_type="core.response_ready",
+                source="core",
             ),
         ),
         output="done",
@@ -1174,8 +1174,8 @@ def test_session_storage_deduped_session_event_does_not_advance_session_order(
                     EventEnvelope(
                         session_id=session_id,
                         sequence=1,
-                        event_type="graph.response_ready",
-                        source="graph",
+                        event_type="core.response_ready",
+                        source="core",
                     ),
                 ),
                 output="done",
@@ -1277,8 +1277,8 @@ def test_session_storage_append_session_event_allocates_sequences_atomically(
             EventEnvelope(
                 session_id="leader-session",
                 sequence=1,
-                event_type="graph.response_ready",
-                source="graph",
+                event_type="core.response_ready",
+                source="core",
             ),
         ),
         output="done",
@@ -1349,8 +1349,8 @@ def test_session_storage_prunes_terminal_sessions_and_dependent_rows(tmp_path: P
                     EventEnvelope(
                         session_id=session_id,
                         sequence=1,
-                        event_type="graph.response_ready",
-                        source="graph",
+                        event_type="core.response_ready",
+                        source="core",
                     ),
                 ),
                 output="done" if status == "completed" else None,
@@ -1645,8 +1645,8 @@ def _completed_response(session_id: str, output: str = "done") -> RuntimeRespons
             EventEnvelope(
                 session_id=session_id,
                 sequence=1,
-                event_type="graph.response_ready",
-                source="graph",
+                event_type="core.response_ready",
+                source="core",
             ),
         ),
         output=output,
@@ -1729,8 +1729,8 @@ def test_list_sessions_auto_prune_preserves_active_sessions(tmp_path: Path, monk
                     EventEnvelope(
                         session_id=sid,
                         sequence=1,
-                        event_type="graph.response_ready",
-                        source="graph",
+                        event_type="core.response_ready",
+                        source="core",
                     ),
                 ),
                 output="done" if status in ("completed", "failed") else None,
@@ -1800,7 +1800,7 @@ def _seed_running_session(store: SqliteSessionStore, workspace: Path, session_id
     store.append_session_events(
         workspace=workspace,
         session_id=session_id,
-        events=(("graph.response_ready", "graph", {}, None),),
+        events=(("core.response_ready", "core", {}, None),),
     )
 
 
@@ -2231,8 +2231,8 @@ def test_session_storage_rename_round_trips_across_store_reopen(tmp_path: Path) 
             EventEnvelope(
                 session_id="rename-session",
                 sequence=1,
-                event_type="graph.response_ready",
-                source="graph",
+                event_type="core.response_ready",
+                source="core",
                 payload={"response": "done"},
             ),
         ),

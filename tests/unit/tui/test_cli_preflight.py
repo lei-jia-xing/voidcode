@@ -32,7 +32,6 @@ def test_invalid_tui_config_exits_before_native_terminal_setup(tmp_path: Path, s
         "PYTHONPATH": str(Path(__file__).resolve().parents[3] / "src"),
         "USERPROFILE": str(home),
         "VOIDCODE_DB_PATH": str(root / "voidcode.sqlite3"),
-        "VOIDCODE_EXECUTION_ENGINE": "deterministic",
         "XDG_CACHE_HOME": str(root / "cache"),
         "XDG_CONFIG_HOME": str(config_home),
         "XDG_DATA_HOME": str(root / "data"),

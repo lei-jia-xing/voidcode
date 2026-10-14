@@ -7,7 +7,7 @@ from pathlib import Path
 
 from ...tools.local_custom import LocalCustomToolManifest, discover_local_custom_tool_manifests
 from ..config.loading import RuntimeToolsLocalConfig
-from ..config.materializer import EffectiveRuntimeConfig
+from ..config.materializer import RunConfig
 from .materializer import RuntimeToolMaterialization, RuntimeToolMaterializer
 from .scope import RuntimeToolScopeResolver
 
@@ -31,18 +31,18 @@ def workspace_local_tool_manifests_provider(workspace: Path) -> LocalToolManifes
 
 
 def materialize_unscoped(
-    effective_config: EffectiveRuntimeConfig,
+    config: RunConfig,
     *,
     materialization: RuntimeToolMaterialization,
     materializer: RuntimeToolMaterializer,
     local_tool_manifests_provider: LocalToolManifestsProvider,
 ) -> RuntimeToolMaterialization:
-    local_config = effective_config.tools.local if effective_config.tools is not None else None
+    local_config = config.tools.local if config.tools is not None else None
     return materializer.materialize_local_manifests(materialization, local_tool_manifests_provider(local_config))
 
 
 def materialize(
-    effective_config: EffectiveRuntimeConfig,
+    config: RunConfig,
     *,
     materialization: RuntimeToolMaterialization,
     materializer: RuntimeToolMaterializer,
@@ -52,7 +52,7 @@ def materialize(
     builtin_mcp_tool_names: Iterable[str] = (),
 ) -> RuntimeToolMaterialization:
     unscoped = materialize_unscoped(
-        effective_config,
+        config,
         materialization=materialization,
         materializer=materializer,
         local_tool_manifests_provider=local_tool_manifests_provider,
@@ -60,7 +60,7 @@ def materialize(
     return unscoped.scoped(
         scope_resolver.scope(
             unscoped.registry,
-            agent=effective_config.agent,
+            agent=config.agent,
             metadata=metadata,
             builtin_mcp_tool_names=tuple(builtin_mcp_tool_names),
         )

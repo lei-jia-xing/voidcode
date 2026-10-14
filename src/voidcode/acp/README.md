@@ -28,6 +28,7 @@
 - `AcpResponseEnvelope`
 - `AcpEventEnvelope`
 - `AcpRequestHandler`
+- `AcpStopReason`
 
 这些定义位于：
 
@@ -55,6 +56,19 @@
 - `AcpDelegatedExecution`
   - capability-layer 的 delegation identity/correlation shape
   - 与 runtime-owned delegated lifecycle truth 对齐，但不夺走 lifecycle ownership
+
+
+## Stdio façade 回合结果
+
+外部 JSON-RPC stdio 入口位于 [`stdio.py`](./stdio.py)，它消费 runtime stream，但不会把 stream 关闭误报成任务完成：
+
+- `completed` 映射为 ACP `end_turn`；`interrupted` 映射为 `cancelled`。
+- `session/cancel` 在运行身份尚未分配时会排队；只有 runtime 确认中断才报告 `cancelled`。prompt pump 继续排空 runtime stream，最终的 `failed` 或 `completed` 状态优先于取消确认。
+- `failed` 返回 JSON-RPC internal error。
+- EOF 时状态仍为 `running`、`idle` 或未知，以及尚未完成的 `waiting`，均返回明确错误；当前 façade 不支持挂起的 approval/question 往返。
+
+`AcpStopReason` 仅允许 ACP v1 定义的 `end_turn`、`max_tokens`、`max_turn_requests`、`refusal`、`cancelled`，本 façade 当前实际发出 `end_turn` 和 `cancelled`。
+
 
 ## 不负责什么
 

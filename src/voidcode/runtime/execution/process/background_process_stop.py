@@ -66,9 +66,5 @@ class BackgroundProcessStopTool:
         return ToolSuccess(
             tool_name=self.name,
             output=TextOutput(f"Stopped background process {state.process_id}."),
-            body=BackgroundProcessStopBody(
-                process_id=state.process_id,
-                exit_code=exit_code,
-                running=exit_code is None,
-            ),
+            body=BackgroundProcessStopBody(process_id=state.process_id, exit_code=exit_code, running=False),
         )

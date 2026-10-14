@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  providerCacheHitRate,
   providerContextTokens,
   providerCostUsd,
   providerTotalTokens,
@@ -24,6 +25,27 @@ describe("provider context tokens", () => {
     expect(providerContextTokens(undefined)).toBeNull();
   });
 
+  it("keeps partial or unreported counts unknown, but preserves explicit zero", () => {
+    expect(
+      providerContextTokens({
+        provider_usage: {
+          latest: {
+            input_tokens: 100,
+            cache_write_tokens: null,
+            output_tokens: 10,
+          },
+        },
+      }),
+    ).toBeNull();
+    expect(
+      providerContextTokens({
+        provider_usage: {
+          latest: { input_tokens: 0, cache_write_tokens: 0, output_tokens: 0 },
+        },
+      }),
+    ).toBe(0);
+  });
+
   it("applies the same inclusive input to the cumulative total", () => {
     expect(
       providerTotalTokens({
@@ -37,6 +59,20 @@ describe("provider context tokens", () => {
         },
       }),
     ).toBe(10_700);
+  });
+
+  it("keeps a cumulative total unknown when any count is unreported", () => {
+    expect(
+      providerTotalTokens({
+        provider_usage: {
+          cumulative: {
+            input_tokens: 100,
+            cache_write_tokens: null,
+            output_tokens: 10,
+          },
+        },
+      }),
+    ).toBeNull();
   });
 });
 
@@ -60,6 +96,39 @@ describe("provider cost", () => {
     // A priced-to-zero model did cost nothing.
     expect(
       providerCostUsd({ provider_usage: { cumulative: { cost_usd: 0 } } }),
+    ).toBe(0);
+  });
+});
+describe("provider cost partial usage", () => {
+  it("does not substitute latest cost for an unknown session total", () => {
+    expect(
+      providerCostUsd({
+        provider_usage: {
+          latest: { cost_usd: 0.25 },
+          cumulative: { cost_usd: null },
+        },
+      }),
+    ).toBeNull();
+    expect(
+      providerCostUsd({ provider_usage: { latest: { cost_usd: 0.25 } } }),
+    ).toBeNull();
+  });
+});
+
+describe("provider cache hit rate", () => {
+  it("preserves explicit zero and leaves missing cumulative telemetry unknown", () => {
+    expect(
+      providerCacheHitRate({
+        provider_usage: {
+          latest: { cache_hit_rate: 0.5 },
+          cumulative: {},
+        },
+      }),
+    ).toBeNull();
+    expect(
+      providerCacheHitRate({
+        provider_usage: { cumulative: { cache_hit_rate: 0 } },
+      }),
     ).toBe(0);
   });
 });

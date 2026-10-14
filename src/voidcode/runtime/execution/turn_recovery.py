@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ...core.turns import CallSeed, ReportedCall
 from ...formats.json_values import json_wire_object
@@ -48,6 +48,8 @@ def persisted_turn_batch(
         raise ValueError("native batch requires its actual producer run identity")
     if batch.run_step is None or batch.run_step < 1:
         raise ValueError("native batch has no actual positive run step")
+    if not isinstance(batch.tool_batch_id, str) or not batch.tool_batch_id.strip():
+        raise ValueError("native batch has no persisted model-turn identity")
     ids = tuple(call.tool_call_id for call in batch.calls)
     if not ids or any(not call_id for call_id in ids) or len(set(ids)) != len(ids):
         raise ValueError("native batch requires unique original call identities")
@@ -58,6 +60,7 @@ def persisted_turn_batch(
         "run_id": run_id,
         "started_sequence": started_sequence,
         "run_step": batch.run_step,
+        "tool_batch_id": batch.tool_batch_id,
         "calls": [
             {
                 "tool_name": call.tool_name,
@@ -110,7 +113,17 @@ def restored_turn_batch(
     raw = runtime_state_value(metadata, "turn_batch")
     if not isinstance(raw, dict):
         raise ValueError("pending native turn has no durable authentic batch; migrate the legacy checkpoint before resuming")
-    expected_keys = {"session_id", "run_id", "started_sequence", "run_step", "calls", "reasoning", "completed_call_ids", "recoverable"}
+    expected_keys = {
+        "session_id",
+        "run_id",
+        "started_sequence",
+        "run_step",
+        "tool_batch_id",
+        "calls",
+        "reasoning",
+        "completed_call_ids",
+        "recoverable",
+    }
     if set(raw) != expected_keys or raw.get("session_id") != session_id:
         raise ValueError("persisted native batch identity or shape does not match its session")
     run_id = raw.get("run_id")
@@ -121,6 +134,9 @@ def restored_turn_batch(
         raise ValueError("persisted native batch does not belong to its original composition turn")
     if raw.get("recoverable") is not True or redact_mapping(raw) != raw or REDACTED_PLACEHOLDER in json.dumps(raw, ensure_ascii=True).lower():
         raise ValueError("native batch contains redacted credentials or reasoning and cannot safely resume")
+    tool_batch_id = raw.get("tool_batch_id")
+    if not isinstance(tool_batch_id, str) or not tool_batch_id.strip():
+        raise ValueError("persisted native batch requires its canonical model-turn identity")
     started_sequence = raw.get("started_sequence")
     if not isinstance(started_sequence, int) or isinstance(started_sequence, bool) or started_sequence < 0:
         raise ValueError("persisted native batch started_sequence must be a non-negative integer")
@@ -148,11 +164,16 @@ def restored_turn_batch(
     batch_ids = set(ids)
     if any(report.tool_call_id not in batch_ids for report in tool_results):
         raise ValueError("durable native result does not belong to the recorded batch")
-    matching = tuple(tool_results)
+    if any(report.tool_batch_id not in (None, tool_batch_id) for report in tool_results):
+        raise ValueError("durable native result belongs to a different model-turn batch")
+    matching = tuple(replace(report, tool_batch_id=tool_batch_id) for report in tool_results)
     completed_ids = [report.tool_call_id for report in matching]
     if completed_ids != ids[: len(completed_ids)] or recorded_ids != completed_ids[: len(recorded_ids)]:
         raise ValueError("durable native results contain a gap, duplicate, or mismatched completed call identity")
     reasoning = raw.get("reasoning")
     if reasoning is not None and not isinstance(reasoning, str):
         raise ValueError("persisted native reasoning must be text or null")
-    return CallSeed(tuple(calls), reasoning=reasoning, completed_reports=matching, run_step=run_step), started_sequence
+    return (
+        CallSeed(tuple(calls), reasoning=reasoning, completed_reports=matching, run_step=run_step, tool_batch_id=tool_batch_id),
+        started_sequence,
+    )

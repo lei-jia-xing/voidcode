@@ -56,7 +56,7 @@ class _RuntimeConfig:
 
 
 class _Surface:
-    def runtime_config_for_request(self, request: object) -> _RuntimeConfig:
+    def run_config_for_request(self, request: object) -> _RuntimeConfig:
         return _RuntimeConfig()
 
 

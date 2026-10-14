@@ -27,7 +27,7 @@ from ..provider.protocol import ProviderAbortSignal
 from ..skills.registry import SkillRegistry
 from ..tools.contracts import Tool, ToolCall, ToolDefinition
 from .config.loading import RuntimeAgentConfig
-from .config.materializer import EffectiveRuntimeConfig
+from .config.materializer import RunConfig
 from .context.window import (
     BeforeCompactInput,
     CompactionBudget,
@@ -66,12 +66,12 @@ class PermissionOutcome:
 
 class RuntimeSurface(Protocol):
     # --- config truth (reads _config / registries / turn-producer override state) ---
-    def effective_runtime_config_from_metadata(self, metadata: dict[str, object] | None) -> EffectiveRuntimeConfig: ...
+    def run_config_from_metadata(self, metadata: dict[str, object] | None) -> RunConfig: ...
 
-    def runtime_config_for_request(self, request: RuntimeRequest) -> EffectiveRuntimeConfig: ...
+    def run_config_for_request(self, request: RuntimeRequest) -> RunConfig: ...
 
-    def prepare_execution_composition(self, config: EffectiveRuntimeConfig) -> FrozenComposition: ...
-    def reasoning_effort_capability(self, config: EffectiveRuntimeConfig) -> ReasoningEffortCapability: ...
+    def prepare_execution_composition(self, config: RunConfig) -> FrozenComposition: ...
+    def reasoning_effort_capability(self, config: RunConfig) -> ReasoningEffortCapability: ...
 
     # --- permission / tool governance (runtime owns uniformly) ---
     def resolve_permission(
@@ -172,17 +172,17 @@ class RuntimeSurface(Protocol):
         stored: RuntimeResponse | None = None,
         session_id: str | None = None,
         parent_session_id: str | None,
-        current_prompt: str | None = None,
+        include_current_request: bool = False,
     ) -> tuple[ContextSegment, ...]: ...
 
     # --- tool / skill registry composition (resume-oriented) ---
-    def tool_registry_for_effective_config(
+    def tool_registry_for_config(
         self,
-        effective_config: EffectiveRuntimeConfig,
+        config: RunConfig,
         metadata: dict[str, object] | None = None,
     ) -> ToolRegistry: ...
 
-    def skill_registry_for_effective_config(self, effective_config: EffectiveRuntimeConfig) -> SkillRegistry: ...
+    def skill_registry_for_config(self, config: RunConfig) -> SkillRegistry: ...
 
     def build_skill_snapshot(
         self,
@@ -196,10 +196,10 @@ class RuntimeSurface(Protocol):
     def provider_tool_definitions(
         self,
         tool_registry: ToolRegistry,
-        effective_config: EffectiveRuntimeConfig,
+        config: RunConfig,
     ) -> tuple[ToolDefinition, ...]: ...
 
-    # --- turn-producer selection (reads _turn_producer_override / _turn_producer_cache) ---
+    # --- turn-producer selection (reads the injected override or resolved provider binding) ---
     def turn_producer_for_session_metadata(self, metadata: dict[str, object] | None) -> TurnProducer: ...
 
     # --- provider context policy decision (runtime-owned config/tool composition) ---
@@ -207,22 +207,17 @@ class RuntimeSurface(Protocol):
         self,
         *,
         turn_request: TurnRequest,
-        effective_config: EffectiveRuntimeConfig,
+        config: RunConfig,
     ) -> RuntimeProviderContextPolicyDecision | None: ...
 
     # --- MCP lifecycle (resume-oriented; runtime owns refresh / startup gates) ---
-    def should_skip_mcp_startup_for_request(
-        self,
-        *,
-        request_metadata: Mapping[str, object],
-        effective_config: EffectiveRuntimeConfig,
-    ) -> bool: ...
+    def should_skip_mcp_startup_for_request(self) -> bool: ...
 
     def mcp_tools_available_for_run(
         self,
         *,
         request_metadata: Mapping[str, object],
-        effective_config: EffectiveRuntimeConfig,
+        config: RunConfig,
     ) -> bool: ...
 
     def materialize_mcp_tools_for_run(
@@ -231,7 +226,7 @@ class RuntimeSurface(Protocol):
         session: SessionState,
         sequence: int,
         request_metadata: Mapping[str, object],
-        effective_config: EffectiveRuntimeConfig,
+        config: RunConfig,
         failure_kind: str,
     ) -> tuple[tuple[RuntimeStreamChunk, ...], SessionState, int, RuntimeStreamChunk | None, tuple[McpToolDescriptor, ...]]: ...
 
@@ -239,7 +234,7 @@ class RuntimeSurface(Protocol):
         self,
         *,
         session: SessionState,
-        effective_config: EffectiveRuntimeConfig,
+        config: RunConfig,
         mcp_descriptors: tuple[McpToolDescriptor, ...],
     ) -> ToolRegistry: ...
 

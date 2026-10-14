@@ -18,10 +18,11 @@ import pytest
 
 import voidcode.runtime.config.materializer as runtime_config_materializer_module
 import voidcode.runtime.service as runtime_service_module
+from tests.provider_loopback import OpenAILoopbackServer, configure_openai_provider, openai_response
 from tests.runtime_composition import create_task, save_checkpoint
 from voidcode.core.questions import QuestionResponse
 from voidcode.core.tool_context import ToolContext
-from voidcode.core.turns import FinalTurn, StreamFact, ToolTurn, TurnRequest, TurnSession
+from voidcode.core.turns import FinalTurn, ModelTurnFact, StreamFact, ToolTurn, TurnRequest, TurnSession
 from voidcode.provider.config import (
     ProviderEndpointConfig,
     ProviderTransientRetryConfig,
@@ -50,6 +51,7 @@ from voidcode.runtime.config.loading import (
     RuntimeSkillsConfig,
     RuntimeToolsBuiltinConfig,
     RuntimeToolsConfig,
+    load_runtime_config,
 )
 from voidcode.runtime.contracts import (
     SESSION_TITLE_MAX_LENGTH,
@@ -58,8 +60,7 @@ from voidcode.runtime.contracts import (
 )
 from voidcode.runtime.events import (
     RUNTIME_BACKGROUND_TASK_COMPLETED,
-    RUNTIME_SESSION_ENDED,
-    RUNTIME_SESSION_IDLE,
+    RUNTIME_LIFECYCLE_HOOK,
     RUNTIME_SKILLS_BINDING_MISMATCH,
     EventEnvelope,
 )
@@ -97,16 +98,21 @@ from voidcode.tools.contracts import TextOutput, ToolCall, ToolDefinition, ToolE
 from voidcode.tools.shell_exec import ShellExecTool
 
 
-def _delegated_request(prompt: str, *, parent_session_id: str = "leader-session") -> RuntimeRequest:
+def _delegated_request(
+    prompt: str,
+    *,
+    parent_session_id: str = "leader-session",
+    session_id: str | None = None,
+) -> RuntimeRequest:
     return RuntimeRequest(
         prompt=prompt,
+        session_id=session_id,
         parent_session_id=parent_session_id,
         metadata={
             "delegation": {
                 "mode": "background",
                 "subagent_type": "execute",
                 "selected_preset": "execute",
-                "selected_execution_engine": "provider",
             }
         },
     )
@@ -121,15 +127,15 @@ _STANDIN_PROVIDERS = RuntimeProvidersConfig(custom={provider_name: ProviderEndpo
 
 
 def _provider_runtime_config() -> RuntimeConfig:
-    return RuntimeConfig(execution_engine="provider", model="opencode-zen/gpt-5.4")
+    return RuntimeConfig(model="opencode-zen/gpt-5.4")
 
 
-pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
+pytestmark = pytest.mark.usefixtures("disable_default_mcp_servers")
 
 
 @pytest.fixture
-def force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
+def disable_default_mcp_servers(monkeypatch: pytest.MonkeyPatch) -> None:
+
     config_module = importlib.import_module("voidcode.runtime.config.loading")
     monkeypatch.setattr(config_module, "_default_runtime_mcp_servers", lambda: {})
 
@@ -197,7 +203,11 @@ def test_runtime_shell_read_probe_external_path_stays_workspace_scoped(tmp_path:
     assert context == ("workspace", None, "execute", ())
 
 
-class _SkillCapturingStubGraph:
+def _model_turn_fact(request: TurnRequest) -> ModelTurnFact:
+    return ModelTurnFact(request.run_step, "deterministic", request.prompt)
+
+
+class _SkillCapturingStubProducer:
     last_request: TurnRequest | None = None
 
     def produce(
@@ -209,10 +219,10 @@ class _SkillCapturingStubGraph:
     ) -> ToolTurn | FinalTurn:
         _ = tool_results, session
         type(self).last_request = request
-        return FinalTurn(output=request.prompt)
+        return FinalTurn(output=request.prompt, facts=(_model_turn_fact(request),))
 
 
-class _ApprovalThenCaptureSkillGraph:
+class _ApprovalThenCaptureSkillProducer:
     last_request: TurnRequest | None = None
 
     def produce(
@@ -224,14 +234,15 @@ class _ApprovalThenCaptureSkillGraph:
     ) -> ToolTurn | FinalTurn:
         _ = session
         type(self).last_request = request
+        fact = _model_turn_fact(request)
         if not tool_results:
-            return ToolTurn(calls=(ToolCall(tool_name="write", arguments={"path": "alpha.txt", "content": "1"}),))
+            return ToolTurn(calls=(ToolCall(tool_name="write", arguments={"path": "alpha.txt", "content": "1"}),), facts=(fact,))
         if session.metadata.get("parent_session_id") is not None:
-            return ToolTurn(calls=(ToolCall(tool_name="yield", arguments={"summary": "done"}),))
-        return FinalTurn(output="done")
+            return ToolTurn(calls=(ToolCall(tool_name="yield", arguments={"summary": "done"}),), facts=(fact,))
+        return FinalTurn(output="done", facts=(fact,))
 
 
-class _GithubWorkflowWriteGraph:
+class _GithubWorkflowWriteProducer:
     def produce(
         self,
         request: TurnRequest,
@@ -239,7 +250,7 @@ class _GithubWorkflowWriteGraph:
         *,
         session: TurnSession,
     ) -> ToolTurn | FinalTurn:
-        _ = request, session
+        fact = _model_turn_fact(request)
         if not tool_results:
             return ToolTurn(
                 calls=(
@@ -247,12 +258,13 @@ class _GithubWorkflowWriteGraph:
                         tool_name="write",
                         arguments={"path": ".github/workflows/ci.yml", "content": "name: CI\n"},
                     ),
-                )
+                ),
+                facts=(fact,),
             )
-        return FinalTurn(output="done")
+        return FinalTurn(output="done", facts=(fact,))
 
 
-class _ExternalWriteGraph:
+class _ExternalWriteProducer:
     def __init__(self, target: Path) -> None:
         self._target = target
 
@@ -263,7 +275,7 @@ class _ExternalWriteGraph:
         *,
         session: TurnSession,
     ) -> ToolTurn | FinalTurn:
-        _ = request, session
+        fact = _model_turn_fact(request)
         if not tool_results:
             return ToolTurn(
                 calls=(
@@ -271,12 +283,13 @@ class _ExternalWriteGraph:
                         tool_name="write",
                         arguments={"path": self._target.as_posix(), "content": "blocked"},
                     ),
-                )
+                ),
+                facts=(fact,),
             )
-        return FinalTurn(output="done")
+        return FinalTurn(output="done", facts=(fact,))
 
 
-class _ExternalReadThenWriteGraph:
+class _ExternalReadThenWriteProducer:
     def __init__(self, *, raw_path: str, expected_hash: str) -> None:
         self._raw_path = raw_path
         self._expected_hash = expected_hash
@@ -288,9 +301,9 @@ class _ExternalReadThenWriteGraph:
         *,
         session: TurnSession,
     ) -> ToolTurn | FinalTurn:
-        _ = request, session
+        fact = _model_turn_fact(request)
         if not tool_results:
-            return ToolTurn(calls=(ToolCall("read", {"path": self._raw_path}),))
+            return ToolTurn(calls=(ToolCall("read", {"path": self._raw_path}),), facts=(fact,))
         if len(tool_results) == 1:
             return ToolTurn(
                 calls=(
@@ -298,12 +311,13 @@ class _ExternalReadThenWriteGraph:
                         "write",
                         {"path": self._raw_path, "content": "after\n", "expectedHash": self._expected_hash},
                     ),
-                )
+                ),
+                facts=(fact,),
             )
-        return FinalTurn(output="done")
+        return FinalTurn(output="done", facts=(fact,))
 
 
-class _BlockingApprovalResumeGraph:
+class _BlockingApprovalResumeProducer:
     def __init__(self) -> None:
         self.resume_started = threading.Event()
         self.release_resume = threading.Event()
@@ -315,16 +329,16 @@ class _BlockingApprovalResumeGraph:
         *,
         session: TurnSession,
     ) -> ToolTurn | FinalTurn:
-        _ = request, session
+        fact = _model_turn_fact(request)
         if not tool_results:
-            return ToolTurn(calls=(ToolCall(tool_name="write", arguments={"path": "alpha.txt", "content": "1"}),))
+            return ToolTurn(calls=(ToolCall(tool_name="write", arguments={"path": "alpha.txt", "content": "1"}),), facts=(fact,))
         self.resume_started.set()
         if not self.release_resume.wait(timeout=2.0):
             raise RuntimeError("resume was not released")
-        return FinalTurn(output="done")
+        return FinalTurn(output="done", facts=(fact,))
 
 
-class _AbortSignalApprovalGraph:
+class _AbortSignalApprovalProducer:
     def produce(
         self,
         request: TurnRequest,
@@ -332,10 +346,10 @@ class _AbortSignalApprovalGraph:
         *,
         session: TurnSession,
     ) -> ToolTurn | FinalTurn:
-        _ = request, session
+        fact = _model_turn_fact(request)
         if not tool_results:
-            return ToolTurn(calls=(ToolCall(tool_name="write", arguments={}),))
-        return FinalTurn(output="captured")
+            return ToolTurn(calls=(ToolCall(tool_name="write", arguments={}),), facts=(fact,))
+        return FinalTurn(output="captured", facts=(fact,))
 
 
 class _AbortBeforeInvokeTool:
@@ -355,7 +369,7 @@ class _AbortBeforeInvokeTool:
         return ToolSuccess(self.definition.name, output=TextOutput("invoked"))
 
 
-class _QuestionThenDoneGraph:
+class _QuestionThenDoneProducer:
     def produce(
         self,
         request: TurnRequest,
@@ -363,7 +377,7 @@ class _QuestionThenDoneGraph:
         *,
         session: TurnSession,
     ) -> ToolTurn | FinalTurn:
-        _ = request, session
+        fact = _model_turn_fact(request)
         if not tool_results:
             return ToolTurn(
                 calls=(
@@ -383,14 +397,15 @@ class _QuestionThenDoneGraph:
                             ]
                         },
                     ),
-                )
+                ),
+                facts=(fact,),
             )
         if session.metadata.get("parent_session_id") is not None:
-            return ToolTurn(calls=(ToolCall(tool_name="yield", arguments={"summary": "done"}),))
-        return FinalTurn(output="done")
+            return ToolTurn(calls=(ToolCall(tool_name="yield", arguments={"summary": "done"}),), facts=(fact,))
+        return FinalTurn(output="done", facts=(fact,))
 
 
-class _TwoQuestionThenDoneGraph:
+class _TwoQuestionThenDoneProducer:
     def produce(
         self,
         request: TurnRequest,
@@ -398,7 +413,7 @@ class _TwoQuestionThenDoneGraph:
         *,
         session: TurnSession,
     ) -> ToolTurn | FinalTurn:
-        _ = request, session
+        fact = _model_turn_fact(request)
         if not tool_results:
             return ToolTurn(
                 calls=(
@@ -427,9 +442,10 @@ class _TwoQuestionThenDoneGraph:
                             ]
                         },
                     ),
-                )
+                ),
+                facts=(fact,),
             )
-        return FinalTurn(output="done")
+        return FinalTurn(output="done", facts=(fact,))
 
 
 @dataclass
@@ -446,8 +462,8 @@ class _ScriptedTurnProducer:
         *,
         session: TurnSession,
     ) -> ToolTurn | FinalTurn:
-        _ = tool_results, session
         self.requests.append(request)
+        fact = _model_turn_fact(request)
         outcomes = self.outcomes
         if self.shared_outcomes:
             if self._shared_outcomes is None:
@@ -464,8 +480,18 @@ class _ScriptedTurnProducer:
         if not isinstance(result, ProviderTurnResult):
             raise TypeError("scripted turn producer requires ProviderTurnResult outcomes")
         if result.tool_calls:
-            return ToolTurn(calls=result.tool_calls, provider_usage=result.usage, reasoning=result.reasoning)
-        return FinalTurn(output=result.output or "", provider_usage=result.usage, reasoning=result.reasoning)
+            return ToolTurn(
+                calls=result.tool_calls,
+                provider_usage=result.usage,
+                reasoning=result.reasoning,
+                facts=(fact,),
+            )
+        return FinalTurn(
+            output=result.output or "",
+            provider_usage=result.usage,
+            reasoning=result.reasoning,
+            facts=(fact,),
+        )
 
 
 class _AbortableStreamingProducer:
@@ -480,8 +506,8 @@ class _AbortableStreamingProducer:
         *,
         session: TurnSession,
     ) -> ToolTurn | FinalTurn:
-        _ = request, tool_results, session
-        return FinalTurn(output="done")
+        _ = tool_results, session
+        return FinalTurn(output="done", facts=(_model_turn_fact(request),))
 
     def stream_produce(
         self,
@@ -513,20 +539,21 @@ class _WriteThenResultAwareProducer:
         *,
         session: TurnSession,
     ) -> ToolTurn | FinalTurn:
-        _ = request, session
+        fact = _model_turn_fact(request)
         if tool_results:
-            return FinalTurn(output="done")
+            return FinalTurn(output="done", facts=(fact,))
         return ToolTurn(
             calls=(
                 ToolCall(
                     tool_name="write",
                     arguments={"path": "allowed.txt", "content": "allowed"},
                 ),
-            )
+            ),
+            facts=(fact,),
         )
 
 
-class _BackgroundTaskSuccessGraph:
+class _BackgroundTaskSuccessProducer:
     def produce(
         self,
         request: TurnRequest,
@@ -534,6 +561,7 @@ class _BackgroundTaskSuccessGraph:
         *,
         session: TurnSession,
     ) -> ToolTurn | FinalTurn:
+        fact = _model_turn_fact(request)
         _ = tool_results
         if session.metadata.get("parent_session_id") is not None:
             return ToolTurn(
@@ -542,12 +570,13 @@ class _BackgroundTaskSuccessGraph:
                         tool_name="yield",
                         arguments={"summary": request.prompt},
                     ),
-                )
+                ),
+                facts=(fact,),
             )
-        return FinalTurn(output=request.prompt)
+        return FinalTurn(output=request.prompt, facts=(fact,))
 
 
-class _BlockingBackgroundTaskGraph:
+class _BlockingBackgroundTaskProducer:
     def __init__(self) -> None:
         self.release_first = threading.Event()
         self.first_started = threading.Event()
@@ -560,16 +589,16 @@ class _BlockingBackgroundTaskGraph:
         *,
         session: TurnSession,
     ) -> ToolTurn | FinalTurn:
-        _ = tool_results, session
         self.prompts_seen.append(request.prompt)
+        fact = _model_turn_fact(request)
         if request.prompt == "first background task":
             self.first_started.set()
             if not self.release_first.wait(timeout=2.0):
                 raise RuntimeError("first background task was not released")
-        return FinalTurn(output=request.prompt)
+        return FinalTurn(output=request.prompt, facts=(fact,))
 
 
-class _BackgroundTaskFailureGraph:
+class _BackgroundTaskFailureProducer:
     def produce(
         self,
         request: TurnRequest,
@@ -581,7 +610,7 @@ class _BackgroundTaskFailureGraph:
         raise RuntimeError("background boom")
 
 
-class _ParentSuccessBackgroundTaskFailureGraph:
+class _ParentSuccessBackgroundTaskFailureProducer:
     def produce(
         self,
         request: TurnRequest,
@@ -591,7 +620,7 @@ class _ParentSuccessBackgroundTaskFailureGraph:
     ) -> ToolTurn | FinalTurn:
         _ = tool_results, session
         if request.prompt == "parent":
-            return FinalTurn(output=request.prompt)
+            return FinalTurn(output=request.prompt, facts=(_model_turn_fact(request),))
         raise RuntimeError("background boom")
 
 
@@ -664,7 +693,7 @@ class _InjectedMcpNamespaceTool:
 
 
 def test_runtime_background_task_executes_through_existing_runtime_path(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessProducer())
 
     started = runtime.start_background_task(RuntimeRequest(prompt="background hello"))
     completed = _wait_for_background_task(runtime, started.task.id)
@@ -693,7 +722,7 @@ def test_runtime_exit_waits_for_background_task_worker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessProducer())
     supervisor = runtime._background_task_supervisor
     task = BackgroundTaskState(
         task=BackgroundTaskRef(id="task-exit-joins-worker"),
@@ -726,7 +755,7 @@ def test_runtime_shutdown_terminalizes_unfinished_background_worker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessProducer())
     supervisor = runtime._background_task_supervisor
     task = BackgroundTaskState(
         task=BackgroundTaskRef(id="task-exit-unfinished-worker"),
@@ -768,7 +797,7 @@ def test_runtime_shutdown_terminalizes_unfinished_background_worker(
 def test_runtime_shutdown_after_mark_running_terminalizes_task_before_worker(
     tmp_path: Path,
 ) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessProducer())
     supervisor = runtime._background_task_supervisor
     task = BackgroundTaskState(
         task=BackgroundTaskRef(id="task-shutdown-before-worker"),
@@ -800,10 +829,10 @@ def test_runtime_shutdown_after_mark_running_terminalizes_task_before_worker(
 
 
 def test_runtime_background_task_concurrency_limit_queues_and_drains(tmp_path: Path) -> None:
-    graph = _BlockingBackgroundTaskGraph()
+    producer = _BlockingBackgroundTaskProducer()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=graph,
+        turn_producer=producer,
         config=RuntimeConfig(
             background_task=RuntimeBackgroundTaskConfig(default_concurrency=1),
             mcp=RuntimeMcpConfig(enabled=False),
@@ -811,13 +840,13 @@ def test_runtime_background_task_concurrency_limit_queues_and_drains(tmp_path: P
     )
 
     first = runtime.start_background_task(RuntimeRequest(prompt="first background task"))
-    assert graph.first_started.wait(timeout=2.0)
+    assert producer.first_started.wait(timeout=2.0)
     second = runtime.start_background_task(RuntimeRequest(prompt="second background task"))
 
     assert runtime.load_background_task(first.task.id).status == "running"
     assert runtime.load_background_task(second.task.id).status == "queued"
 
-    graph.release_first.set()
+    producer.release_first.set()
     first_terminal = _wait_for_background_task(runtime, first.task.id)
     second_terminal = _wait_for_background_task(runtime, second.task.id)
 
@@ -826,7 +855,7 @@ def test_runtime_background_task_concurrency_limit_queues_and_drains(tmp_path: P
     assert first_terminal.session_id is not None
     assert second_terminal.session_id is not None
     assert first_terminal.session_id != second_terminal.session_id
-    assert graph.prompts_seen == ["first background task", "second background task"]
+    assert producer.prompts_seen == ["first background task", "second background task"]
 
 
 def test_runtime_background_task_queued_read_path_drain_re_dispatches(
@@ -837,7 +866,7 @@ def test_runtime_background_task_queued_read_path_drain_re_dispatches(
     re-dispatched by a subsequent read-path drain instead of being stranded."""
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_BackgroundTaskSuccessGraph(),
+        turn_producer=_BackgroundTaskSuccessProducer(),
         config=RuntimeConfig(
             background_task=RuntimeBackgroundTaskConfig(default_concurrency=1),
             mcp=RuntimeMcpConfig(enabled=False),
@@ -871,7 +900,7 @@ def test_runtime_background_task_shutdown_blocked_returns_interrupted(tmp_path: 
     durable reason instead of being stranded as ``queued``."""
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_BackgroundTaskSuccessGraph(),
+        turn_producer=_BackgroundTaskSuccessProducer(),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
         ),
@@ -891,7 +920,7 @@ def test_runtime_background_task_shutdown_terminalizes_queued(
     cross-process ``queued`` orphans survive teardown."""
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_BackgroundTaskSuccessGraph(),
+        turn_producer=_BackgroundTaskSuccessProducer(),
         config=RuntimeConfig(
             background_task=RuntimeBackgroundTaskConfig(default_concurrency=1),
             mcp=RuntimeMcpConfig(enabled=False),
@@ -960,10 +989,9 @@ def test_runtime_persists_agent_capability_snapshot_for_replay(
     _write_demo_skill(skill_dir, content="# Demo\nSnapshot this skill body.")
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_SkillCapturingStubGraph(),
+        turn_producer=_SkillCapturingStubProducer(),
         mcp_manager=_StubMcpManager(),
         config=RuntimeConfig(
-            execution_engine="provider",
             approval_mode="ask",
             model="opencode-zen/gpt-5.4",
             skills=RuntimeSkillsConfig(enabled=True),
@@ -986,7 +1014,7 @@ def test_runtime_persists_agent_capability_snapshot_for_replay(
     capability_snapshot = cast(dict[str, object], metadata["agent_capability_snapshot"])
     skill_snapshot = cast(dict[str, object], metadata["skill_snapshot"])
 
-    assert capability_snapshot["snapshot_version"] == 4
+    assert capability_snapshot["snapshot_version"] == 5
     assert cast(dict[str, object], capability_snapshot["agent"])["preset"] == "default"
     generation = cast(dict[str, object], capability_snapshot["tools"])["generation"]
     assert isinstance(generation, str)
@@ -996,7 +1024,6 @@ def test_runtime_persists_agent_capability_snapshot_for_replay(
     assert cast(dict[str, object], capability_snapshot["mcp"])["governance"] == ("runtime_config_gated")
     binding_snapshot = cast(dict[str, object], skill_snapshot["binding_snapshot"])
     assert binding_snapshot["approval_mode"] == "ask"
-    assert binding_snapshot["execution_engine"] == "provider"
     assert binding_snapshot["model"] == "opencode-zen/gpt-5.4"
     assert binding_snapshot["agent"] == capability_snapshot["agent"]
     assert binding_snapshot["mcp"] == capability_snapshot["mcp"]
@@ -1019,12 +1046,12 @@ def test_resume_rejects_invalid_capability_snapshot_before_mutation(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         repositories=RuntimeRepositories(store, store, store, store, store, store, store),
-        turn_producer=_SkillCapturingStubGraph(),
-        config=RuntimeConfig(execution_engine="deterministic", mcp=RuntimeMcpConfig(enabled=False)),
+        turn_producer=_SkillCapturingStubProducer(),
+        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False)),
     )
     session_id = "snapshot-strict-resume"
     runtime.run(RuntimeRequest(prompt="snapshot", session_id=session_id))
-    produced_request = _SkillCapturingStubGraph.last_request
+    produced_request = _SkillCapturingStubProducer.last_request
     connection = sqlite3.connect(tmp_path / "capability.sqlite3")
     try:
         row = connection.execute(
@@ -1090,7 +1117,7 @@ def test_resume_rejects_invalid_capability_snapshot_before_mutation(
                 ).fetchone()[0]
                 == event_count
             )
-            assert _SkillCapturingStubGraph.last_request is produced_request
+            assert _SkillCapturingStubProducer.last_request is produced_request
     finally:
         connection.close()
 
@@ -1098,7 +1125,7 @@ def test_resume_rejects_invalid_capability_snapshot_before_mutation(
 def test_runtime_pattern_permission_rule_asks_for_workspace_write(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_GithubWorkflowWriteGraph(),
+        turn_producer=_GithubWorkflowWriteProducer(),
         config=RuntimeConfig(
             permission=ExternalDirectoryPermissionConfig(rules=(PatternPermissionRule(tool="write", path=".github/**", decision="ask"),))
         ),
@@ -1132,7 +1159,6 @@ def test_runtime_pattern_permission_rule_denies_shell_command(tmp_path: Path) ->
         workspace=tmp_path,
         config=RuntimeConfig(
             approval_mode="yolo",
-            execution_engine="provider",
             model="opencode-zen/gpt-5.4",
             permission=ExternalDirectoryPermissionConfig(
                 rules=(
@@ -1182,7 +1208,6 @@ def test_provider_runtime_continues_after_deny_rule_and_reads_unchanged_file(tmp
         turn_producer=producer,
         config=RuntimeConfig(
             approval_mode="yolo",
-            execution_engine="provider",
             model="opencode-zen/gpt-5.4",
             permission=ExternalDirectoryPermissionConfig(rules=(PatternPermissionRule(tool="write", path=target.name, decision="deny"),)),
         ),
@@ -1216,7 +1241,7 @@ def test_runtime_pattern_permission_rule_cannot_bypass_external_write_policy(
     external_path = tmp_path.parent / "external-pattern-denied.txt"
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ExternalWriteGraph(external_path),
+        turn_producer=_ExternalWriteProducer(external_path),
         config=RuntimeConfig(
             permission=ExternalDirectoryPermissionConfig(
                 write=ExternalDirectoryPolicy(rules=(("*", "deny"),)),
@@ -1248,7 +1273,7 @@ def test_external_write_asks_for_runtime_approval_then_writes_raw_path(tmp_path:
     session_id = "external-write-approval"
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ExternalReadThenWriteGraph(raw_path=raw_path, expected_hash=expected_hash),
+        turn_producer=_ExternalReadThenWriteProducer(raw_path=raw_path, expected_hash=expected_hash),
         config=RuntimeConfig(
             approval_mode="ask",
             mcp=RuntimeMcpConfig(enabled=False),
@@ -1281,27 +1306,36 @@ def test_external_write_asks_for_runtime_approval_then_writes_raw_path(tmp_path:
     assert resolution.payload["decision"] == "allow"
 
 
-def test_runtime_persists_pattern_permission_rules_for_resume(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(
-            execution_engine="deterministic",
-            permission=ExternalDirectoryPermissionConfig(rules=(PatternPermissionRule(tool="read", path="src/**", decision="allow"),)),
-        ),
-    )
-    (tmp_path / "sample.txt").write_text("persist permissions\n", encoding="utf-8")
-
-    response = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="persist-rules"))
-    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
-    permission = cast(dict[str, object], runtime_config["permission"])
-
-    assert permission["rules"] == [{"tool": "read", "path": "src/**", "decision": "allow"}]
-    resumed = VoidCodeRuntime(workspace=tmp_path).effective_runtime_config(session_id="persist-rules")
-    assert resumed.permission.rules == (PatternPermissionRule(tool="read", path="src/**", decision="allow"),)
+def test_runtime_persists_pattern_permission_rules_for_resume(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    permission = ExternalDirectoryPermissionConfig(rules=(PatternPermissionRule(tool="read", path="src/**", decision="allow"),))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
+    response_body = openai_response(message={"role": "assistant", "content": "done"}, finish="stop")
+    server = OpenAILoopbackServer([response_body])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    try:
+        thread.start()
+        configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_port}/v1")
+        config = replace(
+            load_runtime_config(tmp_path, env={}),
+            mcp=RuntimeMcpConfig(enabled=False),
+            permission=permission,
+        )
+        with VoidCodeRuntime(workspace=tmp_path, config=config) as runtime:
+            response = runtime.run(RuntimeRequest(prompt="persist permissions", session_id="persist-rules"))
+            runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+            persisted_permission = cast(dict[str, object], runtime_config["permission"])
+            assert persisted_permission["rules"] == [{"tool": "read", "path": "src/**", "decision": "allow"}]
+        resumed = VoidCodeRuntime(workspace=tmp_path).run_config(session_id="persist-rules")
+        assert resumed.permission.rules == (PatternPermissionRule(tool="read", path="src/**", decision="allow"),)
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
 
 
 def test_runtime_cancel_session_interrupts_active_run(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessProducer())
 
     stream = runtime.run_stream(RuntimeRequest(prompt="cancel me", session_id="active-cancel"))
     first_chunk = next(stream)
@@ -1334,7 +1368,6 @@ def test_runtime_abort_during_provider_stream_seals_interrupted(tmp_path: Path) 
         workspace=tmp_path,
         turn_producer=producer,
         config=RuntimeConfig(
-            execution_engine="provider",
             model="primary/model-a",
             provider_fallback=RuntimeProviderFallbackConfig(
                 preferred_model="primary/model-a",
@@ -1392,7 +1425,6 @@ def test_runtime_provider_error_with_abort_stays_failed(tmp_path: Path) -> None:
         workspace=tmp_path,
         turn_producer=producer,
         config=RuntimeConfig(
-            execution_engine="provider",
             model="primary/model-a",
             provider_fallback=RuntimeProviderFallbackConfig(
                 preferred_model="primary/model-a",
@@ -1439,7 +1471,7 @@ def test_runtime_cancel_after_tool_started_emits_terminal_tool_completed(
     tool = _AbortBeforeInvokeTool()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_AbortSignalApprovalGraph(),
+        turn_producer=_AbortSignalApprovalProducer(),
         tool_registry=ToolRegistry.from_tools([tool]),
         permission_policy=PermissionPolicy(mode="yolo"),
     )
@@ -1480,7 +1512,7 @@ def test_runtime_cancel_after_tool_started_emits_terminal_tool_completed(
 
 
 def test_runtime_cancel_session_rejects_stale_run_id(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessProducer())
 
     stream = runtime.run_stream(RuntimeRequest(prompt="stale cancel", session_id="stale-cancel"))
     first_chunk = next(stream)
@@ -1494,10 +1526,10 @@ def test_runtime_cancel_session_rejects_stale_run_id(tmp_path: Path) -> None:
 
 
 def test_runtime_cancel_session_interrupts_active_approval_resume_run(tmp_path: Path) -> None:
-    graph = _BlockingApprovalResumeGraph()
+    producer = _BlockingApprovalResumeProducer()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=graph,
+        turn_producer=producer,
         config=RuntimeConfig(approval_mode="ask", mcp=RuntimeMcpConfig(enabled=False)),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -1520,13 +1552,13 @@ def test_runtime_cancel_session_interrupts_active_approval_resume_run(tmp_path: 
 
     resume_thread = threading.Thread(target=_consume_resume_stream)
     resume_thread.start()
-    assert graph.resume_started.wait(timeout=1.0) is True
+    assert producer.resume_started.wait(timeout=1.0) is True
     active_metadata = _private_attr(runtime, "_active_session_metadata")("resume-cancel")
     assert isinstance(active_metadata, dict)
     run_id = cast(str, active_metadata["run_id"])
 
     result = runtime.cancel_session("resume-cancel", run_id=run_id, reason="resume cancellation")
-    graph.release_resume.set()
+    producer.release_resume.set()
     resume_thread.join(timeout=2.0)
 
     failed_events = [
@@ -1556,7 +1588,7 @@ def test_runtime_cancel_after_approved_tool_started_skips_invoke_and_closes_tool
     tool = _AbortBeforeInvokeTool()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_AbortSignalApprovalGraph(),
+        turn_producer=_AbortSignalApprovalProducer(),
         tool_registry=ToolRegistry.from_tools([tool]),
         config=RuntimeConfig(approval_mode="ask", mcp=RuntimeMcpConfig(enabled=False)),
         permission_policy=PermissionPolicy(mode="ask"),
@@ -1601,7 +1633,7 @@ def test_runtime_cancel_after_approved_tool_started_skips_invoke_and_closes_tool
 
 
 def test_runtime_cancel_session_returns_not_active_for_idle_session(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessProducer())
 
     result = runtime.cancel_session("idle-cancel")
 
@@ -1610,14 +1642,14 @@ def test_runtime_cancel_session_returns_not_active_for_idle_session(tmp_path: Pa
 
 
 def test_runtime_rejects_unknown_parent_session_id(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessProducer())
 
     with pytest.raises(ValueError, match="parent session does not exist: missing-parent"):
         _ = runtime.run(RuntimeRequest(prompt="child task", parent_session_id="missing-parent"))
 
 
 def test_runtime_rejects_self_parenting_session_request(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessProducer())
 
     with pytest.raises(ValueError, match="parent_session_id must not match session_id"):
         _ = runtime.run(
@@ -1630,7 +1662,7 @@ def test_runtime_rejects_self_parenting_session_request(tmp_path: Path) -> None:
 
 
 def test_runtime_lists_background_tasks_by_parent_session(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessProducer())
     _ = runtime.run(RuntimeRequest(prompt="leader a", session_id="leader-a"))
     _ = runtime.run(RuntimeRequest(prompt="leader b", session_id="leader-b"))
 
@@ -1654,7 +1686,7 @@ def test_runtime_resume_rejects_malformed_persisted_pending_approval_policy_mode
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -1683,7 +1715,7 @@ def test_runtime_resume_rejects_malformed_persisted_pending_approval_policy_mode
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -1703,7 +1735,7 @@ def test_runtime_resume_rejects_persisted_approval_owned_by_different_session(
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -1732,7 +1764,7 @@ def test_runtime_resume_rejects_persisted_approval_owned_by_different_session(
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -1752,7 +1784,7 @@ def test_runtime_resume_rejects_tampered_pending_approval_payload_against_record
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -1781,7 +1813,7 @@ def test_runtime_resume_rejects_tampered_pending_approval_payload_against_record
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -1802,7 +1834,7 @@ def test_runtime_resume_rejects_stale_duplicate_approval_replay_when_pending_sta
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -1868,7 +1900,7 @@ def test_runtime_resume_rejects_stale_duplicate_approval_replay_when_pending_sta
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -1888,7 +1920,7 @@ def test_runtime_background_task_waiting_approval_resume_with_fresh_runtime_pres
 ) -> None:
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -1906,7 +1938,7 @@ def test_runtime_background_task_waiting_approval_resume_with_fresh_runtime_pres
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -1928,7 +1960,7 @@ def test_runtime_background_task_waiting_approval_resume_with_fresh_runtime_pres
 def test_runtime_resume_rejects_parent_session_for_child_owned_approval(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -1960,7 +1992,7 @@ def test_runtime_child_question_is_rejected_by_child_tool_policy(
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_QuestionThenDoneGraph(),
+        turn_producer=_QuestionThenDoneProducer(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -1976,7 +2008,7 @@ def test_runtime_child_question_is_rejected_by_child_tool_policy(
 def test_runtime_resume_rejects_wrong_workspace_metadata_on_approval_resume(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -2015,7 +2047,7 @@ def test_runtime_resume_rejects_wrong_workspace_metadata_on_approval_resume(tmp_
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -2034,7 +2066,7 @@ def test_runtime_resume_rejects_wrong_workspace_metadata_on_approval_resume(tmp_
 def test_runtime_answer_question_rejects_wrong_workspace_metadata(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_QuestionThenDoneGraph(),
+        turn_producer=_QuestionThenDoneProducer(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -2073,7 +2105,7 @@ def test_runtime_answer_question_rejects_wrong_workspace_metadata(tmp_path: Path
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_QuestionThenDoneGraph(),
+        turn_producer=_QuestionThenDoneProducer(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -2094,7 +2126,7 @@ def test_runtime_answer_question_rejects_tampered_pending_question_payload_again
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_QuestionThenDoneGraph(),
+        turn_producer=_QuestionThenDoneProducer(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -2124,7 +2156,7 @@ def test_runtime_answer_question_rejects_tampered_pending_question_payload_again
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_QuestionThenDoneGraph(),
+        turn_producer=_QuestionThenDoneProducer(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -2143,7 +2175,7 @@ def test_runtime_answer_question_rejects_tampered_pending_question_payload_again
 def test_runtime_cancel_background_task_propagates_to_waiting_child_session(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -2174,15 +2206,9 @@ def test_runtime_cancel_background_task_propagates_to_waiting_child_session(tmp_
 
 
 def test_runtime_reuses_existing_session_lineage_when_parent_is_omitted(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessProducer())
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
-    first_child = runtime.run(
-        RuntimeRequest(
-            prompt="child task",
-            session_id="child-session",
-            parent_session_id="leader-session",
-        )
-    )
+    first_child = runtime.run(_delegated_request("child task", session_id="child-session", parent_session_id="leader-session"))
 
     second_child = runtime.run(RuntimeRequest(prompt="child task follow-up", session_id="child-session"))
 
@@ -2191,16 +2217,10 @@ def test_runtime_reuses_existing_session_lineage_when_parent_is_omitted(tmp_path
 
 
 def test_runtime_rejects_rebinding_existing_session_to_new_parent(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessProducer())
     _ = runtime.run(RuntimeRequest(prompt="leader one", session_id="leader-one"))
     _ = runtime.run(RuntimeRequest(prompt="leader two", session_id="leader-two"))
-    _ = runtime.run(
-        RuntimeRequest(
-            prompt="child task",
-            session_id="child-session",
-            parent_session_id="leader-one",
-        )
-    )
+    _ = runtime.run(_delegated_request("child task", session_id="child-session", parent_session_id="leader-one"))
 
     with pytest.raises(
         ValueError,
@@ -2218,7 +2238,7 @@ def test_runtime_rejects_rebinding_existing_session_to_new_parent(tmp_path: Path
 def test_runtime_background_task_worker_allocates_session_id_when_requested_without_explicit_session(  # noqa: E501
     tmp_path: Path,
 ) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessProducer())
 
     started = runtime.start_background_task(RuntimeRequest(prompt="background hello", allocate_session_id=True))
     completed = _wait_for_background_task(runtime, started.task.id)
@@ -2236,7 +2256,7 @@ def test_runtime_background_task_worker_allocates_session_id_when_requested_with
 
 
 def test_runtime_background_task_persists_failure_state(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskFailureGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskFailureProducer())
 
     started = runtime.start_background_task(RuntimeRequest(prompt="background fail"))
     _ = runtime.load_background_task(started.task.id)
@@ -2255,7 +2275,7 @@ def test_runtime_retries_failed_background_task_as_fresh_queued_task(
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ParentSuccessBackgroundTaskFailureGraph(),
+        turn_producer=_ParentSuccessBackgroundTaskFailureProducer(),
     )
     _ = runtime.run(RuntimeRequest(prompt="parent", session_id="leader-session"))
     started = runtime.start_background_task(
@@ -2302,7 +2322,7 @@ def test_runtime_retries_failed_background_task_as_fresh_queued_task(
 def test_runtime_retries_cancelled_background_task(
     tmp_path: Path,
 ) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessProducer())
     store = _private_attr(runtime, "_repositories").tasks
     task_id = "task-retry-cancelled"
     composition = CompositionOwner().prepare((), intent={"fixture": task_id})
@@ -2332,7 +2352,7 @@ def test_runtime_retries_cancelled_background_task(
 
 
 def test_runtime_rejects_retry_for_non_terminal_background_task(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessProducer())
     store = _private_attr(runtime, "_repositories").tasks
     task_id = "task-retry-queued"
     composition = CompositionOwner().prepare((), intent={"fixture": task_id})
@@ -2370,7 +2390,7 @@ def test_runtime_rejects_retry_for_non_terminal_background_task(tmp_path: Path) 
 
 
 def test_runtime_cancel_background_task_reconciles_orphaned_queued_task(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessProducer())
     store = _private_attr(runtime, "_repositories").tasks
     create_task(
         store,
@@ -2394,7 +2414,7 @@ def test_runtime_cancel_background_task_reconciles_orphaned_queued_task(tmp_path
 
 
 def test_runtime_reconciles_queued_background_tasks_on_init(tmp_path: Path) -> None:
-    first_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
+    first_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessProducer())
     store = _private_attr(first_runtime, "_repositories").tasks
     create_task(
         store,
@@ -2407,7 +2427,7 @@ def test_runtime_reconciles_queued_background_tasks_on_init(tmp_path: Path) -> N
         ),
     )
 
-    second_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
+    second_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessProducer())
     reconciled = _wait_for_background_task(second_runtime, "task-orphan")
 
     assert reconciled.status == "completed"
@@ -2417,7 +2437,7 @@ def test_runtime_reconciles_queued_background_tasks_on_init(tmp_path: Path) -> N
 def test_runtime_status_reconciles_stale_running_background_tasks(
     tmp_path: Path,
 ) -> None:
-    first_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
+    first_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessProducer())
     store = _private_attr(first_runtime, "_repositories").tasks
     create_task(
         store,
@@ -2435,7 +2455,7 @@ def test_runtime_status_reconciles_stale_running_background_tasks(
         session_id="missing-child-session",
     )
 
-    second_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
+    second_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessProducer())
     status = second_runtime.current_status().background_tasks
     task = second_runtime.load_background_task("task-stale-running")
 
@@ -2454,7 +2474,7 @@ def test_runtime_drain_marks_invalid_queued_task_failed_and_continues(
 ) -> None:
     first_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_BackgroundTaskSuccessGraph(),
+        turn_producer=_BackgroundTaskSuccessProducer(),
         config=RuntimeConfig(
             background_task=RuntimeBackgroundTaskConfig(default_concurrency=1),
             mcp=RuntimeMcpConfig(enabled=False),
@@ -2508,7 +2528,7 @@ def test_runtime_drain_marks_invalid_queued_task_failed_and_continues(
 
     second_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_BackgroundTaskSuccessGraph(),
+        turn_producer=_BackgroundTaskSuccessProducer(),
         config=RuntimeConfig(
             background_task=RuntimeBackgroundTaskConfig(default_concurrency=1),
             mcp=RuntimeMcpConfig(enabled=False),
@@ -2529,7 +2549,7 @@ def test_runtime_drain_releases_slot_when_worker_start_fails(
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_BackgroundTaskSuccessGraph(),
+        turn_producer=_BackgroundTaskSuccessProducer(),
         config=RuntimeConfig(background_task=RuntimeBackgroundTaskConfig(default_concurrency=1)),
     )
     real_thread_start = threading.Thread.start
@@ -2555,7 +2575,7 @@ def test_runtime_drain_releases_slot_when_worker_start_fails(
 def test_runtime_background_task_worker_exits_when_task_is_cancelled_before_start_transition(
     tmp_path: Path,
 ) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessProducer())
     runtime._background_task_supervisor.reconciled = True
     store = _private_attr(runtime, "_repositories").tasks
     create_task(
@@ -2588,7 +2608,7 @@ def test_runtime_background_task_worker_exits_when_task_is_cancelled_before_star
 
 
 def test_runtime_background_task_worker_rechecks_cancel_before_dispatch(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessProducer())
     runtime._background_task_supervisor.reconciled = True
     store = _private_attr(runtime, "_repositories").tasks
     create_task(
@@ -2624,7 +2644,7 @@ def test_runtime_background_task_worker_rechecks_cancel_before_dispatch(tmp_path
 def test_runtime_reconciliation_preserves_terminal_task_even_if_child_session_disagrees(
     tmp_path: Path,
 ) -> None:
-    initial_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
+    initial_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessProducer())
     _ = initial_runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
     tasks = _private_attr(initial_runtime, "_repositories").tasks
     run_writer = _private_attr(initial_runtime, "_repositories").run_writer
@@ -2695,7 +2715,7 @@ def test_runtime_reconciliation_preserves_terminal_task_even_if_child_session_di
         ),
     )
 
-    resumed_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
+    resumed_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessProducer())
 
     reconciled = resumed_runtime.load_background_task("task-terminal-truth")
     leader_response = _wait_for_session_event(
@@ -2712,7 +2732,7 @@ def test_runtime_reconciliation_preserves_terminal_task_even_if_child_session_di
 def test_runtime_reconciliation_turns_cancel_requested_running_task_into_cancelled(
     tmp_path: Path,
 ) -> None:
-    first_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
+    first_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessProducer())
     store = _private_attr(first_runtime, "_repositories").tasks
     create_task(
         store,
@@ -2732,7 +2752,7 @@ def test_runtime_reconciliation_turns_cancel_requested_running_task_into_cancell
         task_id="task-orphan-cancel-request",
     )
 
-    second_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
+    second_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessProducer())
     reconciled = second_runtime.load_background_task("task-orphan-cancel-request")
 
     assert reconciled.status == "cancelled"
@@ -2746,7 +2766,7 @@ def test_runtime_rejects_client_supplied_workflow_metadata_on_fresh_request(
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_SkillCapturingStubGraph(),
+        turn_producer=_SkillCapturingStubProducer(),
         config=_provider_runtime_config(),
     )
 
@@ -2778,7 +2798,6 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
                 rules=(PatternPermissionRule(tool="read", path="docs/**", decision="allow"),),
             ),
             policy=RuntimePolicyConfig(tool_policy=RuntimePolicyToolPolicyConfig(default="deny", allowed=("read",))),
-            execution_engine="provider",
             model="opencode-zen/gpt-5.4",
             tool_timeout_seconds=11,
             reasoning_effort="high",
@@ -2813,7 +2832,7 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
     )
 
     metadata = runtime._runtime_config_metadata()
-    effective = runtime.effective_runtime_config_from_metadata({"runtime_config": metadata})
+    config = runtime.run_config_from_metadata({"runtime_config": metadata})
 
     persisted_keys = runtime_config_materializer_module.PERSISTED_RUNTIME_CONFIG_KEYS
     assert set(metadata) <= persisted_keys
@@ -2821,7 +2840,6 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
         "approval_mode",
         "permission",
         "policy",
-        "execution_engine",
         "tool_timeout_seconds",
         "reasoning_effort",
         "model",
@@ -2836,39 +2854,37 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
         "lsp",
         "mcp",
     } <= set(metadata)
-    assert effective.approval_mode == "ask"
-    assert effective.permission.read.rules == (("/var/log/**", "allow"), ("*", "ask"))
-    assert effective.permission.write.rules == (("*", "deny"),)
-    assert effective.permission.rules == (PatternPermissionRule(tool="read", path="docs/**", decision="allow"),)
-    assert effective.policy == RuntimePolicyConfig(tool_policy=RuntimePolicyToolPolicyConfig(default="deny", allowed=("read",)))
-    assert effective.execution_engine == "provider"
-    assert effective.model == "opencode-zen/gpt-5.4"
-    assert effective.tool_timeout_seconds == 11
-    assert effective.reasoning_effort == "high"
-    assert effective.provider_fallback == RuntimeProviderFallbackConfig(
+    assert config.approval_mode == "ask"
+    assert config.permission.read.rules == (("/var/log/**", "allow"), ("*", "ask"))
+    assert config.permission.write.rules == (("*", "deny"),)
+    assert config.permission.rules == (PatternPermissionRule(tool="read", path="docs/**", decision="allow"),)
+    assert config.policy == RuntimePolicyConfig(tool_policy=RuntimePolicyToolPolicyConfig(default="deny", allowed=("read",)))
+    assert config.model == "opencode-zen/gpt-5.4"
+    assert config.tool_timeout_seconds == 11
+    assert config.reasoning_effort == "high"
+    assert config.provider_fallback == RuntimeProviderFallbackConfig(
         preferred_model="opencode-zen/gpt-5.4",
         fallback_models=("opencode-zen/gpt-5.3",),
     )
-    assert effective.providers == RuntimeProvidersConfig(
+    assert config.providers == RuntimeProvidersConfig(
         custom={
             "local-openai": ProviderEndpointConfig(
                 transient_retry=ProviderTransientRetryConfig(max_retries=2),
             )
         }
     )
-    assert effective.tools == RuntimeToolsConfig(
+    assert config.tools == RuntimeToolsConfig(
         builtin=RuntimeToolsBuiltinConfig(enabled=True),
         allowlist=("read", "grep"),
     )
-    assert effective.agent == RuntimeAgentConfig(
+    assert config.agent == RuntimeAgentConfig(
         preset="default",
         prompt_profile="default",
         hook_refs=("role_reminder",),
         context_transform_refs=("runtime_file_rules",),
         model="opencode-zen/gpt-5.4",
-        execution_engine="provider",
     )
-    assert effective.context_window == RuntimeContextWindowConfig()
+    assert config.context_window == RuntimeContextWindowConfig()
 
 
 def test_runtime_config_request_metadata_overrides_supported_fields(
@@ -2877,7 +2893,6 @@ def test_runtime_config_request_metadata_overrides_supported_fields(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
-            execution_engine="provider",
             model="opencode-zen/original",
             reasoning_effort="low",
             agent=RuntimeAgentConfig(
@@ -2887,7 +2902,7 @@ def test_runtime_config_request_metadata_overrides_supported_fields(
         ),
     )
 
-    resolved = cast(Any, runtime).runtime_config_for_request(
+    resolved = cast(Any, runtime).run_config_for_request(
         RuntimeRequest(
             prompt="hello",
             metadata=validate_runtime_request_metadata(
@@ -2907,7 +2922,6 @@ def test_runtime_config_request_metadata_overrides_supported_fields(
         prompt_profile="default",
         context_transform_refs=("runtime_file_rules",),
         model="opencode-zen/gpt-5.4",
-        execution_engine="provider",
     )
 
 
@@ -2920,7 +2934,7 @@ def test_runtime_config_rejects_unknown_persisted_field(tmp_path: Path) -> None:
         ValueError,
         match="persisted runtime_config field 'surprise' is not supported",
     ):
-        _ = runtime.effective_runtime_config_from_metadata({"runtime_config": runtime_config_metadata})
+        _ = runtime.run_config_from_metadata({"runtime_config": runtime_config_metadata})
 
 
 @pytest.mark.parametrize(
@@ -2945,7 +2959,7 @@ def test_runtime_config_rejects_removed_persisted_shapes(
         ValueError,
         match=rf"persisted runtime_config field '{removed_field}' is not supported",
     ):
-        _ = runtime.effective_runtime_config_from_metadata({"runtime_config": runtime_config_metadata})
+        _ = runtime.run_config_from_metadata({"runtime_config": runtime_config_metadata})
 
 
 def test_runtime_config_rejects_removed_top_level_metadata_without_runtime_config(
@@ -2954,7 +2968,7 @@ def test_runtime_config_rejects_removed_top_level_metadata_without_runtime_confi
     runtime = VoidCodeRuntime(workspace=tmp_path)
 
     with pytest.raises(ValueError, match="persisted session metadata must include runtime_config"):
-        _ = runtime.effective_runtime_config_from_metadata(
+        _ = runtime.run_config_from_metadata(
             {
                 "agent": {"preset": "default"},
                 "reasoning_effort": "medium",
@@ -2968,9 +2982,8 @@ def test_runtime_child_capability_snapshot_is_bounded_by_parent_policy(
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_BackgroundTaskSuccessGraph(),
+        turn_producer=_BackgroundTaskSuccessProducer(),
         config=RuntimeConfig(
-            execution_engine="provider",
             model="opencode-zen/gpt-5.4",
             agent=RuntimeAgentConfig(
                 preset="default",
@@ -3016,7 +3029,7 @@ def test_runtime_rejects_client_supplied_applied_skill_payloads_on_new_run(
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_SkillCapturingStubGraph(),
+        turn_producer=_SkillCapturingStubProducer(),
         config=RuntimeConfig(),
     )
 
@@ -3045,7 +3058,7 @@ def test_runtime_rejects_client_supplied_applied_skill_payloads_on_new_run(
 
 
 def test_runtime_rejects_unsupported_request_metadata_field(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_SkillCapturingStubGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_SkillCapturingStubProducer())
 
     with pytest.raises(
         ValueError,
@@ -3060,7 +3073,7 @@ def test_runtime_rejects_unsupported_request_metadata_field(tmp_path: Path) -> N
 
 
 def test_runtime_rejects_non_string_request_metadata_key(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_SkillCapturingStubGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_SkillCapturingStubProducer())
 
     with pytest.raises(
         ValueError,
@@ -3078,7 +3091,7 @@ def test_runtime_rejects_non_string_request_metadata_key(tmp_path: Path) -> None
 
 
 def test_runtime_run_stream_rejects_unsupported_request_metadata_field(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_SkillCapturingStubGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_SkillCapturingStubProducer())
 
     with pytest.raises(ValueError, match="unsupported request metadata field\\(s\\): client"):
         _ = list(
@@ -3094,7 +3107,7 @@ def test_runtime_run_stream_rejects_unsupported_request_metadata_field(tmp_path:
 def test_runtime_start_background_task_rejects_unsupported_request_metadata_field(
     tmp_path: Path,
 ) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessProducer())
 
     with pytest.raises(
         ValueError,
@@ -3104,7 +3117,7 @@ def test_runtime_start_background_task_rejects_unsupported_request_metadata_fiel
 
 
 def test_runtime_rejects_non_boolean_provider_stream_request_metadata(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_SkillCapturingStubGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_SkillCapturingStubProducer())
 
     with pytest.raises(ValueError, match="request metadata 'provider_stream' must be a boolean"):
         _ = runtime.run(
@@ -3116,7 +3129,7 @@ def test_runtime_rejects_non_boolean_provider_stream_request_metadata(tmp_path: 
 
 
 def test_runtime_rejects_non_boolean_show_thinking_request_metadata(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_SkillCapturingStubGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_SkillCapturingStubProducer())
 
     with pytest.raises(ValueError, match="request metadata 'show_thinking' must be a boolean"):
         _ = runtime.run(
@@ -3129,7 +3142,7 @@ def test_runtime_rejects_non_boolean_show_thinking_request_metadata(tmp_path: Pa
 
 @pytest.mark.parametrize("invalid_value", ["none", "banana", "High", "", 1, True, None])
 def test_runtime_rejects_invalid_reasoning_effort_request_metadata(tmp_path: Path, invalid_value: object) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_SkillCapturingStubGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_SkillCapturingStubProducer())
 
     with pytest.raises(
         ValueError,
@@ -3150,7 +3163,7 @@ def test_runtime_resume_rejects_session_metadata_drift_before_mutation(
     _write_demo_skill(skill_dir, content="# Demo\nUse concise bullet points.")
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -3195,7 +3208,7 @@ def test_runtime_resume_rejects_session_metadata_drift_before_mutation(
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -3219,22 +3232,6 @@ def test_runtime_resume_rejects_session_metadata_drift_before_mutation(
     assert unchanged_event_count == event_count
 
 
-class _MultiStepStubGraph:
-    def produce(
-        self,
-        request: TurnRequest,
-        tool_results: tuple[object, ...],
-        *,
-        session: TurnSession,
-    ) -> ToolTurn | FinalTurn:
-        _ = request, session
-        if not tool_results:
-            return ToolTurn(calls=(ToolCall(tool_name="write", arguments={"path": "alpha.txt", "content": "1"}),))
-        if len(tool_results) == 1:
-            return ToolTurn(calls=(ToolCall(tool_name="write", arguments={"path": "beta.txt", "content": "2"}),))
-        return FinalTurn(output="done")
-
-
 def test_runtime_resume_uses_frozen_applied_skill_payloads_when_live_skill_changes(
     tmp_path: Path,
 ) -> None:
@@ -3247,7 +3244,7 @@ def test_runtime_resume_uses_frozen_applied_skill_payloads_when_live_skill_chang
 
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -3265,7 +3262,7 @@ def test_runtime_resume_uses_frozen_applied_skill_payloads_when_live_skill_chang
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -3277,8 +3274,8 @@ def test_runtime_resume_uses_frozen_applied_skill_payloads_when_live_skill_chang
     )
 
     assert resumed.session.status == "completed"
-    assert _ApprovalThenCaptureSkillGraph.last_request is not None
-    assembled = _ApprovalThenCaptureSkillGraph.last_request.assembled_context
+    assert _ApprovalThenCaptureSkillProducer.last_request is not None
+    assembled = _ApprovalThenCaptureSkillProducer.last_request.assembled_context
     assert assembled is not None
     assert [s for s in assembled.segments if s.role == "system" and s.metadata is not None and s.metadata.get("source") == "skill_prompt"] == []
 
@@ -3288,7 +3285,7 @@ def test_runtime_resume_preserves_explicit_empty_applied_skill_snapshot(
 ) -> None:
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -3309,7 +3306,7 @@ def test_runtime_resume_preserves_explicit_empty_applied_skill_snapshot(
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -3321,8 +3318,8 @@ def test_runtime_resume_preserves_explicit_empty_applied_skill_snapshot(
     )
 
     assert resumed.session.status == "completed"
-    assert _ApprovalThenCaptureSkillGraph.last_request is not None
-    assembled = _ApprovalThenCaptureSkillGraph.last_request.assembled_context
+    assert _ApprovalThenCaptureSkillProducer.last_request is not None
+    assembled = _ApprovalThenCaptureSkillProducer.last_request.assembled_context
     assert assembled is not None
     assert [s for s in assembled.segments if s.role == "system" and s.metadata is not None and s.metadata.get("source") == "skill_prompt"] == []
 
@@ -3346,7 +3343,7 @@ def test_runtime_rejects_boolean_continuity_version_in_session_metadata() -> Non
     assert continuity is None
 
 
-def test_runtime_effective_runtime_config_prefers_persisted_session_values(tmp_path: Path) -> None:
+def test_runtime_run_config_prefers_persisted_session_values(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     sample_file.write_text("config session\n", encoding="utf-8")
 
@@ -3355,7 +3352,6 @@ def test_runtime_effective_runtime_config_prefers_persisted_session_values(tmp_p
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
             approval_mode="yolo",
-            execution_engine="deterministic",
             model="session/model",
         ),
     )
@@ -3366,18 +3362,16 @@ def test_runtime_effective_runtime_config_prefers_persisted_session_values(tmp_p
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
             approval_mode="ask",
-            execution_engine="deterministic",
             model="fresh/model",
         ),
     )
-    effective = resumed_runtime.effective_runtime_config(session_id="config-session")
+    config = resumed_runtime.run_config(session_id="config-session")
 
-    assert effective.approval_mode == "yolo"
-    assert effective.model == "session/model"
-    assert effective.execution_engine == "deterministic"
+    assert config.approval_mode == "yolo"
+    assert config.model == "session/model"
 
 
-def test_runtime_effective_runtime_config_rejects_missing_persisted_external_write(
+def test_runtime_run_config_rejects_missing_persisted_external_write(
     tmp_path: Path,
 ) -> None:
     sample_file = tmp_path / "sample.txt"
@@ -3388,7 +3382,6 @@ def test_runtime_effective_runtime_config_rejects_missing_persisted_external_wri
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
             approval_mode="yolo",
-            execution_engine="deterministic",
             model="session/model",
         ),
     )
@@ -3422,10 +3415,10 @@ def test_runtime_effective_runtime_config_rejects_missing_persisted_external_wri
     )
 
     with pytest.raises(ValueError, match="permission is missing required field"):
-        _ = VoidCodeRuntime(workspace=tmp_path).effective_runtime_config(session_id="persisted-missing-external-write")
+        _ = VoidCodeRuntime(workspace=tmp_path).run_config(session_id="persisted-missing-external-write")
 
 
-def test_runtime_effective_runtime_config_recovers_persisted_tool_timeout(tmp_path: Path) -> None:
+def test_runtime_run_config_recovers_persisted_tool_timeout(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     sample_file.write_text("config session\n", encoding="utf-8")
 
@@ -3433,7 +3426,6 @@ def test_runtime_effective_runtime_config_recovers_persisted_tool_timeout(tmp_pa
         workspace=tmp_path,
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
-            execution_engine="deterministic",
             approval_mode="yolo",
             model="session/model",
             tool_timeout_seconds=7,
@@ -3453,14 +3445,14 @@ def test_runtime_effective_runtime_config_recovers_persisted_tool_timeout(tmp_pa
             tool_timeout_seconds=3,
         ),
     )
-    effective = resumed_runtime.effective_runtime_config(session_id="tool-timeout-session")
+    config = resumed_runtime.run_config(session_id="tool-timeout-session")
 
-    assert effective.approval_mode == "yolo"
-    assert effective.model == "session/model"
-    assert effective.tool_timeout_seconds == 7
+    assert config.approval_mode == "yolo"
+    assert config.model == "session/model"
+    assert config.tool_timeout_seconds == 7
 
 
-def test_runtime_effective_runtime_config_preserves_explicit_persisted_none_tool_timeout(
+def test_runtime_run_config_preserves_explicit_persisted_none_tool_timeout(
     tmp_path: Path,
 ) -> None:
     sample_file = tmp_path / "sample.txt"
@@ -3468,7 +3460,7 @@ def test_runtime_effective_runtime_config_preserves_explicit_persisted_none_tool
 
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(providers=_STANDIN_PROVIDERS, execution_engine="deterministic", approval_mode="yolo", model="session/model"),
+        config=RuntimeConfig(providers=_STANDIN_PROVIDERS, approval_mode="yolo", model="session/model"),
     )
     response = initial_runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="tool-timeout-none-session"))
     runtime_config_metadata = cast(dict[str, object], response.session.metadata["runtime_config"])
@@ -3484,14 +3476,14 @@ def test_runtime_effective_runtime_config_preserves_explicit_persisted_none_tool
             tool_timeout_seconds=9,
         ),
     )
-    effective = resumed_runtime.effective_runtime_config(session_id="tool-timeout-none-session")
+    config = resumed_runtime.run_config(session_id="tool-timeout-none-session")
 
-    assert effective.approval_mode == "yolo"
-    assert effective.model == "session/model"
-    assert effective.tool_timeout_seconds is None
+    assert config.approval_mode == "yolo"
+    assert config.model == "session/model"
+    assert config.tool_timeout_seconds is None
 
 
-def test_runtime_effective_runtime_config_rejects_invalid_persisted_tool_timeout(
+def test_runtime_run_config_rejects_invalid_persisted_tool_timeout(
     tmp_path: Path,
 ) -> None:
     sample_file = tmp_path / "sample.txt"
@@ -3501,7 +3493,6 @@ def test_runtime_effective_runtime_config_rejects_invalid_persisted_tool_timeout
         workspace=tmp_path,
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
-            execution_engine="deterministic",
             approval_mode="yolo",
             model="session/model",
             tool_timeout_seconds=7,
@@ -3539,7 +3530,7 @@ def test_runtime_effective_runtime_config_rejects_invalid_persisted_tool_timeout
         ValueError,
         match="persisted runtime_config tool_timeout_seconds must be at least 1",
     ):
-        _ = resumed_runtime.effective_runtime_config(session_id="invalid-tool-timeout")
+        _ = resumed_runtime.run_config(session_id="invalid-tool-timeout")
 
 
 def test_runtime_resume_fails_fast_when_persisted_reasoning_effort_invalid(
@@ -3552,7 +3543,6 @@ def test_runtime_resume_fails_fast_when_persisted_reasoning_effort_invalid(
         workspace=tmp_path,
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
-            execution_engine="deterministic",
             approval_mode="yolo",
             model="session/model",
             reasoning_effort="high",
@@ -3590,10 +3580,10 @@ def test_runtime_resume_fails_fast_when_persisted_reasoning_effort_invalid(
         ValueError,
         match=r"reasoning_effort must be one of: off, minimal, low, medium, high, xhigh, max",
     ):
-        _ = resumed_runtime.effective_runtime_config(session_id="invalid-reasoning-effort")
+        _ = resumed_runtime.run_config(session_id="invalid-reasoning-effort")
 
 
-def test_runtime_effective_runtime_config_keeps_persisted_non_agent_sessions_clear_of_fresh_agent_defaults(  # noqa: E501
+def test_runtime_run_config_keeps_persisted_non_agent_sessions_clear_of_fresh_agent_defaults(  # noqa: E501
     tmp_path: Path,
 ) -> None:
     sample_file = tmp_path / "sample.txt"
@@ -3604,11 +3594,30 @@ def test_runtime_effective_runtime_config_keeps_persisted_non_agent_sessions_cle
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
             approval_mode="yolo",
-            execution_engine="deterministic",
             model="session/model",
         ),
     )
     _ = initial_runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="non-agent-session"))
+    connection = sqlite3.connect(sessions_db_path())
+    try:
+        row = connection.execute(
+            "SELECT metadata_json FROM sessions WHERE session_id = ?",
+            ("non-agent-session",),
+        ).fetchone()
+        assert row is not None
+        metadata = json.loads(str(row[0]))
+        assert isinstance(metadata, dict)
+        metadata_dict = cast(dict[str, object], metadata)
+        runtime_config = cast(dict[str, object], metadata_dict["runtime_config"])
+        assert "agent" in runtime_config
+        runtime_config.pop("agent")
+        _ = connection.execute(
+            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
+            (json.dumps(metadata, sort_keys=True), "non-agent-session"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -3621,15 +3630,14 @@ def test_runtime_effective_runtime_config_keeps_persisted_non_agent_sessions_cle
             ),
         ),
     )
-    effective = resumed_runtime.effective_runtime_config(session_id="non-agent-session")
+    config = resumed_runtime.run_config(session_id="non-agent-session")
 
-    assert effective.approval_mode == "yolo"
-    assert effective.model == "session/model"
-    assert effective.execution_engine == "deterministic"
-    assert effective.agent is None
+    assert config.approval_mode == "yolo"
+    assert config.model == "session/model"
+    assert config.agent is None
 
 
-def test_runtime_effective_runtime_config_restores_persisted_config_without_plan(
+def test_runtime_run_config_restores_persisted_config_without_plan(
     tmp_path: Path,
 ) -> None:
     sample_file = tmp_path / "sample.txt"
@@ -3637,7 +3645,7 @@ def test_runtime_effective_runtime_config_restores_persisted_config_without_plan
 
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(providers=_STANDIN_PROVIDERS, execution_engine="deterministic", model="session/model"),
+        config=RuntimeConfig(providers=_STANDIN_PROVIDERS, model="session/model"),
     )
     response = initial_runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="config-session-without-plan"))
     runtime_config_metadata = cast(dict[str, object], response.session.metadata["runtime_config"])
@@ -3646,16 +3654,15 @@ def test_runtime_effective_runtime_config_restores_persisted_config_without_plan
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(providers=_STANDIN_PROVIDERS, execution_engine="deterministic", model="fresh/model"),
+        config=RuntimeConfig(providers=_STANDIN_PROVIDERS, model="fresh/model"),
     )
 
-    effective = resumed_runtime.effective_runtime_config(session_id="config-session-without-plan")
+    config = resumed_runtime.run_config(session_id="config-session-without-plan")
 
-    assert effective.execution_engine == "deterministic"
-    assert effective.model == "session/model"
+    assert config.model == "session/model"
 
 
-def test_runtime_effective_runtime_config_recovers_provider_engine(tmp_path: Path) -> None:
+def test_runtime_run_config_recovers_provider_model(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     sample_file.write_text("agent config\n", encoding="utf-8")
 
@@ -3664,7 +3671,6 @@ def test_runtime_effective_runtime_config_recovers_provider_engine(tmp_path: Pat
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
             approval_mode="yolo",
-            execution_engine="provider",
             model="opencode-zen/gpt-5.4",
         ),
     )
@@ -3674,11 +3680,10 @@ def test_runtime_effective_runtime_config_recovers_provider_engine(tmp_path: Pat
         workspace=tmp_path,
         config=RuntimeConfig(providers=_STANDIN_PROVIDERS, approval_mode="ask", model="fresh/model"),
     )
-    effective = resumed_runtime.effective_runtime_config(session_id="single-agent-config")
+    config = resumed_runtime.run_config(session_id="single-agent-config")
 
-    assert effective.approval_mode == "yolo"
-    assert effective.execution_engine == "provider"
-    assert effective.model == "opencode-zen/gpt-5.4"
+    assert config.approval_mode == "yolo"
+    assert config.model == "opencode-zen/gpt-5.4"
 
 
 def test_runtime_plan_agent_config_is_not_top_level_selectable(
@@ -4021,7 +4026,7 @@ def test_runtime_agent_tool_allowlist_survives_approval_resume(tmp_path: Path) -
     assert (tmp_path / "allowed.txt").read_text(encoding="utf-8") == "allowed"
 
 
-def test_runtime_effective_runtime_config_recovers_provider_fallback_chain(tmp_path: Path) -> None:
+def test_runtime_run_config_recovers_provider_fallback_chain(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     sample_file.write_text("fallback chain\n", encoding="utf-8")
     runtime = VoidCodeRuntime(
@@ -4029,7 +4034,6 @@ def test_runtime_effective_runtime_config_recovers_provider_fallback_chain(tmp_p
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
             approval_mode="yolo",
-            execution_engine="deterministic",
             model="opencode-zen/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
                 preferred_model="opencode-zen/gpt-5.4",
@@ -4045,15 +4049,15 @@ def test_runtime_effective_runtime_config_recovers_provider_fallback_chain(tmp_p
             providers=_STANDIN_PROVIDERS,
         ),
     )
-    effective = resumed_runtime.effective_runtime_config(session_id="fallback-config")
+    config = resumed_runtime.run_config(session_id="fallback-config")
 
-    assert effective.provider_fallback == RuntimeProviderFallbackConfig(
+    assert config.provider_fallback == RuntimeProviderFallbackConfig(
         preferred_model="opencode-zen/gpt-5.4",
         fallback_models=("opencode-zen/gpt-5.3", "custom/demo"),
     )
 
 
-def test_runtime_effective_runtime_config_rejects_missing_persisted_fallback_models(
+def test_runtime_run_config_rejects_missing_persisted_fallback_models(
     tmp_path: Path,
 ) -> None:
     sample_file = tmp_path / "sample.txt"
@@ -4063,7 +4067,6 @@ def test_runtime_effective_runtime_config_rejects_missing_persisted_fallback_mod
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
             approval_mode="yolo",
-            execution_engine="deterministic",
             model="opencode-zen/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
                 preferred_model="opencode-zen/gpt-5.4",
@@ -4101,7 +4104,6 @@ def test_runtime_effective_runtime_config_rejects_missing_persisted_fallback_mod
         workspace=tmp_path,
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
-            execution_engine="provider",
             model="fresh/model",
             provider_fallback=RuntimeProviderFallbackConfig(
                 preferred_model="fresh/model",
@@ -4110,10 +4112,10 @@ def test_runtime_effective_runtime_config_rejects_missing_persisted_fallback_mod
         ),
     )
     with pytest.raises(ValueError, match="missing required field.*fallback_models"):
-        resumed_runtime.effective_runtime_config(session_id="fallback-config-missing-key")
+        resumed_runtime.run_config(session_id="fallback-config-missing-key")
 
 
-def test_runtime_effective_runtime_config_rejects_malformed_persisted_provider_fallback(
+def test_runtime_run_config_rejects_malformed_persisted_provider_fallback(
     tmp_path: Path,
 ) -> None:
     sample_file = tmp_path / "sample.txt"
@@ -4124,7 +4126,6 @@ def test_runtime_effective_runtime_config_rejects_malformed_persisted_provider_f
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
             approval_mode="yolo",
-            execution_engine="deterministic",
             model="opencode-zen/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
                 preferred_model="opencode-zen/gpt-5.4",
@@ -4163,10 +4164,10 @@ def test_runtime_effective_runtime_config_rejects_malformed_persisted_provider_f
     )
 
     with pytest.raises(ValueError, match="invalid provider config"):
-        _ = resumed_runtime.effective_runtime_config(session_id="malformed-provider-fallback")
+        _ = resumed_runtime.run_config(session_id="malformed-provider-fallback")
 
 
-def test_runtime_effective_runtime_config_accepts_non_first_active_target_in_snapshot(
+def test_runtime_run_config_accepts_non_first_active_target_in_snapshot(
     tmp_path: Path,
 ) -> None:
     sample_file = tmp_path / "sample.txt"
@@ -4177,7 +4178,6 @@ def test_runtime_effective_runtime_config_accepts_non_first_active_target_in_sna
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
             approval_mode="yolo",
-            execution_engine="deterministic",
             model="opencode-zen/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
                 preferred_model="opencode-zen/gpt-5.4",
@@ -4216,16 +4216,16 @@ def test_runtime_effective_runtime_config_accepts_non_first_active_target_in_sna
             providers=_STANDIN_PROVIDERS,
         ),
     )
-    effective = resumed_runtime.effective_runtime_config(session_id="active-target-fallback")
+    config = resumed_runtime.run_config(session_id="active-target-fallback")
 
-    assert effective.model == "opencode-zen/gpt-5.4"
-    assert effective.provider_fallback == RuntimeProviderFallbackConfig(
+    assert config.model == "opencode-zen/gpt-5.4"
+    assert config.provider_fallback == RuntimeProviderFallbackConfig(
         preferred_model="opencode-zen/gpt-5.4",
         fallback_models=("custom/demo",),
     )
 
 
-def test_runtime_effective_runtime_config_rejects_malformed_persisted_resolved_provider_snapshot(
+def test_runtime_run_config_rejects_malformed_persisted_resolved_provider_snapshot(
     tmp_path: Path,
 ) -> None:
     sample_file = tmp_path / "sample.txt"
@@ -4236,7 +4236,6 @@ def test_runtime_effective_runtime_config_rejects_malformed_persisted_resolved_p
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
             approval_mode="yolo",
-            execution_engine="deterministic",
             model="opencode-zen/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
                 preferred_model="opencode-zen/gpt-5.4",
@@ -4292,13 +4291,13 @@ def test_runtime_effective_runtime_config_rejects_malformed_persisted_resolved_p
         ValueError,
         match=("persisted runtime_config.resolved_provider.active_target must reference one of the resolved provider targets"),
     ):
-        _ = resumed_runtime.effective_runtime_config(session_id="malformed-resolved-provider")
+        _ = resumed_runtime.run_config(session_id="malformed-resolved-provider")
 
 
 def test_runtime_persists_resume_checkpoint_for_waiting_session(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(
             approval_mode="ask",
             skills=RuntimeSkillsConfig(enabled=True),
@@ -4338,7 +4337,7 @@ def test_runtime_persists_resume_checkpoint_for_waiting_session(tmp_path: Path) 
 def test_runtime_answer_question_rejects_stale_request_id(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_QuestionThenDoneGraph(),
+        turn_producer=_QuestionThenDoneProducer(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -4356,7 +4355,7 @@ def test_runtime_answer_question_rejects_stale_request_id(tmp_path: Path) -> Non
 def test_answer_question_rejects_duplicate_headers(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_TwoQuestionThenDoneGraph(),
+        turn_producer=_TwoQuestionThenDoneProducer(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -4380,7 +4379,7 @@ def test_runtime_resume_approval_rebuilds_from_persisted_checkpoint_after_restar
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -4390,7 +4389,7 @@ def test_runtime_resume_approval_rebuilds_from_persisted_checkpoint_after_restar
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -4410,7 +4409,7 @@ def test_runtime_resume_emits_skill_binding_mismatch_event_when_checkpoint_bindi
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(
             approval_mode="ask",
             skills=RuntimeSkillsConfig(enabled=True),
@@ -4434,7 +4433,6 @@ def test_runtime_resume_emits_skill_binding_mismatch_event_when_checkpoint_bindi
         checkpoint_dict = cast(dict[str, object], checkpoint)
         checkpoint_dict["skill_binding_snapshot"] = {
             "approval_mode": "yolo",
-            "execution_engine": "deterministic",
         }
         _ = connection.execute(
             "UPDATE sessions SET resume_checkpoint_json = ? WHERE session_id = ?",
@@ -4446,7 +4444,7 @@ def test_runtime_resume_emits_skill_binding_mismatch_event_when_checkpoint_bindi
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(
             approval_mode="ask",
             skills=RuntimeSkillsConfig(enabled=True),
@@ -4479,7 +4477,7 @@ def test_runtime_resume_rejects_skill_snapshot_hash_mismatch_with_checkpoint(
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(
             approval_mode="ask",
             skills=RuntimeSkillsConfig(enabled=True),
@@ -4512,7 +4510,7 @@ def test_runtime_resume_rejects_skill_snapshot_hash_mismatch_with_checkpoint(
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(
             approval_mode="ask",
             skills=RuntimeSkillsConfig(enabled=True),
@@ -4534,7 +4532,7 @@ def test_runtime_resume_rejects_skill_snapshot_hash_mismatch_with_checkpoint(
 def test_runtime_resume_rejects_missing_persisted_checkpoint(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -4555,7 +4553,7 @@ def test_runtime_resume_rejects_missing_persisted_checkpoint(tmp_path: Path) -> 
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -4571,7 +4569,7 @@ def test_runtime_resume_rejects_missing_persisted_checkpoint(tmp_path: Path) -> 
 def test_runtime_resume_rejects_checkpoint_version_mismatch(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -4599,7 +4597,7 @@ def test_runtime_resume_rejects_checkpoint_version_mismatch(tmp_path: Path) -> N
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -4617,7 +4615,7 @@ def test_runtime_session_end_hook_failure_does_not_override_terminal_truth(
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_BackgroundTaskSuccessGraph(),
+        turn_producer=_BackgroundTaskSuccessProducer(),
         config=RuntimeConfig(
             hooks=RuntimeHooksConfig(
                 enabled=True,
@@ -4630,7 +4628,8 @@ def test_runtime_session_end_hook_failure_does_not_override_terminal_truth(
 
     assert response.session.status == "completed"
     assert response.output == "hello"
-    session_end_event = next(event for event in response.events if event.event_type == RUNTIME_SESSION_ENDED)
+    session_end_event = next(event for event in response.events if event.event_type == RUNTIME_LIFECYCLE_HOOK)
+    assert session_end_event.payload["surface"] == "session_end"
     assert session_end_event.payload["hook_status"] == "error"
     assert all(event.event_type != "runtime.failed" for event in response.events)
 
@@ -4640,7 +4639,7 @@ def test_runtime_session_idle_hook_failure_warn_does_not_fail_waiting_session(
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillProducer(),
         config=RuntimeConfig(
             approval_mode="ask",
             hooks=RuntimeHooksConfig(
@@ -4654,7 +4653,8 @@ def test_runtime_session_idle_hook_failure_warn_does_not_fail_waiting_session(
     response = runtime.run(RuntimeRequest(prompt="needs approval", session_id="idle-warn-session"))
 
     assert response.session.status == "waiting"
-    assert response.events[-1].event_type == RUNTIME_SESSION_IDLE
+    assert response.events[-1].event_type == RUNTIME_LIFECYCLE_HOOK
+    assert response.events[-1].payload["surface"] == "session_idle"
     assert response.events[-1].payload["hook_status"] == "error"
     assert all(event.event_type != "runtime.failed" for event in response.events)
 
@@ -4665,7 +4665,7 @@ def test_runtime_session_idle_hook_failure_warn_does_not_fail_waiting_session(
 # ── pre_tool conflict semantics: blocked reason + fail-closed gate (§2) ──────
 
 
-class _WriteOnceGraph:
+class _WriteOnceProducer:
     """Issues one ``write`` call, then finishes; the tool must never run when blocked."""
 
     def __init__(self, target: Path) -> None:
@@ -4678,7 +4678,8 @@ class _WriteOnceGraph:
         *,
         session: TurnSession,
     ) -> ToolTurn | FinalTurn:
-        _ = request, session
+        _ = session
+        fact = _model_turn_fact(request)
         if not tool_results:
             return ToolTurn(
                 calls=(
@@ -4686,9 +4687,10 @@ class _WriteOnceGraph:
                         tool_name="write",
                         arguments={"path": self._target.as_posix(), "content": "blocked"},
                     ),
-                )
+                ),
+                facts=(fact,),
             )
-        return FinalTurn(output="done")
+        return FinalTurn(output="done", facts=(fact,))
 
 
 def test_pre_tool_hook_cancel_blocks_tool_with_llm_visible_reason(tmp_path: Path) -> None:
@@ -4696,7 +4698,7 @@ def test_pre_tool_hook_cancel_blocks_tool_with_llm_visible_reason(tmp_path: Path
     stdout = json.dumps({"action": "cancel", "diagnostic": "operator_hold"})
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_WriteOnceGraph(target),
+        turn_producer=_WriteOnceProducer(target),
         config=RuntimeConfig(
             hooks=RuntimeHooksConfig(
                 enabled=True,
@@ -4720,7 +4722,7 @@ def test_pre_tool_hook_failure_warn_blocks_tool_and_fail_escalates(tmp_path: Pat
     warn_target = tmp_path / "warn.txt"
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_WriteOnceGraph(warn_target),
+        turn_producer=_WriteOnceProducer(warn_target),
         config=RuntimeConfig(
             hooks=RuntimeHooksConfig(
                 enabled=True,
@@ -4741,7 +4743,7 @@ def test_pre_tool_hook_failure_warn_blocks_tool_and_fail_escalates(tmp_path: Pat
     fail_target = tmp_path / "fail.txt"
     fail_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_WriteOnceGraph(fail_target),
+        turn_producer=_WriteOnceProducer(fail_target),
         config=RuntimeConfig(
             hooks=RuntimeHooksConfig(
                 enabled=True,
@@ -4767,7 +4769,7 @@ def test_pre_tool_match_filter_applies_on_plan_path(tmp_path: Path) -> None:
     stdout = json.dumps({"action": "cancel", "diagnostic": "operator_hold"})
     filtered = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_WriteOnceGraph(filtered_target),
+        turn_producer=_WriteOnceProducer(filtered_target),
         config=RuntimeConfig(hooks=RuntimeHooksConfig(enabled=True, pre_tool=(("echo", stdout),), pre_tool_match=("read*",))),
         permission_policy=PermissionPolicy(mode="yolo"),
     )
@@ -4785,7 +4787,7 @@ def test_pre_tool_match_filter_runs_hook_for_matching_tool_on_plan_path(tmp_path
     stdout = json.dumps({"action": "cancel", "diagnostic": "operator_hold"})
     matched = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_WriteOnceGraph(matched_target),
+        turn_producer=_WriteOnceProducer(matched_target),
         config=RuntimeConfig(hooks=RuntimeHooksConfig(enabled=True, pre_tool=(("echo", stdout),), pre_tool_match=("write*",))),
         permission_policy=PermissionPolicy(mode="yolo"),
     )
@@ -4798,42 +4800,56 @@ def test_pre_tool_match_filter_runs_hook_for_matching_tool_on_plan_path(tmp_path
     assert cancelled[0].payload["error"] == "tool 'write' blocked: operator_hold"
 
 
-def test_runtime_rename_session_bounds_rejects_and_returns_updated_summary(tmp_path: Path) -> None:
+def test_runtime_rename_session_bounds_rejects_and_returns_updated_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The runtime boundary is the one title validator: bound, reject, and echo."""
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), execution_engine="deterministic"),
-    )
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
+    response_body = openai_response(message={"role": "assistant", "content": "done"}, finish="stop")
+    server = OpenAILoopbackServer([response_body, response_body])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    try:
+        thread.start()
+        configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_port}/v1")
+        config = replace(load_runtime_config(tmp_path, env={}), mcp=RuntimeMcpConfig(enabled=False))
+        with VoidCodeRuntime(workspace=tmp_path, config=config) as runtime:
 
-    def _seed(session_id: str, prompt: str) -> None:
-        _ = runtime.run(RuntimeRequest(prompt=prompt, session_id=session_id))
+            def _seed(session_id: str) -> None:
+                _ = runtime.run(RuntimeRequest(prompt="persist rename test", session_id=session_id))
 
-    _ = (tmp_path / "sample.txt").write_text("seed\n", encoding="utf-8")
-    _seed("rename-ok", "read sample.txt")
+            _seed("rename-ok")
+            renamed = runtime.rename_session(session_id="rename-ok", title="  spaced\n\ttitle  ")
 
-    renamed = runtime.rename_session(session_id="rename-ok", title="  spaced\n\ttitle  ")
+            assert renamed.session.id == "rename-ok"
+            # Whitespace runs collapse, so every client renders it on one line.
+            assert renamed.title == "spaced title"
+            assert runtime.list_sessions()[0].title == "spaced title"
 
-    assert renamed.session.id == "rename-ok"
-    # Whitespace runs collapse, so every client renders it on one line.
-    assert renamed.title == "spaced title"
-    assert runtime.list_sessions()[0].title == "spaced title"
+            with pytest.raises(RuntimeRequestError, match="title must be a non-empty string"):
+                runtime.rename_session(session_id="rename-ok", title="   \n  ")
+            with pytest.raises(RuntimeRequestError, match=f"title must be at most {SESSION_TITLE_MAX_LENGTH} characters"):
+                runtime.rename_session(session_id="rename-ok", title="x" * (SESSION_TITLE_MAX_LENGTH + 1))
+            # A rejected rename leaves the stored title untouched.
+            assert runtime.list_sessions()[0].title == "spaced title"
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
 
-    with pytest.raises(RuntimeRequestError, match="title must be a non-empty string"):
-        runtime.rename_session(session_id="rename-ok", title="   \n  ")
-    with pytest.raises(RuntimeRequestError, match=f"title must be at most {SESSION_TITLE_MAX_LENGTH} characters"):
-        runtime.rename_session(session_id="rename-ok", title="x" * (SESSION_TITLE_MAX_LENGTH + 1))
-    # A rejected rename leaves the stored title untouched.
-    assert runtime.list_sessions()[0].title == "spaced title"
 
-
-def test_runtime_rename_session_accepts_exactly_at_the_bound(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), execution_engine="deterministic"),
-    )
-    _ = (tmp_path / "sample.txt").write_text("boundary\n", encoding="utf-8")
-    _ = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="boundary-session"))
-
-    at_bound = "y" * SESSION_TITLE_MAX_LENGTH
-
-    assert runtime.rename_session(session_id="boundary-session", title=at_bound).title == at_bound
+def test_runtime_rename_session_accepts_exactly_at_the_bound(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
+    server = OpenAILoopbackServer([openai_response(message={"role": "assistant", "content": "done"}, finish="stop")])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    try:
+        thread.start()
+        configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_port}/v1")
+        config = replace(load_runtime_config(tmp_path, env={}), mcp=RuntimeMcpConfig(enabled=False))
+        with VoidCodeRuntime(workspace=tmp_path, config=config) as runtime:
+            _ = runtime.run(RuntimeRequest(prompt="persist rename test", session_id="boundary-session"))
+            at_bound = "y" * SESSION_TITLE_MAX_LENGTH
+            assert runtime.rename_session(session_id="boundary-session", title=at_bound).title == at_bound
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()

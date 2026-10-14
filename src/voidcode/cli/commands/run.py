@@ -1,4 +1,4 @@
-"""``voidcode run``: one runtime request through the provider or deterministic harness."""
+"""``voidcode run``: send one user request through the configured provider-backed runtime."""
 
 from __future__ import annotations
 
@@ -143,21 +143,20 @@ def _handle_run_command(args: RunArgs) -> int:
             print_readiness_failure(payload)
         return exc.code
     with open_runtime(workspace, config) as runtime:
-        if config.execution_engine == "provider":
-            try:
-                readiness = runtime.provider_readiness()
-            except ValueError:
-                # Preserve the existing runtime error path for invalid effective
-                # session/config state; the gate only handles typed readiness.
-                readiness = None
-            if readiness is not None:
-                preflight_exit = run_readiness_preflight(
-                    readiness=readiness,
-                    workspace=workspace,
-                    json_output=json_output,
-                )
-                if preflight_exit is not None:
-                    return preflight_exit
+        try:
+            readiness = runtime.provider_readiness()
+        except ValueError:
+            # Preserve the existing runtime error path for invalid effective
+            # session/config state; the gate only handles typed readiness.
+            readiness = None
+        if readiness is not None:
+            preflight_exit = run_readiness_preflight(
+                readiness=readiness,
+                workspace=workspace,
+                json_output=json_output,
+            )
+            if preflight_exit is not None:
+                return preflight_exit
         metadata: dict[str, object] = {}
         if args.agent is not None:
             metadata["agent"] = {"preset": args.agent}
@@ -229,7 +228,7 @@ def _handle_run_command(args: RunArgs) -> int:
 
 @click.command(
     name="run",
-    help="Run through the local runtime provider or deterministic harness. "
+    help="Run a request through the configured local provider. "
     "Approval allow means consent to arbitrary command execution without isolation (no OS-level sandbox in v1).",
 )
 @click.argument("request")

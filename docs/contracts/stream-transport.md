@@ -39,8 +39,8 @@ Delegated child `yield` progress 也可在最终输出前到达：runtime 以 `r
 
 ### Tool-call 参数增量与写入预览
 
-Provider streaming 可发送 `graph.tool_call_start`、`graph.tool_call_delta` 和
-`graph.tool_call_end` 事件。事件按 `tool_call_id`（并保留 ordinal）关联；
+Provider streaming 可发送 `core.tool_call_start`、`core.tool_call_delta` 和
+`core.tool_call_end` 事件。事件按 `tool_call_id`（并保留 ordinal）关联；
 `arguments_delta` 是可拼接的原始 JSON 片段，不能被当作完整工具输入执行。
 
 Provider 的 completed turn 必须包含非空终端文本或完整工具调用。Native lifecycle
@@ -49,16 +49,15 @@ Provider 的 completed turn 必须包含非空终端文本或完整工具调用�
 拒绝，不会将不完整/空结果报告为成功或发出工具执行请求。
 
 这些参数增量是 **live-only** 观察数据，不写入持久化 session truth，也不出现在
-replay 中。对于 `write` 与 `edit`，runtime/graph 会
-在相应 lifecycle payload 中提供有界的 `diff_preview`；写工具事件不会把
-`arguments_delta` 或 `parsed_arguments` 直接交给客户端。`diff_preview` 仅由
-workspace 当前快照读取生成，不执行工具、不创建目录、不写入临时 patch；它带有
+replay 中。对于 `write` 与 `edit`，runtime 会在相应 lifecycle payload 中提供有界的
+`diff_preview`；写工具事件不会把 `arguments_delta` 或 `parsed_arguments` 直接交给客户端。
+`diff_preview` 仅由 workspace 当前快照读取生成，不执行工具、不创建目录、不写入临时 patch；它带有
 `schema_version`、`phase`、`status`、`bounded`、`truncated`、目标路径（或 paths）
 以及有界 `diff`/统计/hash。路径不安全、快照不可读、输入不完整或超限时，
 `status` 为 `degraded` 并给出稳定 `reason`，不会中断运行主循环。
 
 最终完整参数仍必须走现有 hash/permission/approval/tool execution 边界。完整的
-`graph.tool_request_created` 可以带 `diff_preview`（`phase=final`）；真实执行的
+`core.tool_request_created` 可以带 `diff_preview`（`phase=final`）；真实执行的
 `runtime.tool_completed` 结果是最终 diff 的权威来源，可覆盖/对齐任何 live preview。
 partial preview 不参与 session truth、checkpoint 或 replay；provider 不支持参数
 增量时继续使用 completed-only tool-call 兼容路径。

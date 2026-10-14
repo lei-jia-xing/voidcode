@@ -116,7 +116,6 @@ def skill_binding_snapshot_from_agent_capability_snapshot(
     execution = capability_snapshot.get("execution")
     if isinstance(execution, dict):
         execution_key_map = {
-            "execution_engine": "execution_engine",
             "model": "model",
             "fallback_models": "fallback_models",
             "resolved_provider": "resolved_provider",

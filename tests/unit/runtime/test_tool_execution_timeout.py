@@ -13,6 +13,7 @@ import pytest
 
 from tests.runtime_composition import save_checkpoint
 from tests.runtime_storage import repositories_for_test_store
+from tests.turn_producers import model_turn_fact
 from voidcode.core.tool_context import ArtifactPage, ArtifactUnavailable, ToolContext
 from voidcode.core.transcript import ToolResultView
 from voidcode.core.turns import FinalTurn, ToolTurn, TurnRequest, TurnSession
@@ -26,6 +27,7 @@ from voidcode.runtime.events import RUNTIME_TOOL_PROGRESS
 from voidcode.runtime.execution.delegation.task import TaskCommand
 from voidcode.runtime.execution.report_codec import parse_report_payload
 from voidcode.runtime.execution.tool_resources import SessionArtifactReader, bind_tool_command
+from voidcode.runtime.run_loop import _is_tool_timeout_like_exception
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.storage import SqliteSessionStore
@@ -207,7 +209,7 @@ class _FatalExceptionTool:
         raise ValueError("fatal tool error")
 
 
-class _SingleToolCallWithArgumentsGraph:
+class _SingleToolCallWithArgumentsProducer:
     def __init__(self, tool_name: str, arguments: dict[str, object]) -> None:
         self._tool_name = tool_name
         self._arguments = arguments
@@ -220,7 +222,8 @@ class _SingleToolCallWithArgumentsGraph:
         *,
         session: TurnSession,
     ) -> ToolTurn | FinalTurn:
-        _ = request, session
+        _ = session
+        fact = model_turn_fact(request)
         self.seen_tool_results = tool_results
         if not tool_results:
             return ToolTurn(
@@ -230,33 +233,36 @@ class _SingleToolCallWithArgumentsGraph:
                         arguments=self._arguments,
                         tool_call_id="sensitive-context-call",
                     ),
-                )
+                ),
+                facts=(fact,),
             )
-        return FinalTurn(output="completed")
+        return FinalTurn(output="completed", facts=(fact,))
 
 
-class _SingleToolCallGraph:
+class _SingleToolCallProducer:
     def __init__(self, tool_name: str) -> None:
         self._tool_name = tool_name
         self._done = False
 
     def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> FinalTurn | ToolTurn:
-        _ = request, session
+        _ = session
+        fact = model_turn_fact(request)
         if tool_results:
             self._done = True
-            return FinalTurn(output="completed")
-        return ToolTurn(calls=(ToolCall(tool_name=self._tool_name, arguments={}),))
+            return FinalTurn(output="completed", facts=(fact,))
+        return ToolTurn(calls=(ToolCall(tool_name=self._tool_name, arguments={}),), facts=(fact,))
 
 
-class _ShellExecGraph:
+class _ShellExecProducer:
     def __init__(self, arguments: dict[str, object]) -> None:
         self._arguments = arguments
 
     def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> FinalTurn | ToolTurn:
-        _ = request, session
+        _ = session
+        fact = model_turn_fact(request)
         if tool_results:
-            return FinalTurn(output="completed")
-        return ToolTurn(calls=(ToolCall(tool_name="shell_exec", arguments=self._arguments),))
+            return FinalTurn(output="completed", facts=(fact,))
+        return ToolTurn(calls=(ToolCall(tool_name="shell_exec", arguments=self._arguments),), facts=(fact,))
 
 
 def _collect_events(runtime: VoidCodeRuntime, prompt: str = "go") -> list[str]:
@@ -273,13 +279,12 @@ def _make_runtime(
     registry = ToolRegistry.from_tools([tool])
     config = RuntimeConfig(
         mcp=RuntimeMcpConfig(enabled=False),
-        execution_engine="deterministic",
         tool_timeout_seconds=tool_timeout_seconds,
     )
     return VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=registry,
-        turn_producer=_SingleToolCallGraph(tool.definition.name),
+        turn_producer=_SingleToolCallProducer(tool.definition.name),
         config=config,
     )
 
@@ -353,7 +358,7 @@ def test_timeout_event_payload_contains_tool_name_and_seconds(tmp_path: Path) ->
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
-        turn_producer=_ShellExecGraph(
+        turn_producer=_ShellExecProducer(
             {
                 "command": f'"{sys.executable}" -c "import time; time.sleep(2)"',
                 "timeout": 10,
@@ -362,7 +367,6 @@ def test_timeout_event_payload_contains_tool_name_and_seconds(tmp_path: Path) ->
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="yolo",
-            execution_engine="deterministic",
             tool_timeout_seconds=timeout,
         ),
     )
@@ -389,12 +393,8 @@ def test_shell_exec_progress_streams_before_tool_completion(tmp_path: Path) -> N
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
-        turn_producer=_ShellExecGraph({"command": command, "timeout": 5}),
-        config=RuntimeConfig(
-            mcp=RuntimeMcpConfig(enabled=False),
-            approval_mode="yolo",
-            execution_engine="deterministic",
-        ),
+        turn_producer=_ShellExecProducer({"command": command, "timeout": 5}),
+        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), approval_mode="yolo"),
     )
 
     chunks: list[Any] = []
@@ -434,7 +434,7 @@ def test_shell_exec_runtime_timeout_preserves_partial_progress_and_final_output(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
-        turn_producer=_ShellExecGraph(
+        turn_producer=_ShellExecProducer(
             {
                 "command": (f'"{sys.executable}" -c "import sys, time; sys.stdout.write(\'partial\\n\'); sys.stdout.flush(); time.sleep(2)"'),
                 "timeout": 10,
@@ -443,7 +443,6 @@ def test_shell_exec_runtime_timeout_preserves_partial_progress_and_final_output(
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="yolo",
-            execution_engine="deterministic",
             tool_timeout_seconds=1,
         ),
     )
@@ -466,7 +465,7 @@ def test_runtime_does_not_hang_after_tool_timeout(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
-        turn_producer=_ShellExecGraph(
+        turn_producer=_ShellExecProducer(
             {
                 "command": f'"{sys.executable}" -c "import time; time.sleep(2)"',
                 "timeout": 10,
@@ -475,7 +474,6 @@ def test_runtime_does_not_hang_after_tool_timeout(tmp_path: Path) -> None:
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="yolo",
-            execution_engine="deterministic",
             tool_timeout_seconds=1,
         ),
     )
@@ -496,24 +494,25 @@ def test_runtime_timeout_unset_does_not_emit_runtime_tool_timeout(tmp_path: Path
 
 
 def test_runtime_caps_large_tool_output_before_feedback(tmp_path: Path) -> None:
-    class CapturingGraph:
+    class CapturingProducer:
         feedback: ToolResultView | None = None
 
         def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> FinalTurn | ToolTurn:
-            _ = request, session
+            fact = model_turn_fact(request)
+            _ = session
             if tool_results:
                 feedback = tool_results[-1]
                 assert isinstance(feedback, ToolResultView)
                 self.feedback = feedback
-                return FinalTurn(output="completed")
-            return ToolTurn(calls=(ToolCall(tool_name="large_output_tool", arguments={}),))
+                return FinalTurn(output="completed", facts=(fact,))
+            return ToolTurn(calls=(ToolCall(tool_name="large_output_tool", arguments={}),), facts=(fact,))
 
-    graph = CapturingGraph()
+    producer = CapturingProducer()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([_LargeOutputTool()]),
-        turn_producer=graph,
-        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), approval_mode="yolo", execution_engine="deterministic"),
+        turn_producer=producer,
+        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), approval_mode="yolo"),
     )
 
     chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
@@ -530,7 +529,7 @@ def test_runtime_caps_large_tool_output_before_feedback(tmp_path: Path) -> None:
     assert artifact["session_id"] == completed_events[0].session_id
     assert artifact["tool_call_id"] == payload["tool_call_id"]
 
-    feedback = graph.feedback
+    feedback = producer.feedback
     assert feedback is not None and isinstance(feedback.output, TextOutput)
     assert len(feedback.output.text.encode("utf-8")) <= 50 * 1024
     assert len(feedback.output.text.splitlines()) <= 1000
@@ -628,7 +627,7 @@ def test_runtime_artifact_resolver_skips_invalid_candidate_for_same_tool_call(
     store = SqliteSessionStore()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), execution_engine="deterministic"),
+        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False)),
         repositories=repositories_for_test_store(store),
     )
     save_checkpoint(
@@ -706,7 +705,7 @@ def test_runtime_sanitizes_tool_arguments_and_data_before_events_and_feedback(
     raw_new_string = "new secret"
     data_uri = "data:image/png;base64," + "A" * 64
     tool = _SensitiveContextTool(data_uri=data_uri, raw_data_content=raw_data_content)
-    graph = _SingleToolCallWithArgumentsGraph(
+    producer = _SingleToolCallWithArgumentsProducer(
         tool.definition.name,
         {
             "path": "out.txt",
@@ -717,8 +716,8 @@ def test_runtime_sanitizes_tool_arguments_and_data_before_events_and_feedback(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([tool]),
-        turn_producer=graph,
-        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), execution_engine="deterministic"),
+        turn_producer=producer,
+        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False)),
     )
 
     chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
@@ -758,8 +757,8 @@ def test_runtime_sanitizes_tool_arguments_and_data_before_events_and_feedback(
     assert attachment["data_uri"] == data_uri
     assert isinstance(payload["reported_call"], dict)
 
-    assert len(graph.seen_tool_results) == 1
-    feedback_payload_text = str(graph.seen_tool_results[0].output)
+    assert len(producer.seen_tool_results) == 1
+    feedback_payload_text = str(producer.seen_tool_results[0].output)
     assert raw_argument_content not in feedback_payload_text
     assert raw_data_content not in feedback_payload_text
     assert data_uri not in feedback_payload_text
@@ -769,7 +768,7 @@ def test_session_status_is_failed_after_timeout(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
-        turn_producer=_ShellExecGraph(
+        turn_producer=_ShellExecProducer(
             {
                 "command": f'"{sys.executable}" -c "import time; time.sleep(2)"',
                 "timeout": 10,
@@ -778,7 +777,6 @@ def test_session_status_is_failed_after_timeout(tmp_path: Path) -> None:
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="yolo",
-            execution_engine="deterministic",
             tool_timeout_seconds=1,
         ),
     )
@@ -794,11 +792,10 @@ def test_shell_exec_timeout_wins_when_shorter_than_runtime_timeout(tmp_path: Pat
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
-        turn_producer=_ShellExecGraph({"command": command, "timeout": 1}),
+        turn_producer=_ShellExecProducer({"command": command, "timeout": 1}),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="yolo",
-            execution_engine="deterministic",
             tool_timeout_seconds=10,
         ),
     )
@@ -820,11 +817,10 @@ def test_runtime_timeout_wins_when_shorter_than_shell_exec_timeout(tmp_path: Pat
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
-        turn_producer=_ShellExecGraph({"command": command, "timeout": 10}),
+        turn_producer=_ShellExecProducer({"command": command, "timeout": 10}),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="yolo",
-            execution_engine="deterministic",
             tool_timeout_seconds=1,
         ),
     )
@@ -866,11 +862,10 @@ def test_runtime_timeout_prevents_delayed_shell_exec_side_effect(tmp_path: Path)
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
-        turn_producer=_ShellExecGraph({"command": command, "timeout": 10}),
+        turn_producer=_ShellExecProducer({"command": command, "timeout": 10}),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="yolo",
-            execution_engine="deterministic",
             tool_timeout_seconds=1,
         ),
     )
@@ -906,11 +901,10 @@ def _timeout_runtime(tmp_path: Path, tool: Any) -> VoidCodeRuntime:
     return VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([tool]),
-        turn_producer=_SingleToolCallGraph(tool.definition.name),
+        turn_producer=_SingleToolCallProducer(tool.definition.name),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="yolo",
-            execution_engine="deterministic",
             tool_timeout_seconds=1,
         ),
     )
@@ -1209,10 +1203,9 @@ def test_tool_completed_payload_carries_active_model_and_provider(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([_InstantTool()]),
-        turn_producer=_SingleToolCallGraph("instant_tool"),
+        turn_producer=_SingleToolCallProducer("instant_tool"),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
-            execution_engine="deterministic",
             model="opencode-go/glm-5.1",
         ),
     )
@@ -1256,7 +1249,7 @@ def test_timeout_exit_emits_terminal_tool_status_with_error(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
-        turn_producer=_ShellExecGraph(
+        turn_producer=_ShellExecProducer(
             {
                 "command": f'"{sys.executable}" -c "import time; time.sleep(2)"',
                 "timeout": 10,
@@ -1265,7 +1258,6 @@ def test_timeout_exit_emits_terminal_tool_status_with_error(
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="yolo",
-            execution_engine="deterministic",
             tool_timeout_seconds=1,
         ),
     )
@@ -1320,57 +1312,38 @@ def test_timeout_exit_emits_terminal_tool_status_with_error(
     assert payload["tool_call_id"] == started_call_id, "terminal tool_completed must use same tool_call_id as tool_started"
 
 
-def test_unrecovered_exception_emits_terminal_tool_status_before_failure(
+def test_tool_exception_is_error_feedback_without_runtime_failure(
     tmp_path: Path,
 ) -> None:
-    """Unrecovered tool exception emits terminal runtime.tool_completed before runtime.failed."""
-    tool = _FatalExceptionTool()
-    runtime = _make_runtime(tmp_path, tool, tool_timeout_seconds=None)
+    """An ordinary tool exception becomes canonical error feedback without failing the runtime."""
+    runtime = _make_runtime(tmp_path, _FatalExceptionTool(), tool_timeout_seconds=None)
+    chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
 
-    chunks: list[Any] = []
-    try:
-        for chunk in runtime.run_stream(RuntimeRequest(prompt="go")):
-            chunks.append(chunk)
-    except ValueError:
-        pass
-
-    completed_events = [c.event for c in chunks if c.kind == "event" and c.event is not None and c.event.event_type == "runtime.tool_completed"]
-    failed_events = [c.event for c in chunks if c.kind == "event" and c.event is not None and c.event.event_type == "runtime.failed"]
-
-    assert len(completed_events) == 1, "expected one runtime.tool_completed before runtime.failed on unrecovered exception"
+    completed_events = [
+        chunk.event for chunk in chunks if chunk.kind == "event" and chunk.event is not None and chunk.event.event_type == "runtime.tool_completed"
+    ]
+    assert len(completed_events) == 1
     payload = completed_events[0].payload
-
-    assert payload["status"] == "error", "terminal tool status must be error"
+    assert payload["status"] == "error"
     assert payload["tool"] == "fatal_exception_tool"
     assert payload["error"] == "fatal tool error"
-
-    assert "tool_call_id" in payload
-    assert isinstance(payload["tool_call_id"], str)
-
-    assert "display" in payload, "terminal status must include display metadata"
-    assert "tool_status" in payload, "terminal status must include tool_status"
+    reported = parse_report_payload(payload["reported_call"])
+    assert isinstance(reported.result, ToolFailure)
+    assert reported.result.error == "fatal tool error"
 
     tool_status = cast(dict[str, object], payload["tool_status"])
     assert tool_status["phase"] == "failed"
     assert tool_status["status"] == "failed"
     assert tool_status["tool_name"] == "fatal_exception_tool"
-
-    # runtime.failed must also be present (existing contract preserved)
-    assert len(failed_events) >= 1, "runtime.failed must still be emitted"
-
-    # Verify ordering: started → completed → failed
-    event_types = [c.event.event_type for c in chunks if c.kind == "event" and c.event is not None]
-    started_idx = event_types.index("runtime.tool_started")
-    completed_idx = event_types.index("runtime.tool_completed")
-    failed_idx = event_types.index("runtime.failed")
-    assert started_idx < completed_idx < failed_idx, "events must be ordered: started → completed → failed"
-
-    # Verify tool_call_id matches the started event (frontend row identity)
-    started_events = [c.event for c in chunks if c.kind == "event" and c.event is not None and c.event.event_type == "runtime.tool_started"]
-    assert len(started_events) >= 1
-    started_call_id = started_events[0].payload["tool_call_id"]
-    assert isinstance(started_call_id, str)
-    assert payload["tool_call_id"] == started_call_id, "terminal tool_completed must use same tool_call_id as tool_started"
+    event_types = [chunk.event.event_type for chunk in chunks if chunk.kind == "event" and chunk.event is not None]
+    assert event_types.index("runtime.tool_started") < event_types.index("runtime.tool_completed")
+    assert "runtime.failed" not in event_types
+    assert chunks[-1].session.status == "completed"
+    started_events = [
+        chunk.event for chunk in chunks if chunk.kind == "event" and chunk.event is not None and chunk.event.event_type == "runtime.tool_started"
+    ]
+    assert len(started_events) == 1
+    assert payload["tool_call_id"] == started_events[0].payload["tool_call_id"]
 
 
 def test_timeout_replay_preserves_terminal_tool_status_with_matching_call_id(
@@ -1381,7 +1354,7 @@ def test_timeout_replay_preserves_terminal_tool_status_with_matching_call_id(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
-        turn_producer=_ShellExecGraph(
+        turn_producer=_ShellExecProducer(
             {
                 "command": f'"{sys.executable}" -c "import time; time.sleep(2)"',
                 "timeout": 10,
@@ -1390,7 +1363,6 @@ def test_timeout_replay_preserves_terminal_tool_status_with_matching_call_id(
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="yolo",
-            execution_engine="deterministic",
             tool_timeout_seconds=1,
         ),
     )
@@ -1422,16 +1394,17 @@ def test_timeout_replay_preserves_terminal_tool_status_with_matching_call_id(
     assert "runtime.failed" in replay_event_types
 
 
-class _ArtifactThenUriReadGraph:
+class _ArtifactThenUriReadProducer:
     """Runs the large-output tool, then reads the spilled artifact via URI."""
 
     def __init__(self) -> None:
         self.artifact_id: str | None = None
 
     def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> FinalTurn | ToolTurn:
-        _ = request, session
+        fact = model_turn_fact(request)
+        _ = session
         if not tool_results:
-            return ToolTurn(calls=(ToolCall(tool_name="large_output_tool", arguments={}),))
+            return ToolTurn(calls=(ToolCall(tool_name="large_output_tool", arguments={}),), facts=(fact,))
         if self.artifact_id is None:
             first_result = tool_results[0]
             assert isinstance(first_result, ToolResultView)
@@ -1444,25 +1417,22 @@ class _ArtifactThenUriReadGraph:
                         tool_name="read",
                         arguments={"path": f"voidcode://artifact/{self.artifact_id}", "limit": 100},
                     ),
-                )
+                ),
+                facts=(fact,),
             )
-        return FinalTurn(output="completed")
+        return FinalTurn(output="completed", facts=(fact,))
 
 
 def test_read_artifact_uri_reads_own_session_artifact_end_to_end(tmp_path: Path) -> None:
     """The URI resolves a real spilled artifact for the owning session."""
     session_id = "artifact-uri-owner"
-    graph = _ArtifactThenUriReadGraph()
+    producer = _ArtifactThenUriReadProducer()
     registry = ToolRegistry.from_tools([_LargeOutputTool(), ReadTool()])
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=registry,
-        turn_producer=graph,
-        config=RuntimeConfig(
-            mcp=RuntimeMcpConfig(enabled=False),
-            approval_mode="yolo",
-            execution_engine="deterministic",
-        ),
+        turn_producer=producer,
+        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), approval_mode="yolo"),
     )
 
     chunks = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id=session_id)))
@@ -1473,7 +1443,7 @@ def test_read_artifact_uri_reads_own_session_artifact_end_to_end(tmp_path: Path)
     assert len(read_events) == 1, "expected one read completion for the artifact URI"
     payload = read_events[0].payload
     assert payload["status"] == "ok"
-    assert payload["artifact_id"] == graph.artifact_id
+    assert payload["artifact_id"] == producer.artifact_id
     assert payload["raw_content"] == "".join(f"line-{index}\n" for index in range(100))
     reported = parse_report_payload(payload["reported_call"])
     assert isinstance(reported.result.body, OpaqueToolBody)
@@ -1483,7 +1453,7 @@ def test_read_artifact_uri_reads_own_session_artifact_end_to_end(tmp_path: Path)
     second_result = ReadTool().invoke(
         ToolCall(
             tool_name="read",
-            arguments={"path": f"voidcode://artifact/{graph.artifact_id}", "offset": continuation, "limit": 100},
+            arguments={"path": f"voidcode://artifact/{producer.artifact_id}", "offset": continuation, "limit": 100},
         ),
         context=ToolContext(
             workspace=tmp_path,
@@ -1501,7 +1471,7 @@ def test_read_artifact_uri_reads_own_session_artifact_end_to_end(tmp_path: Path)
     assert second_page["partial"] is True
 
 
-class _ForeignArtifactUriReadGraph:
+class _ForeignArtifactUriReadProducer:
     """Immediately issues a read URI for a pre-seeded foreign artifact id."""
 
     def __init__(self, artifact_id: str) -> None:
@@ -1509,7 +1479,8 @@ class _ForeignArtifactUriReadGraph:
         self._done = False
 
     def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> FinalTurn | ToolTurn:
-        _ = request, tool_results, session
+        fact = model_turn_fact(request)
+        _ = tool_results, session
         if not self._done:
             self._done = True
             return ToolTurn(
@@ -1518,50 +1489,60 @@ class _ForeignArtifactUriReadGraph:
                         tool_name="read",
                         arguments={"path": f"voidcode://artifact/{self._artifact_id}", "limit": 100},
                     ),
-                )
+                ),
+                facts=(fact,),
             )
-        return FinalTurn(output="completed")
+        return FinalTurn(output="completed", facts=(fact,))
 
 
 def test_read_artifact_uri_rejects_foreign_session_artifact(tmp_path: Path) -> None:
-    """An artifact created in session A is not resolvable from session B."""
+    """A foreign artifact produces failure feedback without exposing its contents."""
     owner_session = "artifact-uri-owner-b"
     foreign_session = "artifact-uri-foreign-b"
-    owner_graph = _ArtifactThenUriReadGraph()
+    owner_producer = _ArtifactThenUriReadProducer()
     owner_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([_LargeOutputTool(), ReadTool()]),
-        turn_producer=owner_graph,
-        config=RuntimeConfig(
-            mcp=RuntimeMcpConfig(enabled=False),
-            approval_mode="yolo",
-            execution_engine="deterministic",
-        ),
+        turn_producer=owner_producer,
+        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), approval_mode="yolo"),
     )
     _ = list(owner_runtime.run_stream(RuntimeRequest(prompt="go", session_id=owner_session)))
-    assert owner_graph.artifact_id
+    assert owner_producer.artifact_id
 
     foreign_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ReadTool()]),
-        turn_producer=_ForeignArtifactUriReadGraph(owner_graph.artifact_id),
-        config=RuntimeConfig(
-            mcp=RuntimeMcpConfig(enabled=False),
-            approval_mode="yolo",
-            execution_engine="deterministic",
-        ),
+        turn_producer=_ForeignArtifactUriReadProducer(owner_producer.artifact_id),
+        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), approval_mode="yolo"),
     )
-    with pytest.raises(ValueError):
-        _ = list(foreign_runtime.run_stream(RuntimeRequest(prompt="go", session_id=foreign_session)))
+    chunks = list(foreign_runtime.run_stream(RuntimeRequest(prompt="go", session_id=foreign_session)))
+
+    read_event = next(
+        chunk.event
+        for chunk in chunks
+        if chunk.kind == "event"
+        and chunk.event is not None
+        and chunk.event.event_type == "runtime.tool_completed"
+        and chunk.event.payload.get("tool") == "read"
+    )
+    payload = read_event.payload
+    assert payload["status"] == "error"
+    assert "not found in current session" in str(payload["error"])
+    assert "line-0" not in str(payload.get("content", ""))
+    assert isinstance(parse_report_payload(payload["reported_call"]).result, ToolFailure)
+    event_types = [chunk.event.event_type for chunk in chunks if chunk.kind == "event" and chunk.event is not None]
+    assert "runtime.failed" not in event_types
+    assert chunks[-1].session.status == "completed"
 
 
 def test_cancelled_bound_task_command_cannot_register_a_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VOIDCODE_DB_PATH", str(tmp_path / "truth.sqlite3"))
     with VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="deterministic", approval_mode="ask", mcp=RuntimeMcpConfig(enabled=False)),
+        turn_producer=_SingleToolCallWithArgumentsProducer("write", {"path": "staged.txt", "content": "must not write"}),
+        config=RuntimeConfig(approval_mode="ask", mcp=RuntimeMcpConfig(enabled=False)),
     ) as runtime:
-        waiting = runtime.run(RuntimeRequest(prompt="write staged.txt requires approval", session_id="cancelled-task-parent"))
+        waiting = runtime.run(RuntimeRequest(prompt="request approval", session_id="cancelled-task-parent"))
         assert waiting.session.status == "waiting"
         signal = ActiveSessionRegistry().register(workspace=tmp_path, session_id=waiting.session.session.id, run_id="cancelled-task-run", metadata={})
         context = ToolContext(
@@ -1590,3 +1571,9 @@ def test_cancelled_bound_task_command_cannot_register_a_child(tmp_path: Path, mo
         assert rejected.value.cancellation_signalled is True
         assert runtime.list_background_tasks() == ()
         assert not (tmp_path / "staged.txt").exists()
+
+
+def test_timeout_classification_uses_exception_type_not_message() -> None:
+    assert _is_tool_timeout_like_exception(TimeoutError("deadline exceeded"))
+    assert not _is_tool_timeout_like_exception(ValueError("timed out"))
+    assert not _is_tool_timeout_like_exception(RuntimeError("timeout"))

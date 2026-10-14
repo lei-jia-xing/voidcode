@@ -138,7 +138,8 @@ def test_webfetch_provenance_survives_project_report_and_engine_segments(
         assembled_context=cast(AssembledContext, object()),
     )
     engine = EngineState(request, [])
-    engine.begin_batch(ToolTurn(calls=(call,)))
+    plan, batch = engine.prepare_batch(ToolTurn(calls=(call,)))
+    engine.append_batch(plan, batch, tool_batch_id=None)
     engine.advance(call, report)
     segment = next(item for item in engine.transcript_segments((projected,)) if item.role == "tool")
     assert segment.content == visible_text

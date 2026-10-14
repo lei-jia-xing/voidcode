@@ -107,7 +107,7 @@ def _touched_paths_from_tool_results(tool_results: tuple[_ToolResultLike, ...]) 
             add(result.arguments.get("path"))
             continue
         if result.final_tool_name == "read":
-            add(result.authorized_arguments.get("path"))
+            add(result.final_arguments.get("path"))
             continue
         body = result.result.body
         if isinstance(body, (WriteResultBody, EditResultBody)):

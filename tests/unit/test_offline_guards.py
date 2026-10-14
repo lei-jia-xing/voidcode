@@ -60,7 +60,7 @@ def test_doctor_version_probe_answers_without_spawning(monkeypatch: pytest.Monke
     monkeypatch.setattr(subprocess, "Popen", _forbid_spawn)
     result = checker.ExecutableChecker("python", "python").check()
 
-    assert result.status is checker.CapabilityCheckStatus.READY
+    assert result.status is checker.CapabilityCheckStatus.AVAILABLE
     assert result.details["command"] == "python"
 
 

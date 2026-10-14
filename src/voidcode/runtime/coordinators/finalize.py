@@ -1,6 +1,6 @@
 """Finalize-bucket coordinator: single owner of every runtime write path.
 
-Owns what ``VoidCodeRuntime`` seals after the graph loop: incremental event
+Owns what ``VoidCodeRuntime`` seals after the turn engine: incremental event
 persistence, interrupted-terminal synthesis, response persistence, the
 terminal-seal guard, and the stored-response readers the seal depends on.
 
@@ -387,7 +387,7 @@ class FinalizeCoordinator:
 
         response = self.load_stored_response(session_id=session_id)
         if "runtime_config" in response.session.metadata:
-            self._surface.effective_runtime_config_from_metadata(response.session.metadata)
+            self._surface.run_config_from_metadata(response.session.metadata)
         projected_metadata = response.session.metadata
         replay_events = self.events_with_runtime_policy_projection(
             response.events,
@@ -409,11 +409,11 @@ class FinalizeCoordinator:
         last_chunk: RuntimeStreamChunk | None,
         last_sequence: int,
         deferred_failed_chunk: RuntimeStreamChunk | None,
-        graph_loop_error: Exception | None,
+        turn_error: Exception | None,
     ) -> Generator[RuntimeStreamChunk]:
         if last_chunk is None:
-            if graph_loop_error is not None:
-                raise graph_loop_error
+            if turn_error is not None:
+                raise turn_error
             return
 
         if deferred_failed_chunk is not None:
@@ -459,12 +459,12 @@ class FinalizeCoordinator:
                 session=deferred_failed_chunk.session,
                 event=resequence_event(failed_event, sequence=release_sequence + 1),
             )
-            if graph_loop_error is not None:
-                raise graph_loop_error
+            if turn_error is not None:
+                raise turn_error
             return
 
-        if graph_loop_error is not None:
-            raise graph_loop_error
+        if turn_error is not None:
+            raise turn_error
 
         if (
             last_chunk.event is not None

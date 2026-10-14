@@ -22,8 +22,8 @@ Covers the observable contracts of the keep-alive delegated worker:
   whose turn carries no ``keep_alive_turn`` metadata still raises
   ``ValueError`` when it completes without ``yield``.
 
-The tests run the deterministic graph engine (no provider, no network) with
-a prompt-driven graph that performs one tool call per child turn.
+The tests run the deterministic turn engine (no provider, no network) with
+a prompt-driven turn producer that performs one tool call per child turn.
 """
 
 from __future__ import annotations
@@ -40,16 +40,16 @@ from typing import Any, Protocol, cast
 import pytest
 
 from voidcode.core.transcript import ToolResultView, tool_result_output
-from voidcode.core.turns import FinalTurn, ToolTurn, TurnSession
+from voidcode.core.turns import FinalTurn, ModelTurnFact, ToolTurn, TurnRequest, TurnSession
 from voidcode.runtime.execution_ownership import EXECUTION_OWNERSHIP
 from voidcode.runtime.storage import SessionRepository
 
-pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
+pytestmark = pytest.mark.usefixtures("disable_default_mcp")
 
 
 @pytest.fixture
-def force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
+def disable_default_mcp(monkeypatch: pytest.MonkeyPatch) -> None:
+
     config_module = importlib.import_module("voidcode.runtime.config.loading")
     monkeypatch.setattr(
         config_module,
@@ -138,7 +138,7 @@ class RuntimeFactory(Protocol):
         *,
         workspace: Path,
         tool_registry: object | None = None,
-        graph: object | None = None,
+        turn_producer: object | None = None,
         config: object | None = None,
         mcp_manager: object | None = None,
         permission_policy: object | None = None,
@@ -194,8 +194,8 @@ def _tool_call(*, tool_name: str, arguments: dict[str, object]) -> object:
     )
 
 
-class _KeepAliveChildGraph:
-    """Prompt-driven graph for the keep-alive lifecycle.
+class _KeepAliveChildProducer:
+    """Prompt-driven turn producer for the keep-alive lifecycle.
 
     Leader branch: delegates a keep-alive background child via the ``task``
     tool and finishes after the tool result. Child branch: performs exactly
@@ -212,12 +212,13 @@ class _KeepAliveChildGraph:
 
     def produce(
         self,
-        request: object,
+        request: TurnRequest,
         tool_results: tuple[object, ...],
         *,
         session: TurnSession,
     ) -> ToolTurn | FinalTurn:
         prompt = _assembled_context(request).prompt
+        fact = ModelTurnFact(request.run_step, "deterministic", prompt)
         if session.metadata.get("parent_session_id") is None:
             if not tool_results:
                 return ToolTurn(
@@ -234,8 +235,9 @@ class _KeepAliveChildGraph:
                             },
                         ),
                     ),
+                    facts=(fact,),
                 )
-            return FinalTurn(output=_last_tool_output(tool_results))
+            return FinalTurn(output=_last_tool_output(tool_results), facts=(fact,))
         self._child_requests.append(request)
         tool_names = [cast(ToolResultView, result).tool_name for result in tool_results]
         if "yield" in prompt and "yield" not in tool_names:
@@ -249,6 +251,7 @@ class _KeepAliveChildGraph:
                         },
                     ),
                 ),
+                facts=(fact,),
             )
         if "write second.txt" in prompt and "write" not in tool_names:
             return ToolTurn(
@@ -258,6 +261,7 @@ class _KeepAliveChildGraph:
                         arguments={"path": "second.txt", "content": "second marker"},
                     ),
                 ),
+                facts=(fact,),
             )
         if "read sample.txt" in prompt and "read" not in tool_names:
             return ToolTurn(
@@ -267,27 +271,29 @@ class _KeepAliveChildGraph:
                         arguments={"path": "sample.txt"},
                     ),
                 ),
+                facts=(fact,),
             )
-        return FinalTurn(output=_last_tool_output(tool_results))
+        return FinalTurn(output=_last_tool_output(tool_results), facts=(fact,))
 
 
-class _ImmediateFinishGraph:
-    """Graph that finishes every turn immediately (no tool calls)."""
+class _ImmediateFinishProducer:
+    """Producer that finishes every turn immediately (no tool calls)."""
 
     def produce(
         self,
-        request: object,
+        request: TurnRequest,
         tool_results: tuple[object, ...],
         *,
         session: TurnSession,
     ) -> ToolTurn | FinalTurn:
-        _ = request, tool_results
+        _ = tool_results
+        fact = ModelTurnFact(request.run_step, "deterministic", request.prompt)
         if session.metadata.get("parent_session_id") is not None:
-            return FinalTurn(output="child done without handoff")
-        return FinalTurn(output="leader done")
+            return FinalTurn(output="child done without handoff", facts=(fact,))
+        return FinalTurn(output="leader done", facts=(fact,))
 
 
-class _BlockingKeepAliveChildGraph:
+class _BlockingKeepAliveChildProducer:
     """Leader delegates a keep-alive child whose first turns block on gates.
 
     ``blocks[i]`` is the ``(entered, gate)`` pair for child turn ``i + 1``: the
@@ -303,11 +309,12 @@ class _BlockingKeepAliveChildGraph:
 
     def produce(
         self,
-        request: object,
+        request: TurnRequest,
         tool_results: tuple[object, ...],
         *,
         session: TurnSession,
     ) -> ToolTurn | FinalTurn:
+        fact = ModelTurnFact(request.run_step, "deterministic", _assembled_context(request).prompt)
         if session.metadata.get("parent_session_id") is None:
             if not tool_results:
                 return ToolTurn(
@@ -324,10 +331,11 @@ class _BlockingKeepAliveChildGraph:
                             },
                         ),
                     ),
+                    facts=(fact,),
                 )
-            return FinalTurn(output=_last_tool_output(tool_results))
+            return FinalTurn(output=_last_tool_output(tool_results), facts=(fact,))
         if any(cast(ToolResultView, result).tool_name == "yield" for result in tool_results):
-            return FinalTurn(output="child finished")
+            return FinalTurn(output="child finished", facts=(fact,))
         self._turn_index += 1
         if self._turn_index <= len(self.blocks):
             entered, gate = self.blocks[self._turn_index - 1]
@@ -340,6 +348,7 @@ class _BlockingKeepAliveChildGraph:
                     arguments={"summary": "keep-alive handoff", "data": {"completed_work": ["child turn"]}},
                 ),
             ),
+            facts=(fact,),
         )
 
 
@@ -400,7 +409,7 @@ def _blocking_keep_alive_runtime(
             object,
             runtime_class(
                 workspace=tmp_path,
-                turn_producer=_BlockingKeepAliveChildGraph(blocks=blocks),
+                turn_producer=_BlockingKeepAliveChildProducer(blocks=blocks),
                 permission_policy=permission_policy(mode="yolo"),
             ),
         ),
@@ -633,7 +642,7 @@ def _keep_alive_runtime(
             object,
             runtime_class(
                 workspace=tmp_path,
-                turn_producer=_KeepAliveChildGraph(child_requests),
+                turn_producer=_KeepAliveChildProducer(child_requests),
                 permission_policy=permission_policy(mode="yolo"),
             ),
         ),
@@ -807,7 +816,7 @@ def test_keep_alive_shutdown_parks_interrupted_and_fresh_runtime_resumes_same_ta
             object,
             fresh(
                 workspace=tmp_path,
-                turn_producer=_KeepAliveChildGraph(child_requests),
+                turn_producer=_KeepAliveChildProducer(child_requests),
                 permission_policy=permission_policy(mode="yolo"),
             ),
         ),
@@ -834,7 +843,7 @@ def test_keep_alive_one_shot_child_yield_contract(tmp_path: Path) -> None:
     runtime_request, runtime_class = _load_runtime_types()
     runtime = cast(
         RuntimeRunner,
-        cast(object, runtime_class(workspace=tmp_path, turn_producer=_ImmediateFinishGraph())),
+        cast(object, runtime_class(workspace=tmp_path, turn_producer=_ImmediateFinishProducer())),
     )
     leader = runtime.run(runtime_request(prompt="leader", session_id="leader-session"))
     assert leader.session.status == "completed"

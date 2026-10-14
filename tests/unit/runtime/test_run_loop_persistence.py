@@ -14,7 +14,7 @@ from tests.runtime_composition import save_checkpoint
 from tests.runtime_storage import repositories_for_test_store
 from voidcode.core.tool_context import ArtifactBinary, ToolContext
 from voidcode.core.transcript import ToolResultView
-from voidcode.core.turns import FinalTurn, ResponseReadyFact, StreamFact, ToolTurn, TurnRequest
+from voidcode.core.turns import FinalTurn, ModelTurnFact, ResponseReadyFact, StreamFact, ToolTurn, TurnRequest
 from voidcode.provider.protocol import ProviderStreamEvent
 from voidcode.runtime.config.loading import RuntimeConfig
 from voidcode.runtime.events import EventEnvelope
@@ -67,7 +67,7 @@ def _turn_request(runtime: VoidCodeRuntime, *, session_id: str, provider_stream:
         run_id=run_id,
     )
     session = runtime._assemble_stream_session_metadata(prepared, run_id=run_id)
-    tool_registry = runtime.tool_registry_for_effective_config(prepared.effective_config)
+    tool_registry = runtime.tool_registry_for_config(prepared.config)
     prompt = runtime_request.prompt
     context_window = runtime.prepare_provider_context_window(
         prompt=prompt,
@@ -117,9 +117,9 @@ def test_persist_events_batch_is_contiguous_and_deduped(tmp_path: Path) -> None:
     envelopes = coordinator._persist_events(
         session_id="session-1",
         events=(
-            ("graph.loop_step", "graph", {"step": 1}, None),
-            ("graph.model_turn", "graph", {"turn": 1}, None),
-            ("graph.response_ready", "graph", {"output_preview": "done"}, None),
+            ("core.loop_step", "core", {"step": 1}, None),
+            ("core.model_turn", "core", {"run_step": 1}, None),
+            ("core.response_ready", "core", {"output_preview": "done"}, None),
         ),
     )
 
@@ -128,8 +128,8 @@ def test_persist_events_batch_is_contiguous_and_deduped(tmp_path: Path) -> None:
     deduped = coordinator._persist_events(
         session_id="session-1",
         events=(
-            ("graph.loop_step", "graph", {"step": 1}, "loop-step-1"),
-            ("graph.loop_step", "graph", {"step": 1}, "loop-step-1"),
+            ("core.loop_step", "core", {"step": 1}, "loop-step-1"),
+            ("core.loop_step", "core", {"step": 1}, "loop-step-1"),
         ),
     )
     assert [envelope.sequence for envelope in deduped] == [4]
@@ -171,7 +171,7 @@ def test_execute_turn_engine_streaming_dedupes_raw_provider_stream(tmp_path: Pat
     store = SqliteSessionStore()
     runtime = _runtime_with_store(tmp_path, store, config=RuntimeConfig(model="openai/gpt-4o"))
 
-    class _StreamingGraph:
+    class _StreamingProducer:
         def produce(self, request: TurnRequest, tool_results: tuple, *, session: SessionState) -> ToolTurn | FinalTurn:
             _ = request, tool_results, session
             raise AssertionError("streaming branch must not call step")
@@ -191,7 +191,7 @@ def test_execute_turn_engine_streaming_dedupes_raw_provider_stream(tmp_path: Pat
 
     chunks = list(
         runtime._run_loop_coordinator.execute_turn_engine(
-            producer=_StreamingGraph(),
+            producer=_StreamingProducer(),
             tool_registry=tool_registry,
             session=session,
             sequence=0,
@@ -201,22 +201,22 @@ def test_execute_turn_engine_streaming_dedupes_raw_provider_stream(tmp_path: Pat
     )
 
     event_types = [chunk.event.event_type for chunk in chunks if chunk.event is not None]
-    assert [event_type for event_type in event_types if event_type.startswith("graph.tool_call_")] == [
-        "graph.tool_call_start",
-        "graph.tool_call_delta",
-        "graph.tool_call_end",
+    assert [event_type for event_type in event_types if event_type.startswith("core.tool_call_")] == [
+        "core.tool_call_start",
+        "core.tool_call_delta",
+        "core.tool_call_end",
     ]
-    assert "graph.provider_stream" in event_types  # live client-only delta still streamed
+    assert "core.provider_stream" in event_types  # live client-only delta still streamed
     # The live raw provider_stream chunk is client-only: not persisted, not DB-sequenced.
     # Streaming turns additionally report the reasoning output diagnostic.
     persisted = _loaded_events(store, workspace=tmp_path, session_id="session-1")
     assert [event.event_type for event in persisted] == [
-        "graph.response_ready",
+        "core.response_ready",
         "runtime.reasoning_diagnostic",
     ]
     assert [event.sequence for event in persisted] == [1, 2]
     # The renumbered batch yields the DB-assigned sequence.
-    response_ready_chunk = next(chunk for chunk in chunks if chunk.event is not None and chunk.event.event_type == "graph.response_ready")
+    response_ready_chunk = next(chunk for chunk in chunks if chunk.event is not None and chunk.event.event_type == "core.response_ready")
     assert response_ready_chunk.event is not None and response_ready_chunk.event.sequence == 1
 
 
@@ -224,7 +224,7 @@ def test_execute_turn_engine_streaming_persists_aggregated_reasoning(tmp_path: P
     store = SqliteSessionStore()
     runtime = _runtime_with_store(tmp_path, store, config=RuntimeConfig(model="openai/gpt-4o"))
 
-    class _StreamingReasoningGraph:
+    class _StreamingReasoningProducer:
         def produce(self, request: TurnRequest, tool_results: tuple, *, session: SessionState) -> ToolTurn | FinalTurn:
             _ = request, tool_results, session
             raise AssertionError("streaming branch must not call step")
@@ -242,7 +242,7 @@ def test_execute_turn_engine_streaming_persists_aggregated_reasoning(tmp_path: P
 
     chunks = list(
         runtime._run_loop_coordinator.execute_turn_engine(
-            producer=_StreamingReasoningGraph(),
+            producer=_StreamingReasoningProducer(),
             tool_registry=tool_registry,
             session=session,
             sequence=0,
@@ -253,17 +253,17 @@ def test_execute_turn_engine_streaming_persists_aggregated_reasoning(tmp_path: P
 
     # Live deltas still stream to the client...
     event_types = [chunk.event.event_type for chunk in chunks if chunk.event is not None]
-    assert "graph.provider_stream" in event_types
+    assert "core.provider_stream" in event_types
     # ...but are not persisted: the turn persists one aggregated reasoning_part
     # so replay of a completed session keeps the thinking.
     persisted = _loaded_events(store, workspace=tmp_path, session_id="session-1")
     persisted_types = [event.event_type for event in persisted]
-    assert "graph.provider_stream" not in persisted_types
+    assert "core.provider_stream" not in persisted_types
     assert persisted_types.count("runtime.reasoning_part") == 1
     # The aggregated reasoning part lands before the terminal response, with the
     # reasoning output diagnostic after it (same tail as non-streaming turns).
     assert persisted_types[-2:] == [
-        "graph.response_ready",
+        "core.response_ready",
         "runtime.reasoning_diagnostic",
     ]
     reasoning = next(event for event in persisted if event.event_type == "runtime.reasoning_part")
@@ -276,7 +276,7 @@ def test_execute_turn_engine_non_streaming_persists_step_reasoning(tmp_path: Pat
     store = SqliteSessionStore()
     runtime = _runtime_with_store(tmp_path, store, config=RuntimeConfig(model="openai/gpt-4o"))
 
-    class _NonStreamingReasoningGraph:
+    class _NonStreamingReasoningProducer:
         def produce(self, request: TurnRequest, tool_results: tuple, *, session: SessionState) -> ToolTurn | FinalTurn:
             _ = request, tool_results, session
             return FinalTurn(
@@ -293,7 +293,7 @@ def test_execute_turn_engine_non_streaming_persists_step_reasoning(tmp_path: Pat
 
     chunks = list(
         runtime._run_loop_coordinator.execute_turn_engine(
-            producer=_NonStreamingReasoningGraph(),
+            producer=_NonStreamingReasoningProducer(),
             tool_registry=tool_registry,
             session=session,
             sequence=0,
@@ -305,12 +305,12 @@ def test_execute_turn_engine_non_streaming_persists_step_reasoning(tmp_path: Pat
     # No live provider_stream deltas on the non-streaming path: the turn persists
     # one aggregated runtime.reasoning_part so replay keeps the child's thinking.
     event_types = [chunk.event.event_type for chunk in chunks if chunk.event is not None]
-    assert "graph.provider_stream" not in event_types
+    assert "core.provider_stream" not in event_types
     persisted = _loaded_events(store, workspace=tmp_path, session_id="session-1")
     persisted_types = [event.event_type for event in persisted]
     assert persisted_types.count("runtime.reasoning_part") == 1
     assert persisted_types[-2:] == [
-        "graph.response_ready",
+        "core.response_ready",
         "runtime.reasoning_diagnostic",
     ]
     reasoning = next(event for event in persisted if event.event_type == "runtime.reasoning_part")
@@ -332,12 +332,16 @@ def test_execute_turn_engine_captures_safe_boundary_checkpoint(tmp_path: Path) -
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("alpha\n", encoding="utf-8")
 
-    class _ToolThenFinalGraph:
+    class _ToolThenFinalProducer:
         def produce(self, request: TurnRequest, tool_results: tuple, *, session: SessionState) -> ToolTurn | FinalTurn:
-            _ = request, session
+            _ = session
+            fact = ModelTurnFact(request.run_step, "deterministic", request.prompt)
             if not tool_results:
-                return ToolTurn(calls=(ToolCall(tool_name="read", arguments={"path": str(sample_file)}),))
-            return FinalTurn(output="done")
+                return ToolTurn(
+                    calls=(ToolCall(tool_name="read", arguments={"path": str(sample_file)}),),
+                    facts=(fact,),
+                )
+            return FinalTurn(output="done", facts=(fact,))
 
         def is_at_safe_boundary(self) -> bool:
             return True
@@ -346,7 +350,7 @@ def test_execute_turn_engine_captures_safe_boundary_checkpoint(tmp_path: Path) -
 
     chunks = list(
         runtime._run_loop_coordinator.execute_turn_engine(
-            producer=_ToolThenFinalGraph(),
+            producer=_ToolThenFinalProducer(),
             tool_registry=tool_registry,
             session=session,
             sequence=0,
@@ -448,7 +452,7 @@ def test_large_attachment_retains_caption_and_full_json_reference(
     session, request, tool_registry = _turn_request(runtime, session_id=session_id)
     observed: dict[str, object] = {}
 
-    class _AttachmentThenFinalGraph:
+    class _AttachmentThenFinalProducer:
         def produce(
             self,
             request: TurnRequest,
@@ -456,9 +460,12 @@ def test_large_attachment_retains_caption_and_full_json_reference(
             *,
             session: SessionState,
         ) -> ToolTurn | FinalTurn:
-            _ = request
+            fact = ModelTurnFact(request.run_step, "deterministic", request.prompt)
             if not tool_results:
-                return ToolTurn(calls=(ToolCall(tool_name="attachment", arguments={}, tool_call_id="call-image"),))
+                return ToolTurn(
+                    calls=(ToolCall(tool_name="attachment", arguments={}, tool_call_id="call-image"),),
+                    facts=(fact,),
+                )
             view = tool_results[-1]
             observed["output"] = view.output
             image_artifact = cast(dict[str, object], created["image_artifact"])
@@ -468,11 +475,11 @@ def test_large_attachment_retains_caption_and_full_json_reference(
                 artifact_id=cast(str, image_artifact["artifact_id"]),
                 tool_call_id=cast(str, image_artifact["tool_call_id"]),
             )
-            return FinalTurn(output="done")
+            return FinalTurn(output="done", facts=(fact,))
 
     chunks = list(
         runtime._run_loop_coordinator.execute_turn_engine(
-            producer=_AttachmentThenFinalGraph(),
+            producer=_AttachmentThenFinalProducer(),
             tool_registry=tool_registry,
             session=session,
             sequence=0,

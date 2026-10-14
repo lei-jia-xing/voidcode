@@ -11,7 +11,6 @@ from typing import Final, Literal
 
 from .config import RuntimeHooksConfig, RuntimeHookSurface, hook_tool_matches
 from .plan import ResolvedHookPlan
-from .surfaces import hook_surface_descriptor
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +22,7 @@ _CANCEL_HONORING_SURFACES: Final[frozenset[str]] = frozenset(
         "pre_tool",
         "post_tool",
         "turn_progress",
-        "stuck_detected",
+        "tool_batch_repeated",
         "approval_requested",
         "before_compact",
     }
@@ -58,7 +57,7 @@ class HookExecutionOutcome:
     events: tuple[HookExecutionEvent, ...]
     last_sequence: int
     failed_error: str | None = None
-    action: Literal["continue", "cancel"] = "continue"
+    action: Literal["continue", "cancel"] | None = "continue"
     diagnostics: tuple[str, ...] = ()
 
 
@@ -177,7 +176,7 @@ def run_lifecycle_hooks(request: LifecycleHookExecutionRequest) -> HookExecution
         timeout_seconds = hooks.timeout_seconds
     return _run_hook_commands(
         _HookCommandLoop(
-            event_type=_event_type_for_surface(request.surface),
+            event_type="runtime.lifecycle_hook",
             base_payload={"surface": request.surface, "session_id": request.session_id, **dict(request.payload)},
             status_key="hook_status",
             environment={**request.environment, **_lifecycle_hook_environment(request)},
@@ -239,13 +238,11 @@ def _run_hook_commands(
                 environment={**adapter.environment, recursion_env_var: "1"},
                 timeout_seconds=timeout_seconds,
             )
-        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            action_payload = _hook_action_payload_from_stdout(command_result.stdout)
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError) as exc:
             error_text = f"{adapter.error_label}: {exc}"
+            _append_diagnostic(diagnostics, error_text)
             if adapter.fail_closed:
-                # Fail-closed gate: crash/timeout blocks the tool (cancel +
-                # failed_error both set); the error text rides diagnostic and
-                # guidance so the reason reaches the prompt buffer.
-                _append_diagnostic(diagnostics, error_text)
                 return HookExecutionOutcome(
                     events=(
                         *events,
@@ -276,11 +273,14 @@ def _run_hook_commands(
                             **adapter.base_payload,
                             adapter.status_key: "error",
                             "error": error_text,
+                            "diagnostic": error_text,
                         },
                     ),
                 ),
                 last_sequence=last_sequence,
                 failed_error=error_text,
+                action=None,
+                diagnostics=tuple(diagnostics),
             )
 
         action_payload = _hook_action_payload_from_stdout(command_result.stdout)
@@ -322,11 +322,7 @@ def _run_hook_commands(
 
 
 def _event_type_for_phase(phase: Literal["pre", "post"]) -> str:
-    return _event_type_for_surface("pre_tool" if phase == "pre" else "post_tool")
-
-
-def _event_type_for_surface(surface: RuntimeHookSurface) -> str:
-    return hook_surface_descriptor(surface).event_type
+    return "runtime.tool_hook_pre" if phase == "pre" else "runtime.tool_hook_post"
 
 
 def _lifecycle_hook_environment(request: LifecycleHookExecutionRequest) -> dict[str, str]:
@@ -350,18 +346,26 @@ def _hook_action_payload_from_stdout(stdout: str) -> _HookActionPayload:
         return _HookActionPayload()
     try:
         raw_payload = json.loads(text)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
+        if text.startswith(("{", "[")):
+            raise ValueError("hook command returned malformed JSON") from exc
         return _HookActionPayload()
     if not isinstance(raw_payload, dict):
-        return _HookActionPayload()
-    payload = raw_payload
-    action = payload.get("action")
-    diagnostic = payload.get("diagnostic")
-    guidance = payload.get("guidance")
+        raise ValueError("hook JSON response must be an object")
+
+    action = raw_payload.get("action", "continue")
+    if action not in ("continue", "cancel"):
+        raise ValueError("hook JSON action must be 'continue' or 'cancel'")
+    diagnostic = raw_payload.get("diagnostic")
+    guidance = raw_payload.get("guidance")
+    if diagnostic is not None and not isinstance(diagnostic, str):
+        raise ValueError("hook JSON diagnostic must be a string")
+    if guidance is not None and not isinstance(guidance, str):
+        raise ValueError("hook JSON guidance must be a string")
     return _HookActionPayload(
-        action="cancel" if action == "cancel" else "continue",
-        diagnostic=diagnostic if isinstance(diagnostic, str) and diagnostic else None,
-        guidance=guidance if isinstance(guidance, str) and guidance else None,
+        action=action,
+        diagnostic=diagnostic or None,
+        guidance=guidance or None,
     )
 
 

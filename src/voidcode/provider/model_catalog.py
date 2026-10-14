@@ -63,35 +63,14 @@ class ProviderModelMetadata:
     #: ``deepseek-v3``, ...). ``None`` means no exact tokenizer and the runtime
     #: falls back to the byte-count estimate. See ``provider/tokenizer.py``.
     tokenizer: str | None = None
-    derived_max_input_tokens: bool = field(default=False, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.default_reasoning_effort is not None and self.default_reasoning_effort not in CANONICAL_EFFORTS:
             raise ValueError(f"default_reasoning_effort must be one of {CANONICAL_EFFORTS}; got {self.default_reasoning_effort!r}")
-        if self.max_input_tokens is not None or self.context_window is None:
-            return
-        if self.max_output_tokens is None:
-            object.__setattr__(self, "max_input_tokens", self.context_window)
-            object.__setattr__(self, "derived_max_input_tokens", True)
-            return
-        # Upstream sometimes reports an output cap equal to (or larger than) the
-        # whole window, which would leave a nonsensical input budget of a few
-        # tokens. Only a derivation that keeps at least half the window for input
-        # is a real cap; otherwise the window itself is the honest answer.
-        derived = self.context_window - self.max_output_tokens
-        object.__setattr__(
-            self,
-            "max_input_tokens",
-            derived if derived >= self.context_window // 2 else self.context_window,
-        )
-        object.__setattr__(self, "derived_max_input_tokens", True)
 
     def payload(self) -> dict[str, int | float | bool | str | list[str]]:
         payload: dict[str, int | float | bool | str | list[str]] = {}
         for model_field in fields(self):
-            # ``derived_max_input_tokens`` is internal bookkeeping, not metadata.
-            if not model_field.init:
-                continue
             value = getattr(self, model_field.name)
             if value is None:
                 continue

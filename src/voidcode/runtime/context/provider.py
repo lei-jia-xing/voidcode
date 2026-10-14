@@ -49,7 +49,6 @@ def inspect_provider_context(
     assembled_context: AssembledContext,
     provider: str,
     model: str,
-    execution_engine: str,
     available_tool_count: int,
     tool_feedback_mode: ToolFeedbackMode = "standard",
     oversized_tool_feedback_chars: int = DEFAULT_PROVIDER_CONTEXT_OVERSIZED_FEEDBACK_CHARS,
@@ -80,7 +79,6 @@ def inspect_provider_context(
     return RuntimeProviderContextSnapshot(
         provider=provider,
         model=model,
-        execution_engine=execution_engine,
         segment_count=len(segments),
         message_count=len(provider_messages),
         context_window=dict(assembled_context.metadata),
@@ -601,8 +599,8 @@ def _tool_pair_diagnostics(
     oversized_tool_feedback_chars: int,
 ) -> list[RuntimeProviderContextDiagnostic]:
     diagnostics: list[RuntimeProviderContextDiagnostic] = []
-    assistant_ids: dict[str, list[int]] = defaultdict(list)
-    tool_ids: dict[str, list[int]] = defaultdict(list)
+    assistant_ids: dict[tuple[str | None, str], list[int]] = defaultdict(list)
+    tool_ids: dict[tuple[str | None, str], list[int]] = defaultdict(list)
     missing_id_indices: list[int] = []
     for index, segment in enumerate(segments):
         if segment.role == "assistant" and segment.tool_name is not None:
@@ -612,12 +610,12 @@ def _tool_pair_diagnostics(
                 # "" would report a blocking orphan/missing pair against a fake id.
                 missing_id_indices.append(index)
             else:
-                assistant_ids[segment.tool_call_id].append(index)
+                assistant_ids[(segment.tool_batch_id, segment.tool_call_id)].append(index)
         if segment.role == "tool":
             if segment.tool_call_id is None:
                 missing_id_indices.append(index)
             else:
-                tool_ids[segment.tool_call_id].append(index)
+                tool_ids[(segment.tool_batch_id, segment.tool_call_id)].append(index)
             if len(segment.content or "") > oversized_tool_feedback_chars:
                 diagnostics.append(
                     RuntimeProviderContextDiagnostic(
@@ -647,8 +645,8 @@ def _tool_pair_diagnostics(
                 ),
             )
         )
-    for tool_call_id, indices in assistant_ids.items():
-        if tool_call_id not in tool_ids:
+    for (_batch_id, tool_call_id), indices in assistant_ids.items():
+        if (_batch_id, tool_call_id) not in tool_ids:
             diagnostics.append(
                 RuntimeProviderContextDiagnostic(
                     severity="error",
@@ -660,8 +658,8 @@ def _tool_pair_diagnostics(
                     details={"tool_call_id": tool_call_id},
                 )
             )
-    for tool_call_id, indices in tool_ids.items():
-        if tool_call_id not in assistant_ids:
+    for (_batch_id, tool_call_id), indices in tool_ids.items():
+        if (_batch_id, tool_call_id) not in assistant_ids:
             diagnostics.append(
                 RuntimeProviderContextDiagnostic(
                     severity="error",
@@ -674,16 +672,16 @@ def _tool_pair_diagnostics(
                 )
             )
     duplicate_ids = sorted(
-        {tool_call_id for ids_by_role in (assistant_ids, tool_ids) for tool_call_id, indices in ids_by_role.items() if len(indices) > 1}
+        {tool_call_id for identities in (assistant_ids, tool_ids) for (_batch_id, tool_call_id), indices in identities.items() if len(indices) > 1}
     )
     if duplicate_ids:
         diagnostics.append(
             RuntimeProviderContextDiagnostic(
                 severity="warning",
                 code="duplicate_tool_call_id",
-                message="Provider context reuses a tool_call_id across assistant tool calls.",
+                message="Provider context reuses a tool_call_id within one native batch.",
                 source="assembled_context",
-                suggested_fix="Check runtime invocation id and provider tool_call_id propagation.",
+                suggested_fix="Check the native batch manifest for duplicate tool_call_id values.",
                 details={"tool_call_ids": duplicate_ids},
             )
         )

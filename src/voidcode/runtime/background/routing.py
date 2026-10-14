@@ -97,7 +97,6 @@ class SubagentRoutingIdentity:
 class ResolvedSubagentRoute:
     requested: SubagentRoutingIdentity
     selected_preset: SubagentExecutablePreset
-    execution_engine: Literal["provider"] = "provider"
 
 
 CALLABLE_SUBAGENT_PRESETS: tuple[str, ...] = ("review", "explore", "research", "execute", "plan")

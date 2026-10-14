@@ -210,14 +210,10 @@ class ToolDefinition:
     def __post_init__(self) -> None:
         object.__setattr__(self, "input_schema", own_json_object(self.input_schema))
 
-    def effective_replay_policy_for(self, arguments: Mapping[str, object] | None = None) -> ToolReplayPolicy:
+    def replay_policy_for(self, arguments: Mapping[str, object] | None = None) -> ToolReplayPolicy:
         if self.name == "ast_grep" and arguments is not None and arguments.get("mode") in {"search", "preview"}:
             return "safe"
         return self.replay_policy or ("safe" if is_read_tier(self.effects) else "never")
-
-    @property
-    def effective_replay_policy(self) -> ToolReplayPolicy:
-        return self.effective_replay_policy_for()
 
 
 @dataclass(frozen=True, slots=True)

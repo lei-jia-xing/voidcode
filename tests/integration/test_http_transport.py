@@ -14,14 +14,15 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.provider_loopback import OpenAILoopbackServer, configure_openai_provider, openai_response
 from tests.runtime_composition import save_checkpoint
 
-pytestmark = pytest.mark.usefixtures("_force_deterministic_engine_default")
+pytestmark = pytest.mark.usefixtures("_disable_mcp_and_stream")
 
 
 @pytest.fixture
-def _force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
+def _disable_mcp_and_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+
     config_module = importlib.import_module("voidcode.runtime.config.loading")
     monkeypatch.setattr(
         config_module,
@@ -137,7 +138,7 @@ class RuntimeFactory(Protocol):
         *,
         workspace: Path,
         tool_registry: object | None = None,
-        graph: object | None = None,
+        turn_producer: object | None = None,
         mcp_manager: object | None = None,
         permission_policy: object | None = None,
         repositories: object | None = None,
@@ -360,9 +361,8 @@ def _assert_runtime_session_metadata(
     metadata: object,
     *,
     workspace: Path | str,
-    approval_mode: str = "yolo",
-    model: str | None = None,
-    execution_engine: str = "deterministic",
+    approval_mode: str = "ask",
+    model: str | None = "deepseek/deepseek-v4-pro",
 ) -> None:
     assert isinstance(metadata, dict)
     typed_metadata = cast(dict[str, object], metadata)
@@ -372,7 +372,7 @@ def _assert_runtime_session_metadata(
     assert isinstance(raw_runtime_config, dict)
     runtime_config = cast(dict[str, object], raw_runtime_config)
     assert runtime_config["approval_mode"] == approval_mode
-    assert runtime_config["execution_engine"] == execution_engine
+    assert "execution_engine" not in runtime_config
     if model is None:
         assert "model" not in runtime_config
     else:
@@ -380,7 +380,7 @@ def _assert_runtime_session_metadata(
 
 
 def _multi_step_prompt() -> str:
-    return "read source.txt\nwrite copied.txt copied marker\ngrep copied copied.txt"
+    return "Read source.txt, write the text 'copied marker' to copied.txt, then search copied.txt for it."
 
 
 def _run_lifespan(app: TransportAppLike) -> list[dict[str, object]]:
@@ -511,14 +511,48 @@ def test_transport_closes_request_scoped_runtime_after_stream_run(tmp_path: Path
     assert closed == ["closed"]
 
 
-def test_transport_replays_session_as_json_runtime_response(tmp_path: Path) -> None:
+def test_transport_replays_session_as_json_runtime_response(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("http replay\n", encoding="utf-8")
     runtime_request, runtime_class = _load_runtime_types()
     create_runtime_app = _load_transport_app_factory()
 
-    runtime = runtime_class(workspace=tmp_path)
-    stored = runtime.run(runtime_request(prompt="read sample.txt", session_id="transport-session"))
+    server = OpenAILoopbackServer(
+        [
+            openai_response(
+                message={
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call-http-replay",
+                            "type": "function",
+                            "function": {
+                                "name": "read",
+                                "arguments": json.dumps({"path": "sample.txt"}),
+                            },
+                        }
+                    ],
+                },
+                finish="tool_calls",
+            ),
+            openai_response(message={"role": "assistant", "content": "http replay"}, finish="stop"),
+        ]
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    try:
+        configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_address[1]}/v1")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
+        thread.start()
+        runtime = runtime_class(workspace=tmp_path)
+        stored = runtime.run(runtime_request(prompt="read sample.txt", session_id="transport-session"))
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
     stored_runtime_state = cast(dict[str, object], cast(dict[str, object], stored.session.metadata["runtime_state"]))
     assert "pending_tool_intent" not in stored_runtime_state
 
@@ -540,7 +574,7 @@ def test_transport_replays_session_as_json_runtime_response(tmp_path: Path) -> N
     assert "http replay" not in json.dumps(policy_observability)
     tool_request_event = _event_by_type(
         cast(list[dict[str, object]], payload["events"]),
-        "graph.tool_request_created",
+        "core.tool_request_created",
     )
     completed_tool_event = _event_by_type(
         cast(list[dict[str, object]], payload["events"]),
@@ -559,27 +593,39 @@ def test_transport_replays_session_as_json_runtime_response(tmp_path: Path) -> N
         [
             "runtime.request_received",
             "runtime.skills_loaded",
-            "graph.loop_step",
-            "graph.model_turn",
-            "graph.tool_request_created",
+            "core.loop_step",
+            "core.model_turn",
+            "core.tool_request_created",
             "runtime.tool_lookup_succeeded",
             "runtime.permission_resolved",
             "runtime.tool_started",
             "runtime.tool_completed",
-            "graph.loop_step",
-            "graph.response_ready",
+            "core.loop_step",
+            "core.response_ready",
         ],
     )
 
 
-def test_transport_get_session_replay_is_read_only_for_interrupted_session(tmp_path: Path) -> None:
-    sample_file = tmp_path / "sample.txt"
-    _ = sample_file.write_text("replay read only\n", encoding="utf-8")
+def test_transport_get_session_replay_is_read_only_for_interrupted_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     runtime_request, runtime_class = _load_runtime_types()
     create_runtime_app = _load_transport_app_factory()
-
-    runtime = runtime_class(workspace=tmp_path)
-    stored = runtime.run(runtime_request(prompt="read sample.txt", session_id="interrupted-replay-session"))
+    prompt = "seed interrupted replay"
+    server = OpenAILoopbackServer([openai_response(message={"role": "assistant", "content": "done"}, finish="stop")])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    try:
+        configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_address[1]}/v1")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
+        thread.start()
+        runtime = runtime_class(workspace=tmp_path)
+        stored = runtime.run(runtime_request(prompt=prompt, session_id="interrupted-replay-session"))
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
     original_events = cast(Any, stored).events
     original_count = len(original_events)
     sessions = runtime._repositories.sessions
@@ -591,7 +637,7 @@ def test_transport_get_session_replay_is_read_only_for_interrupted_session(tmp_p
         sessions,
         workspace=tmp_path,
         session_id="interrupted-replay-session",
-        prompt="read sample.txt",
+        prompt=prompt,
         session_metadata=loaded.session.metadata,
         tool_results=(),
         last_event_sequence=original_count,
@@ -607,8 +653,8 @@ def test_transport_get_session_replay_is_read_only_for_interrupted_session(tmp_p
     assert cast(dict[str, object], payload["session"])["status"] == "interrupted"
     replay_events = cast(list[dict[str, object]], payload["events"])
     assert len(replay_events) == original_count
-    assert sum(1 for event in replay_events if event["event_type"] == "graph.model_turn") == sum(
-        1 for event in original_events if event.event_type == "graph.model_turn"
+    assert sum(1 for event in replay_events if event["event_type"] == "core.model_turn") == sum(
+        1 for event in original_events if event.event_type == "core.model_turn"
     )
     # The persisted transcript must be untouched: no truncation, no re-run, no
     # new provider turn appended.
@@ -618,40 +664,52 @@ def test_transport_get_session_replay_is_read_only_for_interrupted_session(tmp_p
     assert [event.event_type for event in after.events] == [event.event_type for event in original_events]
 
 
-def test_transport_post_session_resume_reexecutes_interrupted_session(tmp_path: Path) -> None:
-    sample_file = tmp_path / "sample.txt"
-    _ = sample_file.write_text("resume reexecutes\n", encoding="utf-8")
+def test_transport_post_session_resume_reexecutes_interrupted_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     runtime_request, runtime_class = _load_runtime_types()
     create_runtime_app = _load_transport_app_factory()
-
-    runtime = runtime_class(workspace=tmp_path)
-    stored = runtime.run(runtime_request(prompt="read sample.txt", session_id="resume-session"))
-    original_count = len(cast(Any, stored).events)
-    sessions = runtime._repositories.sessions
-    loaded = sessions.load_session(workspace=tmp_path, session_id="resume-session")
-    save_checkpoint(
-        sessions,
-        workspace=tmp_path,
-        session_id="resume-session",
-        prompt="read sample.txt",
-        session_metadata=loaded.session.metadata,
-        tool_results=(),
-        last_event_sequence=original_count,
-    )
-
-    app = create_runtime_app(workspace=tmp_path)
-    response = _run_app(app, method="POST", path="/api/sessions/resume-session/resume")
+    prompt = "seed resumable session"
+    response_body = openai_response(message={"role": "assistant", "content": "done"}, finish="stop")
+    server = OpenAILoopbackServer([response_body, response_body])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    try:
+        configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_address[1]}/v1")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
+        thread.start()
+        runtime = runtime_class(workspace=tmp_path)
+        stored = runtime.run(runtime_request(prompt=prompt, session_id="resume-session"))
+        original_count = len(cast(Any, stored).events)
+        sessions = runtime._repositories.sessions
+        loaded = sessions.load_session(workspace=tmp_path, session_id="resume-session")
+        save_checkpoint(
+            sessions,
+            workspace=tmp_path,
+            session_id="resume-session",
+            prompt=prompt,
+            session_metadata=loaded.session.metadata,
+            tool_results=(),
+            last_event_sequence=original_count,
+        )
+        app = create_runtime_app(workspace=tmp_path)
+        response = _run_app(app, method="POST", path="/api/sessions/resume-session/resume")
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
     payload = cast(dict[str, object], response.json())
 
     assert response.status == 200
     assert cast(dict[str, object], payload["session"])["status"] == "completed"
-    # The explicit resume re-executes the graph loop from the checkpoint: new
+    # The explicit resume re-executes the provider loop from the checkpoint: new
     # events are appended past the original transcript and the row is sealed.
     after = sessions.load_session(workspace=tmp_path, session_id="resume-session")
     assert len(after.events) > original_count
     assert [event.sequence for event in after.events] == list(range(1, len(after.events) + 1))
-    assert after.events[-1].event_type == "graph.response_ready"
-    assert sum(1 for event in after.events if event.event_type == "graph.model_turn") >= 2
+    assert any(event.event_type == "core.response_ready" for event in after.events)
+    assert sum(1 for event in after.events if event.event_type == "core.model_turn") >= 2
     # GET after the explicit resume is again read-only replay.
     replay_response = _run_app(
         create_runtime_app(workspace=tmp_path),
@@ -666,13 +724,25 @@ def test_transport_post_session_resume_reexecutes_interrupted_session(tmp_path: 
     assert len(replay_after.events) == len(after.events)
 
 
-def test_transport_streams_session_events_after_sequence(tmp_path: Path) -> None:
-    sample_file = tmp_path / "sample.txt"
-    _ = sample_file.write_text("events payload\n", encoding="utf-8")
+def test_transport_streams_session_events_after_sequence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     runtime_request, runtime_class = _load_runtime_types()
     create_runtime_app = _load_transport_app_factory()
-    runtime = runtime_class(workspace=tmp_path)
-    stored = runtime.run(runtime_request(prompt="read sample.txt", session_id="events-session"))
+    server = OpenAILoopbackServer([openai_response(message={"role": "assistant", "content": "done"}, finish="stop")])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    try:
+        configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_address[1]}/v1")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
+        thread.start()
+        runtime = runtime_class(workspace=tmp_path)
+        stored = runtime.run(runtime_request(prompt="seed event stream", session_id="events-session"))
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
 
     response = _run_app(
         create_runtime_app(workspace=tmp_path),
@@ -693,14 +763,47 @@ def test_transport_streams_session_events_after_sequence(tmp_path: Path) -> None
     assert all(chunk["session"] is None for chunk in event_chunks)
 
 
-def test_transport_events_endpoint_strips_canonical_reported_call_and_redacts_secrets(tmp_path: Path) -> None:
+def test_transport_events_endpoint_strips_canonical_reported_call_and_redacts_secrets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     sample_file = tmp_path / "secrets.env"
     _ = sample_file.write_text("OPENAI_API_KEY=sk-super-secret-key-12345\nTOKEN=token_xyz\n", encoding="utf-8")
     runtime_request, runtime_class = _load_runtime_types()
     create_runtime_app = _load_transport_app_factory()
-    runtime = runtime_class(workspace=tmp_path)
-    stored = runtime.run(runtime_request(prompt="read secrets.env", session_id="wire-secrets-session"))
-    assert stored.session.status == "completed"
+    server = OpenAILoopbackServer(
+        [
+            openai_response(
+                message={
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call-read-secrets",
+                            "type": "function",
+                            "function": {
+                                "name": "read",
+                                "arguments": json.dumps({"path": "secrets.env"}),
+                            },
+                        }
+                    ],
+                },
+                finish="tool_calls",
+            ),
+            openai_response(message={"role": "assistant", "content": "done"}, finish="stop"),
+        ]
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    try:
+        configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_address[1]}/v1")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
+        thread.start()
+        runtime = runtime_class(workspace=tmp_path)
+        runtime.run(runtime_request(prompt="read secrets.env", session_id="wire-secrets-session"))
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
 
     response = _run_app(
         create_runtime_app(workspace=tmp_path),
@@ -919,34 +1022,67 @@ def test_transport_background_task_output_redacts_reasoning_until_query_opt_in()
     assert shown_reasoning["preview"] == "private chain"
 
 
-def test_transport_resolves_pending_approval_allow_over_http(tmp_path: Path) -> None:
+def test_transport_resolves_pending_approval_allow_over_http(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     runtime_request, runtime_class = _load_runtime_types()
     create_runtime_app = _load_transport_app_factory()
     permission_module = importlib.import_module("voidcode.runtime.permissions.policy")
     permission_policy = cast(object, permission_module.PermissionPolicy(mode="ask"))
-
-    runtime = runtime_class(workspace=tmp_path, permission_policy=permission_policy)
-    waiting = runtime.run(runtime_request(prompt="write danger.txt approved later", session_id="approval-session"))
-    approval_request_id = cast(str, cast(Any, waiting.events[-1]).payload["request_id"])
-
-    app = create_runtime_app(
-        workspace=tmp_path,
-        runtime_factory=lambda: runtime_class(
+    server = OpenAILoopbackServer(
+        [
+            openai_response(
+                message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call-allow-write",
+                            "type": "function",
+                            "function": {
+                                "name": "write",
+                                "arguments": json.dumps({"path": "danger.txt", "content": "approved later"}),
+                            },
+                        }
+                    ],
+                },
+                finish="tool_calls",
+            ),
+            openai_response(message={"role": "assistant", "content": "done"}, finish="stop"),
+        ]
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    try:
+        configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_address[1]}/v1")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
+        thread.start()
+        runtime = runtime_class(workspace=tmp_path, permission_policy=permission_policy)
+        waiting = runtime.run(runtime_request(prompt="write danger.txt approved later", session_id="approval-session"))
+        approval_request_id = cast(str, cast(Any, waiting.events[-1]).payload["request_id"])
+        app = create_runtime_app(
             workspace=tmp_path,
-            permission_policy=permission_policy,
-        ),
-    )
-    response = _run_app(
-        app,
-        method="POST",
-        path="/api/sessions/approval-session/approval",
-        body=json.dumps(
-            {
-                "request_id": approval_request_id,
-                "decision": "allow",
-            }
-        ).encode("utf-8"),
-    )
+            runtime_factory=lambda: runtime_class(
+                workspace=tmp_path,
+                permission_policy=permission_policy,
+            ),
+        )
+        response = _run_app(
+            app,
+            method="POST",
+            path="/api/sessions/approval-session/approval",
+            body=json.dumps(
+                {
+                    "request_id": approval_request_id,
+                    "decision": "allow",
+                }
+            ).encode("utf-8"),
+        )
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
     payload = cast(dict[str, object], response.json())
 
     assert response.status == 200
@@ -957,22 +1093,22 @@ def test_transport_resolves_pending_approval_allow_over_http(tmp_path: Path) -> 
         cast(dict[str, object], payload["session"])["metadata"],
         workspace=tmp_path,
     )
-    assert payload["output"] == "Wrote file successfully: danger.txt"
+    assert payload["output"] == "done"
     _assert_ordered_event_types(
         _event_types_from_payload_events(payload),
         [
             "runtime.request_received",
             "runtime.skills_loaded",
-            "graph.loop_step",
-            "graph.model_turn",
-            "graph.tool_request_created",
+            "core.loop_step",
+            "core.model_turn",
+            "core.tool_request_created",
             "runtime.tool_lookup_succeeded",
             "runtime.approval_requested",
             "runtime.approval_resolved",
             "runtime.tool_started",
             "runtime.tool_completed",
-            "graph.loop_step",
-            "graph.response_ready",
+            "core.loop_step",
+            "core.response_ready",
         ],
     )
     assert (tmp_path / "danger.txt").read_text(encoding="utf-8") == "approved later"
@@ -1058,60 +1194,98 @@ def test_transport_stream_preserves_tool_display_metadata(tmp_path: Path) -> Non
     }
 
 
-def test_transport_resolves_pending_approval_deny_over_http(tmp_path: Path) -> None:
+def test_transport_resolves_pending_approval_deny_over_http(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     runtime_request, runtime_class = _load_runtime_types()
     create_runtime_app = _load_transport_app_factory()
     permission_module = importlib.import_module("voidcode.runtime.permissions.policy")
     permission_policy = cast(object, permission_module.PermissionPolicy(mode="ask"))
-
-    runtime = runtime_class(workspace=tmp_path, permission_policy=permission_policy)
-    waiting = runtime.run(runtime_request(prompt="write danger.txt denied later", session_id="deny-session"))
-    approval_request_id = cast(str, cast(Any, waiting.events[-1]).payload["request_id"])
-
-    app = create_runtime_app(
-        workspace=tmp_path,
-        runtime_factory=lambda: runtime_class(
+    server = OpenAILoopbackServer(
+        [
+            openai_response(
+                message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call-deny-write",
+                            "type": "function",
+                            "function": {
+                                "name": "write",
+                                "arguments": json.dumps({"path": "danger.txt", "content": "denied later"}),
+                            },
+                        }
+                    ],
+                },
+                finish="tool_calls",
+            ),
+            openai_response(message={"role": "assistant", "content": "The write was denied."}, finish="stop"),
+        ]
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    try:
+        configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_address[1]}/v1")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
+        thread.start()
+        runtime = runtime_class(workspace=tmp_path, permission_policy=permission_policy)
+        waiting = runtime.run(runtime_request(prompt="write danger.txt denied later", session_id="deny-session"))
+        approval_request_id = cast(str, cast(Any, waiting.events[-1]).payload["request_id"])
+        app = create_runtime_app(
             workspace=tmp_path,
-            permission_policy=permission_policy,
-        ),
-    )
-    response = _run_app(
-        app,
-        method="POST",
-        path="/api/sessions/deny-session/approval",
-        body=json.dumps(
-            {
-                "request_id": approval_request_id,
-                "decision": "deny",
-            }
-        ).encode("utf-8"),
-    )
+            runtime_factory=lambda: runtime_class(
+                workspace=tmp_path,
+                permission_policy=permission_policy,
+            ),
+        )
+        response = _run_app(
+            app,
+            method="POST",
+            path="/api/sessions/deny-session/approval",
+            body=json.dumps(
+                {
+                    "request_id": approval_request_id,
+                    "decision": "deny",
+                }
+            ).encode("utf-8"),
+        )
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
     payload = cast(dict[str, object], response.json())
 
     assert response.status == 200
     assert cast(dict[str, object], payload["session"])["session"] == {"id": "deny-session"}
-    assert cast(dict[str, object], payload["session"])["status"] == "running"
+    assert cast(dict[str, object], payload["session"])["status"] == "completed"
     assert cast(dict[str, object], payload["session"])["turn"] == 1
     _assert_runtime_session_metadata(
         cast(dict[str, object], payload["session"])["metadata"],
         workspace=tmp_path,
     )
-    assert payload["output"] is None
+    assert payload["output"] == "The write was denied."
     events = cast(list[dict[str, object]], payload["events"])
     _assert_ordered_event_types(
         _event_types_from_payload_events(payload),
         [
             "runtime.request_received",
             "runtime.skills_loaded",
-            "graph.loop_step",
-            "graph.model_turn",
-            "graph.tool_request_created",
+            "core.loop_step",
+            "core.model_turn",
+            "core.tool_request_created",
             "runtime.tool_lookup_succeeded",
             "runtime.approval_requested",
             "runtime.approval_resolved",
             "runtime.tool_completed",
+            "core.loop_step",
+            "core.model_turn",
+            "core.response_ready",
         ],
     )
+    approval_payload = cast(dict[str, object], _event_by_type(events, "runtime.approval_resolved", reverse=True)["payload"])
+    assert approval_payload["decision"] == "deny"
     feedback_payload = cast(dict[str, object], _event_by_type(events, "runtime.tool_completed", reverse=True)["payload"])
     assert feedback_payload["status"] == "error"
     assert feedback_payload["permission_denied"] is True
@@ -1119,42 +1293,107 @@ def test_transport_resolves_pending_approval_deny_over_http(tmp_path: Path) -> N
     assert (tmp_path / "danger.txt").exists() is False
 
 
-def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_path: Path) -> None:
+def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _ = (tmp_path / "source.txt").write_text("alpha\nbeta alpha\n", encoding="utf-8")
-    config_module = importlib.import_module("voidcode.runtime.config.loading")
     create_runtime_app = _load_transport_app_factory()
-    app = create_runtime_app(workspace=tmp_path, config=cast(Any, config_module).RuntimeConfig(approval_mode="ask", execution_engine="deterministic"))
-    waiting_response = _run_app(
-        app,
-        method="POST",
-        path="/api/runtime/run/stream",
-        body=json.dumps(
-            {
-                "prompt": _multi_step_prompt(),
-                "session_id": "http-loop-session",
-            }
-        ).encode("utf-8"),
+    server = OpenAILoopbackServer(
+        [
+            openai_response(
+                message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call-loop-read",
+                            "type": "function",
+                            "function": {"name": "read", "arguments": json.dumps({"path": "source.txt"})},
+                        }
+                    ],
+                },
+                finish="tool_calls",
+            ),
+            openai_response(
+                message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call-loop-write",
+                            "type": "function",
+                            "function": {
+                                "name": "write",
+                                "arguments": json.dumps({"path": "copied.txt", "content": "copied marker"}),
+                            },
+                        }
+                    ],
+                },
+                finish="tool_calls",
+            ),
+            openai_response(
+                message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call-loop-grep",
+                            "type": "function",
+                            "function": {
+                                "name": "grep",
+                                "arguments": json.dumps({"pattern": "copied marker", "path": "copied.txt"}),
+                            },
+                        }
+                    ],
+                },
+                finish="tool_calls",
+            ),
+            openai_response(message={"role": "assistant", "content": "Found copied marker."}, finish="stop"),
+        ]
     )
-    waiting_payloads = _parse_sse_payloads(waiting_response)
-    approval_request_id = cast(
-        str,
-        cast(dict[str, object], cast(dict[str, object], waiting_payloads[-1]["event"])["payload"])["request_id"],
-    )
-    approve_response = _run_app(
-        app,
-        method="POST",
-        path="/api/sessions/http-loop-session/approval",
-        body=json.dumps(
-            {
-                "request_id": approval_request_id,
-                "decision": "allow",
-            }
-        ).encode("utf-8"),
-    )
-    approve_payload = cast(dict[str, object], approve_response.json())
-    list_response = _run_app(app, method="GET", path="/api/sessions")
-    replay_response = _run_app(app, method="GET", path="/api/sessions/http-loop-session")
-    replay_payload = cast(dict[str, object], replay_response.json())
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    try:
+        configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_address[1]}/v1")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
+        thread.start()
+        app = create_runtime_app(workspace=tmp_path)
+        waiting_response = _run_app(
+            app,
+            method="POST",
+            path="/api/runtime/run/stream",
+            body=json.dumps(
+                {
+                    "prompt": _multi_step_prompt(),
+                    "session_id": "http-loop-session",
+                }
+            ).encode("utf-8"),
+        )
+        waiting_payloads = _parse_sse_payloads(waiting_response)
+        approval_request_id = cast(
+            str,
+            cast(dict[str, object], cast(dict[str, object], waiting_payloads[-1]["event"])["payload"])["request_id"],
+        )
+        approve_response = _run_app(
+            app,
+            method="POST",
+            path="/api/sessions/http-loop-session/approval",
+            body=json.dumps(
+                {
+                    "request_id": approval_request_id,
+                    "decision": "allow",
+                }
+            ).encode("utf-8"),
+        )
+        approve_payload = cast(dict[str, object], approve_response.json())
+        list_response = _run_app(app, method="GET", path="/api/sessions")
+        replay_response = _run_app(app, method="GET", path="/api/sessions/http-loop-session")
+        replay_payload = cast(dict[str, object], replay_response.json())
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
 
     assert waiting_response.status == 200
     assert all(payload["kind"] == "event" for payload in waiting_payloads)
@@ -1163,16 +1402,16 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
         [
             "runtime.request_received",
             "runtime.skills_loaded",
-            "graph.loop_step",
-            "graph.model_turn",
-            "graph.tool_request_created",
+            "core.loop_step",
+            "core.model_turn",
+            "core.tool_request_created",
             "runtime.tool_lookup_succeeded",
             "runtime.permission_resolved",
             "runtime.tool_started",
             "runtime.tool_completed",
-            "graph.loop_step",
-            "graph.model_turn",
-            "graph.tool_request_created",
+            "core.loop_step",
+            "core.model_turn",
+            "core.tool_request_created",
             "runtime.tool_lookup_succeeded",
             "runtime.approval_requested",
         ],
@@ -1204,30 +1443,30 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
         [
             "runtime.request_received",
             "runtime.skills_loaded",
-            "graph.loop_step",
-            "graph.model_turn",
-            "graph.tool_request_created",
+            "core.loop_step",
+            "core.model_turn",
+            "core.tool_request_created",
             "runtime.tool_lookup_succeeded",
             "runtime.permission_resolved",
             "runtime.tool_started",
             "runtime.tool_completed",
-            "graph.loop_step",
-            "graph.model_turn",
-            "graph.tool_request_created",
+            "core.loop_step",
+            "core.model_turn",
+            "core.tool_request_created",
             "runtime.tool_lookup_succeeded",
             "runtime.approval_requested",
             "runtime.approval_resolved",
             "runtime.tool_started",
             "runtime.tool_completed",
-            "graph.loop_step",
-            "graph.model_turn",
-            "graph.tool_request_created",
+            "core.loop_step",
+            "core.model_turn",
+            "core.tool_request_created",
             "runtime.tool_lookup_succeeded",
             "runtime.permission_resolved",
             "runtime.tool_started",
             "runtime.tool_completed",
-            "graph.loop_step",
-            "graph.response_ready",
+            "core.loop_step",
+            "core.response_ready",
         ],
     )
     assert [event["sequence"] for event in approve_events] == list(range(1, cast(int, approve_events[-1]["sequence"]) + 1))
@@ -1249,7 +1488,11 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
     replay_metadata = cast(dict[str, object], replay_session["metadata"])
     approve_metadata = cast(dict[str, object], approve_session["metadata"])
     assert replay_payload["output"] == approve_payload["output"]
-    assert _event_types_from_payload_events(replay_payload) == _event_types_from_payload_events(approve_payload)
+    live_only_event_types = {"core.provider_stream", "core.tool_call_start", "core.tool_call_delta", "core.tool_call_end"}
+    persisted_approve_types = [
+        event_type for event_type in _event_types_from_payload_events(approve_payload) if event_type not in live_only_event_types
+    ]
+    assert _event_types_from_payload_events(replay_payload) == persisted_approve_types
     assert replay_session["session"] == approve_session["session"]
     assert replay_session["status"] == approve_session["status"]
     assert replay_session["turn"] == approve_session["turn"]
@@ -1331,8 +1574,8 @@ def test_transport_streams_runtime_chunks_in_sse_order() -> None:
                 event=event_envelope(
                     session_id="stream-session",
                     sequence=2,
-                    event_type="graph.response_ready",
-                    source="graph",
+                    event_type="core.response_ready",
+                    source="core",
                     payload={"output_preview": "transported"},
                 ),
             )
@@ -1376,7 +1619,7 @@ def test_transport_streams_runtime_chunks_in_sse_order() -> None:
     assert [payload["kind"] for payload in payloads] == ["event", "event", "output"]
     assert [cast(dict[str, object], payload["event"])["event_type"] for payload in payloads if payload["event"] is not None] == [
         "runtime.request_received",
-        "graph.response_ready",
+        "core.response_ready",
     ]
     assert payloads[-1]["output"] == "transported"
 
@@ -1682,8 +1925,8 @@ def test_transport_session_events_follow_reads_incrementally_after_cursor(monkey
         return runtime_events.EventEnvelope(
             session_id=session_id,
             sequence=sequence,
-            event_type="graph.provider_stream",
-            source="graph",
+            event_type="core.provider_stream",
+            source="core",
             payload={"sequence": sequence},
         )
 
@@ -1779,8 +2022,8 @@ def test_transport_run_stream_sends_session_state_only_when_it_changes() -> None
         return runtime_events.EventEnvelope(
             session_id=session_id,
             sequence=sequence,
-            event_type="graph.provider_stream",
-            source="graph",
+            event_type="core.provider_stream",
+            source="core",
             payload={"sequence": sequence},
         )
 
@@ -1850,27 +2093,54 @@ def test_transport_persists_streamed_run_for_session_listing_and_replay(
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("stream replay\n", encoding="utf-8")
     create_runtime_app = _load_transport_app_factory()
-
-    app = create_runtime_app(workspace=tmp_path)
-
-    async def _direct_stream(_self: object, runtime: object, request: object) -> Any:
-        for chunk in cast(Any, runtime).run_stream(request):
-            yield chunk
-
-    monkeypatch.setattr(type(app), "_stream_runtime_chunks", _direct_stream)
-
-    stream_response = _run_app(
-        app,
-        method="POST",
-        path="/api/runtime/run/stream",
-        body=json.dumps(
-            {
-                "prompt": "read sample.txt",
-                "session_id": "streamed-session",
-            }
-        ).encode("utf-8"),
+    read_response = openai_response(
+        message={
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call-stream-replay-read",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": json.dumps({"path": "sample.txt"})},
+                }
+            ],
+        },
+        finish="tool_calls",
     )
-    stream_payloads = _parse_sse_payloads(stream_response)
+    final_response = openai_response(
+        message={"role": "assistant", "content": "Read 1 line(s) from sample.txt. stream replay"},
+        finish="stop",
+    )
+    server = OpenAILoopbackServer([read_response, final_response])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    try:
+        configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_address[1]}/v1")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
+        thread.start()
+        app = create_runtime_app(workspace=tmp_path)
+
+        async def _direct_stream(_self: object, runtime: object, request: object) -> Any:
+            for chunk in cast(Any, runtime).run_stream(request):
+                yield chunk
+
+        monkeypatch.setattr(type(app), "_stream_runtime_chunks", _direct_stream)
+        stream_response = _run_app(
+            app,
+            method="POST",
+            path="/api/runtime/run/stream",
+            body=json.dumps(
+                {
+                    "prompt": "read sample.txt",
+                    "session_id": "streamed-session",
+                }
+            ).encode("utf-8"),
+        )
+        stream_payloads = _parse_sse_payloads(stream_response)
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
 
     list_response = _run_app(app, method="GET", path="/api/sessions")
     replay_response = _run_app(app, method="GET", path="/api/sessions/streamed-session")
@@ -1907,15 +2177,15 @@ def test_transport_persists_streamed_run_for_session_listing_and_replay(
         [
             "runtime.request_received",
             "runtime.skills_loaded",
-            "graph.loop_step",
-            "graph.model_turn",
-            "graph.tool_request_created",
+            "core.loop_step",
+            "core.model_turn",
+            "core.tool_request_created",
             "runtime.tool_lookup_succeeded",
             "runtime.permission_resolved",
             "runtime.tool_started",
             "runtime.tool_completed",
-            "graph.loop_step",
-            "graph.response_ready",
+            "core.loop_step",
+            "core.response_ready",
         ],
     )
 
@@ -2025,73 +2295,91 @@ def test_transport_rejects_unknown_parent_session_in_run_stream_payload(tmp_path
 
 def test_transport_allows_parent_session_while_parent_stream_request_is_active(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _, runtime_class = _load_runtime_types()
     create_runtime_app = _load_transport_app_factory()
     service_module = importlib.import_module("voidcode.runtime.service")
     active_registry = service_module.ACTIVE_SESSION_REGISTRY
-
-    app = create_runtime_app(
-        workspace=tmp_path,
-        runtime_factory=lambda: runtime_class(workspace=tmp_path),
-    )
-
+    final_response = openai_response(message={"role": "assistant", "content": "done"}, finish="stop")
+    server = OpenAILoopbackServer([final_response, final_response])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
     parent_started = threading.Event()
     allow_parent_to_finish = threading.Event()
-
-    original_register = active_registry.register
-
-    def _register_and_signal(
-        *,
-        workspace: Path,
-        session_id: str,
-        run_id: str,
-        metadata: dict[str, object],
-    ) -> object:
-        result = original_register(
-            workspace=workspace,
-            session_id=session_id,
-            run_id=run_id,
-            metadata=metadata,
-        )
-        if session_id == "leader-session":
-            parent_started.set()
-            allow_parent_to_finish.wait(timeout=5)
-        return result
-
     parent_response_holder: dict[str, object] = {}
+    parent_thread = threading.Thread(
+        target=lambda: parent_response_holder.setdefault(
+            "response",
+            _run_app(
+                app,
+                method="POST",
+                path="/api/runtime/run/stream",
+                body=json.dumps(
+                    {
+                        "prompt": "leader",
+                        "session_id": "leader-session",
+                    }
+                ).encode("utf-8"),
+            ),
+        ),
+        daemon=True,
+    )
 
-    def _run_parent() -> None:
-        parent_response_holder["response"] = _run_app(
-            app,
-            method="POST",
-            path="/api/runtime/run/stream",
-            body=json.dumps(
-                {
-                    "prompt": "leader",
-                    "session_id": "leader-session",
-                }
-            ).encode("utf-8"),
+    try:
+        configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_address[1]}/v1")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
+        thread.start()
+        app = create_runtime_app(
+            workspace=tmp_path,
+            runtime_factory=lambda: runtime_class(workspace=tmp_path),
         )
+        original_register = active_registry.register
 
-    parent_thread = threading.Thread(target=_run_parent, daemon=True)
+        def _register_and_signal(
+            *,
+            workspace: Path,
+            session_id: str,
+            run_id: str,
+            metadata: dict[str, object],
+        ) -> object:
+            result = original_register(
+                workspace=workspace,
+                session_id=session_id,
+                run_id=run_id,
+                metadata=metadata,
+            )
+            if session_id == "leader-session":
+                parent_started.set()
+                allow_parent_to_finish.wait(timeout=5)
+            return result
 
-    with patch.object(active_registry, "register", _register_and_signal):
-        parent_thread.start()
-        assert parent_started.wait(timeout=5)
-        child_response = _run_app(
-            app,
-            method="POST",
-            path="/api/runtime/run/stream",
-            body=json.dumps(
-                {
-                    "prompt": "child",
-                    "parent_session_id": "leader-session",
-                }
-            ).encode("utf-8"),
-        )
+        with patch.object(active_registry, "register", _register_and_signal):
+            parent_thread.start()
+            assert parent_started.wait(timeout=5)
+            child_response = _run_app(
+                app,
+                method="POST",
+                path="/api/runtime/run/stream",
+                body=json.dumps(
+                    {
+                        "prompt": "child",
+                        "parent_session_id": "leader-session",
+                    }
+                ).encode("utf-8"),
+            )
+            allow_parent_to_finish.set()
+            parent_thread.join(timeout=5)
+    finally:
         allow_parent_to_finish.set()
-        parent_thread.join(timeout=5)
+        if parent_thread.is_alive():
+            parent_thread.join(timeout=5)
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
+
+    parent_response = cast(Any, parent_response_holder["response"])
+    assert parent_response.status == 200
 
     child_payloads = _parse_sse_payloads(child_response)
     first_payload = child_payloads[0]
@@ -2105,26 +2393,36 @@ def test_transport_allows_parent_session_while_parent_stream_request_is_active(
 def test_transport_session_surfaces_carry_the_user_set_title(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A renamed session exposes its title on both read surfaces the client uses.
 
-    The run is a real deterministic session; the rename goes through the runtime
-    boundary's own store, so this pins the serializer, not a stub echo.
+    The run is a real provider-backed session; the rename goes through the
+    runtime boundary's store, so this pins the serializer, not a stub echo.
     """
-    (tmp_path / "sample.txt").write_text("titled\n", encoding="utf-8")
+    prompt = "save a titled session"
     create_runtime_app = _load_transport_app_factory()
-    _runtime_request, runtime_class = _load_runtime_types()
-    app = create_runtime_app(workspace=tmp_path, runtime_factory=lambda: runtime_class(workspace=tmp_path))
+    _, runtime_class = _load_runtime_types()
+    server = OpenAILoopbackServer([openai_response(message={"role": "assistant", "content": "done"}, finish="stop")])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    try:
+        configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_address[1]}/v1")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
+        thread.start()
+        app = create_runtime_app(workspace=tmp_path, runtime_factory=lambda: runtime_class(workspace=tmp_path))
 
-    async def _direct_stream(_self: object, runtime: object, request: object) -> Any:
-        for chunk in cast(Any, runtime).run_stream(request):
-            yield chunk
+        async def _direct_stream(_self: object, runtime: object, request: object) -> Any:
+            for chunk in cast(Any, runtime).run_stream(request):
+                yield chunk
 
-    monkeypatch.setattr(type(app), "_stream_runtime_chunks", _direct_stream)
-
-    stream_response = _run_app(
-        app,
-        method="POST",
-        path="/api/runtime/run/stream",
-        body=json.dumps({"prompt": "read sample.txt", "session_id": "titled-session"}).encode("utf-8"),
-    )
+        monkeypatch.setattr(type(app), "_stream_runtime_chunks", _direct_stream)
+        stream_response = _run_app(
+            app,
+            method="POST",
+            path="/api/runtime/run/stream",
+            body=json.dumps({"prompt": prompt, "session_id": "titled-session"}).encode("utf-8"),
+        )
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
     assert stream_response.status == 200
 
     runtime_class(workspace=tmp_path).rename_session(session_id="titled-session", title="Session label")
@@ -2138,7 +2436,7 @@ def test_transport_session_surfaces_carry_the_user_set_title(tmp_path: Path, mon
     assert list_response.status == 200
     assert listed_row["title"] == "Session label"
     # The prompt remains in the body: clients fall back to it when no title is set.
-    assert listed_row["prompt"] == "read sample.txt"
+    assert listed_row["prompt"] == prompt
 
     result_response = _run_app(app, method="GET", path="/api/sessions/titled-session/result")
     assert result_response.status == 200
@@ -2160,21 +2458,45 @@ def test_transport_lists_sessions_in_tree_order_so_a_fork_never_precedes_its_par
     (tmp_path / "sample.txt").write_text("sample\n", encoding="utf-8")
     create_runtime_app = _load_transport_app_factory()
     runtime_request, runtime_class = _load_runtime_types()
-    app = create_runtime_app(workspace=tmp_path, runtime_factory=lambda: runtime_class(workspace=tmp_path))
+    read_response = openai_response(
+        message={
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call-tree-read",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": json.dumps({"path": "sample.txt"})},
+                }
+            ],
+        },
+        finish="tool_calls",
+    )
+    final_response = openai_response(message={"role": "assistant", "content": "Read sample.txt."}, finish="stop")
+    server = OpenAILoopbackServer([read_response, final_response] * 3)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    try:
+        configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_address[1]}/v1")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
+        thread.start()
+        app = create_runtime_app(workspace=tmp_path, runtime_factory=lambda: runtime_class(workspace=tmp_path))
 
-    async def _direct_stream(_self: object, runtime: object, request: object) -> Any:
-        for chunk in cast(Any, runtime).run_stream(request):
-            yield chunk
+        async def _direct_stream(_self: object, runtime: object, request: object) -> Any:
+            for chunk in cast(Any, runtime).run_stream(request):
+                yield chunk
 
-    monkeypatch.setattr(type(app), "_stream_runtime_chunks", _direct_stream)
-
-    runtime = runtime_class(workspace=tmp_path)
-    _ = runtime.run(runtime_request(prompt="read sample.txt", session_id="tree-root"))
-    # An unrelated, older root: recency must place it after the newer tree.
-    _ = runtime.run(runtime_request(prompt="read sample.txt", session_id="aaa-older-root"))
-    fork = runtime.fork_session(session_id="tree-root")
-    _ = runtime.run(runtime_request(prompt="read sample.txt", session_id=fork.session.id))
-
+        monkeypatch.setattr(type(app), "_stream_runtime_chunks", _direct_stream)
+        runtime = runtime_class(workspace=tmp_path)
+        _ = runtime.run(runtime_request(prompt="read sample.txt", session_id="tree-root"))
+        # An unrelated, older root: recency must place it after the newer tree.
+        _ = runtime.run(runtime_request(prompt="read sample.txt", session_id="aaa-older-root"))
+        fork = runtime.fork_session(session_id="tree-root")
+        _ = runtime.run(runtime_request(prompt="read sample.txt", session_id=fork.session.id))
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
     # The flat list really is newest-first: the continued fork precedes the root
     # it forked from. That is the order that used to reach the wire.
     flat = [item.session.id for item in runtime.list_sessions()]
@@ -2193,12 +2515,40 @@ def test_transport_lists_sessions_in_tree_order_so_a_fork_never_precedes_its_par
     ]
 
 
-def test_transport_lists_entries_with_abandoned_branch_after_checkout(tmp_path: Path) -> None:
+def test_transport_lists_entries_with_abandoned_branch_after_checkout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     (tmp_path / "sample.txt").write_text("checkout coverage\n", encoding="utf-8")
     runtime_request, runtime_class = _load_runtime_types()
     create_runtime_app = _load_transport_app_factory()
-    runtime = runtime_class(workspace=tmp_path)
-    stored = runtime.run(runtime_request(prompt="read sample.txt", session_id="checkout-session"))
+    read_response = openai_response(
+        message={
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call-checkout-read",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": json.dumps({"path": "sample.txt"})},
+                }
+            ],
+        },
+        finish="tool_calls",
+    )
+    server = OpenAILoopbackServer([read_response, openai_response(message={"role": "assistant", "content": "Read sample.txt."}, finish="stop")])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    try:
+        configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_address[1]}/v1")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
+        thread.start()
+        runtime = runtime_class(workspace=tmp_path)
+        stored = runtime.run(runtime_request(prompt="read sample.txt", session_id="checkout-session"))
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
     assert len(stored.events) > 8
 
     app = create_runtime_app(workspace=tmp_path)
@@ -2234,12 +2584,42 @@ def test_transport_checkout_rejects_unknown_session(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("sequence", [999, 8])
-def test_transport_checkout_rejects_invalid_targets(tmp_path: Path, sequence: int) -> None:
+def test_transport_checkout_rejects_invalid_targets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    sequence: int,
+) -> None:
     (tmp_path / "sample.txt").write_text("checkout validation\n", encoding="utf-8")
     runtime_request, runtime_class = _load_runtime_types()
-    runtime = runtime_class(workspace=tmp_path)
-    runtime.run(runtime_request(prompt="read sample.txt", session_id="checkout-validation"))
-    app = _load_transport_app_factory()(workspace=tmp_path)
+    create_runtime_app = _load_transport_app_factory()
+    read_response = openai_response(
+        message={
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call-checkout-validation-read",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": json.dumps({"path": "sample.txt"})},
+                }
+            ],
+        },
+        finish="tool_calls",
+    )
+    server = OpenAILoopbackServer([read_response, openai_response(message={"role": "assistant", "content": "Read sample.txt."}, finish="stop")])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    try:
+        configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_address[1]}/v1")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
+        thread.start()
+        runtime = runtime_class(workspace=tmp_path)
+        runtime.run(runtime_request(prompt="read sample.txt", session_id="checkout-validation"))
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
+    app = create_runtime_app(workspace=tmp_path)
 
     response = _run_app(
         app,

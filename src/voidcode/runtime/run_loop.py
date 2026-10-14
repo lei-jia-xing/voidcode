@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import Generator, Iterable, Iterator, Mapping
@@ -10,13 +11,24 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from ..core.engine import CallOutcome, CallPaused, CallReported, CallStoppedAfterReport, CallStoppedBeforeReport, EngineState, TurnBatch, TurnEngine
+from ..core.engine import (
+    CallOutcome,
+    CallPaused,
+    CallReported,
+    CallStoppedAfterReport,
+    CallStoppedBeforeReport,
+    EngineState,
+    TurnBatch,
+    TurnEngine,
+    TurnObservation,
+)
 from ..core.todos import TodoPhase
 from ..core.tool_context import ArtifactBinary, ArtifactInvalid, ArtifactMissing, ArtifactUnavailable, ToolContext
 from ..core.transcript import AssembledContext, ContextSegment, ToolResultView, project_report
 from ..core.turns import (
     CallSeed,
     FinalTurn,
+    ModelTurnFact,
     ReportedCall,
     StreamFact,
     StreamingTurnProducer,
@@ -38,11 +50,7 @@ from ..hook.typed import (
     tool_input_rewrite_metadata,
     validate_tool_input_schema,
 )
-from ..provider.errors import (
-    ProviderContextLimitError,
-    ProviderExecutionError,
-    classify_provider_error,
-)
+from ..provider.errors import ProviderExecutionError
 from ..provider.protocol import (
     ProviderAbortSignal,
 )
@@ -83,7 +91,7 @@ from ..tools.todo import TodoResultBody
 from .agent_capability import composition_ref_from_session_metadata
 from .composition import LifecycleScope, PhaseContext
 from .config.loading import RuntimeConfig
-from .config.materializer import EffectiveRuntimeConfig
+from .config.materializer import RunConfig
 from .context.continuity import replayed_conversation_segments_from_segments
 from .context.transforms import context_transform_applied_payloads
 from .context.window import (
@@ -115,12 +123,14 @@ from .events import (
     RUNTIME_REMINDER_INJECTED,
     RUNTIME_SKILL_LOADED,
     RUNTIME_TODO_UPDATED,
+    RUNTIME_TOOL_BATCH_REPEATED,
     RUNTIME_TOOL_INPUT_PROCESSED,
     RUNTIME_TOOL_PROGRESS,
     RUNTIME_TOOL_STARTED,
     RUNTIME_TOOL_TIMEOUT,
     EventEnvelope,
     EventSource,
+    model_turn_batch_id,
     runtime_reasoning_part_from_provider_stream,
     runtime_reasoning_part_payload,
 )
@@ -137,12 +147,13 @@ from .execution.provider_fallback import (
     decide_provider_error_policy,
     provider_transient_retry_config,
 )
+from .execution.report_codec import report_payload
 from .execution.seams import (
     ContextLimitPromotion,
     RuntimeTurnProducerSelection,
     context_limit_promotion_for_provider_error,
     fallback_turn_producer_for_provider_error,
-    select_turn_producer_for_effective_config,
+    select_turn_producer_for_config,
 )
 from .execution.tool_executor import RuntimeToolExecutor
 from .execution.tool_replay import ToolExecutionIntent
@@ -226,8 +237,40 @@ from .execution import chunk_builders
 
 logger = logging.getLogger(__name__)
 
-_STUCK_DETECTED_MIN_TURN = 25
-_STUCK_DETECTED_MIN_TOOL_RESULTS = 10
+
+class ToolBatchRepetition:
+    """Count consecutive identical complete batches within one engine run."""
+
+    def __init__(self) -> None:
+        self._previous: tuple[str, ...] | None = None
+        self._repeat_count = 0
+
+    def reset(self) -> None:
+        self._previous = None
+        self._repeat_count = 0
+
+    def observe(self, batch: TurnBatch) -> int | None:
+        if len(batch.results) != len(batch.calls):
+            return None
+        if not batch.results:
+            self.reset()
+            return None
+        observation: list[str] = []
+        for report in batch.results:
+            payload = report_payload(report)
+            payload.pop("tool_call_id")
+            observation.append(json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+        current = tuple(observation)
+        if current != self._previous:
+            self._previous = current
+            self._repeat_count = 1
+            return None
+        self._repeat_count += 1
+        return self._repeat_count
+
+    @staticmethod
+    def tool_names(batch: TurnBatch) -> tuple[str, ...]:
+        return tuple(report.final_tool_name for report in batch.results)
 
 
 def _tool_error_content(tool_name: str, error: str) -> str:
@@ -244,10 +287,8 @@ def _reasoning_output_diagnostic(
     if capture_state.output_diagnostic_emitted or not capture_state.stream_observed:
         return None
     capture_state.output_diagnostic_emitted = True
-    effective_config = runtime.effective_runtime_config_from_metadata(session.metadata)
-    if effective_config.execution_engine != "provider":
-        return None
-    active_target = effective_config.resolved_provider.active_target.selection
+    config = runtime.run_config_from_metadata(session.metadata)
+    active_target = config.resolved_provider.active_target.selection
     provider_name = active_target.provider
     model_name = active_target.model
     metadata = provider_catalog_query.metadata_for_model(provider_name, model_name) if provider_name is not None and model_name is not None else None
@@ -312,17 +353,20 @@ def _finalized_step_session(
     turn_plan: TurnPlan,
     is_final_step: bool,
     provider_attempt: int,
+    record_provider_usage: bool = True,
 ) -> tuple[SessionState, int, SessionStatus]:
     """Final-step metadata resets and terminal-status derivation.
 
-    Pure projection of the finalize chain: attach provider usage metadata,
-    reset the provider retry/attempt cursors, and derive the terminal status
-    (keep-alive turns park ``interrupted``; one-shot children ``completed``).
+    Pure projection of the finalize chain: optionally record provider usage,
+    reset retry/attempt cursors, and derive terminal status (keep-alive turns
+    park ``interrupted``; one-shot children ``completed``). ``finish()`` skips
+    usage because its terminal-only projection follows ``observe()`` for the same turn.
     """
-    session = session_with_provider_usage_metadata(
-        session,
-        turn_plan.provider_usage,
-    )
+    if record_provider_usage:
+        session = session_with_provider_usage_metadata(
+            session,
+            turn_plan.provider_usage,
+        )
     if provider_retry_attempt_from_metadata(session.metadata) != 0:
         session = SessionState(
             session=session.session,
@@ -572,10 +616,7 @@ class PermissionDenialBody:
 
 
 def _is_tool_timeout_like_exception(exc: Exception) -> bool:
-    if isinstance(exc, TimeoutError):
-        return True
-    message = str(exc).lower()
-    return "timeout" in message or "timed out" in message
+    return isinstance(exc, TimeoutError)
 
 
 def _tool_timeout_execution_facts(exc: RuntimeToolTimeoutError) -> dict[str, object]:
@@ -607,7 +648,7 @@ def _abort_reason(request: TurnRequest) -> str | None:
 
 
 def _live_event_surfaces_output(event: TurnFact) -> bool:
-    """Whether a live-only graph event renders part of the provider response.
+    """Whether a live-only stream fact renders part of the provider response.
 
     Only content-bearing deltas and tool-call lifecycle events reach the client as
     assistant output. ``error``/``done`` markers carry no output, so they must not
@@ -1279,8 +1320,8 @@ class RuntimeRunLoopCoordinator:
         )
         envelope = self._persist_event(
             session_id=session.session.id,
-            event_type="graph.response_ready",
-            source="graph",
+            event_type="core.response_ready",
+            source="core",
             payload={"output_preview": terminal_output, "source": "yield"},
         )
         yield RuntimeStreamChunk(kind="event", session=completed_session, event=envelope)
@@ -1332,15 +1373,18 @@ class RuntimeRunLoopCoordinator:
         sequence: int,
         turn_plan: TurnPlan,
         current_chunk_session: SessionState,
-    ) -> Generator[RuntimeStreamChunk, None, int]:
+    ) -> Generator[RuntimeStreamChunk, None, tuple[int, EventEnvelope | None]]:
         if any(isinstance(fact, (ToolRequestedFact, ToolCompletedFact)) for fact in turn_plan.facts):
             raise ValueError("producer facts cannot claim governed runtime tool execution")
         step_events = tuple(fact for fact in turn_plan.facts if not isinstance(fact, StreamFact))
         persisted_events = self._fact_store(session).append_for_publication(step_events)
+        model_turn_events = tuple(event for event in persisted_events if event.event_type == "core.model_turn")
+        if len(model_turn_events) > 1:
+            raise ValueError("one provider step cannot persist multiple model-turn identities")
         for envelope in persisted_events:
             sequence = envelope.sequence
             yield RuntimeStreamChunk(kind="event", session=current_chunk_session, event=envelope)
-        return sequence
+        return sequence, model_turn_events[0] if model_turn_events else None
 
     def _emit_final_step_artifacts(
         self,
@@ -1444,45 +1488,21 @@ class RuntimeRunLoopCoordinator:
         turn_index: int,
         provider_attempt: int,
         provider_retry_attempt: int,
-        stuck_detected_emitted: bool,
-    ) -> Generator[RuntimeStreamChunk, None, tuple[int, bool, bool, tuple[str, ...]]]:
+    ) -> Generator[RuntimeStreamChunk, None, tuple[int, bool, tuple[str, ...]]]:
         turn_progress_payload: dict[str, object] = {
             "turn": turn_index,
             "tool_result_count": len(tool_results),
             "provider_attempt": provider_attempt,
             "provider_retry_attempt": provider_retry_attempt,
         }
-        sequence, terminated, turn_guidance = yield from self._run_turn_hook_phase(
+        sequence, terminated, guidance = yield from self._run_turn_hook_phase(
             session=session,
             sequence=sequence,
             surface="turn_progress",
             payload=turn_progress_payload,
             cancel_message="run cancelled by turn-progress hook",
         )
-        collected_guidance = list(turn_guidance)
-        if terminated:
-            return sequence, True, stuck_detected_emitted, ()
-        if not stuck_detected_emitted and self._is_stuck_tool_loop(
-            turn=turn_index,
-            tool_results=tool_results,
-        ):
-            stuck_payload: dict[str, object] = {
-                **turn_progress_payload,
-                "distinct_tool_count": len({result.final_tool_name for result in tool_results}),
-                "reason": "repeated_tool_loop",
-            }
-            stuck_detected_emitted = True
-            sequence, terminated, stuck_guidance = yield from self._run_turn_hook_phase(
-                session=session,
-                sequence=sequence,
-                surface="stuck_detected",
-                payload=stuck_payload,
-                cancel_message="run cancelled by stuck-detected hook",
-            )
-            collected_guidance.extend(stuck_guidance)
-            if terminated:
-                return sequence, True, stuck_detected_emitted, ()
-        return sequence, False, stuck_detected_emitted, tuple(collected_guidance)
+        return sequence, terminated, () if terminated else guidance
 
     def _run_before_compact_hook_phase(
         self,
@@ -1530,9 +1550,9 @@ class RuntimeRunLoopCoordinator:
         current_abort_signal = current_turn_request.abort_signal
         current_session_metadata: dict[str, object] = session.metadata
         if first_iteration:
-            # Boundary: the graph field is typed with the provider Protocol, which
-            # does not declare the runtime-only counters read below; the runtime is
-            # the sole producer of this field, so the concrete window is the truth.
+            # Boundary: the turn request's context window uses the provider Protocol,
+            # which does not declare the runtime-only counters read below; the runtime
+            # created this field, so the concrete window is the truth.
             prebuilt_context = cast(RuntimeContextWindow, current_turn_request.context_window)
             first_iteration = False
             if (
@@ -1660,7 +1680,7 @@ class RuntimeRunLoopCoordinator:
         session: SessionState,
         sequence: int,
         active_turn_request: TurnRequest,
-        effective_runtime_config: EffectiveRuntimeConfig,
+        config: RunConfig,
         context_window: RuntimeContextWindow,
         continuity_to_reinject: ContextProjection | None,
     ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, int, bool]]:
@@ -1668,7 +1688,7 @@ class RuntimeRunLoopCoordinator:
         reinjected_continuity = continuity_to_reinject
         provider_context_policy_decision: RuntimeProviderContextPolicyDecision | None = runtime.provider_context_policy_decision_for_turn_request(
             turn_request=active_turn_request,
-            effective_config=effective_runtime_config,
+            config=config,
         )
         if provider_context_policy_decision is not None:
             if provider_context_policy_decision.action == "warn":
@@ -1747,6 +1767,7 @@ class RuntimeRunLoopCoordinator:
         provider_attempt: int,
         tool_results: list[ReportedCall],
         complete: bool = True,
+        record_provider_usage: bool = True,
     ) -> Generator[RuntimeStreamChunk, None, tuple[bool, SessionState, SessionState, int, bool]]:
         session = self._fresh_composition_session(session)
         is_final_step = complete and isinstance(turn_plan, FinalTurn)
@@ -1757,7 +1778,11 @@ class RuntimeRunLoopCoordinator:
             yield from self._emit_interrupted_failure(session=session, sequence=sequence, active_turn_request=active_turn_request)
             return (False, session, session, provider_attempt, True)
         session, provider_attempt, final_step_status = _finalized_step_session(
-            session=session, turn_plan=turn_plan, is_final_step=is_final_step, provider_attempt=provider_attempt
+            session=session,
+            turn_plan=turn_plan,
+            is_final_step=is_final_step,
+            provider_attempt=provider_attempt,
+            record_provider_usage=record_provider_usage,
         )
         current_chunk_session = session
         if is_final_step:
@@ -1794,7 +1819,7 @@ class RuntimeRunLoopCoordinator:
         tool_results: tuple[ReportedCall, ...],
         active_turn_request: TurnRequest,
         tool_registry: ToolRegistry,
-        effective_runtime_config: EffectiveRuntimeConfig,
+        config: RunConfig,
     ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, int, ContextSegment | None]]:
         """Insert one mid-run todo nudge before the next provider call.
 
@@ -1805,7 +1830,7 @@ class RuntimeRunLoopCoordinator:
         channel as the completion reminder: never persisted, never in the cache
         prefix, and it does not touch output/tool-result semantics.
         """
-        if not effective_runtime_config.reminders.enabled or effective_runtime_config.execution_engine != "provider":
+        if not config.reminders.enabled:
             return session, sequence, None
         todo_state = todo_state_from_session_metadata(session.metadata)
         phases = runtime_todo_phases_from_payload(todo_state["phases"]) if todo_state is not None else ()
@@ -1844,24 +1869,23 @@ class RuntimeRunLoopCoordinator:
         sequence: int,
         tool_results: list[ReportedCall],
         available_tools: tuple[ToolDefinition, ...],
-        effective_runtime_config: EffectiveRuntimeConfig,
+        config: RunConfig,
     ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, int, ContextSegment | None]]:
         """Decide, persist and announce the terminal-turn todo reminder.
 
         Returns the per-call tail segment the continuation turn must append, or
-        ``None`` when the channel stays silent (disabled, a non-provider engine
-        whose graph has no model call to append to, no unfinished todo, previous
-        reminder still awaiting progress, attempt budget spent, waiting on the
-        user, a pending background task that will re-wake the loop, or a
-        delegated child, which must terminate through ``yield``).
+        ``None`` when disabled, no unfinished todo exists, a previous reminder
+        is still awaiting progress, the attempt budget is spent, the run is
+        waiting on the user, a pending background task will re-wake the loop,
+        or a delegated child must terminate through ``yield``.
         """
-        if not effective_runtime_config.reminders.enabled or effective_runtime_config.execution_engine != "provider":
+        if not config.reminders.enabled:
             return session, sequence, None
         todo_state = todo_state_from_session_metadata(session.metadata)
         phases = runtime_todo_phases_from_payload(todo_state["phases"]) if todo_state is not None else ()
         stored_state = todo_reminder_state_from_metadata(session.metadata)
         decision = decide_todo_reminder(
-            max_per_cycle=effective_runtime_config.reminders.todo.max_per_cycle,
+            max_per_cycle=config.reminders.todo.max_per_cycle,
             state=stored_state,
             run_id=runtime_state_run_id(session.metadata),
             incomplete_phases=incomplete_todo_phases(phases),
@@ -1967,7 +1991,7 @@ class RuntimeRunLoopCoordinator:
                     # run is interrupted, every remaining stream delta is
                     # a late event — drop it instead of streaming it to
                     # the client. Keep consuming the generator so a
-                    # graph-raised provider error (e.g. an abort-aware
+                    # turn-producer-raised provider error (e.g. an abort-aware
                     # provider surfacing a ``cancelled`` failure) still
                     # propagates through the normal exception handler
                     # instead of being masked by the interrupt.
@@ -2012,7 +2036,7 @@ class RuntimeRunLoopCoordinator:
                 else:
                     turn_plan = streamed_item
             if turn_plan is None:
-                raise RuntimeError("graph stream ended without a terminal step")
+                raise RuntimeError("turn producer stream ended without a terminal step")
         else:
             turn_plan = producer.produce(
                 turn_request,
@@ -2126,7 +2150,7 @@ class RuntimeRunLoopCoordinator:
         sequence: int,
         active_turn_request: TurnRequest,
         context_window: RuntimeContextWindow,
-        effective_runtime_config: EffectiveRuntimeConfig,
+        config: RunConfig,
         provider_attempt: int,
         provider_retry_attempt: int,
         current_metadata: dict[str, object],
@@ -2141,12 +2165,12 @@ class RuntimeRunLoopCoordinator:
         if provider_error is not None:
             fallback_selection = fallback_turn_producer_for_provider_error(
                 error=provider_error,
-                provider_chain=effective_runtime_config.resolved_provider.target_chain,
-                config=effective_runtime_config,
+                provider_chain=config.resolved_provider.target_chain,
+                config=config,
                 provider_attempt=current_provider_attempt,
             )
             transient_retry_config = provider_transient_retry_config(
-                providers=effective_runtime_config.providers,
+                providers=config.providers,
                 provider_name=provider_error.provider_name,
             )
             # The context_limit lane prefers a strictly larger-window candidate
@@ -2156,8 +2180,8 @@ class RuntimeRunLoopCoordinator:
             if provider_error.kind == "context_limit":
                 promotion = context_limit_promotion_for_provider_error(
                     error=provider_error,
-                    provider_chain=effective_runtime_config.resolved_provider.target_chain,
-                    config=effective_runtime_config,
+                    provider_chain=config.resolved_provider.target_chain,
+                    config=config,
                     provider_attempt=current_provider_attempt,
                 )
                 fallback_selection = promotion.selection
@@ -2431,18 +2455,14 @@ class RuntimeRunLoopCoordinator:
             )
             yield failed_chunk
             return {"action": "exit"}
-        classified_error = classify_provider_error(exc)
         failed_chunk, _ = self._persist_chunk(
             chunk_builders.failed_chunk(
                 session=session,
                 sequence=sequence + 1,
                 error=str(exc),
-                payload=({"kind": "provider_context_limit"} if isinstance(classified_error, ProviderContextLimitError) else None),
             )
         )
         yield failed_chunk
-        if isinstance(classified_error, ProviderContextLimitError):
-            return {"action": "exit"}
         return {"action": "reraise", "exc": exc}
 
     def _prepare_typed_tool_call(
@@ -2616,7 +2636,6 @@ class RuntimeRunLoopCoordinator:
         tool_call_id: str,
         approved: ApprovedInvocation | None,
         active_permission_policy: PermissionPolicy,
-        effective_runtime_config: EffectiveRuntimeConfig,
         continue_after_denial: bool = True,
     ) -> Generator[RuntimeStreamChunk, None, tuple[str, SessionState, int, ReportedCall | None]]:
         runtime = self._surface
@@ -2644,7 +2663,7 @@ class RuntimeRunLoopCoordinator:
             sequence, result = yield from self._permission_denied_tool_feedback_chunks(
                 session=session, tool_call=plan_tool_call, pending=permission_chunks.denied_approval, tool_call_id=tool_call_id
             )
-            action = "stopped" if effective_runtime_config.execution_engine != "provider" or not continue_after_denial else "result"
+            action = "stopped" if not continue_after_denial else "result"
             return action, session, sequence, result
         return "ok", session, sequence, None
 
@@ -2708,7 +2727,6 @@ class RuntimeRunLoopCoordinator:
         tool_timeout: int | None,
         tool_results: list[ReportedCall],
         active_turn_request: TurnRequest,
-        tool_exception_recovery_enabled: bool,
     ) -> Generator[RuntimeStreamChunk, None, tuple[str, ToolResult | None, SessionState, int]]:
         sequence = yield from self._emit_started_tool_event(
             session=session,
@@ -2828,29 +2846,6 @@ class RuntimeRunLoopCoordinator:
                 )
                 yield failed_chunk
                 return "returned", None, session, sequence
-            if not tool_exception_recovery_enabled and not _is_tool_timeout_like_exception(exc):
-                error_result = ToolFailure(
-                    tool_name=plan_tool_call.tool_name,
-                    error=str(exc),
-                    output=TextOutput(_tool_error_content(plan_tool_call.tool_name, str(exc))),
-                    diagnostics=_tool_error_diagnostics(tool_name=plan_tool_call.tool_name, error=str(exc)),
-                )
-                envelope = self._persist_fact(
-                    session=session,
-                    fact=ToolCompletedFact(
-                        report_call(
-                            replace(plan_tool_call, tool_call_id=tool_call_id),
-                            error_result,
-                            final_tool_name=plan_tool_call.tool_name,
-                            final_arguments=plan_tool_call.arguments,
-                        )
-                    ),
-                )
-                sequence = envelope.sequence
-                yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
-                failed_chunk, _ = self._persist_chunk(chunk_builders.failed_chunk(session=session, sequence=sequence + 1, error=str(exc)))
-                yield failed_chunk
-                raise
             error_kind: str | None = None
             error_details: dict[str, object] = {}
             retry_guidance: str | None = _tool_error_retry_guidance(str(exc))
@@ -3202,7 +3197,6 @@ class RuntimeRunLoopCoordinator:
             tool_call_id=outer_call_id,
             approved=None,
             active_permission_policy=permission_policy or self._permission_policy,
-            effective_runtime_config=runtime.effective_runtime_config_from_metadata(session.metadata),
         )
         if permission_action != "ok":
             if permission_result is not None:
@@ -3255,7 +3249,7 @@ class RuntimeRunLoopCoordinator:
                 error_kind="hook_cancelled",
             )
             return (session, sequence, CallReported(published_result))
-        tool_timeout = runtime.effective_runtime_config_from_metadata(session.metadata).tool_timeout_seconds
+        tool_timeout = runtime.run_config_from_metadata(session.metadata).tool_timeout_seconds
         sequence = yield from self._emit_started_tool_event(session=session, tool_call=inner_call, tool_call_id=outer_call_id)
         if _is_abort_signal_requested(abort_signal):
             yield from self._started_tool_abort_chunks(
@@ -3488,14 +3482,6 @@ class RuntimeRunLoopCoordinator:
             and memory_state.get("last_retained_tool_result_count") == retained_tool_result_count
         )
 
-    @staticmethod
-    def _is_stuck_tool_loop(*, turn: int, tool_results: list[ReportedCall]) -> bool:
-        if turn < _STUCK_DETECTED_MIN_TURN:
-            return False
-        if len(tool_results) < _STUCK_DETECTED_MIN_TOOL_RESULTS:
-            return False
-        return len({result.final_tool_name for result in tool_results}) <= 2
-
     def _drain_runtime_events(
         self,
         *,
@@ -3579,11 +3565,12 @@ class RuntimeHost:
         self.active_turn_request = turn_request
         self.attempt_stream_visibility = _AttemptStreamVisibility()
         self.first_iteration = True
-        self.stuck_detected_emitted = False
+        self.tool_batch_repetition = ToolBatchRepetition()
+        self.observed_batch_count: int | None = None
         self.pending_reminder_segment: ContextSegment | None = None
         self.context_limit_recovery = _ContextLimitRecoveryState()
         self.checkpoint_tool_result_count = len(tool_results)
-        self.effective_runtime_config = self.runtime.effective_runtime_config_from_metadata(session.metadata)
+        self.config = self.runtime.run_config_from_metadata(session.metadata)
         self.context_window = turn_request.context_window
         self.current_chunk_session = session
         self.continuation = continuation
@@ -3595,15 +3582,23 @@ class RuntimeHost:
         self._terminal_phase_attempts: set[str] = set()
         coordinator._pending_hook_guidance = []
 
-    def _save_batch(self, state: EngineState) -> None:
-        self.session = self.coordinator._fresh_composition_session(self.session)
-        batch = state.batches[-1]
+    def _stage_batch(self, batch: TurnBatch) -> None:
         if self.current_batch is not batch:
             if self.current_batch is not None or self.continuation is None:
                 self.batch_started_sequence = self.sequence
             self.current_batch = batch
-            self.batch_snapshot = CallSeed(batch.calls, reasoning=batch.reasoning, run_step=batch.run_step)
-        assert self.batch_snapshot is not None
+        self.batch_snapshot = CallSeed(
+            batch.calls,
+            reasoning=batch.reasoning,
+            run_step=batch.run_step,
+            tool_batch_id=batch.tool_batch_id,
+        )
+
+    def _save_batch(self, batch: TurnBatch) -> None:
+        self.session = self.coordinator._fresh_composition_session(self.session)
+        self._stage_batch(batch)
+        if self.batch_snapshot is None or self.batch_snapshot.tool_batch_id is None:
+            raise ValueError("native batch checkpoint requires its persisted model-turn identity")
         self.session = replace(
             self.session,
             metadata=session_metadata_with_runtime_state_updates(
@@ -3624,6 +3619,53 @@ class RuntimeHost:
             session_id=self.session.session.id,
             metadata=self.session.metadata,
         )
+
+    def _observe_tool_batch_repetitions(
+        self,
+        state: EngineState,
+    ) -> Generator[RuntimeStreamChunk, None, bool]:
+        if self.observed_batch_count is None:
+            self.observed_batch_count = len(state.batches)
+        while self.observed_batch_count < len(state.batches):
+            batch = state.batches[self.observed_batch_count]
+            if len(batch.results) != len(batch.calls):
+                break
+            self.observed_batch_count += 1
+            repeat_count = self.tool_batch_repetition.observe(batch)
+            if repeat_count is None:
+                continue
+            payload: dict[str, object] = {
+                "repeat_count": repeat_count,
+                "tool_names": list(self.tool_batch_repetition.tool_names(batch)),
+                "batch_size": len(batch.results),
+            }
+            event = self.coordinator._persist_event(
+                session_id=self.session.session.id,
+                event_type=RUNTIME_TOOL_BATCH_REPEATED,
+                source="runtime",
+                payload=payload,
+            )
+            self.sequence = event.sequence
+            yield RuntimeStreamChunk(kind="event", session=self.session, event=event)
+
+            hook_run = self.coordinator._run_turn_hook_phase(
+                session=self.session,
+                sequence=self.sequence,
+                surface="tool_batch_repeated",
+                payload=payload,
+                cancel_message="run cancelled by tool-batch-repeated hook",
+            )
+            while True:
+                try:
+                    chunk = next(hook_run)
+                except StopIteration as outcome:
+                    self.sequence, terminated, guidance = outcome.value
+                    break
+                yield chunk
+            if terminated:
+                return True
+            self.coordinator._note_hook_guidance(guidance)
+        return False
 
     def prepare(self, state: EngineState) -> Generator[RuntimeStreamChunk, None, TurnRequest | None]:
         self.state = state
@@ -3650,7 +3692,7 @@ class RuntimeHost:
             for report in self.continuation.batch.completed_reports:
                 if report.tool_call_id not in invoked_ids:
                     continue
-                restored_call = ToolCall(tool_name=report.final_tool_name, tool_call_id=report.tool_call_id, arguments=report.authorized_arguments)
+                restored_call = ToolCall(tool_name=report.final_tool_name, tool_call_id=report.tool_call_id, arguments=report.final_arguments)
                 self.session = self.coordinator._tool_composition_phase("before_tool", restored_call, self.session, restore_only=True)
                 self.session = self.coordinator._tool_composition_phase("after_tool", report, self.session, restore_only=True)
             raw_turn = runtime_state_value(self.session.metadata, "composition_turn")
@@ -3667,12 +3709,15 @@ class RuntimeHost:
             self._restored_pending_turn = True
             self.session = self.coordinator._fresh_composition_session(self.session)
         if state.batches:
-            self._save_batch(state)
+            self._save_batch(state.batches[-1])
             if not state.pending:
                 batch = state.batches[-1]
                 self.session = self.coordinator._complete_composition_turn(
                     self.session, ToolTurn(calls=batch.calls, reasoning=batch.reasoning, provider_usage=batch.provider_usage)
                 )
+        repeated_terminated = yield from self._observe_tool_batch_repetitions(state)
+        if repeated_terminated:
+            return None
         new_tool_results = len(state.results) > self.checkpoint_tool_result_count
         self.checkpoint_tool_result_count = self.coordinator._capture_iteration_checkpoint(
             at_safe_boundary=state.at_safe_boundary,
@@ -3693,21 +3738,20 @@ class RuntimeHost:
         if self.provider_attempt and new_tool_results:
             reset = _provider_attempt_reset_after_tool_result(
                 provider_attempt=self.provider_attempt,
-                selection=select_turn_producer_for_effective_config(config=self.effective_runtime_config, provider_attempt=0),
+                selection=select_turn_producer_for_config(config=self.config, provider_attempt=0),
                 turn_request=state.request,
                 session=self.session,
             )
             if reset is not None:
                 self.provider_attempt, self.producer, self.session = reset.provider_attempt, reset.producer, reset.session
                 self.active_turn_request = replace(reset.turn_request, run_step=state.request.run_step, prompt=state.request.prompt)
-        self.sequence, terminated, self.stuck_detected_emitted, guidance = yield from self.coordinator._run_turn_hooks(
+        self.sequence, terminated, guidance = yield from self.coordinator._run_turn_hooks(
             session=self.session,
             sequence=self.sequence,
             tool_results=state.results,
             turn_index=state.request.run_step,
             provider_attempt=self.provider_attempt,
             provider_retry_attempt=self.provider_retry_attempt,
-            stuck_detected_emitted=self.stuck_detected_emitted,
         )
         if terminated:
             return None
@@ -3735,21 +3779,22 @@ class RuntimeHost:
             first_iteration=self.first_iteration,
             before_compact=before_compact,
         )
-        self.effective_runtime_config = self.runtime.effective_runtime_config_from_metadata(self.session.metadata)
+        self.config = self.runtime.run_config_from_metadata(self.session.metadata)
         self.session, self.sequence, nudge = yield from self.coordinator._todo_mid_run_nudge_step(
             session=self.session,
             sequence=self.sequence,
             tool_results=provider_results,
             active_turn_request=self.active_turn_request,
             tool_registry=self.tool_registry,
-            effective_runtime_config=self.effective_runtime_config,
+            config=self.config,
         )
+        reminder_segment = self.pending_reminder_segment or nudge
         self.session, assembled, self.context_window = yield from self.coordinator._assemble_turn_context(
             active_turn_request=self.active_turn_request,
             context_window=self.context_window,
             session=self.session,
             hook_guidance=guidance,
-            reminder_segment=self.pending_reminder_segment or nudge,
+            reminder_segment=reminder_segment,
             before_compact=before_compact,
             continuity_summary_override=summary,
             continuity_summary_kind=summary_kind,
@@ -3757,17 +3802,33 @@ class RuntimeHost:
         self.pending_reminder_segment = None
         context = cast(RuntimeAssembledContext, assembled)
         timeline = state.transcript_segments(context.tool_results)
-        core_ids = {segment.tool_call_id for segment in timeline if segment.tool_call_id is not None}
+        core_members = {
+            (segment.tool_batch_id, segment.tool_call_id)
+            for segment in timeline
+            if segment.tool_batch_id is not None and segment.tool_call_id is not None
+        }
+        core_batch_ids = {batch_id for batch_id, _call_id in core_members}
+        replayed_batch_ids = {
+            segment.tool_batch_id
+            for segment in context.segments
+            if segment.tool_batch_id is not None
+            and segment.role in {"assistant", "tool"}
+            and segment.tool_call_id is not None
+            and (segment.metadata or {}).get("source") == "replayed_conversation"
+        }
+        duplicate_replayed_batch_ids = replayed_batch_ids & core_batch_ids
         retained = {
-            (segment.role, segment.tool_call_id): segment
+            (segment.role, segment.tool_batch_id, segment.tool_call_id): segment
             for segment in context.segments
             if (segment.metadata or {}).get("source") == "retained_tool_result"
         }
         projected = tuple(
             replace(
                 segment,
-                tool_arguments=sanitize_tool_arguments(dict(segment.tool_arguments)) if segment.tool_arguments is not None else None,
-                metadata={**(retained.get((segment.role, segment.tool_call_id), segment).metadata or {}), **(segment.metadata or {})},
+                metadata={
+                    **(retained.get((segment.role, segment.tool_batch_id, segment.tool_call_id), segment).metadata or {}),
+                    **(segment.metadata or {}),
+                },
             )
             if segment.tool_call_id is not None
             else replace(segment, content=redact_text(segment.content))
@@ -3775,14 +3836,27 @@ class RuntimeHost:
             else segment
             for segment in timeline
         )
-        prior_results = tuple(segment for segment in retained.values() if segment.tool_call_id not in core_ids)
+        prior_results = tuple(
+            segment for (role, batch_id, call_id), segment in retained.items() if role == "tool" and (batch_id, call_id) not in core_members
+        )
         segments: list[ContextSegment] = []
         for segment in context.segments:
-            source = (segment.metadata or {}).get("source")
-            if source == "current_user_prompt":
-                segments.extend((replace(projected[0], metadata=segment.metadata), *prior_results, *projected[1:]))
-            elif source != "retained_tool_result":
+            metadata = segment.metadata or {}
+            source = metadata.get("source")
+            replayed_current_prompt = source == "replayed_conversation" and metadata.get("kind") == "current_user_prompt"
+            if source == "replayed_conversation" and segment.tool_batch_id in duplicate_replayed_batch_ids:
+                continue
+            if source == "current_user_prompt" or replayed_current_prompt:
+                prompt_segment = projected[0]
+                if replayed_current_prompt:
+                    prompt_segment = replace(prompt_segment, content=segment.content)
+                segments.append(replace(prompt_segment, metadata=segment.metadata))
+                segments.extend(prior_results)
+            elif source != "retained_tool_result" and segment is not reminder_segment:
                 segments.append(segment)
+        segments.extend(projected[1:])
+        if reminder_segment is not None:
+            segments.append(reminder_segment)
         context = replace(context, segments=tuple(segments))
         self.active_turn_request = turn_request_for_session(
             replace(
@@ -3799,7 +3873,7 @@ class RuntimeHost:
             session=self.session,
             sequence=self.sequence,
             active_turn_request=self.active_turn_request,
-            effective_runtime_config=self.effective_runtime_config,
+            config=self.config,
             context_window=self.context_window,
             continuity_to_reinject=self.continuity_to_reinject,
         )
@@ -3875,7 +3949,7 @@ class RuntimeHost:
                     sequence=self.sequence,
                     active_turn_request=self.active_turn_request,
                     context_window=cast(RuntimeContextWindow, self.context_window),
-                    effective_runtime_config=self.effective_runtime_config,
+                    config=self.config,
                     provider_attempt=self.provider_attempt,
                     provider_retry_attempt=self.provider_retry_attempt,
                     current_metadata=self.active_turn_request.metadata,
@@ -3900,10 +3974,37 @@ class RuntimeHost:
                 self.active_turn_request = prepared
                 state.request = prepared
 
-    def observe(self, plan: TurnPlan, state: EngineState) -> Generator[RuntimeStreamChunk, None, bool]:
+    def observe(self, plan: TurnPlan, state: EngineState, batch: TurnBatch | None) -> Generator[RuntimeStreamChunk, None, TurnObservation]:
+        is_new_batch = isinstance(plan, ToolTurn) and batch is not None and all(batch is not item for item in state.batches)
         if isinstance(plan, ToolTurn):
-            self._save_batch(state)
+            if batch is None:
+                raise ValueError("tool-turn observation requires its normalized candidate batch")
+            if is_new_batch:
+                self.session = self.coordinator._fresh_composition_session(self.session)
+                self._stage_batch(batch)
+                model_turn_facts = tuple(fact for fact in plan.facts if isinstance(fact, ModelTurnFact))
+                if len(model_turn_facts) != 1 or model_turn_facts[0].run_step != batch.run_step:
+                    raise ValueError("tool batch requires its authoritative model-turn fact")
+            else:
+                if batch.tool_batch_id is None:
+                    raise ValueError("pending native batch has no persisted model-turn identity")
+                self._save_batch(batch)
+            facts: list[TurnFact] = []
+            for fact in plan.facts:
+                if isinstance(fact, ModelTurnFact):
+                    if not is_new_batch:
+                        raise ValueError("pending tool execution cannot persist a second model-turn fact")
+                    fact = replace(
+                        fact,
+                        tool_batch_calls=batch.calls,
+                        tool_batch_reasoning=batch.reasoning,
+                    )
+                facts.append(fact)
+            if tuple(facts) != plan.facts:
+                plan = replace(plan, facts=tuple(facts))
         else:
+            batch = None
+            self.tool_batch_repetition.reset()
             self.session = self.coordinator._complete_composition_turn(self.session, plan)
         _, self.session, self.current_chunk_session, self.provider_attempt, terminated = yield from self.coordinator._finalize_step_state(
             session=self.session,
@@ -3915,14 +4016,22 @@ class RuntimeHost:
             complete=False,
         )
         if terminated:
-            return False
-        self.sequence = yield from self.coordinator._persist_step_events(
+            return TurnObservation(False)
+        self.sequence, model_turn_event = yield from self.coordinator._persist_step_events(
             session=self.session,
             sequence=self.sequence,
             turn_plan=plan,
             current_chunk_session=self.current_chunk_session,
         )
-        return True
+        if is_new_batch:
+            assert batch is not None
+            if model_turn_event is None or model_turn_event.payload.get("run_step") != batch.run_step:
+                raise ValueError("tool batch model-turn fact was not persisted at its observed run step")
+            batch.tool_batch_id = model_turn_batch_id(model_turn_event.session_id, model_turn_event.sequence)
+            self._save_batch(batch)
+        elif isinstance(plan, ToolTurn) and model_turn_event is not None:
+            raise ValueError("pending tool execution cannot create a new model-turn identity")
+        return TurnObservation(True, None if batch is None else batch.tool_batch_id)
 
     def execute(self, call: ToolCall, state: EngineState) -> Generator[RuntimeStreamChunk, None, CallOutcome]:
         approved = self.continuation if isinstance(self.continuation, ApprovedInvocation) else None
@@ -3984,7 +4093,6 @@ class RuntimeHost:
                 tool_call_id=call_id,
                 approved=approved,
                 active_permission_policy=self.active_permission_policy,
-                effective_runtime_config=self.effective_runtime_config,
             )
             if action == "paused":
                 return CallPaused()
@@ -4014,10 +4122,9 @@ class RuntimeHost:
                 plan_tool_call=final_call,
                 tool=tool,
                 tool_call_id=call_id,
-                tool_timeout=self.effective_runtime_config.tool_timeout_seconds,
+                tool_timeout=self.config.tool_timeout_seconds,
                 tool_results=state.results,
                 active_turn_request=state.request,
-                tool_exception_recovery_enabled=self.effective_runtime_config.execution_engine == "provider",
             )
             if action == "returned":
                 return CallStoppedBeforeReport()
@@ -4091,7 +4198,7 @@ class RuntimeHost:
             sequence=self.sequence,
             tool_results=state.results,
             available_tools=state.request.available_tools,
-            effective_runtime_config=self.effective_runtime_config,
+            config=self.config,
         )
         if self.pending_reminder_segment is not None:
             return state.request.prompt
@@ -4107,9 +4214,10 @@ class RuntimeHost:
             session=self.session,
             sequence=self.sequence,
             active_turn_request=state.request,
-            turn_plan=replace(plan, provider_usage=None),
+            turn_plan=plan,
             provider_attempt=self.provider_attempt,
             tool_results=state.results,
+            record_provider_usage=False,
         )
         if not terminated:
             self._terminal_composition_phases(plan)

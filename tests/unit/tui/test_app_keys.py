@@ -26,7 +26,7 @@ def test_f2_opens_appearance_picker(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
-    monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
+
     for key in tuple(os.environ):
         if key.endswith("_API_KEY"):
             monkeypatch.delenv(key, raising=False)
@@ -59,7 +59,7 @@ def test_f1_reports_approval_mode_and_auto_theme_source(tmp_path: Path, monkeypa
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
-    monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
+
     monkeypatch.setenv("VOIDCODE_APPROVAL_MODE", "ask")
     for key in tuple(os.environ):
         if key.endswith("_API_KEY"):

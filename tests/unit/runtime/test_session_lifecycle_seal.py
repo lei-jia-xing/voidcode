@@ -25,8 +25,10 @@ import pytest
 
 from tests.runtime_composition import create_task, save_checkpoint
 from tests.runtime_storage import repositories_for_test_store
+from tests.turn_producers import model_turn_fact
 from voidcode.core.questions import PendingQuestionOption, PendingQuestionPrompt
 from voidcode.core.tool_context import ToolContext
+from voidcode.core.transcript import ToolResultView
 from voidcode.core.turns import FinalTurn, ReportedCall, StreamFact, ToolTurn, TurnRequest, TurnSession
 from voidcode.provider.protocol import ProviderStreamEvent
 from voidcode.runtime.background.models import (
@@ -70,12 +72,12 @@ from voidcode.tools.contracts import (
 )
 from voidcode.tools.read import ReadTool
 
-pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
+pytestmark = pytest.mark.usefixtures("disable_default_mcp")
 
 
 @pytest.fixture
-def force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
+def disable_default_mcp(monkeypatch: pytest.MonkeyPatch) -> None:
+
     config_module = importlib.import_module("voidcode.runtime.config.loading")
     monkeypatch.setattr(
         config_module,
@@ -94,13 +96,12 @@ def _delegated_request(prompt: str, *, parent_session_id: str = "leader-session"
                 "mode": "background",
                 "subagent_type": "execute",
                 "selected_preset": "execute",
-                "selected_execution_engine": "provider",
             }
         },
     )
 
 
-class _SuccessGraph:
+class _SuccessProducer:
     """Top-level runs finish immediately; delegated children call yield."""
 
     def produce(
@@ -110,10 +111,10 @@ class _SuccessGraph:
         *,
         session: TurnSession,
     ) -> ToolTurn | FinalTurn:
-        _ = tool_results
+        fact = model_turn_fact(request)
         if session.metadata.get("parent_session_id") is not None:
-            return ToolTurn(calls=(ToolCall(tool_name="yield", arguments={"summary": request.prompt}),))
-        return FinalTurn(output=request.prompt)
+            return ToolTurn(calls=(ToolCall(tool_name="yield", arguments={"summary": request.prompt}),), facts=(fact,))
+        return FinalTurn(output=request.prompt, facts=(fact,))
 
 
 def _seed_child_session_and_task(
@@ -157,6 +158,23 @@ def _seed_child_session_and_task(
     events: tuple[tuple[str, EventSource, dict[str, object], None], ...] = (
         ("runtime.request_received", "runtime", {"prompt": "child probe"}, None),
         (
+            "core.model_turn",
+            "core",
+            {
+                "run_step": 1,
+                "mode": "provider",
+                "prompt": "child probe",
+                "provider": "test",
+                "model": "test",
+                "attempt": 0,
+                "streaming": False,
+                "tool_batch_calls": [{"tool": "yield", "tool_call_id": "yield-call", "arguments": {}}],
+                "tool_batch_reasoning": None,
+            },
+            None,
+        ),
+        ("core.tool_request_created", "core", {"tool": "yield", "tool_call_id": "yield-call", "arguments": {}}, None),
+        (
             "runtime.tool_completed",
             "tool",
             {
@@ -172,7 +190,7 @@ def _seed_child_session_and_task(
             },
             None,
         ),
-        ("graph.response_ready", "graph", {"summary": "child done"}, None),
+        ("core.response_ready", "core", {"summary": "child done"}, None),
     )
     store.append_session_events(workspace=workspace, session_id=child_session_id, events=events)
     store.save_run(
@@ -207,7 +225,6 @@ def _seed_waiting_child_and_task(
             "mode": "background",
             "subagent_type": "execute",
             "selected_preset": "execute",
-            "selected_execution_engine": "provider",
         },
     }
     if capability_snapshot is not None:
@@ -347,7 +364,7 @@ class _BlockingThenResultTool:
         return ToolSuccess(tool_name=self.definition.name, output=TextOutput("real late result"))
 
 
-class _ToolThenNothingGraph:
+class _ToolThenNothingProducer:
     def __init__(self) -> None:
         self.seen_tool_results: list[tuple[object, ...]] = []
 
@@ -358,21 +375,22 @@ class _ToolThenNothingGraph:
         *,
         session: TurnSession,
     ) -> ToolTurn | FinalTurn:
-        _ = request, session
+        fact = model_turn_fact(request)
+        _ = session
         self.seen_tool_results.append(tool_results)
         if not tool_results:
-            return ToolTurn(calls=(ToolCall(tool_name="write", arguments={}),))
-        return FinalTurn(output="done")
+            return ToolTurn(calls=(ToolCall(tool_name="write", arguments={}),), facts=(fact,))
+        return FinalTurn(output="done", facts=(fact,))
 
 
 def test_cancel_lands_while_tool_result_in_flight_drops_late_result(tmp_path: Path) -> None:
     tool = _BlockingThenResultTool()
-    graph = _ToolThenNothingGraph()
+    producer = _ToolThenNothingProducer()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=graph,
+        turn_producer=producer,
         tool_registry=ToolRegistry.from_tools([tool]),
-        config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
+        config=RuntimeConfig(approval_mode="yolo"),
         permission_policy=PermissionPolicy(mode="yolo"),
     )
     sessions = runtime._repositories.sessions
@@ -413,8 +431,8 @@ def test_cancel_lands_while_tool_result_in_flight_drops_late_result(tmp_path: Pa
     assert completed.payload["execution_stopped"] is execution_stopped
     assert completed.payload["side_effect_state"] == ("settled" if execution_stopped else "unknown")
     assert all("real late result" not in repr(event.payload) for event in persisted.events)
-    assert all("real late result" not in repr(results) for results in graph.seen_tool_results)
-    assert not any(event.event_type == "graph.response_ready" for event in persisted.events)
+    assert all("real late result" not in repr(results) for results in producer.seen_tool_results)
+    assert not any(event.event_type == "core.response_ready" for event in persisted.events)
     assert all("real late result" not in repr(chunk) for chunk in chunks)
 
     # The terminal failure chunk records the interruption as session truth.
@@ -431,7 +449,7 @@ def test_cancel_lands_while_tool_result_in_flight_drops_late_result(tmp_path: Pa
 
 
 def test_cancel_mid_provider_stream_drops_remaining_deltas(tmp_path: Path) -> None:
-    class _StreamingGraph:
+    class _StreamingProducer:
         def __init__(self) -> None:
             self.deltas_seen = threading.Event()
             self.release = threading.Event()
@@ -442,25 +460,25 @@ def test_cancel_mid_provider_stream_drops_remaining_deltas(tmp_path: Path) -> No
                 yield StreamFact(ProviderStreamEvent(kind="delta", channel="text", text=f"delta-{index}"))
             self.deltas_seen.set()
             if not self.release.wait(timeout=5.0):
-                raise RuntimeError("streaming graph was not released")
+                raise RuntimeError("streaming producer was not released")
             for index in range(3, 10):
                 yield StreamFact(ProviderStreamEvent(kind="delta", channel="text", text=f"delta-{index}"))
             yield FinalTurn(output="done")
 
         def produce(self, request: TurnRequest, tool_results: tuple, *, session: TurnSession) -> ToolTurn | FinalTurn:
-            raise AssertionError("streaming graph must not call step")
+            raise AssertionError("streaming producer must not call produce")
 
-    graph = _StreamingGraph()
+    producer = _StreamingProducer()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=graph,  # type: ignore[arg-type]
-        config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
+        turn_producer=producer,  # type: ignore[arg-type]
+        config=RuntimeConfig(approval_mode="yolo"),
     )
     streamed_deltas: list[str] = []
 
     def _consume_stream() -> None:
         for chunk in runtime.run_stream(RuntimeRequest(prompt="stream race", session_id="race-stream", metadata={"provider_stream": True})):
-            if chunk.event is not None and chunk.event.event_type == "graph.provider_stream":
+            if chunk.event is not None and chunk.event.event_type == "core.provider_stream":
                 text = chunk.event.payload.get("text")
                 if isinstance(text, str):
                     streamed_deltas.append(text)
@@ -469,10 +487,10 @@ def test_cancel_mid_provider_stream_drops_remaining_deltas(tmp_path: Path) -> No
     consumer.start()
     # Deterministic: the cancel lands while the provider stream is mid-flight
     # (three deltas delivered, the rest blocked on ``release``).
-    assert graph.deltas_seen.wait(timeout=5.0)
+    assert producer.deltas_seen.wait(timeout=5.0)
     result = runtime.cancel_session("race-stream", reason="cancel mid stream")
     assert result.interrupted is True
-    graph.release.set()
+    producer.release.set()
     consumer.join(timeout=5.0)
 
     assert consumer.is_alive() is False
@@ -484,7 +502,7 @@ def test_cancel_mid_provider_stream_drops_remaining_deltas(tmp_path: Path) -> No
     assert failed_events[-1].payload["kind"] == "interrupted"
     assert failed_events[-1].payload["reason"] == "cancel mid stream"
     # Live provider deltas are client-only: nothing was persisted from the stream.
-    assert all(event.event_type != "graph.provider_stream" for event in persisted.events)
+    assert all(event.event_type != "core.provider_stream" for event in persisted.events)
 
 
 # ---------------------------------------------------------------------------
@@ -492,7 +510,7 @@ def test_cancel_mid_provider_stream_drops_remaining_deltas(tmp_path: Path) -> No
 # ---------------------------------------------------------------------------
 
 
-class _ApprovalThenDoneGraph:
+class _ApprovalThenDoneProducer:
     def __init__(self) -> None:
         self.prompts: list[str] = []
 
@@ -503,6 +521,7 @@ class _ApprovalThenDoneGraph:
         *,
         session: TurnSession,
     ) -> ToolTurn | FinalTurn:
+        fact = model_turn_fact(request)
         _ = session
         self.prompts.append(request.prompt)
         if not tool_results and "pre-seal steer" not in request.prompt:
@@ -512,9 +531,10 @@ class _ApprovalThenDoneGraph:
                         tool_name="write",
                         arguments={"path": "alpha.txt", "content": "1"},
                     ),
-                )
+                ),
+                facts=(fact,),
             )
-        return FinalTurn(output="done")
+        return FinalTurn(output="done", facts=(fact,))
 
 
 def _waiting_approval_request_id(response: RuntimeResponse) -> str:
@@ -528,8 +548,8 @@ def _waiting_approval_request_id(response: RuntimeResponse) -> str:
 def test_steer_landing_after_approval_resolution_is_rejected(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ApprovalThenDoneGraph(),
-        config=RuntimeConfig(approval_mode="ask", execution_engine="deterministic"),
+        turn_producer=_ApprovalThenDoneProducer(),
+        config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
     waiting = runtime.run(RuntimeRequest(prompt="approval steer", session_id="steer-1"))
@@ -554,11 +574,11 @@ def test_steer_landing_after_approval_resolution_is_rejected(tmp_path: Path) -> 
 
 
 def test_steering_queued_before_approval_resume_is_durable_and_delivered(tmp_path: Path) -> None:
-    graph = _ApprovalThenDoneGraph()
+    producer = _ApprovalThenDoneProducer()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=graph,
-        config=RuntimeConfig(approval_mode="ask", execution_engine="deterministic"),
+        turn_producer=producer,
+        config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
     waiting = runtime.run(RuntimeRequest(prompt="approval steer", session_id="steer-queued"))
@@ -576,13 +596,13 @@ def test_steering_queued_before_approval_resume_is_durable_and_delivered(tmp_pat
         approval_decision="allow",
     )
     assert resolved.session.status == "completed"
-    assert len(graph.prompts) > 1
-    assert "pre-seal steer" in graph.prompts[-1]
+    assert len(producer.prompts) > 1
+    assert "pre-seal steer" in producer.prompts[-1]
     assert "pending_messages" not in runtime._load_stored_response(session_id="steer-queued").session.metadata
 
 
 def test_steer_queued_while_run_active_is_accepted(tmp_path: Path) -> None:
-    class _ImmediateDoneGraph:
+    class _ImmediateDoneProducer:
         def produce(
             self,
             request: TurnRequest,
@@ -595,8 +615,8 @@ def test_steer_queued_while_run_active_is_accepted(tmp_path: Path) -> None:
 
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ImmediateDoneGraph(),  # type: ignore[arg-type]
-        config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
+        turn_producer=_ImmediateDoneProducer(),  # type: ignore[arg-type]
+        config=RuntimeConfig(approval_mode="yolo"),
     )
     stream = runtime.run_stream(RuntimeRequest(prompt="active steer", session_id="steer-active"))
     first_chunk = next(stream)
@@ -626,13 +646,33 @@ def test_same_run_followup_executes_each_real_read_once_in_input_order(tmp_path:
             self.paths.append(call.arguments["path"])
             return self.delegate.invoke(call, context=context)
 
+    class FollowupReadProducer:
+        def produce(
+            self,
+            request: TurnRequest,
+            tool_results: tuple[ToolResultView, ...],
+            *,
+            session: TurnSession,
+        ) -> ToolTurn | FinalTurn:
+            fact = model_turn_fact(request)
+            _ = session
+            second_read_completed = any(result.arguments.get("path") == "second.txt" for result in tool_results)
+            if "second.txt" in request.prompt and not second_read_completed:
+                return ToolTurn(calls=(ToolCall(tool_name="read", arguments={"path": "second.txt"}),), facts=(fact,))
+            if second_read_completed:
+                return FinalTurn(output="second real file", facts=(fact,))
+            if tool_results:
+                return FinalTurn(output="first real file", facts=(fact,))
+            return ToolTurn(calls=(ToolCall(tool_name="read", arguments={"path": "first.txt"}),), facts=(fact,))
+
     tool = TrackedRead()
     owner = SqliteSessionStore(database_path=tmp_path / "follow-up.sqlite3")
     with VoidCodeRuntime(
         workspace=tmp_path,
         repositories=repositories_for_test_store(owner),
         tool_registry=ToolRegistry.from_tools((tool,)),
-        config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
+        turn_producer=FollowupReadProducer(),
+        config=RuntimeConfig(approval_mode="yolo"),
     ) as runtime:
         for chunk in runtime.run_stream(RuntimeRequest(prompt="read first.txt", session_id="follow-up-active")):
             if chunk.event is not None and chunk.event.event_type == "runtime.tool_completed" and tool.paths == ["first.txt"]:
@@ -642,7 +682,13 @@ def test_same_run_followup_executes_each_real_read_once_in_input_order(tmp_path:
         assert completed.output is not None and "second real file" in completed.output
         assert tool.paths == ["first.txt", "second.txt"]
         results = [event for event in completed.transcript if event.event_type == "runtime.tool_completed"]
-        assert [parse_report_payload(event.payload["reported_call"]).authorized_arguments["path"] for event in results] == ["first.txt", "second.txt"]
+        reports = [parse_report_payload(event.payload["reported_call"]) for event in results]
+        assert [report.final_arguments["path"] for report in reports] == ["first.txt", "second.txt"]
+        assert all(isinstance(report.result, ToolSuccess) for report in reports)
+        assert [cast(TextOutput, cast(ToolSuccess, report.result).output).text.rsplit("\n\n", maxsplit=1)[-1] for report in reports] == [
+            "first real file",
+            "second real file",
+        ]
 
 
 def test_steer_rejected_on_interrupted_session_without_active_run(tmp_path: Path) -> None:
@@ -650,8 +696,8 @@ def test_steer_rejected_on_interrupted_session_without_active_run(tmp_path: Path
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         repositories=repositories_for_test_store(store),
-        turn_producer=_SuccessGraph(),
-        config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
+        turn_producer=_SuccessProducer(),
+        config=RuntimeConfig(approval_mode="yolo"),
     )
     response = runtime.run(RuntimeRequest(prompt="interrupted probe", session_id="interrupted-steer"))
     save_checkpoint(
@@ -683,8 +729,8 @@ def test_child_background_completion_cannot_mutate_sealed_parent(tmp_path: Path)
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         repositories=repositories_for_test_store(store),
-        turn_producer=_SuccessGraph(),  # type: ignore[arg-type]
-        config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
+        turn_producer=_SuccessProducer(),  # type: ignore[arg-type]
+        config=RuntimeConfig(approval_mode="yolo"),
     )
     parent = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
     assert parent.session.status == "completed"
@@ -766,8 +812,8 @@ def test_child_background_completion_cannot_mutate_sealed_parent(tmp_path: Path)
         store.append_session_event(
             workspace=tmp_path,
             session_id="leader-session",
-            event_type="graph.response_ready",
-            source="graph",
+            event_type="core.response_ready",
+            source="core",
             payload={"summary": "late"},
         )
 
@@ -782,8 +828,8 @@ def test_finalize_is_idempotent_and_backfill_repairs_missing_parent_event(tmp_pa
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         repositories=repositories_for_test_store(store),
-        turn_producer=_SuccessGraph(),  # type: ignore[arg-type]
-        config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
+        turn_producer=_SuccessProducer(),  # type: ignore[arg-type]
+        config=RuntimeConfig(approval_mode="yolo"),
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
     _seed_child_session_and_task(
@@ -821,8 +867,8 @@ def test_cancel_wins_completion_race_without_mutating_child_truth(tmp_path: Path
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         repositories=repositories_for_test_store(store),
-        turn_producer=_SuccessGraph(),  # type: ignore[arg-type]
-        config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
+        turn_producer=_SuccessProducer(),  # type: ignore[arg-type]
+        config=RuntimeConfig(approval_mode="yolo"),
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
     _seed_child_session_and_task(
@@ -851,8 +897,8 @@ def test_unknown_parent_drops_delivery_but_preserves_child_and_task_truth(tmp_pa
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         repositories=repositories_for_test_store(store),
-        turn_producer=_SuccessGraph(),  # type: ignore[arg-type]
-        config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
+        turn_producer=_SuccessProducer(),  # type: ignore[arg-type]
+        config=RuntimeConfig(approval_mode="yolo"),
     )
     _seed_child_session_and_task(
         store,
@@ -885,8 +931,8 @@ def test_runtime_shutdown_drains_background_worker_results_before_teardown(
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_SuccessGraph(),  # type: ignore[arg-type]
-        config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
+        turn_producer=_SuccessProducer(),  # type: ignore[arg-type]
+        config=RuntimeConfig(approval_mode="yolo"),
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
@@ -908,10 +954,9 @@ def _background_lifecycle_runtime(workspace: Path) -> tuple[VoidCodeRuntime, Sql
     runtime = VoidCodeRuntime(
         workspace=workspace,
         repositories=repositories_for_test_store(store),
-        turn_producer=_SuccessGraph(),  # type: ignore[arg-type]
+        turn_producer=_SuccessProducer(),  # type: ignore[arg-type]
         config=RuntimeConfig(
             approval_mode="yolo",
-            execution_engine="deterministic",
             background_task=RuntimeBackgroundTaskConfig(delegated_reminders_enabled=False),
         ),
     )

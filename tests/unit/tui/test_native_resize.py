@@ -5,12 +5,18 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import get_args
 
 import pytest
 
+from tests.provider_loopback import (
+    OpenAILoopbackServer,
+    configure_openai_provider,
+    openai_response,
+)
 from voidcode.runtime.config.models import (
     VALID_TUI_COMPOSER_CURSOR_SHAPES,
     VALID_TUI_COMPOSER_STYLES,
@@ -42,7 +48,7 @@ _QUESTION_CHILD = r"""
 import os
 from pathlib import Path
 
-from voidcode.core.turns import FinalTurn, ToolTurn
+from voidcode.core.turns import FinalTurn, ModelTurnFact, ToolTurn
 from voidcode.runtime.config.loading import RuntimeConfig
 from voidcode.runtime.service import VoidCodeRuntime
 from voidcode.tools.contracts import ToolCall
@@ -50,7 +56,9 @@ from voidcode.tui.app import TuiApp
 
 
 class QuestionProducer:
-    def produce(self, _request, tool_results, *, session):
+    def produce(self, request, tool_results, *, session):
+        fact = ModelTurnFact(request.run_step, "deterministic", request.prompt)
+        _ = session
         questions = (
             {
                 "question": "Choose a path",
@@ -72,21 +80,22 @@ class QuestionProducer:
             },
         )
         if len(tool_results) >= len(questions):
-            return FinalTurn(output="question answers and cancellations recorded")
+            return FinalTurn(output="question answers and cancellations recorded", facts=(fact,))
         return ToolTurn(
             calls=(
                 ToolCall(
                     tool_name="question",
                     arguments={"questions": [questions[len(tool_results)]]},
                 ),
-            )
+            ),
+            facts=(fact,),
         )
 
 workspace = Path(os.environ["NATIVE_WORKSPACE"])
 runtime = VoidCodeRuntime(
     workspace=workspace,
     turn_producer=QuestionProducer(),
-    config=RuntimeConfig(execution_engine="deterministic", approval_mode="yolo"),
+    config=RuntimeConfig(approval_mode="yolo"),
 )
 raise SystemExit(TuiApp(workspace, runtime=runtime).run())
 """
@@ -106,28 +115,71 @@ def test_native_tui_survives_small_terminal_sizes_and_restores_input(
         directory.mkdir()
     earlier_content = "".join(f"EARLIER_ROW_{index:04d}\n" for index in range(1200)) + "NATIVE_PTY_READY\n"
     (workspace / "earlier.txt").write_text(earlier_content)
-    (workspace / "restored.txt").write_text("NATIVE_PTY_RESTORED\n")
+    (workspace / "restored.txt").write_text("restored file bytes\n")
     config_path = workspace / ".voidcode.json"
-    config_path.write_text(
-        json.dumps(
-            {
-                "tui": {
-                    "keymap": {
-                        "ctrl+p": "app.history.search",
-                        "ctrl+r": "app.session.resume",
-                        "ctrl+t": "app.session.tree",
-                        "f1": "app.help",
-                        "f2": "app.tui.appearance",
-                        "f3": "app.tools.detail",
-                    },
-                    "theme": {"mode": "auto"},
-                }
-            }
-        )
-    )
+    tui_config = {
+        "keymap": {
+            "ctrl+p": "app.history.search",
+            "ctrl+r": "app.session.resume",
+            "ctrl+t": "app.session.tree",
+            "f1": "app.help",
+            "f2": "app.tui.appearance",
+            "f3": "app.tools.detail",
+        },
+        "theme": {"mode": "auto"},
+    }
+    config_path.write_text(json.dumps({"tui": tui_config}))
 
+    def tool_response(call_id: str, name: str, arguments: dict[str, object]) -> dict[str, object]:
+        return openai_response(
+            message={
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": name, "arguments": json.dumps(arguments)},
+                    }
+                ],
+            },
+            finish="tool_calls",
+        )
+
+    provider = OpenAILoopbackServer(
+        [
+            tool_response("call-read-earlier", "read", {"path": "earlier.txt"}),
+            openai_response(
+                message={"role": "assistant", "content": "Read 1201 line(s) from earlier.txt."},
+                finish="stop",
+            ),
+            tool_response("call-read-restored-artifact", "read", {"path": "restored.txt"}),
+            openai_response(message={"role": "assistant", "content": "Read restored file."}, finish="stop"),
+            tool_response("call-run-pwd-allow", "shell_exec", {"command": "pwd"}),
+            openai_response(message={"role": "assistant", "content": "Ran pwd."}, finish="stop"),
+            tool_response("call-run-pwd-deny-40", "shell_exec", {"command": "pwd"}),
+            openai_response(message={"role": "assistant", "content": "The command was denied."}, finish="stop"),
+            tool_response("call-run-pwd-deny-20", "shell_exec", {"command": "pwd"}),
+            openai_response(message={"role": "assistant", "content": "The command was denied."}, finish="stop"),
+            tool_response("call-run-pwd-allow-20", "shell_exec", {"command": "pwd"}),
+            openai_response(message={"role": "assistant", "content": "Ran pwd."}, finish="stop"),
+            tool_response("call-run-pwd-deny-hold", "shell_exec", {"command": "pwd"}),
+            openai_response(message={"role": "assistant", "content": "The command was denied."}, finish="stop"),
+            tool_response("call-read-restored-tui", "read", {"path": "restored.txt"}),
+            openai_response(message={"role": "assistant", "content": "Read restored file."}, finish="stop"),
+            tool_response("call-run-sleep", "shell_exec", {"command": "sleep 15"}),
+        ]
+    )
+    provider_thread = threading.Thread(target=provider.serve_forever, daemon=True)
+    configure_openai_provider(workspace, f"http://127.0.0.1:{provider.server_address[1]}/v1")
+    provider_config = json.loads(config_path.read_text())
+    provider_config["tui"] = tui_config
+    config_path.write_text(json.dumps(provider_config))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
     project_root = Path(__file__).resolve().parents[3]
     env = {
+        "DEEPSEEK_API_KEY": "loopback-key",
         "APPDATA": str(config_home),
         "HOME": str(home),
         "LOCALAPPDATA": str(local_app_data),
@@ -135,7 +187,6 @@ def test_native_tui_survives_small_terminal_sizes_and_restores_input(
         "PYTHONPATH": str(project_root / "src"),
         "TERM": "tmux-256color",
         "USERPROFILE": str(home),
-        "VOIDCODE_EXECUTION_ENGINE": "deterministic",
         "VOIDCODE_APPROVAL_MODE": "ask",
         "VOIDCODE_DB_PATH": str(root / "voidcode.sqlite3"),
         "XDG_CONFIG_HOME": str(config_home),
@@ -148,7 +199,7 @@ def test_native_tui_survives_small_terminal_sizes_and_restores_input(
     public_runtime_state: dict[str, object] = {}
     monkeypatch.setenv("XDG_STATE_HOME", env["XDG_STATE_HOME"])
     monkeypatch.setenv("VOIDCODE_DB_PATH", env["VOIDCODE_DB_PATH"])
-    monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", env["VOIDCODE_EXECUTION_ENGINE"])
+
     session = "native-acceptance"
     command = (
         "env -i "
@@ -301,6 +352,7 @@ def test_native_tui_survives_small_terminal_sizes_and_restores_input(
         return cycle_appearance_field("theme.mode", 0, VALID_TUI_THEME_MODES, mode)
 
     try:
+        provider_thread.start()
         _tmux(socket, "new-session", "-d", "-s", "keepalive", "sleep", "60", env=env)
         _tmux(socket, "set-option", "-g", "exit-empty", "off", env=env)
         _tmux(socket, "set-option", "-g", "remain-on-exit", "on", env=env)
@@ -405,7 +457,7 @@ def test_native_tui_survives_small_terminal_sizes_and_restores_input(
             else:
                 pytest.fail("native TUI did not complete the initial resize-test prompt")
 
-        # The TUI commits settled transcript rows only after consuming StreamCompleted.
+        # The TUI commits settled transcript rows only after the runtime iterator closes with a terminal session status.
         wait_for_scrollback("Read 1201 line(s) from earlier.txt.", timeout=30)
 
         status_profiles = statusline_profiles()
@@ -632,13 +684,19 @@ def test_native_tui_survives_small_terminal_sizes_and_restores_input(
                             ),
                             None,
                         )
+                        response_ready = next(
+                            (event for event in after_request if event.event_type == "core.response_ready"),
+                            None,
+                        )
                         if (
                             summary is not None
-                            and str(summary.status) == "running"
+                            and str(summary.status) == "completed"
                             and resolved is not None
                             and resolved.payload["decision"] == "deny"
                             and denied is not None
                             and denied.sequence > resolved.sequence
+                            and response_ready is not None
+                            and response_ready.sequence > denied.sequence
                             and not any(
                                 event.event_type == "runtime.approval_requested" and event.sequence > resolved.sequence for event in replay.events
                             )
@@ -646,7 +704,7 @@ def test_native_tui_survives_small_terminal_sizes_and_restores_input(
                             return tuple(event.sequence for event in after_request)
                     time.sleep(0.05)
             pytest.fail(
-                f"native denial did not record its public tool outcome for {expected_prompt!r}; "
+                f"native denial did not reach a terminal response for {expected_prompt!r}; "
                 f"status={str(summary.status) if summary is not None else 'missing'}; "
                 f"events={[(event.sequence, event.event_type) for event in replay.events]!r}"
             )
@@ -659,7 +717,7 @@ def test_native_tui_survives_small_terminal_sizes_and_restores_input(
                     summary = summaries[0]
                     replay = runtime.replay_session(session_id=summary.session.id)
                     event_types = [event.event_type for event in replay.events]
-                    if str(summary.status) == "completed" and "runtime.tool_completed" in event_types and "graph.response_ready" in event_types:
+                    if str(summary.status) == "completed" and "runtime.tool_completed" in event_types and "core.response_ready" in event_types:
                         break
                 time.sleep(0.1)
             else:
@@ -943,9 +1001,10 @@ def test_native_tui_survives_small_terminal_sizes_and_restores_input(
 
         _tmux(socket, "send-keys", "-t", f"{session}:0.0", "-l", "read restored.txt", env=env)
         _tmux(socket, "send-keys", "-t", f"{session}:0.0", "Enter", env=env)
-        wait_for_screen("NATIVE_PTY_RESTORED", timeout=30)
-        wait_for_completed_prompt(session_id, "read restored.txt", previous_request_count)
+        restored_result = wait_for_completed_prompt(session_id, "read restored.txt", previous_request_count)
         previous_request_count += 1
+        assert "restored file bytes" in str(restored_result.get("content", ""))
+        wait_for_scrollback("Read · restored.txt")
         apply_appearance("minimal", baseline["composer.style"], baseline["composer.cursor"])
         resize_native(40, 12)
 
@@ -1065,13 +1124,16 @@ def test_native_tui_survives_small_terminal_sizes_and_restores_input(
             check=False,
             capture_output=True,
         )
+        if provider_thread.is_alive():
+            provider.shutdown()
+            provider_thread.join(timeout=5)
+        provider.server_close()
 
 
 def test_native_tui_persists_active_steering_through_cancel_and_reentry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from voidcode.command.resolver import UNSUPPORTED_TOOL_COMMAND_MESSAGE
     from voidcode.runtime.config.loading import load_runtime_config
     from voidcode.runtime.service import VoidCodeRuntime
 
@@ -1083,11 +1145,42 @@ def test_native_tui_persists_active_steering_through_cancel_and_reentry(
     tmux_tmpdir = root / "tmux"
     for directory in (workspace, home, config_home, local_app_data, tmux_tmpdir):
         directory.mkdir()
-    (workspace / "restored.txt").write_text("POST_CANCEL_REENTRY\n")
+    (workspace / "restored.txt").write_text("first re-entry file bytes\n")
+
+    def tool_response(call_id: str, tool_name: str, arguments: dict[str, object]) -> dict[str, object]:
+        return openai_response(
+            message={
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": tool_name, "arguments": json.dumps(arguments)},
+                    }
+                ],
+            },
+            finish="tool_calls",
+        )
+
+    provider = OpenAILoopbackServer(
+        [
+            tool_response("call-steering-sleep", "shell_exec", {"command": "sleep 15"}),
+            tool_response("call-steering-reentry-read", "read", {"path": "restored.txt"}),
+            openai_response(message={"role": "assistant", "content": "Read after cancellation."}, finish="stop"),
+            tool_response("call-steering-clean-read", "read", {"path": "restored.txt"}),
+            openai_response(message={"role": "assistant", "content": "Read after clean re-entry."}, finish="stop"),
+        ]
+    )
+    provider_thread = threading.Thread(target=provider.serve_forever, daemon=True)
+    configure_openai_provider(workspace, f"http://127.0.0.1:{provider.server_address[1]}/v1")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
     socket = root / "tmux.sock"
     session = "native-steering"
     database = root / "voidcode.sqlite3"
     env = {
+        "DEEPSEEK_API_KEY": "loopback-key",
         "APPDATA": str(config_home),
         "HOME": str(home),
         "LOCALAPPDATA": str(local_app_data),
@@ -1098,7 +1191,6 @@ def test_native_tui_persists_active_steering_through_cancel_and_reentry(
         "USERPROFILE": str(home),
         "VOIDCODE_APPROVAL_MODE": "ask",
         "VOIDCODE_DB_PATH": str(database),
-        "VOIDCODE_EXECUTION_ENGINE": "deterministic",
         "XDG_CACHE_HOME": str(root / "cache"),
         "XDG_CONFIG_HOME": str(config_home),
         "XDG_DATA_HOME": str(root / "data"),
@@ -1107,7 +1199,7 @@ def test_native_tui_persists_active_steering_through_cancel_and_reentry(
     for name in ("cache", "data", "state"):
         (root / name).mkdir()
     monkeypatch.setenv("VOIDCODE_DB_PATH", str(database))
-    monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
+
     monkeypatch.setenv("XDG_STATE_HOME", env["XDG_STATE_HOME"])
     terminal_before = root / "termios-before"
     terminal_after = root / "termios-after"
@@ -1139,6 +1231,7 @@ def test_native_tui_persists_active_steering_through_cancel_and_reentry(
         pytest.fail(f"native screen did not {'show' if present else 'hide'} {text!r}; pane_dead={pane_dead}; cursor={cursor}:\n{pane}")
 
     try:
+        provider_thread.start()
         _tmux(socket, "new-session", "-d", "-s", "keepalive", "sleep", "60", env=env)
         _tmux(socket, "set-option", "-g", "exit-empty", "off", env=env)
         _tmux(socket, "set-option", "-g", "remain-on-exit", "on", env=env)
@@ -1260,12 +1353,13 @@ def test_native_tui_persists_active_steering_through_cancel_and_reentry(
         # DB interruption can precede the app pump; wait until neither active nor failed status remains.
         wait_for_screen("Running", present=False)
         wait_for_screen("Failed ·", present=False)
+        wait_for_screen("Interrupted")
 
         _tmux(socket, "send-keys", "-t", f"{session}:0.0", "-l", "read restored.txt", env=env)
         _tmux(socket, "send-keys", "-t", f"{session}:0.0", "Enter", env=env)
         expected_prompt = "read restored.txt\n\nRuntime steering messages:\ncontinue"
         reentry_request = None
-        reentry_failure = None
+        reentry_response = None
         reentry_tool_events = []
         with VoidCodeRuntime(workspace=workspace, config=load_runtime_config(workspace)) as runtime:
             deadline = time.monotonic() + 15
@@ -1286,15 +1380,15 @@ def test_native_tui_persists_active_steering_through_cancel_and_reentry(
                         for event in reentry_replay.events
                         if event.sequence > reentry_request.sequence and event.event_type in {"runtime.tool_started", "runtime.tool_completed"}
                     ]
-                    reentry_failure = next(
+                    reentry_response = next(
                         (
                             event
                             for event in reentry_replay.events
-                            if event.event_type == "runtime.failed" and event.sequence > reentry_request.sequence
+                            if event.event_type == "core.response_ready" and event.sequence > reentry_request.sequence
                         ),
                         None,
                     )
-                    if len(reentry_tool_events) == 2 and reentry_failure is not None and str(reentry_summary.status) == "failed":
+                    if len(reentry_tool_events) == 2 and reentry_response is not None and str(reentry_summary.status) == "completed":
                         break
                 time.sleep(0.05)
             else:
@@ -1323,23 +1417,24 @@ def test_native_tui_persists_active_steering_through_cancel_and_reentry(
                     f"public_events_after_cancel={json.dumps(events_after_cancel, indent=2, sort_keys=True)}\n"
                     f"pending_messages={json.dumps(pending_after_reentry, indent=2, sort_keys=True)}"
                 )
-        assert reentry_request is not None and reentry_failure is not None
+        assert reentry_request is not None and reentry_response is not None
         assert reentry_request.payload["prompt"] == expected_prompt
         assert "pending_messages" not in reentry_replay.session.metadata
         assert [event.event_type for event in reentry_tool_events] == ["runtime.tool_started", "runtime.tool_completed"], reentry_tool_events
         assert reentry_tool_events[-1].payload["tool"] == "read"
         read_output = reentry_tool_events[-1].payload.get("content")
-        assert isinstance(read_output, str) and "POST_CANCEL_REENTRY" in read_output
-        assert reentry_failure.payload["error"] == UNSUPPORTED_TOOL_COMMAND_MESSAGE
-        assert str(reentry_summary.status) == "failed"
-        wait_for_screen("Failed ·")
-        wait_for_screen("Read · restored.txt")
+        assert isinstance(read_output, str) and "first re-entry file bytes" in read_output
+        assert "Read after cancellation." in str(reentry_response.payload.get("output_preview", ""))
+        assert str(reentry_summary.status) == "completed"
+        wait_for_screen("Read after cancellation.")
 
-        (workspace / "restored.txt").write_text("POST_CANCEL_CLEAN_REENTRY\n")
+        (workspace / "restored.txt").write_text("clean re-entry file bytes\n")
         _tmux(socket, "send-keys", "-t", f"{session}:0.0", "-l", "read restored.txt", env=env)
         _tmux(socket, "send-keys", "-t", f"{session}:0.0", "Enter", env=env)
         with VoidCodeRuntime(workspace=workspace, config=load_runtime_config(workspace)) as runtime:
             clean_tool_events = []
+            clean_request = None
+            clean_response = None
             deadline = time.monotonic() + 15
             while time.monotonic() < deadline:
                 clean_replay = runtime.replay_session(session_id=session_id)
@@ -1348,7 +1443,7 @@ def test_native_tui_persists_active_steering_through_cancel_and_reentry(
                     (
                         event
                         for event in reversed(clean_replay.events)
-                        if event.event_type == "runtime.request_received" and event.sequence > reentry_failure.sequence
+                        if event.event_type == "runtime.request_received" and event.sequence > reentry_response.sequence
                     ),
                     None,
                 )
@@ -1358,7 +1453,15 @@ def test_native_tui_persists_active_steering_through_cancel_and_reentry(
                         for event in clean_replay.events
                         if event.sequence > clean_request.sequence and event.event_type in {"runtime.tool_started", "runtime.tool_completed"}
                     ]
-                    if len(clean_tool_events) == 2 and str(clean_summary.status) == "completed":
+                    clean_response = next(
+                        (
+                            event
+                            for event in clean_replay.events
+                            if event.event_type == "core.response_ready" and event.sequence > clean_request.sequence
+                        ),
+                        None,
+                    )
+                    if len(clean_tool_events) == 2 and clean_response is not None and str(clean_summary.status) == "completed":
                         break
                 time.sleep(0.05)
             else:
@@ -1374,27 +1477,28 @@ def test_native_tui_persists_active_steering_through_cancel_and_reentry(
                     env=env,
                 ).strip()
                 pane_dead = _tmux(socket, "display-message", "-p", "-t", f"{session}:0.0", "#{pane_dead}", env=env).strip()
-                events_after_failure = [
+                events_after_reentry = [
                     {"sequence": event.sequence, "event_type": event.event_type, "payload": event.payload}
                     for event in clean_replay.events
-                    if event.sequence > reentry_failure.sequence
+                    if event.sequence > reentry_response.sequence
                 ]
                 pytest.fail(
                     "native TUI did not complete the clean post-queue read:\n"
                     f"session_status={clean_summary.status}; pane_dead={pane_dead}; cursor={cursor}\n"
                     f"pane:\n{pane}\nscrollback:\n{scrollback}\n"
-                    f"public_events_after_queued_reentry={json.dumps(events_after_failure, indent=2, sort_keys=True)}"
+                    f"public_events_after_queued_reentry={json.dumps(events_after_reentry, indent=2, sort_keys=True)}"
                 )
-        assert clean_request is not None
+        assert clean_request is not None and clean_response is not None
         assert clean_request.payload["prompt"] == "read restored.txt"
         assert "pending_messages" not in clean_replay.session.metadata
         assert [event.event_type for event in clean_tool_events] == ["runtime.tool_started", "runtime.tool_completed"], clean_tool_events
         assert clean_tool_events[-1].payload["tool"] == "read"
         clean_output = clean_tool_events[-1].payload.get("content")
-        assert isinstance(clean_output, str) and "POST_CANCEL_CLEAN_REENTRY" in clean_output
+        assert isinstance(clean_output, str) and "clean re-entry file bytes" in clean_output
+        assert "Read after clean re-entry." in str(clean_response.payload.get("output_preview", ""))
         assert not any(event.event_type == "runtime.approval_requested" and event.sequence > clean_request.sequence for event in clean_replay.events)
         assert str(clean_summary.status) == "completed"
-        wait_for_screen("POST_CANCEL_CLEAN_REENTRY")
+        wait_for_screen("Read after clean re-entry.")
 
         _tmux(socket, "send-keys", "-t", f"{session}:0.0", "C-c", "C-c", env=env)
         deadline = time.monotonic() + 10
@@ -1412,6 +1516,375 @@ def test_native_tui_persists_active_steering_through_cancel_and_reentry(
             check=False,
             capture_output=True,
         )
+        if provider_thread.is_alive():
+            provider.shutdown()
+            provider_thread.join(timeout=5)
+        provider.server_close()
+
+
+def test_native_tui_provider_read_cancel_and_reentry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from voidcode.runtime.config.loading import load_runtime_config
+    from voidcode.runtime.service import VoidCodeRuntime
+
+    root = tmp_path
+    workspace = root / "workspace"
+    home = root / "home"
+    config_home = root / "config"
+    local_app_data = root / "localappdata"
+    tmux_tmpdir = root / "tmux"
+    for directory in (workspace, home, config_home, local_app_data, tmux_tmpdir):
+        directory.mkdir()
+    (workspace / "restored.txt").write_text("POST_CANCEL_PROVIDER_READ\n")
+
+    def tool_response(
+        call_id: str,
+        tool_name: str,
+        arguments: dict[str, object],
+    ) -> dict[str, object]:
+        return openai_response(
+            message={
+                "role": "assistant",
+                "content": None,
+                "reasoning_content": "loopback reasoning",
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_name,
+                            "arguments": json.dumps(arguments),
+                        },
+                    }
+                ],
+            },
+            finish="tool_calls",
+        )
+
+    provider = OpenAILoopbackServer(
+        [
+            tool_response(
+                "call-shell-sleep",
+                "shell_exec",
+                {"command": "sleep 15"},
+            ),
+            tool_response(
+                "call-read-after-cancel",
+                "read",
+                {"path": "restored.txt"},
+            ),
+            openai_response(
+                message={"role": "assistant", "content": "Read after cancellation."},
+                finish="stop",
+            ),
+            tool_response(
+                "call-read-clean-reentry",
+                "read",
+                {"path": "restored.txt"},
+            ),
+            openai_response(
+                message={"role": "assistant", "content": "Read after clean re-entry."},
+                finish="stop",
+            ),
+        ]
+    )
+    provider_thread = threading.Thread(target=provider.serve_forever, daemon=True)
+    provider_thread.start()
+    configure_openai_provider(
+        workspace,
+        f"http://127.0.0.1:{provider.server_address[1]}/v1",
+    )
+
+    state_home = root / "state"
+    cache_home = root / "cache"
+    data_home = root / "data"
+    for directory in (state_home, cache_home, data_home):
+        directory.mkdir()
+    database = root / "voidcode.sqlite3"
+    env = {
+        "APPDATA": str(config_home),
+        "DEEPSEEK_API_KEY": "loopback-key",
+        "HOME": str(home),
+        "LOCALAPPDATA": str(local_app_data),
+        "PATH": os.environ.get("PATH", ""),
+        "PYTHONPATH": str(Path(__file__).resolve().parents[3] / "src"),
+        "TERM": "tmux-256color",
+        "TMUX_TMPDIR": str(tmux_tmpdir),
+        "USERPROFILE": str(home),
+        "VOIDCODE_APPROVAL_MODE": "ask",
+        "VOIDCODE_DB_PATH": str(database),
+        "XDG_CACHE_HOME": str(cache_home),
+        "XDG_CONFIG_HOME": str(config_home),
+        "XDG_DATA_HOME": str(data_home),
+        "XDG_STATE_HOME": str(state_home),
+    }
+    monkeypatch.setenv("DEEPSEEK_API_KEY", env["DEEPSEEK_API_KEY"])
+    monkeypatch.setenv("VOIDCODE_DB_PATH", env["VOIDCODE_DB_PATH"])
+    monkeypatch.setenv("XDG_STATE_HOME", env["XDG_STATE_HOME"])
+    socket = root / "tmux.sock"
+    session = "native-provider-cancel"
+    terminal_before = root / "termios-before"
+    terminal_after = root / "termios-after"
+    app_command = (
+        "env -i "
+        + " ".join(f"{key}={shlex.quote(value)}" for key, value in env.items())
+        + " "
+        + shlex.quote(sys.executable)
+        + " -m voidcode tui --workspace "
+        + shlex.quote(str(workspace))
+    )
+    command = "sh -c " + shlex.quote(
+        f"stty -g > {shlex.quote(str(terminal_before))}; " + app_command + f"; status=$?; stty -g > {shlex.quote(str(terminal_after))}; exit $status"
+    )
+
+    def capture() -> str:
+        return _tmux(socket, "capture-pane", "-p", "-t", f"{session}:0.0", env=env)
+
+    def wait_for_screen(text: str, *, present: bool = True, timeout: float = 15) -> str:
+        deadline = time.monotonic() + timeout
+        pane = ""
+        while time.monotonic() < deadline:
+            pane = capture()
+            if (text in pane) is present:
+                return pane
+            time.sleep(0.05)
+        pytest.fail(
+            f"native provider screen did not {'show' if present else 'hide'} {text!r}:\n"
+            f"{pane}\nprovider_requests={json.dumps(provider.requests, indent=2, sort_keys=True)}\n"
+            f"provider_response_content_types={json.dumps(provider.response_content_types)}\n"
+            "provider_response_chunks="
+            f"{json.dumps([body.decode() for body in provider.response_bodies], indent=2)}"
+        )
+
+    try:
+        _tmux(socket, "new-session", "-d", "-s", "keepalive", "sleep", "60", env=env)
+        _tmux(socket, "set-option", "-g", "exit-empty", "off", env=env)
+        _tmux(socket, "set-option", "-g", "remain-on-exit", "on", env=env)
+        _tmux(socket, "new-session", "-d", "-x", "80", "-y", "24", "-s", session, command, env=env)
+        _tmux(socket, "kill-session", "-t", "keepalive", env=env)
+        _tmux(socket, "set-option", "-g", "status", "off", env=env)
+        wait_for_screen("VOIDCODE", timeout=30)
+
+        _tmux(
+            socket,
+            "send-keys",
+            "-t",
+            f"{session}:0.0",
+            "-l",
+            "Please start a shell command that sleeps for fifteen seconds.",
+            env=env,
+        )
+        _tmux(socket, "send-keys", "-t", f"{session}:0.0", "Enter", env=env)
+        approval = wait_for_screen("y Allow", timeout=30)
+        assert "shell_exec" in approval and "sleep 15" in approval
+        assert "Waiting approval" in approval
+        _tmux(socket, "send-keys", "-t", f"{session}:0.0", "y", env=env)
+        wait_for_screen("y Allow", present=False, timeout=10)
+
+        with VoidCodeRuntime(workspace=workspace, config=load_runtime_config(workspace)) as runtime:
+            deadline = time.monotonic() + 15
+            summary = None
+            replay = None
+            while time.monotonic() < deadline:
+                summaries = runtime.list_sessions()
+                if summaries:
+                    summary = summaries[0]
+                    session_id = summary.session.id
+                    replay = runtime.replay_session(session_id=session_id)
+                    requests = [event for event in replay.events if event.event_type == "runtime.request_received"]
+                    started = bool(requests) and any(
+                        event.event_type == "runtime.tool_started" and event.sequence > requests[-1].sequence for event in replay.events
+                    )
+                    if str(summary.status) == "running" and started:
+                        break
+                time.sleep(0.05)
+            else:
+                event_details = [(event.sequence, event.event_type, event.payload) for event in replay.events] if replay is not None else []
+                pytest.fail(
+                    "provider shell call did not reach public tool_started state: "
+                    f"status={getattr(summary, 'status', None)!r}; "
+                    f"screen={capture()!r}; "
+                    f"events={json.dumps(event_details, default=str)}; "
+                    f"provider_requests={json.dumps(provider.requests, indent=2, sort_keys=True)}"
+                )
+            first_request = requests[-1]
+            session_id = summary.session.id
+
+        wait_for_screen("Running")
+        _tmux(socket, "send-keys", "-t", f"{session}:0.0", "-l", "continue", env=env)
+        _tmux(socket, "send-keys", "-t", f"{session}:0.0", "Enter", env=env)
+        steering_screen = wait_for_screen("Steering queued (1)")
+        assert "continue" in steering_screen and "Running" in steering_screen
+        with VoidCodeRuntime(workspace=workspace, config=load_runtime_config(workspace)) as runtime:
+            queued_replay = runtime.replay_session(session_id=session_id)
+            pending = queued_replay.session.metadata.get("pending_messages", [])
+            assert isinstance(pending, list) and len(pending) == 1
+            assert pending[0]["kind"] == "steering"
+            assert pending[0]["content"] == "continue"
+            steering_ids = tuple(message["id"] for message in pending)
+            active_tool_started = next(
+                event for event in queued_replay.events if event.event_type == "runtime.tool_started" and event.sequence > first_request.sequence
+            )
+
+        _tmux(socket, "send-keys", "-t", f"{session}:0.0", "Escape", env=env)
+        with VoidCodeRuntime(workspace=workspace, config=load_runtime_config(workspace)) as runtime:
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                cancelled_summary = next(item for item in runtime.list_sessions() if item.session.id == session_id)
+                cancelled_replay = runtime.replay_session(session_id=session_id)
+                cancelled = next(
+                    (
+                        event
+                        for event in reversed(cancelled_replay.events)
+                        if event.event_type == "runtime.failed" and event.payload.get("cancelled") is True
+                    ),
+                    None,
+                )
+                if str(cancelled_summary.status) == "interrupted" and cancelled is not None:
+                    break
+                time.sleep(0.05)
+            else:
+                pytest.fail(
+                    "native Escape did not interrupt the provider-backed run; "
+                    f"status={cancelled_summary.status}; events="
+                    f"{[(event.sequence, event.event_type) for event in cancelled_replay.events]!r}"
+                )
+            assert cancelled.payload["reason"] == "tui_turn_cancel"
+            cancel_sequence = cancelled.sequence
+            remaining = cancelled_replay.session.metadata.get("pending_messages", [])
+            assert isinstance(remaining, list)
+            assert tuple(message["id"] for message in remaining) == steering_ids
+            tool_lifecycle = [event for event in cancelled_replay.events if event.event_type in {"runtime.tool_started", "runtime.tool_completed"}]
+            assert [event.event_type for event in tool_lifecycle] == [
+                "runtime.tool_started",
+                "runtime.tool_completed",
+            ]
+            assert tool_lifecycle[0].sequence == active_tool_started.sequence
+            assert tool_lifecycle[1].sequence < cancelled.sequence
+
+        wait_for_screen("Running", present=False)
+        wait_for_screen("Failed ·", present=False)
+        wait_for_screen("Interrupted")
+        reentry_prompt = "Please inspect restored.txt and report its contents."
+        _tmux(socket, "send-keys", "-t", f"{session}:0.0", "-l", reentry_prompt, env=env)
+        _tmux(socket, "send-keys", "-t", f"{session}:0.0", "Enter", env=env)
+        expected_prompt = f"{reentry_prompt}\n\nRuntime steering messages:\ncontinue"
+        with VoidCodeRuntime(workspace=workspace, config=load_runtime_config(workspace)) as runtime:
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                reentry_replay = runtime.replay_session(session_id=session_id)
+                reentry_summary = next(item for item in runtime.list_sessions() if item.session.id == session_id)
+                reentry_request = next(
+                    (
+                        event
+                        for event in reversed(reentry_replay.events)
+                        if event.event_type == "runtime.request_received" and event.sequence > cancel_sequence
+                    ),
+                    None,
+                )
+                if reentry_request is not None:
+                    reentry_tool_events = [
+                        event
+                        for event in reentry_replay.events
+                        if event.sequence > reentry_request.sequence and event.event_type in {"runtime.tool_started", "runtime.tool_completed"}
+                    ]
+                    if len(reentry_tool_events) == 2 and str(reentry_summary.status) == "completed":
+                        break
+                time.sleep(0.05)
+            else:
+                pytest.fail(
+                    "provider-backed TUI did not complete the queued-steering read; "
+                    f"status={reentry_summary.status}; events="
+                    f"{[(event.sequence, event.event_type) for event in reentry_replay.events]!r}"
+                )
+            assert reentry_request is not None
+            assert reentry_request.payload["prompt"] == expected_prompt
+            assert "pending_messages" not in reentry_replay.session.metadata
+            assert [event.event_type for event in reentry_tool_events] == [
+                "runtime.tool_started",
+                "runtime.tool_completed",
+            ]
+            assert reentry_tool_events[-1].payload["tool"] == "read"
+            read_output = reentry_tool_events[-1].payload.get("content")
+            assert isinstance(read_output, str) and "POST_CANCEL_PROVIDER_READ" in read_output
+            assert str(reentry_summary.status) == "completed"
+        wait_for_screen("Read after cancellation.")
+
+        (workspace / "restored.txt").write_text("POST_CANCEL_CLEAN_PROVIDER_READ\n")
+        clean_prompt = "Please inspect restored.txt again and report its contents."
+        _tmux(socket, "send-keys", "-t", f"{session}:0.0", "-l", clean_prompt, env=env)
+        _tmux(socket, "send-keys", "-t", f"{session}:0.0", "Enter", env=env)
+        with VoidCodeRuntime(workspace=workspace, config=load_runtime_config(workspace)) as runtime:
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                clean_replay = runtime.replay_session(session_id=session_id)
+                clean_summary = next(item for item in runtime.list_sessions() if item.session.id == session_id)
+                clean_request = next(
+                    (
+                        event
+                        for event in reversed(clean_replay.events)
+                        if event.event_type == "runtime.request_received" and event.sequence > reentry_request.sequence
+                    ),
+                    None,
+                )
+                if clean_request is not None:
+                    clean_tool_events = [
+                        event
+                        for event in clean_replay.events
+                        if event.sequence > clean_request.sequence and event.event_type in {"runtime.tool_started", "runtime.tool_completed"}
+                    ]
+                    if len(clean_tool_events) == 2 and str(clean_summary.status) == "completed":
+                        break
+                time.sleep(0.05)
+            else:
+                pytest.fail(
+                    "provider-backed TUI did not complete the clean read; "
+                    f"status={clean_summary.status}; events="
+                    f"{[(event.sequence, event.event_type) for event in clean_replay.events]!r}"
+                )
+            assert clean_request is not None
+            assert clean_request.payload["prompt"] == clean_prompt
+            assert "pending_messages" not in clean_replay.session.metadata
+            assert [event.event_type for event in clean_tool_events] == [
+                "runtime.tool_started",
+                "runtime.tool_completed",
+            ]
+            assert clean_tool_events[-1].payload["tool"] == "read"
+            clean_output = clean_tool_events[-1].payload.get("content")
+            assert isinstance(clean_output, str) and "POST_CANCEL_CLEAN_PROVIDER_READ" in clean_output
+            assert str(clean_summary.status) == "completed"
+        wait_for_screen("Read after clean re-entry.")
+        assert len(provider.requests) == 5
+        _tmux(socket, "send-keys", "-t", f"{session}:0.0", "C-c", "C-c", env=env)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            dead = _tmux(
+                socket,
+                "display-message",
+                "-p",
+                "-t",
+                f"{session}:0.0",
+                "#{pane_dead}",
+                env=env,
+            ).strip()
+            if dead == "1":
+                break
+            time.sleep(0.05)
+        assert dead == "1"
+        assert terminal_before.read_text().strip() == terminal_after.read_text().strip()
+    finally:
+        subprocess.run(
+            ["tmux", "-S", str(socket), "-f", "/dev/null", "kill-server"],
+            env=env,
+            check=False,
+            capture_output=True,
+        )
+        provider.shutdown()
+        provider_thread.join(timeout=5)
+        provider.server_close()
 
 
 def test_native_tui_resume_preserves_completed_session_without_duplicate_events(
@@ -1433,38 +1906,76 @@ def test_native_tui_resume_preserves_completed_session_without_duplicate_events(
     tmux_tmpdir = root / "tmux"
     for directory in (workspace, home, config_home, state_home, cache_home, data_home, local_app_data, tmux_tmpdir):
         directory.mkdir()
-    (workspace / "resume.txt").write_text("NATIVE_RESUME_READY\n")
-    (workspace / ".voidcode.json").write_text(json.dumps({"tui": {"keymap": {"ctrl+r": "app.session.resume"}}}))
-    project_root = Path(__file__).resolve().parents[3]
-    socket = root / "tmux.sock"
-    session = "native-resume"
-    database = root / "voidcode.sqlite3"
-    env = {
-        "APPDATA": str(config_home),
-        "HOME": str(home),
-        "LOCALAPPDATA": str(local_app_data),
-        "PATH": os.environ.get("PATH", ""),
-        "PYTHONPATH": str(project_root / "src"),
-        "TERM": "tmux-256color",
-        "TMUX_TMPDIR": str(tmux_tmpdir),
-        "USERPROFILE": str(home),
-        "VOIDCODE_APPROVAL_MODE": "yolo",
-        "VOIDCODE_DB_PATH": str(database),
-        "VOIDCODE_EXECUTION_ENGINE": "deterministic",
-        "XDG_CACHE_HOME": str(cache_home),
-        "XDG_CONFIG_HOME": str(config_home),
-        "XDG_DATA_HOME": str(data_home),
-        "XDG_STATE_HOME": str(state_home),
-    }
-    monkeypatch.setenv("VOIDCODE_DB_PATH", str(database))
-    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
-    monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
-    with VoidCodeRuntime(workspace=workspace, config=load_runtime_config(workspace)) as runtime:
-        seeded = runtime.run(RuntimeRequest(prompt="read resume.txt", allocate_session_id=True))
-        assert seeded.session.status == "completed"
-        session_id = seeded.session.session.id
-        seeded_replay = runtime.replay_session(session_id=session_id)
-        assert any(event.event_type == "runtime.tool_completed" for event in seeded_replay.events)
+    (workspace / "resume.txt").write_text("resumed file bytes\n")
+    provider = OpenAILoopbackServer(
+        [
+            openai_response(
+                message={
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call-read-resume",
+                            "type": "function",
+                            "function": {
+                                "name": "read",
+                                "arguments": json.dumps({"path": "resume.txt"}),
+                            },
+                        }
+                    ],
+                },
+                finish="tool_calls",
+            ),
+            openai_response(message={"role": "assistant", "content": "done"}, finish="stop"),
+        ]
+    )
+    provider_thread = threading.Thread(target=provider.serve_forever, daemon=True)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
+    try:
+        provider_thread.start()
+        configure_openai_provider(workspace, f"http://127.0.0.1:{provider.server_address[1]}/v1")
+        workspace_config = json.loads((workspace / ".voidcode.json").read_text(encoding="utf-8"))
+        workspace_config["approval_mode"] = "yolo"
+        workspace_config["tui"] = {"keymap": {"ctrl+r": "app.session.resume"}}
+        (workspace / ".voidcode.json").write_text(json.dumps(workspace_config), encoding="utf-8")
+        project_root = Path(__file__).resolve().parents[3]
+        socket = root / "tmux.sock"
+        session = "native-resume"
+        database = root / "voidcode.sqlite3"
+        env = {
+            "DEEPSEEK_API_KEY": "loopback-key",
+            "APPDATA": str(config_home),
+            "HOME": str(home),
+            "LOCALAPPDATA": str(local_app_data),
+            "PATH": os.environ.get("PATH", ""),
+            "PYTHONPATH": str(project_root / "src"),
+            "TERM": "tmux-256color",
+            "TMUX_TMPDIR": str(tmux_tmpdir),
+            "USERPROFILE": str(home),
+            "VOIDCODE_APPROVAL_MODE": "yolo",
+            "VOIDCODE_DB_PATH": str(database),
+            "XDG_CACHE_HOME": str(cache_home),
+            "XDG_CONFIG_HOME": str(config_home),
+            "XDG_DATA_HOME": str(data_home),
+            "XDG_STATE_HOME": str(state_home),
+        }
+        monkeypatch.setenv("VOIDCODE_DB_PATH", str(database))
+        monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
+        with VoidCodeRuntime(workspace=workspace, config=load_runtime_config(workspace)) as runtime:
+            seeded = runtime.run(RuntimeRequest(prompt="read resume.txt", allocate_session_id=True))
+            assert seeded.session.status == "completed"
+            session_id = seeded.session.session.id
+            seeded_replay = runtime.replay_session(session_id=session_id)
+            completed_read = next(event for event in seeded_replay.events if event.event_type == "runtime.tool_completed")
+            assert "resumed file bytes" in str(completed_read.payload.get("content", ""))
+            assert "done" in (seeded_replay.output or "")
+            assert sum(event.event_type == "runtime.tool_started" for event in seeded_replay.events) == 1
+            assert sum(event.event_type == "runtime.tool_completed" for event in seeded_replay.events) == 1
+            assert len(provider.requests) == 2
+    finally:
+        if provider_thread.is_alive():
+            provider.shutdown()
+            provider_thread.join(timeout=5)
+        provider.server_close()
 
     command = (
         "env -i "
@@ -1500,12 +2011,19 @@ def test_native_tui_resume_preserves_completed_session_without_duplicate_events(
         picker = wait_for_screen("Select Session")
         assert "read resume.txt" in picker
         _tmux(socket, "send-keys", "-t", f"{session}:0.0", "Enter", env=env)
-        pane = wait_for_screen("NATIVE_RESUME_READY", timeout=30)
+        wait_for_screen("Read · resume.txt", timeout=30)
+        pane = wait_for_screen("done")
         assert "Traceback" not in pane
+        scrollback = capture("-S", "-")
+        assert "Read · resume.txt" in scrollback and "done" in scrollback
+        assert "to expand" not in scrollback.lower()
         with VoidCodeRuntime(workspace=workspace, config=load_runtime_config(workspace)) as runtime:
             restored_replay = runtime.replay_session(session_id=session_id)
             assert restored_replay.events == seeded_replay.events
             assert restored_replay.output == seeded_replay.output
+            assert sum(event.event_type == "runtime.tool_started" for event in restored_replay.events) == 1
+            assert sum(event.event_type == "runtime.tool_completed" for event in restored_replay.events) == 1
+            assert len(provider.requests) == 2
             restored = runtime.list_sessions()
             assert any(item.session.id == session_id and str(item.status) == "completed" for item in restored)
         print(
@@ -1540,7 +2058,35 @@ def test_native_ctrl_t_tree_filter_moves_native_caret_and_cancels(
     prompt_text = prompt_bytes.replace("\r\n", "\n").replace("\r", "\n")
     prompt_buffer = root / "prompt.txt"
     prompt_buffer.write_bytes(prompt_bytes.encode("utf-8"))
-    (workspace / ".voidcode.json").write_text(json.dumps({"tui": {"keymap": {"ctrl+t": "app.session.tree"}}}))
+    provider = OpenAILoopbackServer(
+        [
+            openai_response(
+                message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call-native-tree",
+                            "type": "function",
+                            "function": {
+                                "name": "shell_exec",
+                                "arguments": json.dumps({"command": "printf tree_Native_READY"}),
+                            },
+                        }
+                    ],
+                },
+                finish="tool_calls",
+            ),
+            openai_response(message={"role": "assistant", "content": "tree_Native_READY"}, finish="stop"),
+        ]
+    )
+    provider_thread = threading.Thread(target=provider.serve_forever, daemon=True)
+    configure_openai_provider(workspace, f"http://127.0.0.1:{provider.server_address[1]}/v1")
+    config = json.loads((workspace / ".voidcode.json").read_text(encoding="utf-8"))
+    config["approval_mode"] = "yolo"
+    config["tui"] = {"keymap": {"ctrl+t": "app.session.tree"}}
+    (workspace / ".voidcode.json").write_text(json.dumps(config), encoding="utf-8")
     project_root = Path(__file__).resolve().parents[3]
     env = {
         "APPDATA": str(root / "config"),
@@ -1550,9 +2096,9 @@ def test_native_ctrl_t_tree_filter_moves_native_caret_and_cancels(
         "PYTHONPATH": str(project_root / "src"),
         "TERM": "tmux-256color",
         "USERPROFILE": str(root / "home"),
+        "DEEPSEEK_API_KEY": "loopback-key",
         "VOIDCODE_APPROVAL_MODE": "yolo",
         "VOIDCODE_DB_PATH": str(root / "voidcode.sqlite3"),
-        "VOIDCODE_EXECUTION_ENGINE": "deterministic",
         "TMUX_TMPDIR": str(root / "tmux"),
         "XDG_CACHE_HOME": str(root / "cache"),
         "XDG_CONFIG_HOME": str(root / "config"),
@@ -1586,6 +2132,7 @@ def test_native_ctrl_t_tree_filter_moves_native_caret_and_cancels(
         pytest.fail(f"native Ctrl+T screen did not {'show' if present else 'hide'} {text!r}:\n{pane}\n{capture('-S', '-')}")
 
     try:
+        provider_thread.start()
         _tmux(socket, "new-session", "-d", "-s", "keepalive", "sleep", "60", env=env)
         _tmux(socket, "set-option", "-g", "exit-empty", "off", env=env)
         _tmux(socket, "set-option", "-g", "remain-on-exit", "on", env=env)
@@ -1600,18 +2147,33 @@ def test_native_ctrl_t_tree_filter_moves_native_caret_and_cancels(
 
         from voidcode.runtime.config.loading import load_runtime_config
         from voidcode.runtime.service import VoidCodeRuntime
+        from voidcode.runtime.storage import SqliteSessionStore
 
         with VoidCodeRuntime(workspace=workspace, config=load_runtime_config(workspace)) as runtime:
+            store = SqliteSessionStore()
+            summary = None
+            checkpoint = None
+            replay = None
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
                 summaries = runtime.list_sessions()
-                if summaries and str(summaries[0].status) == "completed":
+                if summaries:
                     summary = summaries[0]
-                    replay = runtime.replay_session(session_id=summary.session.id)
-                    break
+                    checkpoint = store.load_resume_checkpoint(workspace=workspace, session_id=summary.session.id)
+                    if checkpoint is not None and checkpoint["kind"] == "terminal":
+                        replay = runtime.replay_session(session_id=summary.session.id)
+                        break
                 time.sleep(0.1)
             else:
-                pytest.fail("public runtime did not complete native tree test request")
+                checkpoint_kind = None if checkpoint is None else checkpoint.get("kind")
+                pytest.fail(
+                    "public runtime did not complete native tree test request "
+                    f"(status={None if summary is None else summary.status!s}, checkpoint={checkpoint_kind!r})"
+                )
+            assert summary is not None
+            assert checkpoint is not None and checkpoint["kind"] == "terminal"
+            assert replay is not None
+            assert any(event.event_type == "core.response_ready" for event in replay.events)
             request = next(event for event in replay.events if event.event_type == "runtime.request_received")
             assert request.payload["prompt"] == prompt_text
 
@@ -1678,7 +2240,7 @@ def test_native_ctrl_t_tree_filter_moves_native_caret_and_cancels(
                     "filter_caret": [before, after],
                     "filtered_tree": filtered,
                     "runtime_prompt": request.payload["prompt"],
-                    "runtime_status": str(summary.status),
+                    "checkpoint_kind": checkpoint["kind"],
                     "tree_cancelled": True,
                 },
                 sort_keys=True,
@@ -1691,6 +2253,10 @@ def test_native_ctrl_t_tree_filter_moves_native_caret_and_cancels(
             check=False,
             capture_output=True,
         )
+        if provider_thread.is_alive():
+            provider.shutdown()
+            provider_thread.join(timeout=5)
+        provider.server_close()
 
 
 def test_native_question_escape_cancels_through_the_public_runtime(
@@ -1724,7 +2290,6 @@ def test_native_question_escape_cancels_through_the_public_runtime(
         "USERPROFILE": str(home),
         "VOIDCODE_APPROVAL_MODE": "yolo",
         "VOIDCODE_DB_PATH": str(database),
-        "VOIDCODE_EXECUTION_ENGINE": "deterministic",
         "XDG_CACHE_HOME": str(cache_home),
         "XDG_CONFIG_HOME": str(config_home),
         "XDG_DATA_HOME": str(data_home),
@@ -1741,7 +2306,7 @@ def test_native_question_escape_cancels_through_the_public_runtime(
         + shlex.quote(_QUESTION_CHILD)
     )
 
-    def wait_for_screen(text: str, timeout: float = 10) -> str:
+    def wait_for_screen(text: str, timeout: float = 30) -> str:
         deadline = time.monotonic() + timeout
         pane = ""
         while time.monotonic() < deadline:
@@ -1800,7 +2365,7 @@ def test_native_question_escape_cancels_through_the_public_runtime(
         def public_question_state() -> tuple[object, ...]:
             with VoidCodeRuntime(
                 workspace=workspace,
-                config=RuntimeConfig(execution_engine="deterministic", approval_mode="yolo"),
+                config=RuntimeConfig(approval_mode="yolo"),
             ) as runtime:
                 summary = runtime.list_sessions()[0]
                 replay = runtime.replay_session(session_id=summary.session.id)
@@ -1819,7 +2384,7 @@ def test_native_question_escape_cancels_through_the_public_runtime(
 
         with VoidCodeRuntime(
             workspace=workspace,
-            config=RuntimeConfig(execution_engine="deterministic", approval_mode="yolo"),
+            config=RuntimeConfig(approval_mode="yolo"),
         ) as runtime:
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
@@ -1895,9 +2460,37 @@ def test_native_tui_renders_all_glyph_presets_on_real_tool_output(tmp_path: Path
             tmux_tmpdir,
         ):
             directory.mkdir(parents=True)
-        (workspace / "glyph.txt").write_text("NATIVE_GLYPH_READY\n")
+        (workspace / "glyph.txt").write_text("glyph file line one\nglyph file line two\n")
         config_path = workspace / ".voidcode.json"
-        config_path.write_text(json.dumps({"tui": {"theme": {"symbols": {"preset": preset}}}}))
+        provider = OpenAILoopbackServer(
+            [
+                openai_response(
+                    message={
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": f"call-glyph-{preset}",
+                                "type": "function",
+                                "function": {
+                                    "name": "shell_exec",
+                                    "arguments": json.dumps({"command": "sleep 1; cat glyph.txt"}),
+                                },
+                            }
+                        ],
+                    },
+                    finish="tool_calls",
+                ),
+                openai_response(message={"role": "assistant", "content": "Read glyph.txt."}, finish="stop"),
+            ]
+        )
+        provider_thread = threading.Thread(target=provider.serve_forever, daemon=True)
+        configure_openai_provider(workspace, f"http://127.0.0.1:{provider.server_address[1]}/v1")
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["approval_mode"] = "yolo"
+        config["tui"] = {"theme": {"symbols": {"preset": preset}}}
+        config_path.write_text(json.dumps(config), encoding="utf-8")
         project_root = Path(__file__).resolve().parents[3]
         env = {
             "APPDATA": str(config_home),
@@ -1908,9 +2501,9 @@ def test_native_tui_renders_all_glyph_presets_on_real_tool_output(tmp_path: Path
             "TERM": "tmux-256color",
             "TMUX_TMPDIR": str(tmux_tmpdir),
             "USERPROFILE": str(home),
+            "DEEPSEEK_API_KEY": "loopback-key",
             "VOIDCODE_APPROVAL_MODE": "yolo",
             "VOIDCODE_DB_PATH": str(root / "voidcode.sqlite3"),
-            "VOIDCODE_EXECUTION_ENGINE": "deterministic",
             "XDG_CACHE_HOME": str(cache_home),
             "XDG_CONFIG_HOME": str(config_home),
             "XDG_DATA_HOME": str(data_home),
@@ -1927,6 +2520,7 @@ def test_native_tui_renders_all_glyph_presets_on_real_tool_output(tmp_path: Path
             + shlex.quote(str(workspace))
         )
         try:
+            provider_thread.start()
             _tmux(socket, "new-session", "-d", "-s", "keepalive", "sleep", "60", env=env)
             _tmux(socket, "set-option", "-g", "exit-empty", "off", env=env)
             _tmux(socket, "set-option", "-g", "remain-on-exit", "on", env=env)
@@ -1953,28 +2547,50 @@ def test_native_tui_renders_all_glyph_presets_on_real_tool_output(tmp_path: Path
             brand_mark = "[*V]" if preset == "ascii" else "◇V"
             assert any(line.strip() == f"{brand_mark}  VOIDCODE" for line in pane.splitlines())
 
-            _tmux(socket, "send-keys", "-t", f"{session}:0.0", "-l", "read glyph.txt", env=env)
+            _tmux(socket, "send-keys", "-t", f"{session}:0.0", "-l", "show glyph.txt", env=env)
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
                 pane = capture()
-                if "read glyph.txt" in pane:
+                if "show glyph.txt" in pane:
                     break
                 time.sleep(0.05)
             _tmux(socket, "send-keys", "-t", f"{session}:0.0", "Enter", env=env)
 
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                pane = capture()
+                if "Running" in pane:
+                    break
+                time.sleep(0.05)
+            else:
+                pytest.fail(f"native shell tool did not start for glyph preset {preset}:\n{capture()}")
+            _tmux(socket, "send-keys", "-t", f"{session}:0.0", "C-o", env=env)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                pane = capture()
+                if "Tool output expansion enabled" in pane:
+                    break
+                time.sleep(0.05)
+            else:
+                pytest.fail(f"native expansion toggle was not acknowledged before tool output:\n{capture()}")
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
                 scrollback = capture("-S", "-")
-                if "NATIVE_GLYPH_READY" in scrollback:
+                if "glyph file line two" in scrollback and "Read glyph.txt." in scrollback:
                     break
                 time.sleep(0.1)
             else:
-                pytest.fail(f"native deterministic read did not render for glyph preset {preset}:\n{capture()}\nscrollback:\n{scrollback}")
+                pytest.fail(f"native tool body did not expand for glyph preset {preset}:\n{capture()}\nscrollback:\n{scrollback}")
+            assert "glyph file line one" in scrollback and "Read glyph.txt." in scrollback
             assert not any(line.strip() == f"{brand_mark}  VOIDCODE" for line in capture().splitlines())
             glyph = resolve_theme(glyph_preset=preset).symbol("status.success")
             assert glyph in scrollback
             observed[preset] = glyph
         finally:
+            if provider_thread.is_alive():
+                provider.shutdown()
+                provider_thread.join(timeout=5)
+            provider.server_close()
             subprocess.run(
                 ["tmux", "-S", str(socket), "-f", "/dev/null", "kill-server"],
                 env=env,

@@ -22,8 +22,7 @@ from voidcode.runtime.background.models import (
 from voidcode.runtime.background.supervisor import RuntimeBackgroundTaskSupervisor
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse
 from voidcode.runtime.events import (
-    RUNTIME_BACKGROUND_TASK_COMPLETED,
-    RUNTIME_BACKGROUND_TASK_NOTIFICATION_ENQUEUED,
+    RUNTIME_LIFECYCLE_HOOK,
 )
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.storage import SqliteSessionStore
@@ -84,7 +83,7 @@ def _hook_events(store: SqliteSessionStore, workspace: Path, session_id: str, ev
 
 def test_background_lifecycle_hook_is_durable_on_child_and_replay_does_not_rerun(tmp_path: Path) -> None:
     store = SqliteSessionStore(database_path=tmp_path / "hooks.sqlite3")
-    _session(store, tmp_path, "child", status="completed")
+    _session(store, tmp_path, "child", status="running")
     marker = tmp_path / "hook-count"
     command = (
         sys.executable,
@@ -105,8 +104,9 @@ def test_background_lifecycle_hook_is_durable_on_child_and_replay_does_not_rerun
         session_id="child",
     )
 
-    events = _hook_events(store, tmp_path, "child", RUNTIME_BACKGROUND_TASK_COMPLETED)
+    events = _hook_events(store, tmp_path, "child", RUNTIME_LIFECYCLE_HOOK)
     assert len(events) == 1
+    assert events[0].payload["surface"] == "background_task_completed"
     assert events[0].payload["hook_status"] == "ok"
     assert events[0].payload["diagnostic"] == "observed"
     assert events[0].sequence > 0
@@ -209,7 +209,7 @@ def test_background_lifecycle_failure_is_observable_without_changing_truth(
     failure_mode: str,
 ) -> None:
     store = SqliteSessionStore(database_path=tmp_path / f"hooks-{failure_mode}.sqlite3")
-    _session(store, tmp_path, "child", status="completed")
+    _session(store, tmp_path, "child", status="running")
     task = _task()
     create_task(store, workspace=tmp_path, task=task)
     store.mark_background_task_terminal(workspace=tmp_path, task_id=task.task.id, status="completed")
@@ -229,17 +229,17 @@ def test_background_lifecycle_failure_is_observable_without_changing_truth(
         session_id="child",
     )
 
-    events = _hook_events(store, tmp_path, "child", RUNTIME_BACKGROUND_TASK_COMPLETED)
+    events = _hook_events(store, tmp_path, "child", RUNTIME_LIFECYCLE_HOOK)
     assert len(events) == 1
     assert events[0].payload["hook_status"] == "error"
     assert "lifecycle hook failed" in str(events[0].payload["error"])
     assert store.load_background_task(workspace=tmp_path, task_id=task.task.id).status == "completed"
-    assert store.load_session_status(workspace=tmp_path, session_id="child") == "completed"
+    assert store.load_session_status(workspace=tmp_path, session_id="child") == "running"
 
 
 def test_background_lifecycle_timeout_is_durable_and_worker_safe(tmp_path: Path) -> None:
     store = SqliteSessionStore(database_path=tmp_path / "timeout.sqlite3")
-    _session(store, tmp_path, "child", status="completed")
+    _session(store, tmp_path, "child", status="running")
     supervisor = _supervisor(
         tmp_path,
         store,
@@ -256,11 +256,11 @@ def test_background_lifecycle_timeout_is_durable_and_worker_safe(tmp_path: Path)
         session_id="child",
     )
 
-    events = _hook_events(store, tmp_path, "child", RUNTIME_BACKGROUND_TASK_COMPLETED)
+    events = _hook_events(store, tmp_path, "child", RUNTIME_LIFECYCLE_HOOK)
     assert len(events) == 1
     assert events[0].payload["hook_status"] == "error"
     assert "timed out" in str(events[0].payload["error"])
-    assert store.load_session_status(workspace=tmp_path, session_id="child") == "completed"
+    assert store.load_session_status(workspace=tmp_path, session_id="child") == "running"
 
 
 def test_background_lifecycle_targets_parent_and_handles_sealed_or_unknown_parent(tmp_path: Path) -> None:
@@ -283,7 +283,8 @@ def test_background_lifecycle_targets_parent_and_handles_sealed_or_unknown_paren
         session_id="leader",
         extra_payload={"delegated_session_id": "child", "parent_session_id": "leader"},
     )
-    assert len(_hook_events(store, tmp_path, "leader", "runtime.delegated_result_available")) == 1
+    events_before_seal = _hook_events(store, tmp_path, "leader", RUNTIME_LIFECYCLE_HOOK)
+    assert len(events_before_seal) == 1
 
     # A notification observer can race parent sealing; dropping its event is
     # safe and must not mutate the sealed parent or throw from the worker path.
@@ -303,7 +304,7 @@ def test_background_lifecycle_targets_parent_and_handles_sealed_or_unknown_paren
         session_id="leader",
         extra_payload={"notification_event_sequence": 9},
     )
-    assert _hook_events(store, tmp_path, "leader", RUNTIME_BACKGROUND_TASK_NOTIFICATION_ENQUEUED) == []
+    assert _hook_events(store, tmp_path, "leader", RUNTIME_LIFECYCLE_HOOK) == events_before_seal
     assert store.load_session_status(workspace=tmp_path, session_id="leader") == "completed"
 
     # Unknown parent/session is a no-op observer target, never a worker error.

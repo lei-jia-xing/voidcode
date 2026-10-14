@@ -1,4 +1,4 @@
-"""Exact CURRENT bundle2 row snapshots; import never dispatches copied tasks.
+"""Exact CURRENT bundle3 row snapshots; import never dispatches copied tasks.
 
 Signed composition bodies stay on their canonical owner rows. JSON and ZIP use
 one closed schema, and every row is checked before the single storage transaction.
@@ -32,7 +32,7 @@ from ..tools.output import (
 from .agent_capability import validate_agent_capability_snapshot
 from .composition import CompositionRef, FrozenComposition, SessionCompositionOwner, TaskCompositionOwner
 from .contracts import validate_id
-from .events import EventEnvelope, EventSource
+from .events import EventEnvelope, EventSource, model_turn_batch_id
 from .execution.resume_checkpoint import tool_results_from_checkpoint, validated_resume_checkpoint_envelope
 from .fact_codec import decode_fact
 from .paths import session_artifacts_dir
@@ -40,8 +40,8 @@ from .permissions.policy import PendingApproval
 from .storage import BackgroundTaskRepository, SessionEventRepository, SessionRecoveryRepository, SessionRepository, SessionRunWriter
 from .storage.shared import _pending_operation_class, _pending_path_scope, _pending_permission_decision
 
-SESSION_BUNDLE_SCHEMA_NAME: Final[str] = "voidcode.session.bundle.v2"
-SESSION_BUNDLE_SCHEMA_VERSION: Final[int] = 2
+SESSION_BUNDLE_SCHEMA_NAME: Final[str] = "voidcode.session.bundle.v3"
+SESSION_BUNDLE_SCHEMA_VERSION: Final[int] = 3
 SESSION_BUNDLE_FILE_NAME: Final[str] = "bundle.json"
 SESSION_BUNDLE_DEFAULT_EXTENSION: Final[str] = ".vcsession.zip"
 type SessionBundleFormat = Literal["zip", "json"]
@@ -445,7 +445,7 @@ def _validate_rows(
         )
         identity = cast(str, event["session_id"])
         sequence = cast(int, event["sequence"])
-        if event["workspace_id"] != workspace or identity not in by_session or sequence <= 0 or event["source"] not in ("runtime", "graph", "tool"):
+        if event["workspace_id"] != workspace or identity not in by_session or sequence <= 0 or event["source"] not in ("runtime", "core", "tool"):
             raise SessionBundleError("invalid event scope/identity/source")
         if sequence in by_session[identity]:
             raise SessionBundleError("duplicate event sequence")
@@ -511,7 +511,7 @@ def parse_session_bundle(payload: object) -> SessionBundle:
         _exact(root, frozenset({"schema", "manifest", "sessions", "events", "background_tasks", "deliveries", "diagnostics", "artifacts"}), "bundle")
         manifest = _object(root["manifest"], "manifest")
         _exact(manifest, frozenset(field.name for field in fields(SessionBundleManifest)), "manifest")
-        if type(manifest["schema_version"]) is not int or manifest["schema_version"] != 2:
+        if type(manifest["schema_version"]) is not int or manifest["schema_version"] != SESSION_BUNDLE_SCHEMA_VERSION:
             raise SessionBundleError("unsupported session bundle schema version")
         for name in ("created_at", "session_count", "event_count", "background_task_count", "artifact_count"):
             if type(manifest[name]) is not int or cast(int, manifest[name]) < 0:
@@ -667,7 +667,7 @@ def build_session_bundle(
     if options.redact is not False or any(
         value is not True for value in (options.include_tool_output, options.include_raw_provider_messages, options.include_reasoning_text)
     ):
-        raise SessionBundleError("CURRENT bundle2 requires exact unredacted export options")
+        raise SessionBundleError("CURRENT bundle3 requires exact unredacted export options")
     validate_id(session_id)
     session_ids = {session_id}
     task_ids: set[str] = set()
@@ -764,7 +764,7 @@ def build_session_bundle(
                 }
             )
     manifest = SessionBundleManifest(
-        2,
+        SESSION_BUNDLE_SCHEMA_VERSION,
         VOIDCODE_VERSION,
         (clock or (lambda: int(time.time() * 1000)))(),
         _workspace_hash(workspace),
@@ -800,6 +800,68 @@ def _relocate_metadata(metadata: dict[str, object], *, workspace: str, session_i
         metadata["composition_ref"] = _relocate_ref(CompositionRef.model_validate(metadata["composition_ref"]), workspace, session_ids, task_ids)
     if "workspace" in metadata:
         metadata["workspace"] = workspace
+
+
+def _relocate_turn_batch(
+    metadata: dict[str, object],
+    *,
+    source_session_id: str,
+    destination_session_id: str,
+    batch_ids: Mapping[str, str],
+) -> None:
+    runtime_state = metadata.get("runtime_state")
+    if not isinstance(runtime_state, dict):
+        return
+    batch = runtime_state.get("turn_batch")
+    if batch is None:
+        return
+    if not isinstance(batch, dict) or batch.get("session_id") != source_session_id:
+        raise SessionBundleError("native batch checkpoint does not match its source session")
+    source_batch_id = batch.get("tool_batch_id")
+    destination_batch_id = batch_ids.get(source_batch_id) if isinstance(source_batch_id, str) else None
+    if destination_batch_id is None:
+        raise SessionBundleError("native batch checkpoint has no matching copied model-turn event")
+    batch["session_id"] = destination_session_id
+    batch["tool_batch_id"] = destination_batch_id
+
+
+def _relocate_composition_turn(metadata: dict[str, object], *, source_session_id: str, destination_session_id: str) -> None:
+    runtime_state = metadata.get("runtime_state")
+    if not isinstance(runtime_state, dict):
+        return
+    turn = runtime_state.get("composition_turn")
+    if turn is None:
+        return
+    if not isinstance(turn, dict) or turn.get("session_id") != source_session_id:
+        raise SessionBundleError("composition turn does not match its source session")
+    run_id = turn.get("run_id")
+    occurrence = turn.get("occurrence")
+    if (
+        not isinstance(run_id, str)
+        or not run_id.strip()
+        or type(occurrence) is not int
+        or occurrence < 1
+        or turn.get("scope_id") != f"{source_session_id}:{run_id}:{occurrence}"
+    ):
+        raise SessionBundleError("composition turn has invalid source ownership")
+    turn["session_id"] = destination_session_id
+    turn["scope_id"] = f"{destination_session_id}:{run_id}:{occurrence}"
+
+
+def _relocate_checkpoint_tool_results(checkpoint: dict[str, object], *, batch_ids: Mapping[str, str]) -> None:
+    tool_results = checkpoint.get("tool_results")
+    if not isinstance(tool_results, list):
+        return
+    for result in tool_results:
+        if not isinstance(result, dict):
+            raise SessionBundleError("checkpoint tool result must be an object")
+        source_batch_id = result.get("tool_batch_id")
+        if not isinstance(source_batch_id, str) or not source_batch_id.strip():
+            raise SessionBundleError("checkpoint tool result requires its native batch identity")
+        destination_batch_id = batch_ids.get(source_batch_id)
+        if destination_batch_id is None:
+            raise SessionBundleError("checkpoint tool result has no matching copied model-turn event")
+        result["tool_batch_id"] = destination_batch_id
 
 
 def _relocate_ref(ref: CompositionRef, workspace: str, session_ids: dict[str, str], task_ids: dict[str, str]) -> dict[str, object]:
@@ -896,19 +958,53 @@ def apply_session_bundle(
             validate_id(candidate)
             rebound[original] = candidate
             reserved.add(candidate)
+    batch_id_maps: dict[str, dict[str, str]] = {}
+    for event in rows["events"]:
+        original_session_id = cast(str, event["session_id"])
+        if event["event_type"] != "core.model_turn":
+            continue
+        sequence = cast(int, event["sequence"])
+        destination_session_id = session_ids[original_session_id]
+        batch_id_maps.setdefault(original_session_id, {})[model_turn_batch_id(original_session_id, sequence)] = model_turn_batch_id(
+            destination_session_id, sequence
+        )
     for row in rows["sessions"]:
-        original = row["session_id"]
-        row["session_id"] = session_ids[original]
+        original = cast(str, row["session_id"])
+        destination = session_ids[original]
+        row["session_id"] = destination
         row["workspace_id"] = str(workspace)
         for name in ("parent_session_id", "forked_from_session_id"):
             if row[name] is not None:
                 row[name] = session_ids[row[name]]
+        batch_ids = batch_id_maps.get(original, {})
         metadata = row["metadata_json"]
         _relocate_metadata(metadata, workspace=str(workspace), session_ids=session_ids, task_ids=task_ids)
-        metadata["bundle_import_provenance"] = {"source_workspace": source, "source_session_id": original, "status": row["status"], "runnable": True}
+        _relocate_turn_batch(
+            metadata,
+            source_session_id=original,
+            destination_session_id=destination,
+            batch_ids=batch_ids,
+        )
+        _relocate_composition_turn(metadata, source_session_id=original, destination_session_id=destination)
+        metadata["bundle_import_provenance"] = {
+            "source_workspace": source,
+            "source_session_id": original,
+            "status": row["status"],
+            "runnable": True,
+        }
         checkpoint = row["resume_checkpoint_json"]
         if checkpoint is not None:
-            _relocate_metadata(checkpoint["session_metadata"], workspace=str(workspace), session_ids=session_ids, task_ids=task_ids)
+            checkpoint_metadata = checkpoint["session_metadata"]
+            _relocate_metadata(checkpoint_metadata, workspace=str(workspace), session_ids=session_ids, task_ids=task_ids)
+            _relocate_turn_batch(
+                checkpoint_metadata,
+                source_session_id=original,
+                destination_session_id=destination,
+                batch_ids=batch_ids,
+            )
+            _relocate_composition_turn(checkpoint_metadata, source_session_id=original, destination_session_id=destination)
+            checkpoint_metadata["bundle_import_provenance"] = metadata["bundle_import_provenance"]
+            _relocate_checkpoint_tool_results(checkpoint, batch_ids=batch_ids)
             for name, mapping in (
                 ("pending_approval_owner_session_id", session_ids),
                 ("pending_approval_owner_parent_session_id", session_ids),
@@ -997,7 +1093,16 @@ def apply_session_bundle(
     for event in rows["events"]:
         event["session_id"] = session_ids[event["session_id"]]
         event["workspace_id"] = str(workspace)
-        rebind_artifact_references(event.get("payload_json") or event.get("payload"))
+        payload = event.get("payload_json") or event.get("payload")
+        if isinstance(payload, dict):
+            for name, mapping in (
+                ("owner_session_id", session_ids),
+                ("owner_parent_session_id", session_ids),
+                ("delegated_task_id", task_ids),
+            ):
+                if payload.get(name) in mapping:
+                    payload[name] = mapping[payload[name]]
+        rebind_artifact_references(payload)
     for row in rows["sessions"]:
         checkpoint = row["resume_checkpoint_json"]
         if isinstance(checkpoint, dict):
@@ -1013,7 +1118,7 @@ def apply_session_bundle(
     if dry_run:
         return SessionBundleImportResult(
             SESSION_BUNDLE_SCHEMA_NAME,
-            2,
+            SESSION_BUNDLE_SCHEMA_VERSION,
             checked.manifest.voidcode_version,
             checked.manifest.created_at,
             False,
@@ -1082,7 +1187,7 @@ def apply_session_bundle(
         raise
     return SessionBundleImportResult(
         SESSION_BUNDLE_SCHEMA_NAME,
-        2,
+        SESSION_BUNDLE_SCHEMA_VERSION,
         checked.manifest.voidcode_version,
         checked.manifest.created_at,
         False,

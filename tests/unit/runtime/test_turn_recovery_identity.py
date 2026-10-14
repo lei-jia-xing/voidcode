@@ -3,12 +3,17 @@ from typing import Any
 import pytest
 
 from voidcode.core.turns import CallSeed
+from voidcode.runtime.events import model_turn_batch_id
 from voidcode.runtime.execution.turn_recovery import persisted_turn_batch, restored_turn_batch
 from voidcode.tools.contracts import ToolCall
 
 
 def _metadata() -> dict[str, Any]:
-    batch = CallSeed((ToolCall("read", {"path": "source.txt"}, "call-1"),), run_step=1)
+    batch = CallSeed(
+        (ToolCall("read", {"path": "source.txt"}, "call-1"),),
+        run_step=1,
+        tool_batch_id=model_turn_batch_id("session", 1),
+    )
     return {
         "runtime_state": {
             "run_id": "active-resume",

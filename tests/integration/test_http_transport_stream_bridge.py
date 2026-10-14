@@ -57,8 +57,8 @@ class _StubRuntime:
                 event=EventEnvelope(
                     session_id=cast(str, request.session_id),
                     sequence=sequence,
-                    event_type="graph.provider_stream",
-                    source="graph",
+                    event_type="core.provider_stream",
+                    source="core",
                     payload={"sequence": sequence},
                 ),
             )

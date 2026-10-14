@@ -53,7 +53,7 @@ class RuntimeHooksConfig:
     on_background_task_result_read: tuple[tuple[str, ...], ...] = ()
     on_delegated_result_available: tuple[tuple[str, ...], ...] = ()
     on_turn_progress: tuple[tuple[str, ...], ...] = ()
-    on_stuck_detected: tuple[tuple[str, ...], ...] = ()
+    on_tool_batch_repeated: tuple[tuple[str, ...], ...] = ()
     on_approval_requested: tuple[tuple[str, ...], ...] = ()
     on_question_asked: tuple[tuple[str, ...], ...] = ()
     on_before_compact: tuple[tuple[str, ...], ...] = ()

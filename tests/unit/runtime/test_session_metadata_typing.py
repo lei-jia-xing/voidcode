@@ -122,7 +122,6 @@ def test_persisted_parse_accepts_current_payloads() -> None:
             "depth": 2,
             "remaining_spawn_budget": 5,
             "selected_preset": "task",
-            "selected_execution_engine": "provider",
         }
     )
     assert delegation["depth"] == 2

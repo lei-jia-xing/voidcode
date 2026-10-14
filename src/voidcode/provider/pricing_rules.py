@@ -30,17 +30,12 @@ _PER_MILLION = 1_000_000
 
 @dataclass(frozen=True, slots=True)
 class LongContextRates:
-    """The rate card one model's tier applies above its threshold.
+    """The rate card one model's tier applies above its threshold."""
 
-    USD per token, the unit the catalog's own ``cost_per_*`` fields use; the JSON
-    authors the OMP KDL numbers verbatim (USD per 1M) and they are converted once,
-    on load.
-    """
-
-    input: float
-    output: float
-    cache_read: float
-    cache_write: float
+    input: float | None
+    output: float | None
+    cache_read: float | None
+    cache_write: float | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,14 +64,11 @@ class PricingRuleRow:
             return self.rates
         if self.multiplier is None or metadata is None:
             return None
-        # ponytail: ``or 0.0`` prices an absent catalog rate as free -- see
-        # ``scripts/generate_model_catalog.py::_per_token`` for the ceiling and the
-        # upgrade path (carry ``float | None`` rates, propagate ``None`` as unpriced).
         return LongContextRates(
-            input=(metadata.cost_per_input_token or 0.0) * self.multiplier,
-            output=(metadata.cost_per_output_token or 0.0) * self.multiplier,
-            cache_read=(metadata.cost_per_cache_read_token or 0.0) * self.multiplier,
-            cache_write=(metadata.cost_per_cache_write_token or 0.0) * self.multiplier,
+            input=None if metadata.cost_per_input_token is None else metadata.cost_per_input_token * self.multiplier,
+            output=None if metadata.cost_per_output_token is None else metadata.cost_per_output_token * self.multiplier,
+            cache_read=None if metadata.cost_per_cache_read_token is None else metadata.cost_per_cache_read_token * self.multiplier,
+            cache_write=None if metadata.cost_per_cache_write_token is None else metadata.cost_per_cache_write_token * self.multiplier,
         )
 
 
@@ -161,18 +153,20 @@ def long_context_rule_for(provider_id: str, model_id: str) -> PricingRuleRow | N
     return None
 
 
-def _uncached_input_tokens(usage: ProviderTokenUsage) -> int:
-    """The prompt tokens priced at the input rate.
-
-    A provider that reports only the prompt total (no uncached/cached split) still
-    has to be priced: the uncached part is derived from the total minus whatever
-    cached buckets were reported, floored at zero.
-    """
+def _uncached_input_tokens(usage: ProviderTokenUsage) -> int | None:
     if usage.uncached_input_tokens is not None:
         return usage.uncached_input_tokens
-    if usage.input_tokens is None:
-        return 0
-    return max(0, usage.input_tokens - (usage.cache_read_tokens or 0) - (usage.cache_write_tokens or 0))
+    if usage.input_tokens is None or usage.cache_read_tokens is None:
+        return None
+    return max(0, usage.input_tokens - usage.cache_read_tokens)
+
+
+def _bucket_cost(count: int | None, rate: float | None) -> float | None:
+    if count == 0 or rate == 0:
+        return 0.0
+    if count is None or rate is None:
+        return None
+    return count * rate
 
 
 def usage_cost_usd(
@@ -182,41 +176,50 @@ def usage_cost_usd(
     usage: ProviderTokenUsage,
     metadata: ProviderModelMetadata | None,
 ) -> float | None:
-    """The USD cost of one turn's usage, from the catalog's flat rates plus any tier.
-
-    Every bucket is priced with the same rate card: the tier's when the prompt's
-    input tokens reach its threshold, the catalog's flat rates otherwise. A usage
-    field the provider did not report counts as zero, except the prompt total,
-    which is split by `_uncached_input_tokens`.
-
-    ``None`` means *unpriced*: the shipped catalog describes no rates for this
-    model, so no number can be honest. A model the catalog prices at zero is a
-    free model and returns ``0.0`` -- the two are deliberately distinguishable.
-    """
-    if metadata is None:
+    """Price observed usage; return ``None`` when a required count or rate is unknown."""
+    if metadata is None or all(
+        count is None
+        for count in (
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cache_read_tokens,
+            usage.cache_write_tokens,
+            usage.uncached_input_tokens,
+        )
+    ):
         return None
-    # ponytail: ``or 0.0`` prices an absent catalog rate as free -- see
-    # ``scripts/generate_model_catalog.py::_per_token`` for the ceiling and the
-    # upgrade path (carry ``float | None`` rates, propagate ``None`` as unpriced).
     rates = LongContextRates(
-        input=metadata.cost_per_input_token or 0.0,
-        output=metadata.cost_per_output_token or 0.0,
-        cache_read=metadata.cost_per_cache_read_token or 0.0,
-        cache_write=metadata.cost_per_cache_write_token or 0.0,
+        input=metadata.cost_per_input_token,
+        output=metadata.cost_per_output_token,
+        cache_read=metadata.cost_per_cache_read_token,
+        cache_write=metadata.cost_per_cache_write_token,
     )
-    uncached = _uncached_input_tokens(usage)
-    cache_read = usage.cache_read_tokens or 0
-    cache_write = usage.cache_write_tokens or 0
-    output = usage.output_tokens or 0
     rule = long_context_rule_for(provider_id, model_id)
     if rule is not None:
-        prompt_input = uncached + cache_read + cache_write
+        uncached = _uncached_input_tokens(usage)
+        if usage.input_tokens is not None:
+            prompt_input = usage.input_tokens
+        elif uncached is not None and usage.cache_read_tokens is not None:
+            prompt_input = uncached + usage.cache_read_tokens
+        else:
+            return None
+        if usage.cache_write_tokens is None:
+            return None
+        prompt_input += usage.cache_write_tokens
         reached = prompt_input > rule.threshold or (rule.inclusive and prompt_input == rule.threshold)
         if reached:
             tier = rule.tier_for(metadata)
-            if tier is not None:
-                rates = tier
-    return rates.input * uncached + rates.output * output + rates.cache_read * cache_read + rates.cache_write * cache_write
+            if tier is None:
+                return None
+            rates = tier
+
+    costs = (
+        _bucket_cost(_uncached_input_tokens(usage), rates.input),
+        _bucket_cost(usage.output_tokens, rates.output),
+        _bucket_cost(usage.cache_read_tokens, rates.cache_read),
+        _bucket_cost(usage.cache_write_tokens, rates.cache_write),
+    )
+    return None if any(cost is None for cost in costs) else sum(cost for cost in costs if cost is not None)
 
 
 __all__ = [

@@ -7,6 +7,7 @@ from voidcode.provider.pricing_rules import usage_cost_usd
 from voidcode.provider.protocol import ProviderTokenUsage
 from voidcode.runtime.contracts import SessionState
 from voidcode.runtime.execution.provider_execution_metadata import session_with_provider_usage_metadata
+from voidcode.runtime.providers.metadata import catalog_metadata_from_payload
 
 
 def _session() -> SessionState:
@@ -104,8 +105,8 @@ def test_a_resumed_run_does_not_double_count_the_cost() -> None:
 
 
 def test_a_retried_attempt_inside_one_turn_is_not_accumulated_twice() -> None:
-    """The accumulator is driven by the graph step, and a turn produces one step
-    (the retry loop lives inside the graph), so one turn adds one amount."""
+    """The accumulator is driven by the producer step, and a turn produces one step
+    (the retry loop lives inside the producer), so one turn adds one amount."""
     session = _session()
     step = _usage(0.25)
 
@@ -115,3 +116,46 @@ def test_a_retried_attempt_inside_one_turn_is_not_accumulated_twice() -> None:
     assert isinstance(payload, dict)
     assert payload["cumulative"]["cost_usd"] == 0.25
     assert payload["turn_count"] == 1
+
+
+def test_zero_catalog_price_is_preserved_as_free_not_unknown() -> None:
+    metadata = catalog_metadata_from_payload({"cost_per_input_token": 0.0})
+    assert metadata.cost_per_input_token == 0.0
+    assert metadata.cost_per_output_token is None
+
+
+def test_zero_cost_stays_observed_and_an_unreported_turn_invalidates_cumulative_usage() -> None:
+    observed_zero = session_with_provider_usage_metadata(_session(), _usage(0.0))
+    observed_payload = observed_zero.metadata["provider_usage"]
+    assert isinstance(observed_payload, dict)
+    assert observed_payload["latest"]["cost_usd"] == 0.0
+    assert observed_payload["cumulative"]["cost_usd"] == 0.0
+
+    unreported = session_with_provider_usage_metadata(observed_zero, None)
+    payload = unreported.metadata["provider_usage"]
+    assert isinstance(payload, dict)
+    assert payload["latest"]["cost_usd"] is None
+    assert payload["cumulative"]["cost_usd"] is None
+    assert payload["cumulative"]["input_tokens"] is None
+    assert payload["turn_count"] == 2
+
+
+def test_missing_legacy_cumulative_bucket_stays_unknown() -> None:
+    session = SessionState(
+        session="s",
+        status="running",
+        turn=2,
+        metadata={
+            "provider_usage": {
+                "cumulative": {"input_tokens": 3000},
+                "turn_count": 1,
+            }
+        },
+    )
+
+    updated = session_with_provider_usage_metadata(session, _usage(0.0))
+    payload = updated.metadata["provider_usage"]
+    assert isinstance(payload, dict)
+    assert payload["cumulative"]["input_tokens"] == 6000
+    assert payload["cumulative"]["output_tokens"] is None
+    assert payload["cumulative"]["cost_usd"] is None

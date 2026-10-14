@@ -148,20 +148,22 @@ def test_non_ascii_payload_is_not_under_counted() -> None:
 # --- no usable report ----------------------------------------------------------------
 
 
-def test_missing_or_zero_usage_falls_back_to_a_pure_estimate() -> None:
-    for anchor in (None, 0):
-        window = _window(anchor_tokens=anchor)
+def test_missing_usage_falls_back_but_observed_zero_is_preserved() -> None:
+    missing = _window(anchor_tokens=None)
+    observed_zero = _window(anchor_tokens=0)
 
-        # No measured part is reported, so the decision is the estimate alone.
-        assert window.measured_anchor_tokens is None
-        assert window.usage_tokens_before == window.estimated_delta_tokens
+    assert missing.measured_anchor_tokens is None
+    assert missing.usage_tokens_before == missing.estimated_delta_tokens
+    assert observed_zero.measured_anchor_tokens == 0
+    assert observed_zero.usage_tokens_before == observed_zero.estimated_delta_tokens
+    assert observed_zero.metadata_payload()["usage_tokens_estimated"] is True
 
 
-def test_anchor_reader_sums_the_reported_buckets_only_when_present() -> None:
+def test_anchor_reader_sums_reported_buckets_only_when_present() -> None:
     assert provider_usage_anchor_tokens({}) is None
-    assert provider_usage_anchor_tokens({"provider_usage": {"latest": {"input_tokens": 0, "output_tokens": 0}}}) is None
+    assert provider_usage_anchor_tokens({"provider_usage": {"latest": {"input_tokens": 0, "output_tokens": 0}}}) == 0
     # ``cache_read_tokens`` is a component of ``input_tokens``, so it must NOT be
-    # added again; only ``cache_write_tokens`` joins the inclusive input.
+    # added again; only ``cache_write_tokens`` joins the inclusive input when reported.
     assert (
         provider_usage_anchor_tokens(
             {"provider_usage": {"latest": {"input_tokens": 1_000, "cache_read_tokens": 9_000, "cache_write_tokens": 500, "output_tokens": 200}}}

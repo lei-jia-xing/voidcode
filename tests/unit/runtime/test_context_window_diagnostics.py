@@ -20,7 +20,6 @@ def _diagnostic_codes(metadata: dict[str, object]) -> tuple[str, ...]:
         assembled_context=_Assembled(metadata=metadata),
         provider="anthropic",
         model="claude-test",
-        execution_engine="direct",
         available_tool_count=0,
     )
     return tuple(diagnostic.code for diagnostic in snapshot.diagnostics)
@@ -66,7 +65,6 @@ def test_context_transform_diagnostics_keep_declared_and_request_policies_distin
         ),
         provider="anthropic",
         model="claude-test",
-        execution_engine="direct",
         available_tool_count=0,
     )
 
@@ -85,3 +83,61 @@ def test_context_transform_diagnostics_keep_declared_and_request_policies_distin
         "diagnostics": ["provider unavailable"],
         "error": "provider unavailable",
     }
+
+
+def test_tool_pairing_scopes_reused_call_ids_to_native_batches() -> None:
+    first_call = ContextSegment(
+        role="assistant",
+        content=None,
+        tool_call_id="read_1",
+        tool_name="read",
+        tool_arguments={"path": "first.txt"},
+        tool_batch_id="first-batch",
+    )
+    first_result = ContextSegment(
+        role="tool",
+        content="first result",
+        tool_call_id="read_1",
+        tool_name="read",
+        tool_batch_id="first-batch",
+    )
+    second_call = ContextSegment(
+        role="assistant",
+        content=None,
+        tool_call_id="read_1",
+        tool_name="read",
+        tool_arguments={"path": "second.txt"},
+        tool_batch_id="second-batch",
+    )
+    second_result = ContextSegment(
+        role="tool",
+        content="second result",
+        tool_call_id="read_1",
+        tool_name="read",
+        tool_batch_id="second-batch",
+    )
+    snapshot = inspect_provider_context(
+        assembled_context=_Assembled(segments=(first_call, first_result, second_call, second_result)),
+        provider="openai",
+        model="test",
+        available_tool_count=1,
+    )
+    assert "missing_tool_result" not in {diagnostic.code for diagnostic in snapshot.diagnostics}
+    assert "orphan_tool_result" not in {diagnostic.code for diagnostic in snapshot.diagnostics}
+    assert "duplicate_tool_call_id" not in {diagnostic.code for diagnostic in snapshot.diagnostics}
+
+    duplicate = ContextSegment(
+        role="assistant",
+        content=None,
+        tool_call_id="read_1",
+        tool_name="read",
+        tool_arguments={"path": "duplicate.txt"},
+        tool_batch_id="first-batch",
+    )
+    same_batch = inspect_provider_context(
+        assembled_context=_Assembled(segments=(first_call, duplicate, first_result)),
+        provider="openai",
+        model="test",
+        available_tool_count=1,
+    )
+    assert "duplicate_tool_call_id" in {diagnostic.code for diagnostic in same_batch.diagnostics}

@@ -433,7 +433,20 @@ export const StatusBar = memo(function StatusBar({
   const serverTone = toneFromState(snapshot?.acp?.state);
   const lspTone = toneFromState(snapshot?.lsp?.state);
   const mcpTone = toneFromState(snapshot?.mcp?.state);
-  const overallTone = aggregateTone(serverTone, lspTone, mcpTone);
+  const currentSnapshotAvailable = status === "success" && snapshot !== null;
+  const overallTone =
+    status === "error"
+      ? "error"
+      : status === "loading"
+        ? "warn"
+        : currentSnapshotAvailable
+          ? aggregateTone(serverTone, lspTone, mcpTone)
+          : "muted";
+  const overallHasUnknown =
+    currentSnapshotAvailable &&
+    [snapshot.acp?.state, snapshot.lsp?.state, snapshot.mcp?.state].some(
+      (state) => state === undefined,
+    );
   const mcpDetails = snapshot?.mcp?.details;
   const mcpRetryAvailable = Boolean(mcpDetails?.retry_available);
 
@@ -450,13 +463,21 @@ export const StatusBar = memo(function StatusBar({
   }, [snapshot]);
 
   const overallLabel =
-    overallTone === "ok"
-      ? t("status.overallOk")
-      : overallTone === "warn"
-        ? t("status.overallWarn")
-        : overallTone === "error"
-          ? t("status.overallError")
-          : t("status.overallIdle");
+    status === "error"
+      ? t("status.overallUnavailable")
+      : status === "loading"
+        ? t("status.loading")
+        : !currentSnapshotAvailable
+          ? t("status.overallUnknown")
+          : overallTone === "ok"
+            ? t("status.overallOk")
+            : overallTone === "warn"
+              ? t("status.overallWarn")
+              : overallTone === "error"
+                ? t("status.overallError")
+                : overallHasUnknown
+                  ? t("status.overallUnknown")
+                  : t("status.overallIdle");
 
   if (status === "idle" && !snapshot) return null;
 
@@ -467,9 +488,14 @@ export const StatusBar = memo(function StatusBar({
         variant="secondary"
         onClick={() => setOpen((value) => !value)}
         className="text-[var(--vc-text-muted)]"
-        aria-label={t("status.toggleAria")}
+        aria-label={`${t("status.toggleAria")}: ${overallLabel}`}
         aria-expanded={open}
         aria-controls={popoverId}
+        title={
+          status === "error"
+            ? t("status.loadError", { message: error ?? "" })
+            : overallLabel
+        }
       >
         <span className="flex items-center gap-1.5">
           <Activity className="h-3.5 w-3.5" />
@@ -477,7 +503,11 @@ export const StatusBar = memo(function StatusBar({
             aria-hidden="true"
             className={`h-1.5 w-1.5 rounded-full ${dotClassFromTone(overallTone)}`}
           />
-          <span className="hidden sm:inline">{overallLabel}</span>
+          <span
+            className={overallTone === "ok" ? "hidden sm:inline" : "inline"}
+          >
+            {overallLabel}
+          </span>
           <ChevronDown
             className={`h-3 w-3 transition-transform ${open ? "rotate-180" : ""}`}
           />

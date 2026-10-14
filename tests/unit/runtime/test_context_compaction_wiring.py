@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from voidcode.core.transcript import output_text
-from voidcode.core.turns import FinalTurn, ToolTurn
+from voidcode.core.turns import FinalTurn, ModelTurnFact, ToolTurn, TurnRequest
 from voidcode.hook.config import RuntimeHooksConfig
 from voidcode.provider.config import ProviderConfigs, ProviderEndpointConfig
 from voidcode.provider.protocol import ProviderTurnRequest, ProviderTurnResult
@@ -419,21 +419,25 @@ class _SummaryModelProvider:
         return self.turn
 
 
-class _ReadThenDoneGraph:
-    """Scripted graph: one read per step, then done; records the provider view."""
+class _ReadThenDoneProducer:
+    """Scripted producer: one read per step, then done; records the provider view."""
 
     def __init__(self, reads: int) -> None:
         self._reads = reads
         self.summary_segments: list[str | None] = []
 
-    def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> FinalTurn | ToolTurn:
+    def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: object) -> FinalTurn | ToolTurn:
         _ = session
-        assembled = request.assembled_context  # type: ignore[attr-defined]
+        fact = ModelTurnFact(request.run_step, "deterministic", request.prompt)
+        assembled = request.assembled_context
         projection = [segment.content for segment in assembled.segments if (segment.metadata or {}).get("source") == "context_projection"]
         self.summary_segments.append(projection[0] if projection else None)
         if len(tool_results) < self._reads:
-            return ToolTurn(calls=(ToolCall(tool_name="read", arguments={"path": f"big-{len(tool_results)}.txt"}),))
-        return FinalTurn(output="done")
+            return ToolTurn(
+                calls=(ToolCall(tool_name="read", arguments={"path": f"big-{len(tool_results)}.txt"}),),
+                facts=(fact,),
+            )
+        return FinalTurn(output="done", facts=(fact,))
 
 
 def _summary_runtime(
@@ -443,15 +447,14 @@ def _summary_runtime(
     summary_enabled: bool,
     reads: int = _READ_COUNT,
     hooks: RuntimeHooksConfig | None = None,
-) -> tuple[VoidCodeRuntime, _ReadThenDoneGraph]:
-    graph = _ReadThenDoneGraph(reads)
+) -> tuple[VoidCodeRuntime, _ReadThenDoneProducer]:
+    producer = _ReadThenDoneProducer(reads)
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ReadTool()]),
-        turn_producer=graph,  # type: ignore[arg-type]
+        turn_producer=producer,  # type: ignore[arg-type]
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
-            execution_engine="provider",
             model="session/model",
             hooks=hooks,
             providers=ProviderConfigs(custom={"session": ProviderEndpointConfig()}),
@@ -466,7 +469,7 @@ def _summary_runtime(
         model_provider_registry=ModelProviderRegistry(providers={"session": provider}),  # type: ignore[arg-type]
         permission_policy=PermissionPolicy(mode="yolo"),
     )
-    return runtime, graph
+    return runtime, producer
 
 
 def _compacted_kind(response: object) -> object:
@@ -479,12 +482,12 @@ def test_opt_in_summary_reaches_the_provider_view_as_model_kind(tmp_path: Path) 
     """Gate on + a working call: the stub's text is what the provider receives."""
     _big_workspace(tmp_path)
     provider = _SummaryModelProvider(outcome=_SUMMARY_TEXT)
-    runtime, graph = _summary_runtime(tmp_path, provider=provider, summary_enabled=True)
+    runtime, producer = _summary_runtime(tmp_path, provider=provider, summary_enabled=True)
 
     response = runtime.run(RuntimeRequest(prompt=_SUMMARY_PROMPT, session_id="summary-on"))
 
     assert "line 000" in provider.turn.requests[0].prompt  # the discarded content, not the summary
-    projection = [text for text in graph.summary_segments if text]
+    projection = [text for text in producer.summary_segments if text]
     assert projection and _SUMMARY_TEXT in projection[-1]
     assert _compacted_kind(response) == "model"
 
@@ -493,12 +496,12 @@ def test_failed_summary_keeps_the_deterministic_text_and_reports_fallback(tmp_pa
     """Gate on + a failing call: the run completes on the deterministic projection."""
     _big_workspace(tmp_path)
     provider = _SummaryModelProvider(outcome=RuntimeError("summary provider exploded"))
-    runtime, graph = _summary_runtime(tmp_path, provider=provider, summary_enabled=True)
+    runtime, producer = _summary_runtime(tmp_path, provider=provider, summary_enabled=True)
 
     response = runtime.run(RuntimeRequest(prompt=_SUMMARY_PROMPT, session_id="summary-off"))
 
     assert provider.turn.requests, "the summary lane was attempted"
-    projection = [text for text in graph.summary_segments if text]
+    projection = [text for text in producer.summary_segments if text]
     assert projection and "Runtime context projection:" in projection[-1]
     assert "MODEL SUMMARY" not in projection[-1]
     assert _compacted_kind(response) == "fallback"
@@ -508,12 +511,12 @@ def test_blank_summary_degrades_like_a_failure(tmp_path: Path) -> None:
     """Gate on + a whitespace-only answer: no override, deterministic text, fallback."""
     _big_workspace(tmp_path)
     provider = _SummaryModelProvider(outcome="   \n  ")
-    runtime, graph = _summary_runtime(tmp_path, provider=provider, summary_enabled=True)
+    runtime, producer = _summary_runtime(tmp_path, provider=provider, summary_enabled=True)
 
     response = runtime.run(RuntimeRequest(prompt=_SUMMARY_PROMPT, session_id="summary-blank"))
 
     assert provider.turn.requests, "the summary lane was attempted"
-    projection = [text for text in graph.summary_segments if text]
+    projection = [text for text in producer.summary_segments if text]
     assert projection and "Runtime context projection:" in projection[-1]
     assert projection[-1].strip() != ""
     assert _compacted_kind(response) == "fallback"
@@ -523,12 +526,12 @@ def test_gate_off_spends_no_provider_call(tmp_path: Path) -> None:
     """Gate off: the provider is never asked, and the payload reports deterministic."""
     _big_workspace(tmp_path)
     provider = _SummaryModelProvider(outcome=_SUMMARY_TEXT)
-    runtime, graph = _summary_runtime(tmp_path, provider=provider, summary_enabled=False)
+    runtime, producer = _summary_runtime(tmp_path, provider=provider, summary_enabled=False)
 
     response = runtime.run(RuntimeRequest(prompt=_SUMMARY_PROMPT, session_id="summary-disabled"))
 
     assert provider.turn.requests == [], "gate off must not spend a provider call"
-    projection = [text for text in graph.summary_segments if text]
+    projection = [text for text in producer.summary_segments if text]
     assert projection and _SUMMARY_TEXT not in projection[-1]
     assert _compacted_kind(response) == "deterministic"
 
@@ -538,7 +541,7 @@ def test_cancelling_before_compact_hook_skips_the_model_call(tmp_path: Path) -> 
     _big_workspace(tmp_path)
     stdout = json.dumps({"action": "cancel", "diagnostic": "operator_hold"})
     provider = _SummaryModelProvider(outcome=_SUMMARY_TEXT)
-    runtime, _graph = _summary_runtime(
+    runtime, _producer = _summary_runtime(
         tmp_path,
         provider=provider,
         summary_enabled=True,

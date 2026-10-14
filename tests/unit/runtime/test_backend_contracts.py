@@ -61,7 +61,7 @@ def test_tool_result_diagnostics_is_redacted_and_json_safe() -> None:
     assert failure.diagnostics == diagnostics
 
 
-def test_runtime_and_graph_protocols_are_runtime_checkable() -> None:
+def test_runtime_entrypoint_protocols_are_runtime_checkable() -> None:
     runtime_module = _runtime_module()
 
     class StubRuntime:
@@ -226,7 +226,6 @@ def test_event_envelope_exposes_typed_delegated_lifecycle_payload() -> None:
                 "approval_request_id": None,
                 "question_request_id": None,
                 "selected_preset": "execute",
-                "selected_execution_engine": "provider",
             },
             "message": {
                 "kind": "delegated_lifecycle",

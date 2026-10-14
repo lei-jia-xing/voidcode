@@ -2,7 +2,7 @@
 
 This module is the only place the CLI loads runtime config, constructs
 ``VoidCodeRuntime``, and consumes runtime streams; command modules call it
-instead of touching the runtime service, graph, or storage directly.
+instead of touching the runtime service, turn engine, or storage directly.
 """
 
 from __future__ import annotations
@@ -203,26 +203,13 @@ def consume_runtime_stream(
 
 
 def incomplete_runtime_stream_message(result: StreamResult) -> str | None:
-    if result.session.status in {"completed", "failed", "waiting"}:
+    if result.session.status in {"completed", "failed"}:
         return None
-    if has_permission_denied_tool_result(result.events):
-        return None
-    if pending_blocked_event(result.session, last_event(result)) is not None:
-        return None
-    final_event = last_event(result)
-    if final_event is not None and final_event.event_type == "runtime.failed":
+    if result.session.status == "interrupted":
+        return "runtime reported an interrupted outcome; the request did not complete"
+    if result.session.status == "waiting" and pending_blocked_event(result.session, last_event(result)) is not None:
         return None
     return f"runtime stream ended without a terminal outcome; last session status was {result.session.status}"
-
-
-def last_event_is_permission_denied_tool_result(event: EventEnvelope | None) -> bool:
-    if event is None or event.event_type != "runtime.tool_completed":
-        return False
-    return event.payload.get("permission_denied") is True
-
-
-def has_permission_denied_tool_result(events: tuple[EventEnvelope, ...]) -> bool:
-    return any(last_event_is_permission_denied_tool_result(event) for event in events)
 
 
 def run_id_from_session_metadata(metadata: dict[str, object]) -> str | None:
@@ -310,9 +297,7 @@ def session_result_exit_code(result: StreamResult) -> int:
         return blocked_exit_code(blocked_event)
     if any(event.event_type == "runtime.approval_resolved" and event.payload.get("decision") == "deny" for event in result.events):
         return EXIT_APPROVAL_DENIED
-    if result.session.status == "failed":
-        return EXIT_RUNTIME_ERROR
-    if result.session.status == "waiting":
+    if result.session.status != "completed":
         return EXIT_RUNTIME_ERROR
     return EXIT_SUCCESS
 

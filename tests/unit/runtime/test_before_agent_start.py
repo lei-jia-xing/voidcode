@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from voidcode.core.questions import QuestionResponse
-from voidcode.core.turns import FinalTurn, ToolTurn, TurnRequest, TurnSession
+from voidcode.core.turns import FinalTurn, ModelTurnFact, ToolTurn, TurnRequest, TurnSession
 from voidcode.hook.before_agent_start import (
     BeforeAgentStartBinding,
     BeforeAgentStartBlock,
@@ -34,11 +34,15 @@ class _ApprovalThenFinish:
         session: TurnSession,
     ) -> ToolTurn | FinalTurn:
         self.prompts.append(request.prompt)
+        fact = ModelTurnFact(request.run_step, "deterministic", request.prompt)
         if request.prompt == "fresh input prepared":
-            return FinalTurn(output="fresh turn")
+            return FinalTurn(output="fresh turn", facts=(fact,))
         if not tool_results:
-            return ToolTurn(calls=(ToolCall(tool_name="write", arguments={"path": "approved.txt", "content": "ok"}),))
-        return FinalTurn(output="approved")
+            return ToolTurn(
+                calls=(ToolCall(tool_name="write", arguments={"path": "approved.txt", "content": "ok"}),),
+                facts=(fact,),
+            )
+        return FinalTurn(output="approved", facts=(fact,))
 
 
 def _registry(calls: list[tuple[str, str]]) -> BeforeAgentStartRegistry:
@@ -61,14 +65,14 @@ class _Finish:
         *,
         session: TurnSession,
     ) -> FinalTurn:
-        return FinalTurn(output="done")
+        return FinalTurn(output="done", facts=(ModelTurnFact(request.run_step, "deterministic", request.prompt),))
 
 
 def test_no_handlers_leave_event_and_session_metadata_unchanged(tmp_path: Path) -> None:
     with VoidCodeRuntime(
         workspace=tmp_path,
         turn_producer=_Finish(),
-        config=RuntimeConfig(execution_engine="deterministic"),
+        config=RuntimeConfig(),
     ) as runtime:
         response = runtime.run(RuntimeRequest(prompt="ordinary request", session_id="no-hook"))
 
@@ -89,7 +93,7 @@ class _NeverCalled:
         session: TurnSession,
     ) -> FinalTurn:
         self.calls += 1
-        return FinalTurn(output="must not run")
+        return FinalTurn(output="must not run", facts=(ModelTurnFact(request.run_step, "deterministic", request.prompt),))
 
 
 @pytest.mark.parametrize("failure_kind", ["blocked", "error"])
@@ -114,7 +118,7 @@ def test_closing_failed_hook_stream_leaves_durable_terminal_result(
         )
 
     session_id = f"before-agent-start-{failure_kind}"
-    config = RuntimeConfig(execution_engine="deterministic")
+    config = RuntimeConfig()
     with VoidCodeRuntime(
         workspace=tmp_path,
         turn_producer=producer,
@@ -158,9 +162,13 @@ class _WriteThenFinish:
         session: TurnSession,
     ) -> ToolTurn | FinalTurn:
         self.prompts.append(request.prompt)
+        fact = ModelTurnFact(request.run_step, "deterministic", request.prompt)
         if tool_results:
-            return FinalTurn(output="interrupted run resumed")
-        return ToolTurn(calls=(ToolCall(tool_name="write", arguments={"path": "completed.txt", "content": "write happened once"}),))
+            return FinalTurn(output="interrupted run resumed", facts=(fact,))
+        return ToolTurn(
+            calls=(ToolCall(tool_name="write", arguments={"path": "completed.txt", "content": "write happened once"}),),
+            facts=(fact,),
+        )
 
 
 def test_hook_is_not_repeated_during_cold_interrupted_resume(tmp_path: Path) -> None:
@@ -170,7 +178,7 @@ def test_hook_is_not_repeated_during_cold_interrupted_resume(tmp_path: Path) -> 
     with VoidCodeRuntime(
         workspace=tmp_path,
         turn_producer=producer,
-        config=RuntimeConfig(execution_engine="deterministic", approval_mode="yolo"),
+        config=RuntimeConfig(approval_mode="yolo"),
         before_agent_start_registry=_registry(calls),
     ) as runtime:
         stream = runtime.run_stream(RuntimeRequest(prompt="interrupted input", session_id=session_id))
@@ -186,7 +194,7 @@ def test_hook_is_not_repeated_during_cold_interrupted_resume(tmp_path: Path) -> 
     with VoidCodeRuntime(
         workspace=tmp_path,
         turn_producer=producer,
-        config=RuntimeConfig(execution_engine="deterministic", approval_mode="yolo"),
+        config=RuntimeConfig(approval_mode="yolo"),
         before_agent_start_registry=_registry(calls),
     ) as resumed_runtime:
         resumed = resumed_runtime.resume(session_id)
@@ -212,8 +220,9 @@ class _QuestionThenFinish:
         session: TurnSession,
     ) -> ToolTurn | FinalTurn:
         self.prompts.append(request.prompt)
+        fact = ModelTurnFact(request.run_step, "deterministic", request.prompt)
         if tool_results:
-            return FinalTurn(output="question answered")
+            return FinalTurn(output="question answered", facts=(fact,))
         return ToolTurn(
             calls=(
                 ToolCall(
@@ -230,14 +239,15 @@ class _QuestionThenFinish:
                         ]
                     },
                 ),
-            )
+            ),
+            facts=(fact,),
         )
 
 
 def test_hook_is_not_repeated_during_cold_question_resume(tmp_path: Path) -> None:
     calls: list[tuple[str, str]] = []
     producer = _QuestionThenFinish()
-    config = RuntimeConfig(execution_engine="deterministic", approval_mode="ask")
+    config = RuntimeConfig(approval_mode="ask")
     session_id = "before-agent-start-question-resume"
     tool_registry = ToolRegistry.from_tools((QuestionTool(),))
     with VoidCodeRuntime(
@@ -275,7 +285,7 @@ def test_hook_is_not_repeated_during_cold_question_resume(tmp_path: Path) -> Non
 def test_hook_runs_per_new_turn_but_not_during_cold_approval_resume(tmp_path: Path) -> None:
     calls: list[tuple[str, str]] = []
     producer = _ApprovalThenFinish()
-    config = RuntimeConfig(execution_engine="deterministic", approval_mode="ask")
+    config = RuntimeConfig(approval_mode="ask")
     session_id = "before-agent-start-resume"
     with VoidCodeRuntime(
         workspace=tmp_path,

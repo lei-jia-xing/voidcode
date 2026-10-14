@@ -33,7 +33,7 @@ from voidcode.tools.glob import GlobTool
 from voidcode.tools.shell_exec import ShellExecTool
 from voidcode.tools.write import WriteTool
 
-from .test_todo_reminder import _ScriptedGraph
+from .test_todo_reminder import _ScriptedTurnProducer
 
 #: The omp matrix: mode → tier → decision. This is the expected side; the test
 #: drives the real resolver and compares against it.
@@ -93,12 +93,12 @@ def test_default_mode_auto_approves_write_tier_through_the_real_path(tmp_path: P
     Neither the mode nor the permission policy is passed here, so the runtime's
     own default selection is what resolves the call.
     """
-    graph = _ScriptedGraph([_write_step(), FinalTurn(output="done")])
+    producer = _ScriptedTurnProducer([_write_step(), FinalTurn(output="done")])
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([WriteTool()]),
-        turn_producer=graph,
-        config=RuntimeConfig(execution_engine="deterministic"),
+        turn_producer=producer,
+        config=RuntimeConfig(),
     )
     chunks = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id="approval-default-mode")))
 
@@ -162,13 +162,12 @@ def test_write_mode_auto_approves_write_tier_but_prompts_for_execute(
     """End-to-end: under mode ``write`` the write-tier call resolves with no
     pending approval (``runtime.approval_resolved`` with ``allow``), while the
     execute-tier call parks on a ``runtime.approval_requested``."""
-    graph = _ScriptedGraph([step(), FinalTurn(output="done")])
+    producer = _ScriptedTurnProducer([step(), FinalTurn(output="done")])
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([WriteTool(), ShellExecTool()]),
-        turn_producer=graph,
+        turn_producer=producer,
         config=RuntimeConfig(
-            execution_engine="deterministic",
             approval_mode=mode,
         ),
         permission_policy=PermissionPolicy(mode=mode),

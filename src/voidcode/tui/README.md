@@ -41,6 +41,8 @@ VoidCode 的终端客户端层：inline 渲染 + 原生 scrollback 的 TUI。
 - **transcript 永不进 alt screen**：只有全屏浮层（会话选择器、放不下的问答向导）临时
   `\x1b[?1049h` 借用，正文的滚动历史始终可用。
 - **单线程**：runtime 的阻塞流在 `threading.Thread` 里泵进 `queue.Queue`，循环从不阻塞在 runtime 上。
+- **stream outcome**: only `completed`, `failed`, and `interrupted` settle a closed stream. `running`/`idle` closure preserves unsettled rows with an “outcome unknown” notice; transport loss is “disconnected” and does not imply failure. Tool/assistant spinners stop without committing those rows.
+  An `interrupted` outcome is neutral; it does not assert who initiated it. Approval/question overlays remain pending until their matching resolution event arrives; a failed stream does not assume an answer was unapplied.
 
 ## 不负责什么
 

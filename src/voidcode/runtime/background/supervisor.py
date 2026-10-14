@@ -526,8 +526,8 @@ class RuntimeBackgroundTaskSupervisor:
         """Start a new background task from a TaskSpec."""
         request = spec.as_runtime_request()
         if composition is None and request.metadata.get("composition_ref") is None:
-            effective_config = self._surface.runtime_config_for_request(request)
-            composition = self._surface.prepare_execution_composition(effective_config)
+            config = self._surface.run_config_for_request(request)
+            composition = self._surface.prepare_execution_composition(config)
         state = self.start_background_task(request, composition=composition)
         return TaskHandle.from_state(state, substrate=self)
 
@@ -907,9 +907,9 @@ class RuntimeBackgroundTaskSupervisor:
         return self.task_with_observability(steered_task)
 
     def _concurrency_identity_for_request(self, request: RuntimeRequest) -> _BackgroundTaskConcurrencyIdentity:
-        effective_config = self._surface.runtime_config_for_request(request)
+        config = self._surface.run_config_for_request(request)
         return self._concurrency_identity_for_resolved_provider(
-            effective_config.resolved_provider,
+            config.resolved_provider,
         )
 
     def _concurrency_identity_for_resolved_provider(self, resolved_provider: ResolvedProviderConfig) -> _BackgroundTaskConcurrencyIdentity:
@@ -1620,7 +1620,7 @@ class RuntimeBackgroundTaskSupervisor:
         # A child whose ROW is still ``interrupted`` can already be terminally
         # finished: the run loop persists every event before the generator-driven
         # terminal seal, so a transcript ending in a successful terminal
-        # ``yield`` handoff plus ``graph.response_ready`` proves completion
+        # ``yield`` handoff plus ``core.response_ready`` proves completion
         # even when the seal was skipped/downgraded (worker early-exit, worker
         # death, overlap guard). The child terminal protocol is authoritative.
         if child_terminal_outcome(child_response) is not None:
@@ -2681,7 +2681,7 @@ class RuntimeBackgroundTaskSupervisor:
         # inside the stream generator) can be skipped entirely (generator
         # abandoned by a worker early-exit or thread death) or downgraded to
         # ``interrupted`` (the ``_persist_response`` overlap guard) even though
-        # every event — including the final ``graph.response_ready`` — was
+        # every event — including the final ``core.response_ready`` — was
         # already persisted. Finalizing the task from the in-memory response
         # must therefore also repair the session row, or a completed child can
         # be left ``interrupted`` forever with a stale ``last_event_sequence``

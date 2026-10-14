@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from ...core.turns import ReportedCall
@@ -227,11 +227,14 @@ def tool_results_from_checkpoint(raw_tool_results: list[object], *, version: int
     if version == 2:
         parsed: list[ReportedCall] = []
         for item in raw_tool_results:
-            if not isinstance(item, dict):
-                raise ValueError("persisted resume checkpoint tool_results must contain objects")
+            if not isinstance(item, dict) or "tool_batch_id" not in item:
+                raise ValueError("persisted resume checkpoint tool_results require their native batch identity")
             report = parse_report_payload(item.get("reported_call"))
+            batch_id = item["tool_batch_id"]
+            if batch_id is not None and (not isinstance(batch_id, str) or not batch_id.strip()):
+                raise ValueError("persisted checkpoint report batch identity must be non-empty text or null")
             if item.get("tool_name") != report.final_tool_name or item.get("status") != report.result.status:
                 raise ValueError("persisted checkpoint report disagrees with its client-facing projection")
-            parsed.append(report)
+            parsed.append(replace(report, tool_batch_id=batch_id))
         return tuple(parsed)
     raise ValueError(f"persisted resume checkpoint version is unsupported: {version!r}")

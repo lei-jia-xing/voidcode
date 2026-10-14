@@ -598,7 +598,6 @@ class DelegatedExecutionBody(ResponseModel):
     question_request_id: str | None = None
     routing: SubagentRoutingBody | None = None
     selected_preset: str | None = None
-    selected_execution_engine: str | None = None
     lifecycle_status: DelegatedLifecycleStatus | None = None
     approval_blocked: bool
     result_available: bool

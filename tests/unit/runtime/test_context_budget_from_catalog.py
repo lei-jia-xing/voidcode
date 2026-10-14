@@ -18,8 +18,8 @@ def _tool_results(count: int = 20) -> tuple[ToolResultView, ...]:
 
 
 class _Selection:
-    provider = "opencode-go"
-    model = "minimax-m3"
+    provider = "openai"
+    model = "gpt-5.4"
 
 
 class _Target:
@@ -63,8 +63,8 @@ def test_small_context_model_compacts_earlier_than_a_large_one() -> None:
     assert [view.output.text for view in large.tool_results] == [result.output.text for result in results]
 
 
-def test_the_budget_is_the_models_input_cap_from_the_catalog() -> None:
-    metadata = static_catalog_metadata("opencode-go", "minimax-m3")
+def test_context_budget_prefers_the_catalogs_explicit_input_cap() -> None:
+    metadata = static_catalog_metadata("openai", "gpt-5.4")
     assert metadata is not None and metadata.max_input_tokens is not None
 
     budget = StreamPrepCoordinator._context_budget_for(_Config())  # type: ignore[arg-type]

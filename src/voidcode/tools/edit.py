@@ -8,9 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
-from rapidfuzz.distance import Levenshtein
-
-from ..core.tool_context import EditSchema, ToolContext
+from ..core.tool_context import ToolContext
 from ..formats.json_values import json_wire_object, own_json_object
 from ..formatter import (
     FormatterExecutionResult,
@@ -87,7 +85,7 @@ def _occurrence_line_ranges(content: str, needle: str) -> list[tuple[int, int]]:
         start_line = content.count("\n", 0, index) + 1
         end_line = content.count("\n", 0, index + len(needle)) + 1
         ranges.append((start_line, end_line))
-        start = index + 1
+        start = index + len(needle)
     return ranges
 
 
@@ -98,9 +96,8 @@ def _detect_line_ending(text: str) -> str:
 
 
 def _convert_line_endings(text: str, ending: str) -> str:
-    if ending == "\n":
-        return _normalize_line_endings(text)
-    return text.replace("\n", "\r\n")
+    normalized = _normalize_line_endings(text)
+    return normalized if ending == "\n" else normalized.replace("\n", "\r\n")
 
 
 def _near_match_hints(content: str, old_string: str, *, limit: int = 2) -> list[str]:
@@ -114,46 +111,21 @@ def _near_match_hints(content: str, old_string: str, *, limit: int = 2) -> list[
     window_size = min(len(old_lines), len(lines))
     if window_size == 0:
         return []
-
-    candidates: list[tuple[float, int, str, str]] = []
-    normalized_old = WhitespaceNormalizedReplacer.normalize(old_string)
-    dedented_old = IndentationFlexibleReplacer.remove_indentation(old_string)
-
+    candidates: list[tuple[float, int, str]] = []
     for start in range(len(lines) - window_size + 1):
         block = "\n".join(lines[start : start + window_size])
         ratio = difflib.SequenceMatcher(None, old_string.strip(), block.strip()).ratio()
-        if ratio < 0.58:
-            continue
-
-        notes: list[str] = []
-        if WhitespaceNormalizedReplacer.normalize(block) == normalized_old:
-            notes.append("whitespace-only mismatch")
-        if IndentationFlexibleReplacer.remove_indentation(block) == dedented_old:
-            notes.append("indentation-only mismatch")
-        if len(old_lines) >= 3:
-            first_close = BlockAnchorReplacer._similar(lines[start].strip(), old_lines[0].strip())
-            last_close = BlockAnchorReplacer._similar(lines[start + window_size - 1].strip(), old_lines[-1].strip())
-            if first_close and last_close:
-                notes.append("block anchors are close")
-            elif first_close:
-                notes.append("first block anchor is close; check the ending line")
-            elif last_close:
-                notes.append("last block anchor is close; check the starting line")
-        if not notes:
-            notes.append("near text match")
-
-        candidates.append((ratio, start, ", ".join(notes), block))
+        if ratio >= 0.58:
+            candidates.append((ratio, start, block))
 
     candidates.sort(key=lambda item: item[0], reverse=True)
-    hints: list[str] = []
-    for ratio, start, note, block in candidates[:limit]:
-        hints.append(
-            f"  - L{start + 1} ({round(ratio * 100)}% similar; {note})\n"
-            f"{bounded_block_preview(lines, start, window_size)}\n"
-            "    Diff (- oldString, + current):\n"
-            f"{bounded_candidate_diff(old_string, block).replace('expected', 'oldString')}"
-        )
-    return hints
+    return [
+        f"  - L{start + 1} ({round(ratio * 100)}% similar; inspect only)\n"
+        f"{bounded_block_preview(lines, start, window_size)}\n"
+        "    Diff (- oldString, + current):\n"
+        f"{bounded_candidate_diff(old_string, block).replace('expected', 'oldString')}"
+        for ratio, start, block in candidates[:limit]
+    ]
 
 
 def _match_locations(content: str, matches: list[str]) -> list[dict[str, object]]:
@@ -182,33 +154,22 @@ def _match_locations(content: str, matches: list[str]) -> list[dict[str, object]
     return locations
 
 
-def _edit_mismatch_message(
-    *,
-    content: str,
-    old_string: str,
-    attempted_replacers: list[str],
-) -> str:
-    lines = [
-        "Could not find oldString in the file.",
-        "Replacers attempted:",
-        *(f"  - {name}" for name in attempted_replacers),
-    ]
-
+def _edit_mismatch_message(*, content: str, old_string: str) -> str:
+    lines = ["Exact oldString was not found in the current file text."]
     hints = _near_match_hints(content, old_string)
     if hints:
         lines.extend(
             [
-                "Near-match hints:",
+                "Advisory near-match suggestions (not applied):",
                 *hints,
-                "Tip: re-read the shown lines and retry with exact current text, including indentation.",
+                "Re-read the shown lines and retry with exact current text, including indentation.",
             ]
         )
     else:
-        lines.append("No nearby text match found; re-read the file before retrying the edit.")
+        lines.append("No similar text found; re-read the file before retrying.")
 
     if looks_line_number_prefixed(old_string):
         lines.append(line_prefix_retry_guidance())
-
     return "\n".join(lines)
 
 
@@ -275,169 +236,12 @@ def summarize_diff(*, path: Path, before: str, after: str) -> tuple[str, int, in
     return diff, additions, deletions
 
 
-class SimpleReplacer:
-    @staticmethod
-    def find(content: str, old: str) -> list[str]:
-        results: list[str] = []
-        if not old:
-            return results
-
-        start = 0
-        while True:
-            idx = content.find(old, start)
-            if idx == -1:
-                break
-            results.append(content[idx : idx + len(old)])
-            start = idx + 1
-        return results
-
-
-class LineTrimmedReplacer:
-    @staticmethod
-    def find(content: str, old: str) -> list[str]:
-        # Find blocks where each corresponding line, after trimming whitespace, matches
-        results: list[str] = []
-        original_lines = content.split("\n")
-        search_lines = old.split("\n")
-
-        if search_lines and search_lines[-1] == "":
-            search_lines = search_lines[:-1]
-
-        L = len(search_lines)
-        if L == 0:
-            return results
-
-        for i in range(len(original_lines) - L + 1):
-            good = True
-            for j in range(L):
-                if original_lines[i + j].strip() != search_lines[j].strip():
-                    good = False
-                    break
-            if good:
-                # reconstruct the exact block from the original content
-                block = "\n".join(original_lines[i : i + L])
-                results.append(block)
-        return results
-
-
-class BlockAnchorReplacer:
-    _MAX_ANCHOR_LENGTH = 200
-    _MAX_LINES_SCAN = 2000
-
-    @staticmethod
-    def _similar(a: str, b: str) -> bool:
-        if abs(len(a) - len(b)) > max(1, max(len(a), len(b)) // 4):
-            return False
-
-        if len(a) > BlockAnchorReplacer._MAX_ANCHOR_LENGTH:
-            a = a[: BlockAnchorReplacer._MAX_ANCHOR_LENGTH]
-        if len(b) > BlockAnchorReplacer._MAX_ANCHOR_LENGTH:
-            b = b[: BlockAnchorReplacer._MAX_ANCHOR_LENGTH]
-
-        max_distance = max(1, max(len(a), len(b)) // 4)
-        distance = Levenshtein.distance(a, b, score_cutoff=max_distance)
-        return distance <= max_distance
-
-    @staticmethod
-    def find(content: str, old: str) -> list[str]:
-        results: list[str] = []
-        original_lines = content.split("\n")
-        search_lines = old.split("\n")
-        if len(search_lines) < 3:
-            return results
-
-        if search_lines and search_lines[-1] == "":
-            search_lines = search_lines[:-1]
-
-        first_anchor = search_lines[0].strip()
-        last_anchor = search_lines[-1].strip()
-
-        # Try to locate blocks bounded by anchors with similarity tolerance
-        max_scan = min(len(original_lines), BlockAnchorReplacer._MAX_LINES_SCAN)
-        for i in range(max_scan):
-            if not BlockAnchorReplacer._similar(original_lines[i].strip(), first_anchor):
-                continue
-            # search a corresponding end line with similarity to last_anchor
-            upper = min(len(original_lines), i + BlockAnchorReplacer._MAX_LINES_SCAN)
-            for j in range(i + 2, upper):
-                if BlockAnchorReplacer._similar(original_lines[j].strip(), last_anchor):
-                    # extract the block from i to j inclusive
-                    block = "\n".join(original_lines[i : j + 1])
-                    results.append(block)
-                    break
-        return results
-
-
-class WhitespaceNormalizedReplacer:
-    @staticmethod
-    def normalize(text: str) -> str:
-        return re.sub(r"\s+", " ", text).strip()
-
-    @staticmethod
-    def find(content: str, old: str) -> list[str]:
-        results: list[str] = []
-        normalized_old = WhitespaceNormalizedReplacer.normalize(old)
-        lines = content.split("\n")
-        find_lines = old.split("\n")
-
-        for _i, line in enumerate(lines):
-            if WhitespaceNormalizedReplacer.normalize(line) == normalized_old:
-                results.append(line)
-
-        if len(find_lines) > 1:
-            for i in range(len(lines) - len(find_lines) + 1):
-                block = "\n".join(lines[i : i + len(find_lines)])
-                if WhitespaceNormalizedReplacer.normalize(block) == normalized_old:
-                    results.append(block)
-
-        return results
-
-
-class IndentationFlexibleReplacer:
-    @staticmethod
-    def remove_indentation(text: str) -> str:
-        lines = text.split("\n")
-        non_empty = [line for line in lines if line.strip()]
-        if not non_empty:
-            return text
-
-        min_indent: int | None = None
-        for line in non_empty:
-            match = re.match(r"^(\s*)", line)
-            if match and match.group(1):
-                indent = len(match.group(1))
-                min_indent = indent if min_indent is None else min(min_indent, indent)
-
-        if min_indent is None:
-            return text
-
-        dedented = [line[min_indent:] if len(line) >= min_indent else line for line in lines]
-        return "\n".join(dedented)
-
-    @staticmethod
-    def find(content: str, old: str) -> list[str]:
-        results: list[str] = []
-        normalized_old = IndentationFlexibleReplacer.remove_indentation(old)
-        content_lines = content.split("\n")
-        find_lines = old.split("\n")
-        if not find_lines:
-            return results
-
-        for i in range(len(content_lines) - len(find_lines) + 1):
-            block = "\n".join(content_lines[i : i + len(find_lines)])
-            if IndentationFlexibleReplacer.remove_indentation(block) == normalized_old:
-                results.append(block)
-
-        return results
-
-
 def _replace(
     content: str,
     old_string: str,
     new_string: str,
     *,
     replace_all: bool = False,
-    edit_schema: EditSchema = EditSchema.FLEXIBLE,
     tracker: CharProvenanceTracker | None = None,
     context: ToolContext | None = None,
     resolved_path: str | None = None,
@@ -446,243 +250,79 @@ def _replace(
     raw_path: str = "",
     is_external: bool = False,
 ) -> tuple[str, int, tuple[tuple[int, int], ...]]:
-    # Smart replacement pipeline using 9 replacers in order
     if old_string == new_string:
         raise_tool_diagnostic(
             message="No changes to apply: oldString and newString are identical.",
             error_kind="no_op",
             reason="identical_old_and_new",
-            retry_guidance=("Provide a newString that differs from oldString, or use read to confirm the file already has the desired content."),
+            retry_guidance="Provide a newString that differs from oldString, or use read to confirm the file already has the desired content.",
             details={"old_string": old_string, "new_string": new_string},
         )
-
     if not content:
         raise_tool_diagnostic(
             message="Content is empty; nothing to edit.",
             error_kind="no_op",
             reason="empty_content",
-            retry_guidance=(
-                "The target file is empty; use write to create content, or read the file again and retry the edit against the current text."
-            ),
+            retry_guidance="The target file is empty; use write to create content, or read it again before retrying.",
             details={"content_empty": True},
         )
 
-    if edit_schema is EditSchema.STRICT:
-        # Strict profile: exact-match only. The simple replacer is the sole
-        # strategy; any non-exact input fails with the ``ambiguous_match``
-        # diagnostic below instead of falling through to fuzzy matching.
-        replacers = [SimpleReplacer]
-    else:
-        replacers = [
-            SimpleReplacer,
-            LineTrimmedReplacer,
-            BlockAnchorReplacer,
-            WhitespaceNormalizedReplacer,
-            IndentationFlexibleReplacer,
-            EscapeNormalizedReplacer,
-            MultiOccurrenceReplacer,
-            TrimmedBoundaryReplacer,
-            ContextAwareReplacer,
-        ]
-
-    # Helper to perform a replacement given a matched substring
-    # If replace_all is requested we attempt to replace all occurrences found by any replacer
-    total_replacements = 0
-    current = content
-
-    # Try each replacer in order until we find at least one match
-    attempted_replacers: list[str] = []
-    for replacer in replacers:
-        attempted_replacers.append(replacer.__name__)
-        matches = replacer.find(current, old_string)
-        if not matches:
-            continue
-
-        # If replaceAll, replace all occurrences found by this replacer
-        if replace_all:
-            seen: set[str] = set()
-            match_ranges: list[tuple[int, int]] = []
-            for m in matches:
-                if m in seen or not m:
-                    continue
-                seen.add(m)
-                match_ranges.extend(_occurrence_line_ranges(current, m))
-                if tracker is not None:
-                    start_search = 0
-                    while True:
-                        idx = current.find(m, start_search)
-                        if idx == -1:
-                            break
-                        if context is not None and resolved_path is not None:
-                            tracker.check_seen_lines(
-                                idx,
-                                idx + len(m),
-                                context=context,
-                                resolved_path=resolved_path,
-                                tool_name=tool_name,
-                                display_path=display_path,
-                                raw_path=raw_path,
-                                is_external=is_external,
-                            )
-                        tracker.apply_replacement(idx, idx + len(m), new_string)
-                        total_replacements += 1
-                        current = tracker.content
-                        start_search = idx + len(new_string)
-                else:
-                    count = current.count(m)
-                    if count:
-                        current = current.replace(m, new_string)
-                        total_replacements += count
-            return current, total_replacements, tuple(match_ranges)
-
-        # If not replacing all, enforce single-match constraint per problem statement
-        if len(matches) > 1:
-            raise_tool_diagnostic(
-                message="Multiple matches found. Use replaceAll to replace all occurrences.",
-                error_kind="ambiguous_match",
-                reason="ambiguous_match",
-                retry_guidance=(
-                    "Either set replaceAll=true to replace every occurrence, or re-read the file and "
-                    "provide a longer, more specific oldString that uniquely identifies the intended "
-                    "location."
-                ),
-                details={
-                    "match_count": len(matches),
-                    "matches": _match_locations(current, matches),
-                    "replace_all_hint": True,
-                },
-            )
-        # Exactly one match; replace that exact substring in the current content
-        m = matches[0]
-        if m:
-            match_ranges = _occurrence_line_ranges(current, m)
-            idx = current.find(m)
-            if tracker is not None:
-                if context is not None and resolved_path is not None:
-                    tracker.check_seen_lines(
-                        idx,
-                        idx + len(m),
-                        context=context,
-                        resolved_path=resolved_path,
-                        tool_name=tool_name,
-                        display_path=display_path,
-                        raw_path=raw_path,
-                        is_external=is_external,
-                    )
-                tracker.apply_replacement(idx, idx + len(m), new_string)
-                current = tracker.content
-            else:
-                current = current.replace(m, new_string, 1)
-            total_replacements += 1
-            return current, total_replacements, tuple(match_ranges[:1])
-    # If we reach here, no replacer found any match
-    if edit_schema is EditSchema.STRICT:
+    match_count = content.count(old_string) if old_string else 0
+    if match_count == 0:
         raise_tool_diagnostic(
-            message=(
-                "No exact match for oldString under strict edit matching. "
-                "Fuzzy matching is disabled for this model, so the oldString must match the "
-                "current file text exactly."
-            ),
-            error_kind="ambiguous_match",
-            reason="strict_no_exact_match",
-            retry_guidance=(
-                "Use read on the target path, copy exact current file text without line-number prefixes, then retry edit with that exact oldString."
-            ),
+            message=_edit_mismatch_message(content=content, old_string=old_string),
+            error_kind="tool_input_mismatch",
+            reason="old_string_not_found",
+            retry_guidance="Read the target path and retry with exact current file text, without line-number prefixes.",
             details={
-                "edit_schema": "strict",
-                "match_count": 0,
                 "old_string_line_count": len(old_string.splitlines()),
                 "line_number_prefix_suspected": looks_line_number_prefixed(old_string),
             },
         )
-    raise_tool_diagnostic(
-        message=_edit_mismatch_message(content=current, old_string=old_string, attempted_replacers=attempted_replacers),
-        error_kind="tool_input_mismatch",
-        reason="old_string_not_found",
-        retry_guidance=(
-            "Use read on the target path, copy exact current file text without line-number prefixes, then retry edit with that exact oldString."
-        ),
-        details={
-            "attempted_replacers": attempted_replacers,
-            "old_string_line_count": len(old_string.splitlines()),
-            "line_number_prefix_suspected": looks_line_number_prefixed(old_string),
-        },
-    )
+    if not replace_all and match_count > 1:
+        raise_tool_diagnostic(
+            message="Multiple exact matches found. Use replaceAll to replace every occurrence.",
+            error_kind="ambiguous_match",
+            reason="ambiguous_match",
+            retry_guidance="Set replaceAll=true or provide longer exact text that uniquely identifies the intended location.",
+            details={
+                "match_count": match_count,
+                "matches": _match_locations(content, [old_string] * match_count),
+                "replace_all_hint": True,
+            },
+        )
 
+    match_ranges = tuple(_occurrence_line_ranges(content, old_string))
+    if not replace_all:
+        match_ranges = match_ranges[:1]
+    if tracker is None:
+        return content.replace(old_string, new_string, -1 if replace_all else 1), match_count if replace_all else 1, match_ranges
 
-class EscapeNormalizedReplacer:
-    @staticmethod
-    def find(content: str, old: str) -> list[str]:
-        results: list[str] = []
-        # interpret escapes in old
-        try:
-            old_unescaped = bytes(old, "utf-8").decode("unicode_escape")
-        except Exception:
-            old_unescaped = old
-        variants = [old, old_unescaped]
-        for v in variants:
-            if not v:
-                continue
-            start = 0
-            while True:
-                idx = content.find(v, start)
-                if idx == -1:
-                    break
-                results.append(content[idx : idx + len(v)])
-                start = idx + 1
-        return results
-
-
-class MultiOccurrenceReplacer:
-    @staticmethod
-    def find(content: str, old: str) -> list[str]:
-        results: list[str] = []
-        if old == "":
-            return results
-        start = 0
-        while True:
-            idx = content.find(old, start)
-            if idx == -1:
-                break
-            results.append(content[idx : idx + len(old)])
-            start = idx + 1
-        return results
-
-
-class TrimmedBoundaryReplacer:
-    @staticmethod
-    def find(content: str, old: str) -> list[str]:
-        results: list[str] = []
-        old_lines = old.split("\n")
-        if not old_lines:
-            return results
-        lines = content.split("\n")
-        n = len(old_lines)
-        for i in range(len(lines) - n + 1):
-            block = "\n".join(lines[i : i + n])
-            if block.strip() == old.strip():
-                results.append(block)
-        return results
-
-
-class ContextAwareReplacer:
-    @staticmethod
-    def find(content: str, old: str) -> list[str]:
-        results: list[str] = []
-        old_lines = old.split("\n")
-        if len(old_lines) < 3:
-            return results
-        lines = content.split("\n")
-        n = len(old_lines)
-        for i in range(len(lines) - n + 1):
-            match = True
-            for k in range(n):
-                if lines[i + k].strip() != old_lines[k].strip():
-                    match = False
-                    break
-            if match:
-                results.append("\n".join(lines[i : i + n]))
-        return results
+    current = content
+    total_replacements = 0
+    start_search = 0
+    while True:
+        idx = current.find(old_string, start_search)
+        if idx == -1:
+            break
+        if context is not None and resolved_path is not None:
+            tracker.check_seen_lines(
+                idx,
+                idx + len(old_string),
+                context=context,
+                resolved_path=resolved_path,
+                tool_name=tool_name,
+                display_path=display_path,
+                raw_path=raw_path,
+                is_external=is_external,
+            )
+        tracker.apply_replacement(idx, idx + len(old_string), new_string)
+        current = tracker.content
+        total_replacements += 1
+        if not replace_all:
+            break
+        start_search = idx + len(new_string)
+    return current, total_replacements, match_ranges
 
 
 class EditTool:
@@ -690,8 +330,8 @@ class EditTool:
         name="edit",
         description=(
             "Edit files by replacing text (single replacement or ordered batch) or applying a patch. "
-            "Supports flexible matching strategies for text replacements. When constructing oldString from read output, "
-            "omit any leading line-number prefix such as '42: ' and pass only the file's actual text."
+            "OldString replacements require exact current file text; advisory near-match suggestions are never applied. "
+            "When constructing oldString from read output, omit any leading line-number prefix such as '42: ' and pass only the file's actual text."
         ),
         input_schema={
             "type": "object",
@@ -878,25 +518,21 @@ class EditTool:
             parsed_edits.append((old_s, new_s, rep_all))
 
         ending = _detect_line_ending(content_before)
-        normalized_content = _normalize_line_endings(content_before)
 
-        # Preflight all edits entirely in memory
-        tracker = CharProvenanceTracker(normalized_content)
+        # Preflight all edits against exact current text entirely in memory.
+        tracker = CharProvenanceTracker(content_before)
         details: list[tuple[int, EditResultBody]] = []
         applied = 0
 
         for idx, (old_str, new_str, rep_all) in enumerate(parsed_edits, start=1):
-            normalized_old = _normalize_line_endings(old_str)
-            normalized_new = _normalize_line_endings(new_str)
             before_step = tracker.content
 
             try:
                 next_content, match_count, match_ranges = _replace(
                     tracker.content,
-                    normalized_old,
-                    normalized_new,
+                    old_str,
+                    new_str,
                     replace_all=rep_all,
-                    edit_schema=context.edit_schema,
                     tracker=tracker,
                     context=context,
                     resolved_path=resolved_path,
@@ -1064,16 +700,12 @@ class EditTool:
             )
 
         ending = _detect_line_ending(content_old)
-        normalized_old = _normalize_line_endings(old_string)
-        normalized_new = _normalize_line_endings(new_string)
-        normalized_content = _normalize_line_endings(content_old)
 
         new_content, match_count, match_ranges = _replace(
-            normalized_content,
-            normalized_old,
-            normalized_new,
+            content_old,
+            old_string,
+            new_string,
             replace_all=replace_all,
-            edit_schema=context.edit_schema,
         )
 
         for start_line, end_line in match_ranges:

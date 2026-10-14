@@ -76,7 +76,7 @@ def test_edit_tool_rejects_multiple_exact_matches_without_replace_all(tmp_path: 
 
     tool = EditTool()
 
-    with pytest.raises(ToolDiagnosticError, match="Multiple matches found") as exc_info:
+    with pytest.raises(ToolDiagnosticError) as exc_info:
         tool.invoke(
             ToolCall(
                 tool_name="edit",
@@ -90,6 +90,7 @@ def test_edit_tool_rejects_multiple_exact_matches_without_replace_all(tmp_path: 
             context=ToolContext(workspace=tmp_path),
         )
 
+    assert file_path.read_text(encoding="utf-8") == "foo bar foo"
     diagnostic = exc_info.value
     assert diagnostic.error_kind == "ambiguous_match"
     assert diagnostic.error_details["reason"] == "ambiguous_match"
@@ -108,7 +109,7 @@ def test_edit_tool_rejects_when_old_string_not_found(tmp_path: Path) -> None:
 
     tool = EditTool()
 
-    with pytest.raises(ToolDiagnosticError, match="Could not find oldString") as exc_info:
+    with pytest.raises(ToolDiagnosticError, match="Exact oldString was not found") as exc_info:
         tool.invoke(
             ToolCall(
                 tool_name="edit",
@@ -125,15 +126,34 @@ def test_edit_tool_rejects_when_old_string_not_found(tmp_path: Path) -> None:
     diagnostic = exc_info.value
     assert diagnostic.error_kind == "tool_input_mismatch"
     assert diagnostic.error_details["reason"] == "old_string_not_found"
-    assert "Replacers attempted:" in str(diagnostic)
-    message = str(diagnostic)
-    assert "SimpleReplacer" in message
-    assert "ContextAwareReplacer" in message
-    assert "No nearby text match found" in message
-    assert "attempted_replacers" in diagnostic.error_details
     assert diagnostic.error_details["line_number_prefix_suspected"] is False
     assert isinstance(diagnostic.retry_guidance, str)
     assert diagnostic.retry_guidance
+
+
+def test_edit_api_does_not_apply_similar_block_when_middle_line_differs(tmp_path: Path) -> None:
+    file_path = tmp_path / "test.py"
+    original = "def foo():\n    return 1\n# end\n"
+    file_path.write_text(original, encoding="utf-8")
+    tool = EditTool()
+
+    with pytest.raises(ToolDiagnosticError, match="Exact oldString was not found") as exc_info:
+        tool.invoke(
+            ToolCall(
+                tool_name="edit",
+                arguments={
+                    "path": "test.py",
+                    "oldString": "def foo():\n    return 999\n# end\n",
+                    "newString": "def foo():\n    return 2\n# end\n",
+                    "expectedHash": _content_hash(file_path),
+                },
+            ),
+            context=ToolContext(workspace=tmp_path),
+        )
+
+    assert exc_info.value.error_details["reason"] == "old_string_not_found"
+    assert "Advisory near-match suggestions (not applied)" in str(exc_info.value)
+    assert file_path.read_text(encoding="utf-8") == original
 
 
 def _read_lines_context(path: Path, lines: set[int], *, workspace: Path) -> ToolContext:

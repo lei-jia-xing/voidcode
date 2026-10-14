@@ -30,6 +30,7 @@ import {
 } from "./lib/queries";
 import type { BackgroundTaskActionRequest } from "./lib/queries";
 import { SessionSidebar } from "./components/SessionSidebar";
+import { StatusBar } from "./components/StatusBar";
 import { ChildSessionSidebar } from "./components/ChildSessionSidebar";
 import { ChatThread } from "./components/ChatThread";
 import { Composer, type SessionContextUsage } from "./components/Composer";
@@ -52,10 +53,10 @@ import {
   FileCodeCorner,
   FolderTree,
   GitCompare,
+  CirclePause,
   LoaderCircle,
   MoveLeft,
 } from "lucide-react";
-import { StatusBar } from "./components/StatusBar";
 import { buildSessionDisplayTitle } from "./components/sessionTitle";
 import { errorMessage } from "./lib/errorMessage";
 
@@ -134,18 +135,33 @@ function SubsessionLiveStatus({
   lifecycleStatus?: string | null;
 }) {
   const { t } = useTranslation();
+  const waitingApproval = lifecycleStatus === "waiting_approval";
+  const queued =
+    taskStatus === "queued" &&
+    childStatus !== "running" &&
+    lifecycleStatus !== "running" &&
+    !waitingApproval;
   const active =
-    taskStatus === "queued" ||
     taskStatus === "running" ||
     childStatus === "running" ||
     lifecycleStatus === "running";
-  if (!active) return null;
+  if (!queued && !waitingApproval && !active) return null;
 
   return (
     <div className="mx-auto mt-4 max-w-[var(--vc-chat-content-width)] px-4">
       <div className="flex items-center gap-2 rounded-[var(--vc-radius-control)] border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] px-3 py-2 text-sm text-[var(--vc-text-primary)]">
-        <LoaderCircle className="h-4 w-4 animate-spin" />
-        <span>{t("subsession.liveWorking")}</span>
+        {active && !waitingApproval ? (
+          <LoaderCircle className="h-4 w-4 animate-spin" />
+        ) : (
+          <CirclePause className="h-4 w-4" />
+        )}
+        <span>
+          {queued
+            ? t("subsession.queued")
+            : waitingApproval
+              ? t("subsession.waitingApproval")
+              : t("subsession.liveWorking")}
+        </span>
       </div>
     </div>
   );
@@ -427,10 +443,13 @@ function App() {
   const isRunning =
     runStatus === "running" ||
     runStatus === "cancelling" ||
-    currentSessionState?.status === "running";
+    (runStatus !== "error" &&
+      runStatus !== "incomplete" &&
+      currentSessionState?.status === "running");
   const isReplayLoading = replayStatus === "loading";
   const isApprovalSubmitting = approvalStatus === "submitting";
-  const isWaitingApproval = currentSessionState?.status === "waiting";
+  const isWaitingApproval =
+    runStatus !== "incomplete" && currentSessionState?.status === "waiting";
   const isQuestionSubmitting = questionStatus === "submitting";
   const latestWaitingEvent = useMemo(() => {
     for (let index = currentSessionEvents.length - 1; index >= 0; index -= 1) {
@@ -622,6 +641,7 @@ function App() {
     if (
       !currentSessionId ||
       replayStatus === "loading" ||
+      runStatus === "incomplete" ||
       (runStatus === "running" && runOrigin !== "external") ||
       runStatus === "cancelling" ||
       (sessionStatus != null &&
@@ -698,10 +718,18 @@ function App() {
           await refreshDelegatedTaskSurfaces({ outputId }, scope);
           return;
         }
-        if (useAppStore.getState().replayStatus === "loading") {
+        const storeState = useAppStore.getState();
+        if (storeState.replayStatus === "loading") {
           // A selectSession for this session is already in flight (its fetch
           // has not resolved yet). Re-selecting now would clear the view and
           // discard the in-flight result, flashing the transcript.
+          return;
+        }
+        if (
+          storeState.approvalStatus === "submitting" ||
+          storeState.questionStatus === "submitting"
+        ) {
+          // The resolution response carries the authoritative resumed transcript.
           return;
         }
         // The stream closing is how the runtime reports that the session no
@@ -1065,7 +1093,8 @@ function App() {
     isReplayLoading ||
     isWaitingApproval ||
     isApprovalSubmitting ||
-    isQuestionSubmitting;
+    isQuestionSubmitting ||
+    (runStatus === "incomplete" && currentSessionId !== null);
   const hasCurrentWorkspace = Boolean(workspaces?.current);
   const isWorkspaceBootLoading =
     !hasCurrentWorkspace &&
@@ -1249,6 +1278,33 @@ function App() {
                 </ControlButton>
               </div>
             )}
+            {runStatus === "running" &&
+              runOrigin === "external" &&
+              !displayedMessages.some(
+                (message) =>
+                  message.role === "assistant" &&
+                  message.status === "in_progress",
+              ) && (
+                <div
+                  role="status"
+                  className="shrink-0 border-b border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] px-4 py-2 text-xs text-[var(--vc-text-muted)]"
+                >
+                  {t("chat.runtimeRunActive")}
+                </div>
+              )}
+            {runStatus === "incomplete" &&
+              !displayedMessages.some(
+                (message) =>
+                  message.role === "assistant" &&
+                  message.status === "in_progress",
+              ) && (
+                <div
+                  role="status"
+                  className="shrink-0 border-b border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] px-4 py-2 text-xs text-[var(--vc-text-muted)]"
+                >
+                  {t("chat.runStreamIncomplete")}
+                </div>
+              )}
             {runError && (
               <div className="shrink-0 bg-[var(--vc-surface-1)] border-b border-[color:var(--vc-border-subtle)] px-4 py-2 text-xs text-[var(--vc-danger-text)]">
                 {t("common.errorWithMessage", { message: runError })}
@@ -1275,7 +1331,22 @@ function App() {
               >
                 <ChatThread
                   messages={displayedMessages}
+                  sessionStatus={
+                    displayedIsChildSession
+                      ? (backgroundTaskOutput?.session_result?.session.status ??
+                        null)
+                      : runStatus === "incomplete"
+                        ? null
+                        : runStatus === "error"
+                          ? "failed"
+                          : (currentSessionState?.status ?? null)
+                  }
                   isRunning={!displayedIsChildSession && isRunning}
+                  isLiveStreamActive={
+                    !displayedIsChildSession &&
+                    runStatus === "running" &&
+                    runOrigin === "local"
+                  }
                   isWaitingApproval={
                     !displayedIsChildSession && isWaitingApproval
                   }

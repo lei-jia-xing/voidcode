@@ -136,7 +136,7 @@ def test_native_non_stream_uses_chat_completions_wire_and_auth_headers() -> None
     assert result.usage is not None and result.usage.input_tokens == 7 and result.usage.output_tokens == 3
 
 
-def test_nonstream_missing_finish_reason_is_stop_and_reported_reasons_fail() -> None:
+def test_missing_and_unrecognized_finish_reasons_remain_unknown() -> None:
     def provider_for(reason: object = ...) -> OpenAIModelProvider:
         payload: dict[str, object] = {"choices": [{"message": {"content": "hello"}}]}
         if reason is not ...:
@@ -147,19 +147,26 @@ def test_nonstream_missing_finish_reason_is_stop_and_reported_reasons_fail() -> 
         )
         return OpenAIModelProvider(config=OpenAIProviderConfig(api_key="sk-test"), transport=transport)
 
-    result = provider_for().turn_provider().propose_turn(_request(transport=None))
-    assert result.done_reason == "stop"
-    assert result.finish_reason_reported is False
-
-    for reason in ("content_filter", "eos_token"):
-        with pytest.raises(ProviderExecutionError, match=f"finish_reason: {reason}"):
-            provider_for(reason).turn_provider().propose_turn(_request(transport=None))
+    for reason, expected, reported in (
+        (..., "unknown", False),
+        ("", "unknown", False),
+        ("content_filter", "content_filter", True),
+        ("eos_token", "unknown", True),
+    ):
+        result = provider_for(reason).turn_provider().propose_turn(_request(transport=None))
+        assert result.done_reason == expected
+        assert result.finish_reason_reported is reported
 
     class StreamingOpenAIProvider(OpenAIModelProvider):
         def turn_provider(self) -> OpenAIChatCompletionsProvider:
             return OpenAIChatCompletionsProvider(config=self.provider_config(), transport=self.transport)
 
-    for reason, expected in ((None, "stop"), ("content_filter", None), ("eos_token", None)):
+    for reason, expected, reported in (
+        (None, "unknown", False),
+        ("", "unknown", False),
+        ("content_filter", "content_filter", True),
+        ("eos_token", "unknown", True),
+    ):
         payload: dict[str, object] = {"choices": [{"delta": {"content": "hello"}, "finish_reason": reason}]}
         if reason is None:
             payload["choices"] = [{"delta": {"content": "hello"}}]
@@ -168,20 +175,21 @@ def test_nonstream_missing_finish_reason_is_stop_and_reported_reasons_fail() -> 
             api_key="sk-test",
             http_client=httpx2.Client(
                 transport=httpx2.MockTransport(
-                    lambda _request, body=response_body: httpx2.Response(
-                        200,
-                        content=body,
-                        headers={"content-type": "text/event-stream"},
-                    )
+                    lambda _request, body=response_body: httpx2.Response(200, content=body, headers={"content-type": "text/event-stream"})
                 )
             ),
         )
         provider = StreamingOpenAIProvider(config=OpenAIProviderConfig(api_key="sk-test"), transport=transport)
-        stream_provider = provider.turn_provider()
-        if expected is None:
-            with pytest.raises(ProviderExecutionError, match=f"finish_reason: {reason}"):
-                list(stream_provider.stream_turn(_request(transport=None)))
-        else:
-            events = list(stream_provider.stream_turn(_request(transport=None)))
-            assert events[-1].done_reason == expected
-            assert events[-1].metadata == {"finish_reason_reported": False}
+        if not reported:
+            with pytest.raises(ProviderExecutionError) as captured:
+                list(provider.turn_provider().stream_turn(_request(transport=None)))
+            assert captured.value.kind == "provider_error"
+            assert captured.value.details["reason"] == "missing_terminal_event"
+            assert captured.value.retryable is False
+            continue
+        events = list(provider.turn_provider().stream_turn(_request(transport=None)))
+        assert events[-1].done_reason == expected
+        assert events[-1].metadata is not None
+        assert events[-1].metadata["finish_reason_reported"] is reported
+        if reason == "eos_token":
+            assert events[-1].metadata["finish_reason_raw"] == reason

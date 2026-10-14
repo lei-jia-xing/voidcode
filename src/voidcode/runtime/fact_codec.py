@@ -13,22 +13,22 @@ from ..core.turns import (
     ToolRequestedFact,
     TurnFact,
 )
+from ..formats.json_values import json_wire_object
 from ..security.redaction import redact_mapping
 from ..tools.contracts import ToolCall
-from ..tools.output import sanitize_tool_arguments
 from .events import EventEnvelope, EventSource
 from .execution.report_codec import parse_report_payload
 from .execution.tool_result_projection import _tool_completed_payload
 from .session import SessionState
 from .tool_call_preview import WRITE_PREVIEW_TOOLS
 
-FACT_CODEC_VERSION: Final[int] = 2
+FACT_CODEC_VERSION: Final[int] = 3
 DURABLE_FACT_EVENT_TYPES: Final[frozenset[str]] = frozenset(
     {
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.response_ready",
-        "graph.tool_request_created",
+        "core.loop_step",
+        "core.model_turn",
+        "core.response_ready",
+        "core.tool_request_created",
         "runtime.tool_completed",
     }
 )
@@ -57,19 +57,36 @@ def reported_call_from_event(event: EventEnvelope) -> ReportedCall | None:
 def encode_fact(fact: TurnFact, *, version: int = FACT_CODEC_VERSION, session: SessionState | None = None) -> EncodedFact:
     """Project a typed fact once; public flat presentation fields are redacted, while private rows retain the canonical report."""
     require_fact_codec_version(version)
-    source: EventSource = "graph"
+    source: EventSource = "core"
     persistable = not isinstance(fact, StreamFact)
     payload: dict[str, object] = {}
     if isinstance(fact, LoopStepFact):
-        event_type = "graph.loop_step"
+        event_type = "core.loop_step"
         payload.update(step=fact.step, phase=fact.phase)
     elif isinstance(fact, ModelTurnFact):
-        event_type = "graph.model_turn"
-        payload.update(turn=fact.turn, mode=fact.mode, prompt=fact.prompt)
+        event_type = "core.model_turn"
+        payload.update(run_step=fact.run_step, mode=fact.mode, prompt=fact.prompt)
         if fact.mode == "provider":
             payload.update(provider=fact.provider, model=fact.model, attempt=fact.attempt, streaming=fact.streaming)
+        calls: list[dict[str, object]] | None = None
+        if fact.tool_batch_calls is not None:
+            calls = []
+            seen_call_ids: set[str] = set()
+            for call in fact.tool_batch_calls:
+                call_id = call.tool_call_id
+                if not isinstance(call_id, str) or not call_id.strip() or call_id in seen_call_ids:
+                    raise ValueError("model-turn batch requires unique original tool call identities")
+                seen_call_ids.add(call_id)
+                calls.append(
+                    {
+                        "tool": call.tool_name,
+                        "tool_call_id": call_id,
+                        "arguments": json_wire_object(call.arguments),
+                    }
+                )
+        payload.update(tool_batch_calls=calls, tool_batch_reasoning=fact.tool_batch_reasoning)
     elif isinstance(fact, ResponseReadyFact):
-        event_type = "graph.response_ready"
+        event_type = "core.response_ready"
         payload["output_preview"] = fact.output_preview
         if fact.finish_reason is not None:
             payload["finish_reason"] = fact.finish_reason
@@ -77,7 +94,7 @@ def encode_fact(fact: TurnFact, *, version: int = FACT_CODEC_VERSION, session: S
             payload["finish_reason_reported"] = fact.finish_reason_reported
     elif isinstance(fact, StreamFact):
         event = fact.event
-        event_type = f"graph.{fact.kind}"
+        event_type = f"core.{fact.kind}"
         payload.update(kind=event.kind, channel=event.channel)
         for key, value in (
             ("text", event.text),
@@ -103,11 +120,15 @@ def encode_fact(fact: TurnFact, *, version: int = FACT_CODEC_VERSION, session: S
         if event.usage is not None:
             payload["usage"] = event.usage.metadata_payload()
     elif isinstance(fact, ToolRequestedFact):
-        event_type = "graph.tool_request_created"
+        event_type = "core.tool_request_created"
         call = fact.call
         if not call.tool_call_id:
             raise ValueError("requested execution fact has no original native call identity")
-        payload.update(tool=call.tool_name, tool_call_id=call.tool_call_id, arguments=sanitize_tool_arguments(call.arguments))
+        payload.update(
+            tool=call.tool_name,
+            tool_call_id=call.tool_call_id,
+            arguments=json_wire_object(call.arguments),
+        )
         if isinstance(path := call.arguments.get("path"), str):
             payload["path"] = path
         if fact.diff_preview is not None:
@@ -137,6 +158,29 @@ def _integer(payload: dict[str, object], key: str) -> int:
     return value
 
 
+def _tool_batch_calls_from_payload(payload: dict[str, object]) -> tuple[ToolCall, ...] | None:
+    raw_calls = payload.get("tool_batch_calls")
+    if raw_calls is None:
+        return None
+    if not isinstance(raw_calls, list):
+        raise ValueError("persisted model-turn batch calls must be a list or null")
+    calls: list[ToolCall] = []
+    seen_call_ids: set[str] = set()
+    for raw_call in raw_calls:
+        if not isinstance(raw_call, dict):
+            raise ValueError("persisted model-turn batch call must be an object")
+        call_id = _text(raw_call, "tool_call_id")
+        tool_name = _text(raw_call, "tool")
+        arguments = raw_call.get("arguments")
+        if not call_id.strip() or not tool_name.strip() or call_id in seen_call_ids:
+            raise ValueError("persisted model-turn batch requires unique original tool call identities")
+        if not isinstance(arguments, dict) or not all(isinstance(key, str) for key in arguments):
+            raise ValueError("persisted model-turn batch arguments must be an object")
+        seen_call_ids.add(call_id)
+        calls.append(ToolCall(tool_name=tool_name, arguments=arguments, tool_call_id=call_id))
+    return tuple(calls)
+
+
 def _boolean(payload: dict[str, object], key: str) -> bool:
     value = payload.get(key)
     if not isinstance(value, bool):
@@ -148,31 +192,34 @@ def decode_fact(event: EventEnvelope, *, version: int = FACT_CODEC_VERSION) -> T
     """Decode the current durable fact format; legacy flat tool rows are not executable."""
     require_fact_codec_version(version)
     payload = event.payload
-    if event.event_type == "graph.loop_step":
+    if event.event_type == "core.loop_step":
         phase = _text(payload, "phase")
         if phase not in {"plan", "finalize"}:
             raise ValueError("persisted loop phase is unsupported")
         return LoopStepFact(_integer(payload, "step"), phase)
-    if event.event_type == "graph.model_turn":
+    if event.event_type == "core.model_turn":
         mode = _text(payload, "mode")
-        if mode == "deterministic":
-            return ModelTurnFact(_integer(payload, "turn"), mode, _text(payload, "prompt"))
-        if mode != "provider":
+        if mode not in {"deterministic", "provider"}:
             raise ValueError("persisted model-turn mode is unsupported")
+        tool_batch_reasoning = payload.get("tool_batch_reasoning")
+        if tool_batch_reasoning is not None and not isinstance(tool_batch_reasoning, str):
+            raise ValueError("persisted model-turn batch reasoning must be text or null")
         return ModelTurnFact(
-            _integer(payload, "turn"),
+            _integer(payload, "run_step"),
             mode,
             _text(payload, "prompt"),
-            provider=_text(payload, "provider"),
-            model=_text(payload, "model"),
-            attempt=_integer(payload, "attempt"),
-            streaming=_boolean(payload, "streaming"),
+            provider=_text(payload, "provider") if mode == "provider" else None,
+            model=_text(payload, "model") if mode == "provider" else None,
+            attempt=_integer(payload, "attempt") if mode == "provider" else 0,
+            streaming=_boolean(payload, "streaming") if mode == "provider" else False,
+            tool_batch_calls=_tool_batch_calls_from_payload(payload),
+            tool_batch_reasoning=tool_batch_reasoning,
         )
-    if event.event_type == "graph.response_ready":
+    if event.event_type == "core.response_ready":
         reason = _text(payload, "finish_reason") if "finish_reason" in payload else None
         reported = _boolean(payload, "finish_reason_reported") if "finish_reason_reported" in payload else None
         return ResponseReadyFact(_text(payload, "output_preview"), reason, reported)
-    if event.event_type == "graph.tool_request_created":
+    if event.event_type == "core.tool_request_created":
         call_id = _text(payload, "tool_call_id")
         if not call_id:
             raise ValueError("persisted tool request has no authentic call identity")
@@ -189,7 +236,7 @@ def decode_fact(event: EventEnvelope, *, version: int = FACT_CODEC_VERSION) -> T
         if report is None:
             raise ValueError("unsupported or malformed runtime.tool_completed payload; missing canonical reported_call")
         return ToolCompletedFact(report)
-    if event.event_type in {"graph.provider_stream", "graph.tool_call_start", "graph.tool_call_delta", "graph.tool_call_end"}:
+    if event.event_type in {"core.provider_stream", "core.tool_call_start", "core.tool_call_delta", "core.tool_call_end"}:
         raise ValueError("live-only provider facts do not belong in the durable log")
     # Product governance/capability rows retain their runtime owner, not a fake
     # generic core fact. Pages keep their real parent edges and cursor positions.

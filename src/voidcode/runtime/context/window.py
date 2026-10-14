@@ -1185,7 +1185,7 @@ def prepare_provider_context(
     effective_policy = policy or ContextWindowPolicy()
     summary_enabled = effective_policy.compaction.summary_enabled
     projection = project_tool_results_for_context_window(tool_results=tool_results, policy=effective_policy)
-    measured_anchor_tokens = anchor_tokens if _positive_int(anchor_tokens) else None
+    measured_anchor_tokens = anchor_tokens if isinstance(anchor_tokens, int) and not isinstance(anchor_tokens, bool) and anchor_tokens >= 0 else None
     counts: dict[str, int] = {
         "original_tool_result_count": len(tool_results),
         "retained_tool_result_count": len(projection.retained_results),
@@ -1512,12 +1512,21 @@ def assemble_provider_context(
         metadata_payload["context_transforms"] = transform_result.metadata_payload()
     metadata_payload["summary_kind"] = effective_summary_kind
     metadata_payload["prompt_stack"] = assembly_plan.fragment_metadata_payload()
+    current_prompt_in_replay = any(
+        segment.role == "user"
+        and isinstance(segment.metadata, dict)
+        and segment.metadata.get("source") == "replayed_conversation"
+        and segment.metadata.get("kind") == "current_user_prompt"
+        for segment in replayed_conversation_segments
+    )
     segments: list[ContextSegment] = []
     replayed_conversation_inserted = False
     for section in assembly_plan.sections:
         if not replayed_conversation_inserted and section.source == "current_user_prompt":
             segments.extend(replayed_conversation_segments)
             replayed_conversation_inserted = True
+            if current_prompt_in_replay:
+                continue
         segments.append(
             ContextSegment(
                 role=section.role,
@@ -1532,14 +1541,16 @@ def assemble_provider_context(
     if not replayed_conversation_inserted:
         raise RuntimeError("prompt assembly plan missing current_user_prompt section")
     if replay_retained_tool_messages:
-        replayed_tool_call_ids = {
-            segment.tool_call_id for segment in replayed_conversation_segments if segment.role == "tool" and segment.tool_call_id is not None
+        replayed_tool_members = {
+            (segment.tool_batch_id, segment.tool_call_id)
+            for segment in replayed_conversation_segments
+            if segment.role == "tool" and segment.tool_call_id is not None
         }
         for result in context_window.tool_results:
             if todo_prompt_context is not None and result.tool_name == "todo":
                 continue
             # Older results are already rendered before the current prompt.
-            if result.tool_call_id in replayed_tool_call_ids:
+            if (result.tool_batch_id, result.tool_call_id) in replayed_tool_members:
                 continue
             bounds = result.output.bounds
             reference = bounds.reference
@@ -1551,6 +1562,7 @@ def assemble_provider_context(
                     tool_name=result.tool_name,
                     tool_arguments=dict(result.arguments),
                     metadata={"source": "retained_tool_result", "tier": "recent"},
+                    tool_batch_id=result.tool_batch_id,
                 )
             )
             pruned_metadata: dict[str, object] = {}
@@ -1574,6 +1586,7 @@ def assemble_provider_context(
                         "reference": None if reference is None else reference.uri,
                         **pruned_metadata,
                     },
+                    tool_batch_id=result.tool_batch_id,
                 )
             )
     if compaction_budget is not None:
@@ -1633,14 +1646,9 @@ def count_payload_bytes(byte_count: int) -> int:
 def provider_usage_anchor_tokens(session_metadata: Mapping[str, object]) -> int | None:
     """Last provider-reported context size, usable as a measured anchor.
 
-    The canonical context-token total is ``input + cache_write + output``:
-    ``input_tokens`` is the *inclusive* prompt total every wire reports (cache
-    reads are a component, never added again), ``cache_write_tokens`` is the
-    separate prompt-cache-write bucket only Anthropic reports, and this turn's
-    output becomes history on the next request. ``cache_read_tokens`` and
-    ``uncached_input_tokens`` are components of ``input_tokens`` and must not be
-    summed. A missing or all-zero report has no anchor to offer and returns
-    ``None``.
+    ``input_tokens`` is the inclusive prompt total; cache reads are already part
+    of it. The separate cache-write and output buckets join when reported. A
+    missing bucket is unreported, while an explicit zero is an observed value.
     """
     raw_usage = session_metadata.get("provider_usage")
     if not isinstance(raw_usage, dict):
@@ -1652,10 +1660,10 @@ def provider_usage_anchor_tokens(session_metadata: Mapping[str, object]) -> int 
     reported = False
     for key in ("input_tokens", "cache_write_tokens", "output_tokens"):
         value = raw_latest.get(key)
-        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
             total += value
             reported = True
-    return total if reported and total > 0 else None
+    return total if reported else None
 
 
 def _reserve_floor(floor: int) -> int:

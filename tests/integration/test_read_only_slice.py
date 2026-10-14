@@ -1,4 +1,4 @@
-"""Integration tests for the deterministic read-only slice."""
+"""Integration tests for runtime persistence and execution boundaries."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import importlib
 import json
 import sqlite3
 import sys
+import threading
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,10 +14,11 @@ from typing import Any, Protocol, cast
 
 import pytest
 
+from tests.provider_loopback import OpenAILoopbackServer, configure_openai_provider, openai_response
 from tests.runtime_composition import create_task
 from voidcode.core.tool_context import ToolContext
 from voidcode.core.transcript import ToolResultView, tool_result_output
-from voidcode.core.turns import FinalTurn, ToolTurn, TurnSession
+from voidcode.core.turns import FinalTurn, ModelTurnFact, ToolTurn, TurnRequest, TurnSession
 from voidcode.runtime.execution.report_codec import parse_report_payload
 from voidcode.runtime.paths import sessions_db_path
 from voidcode.runtime.storage import RuntimeRepositories, SqliteSessionStore
@@ -24,7 +26,7 @@ from voidcode.runtime.tools.registry import ToolRegistry
 from voidcode.tools.contracts import ToolCall, ToolResult
 from voidcode.tools.read import ReadTool
 
-pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
+pytestmark = pytest.mark.usefixtures("disable_default_mcp")
 
 _DEFAULT_PERMISSION_METADATA = {
     "external_directory_read": {"*": "allow"},
@@ -40,8 +42,8 @@ _LEADER_HOOK_PRESET_SNAPSHOT = {
     ],
     "kinds": ["guidance", "guard", "guidance", "guard", "continuation"],
     "event_scopes": [
-        "graph.model_turn",
-        "graph.tool_request_created",
+        "core.model_turn",
+        "core.tool_request_created",
         "runtime.background_task_cancelled",
         "runtime.background_task_completed",
         "runtime.background_task_failed",
@@ -50,7 +52,6 @@ _LEADER_HOOK_PRESET_SNAPSHOT = {
         "runtime.delegated_result_available",
         "runtime.permission_resolved",
         "runtime.request_received",
-        "runtime.stuck_detected",
         "runtime.todo_updated",
         "runtime.tool_started",
         "runtime.turn_progress",
@@ -63,8 +64,8 @@ _LEADER_HOOK_PRESET_SNAPSHOT = {
 
 
 @pytest.fixture
-def force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
+def disable_default_mcp(monkeypatch: pytest.MonkeyPatch) -> None:
+
     config_module = importlib.import_module("voidcode.runtime.config.loading")
     monkeypatch.setattr(
         config_module,
@@ -195,7 +196,7 @@ class RuntimeFactory(Protocol):
         *,
         workspace: Path,
         tool_registry: object | None = None,
-        graph: object | None = None,
+        turn_producer: object | None = None,
         config: object | None = None,
         mcp_manager: object | None = None,
         permission_policy: object | None = None,
@@ -321,12 +322,12 @@ class _DefaultConfiguredMcpManager(_NoopMcpManager):
         )
 
 
-class _AstGrepPreviewGraph:
-    def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
-        _ = request, session
+class _AstGrepPreviewProducer:
+    def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: object) -> object:
+        _ = session
         if not tool_results:
             return ToolTurn(
-                facts=(),
+                facts=(ModelTurnFact(request.run_step, "deterministic", request.prompt),),
                 calls=(
                     cast(
                         ToolCallFactory,
@@ -343,15 +344,15 @@ class _AstGrepPreviewGraph:
                     ),
                 ),
             )
-        return FinalTurn(facts=(), output="previewed")
+        return FinalTurn(facts=(ModelTurnFact(request.run_step, "deterministic", request.prompt),), output="previewed")
 
 
-class _AstGrepReplaceGraph:
-    def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
-        _ = request, session
+class _AstGrepReplaceProducer:
+    def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: object) -> object:
+        _ = session
         if not tool_results:
             return ToolTurn(
-                facts=(),
+                facts=(ModelTurnFact(request.run_step, "deterministic", request.prompt),),
                 calls=(
                     cast(
                         ToolCallFactory,
@@ -369,19 +370,19 @@ class _AstGrepReplaceGraph:
                     ),
                 ),
             )
-        return FinalTurn(facts=(), output="applied")
+        return FinalTurn(facts=(ModelTurnFact(request.run_step, "deterministic", request.prompt),), output="applied")
 
 
-class _SingleToolGraph:
+class _SingleToolProducer:
     def __init__(self, tool_name: str, arguments: dict[str, object]) -> None:
         self._tool_name = tool_name
         self._arguments = arguments
 
-    def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
-        _ = request, session
+    def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: object) -> object:
+        _ = session
         if not tool_results:
             return ToolTurn(
-                facts=(),
+                facts=(ModelTurnFact(request.run_step, "deterministic", request.prompt),),
                 calls=(
                     cast(
                         ToolCallFactory,
@@ -392,19 +393,19 @@ class _SingleToolGraph:
                     ),
                 ),
             )
-        return FinalTurn(facts=(), output="done")
+        return FinalTurn(facts=(ModelTurnFact(request.run_step, "deterministic", request.prompt),), output="done")
 
 
-class _SequentialToolGraph:
+class _SequentialToolProducer:
     def __init__(self, calls: tuple[tuple[str, dict[str, object]], ...]) -> None:
         self._calls = calls
 
-    def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
-        _ = request, session
+    def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: object) -> object:
+        _ = session
         if len(tool_results) < len(self._calls):
             tool_name, arguments = self._calls[len(tool_results)]
             return ToolTurn(
-                facts=(),
+                facts=(ModelTurnFact(request.run_step, "deterministic", request.prompt),),
                 calls=(
                     cast(
                         ToolCallFactory,
@@ -415,13 +416,13 @@ class _SequentialToolGraph:
                     ),
                 ),
             )
-        return FinalTurn(facts=(), output="done")
+        return FinalTurn(facts=(ModelTurnFact(request.run_step, "deterministic", request.prompt),), output="done")
 
 
-class _SequentialSafeBoundaryGraph(_SequentialToolGraph):
-    """Sequential tool graph that reports every step as a safe boundary.
+class _SequentialSafeBoundaryProducer(_SequentialToolProducer):
+    """Sequential tool producer that reports every step as a safe boundary.
 
-    Unlike the plain ``_SequentialToolGraph``, this exposes
+    Unlike the plain ``_SequentialToolProducer``, this exposes
     ``is_at_safe_boundary()`` so the run loop captures an ``interrupted``
     checkpoint after each completed tool call. A crash between tool calls
     therefore resumes from the last completed tool rather than re-running
@@ -436,7 +437,6 @@ def _approval_runtime(
     tmp_path: Path,
     *,
     mode: str = "ask",
-    graph: object | None = None,
 ) -> tuple[RuntimeRequestFactory, RuntimeRunner]:
     runtime_request, runtime_class = _load_runtime_types()
     permission_module = importlib.import_module("voidcode.runtime.permissions.policy")
@@ -447,10 +447,25 @@ def _approval_runtime(
         "permission_policy": policy,
         "mcp_manager": _NoopMcpManager(),
     }
-    if graph is not None:
-        runtime_kwargs["graph"] = graph
     runtime = cast(RuntimeRunner, cast(object, runtime_class(**runtime_kwargs)))
     return runtime_request, runtime
+
+
+def _tool_call_response(call_id: str, tool_name: str, arguments: dict[str, object]) -> dict[str, object]:
+    return openai_response(
+        message={
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": tool_name, "arguments": json.dumps(arguments)},
+                }
+            ],
+        },
+        finish="tool_calls",
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -782,12 +797,11 @@ def _write_demo_skill(skill_dir: Path, *, content: str) -> None:
     )
 
 
-class _ParentBackgroundOutputGraph:
-    def produce(self, request: object, tool_results: tuple[ToolResultView, ...], *, session: TurnSession) -> object:
-        _ = request
+class _ParentBackgroundOutputProducer:
+    def produce(self, request: TurnRequest, tool_results: tuple[ToolResultView, ...], *, session: TurnSession) -> object:
         if session.metadata.get("parent_session_id") is not None:
             return ToolTurn(
-                facts=(),
+                facts=(ModelTurnFact(request.run_step, "deterministic", request.prompt),),
                 calls=(
                     cast(ToolCallFactory, importlib.import_module("voidcode.tools.contracts").ToolCall)(
                         tool_name="yield",
@@ -801,7 +815,7 @@ class _ParentBackgroundOutputGraph:
         )
         if not tool_results:
             return ToolTurn(
-                facts=(),
+                facts=(ModelTurnFact(request.run_step, "deterministic", request.prompt),),
                 calls=(
                     tool_call_factory(
                         tool_name="task",
@@ -818,7 +832,7 @@ class _ParentBackgroundOutputGraph:
         task_id = _background_task_id(tool_results[0])
         if len(tool_results) == 1:
             return ToolTurn(
-                facts=(),
+                facts=(ModelTurnFact(request.run_step, "deterministic", request.prompt),),
                 calls=(
                     tool_call_factory(
                         tool_name="task",
@@ -835,23 +849,23 @@ class _ParentBackgroundOutputGraph:
         final_output = tool_result_output(tool_results[1])
         if final_output is None:
             raise AssertionError("final delegated tool result has no text presentation")
-        return FinalTurn(facts=(), output=final_output)
+        return FinalTurn(facts=(ModelTurnFact(request.run_step, "deterministic", request.prompt),), output=final_output)
 
 
-class _FailingBackgroundChildGraph:
-    def produce(self, request: object, tool_results: tuple[object, ...], *, session: TurnSession) -> object:
-        _ = request, tool_results
+class _FailingBackgroundChildProducer:
+    def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: TurnSession) -> object:
+        _ = tool_results
         if session.metadata.get("parent_session_id") is not None:
             raise RuntimeError("delegated child failed twice")
-        return FinalTurn(facts=(), output="leader ready")
+        return FinalTurn(facts=(ModelTurnFact(request.run_step, "deterministic", request.prompt),), output="leader ready")
 
 
-class _McpEchoGraph:
-    def produce(self, request: object, tool_results: tuple[object, ...], *, session: TurnSession) -> object:
-        _ = request, session
+class _McpEchoProducer:
+    def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: TurnSession) -> object:
+        _ = session
         if not tool_results:
             return ToolTurn(
-                facts=(),
+                facts=(ModelTurnFact(request.run_step, "deterministic", request.prompt),),
                 calls=(
                     cast(
                         ToolCallFactory,
@@ -864,7 +878,7 @@ class _McpEchoGraph:
             )
         if session.metadata.get("parent_session_id") is not None:
             return ToolTurn(
-                facts=(),
+                facts=(ModelTurnFact(request.run_step, "deterministic", request.prompt),),
                 calls=(
                     cast(ToolCallFactory, importlib.import_module("voidcode.tools.contracts").ToolCall)(
                         tool_name="yield",
@@ -872,7 +886,7 @@ class _McpEchoGraph:
                     ),
                 ),
             )
-        return FinalTurn(facts=(), output="mcp parent done")
+        return FinalTurn(facts=(ModelTurnFact(request.run_step, "deterministic", request.prompt),), output="mcp parent done")
 
 
 def test_runtime_background_restart_reconcile_reloads_terminal_delegated_result(
@@ -881,7 +895,7 @@ def test_runtime_background_restart_reconcile_reloads_terminal_delegated_result(
     runtime_request, runtime_class = _load_runtime_types()
     first_runtime = cast(
         RuntimeRunner,
-        cast(object, runtime_class(workspace=tmp_path, turn_producer=_ParentBackgroundOutputGraph())),
+        cast(object, runtime_class(workspace=tmp_path, turn_producer=_ParentBackgroundOutputProducer())),
     )
     _ = first_runtime.run(runtime_request(prompt="leader", session_id="leader-restart"))
     started = first_runtime.start_background_task(
@@ -895,7 +909,7 @@ def test_runtime_background_restart_reconcile_reloads_terminal_delegated_result(
 
     second_runtime = cast(
         RuntimeRunner,
-        cast(object, runtime_class(workspace=tmp_path, turn_producer=_ParentBackgroundOutputGraph())),
+        cast(object, runtime_class(workspace=tmp_path, turn_producer=_ParentBackgroundOutputProducer())),
     )
     reloaded = second_runtime.load_background_task(started.task.id)
     task_result = cast(Any, second_runtime).load_background_task_result(started.task.id)
@@ -907,7 +921,10 @@ def test_runtime_background_restart_reconcile_reloads_terminal_delegated_result(
     assert task_result.result_available is True
 
 
-def test_runtime_skips_hooks_for_nested_hook_launched_runtime_invocations(tmp_path: Path) -> None:
+def test_runtime_skips_hooks_for_nested_hook_launched_runtime_invocations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     runtime_request, runtime_class = _load_runtime_types()
     src_path = str(Path(__file__).resolve().parents[2] / "src")
     marker_path = tmp_path / "hook-count.txt"
@@ -955,24 +972,43 @@ def test_runtime_skips_hooks_for_nested_hook_launched_runtime_invocations(tmp_pa
             "    nested_output_path.write_text(result.stdout, encoding='utf-8')",
         ]
     )
-    (tmp_path / ".voidcode.json").write_text(
-        json.dumps(
-            {
-                "approval_mode": "yolo",
-                "hooks": {
-                    "enabled": True,
-                    "timeout_seconds": 90,
-                    "pre_tool": [[sys.executable, "-c", hook_script]],
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-
+    hook_config = {
+        "approval_mode": "yolo",
+        "hooks": {
+            "enabled": True,
+            "timeout_seconds": 90,
+            "pre_tool": [[sys.executable, "-c", hook_script]],
+        },
+    }
+    config_path = tmp_path / ".voidcode.json"
+    config_path.write_text(json.dumps(hook_config), encoding="utf-8")
     command = _cwd_command()
     prompt = f"run {command}"
-    runtime = runtime_class(workspace=tmp_path)
-    result = runtime.run(runtime_request(prompt=prompt, session_id="outer-hook-recursion-session"))
+
+    server = OpenAILoopbackServer(
+        [
+            _tool_call_response("call-hook-shell", "shell_exec", {"command": command}),
+            _tool_call_response("call-hook-read", "read", {"path": "nested.txt"}),
+            openai_response(message={"role": "assistant", "content": "Read nested hook read."}, finish="stop"),
+            openai_response(message={"role": "assistant", "content": "The nested hook completed."}, finish="stop"),
+        ]
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_address[1]}/v1")
+    provider_config = json.loads(config_path.read_text(encoding="utf-8"))
+    provider_config.update(hook_config)
+    config_path.write_text(json.dumps(provider_config), encoding="utf-8")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
+
+    try:
+        thread.start()
+        runtime = runtime_class(workspace=tmp_path)
+        result = runtime.run(runtime_request(prompt=prompt, session_id="outer-hook-recursion-session"))
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
 
     assert marker_path.read_text(encoding="utf-8") == "1"
     nested_output = nested_output_path.read_text(encoding="utf-8")
@@ -984,53 +1020,74 @@ def test_runtime_skips_hooks_for_nested_hook_launched_runtime_invocations(tmp_pa
 
 def test_runtime_background_task_persists_and_can_be_loaded_from_fresh_runtime(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime_request, runtime_class = _load_runtime_types()
+    server = OpenAILoopbackServer([openai_response(message={"role": "assistant", "content": "done"}, finish="stop")])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_address[1]}/v1")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
 
-    first_runtime = cast(RuntimeRunner, cast(object, runtime_class(workspace=tmp_path)))
-    task = first_runtime.start_background_task(runtime_request(prompt="read missing.txt"))
+    try:
+        thread.start()
+        first_runtime = cast(RuntimeRunner, cast(object, runtime_class(workspace=tmp_path)))
+        task = first_runtime.start_background_task(runtime_request(prompt="complete background persistence task"))
+        terminal_task = _wait_for_background_task_status(
+            first_runtime,
+            task.task.id,
+            {"completed", "failed", "cancelled", "interrupted"},
+        )
+        second_runtime = cast(RuntimeRunner, cast(object, runtime_class(workspace=tmp_path)))
+        reloaded = second_runtime.load_background_task(task.task.id)
+        listed = second_runtime.list_background_tasks()
 
-    terminal_task = _wait_for_background_task_status(
-        first_runtime,
-        task.task.id,
-        {"completed", "failed", "cancelled", "interrupted"},
-    )
-    second_runtime = cast(RuntimeRunner, cast(object, runtime_class(workspace=tmp_path)))
-    reloaded = second_runtime.load_background_task(task.task.id)
-    listed = second_runtime.list_background_tasks()
-
-    assert reloaded.task.id == task.task.id
-    assert reloaded.status == terminal_task.status
-    assert any(item.task.id == task.task.id for item in listed)
-    if reloaded.session_id is not None:
-        replay = second_runtime.resume(reloaded.session_id)
-        assert replay.session.metadata["background_task_id"] == task.task.id
-        assert replay.session.metadata["background_run"] is True
+        assert reloaded.task.id == task.task.id
+        assert reloaded.status == terminal_task.status
+        assert any(item.task.id == task.task.id for item in listed)
+        if reloaded.session_id is not None:
+            replay = second_runtime.resume(reloaded.session_id)
+            assert replay.session.metadata["background_task_id"] == task.task.id
+            assert replay.session.metadata["background_run"] is True
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
 
 
 def test_runtime_lists_background_tasks_by_parent_session_from_fresh_runtime(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime_request, runtime_class = _load_runtime_types()
-    _ = (tmp_path / "sample.txt").write_text("hello\n", encoding="utf-8")
+    prompt = "complete background listing task"
+    final_response = openai_response(message={"role": "assistant", "content": "done"}, finish="stop")
+    server = OpenAILoopbackServer([final_response, final_response, final_response])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_address[1]}/v1")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
 
-    first_runtime = cast(RuntimeRunner, cast(object, runtime_class(workspace=tmp_path)))
-    _ = first_runtime.run(runtime_request(prompt="read sample.txt", session_id="leader-session"))
-    leader_task = first_runtime.start_background_task(runtime_request(prompt="read sample.txt", parent_session_id="leader-session"))
-    _ = first_runtime.start_background_task(runtime_request(prompt="read sample.txt"))
+    try:
+        thread.start()
+        first_runtime = cast(RuntimeRunner, cast(object, runtime_class(workspace=tmp_path)))
+        _ = first_runtime.run(runtime_request(prompt="leader session", session_id="leader-session"))
+        leader_task = first_runtime.start_background_task(runtime_request(prompt=prompt, parent_session_id="leader-session"))
+        independent_task = first_runtime.start_background_task(runtime_request(prompt="independent background task"))
+        terminal_statuses = {"completed", "failed", "cancelled", "interrupted"}
+        _ = _wait_for_background_task_status(first_runtime, leader_task.task.id, terminal_statuses)
+        _ = _wait_for_background_task_status(first_runtime, independent_task.task.id, terminal_statuses)
 
-    _ = _wait_for_background_task_status(
-        first_runtime,
-        leader_task.task.id,
-        {"completed", "failed", "cancelled", "interrupted"},
-    )
+        second_runtime = cast(RuntimeRunner, cast(object, runtime_class(workspace=tmp_path)))
+        listed = second_runtime.list_background_tasks_by_parent_session(parent_session_id="leader-session")
 
-    second_runtime = cast(RuntimeRunner, cast(object, runtime_class(workspace=tmp_path)))
-    listed = second_runtime.list_background_tasks_by_parent_session(parent_session_id="leader-session")
-
-    assert len(listed) == 1
-    assert listed[0].task.id == leader_task.task.id
-    assert listed[0].prompt == "read sample.txt"
+        assert len(listed) == 1
+        assert listed[0].task.id == leader_task.task.id
+        assert listed[0].prompt == prompt
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
 
 
 def test_runtime_background_task_cancel_reconciles_orphaned_task_from_fresh_runtime(
@@ -1062,58 +1119,91 @@ def test_runtime_background_task_cancel_reconciles_orphaned_task_from_fresh_runt
     assert cancelled.cancel_requested_at is None
 
 
-def test_runtime_persists_pending_approval_until_single_resume_resolution(tmp_path: Path) -> None:
-    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
-    permission_module = importlib.import_module("voidcode.runtime.permissions.policy")
-    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="ask")
+def test_runtime_persists_pending_approval_until_single_resume_resolution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = OpenAILoopbackServer(
+        [
+            _tool_call_response("call-persisted-approval", "write", {"path": "danger.txt", "content": "persisted approval"}),
+            openai_response(message={"role": "assistant", "content": "done"}, finish="stop"),
+        ]
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_address[1]}/v1")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
 
-    waiting = runtime.run(runtime_request(prompt="write danger.txt persisted approval", session_id="persisted-approval"))
-    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
-
-    _, replay_runtime_class = _load_runtime_types()
-    resumed_runtime = cast(
-        RuntimeRunner,
-        cast(
-            object,
-            replay_runtime_class(
-                workspace=tmp_path,
-                permission_policy=policy,
+    try:
+        thread.start()
+        runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
+        permission_module = importlib.import_module("voidcode.runtime.permissions.policy")
+        policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="ask")
+        waiting = runtime.run(runtime_request(prompt="write danger.txt persisted approval", session_id="persisted-approval"))
+        approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+        _, replay_runtime_class = _load_runtime_types()
+        resumed_runtime = cast(
+            RuntimeRunner,
+            cast(
+                object,
+                replay_runtime_class(
+                    workspace=tmp_path,
+                    permission_policy=policy,
+                ),
             ),
-        ),
-    )
-
-    replay = resumed_runtime.resume("persisted-approval")
-    resolved = resumed_runtime.resume(
-        "persisted-approval",
-        approval_request_id=approval_request_id,
-        approval_decision="allow",
-    )
-
-    assert replay.session.status == "waiting"
-    assert replay.events[-1].event_type == "runtime.approval_requested"
-    assert replay.events[-1].payload["policy"] == {"mode": "ask"}
-    assert resolved.session.status == "completed"
-    with pytest.raises(ValueError, match="no pending approval"):
-        _ = resumed_runtime.resume(
+        )
+        replay = resumed_runtime.resume("persisted-approval")
+        resolved = resumed_runtime.resume(
             "persisted-approval",
             approval_request_id=approval_request_id,
             approval_decision="allow",
         )
 
+        assert replay.session.status == "waiting"
+        assert replay.events[-1].event_type == "runtime.approval_requested"
+        assert replay.events[-1].payload["policy"] == {"mode": "ask"}
+        assert resolved.session.status == "completed"
+        with pytest.raises(ValueError, match="no pending approval"):
+            _ = resumed_runtime.resume(
+                "persisted-approval",
+                approval_request_id=approval_request_id,
+                approval_decision="allow",
+            )
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
+
 
 def test_runtime_rejects_stale_duplicate_approval_replay_after_resolution_even_if_pending_state_is_restored(  # noqa: E501
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
-
-    waiting = runtime.run(runtime_request(prompt="write danger.txt stale replay", session_id="stale-replay-session"))
-    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
-    resolved = runtime.resume(
-        "stale-replay-session",
-        approval_request_id=approval_request_id,
-        approval_decision="allow",
+    server = OpenAILoopbackServer(
+        [
+            _tool_call_response("call-stale-approval", "write", {"path": "danger.txt", "content": "stale replay"}),
+            openai_response(message={"role": "assistant", "content": "done"}, finish="stop"),
+        ]
     )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_address[1]}/v1")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
 
+    try:
+        thread.start()
+        runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
+        waiting = runtime.run(runtime_request(prompt="write danger.txt stale replay", session_id="stale-replay-session"))
+        approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+        resolved = runtime.resume(
+            "stale-replay-session",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
     database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
@@ -1173,25 +1263,25 @@ def test_runtime_rejects_stale_duplicate_approval_replay_after_resolution_even_i
         )
 
 
-class _DivergentWriteFileGraph:
-    """Graph that returns different write arguments on consecutive steps."""
+class _DivergentWriteFileProducer:
+    """Turn producer that returns different write arguments on consecutive steps."""
 
     def __init__(self) -> None:
         self._call_count = 0
 
     def produce(
         self,
-        request: object,
+        request: TurnRequest,
         tool_results: tuple[object, ...],
         *,
         session: object,
     ) -> object:
-        _ = request, session
+        _ = session
         self._call_count += 1
         if not tool_results:
             suffix = "first" if self._call_count == 1 else "second"
             return ToolTurn(
-                facts=(),
+                facts=(ModelTurnFact(request.run_step, "deterministic", request.prompt),),
                 calls=(
                     cast(
                         ToolCallFactory,
@@ -1205,7 +1295,7 @@ class _DivergentWriteFileGraph:
                     ),
                 ),
             )
-        return FinalTurn(facts=(), output="written")
+        return FinalTurn(facts=(ModelTurnFact(request.run_step, "deterministic", request.prompt),), output="written")
 
 
 def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_overrides(
@@ -1217,9 +1307,24 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
     standin_providers = provider_config_module.ProviderConfigs(
         custom={provider_name: provider_config_module.ProviderEndpointConfig() for provider_name in ("repo", "session", "fresh")}
     )
+    server = OpenAILoopbackServer(
+        [
+            _tool_call_response("call-resume-config-read", "read", {"path": "sample.txt"}),
+            openai_response(message={"role": "assistant", "content": "Read resume config."}, finish="stop"),
+        ]
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    base_url = f"http://127.0.0.1:{server.server_address[1]}/v1"
+    custom_providers = {name: {"api_key": "loopback-key", "base_url": base_url, "timeout_seconds": 5} for name in ("repo", "session", "fresh")}
     config_path = tmp_path / ".voidcode.json"
     config_path.write_text(
-        json.dumps({"approval_mode": "ask", "model": "repo/model", "providers": {"custom": {"repo": {}, "session": {}, "fresh": {}}}}),
+        json.dumps(
+            {
+                "approval_mode": "ask",
+                "model": "repo/model",
+                "providers": {"custom": custom_providers},
+            }
+        ),
         encoding="utf-8",
     )
     runtime_request, runtime_class = _load_runtime_types()
@@ -1227,7 +1332,6 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
     config_module = importlib.import_module("voidcode.runtime.config.loading")
     load_runtime_config = cast(Callable[..., object], config_module.load_runtime_config)
     runtime_config = cast(Callable[..., object], config_module.RuntimeConfig)
-
     initial_runtime = cast(
         RuntimeRunner,
         cast(
@@ -1240,8 +1344,14 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
         ),
     )
     _ = (tmp_path / "sample.txt").write_text("resume config\n", encoding="utf-8")
-
-    stored = initial_runtime.run(runtime_request(prompt="read sample.txt", session_id="resume-config-session"))
+    try:
+        thread.start()
+        stored = initial_runtime.run(runtime_request(prompt="read sample.txt", session_id="resume-config-session"))
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
 
     resumed_runtime = cast(
         RuntimeRunner,
@@ -1266,19 +1376,33 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
     assert [event.payload.get("tool") for event in completed_tools] == ["read"]
 
 
-def test_runtime_preserves_pending_request_when_resumed_finalize_raises(tmp_path: Path) -> None:
-    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
+def test_runtime_preserves_pending_request_when_resumed_finalize_raises(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = OpenAILoopbackServer([_tool_call_response("call-finalize-failure", "write", {"path": "danger.txt", "content": "finalize failure"})])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_address[1]}/v1")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
     permission_module = importlib.import_module("voidcode.runtime.permissions.policy")
     policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="ask")
 
-    waiting = runtime.run(runtime_request(prompt="write danger.txt finalize failure", session_id="approval-session"))
-    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+    try:
+        thread.start()
+        runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
+        waiting = runtime.run(runtime_request(prompt="write danger.txt finalize failure", session_id="approval-session"))
+        approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
 
-    class FailingFinalizeGraph:
-        def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
+    class FailingFinalizeProducer:
+        def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: object) -> object:
             if not tool_results:
                 return ToolTurn(
-                    facts=(),
+                    facts=(ModelTurnFact(request.run_step, "deterministic", request.prompt),),
                     calls=(
                         cast(
                             ToolCallFactory,
@@ -1298,7 +1422,7 @@ def test_runtime_preserves_pending_request_when_resumed_finalize_raises(tmp_path
             object,
             resumed_runtime_class(
                 workspace=tmp_path,
-                turn_producer=FailingFinalizeGraph(),
+                turn_producer=FailingFinalizeProducer(),
                 permission_policy=policy,
             ),
         ),
@@ -1319,7 +1443,7 @@ def test_runtime_preserves_pending_request_when_resumed_finalize_raises(tmp_path
             object,
             _load_runtime_types()[1](
                 workspace=tmp_path,
-                turn_producer=FailingFinalizeGraph(),
+                turn_producer=FailingFinalizeProducer(),
                 permission_policy=policy,
             ),
         ),
@@ -1330,116 +1454,145 @@ def test_runtime_preserves_pending_request_when_resumed_finalize_raises(tmp_path
     assert replay.events[-1].event_type == "runtime.failed"
 
 
-def test_runtime_preserves_pending_approval_when_terminal_save_fails(tmp_path: Path) -> None:
-    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
+def test_runtime_preserves_pending_approval_when_terminal_save_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = OpenAILoopbackServer(
+        [
+            _tool_call_response("call-save-failure", "write", {"path": "danger.txt", "content": "save failure"}),
+            openai_response(message={"role": "assistant", "content": "approval persisted"}, finish="stop"),
+            openai_response(message={"role": "assistant", "content": "retry completed"}, finish="stop"),
+        ]
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_address[1]}/v1")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
     permission_module = importlib.import_module("voidcode.runtime.permissions.policy")
     policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="ask")
 
-    waiting = runtime.run(runtime_request(prompt="write danger.txt save failure", session_id="approval-session"))
-    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+    try:
+        thread.start()
+        runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
+        waiting = runtime.run(runtime_request(prompt="write danger.txt save failure", session_id="approval-session"))
+        approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
 
-    storage_module = importlib.import_module("voidcode.runtime.storage")
-    sqlite_store_class = cast(Callable[[], SqliteSessionStore], storage_module.SqliteSessionStore)
-    base_store = sqlite_store_class()
+        storage_module = importlib.import_module("voidcode.runtime.storage")
+        sqlite_store_class = cast(Callable[[], SqliteSessionStore], storage_module.SqliteSessionStore)
+        base_store = sqlite_store_class()
 
-    class FailingTerminalSaveStore:
-        def save_run(
-            self,
-            *,
-            workspace: Path,
-            request: Any,
-            response: Any,
-            clear_pending_approval: bool = True,
-            seal_terminal_status: bool = True,
-        ) -> None:
-            if clear_pending_approval:
-                raise RuntimeError("save boom")
-            base_store.save_run(
-                workspace=workspace,
-                request=request,
-                response=response,
-                clear_pending_approval=clear_pending_approval,
-                seal_terminal_status=seal_terminal_status,
-            )
+        class FailingTerminalSaveStore:
+            def save_run(
+                self,
+                *,
+                workspace: Path,
+                request: Any,
+                response: Any,
+                clear_pending_approval: bool = True,
+                seal_terminal_status: bool = True,
+            ) -> None:
+                if clear_pending_approval:
+                    raise RuntimeError("save boom")
+                base_store.save_run(
+                    workspace=workspace,
+                    request=request,
+                    response=response,
+                    clear_pending_approval=clear_pending_approval,
+                    seal_terminal_status=seal_terminal_status,
+                )
 
-    resumed_runtime_class = _load_runtime_types()[1]
-    resumed_runtime = cast(
-        RuntimeRunner,
-        cast(
-            object,
-            resumed_runtime_class(
-                workspace=tmp_path,
-                permission_policy=policy,
-                repositories=RuntimeRepositories(
-                    events=base_store,
-                    sessions=base_store,
-                    run_writer=FailingTerminalSaveStore(),
-                    recovery=base_store,
-                    tasks=base_store,
-                    maintenance=base_store,
-                    process_persistence=base_store,
+        resumed_runtime_class = _load_runtime_types()[1]
+        resumed_runtime = cast(
+            RuntimeRunner,
+            cast(
+                object,
+                resumed_runtime_class(
+                    workspace=tmp_path,
+                    permission_policy=policy,
+                    repositories=RuntimeRepositories(
+                        events=base_store,
+                        sessions=base_store,
+                        run_writer=FailingTerminalSaveStore(),
+                        recovery=base_store,
+                        tasks=base_store,
+                        maintenance=base_store,
+                        process_persistence=base_store,
+                    ),
                 ),
             ),
-        ),
-    )
-
-    with pytest.raises(RuntimeError, match="save boom"):
-        _ = resumed_runtime.resume(
-            "approval-session",
-            approval_request_id=approval_request_id,
-            approval_decision="allow",
         )
 
-    replay_runtime = cast(
-        RuntimeRunner,
-        cast(
-            object,
-            _load_runtime_types()[1](
-                workspace=tmp_path,
-                permission_policy=policy,
+        with pytest.raises(RuntimeError, match="save boom"):
+            _ = resumed_runtime.resume(
+                "approval-session",
+                approval_request_id=approval_request_id,
+                approval_decision="allow",
+            )
+
+        replay_runtime = cast(
+            RuntimeRunner,
+            cast(
+                object,
+                _load_runtime_types()[1](
+                    workspace=tmp_path,
+                    permission_policy=policy,
+                ),
             ),
-        ),
-    )
-    replay = replay_runtime.resume("approval-session")
+        )
+        replay = replay_runtime.resume("approval-session")
 
-    # Reconciliation converts the durable resolved tail into an interrupted
-    # checkpoint, so retrying without the approval request id cannot execute the
-    # approved tool twice and can finish the graph safely.
-    assert replay.session.status == "completed"
-    assert replay.events[-1].event_type == "graph.response_ready"
-    assert replay.events.count(next(event for event in replay.events if event.event_type == "runtime.approval_resolved")) == 1
+        # Reconciliation converts the durable resolved tail into an interrupted
+        # checkpoint, so retrying without the approval request id cannot execute the
+        # approved tool twice and can finish the provider turn safely.
+        assert replay.session.status == "completed"
+        assert any(event.event_type == "core.response_ready" for event in replay.events)
+        assert replay.events.count(next(event for event in replay.events if event.event_type == "runtime.approval_resolved")) == 1
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
 
 
-def test_runtime_persists_and_resumes_session_across_instances(tmp_path: Path) -> None:
+def test_runtime_persists_and_resumes_session_across_instances(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("persisted slice\n", encoding="utf-8")
     runtime_request, runtime_class = _load_runtime_types()
+    server = OpenAILoopbackServer(
+        [
+            _tool_call_response("call-persisted-read", "read", {"path": "sample.txt"}),
+            openai_response(message={"role": "assistant", "content": "Read persisted slice."}, finish="stop"),
+        ]
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_address[1]}/v1")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
 
-    first_runtime = runtime_class(workspace=tmp_path)
-    first_result = first_runtime.run(runtime_request(prompt="read sample.txt", session_id="demo-session"))
+    try:
+        thread.start()
+        first_runtime = runtime_class(workspace=tmp_path)
+        first_result = first_runtime.run(runtime_request(prompt="read sample.txt", session_id="demo-session"))
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
 
     second_runtime = runtime_class(workspace=tmp_path)
     sessions = second_runtime.list_sessions()
     resumed = second_runtime.resume("demo-session")
 
     assert [summary.session.id for summary in sessions] == ["demo-session"]
+    assert first_result.session.status == resumed.session.status == "completed"
     assert first_result.output == resumed.output
-    _assert_ordered_event_types(
-        [event.event_type for event in resumed.events],
-        [
-            "runtime.request_received",
-            "runtime.skills_loaded",
-            "graph.loop_step",
-            "graph.model_turn",
-            "graph.tool_request_created",
-            "runtime.tool_lookup_succeeded",
-            "runtime.permission_resolved",
-            "runtime.tool_started",
-            "runtime.tool_completed",
-            "graph.loop_step",
-            "graph.response_ready",
-        ],
-    )
+    assert resumed.events == first_result.events
+    assert len(server.requests) == 2
+    assert "persisted slice" in json.dumps(server.requests[1])
+    completed_reads = [event for event in resumed.events if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "read"]
+    assert len(completed_reads) == 1
 
 
 def _drop_crashed_run_registration(*, workspace: Path, session_id: str) -> None:
@@ -1470,7 +1623,7 @@ def test_runtime_crash_mid_run_marks_interrupted_and_resumes_to_completion(tmp_p
 
     first_runtime = cast(
         RuntimeRunner,
-        cast(object, runtime_class(workspace=tmp_path, turn_producer=_SequentialSafeBoundaryGraph(calls), permission_policy=policy)),
+        cast(object, runtime_class(workspace=tmp_path, turn_producer=_SequentialSafeBoundaryProducer(calls), permission_policy=policy)),
     )
     stream = first_runtime.run_stream(runtime_request(prompt="read two files", session_id="crash-session"))
     # The interrupted checkpoint is captured as a side effect at the top of the
@@ -1478,7 +1631,7 @@ def test_runtime_crash_mid_run_marks_interrupted_and_resumes_to_completion(tmp_p
     # second tool request is emitted before abandoning the stream (the crash).
     tool_requests = 0
     for chunk in stream:
-        if chunk.event is not None and chunk.event.event_type == "graph.tool_request_created":
+        if chunk.event is not None and chunk.event.event_type == "core.tool_request_created":
             tool_requests += 1
             if tool_requests >= 2:
                 break
@@ -1486,7 +1639,7 @@ def test_runtime_crash_mid_run_marks_interrupted_and_resumes_to_completion(tmp_p
     _drop_crashed_run_registration(workspace=tmp_path, session_id="crash-session")
     second_runtime = cast(
         RuntimeRunner,
-        cast(object, runtime_class(workspace=tmp_path, turn_producer=_SequentialSafeBoundaryGraph(calls), permission_policy=policy)),
+        cast(object, runtime_class(workspace=tmp_path, turn_producer=_SequentialSafeBoundaryProducer(calls), permission_policy=policy)),
     )
     summaries = second_runtime.list_sessions()
     assert [summary.session.id for summary in summaries] == ["crash-session"]
@@ -1531,12 +1684,12 @@ def test_runtime_resume_restores_leaf_and_keeps_orphaned_tail_rows(tmp_path: Pat
 
     first_runtime = cast(
         RuntimeRunner,
-        cast(object, runtime_class(workspace=tmp_path, turn_producer=_SequentialSafeBoundaryGraph(calls), permission_policy=policy)),
+        cast(object, runtime_class(workspace=tmp_path, turn_producer=_SequentialSafeBoundaryProducer(calls), permission_policy=policy)),
     )
     stream = first_runtime.run_stream(runtime_request(prompt="read two files", session_id="orphan-session"))
     tool_requests = 0
     for chunk in stream:
-        if chunk.event is not None and chunk.event.event_type == "graph.tool_request_created":
+        if chunk.event is not None and chunk.event.event_type == "core.tool_request_created":
             tool_requests += 1
             if tool_requests >= 2:
                 break
@@ -1556,8 +1709,8 @@ def test_runtime_resume_restores_leaf_and_keeps_orphaned_tail_rows(tmp_path: Pat
         workspace=tmp_path,
         session_id="orphan-session",
         events=(
-            ("graph.loop_step", "graph", {"step": 999, "phase": "orphan", "orphan": True}, None),
-            ("graph.model_turn", "graph", {"turn": 999, "mode": "orphan", "orphan": True}, None),
+            ("core.loop_step", "core", {"step": 999, "phase": "orphan", "orphan": True}, None),
+            ("core.model_turn", "core", {"run_step": 999, "mode": "orphan", "orphan": True}, None),
             ("runtime.tool_completed", "runtime", {"tool": "orphan_tool", "status": "ok", "orphan": True}, None),
         ),
     )
@@ -1569,7 +1722,7 @@ def test_runtime_resume_restores_leaf_and_keeps_orphaned_tail_rows(tmp_path: Pat
 
     resumed_runtime = cast(
         RuntimeRunner,
-        cast(object, runtime_class(workspace=tmp_path, turn_producer=_SequentialSafeBoundaryGraph(calls), permission_policy=policy)),
+        cast(object, runtime_class(workspace=tmp_path, turn_producer=_SequentialSafeBoundaryProducer(calls), permission_policy=policy)),
     )
     resumed = resumed_runtime.resume("orphan-session")
 
@@ -1641,7 +1794,7 @@ def test_runtime_multi_tool_call_crash_requeries_provider_from_durable_tool_resu
     assert checkpoint is not None and checkpoint.get("kind") == "interrupted"
     checkpoint_tool_results = cast(list[object], checkpoint.get("tool_results", []))
     checkpoint_reports = [parse_report_payload(cast(dict[str, object], result)["reported_call"]) for result in checkpoint_tool_results]
-    assert [(report.tool_call_id, report.authorized_arguments["path"]) for report in checkpoint_reports] == [
+    assert [(report.tool_call_id, report.final_arguments["path"]) for report in checkpoint_reports] == [
         ("call-a", "a.txt"),
         ("call-b", "b.txt"),
     ]
@@ -1658,7 +1811,7 @@ def test_runtime_multi_tool_call_crash_requeries_provider_from_durable_tool_resu
     assert resumed.output == "done"
     completed = [event for event in resumed.events if event.event_type == "runtime.tool_completed"]
     resumed_reports = [parse_report_payload(event.payload["reported_call"]) for event in completed]
-    assert [(report.tool_call_id, report.authorized_arguments["path"]) for report in resumed_reports] == [
+    assert [(report.tool_call_id, report.final_arguments["path"]) for report in resumed_reports] == [
         ("call-a", "a.txt"),
         ("call-b", "b.txt"),
         ("call-c", "c.txt"),

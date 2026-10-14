@@ -55,3 +55,21 @@ def test_each_statusline_profile_renders_its_configured_segments_with_bounded_wi
         assert visible_width(rendered) <= 200
         line.set_width(20)
         assert visible_width(line.render(data)) <= 20
+
+
+def test_context_usage_distinguishes_unknown_from_observed_zero() -> None:
+    theme = resolve_theme("voidcode-dark", "dark", color_system=None)
+    config = RuntimeTuiStatuslineConfig(layout="custom", right=("context_pct",))
+    statusline = StatusLine(theme, 80, config)
+
+    unknown = statusline.render(StatusSegmentData(context_window=100, context_tokens=None))
+    observed_zero = statusline.render(
+        StatusSegmentData(
+            context_percent=0.0,
+            context_window=100,
+            context_tokens=0,
+        )
+    )
+
+    assert "?/100" in unknown
+    assert "0.0%/100" in observed_zero

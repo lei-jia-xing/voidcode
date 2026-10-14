@@ -35,27 +35,29 @@ def run_id_from_session_metadata(metadata: dict[str, object]) -> str | None:
     return run_id if run_id else None
 
 
-def _cache_hit_rate(cache_read_tokens: int, uncached_input_tokens: int) -> float | None:
+def _cache_hit_rate(cache_read_tokens: int | None, uncached_input_tokens: int | None) -> float | None:
+    if cache_read_tokens is None or uncached_input_tokens is None:
+        return None
     denominator = cache_read_tokens + uncached_input_tokens
     if denominator <= 0:
         return None
     return cache_read_tokens / denominator
 
 
-def _accumulated_int(payload: Mapping[str, object], key: str) -> int:
-    raw_value = payload.get(key, 0)
+def _accumulated_int(payload: Mapping[str, object], key: str) -> int | None:
+    raw_value = payload.get(key, 0 if not payload else None)
+    if raw_value is None:
+        return None
     if isinstance(raw_value, int) and not isinstance(raw_value, bool):
         return raw_value
-    raise ValueError(f"persisted provider_usage.cumulative.{key} must be an integer")
+    raise ValueError(f"persisted provider_usage.cumulative.{key} must be an integer or null")
 
 
 def session_with_provider_usage_metadata(
     session: SessionState,
     usage: ProviderTokenUsage | None,
 ) -> SessionState:
-    if usage is None:
-        return session
-    usage_payload = usage.metadata_payload()
+    usage_payload = ProviderTokenUsage().metadata_payload() if usage is None else usage.metadata_payload()
     raw_provider_usage = session.metadata.get("provider_usage")
     if raw_provider_usage is not None and not isinstance(raw_provider_usage, dict):
         raise ValueError("persisted provider_usage must be an object")
@@ -65,22 +67,25 @@ def session_with_provider_usage_metadata(
         raise ValueError("persisted provider_usage.cumulative must be an object")
     cumulative: dict[str, object] = dict(raw_cumulative) if isinstance(raw_cumulative, dict) else {}
 
-    def _int_value(key: str) -> int:
+    def _int_value(key: str) -> int | None:
         return _accumulated_int(cumulative, key)
 
-    cumulative_payload: dict[str, int | float] = {}
+    cumulative_payload: dict[str, int | float | None] = {}
     for key, value in usage_payload.items():
+        previous = cumulative.get(key, 0 if not cumulative else None)
         if key == "cost_usd":
-            # Money accumulates as a float; the token buckets stay integers.
-            previous_cost = cumulative.get(key, 0)
-            if not isinstance(previous_cost, (int, float)) or isinstance(previous_cost, bool):
-                raise ValueError("persisted provider_usage.cumulative.cost_usd must be a number")
-            cumulative_payload[key] = float(previous_cost) + float(value or 0.0)
+            if value is None or previous is None:
+                cumulative_payload[key] = None
+            elif isinstance(previous, (int, float)) and not isinstance(previous, bool):
+                cumulative_payload[key] = float(previous) + float(value)
+            else:
+                raise ValueError("persisted provider_usage.cumulative.cost_usd must be a number or null")
             continue
-        cumulative_payload[key] = _int_value(key) if value is None else _int_value(key) + value
+        previous_value = _int_value(key)
+        cumulative_payload[key] = None if value is None or previous_value is None else previous_value + value
     latest_payload = {
         **usage_payload,
-        "cache_hit_rate": usage.cache_hit_rate,
+        "cache_hit_rate": usage.cache_hit_rate if usage is not None else None,
     }
     cumulative_payload_with_rate = {
         **cumulative_payload,

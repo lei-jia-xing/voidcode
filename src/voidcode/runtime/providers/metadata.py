@@ -5,7 +5,7 @@ from typing import Literal
 
 from ...provider.model_catalog import ProviderModelMetadata as CatalogProviderModelMetadata
 from ...provider.model_catalog import tool_feedback_mode
-from ..config.materializer import EffectiveRuntimeConfig
+from ..config.materializer import RunConfig
 from ..contracts import ProviderModelMetadata
 
 
@@ -19,11 +19,11 @@ def optional_bool(value: object) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
-def optional_positive_float(value: object) -> float | None:
+def optional_nonnegative_float(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
     normalized = float(value)
-    return normalized if normalized > 0 else None
+    return normalized if normalized >= 0 else None
 
 
 def optional_string(value: object) -> str | None:
@@ -49,10 +49,10 @@ def catalog_metadata_from_payload(
         supports_streaming=optional_bool(payload.get("supports_streaming")),
         supports_reasoning=optional_bool(payload.get("supports_reasoning")),
         supports_json_mode=optional_bool(payload.get("supports_json_mode")),
-        cost_per_input_token=optional_positive_float(payload.get("cost_per_input_token")),
-        cost_per_output_token=optional_positive_float(payload.get("cost_per_output_token")),
-        cost_per_cache_read_token=optional_positive_float(payload.get("cost_per_cache_read_token")),
-        cost_per_cache_write_token=optional_positive_float(payload.get("cost_per_cache_write_token")),
+        cost_per_input_token=optional_nonnegative_float(payload.get("cost_per_input_token")),
+        cost_per_output_token=optional_nonnegative_float(payload.get("cost_per_output_token")),
+        cost_per_cache_read_token=optional_nonnegative_float(payload.get("cost_per_cache_read_token")),
+        cost_per_cache_write_token=optional_nonnegative_float(payload.get("cost_per_cache_write_token")),
         supports_reasoning_effort=optional_bool(payload.get("supports_reasoning_effort")),
         default_reasoning_effort=optional_string(payload.get("default_reasoning_effort")),
         supported_effort_levels=optional_string_tuple(payload.get("supported_effort_levels")),
@@ -126,13 +126,11 @@ def resolve_reasoning_effort_capability(
 
 
 def validate_reasoning_effort_capability(
-    config: EffectiveRuntimeConfig,
+    config: RunConfig,
     capability: ReasoningEffortCapability,
 ) -> None:
     """Fail fast when the effective config asks for an effort the target cannot take."""
     if config.reasoning_effort is None:
-        return
-    if config.execution_engine != "provider":
         return
     if capability.supported is not False:
         return

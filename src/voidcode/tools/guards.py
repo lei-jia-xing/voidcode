@@ -266,7 +266,7 @@ def _has_whole_file_for_context(context: ToolContext, path: str) -> bool:
 
 
 def _read_result_path(report: ReportedCall) -> str | None:
-    raw_path = report.authorized_arguments.get("path")
+    raw_path = report.final_arguments.get("path")
     return raw_path if isinstance(raw_path, str) and raw_path != "" else None
 
 

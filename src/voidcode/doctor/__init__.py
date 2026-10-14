@@ -1,14 +1,7 @@
-"""VoidCode Capability Doctor - runtime capability readiness checker.
+"""VoidCode capability checks for command availability and configuration.
 
-This module provides a unified capability doctor surface for checking external
-tool readiness including:
-- ast-grep binary availability
-- formatter presets and their executables
-- LSP server commands
-- MCP server commands
-
-The doctor is non-blocking and provides structured output suitable for both
-CLI users and agents.
+This module reports local executable availability and configured capabilities.
+It does not verify runtime behavior or remote connectivity.
 """
 
 from __future__ import annotations

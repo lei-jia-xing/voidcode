@@ -33,12 +33,12 @@ Registry 的 handler 输入是深拷贝 snapshot。handler 对 arguments 或 pub
 
 ## 触发顺序
 
-### 普通 provider/graph tool call
+### 普通 provider-native tool call
 
 正常 native tool 的顺序为：
 
 ```text
-graph.tool_request_created (原始请求，保持既有时序)
+core.tool_request_created (原始请求，保持既有时序)
   -> delegation/tool policy
   -> tool lookup
   -> typed ToolInputHandlerRegistry
@@ -64,7 +64,7 @@ handler 的 return contract。
 runtime 解析 inner target 后，typed handler 只对 inner target 执行一次。这样同一
 logical call 不会被 outer 与 inner 双重 canonicalize。
 
-Inner target 的 `graph.tool_request_created` 仍记录 inner target 的原始参数；typed
+Inner target 的 `core.tool_request_created` 仍记录 inner target 的原始参数；typed
 结果通过专用的 `runtime.tool_input_processed` 事件记录，随后 permission/approval
 与执行使用最终 inner 参数。
 
@@ -73,7 +73,7 @@ Inner target 的 `graph.tool_request_created` 仍记录 inner target 的原始�
 Approved approval resume 直接使用已持久化 `PendingApproval.arguments`，不再次运行
 typed handler。这样审批所看到、持久化和实际执行的参数保持一致。
 
-普通 graph resume 是原 prompt + 已完成 tool results 的重新执行；新的 graph tool call
+普通 turn resume 是原 prompt + 已完成 tool results 的重新执行；新的 provider tool call
 仍运行 typed registry，并把 `ToolInputEvent.is_resume` 设为 `true`。handler 必须是
 纯的、可重复执行的 canonicalization/校验逻辑。runtime 不按整个 resumed run 跳过
 handler，也不把新调用误当成旧调用。中断前已写入的 pending tool intent 按既有
@@ -134,7 +134,7 @@ permission/approval。诊断不会自动注入 provider context。
 
 ## 事件与参数真相
 
-`graph.tool_request_created` 是 graph/provider 提出的请求事实，保存原始 arguments。
+`core.tool_request_created` 是 core/provider 提出的请求事实，保存原始 arguments。
 Typed rewrite 不覆盖这个事件，以便 replay/debug 能区分“模型原始请求”和“runtime
 后续 canonicalization”。
 
@@ -170,7 +170,7 @@ authority。`runtime.tool_input_processed` 是 typed 专用事件，不复用 ar
 - diagnostics 最多保存 32 项；
 - argument key 列表有上限，超出时使用 omission marker；
 - hash 使用 canonical JSON 表示，不能用于恢复参数；
-- raw arguments 是否在 graph/tool result/approval payload 中出现，继续由原有
+- raw arguments 是否在 core tool result/approval payload 中出现，继续由原有
   runtime redaction/persistence contract 决定。
 
 所有事件仍通过 runtime 的 SQLite session event append 路径持久化；handler 不直接

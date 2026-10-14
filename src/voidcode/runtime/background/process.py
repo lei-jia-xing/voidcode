@@ -450,7 +450,10 @@ class BackgroundProcessManager:
                 "and is externally managed/unavailable to this runtime"
             )
         if state.process.poll() is None or (state.process_group_id is not None and _process_group_exists(state.process_group_id)):
-            _terminate_background_process_group(state.process)
+            if not _terminate_background_process_group(state.process):
+                raise ValueError(f"could not confirm background process {process_id} stopped; process group remains or termination is unconfirmed")
+            if state.process.poll() is None or (state.process_group_id is not None and _process_group_exists(state.process_group_id)):
+                raise ValueError(f"could not confirm background process {process_id} stopped; process group remains or termination is unconfirmed")
         self._mark_exit(state)
         return state
 
@@ -661,10 +664,9 @@ class BackgroundProcessManager:
         threading.Thread(target=_read, name=f"background-process-{stream_name}", daemon=True).start()
 
 
-def _terminate_background_process_group(process: subprocess.Popen[str]) -> None:
+def _terminate_background_process_group(process: subprocess.Popen[str]) -> bool:
     if _is_windows():
-        _terminate_windows_process_tree(process)
-        return
+        return _terminate_windows_process_tree(process)
 
     killpg = getattr(os, "killpg", None)
     sigkill = getattr(signal, "SIGKILL", None)
@@ -673,34 +675,42 @@ def _terminate_background_process_group(process: subprocess.Popen[str]) -> None:
         try:
             killpg(process_group_id, signal.SIGTERM)
         except ProcessLookupError:
-            return
+            return process.poll() is not None
         try:
             process.wait(timeout=1)
         except subprocess.TimeoutExpired:
             pass
-        if sigkill is not None and _process_group_exists(process_group_id):
+        if _process_group_exists(process_group_id):
+            if sigkill is None:
+                return False
             try:
                 killpg(process_group_id, sigkill)
             except ProcessLookupError:
-                return
-            if process.poll() is None:
+                pass
+        if process.poll() is None:
+            try:
                 process.wait(timeout=1)
-            _wait_for_process_group_exit(process_group_id, timeout=1)
-        return
+            except subprocess.TimeoutExpired:
+                return False
+        return _wait_for_process_group_exit(process_group_id, timeout=1)
 
     process.terminate()
     try:
         process.wait(timeout=1)
     except subprocess.TimeoutExpired:
         process.kill()
-        process.wait(timeout=1)
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            return False
+    return process.poll() is not None
 
 
 def _is_windows() -> bool:
     return os.name == "nt"
 
 
-def _terminate_windows_process_tree(process: subprocess.Popen[str]) -> None:
+def _terminate_windows_process_tree(process: subprocess.Popen[str]) -> bool:
     taskkill = shutil.which("taskkill") or "taskkill"
     completed = subprocess.run(
         [taskkill, "/PID", str(process.pid), "/T", "/F"],
@@ -710,10 +720,13 @@ def _terminate_windows_process_tree(process: subprocess.Popen[str]) -> None:
         encoding="utf-8",
         errors="replace",
     )
-    if completed.returncode == 0:
-        return
-    process.kill()
-    process.wait(timeout=1)
+    if completed.returncode != 0:
+        process.kill()
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        return False
+    return process.poll() is not None
 
 
 def _process_group_exists(process_group_id: int) -> bool:
@@ -729,10 +742,13 @@ def _process_group_exists(process_group_id: int) -> bool:
     return True
 
 
-def _wait_for_process_group_exit(process_group_id: int, *, timeout: float) -> None:
+def _wait_for_process_group_exit(process_group_id: int, *, timeout: float) -> bool:
     deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline and _process_group_exists(process_group_id):
+    while _process_group_exists(process_group_id):
+        if time.monotonic() >= deadline:
+            return False
         time.sleep(0.02)
+    return True
 
 
 __all__ = [

@@ -130,15 +130,14 @@ class ToolEffectivenessReport:
     approval_request_count: int
     resumed_run_count: int
     delegated_task_count: int
-    input_tokens: int
-    output_tokens: int
-    cache_read_tokens: int
-    cache_write_tokens: int
-    uncached_input_tokens: int
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    uncached_input_tokens: int | None
     tools: tuple[ToolEffectivenessStats, ...]
     models: tuple[ModelEditEffectivenessStats, ...] = ()
-    #: USD across every session's ``provider_usage.cumulative``; ``None`` when no
-    #: session carried a priced usage (an unpriced model yields no number at all).
+    #: ``None`` if any session's usage or price was unknown.
     cost_usd: float | None = None
 
     @property
@@ -149,6 +148,8 @@ class ToolEffectivenessReport:
 
     @property
     def cache_hit_rate(self) -> float | None:
+        if self.cache_read_tokens is None or self.uncached_input_tokens is None:
+            return None
         denominator = self.cache_read_tokens + self.uncached_input_tokens
         if denominator <= 0:
             return None
@@ -225,9 +226,14 @@ def project_tool_effectiveness(
     compaction_count = 0
     approval_request_count = 0
     request_counts: Counter[str] = Counter()
+    provider_usage_sessions: set[str] = set()
 
     for item in events:
         event = item.event
+        if event.event_type == "core.model_turn":
+            if event.payload.get("mode") == "provider":
+                provider_usage_sessions.add(item.session_id)
+            continue
         if event.event_type == "runtime.request_received":
             request_counts[item.session_id] += 1
             continue
@@ -331,29 +337,37 @@ def project_tool_effectiveness(
         for model, stats in sorted(model_edit_mutable.items())
     )
     metadata_by_session = session_metadata or {}
-    usage_totals = Counter[str]()
+    usage_keys = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "uncached_input_tokens")
+    usage_totals = dict.fromkeys(usage_keys, 0)
+    usage_unknown: set[str] = set()
     cost_total = 0.0
     cost_seen = False
-    for metadata in metadata_by_session.values():
+    cost_unknown = False
+    for session_id in session_id_set:
+        metadata = metadata_by_session.get(session_id, {})
         provider_usage = metadata.get("provider_usage")
         if not isinstance(provider_usage, Mapping):
+            if session_id in provider_usage_sessions:
+                usage_unknown.update(usage_keys)
+                cost_unknown = True
             continue
         cumulative = provider_usage.get("cumulative")
         if not isinstance(cumulative, Mapping):
+            usage_unknown.update(usage_keys)
+            cost_unknown = True
             continue
-        # Each bucket is accumulated on its own; the report exposes them as
-        # components, never as a sum. ``input_tokens`` is the inclusive prompt
-        # total (``cache_read_tokens`` and ``uncached_input_tokens`` are parts of
-        # it), so a caller wanting prompt tokens must not add ``cache_read_tokens``
-        # back on top; ``cache_write_tokens`` is the only additive prompt bucket.
-        for key in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "uncached_input_tokens"):
+        for key in usage_keys:
             value = cumulative.get(key)
             if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                 usage_totals[key] += value
+            else:
+                usage_unknown.add(key)
         cumulative_cost = cumulative.get("cost_usd")
         if isinstance(cumulative_cost, (int, float)) and not isinstance(cumulative_cost, bool):
             cost_total += float(cumulative_cost)
             cost_seen = True
+        else:
+            cost_unknown = True
     return ToolEffectivenessReport(
         schema_version=1,
         workspace_id=workspace_id,
@@ -367,12 +381,12 @@ def project_tool_effectiveness(
         approval_request_count=approval_request_count,
         resumed_run_count=sum(max(count - 1, 0) for count in request_counts.values()),
         delegated_task_count=next((tool.calls for tool in tools if tool.tool == "task"), 0),
-        input_tokens=usage_totals["input_tokens"],
-        output_tokens=usage_totals["output_tokens"],
-        cache_read_tokens=usage_totals["cache_read_tokens"],
-        cache_write_tokens=usage_totals["cache_write_tokens"],
-        uncached_input_tokens=usage_totals["uncached_input_tokens"],
-        cost_usd=cost_total if cost_seen else None,
+        input_tokens=None if "input_tokens" in usage_unknown else usage_totals["input_tokens"],
+        output_tokens=None if "output_tokens" in usage_unknown else usage_totals["output_tokens"],
+        cache_read_tokens=None if "cache_read_tokens" in usage_unknown else usage_totals["cache_read_tokens"],
+        cache_write_tokens=None if "cache_write_tokens" in usage_unknown else usage_totals["cache_write_tokens"],
+        uncached_input_tokens=None if "uncached_input_tokens" in usage_unknown else usage_totals["uncached_input_tokens"],
+        cost_usd=cost_total if cost_seen and not cost_unknown else None,
         tools=tools,
         models=models,
     )

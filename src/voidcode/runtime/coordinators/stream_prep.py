@@ -1,6 +1,6 @@
 """Stream-prep-bucket coordinator: run-start composition for streaming runs.
 
-Owns what ``VoidCodeRuntime`` composes before the graph loop: request-level
+Owns what ``VoidCodeRuntime`` composes before the turn engine: request-level
 config resolution, session routing, context-window policy helpers, and
 provider context-window preparation.
 
@@ -27,7 +27,7 @@ from ...skills import SkillRegistry, skill_registry_with_builtins
 from ...tools.contracts import Tool
 from ..config.loading import RuntimeSkillsConfig
 from ..config.materializer import (
-    EffectiveRuntimeConfig,
+    RunConfig,
     apply_request_runtime_config_overrides,
 )
 from ..context.transforms import validate_runtime_context_transform_refs
@@ -63,7 +63,7 @@ class StreamPrepCoordinator:
         surface: RuntimeSurface,
         *,
         default_context_window_policy: ContextWindowPolicy,
-        config_with_request_agent_override: Callable[..., EffectiveRuntimeConfig],
+        config_with_request_agent_override: Callable[..., RunConfig],
         context_transform_registry_for_agent: Callable[..., RuntimeContextTransformRegistry],
         workspace: Path,
         global_skills_config: RuntimeSkillsConfig | None,
@@ -85,13 +85,13 @@ class StreamPrepCoordinator:
         self._mcp_manager_is_injected = mcp_manager_is_injected
         self._turn_producer_override_present_fn = turn_producer_override_present
 
-    def runtime_config_for_request(self, request: RuntimeRequest) -> EffectiveRuntimeConfig:
-        resolved = self._surface.effective_runtime_config_from_metadata(None)
+    def run_config_for_request(self, request: RuntimeRequest) -> RunConfig:
+        config = self._surface.run_config_from_metadata(None)
         request_agent = request.metadata.get("agent")
         if request_agent is not None:
             try:
-                resolved = self._config_with_request_agent_override_fn(
-                    resolved,
+                config = self._config_with_request_agent_override_fn(
+                    config,
                     request_agent,
                     allow_subagent_presets=request.subagent_routing is not None,
                 )
@@ -105,18 +105,18 @@ class StreamPrepCoordinator:
             validate_runtime_context_transform_refs(
                 context_transform_refs,
                 field_path="request metadata 'context_transform_refs'",
-                registry=self._context_transform_registry_for_agent_fn(resolved.agent),
+                registry=self._context_transform_registry_for_agent_fn(config.agent),
             )
-        resolved = apply_request_runtime_config_overrides(
-            resolved,
+        config = apply_request_runtime_config_overrides(
+            config,
             reasoning_effort=request.metadata.get("reasoning_effort"),
             context_transform_refs=context_transform_refs,
         )
         try:
-            validate_reasoning_effort_capability(resolved, self._surface.reasoning_effort_capability(resolved))
+            validate_reasoning_effort_capability(config, self._surface.reasoning_effort_capability(config))
         except ValueError as exc:
             raise RuntimeRequestError(str(exc)) from exc
-        return resolved
+        return config
 
     def prepare_provider_context_window(
         self,
@@ -128,9 +128,9 @@ class StreamPrepCoordinator:
         abort_signal: ProviderAbortSignal | None = None,  # noqa: ARG002 — retained by RuntimeSurface protocol for abort-aware callers.
         before_compact: BeforeCompactInput | None = None,
     ) -> RuntimeContextWindow:
-        effective_config = self._surface.effective_runtime_config_from_metadata(session_metadata)
+        config = self._surface.run_config_from_metadata(session_metadata)
         if policy is None:
-            policy = context_window_policy_from_config(effective_config.context_window)
+            policy = context_window_policy_from_config(config.context_window)
         return prepare_provider_context(
             prompt=prompt,
             tool_results=tool_results,
@@ -145,21 +145,20 @@ class StreamPrepCoordinator:
             payload_bytes=None,
         )
 
-    def context_budget_for_effective_config(self, effective_config: EffectiveRuntimeConfig) -> int | None:
-        """The catalog-derived window that sizes this model's compaction."""
-        return self._context_budget_for(effective_config)
+    def context_budget_for_config(self, config: RunConfig) -> int | None:
+        """Catalog basis for compaction; this is not a fallback-comparison cap."""
+        return self._context_budget_for(config)
 
     @staticmethod
-    def _context_budget_for(effective_config: EffectiveRuntimeConfig) -> int | None:
-        """The window that sizes this model's compaction, ``None`` when nothing sizes it.
+    def _context_budget_for(config: RunConfig) -> int | None:
+        """Size compaction from an input cap or aggregate window, if known.
 
-        The model's own input cap wins over its whole window: the catalog derives
-        ``max_input_tokens`` from ``limit.input`` when upstream carries one and from
-        ``context_window - max_output_tokens`` otherwise, and that is the space a
-        request may actually use. A model the shipped catalog does not describe
-        leaves compaction unsized, exactly as before.
+        When only the aggregate context window is available, compaction applies
+        its configured output reserve before sizing the request. This estimate is
+        separate from provider fallback comparisons, which require explicit input
+        caps.
         """
-        selection = effective_config.resolved_provider.active_target.selection
+        selection = config.resolved_provider.active_target.selection
         provider_name = selection.provider
         model_name = selection.model
         if not provider_name or not model_name:
@@ -195,22 +194,22 @@ class StreamPrepCoordinator:
 
         return LspTool()
 
-    def skills_config_for_effective_config(
+    def skills_config_for_config(
         self,
-        effective_config: EffectiveRuntimeConfig,
+        config: RunConfig,
     ) -> RuntimeSkillsConfig | None:
-        if effective_config.agent is not None and effective_config.agent.skills is not None:
-            return effective_config.agent.skills
+        if config.agent is not None and config.agent.skills is not None:
+            return config.agent.skills
         return self._global_skills_config
 
-    def skill_registry_for_effective_config(
+    def skill_registry_for_config(
         self,
-        effective_config: EffectiveRuntimeConfig,
+        config: RunConfig,
     ) -> SkillRegistry:
         if self._skill_registry_is_injected:
             assert self._skill_registry is not None
             return self._skill_registry
-        return self.build_skill_registry(self.skills_config_for_effective_config(effective_config))
+        return self.build_skill_registry(self.skills_config_for_config(config))
 
     def list_mcp_descriptors(self) -> tuple[McpToolDescriptor, ...]:
         if self._mcp_manager is None or self._mcp_manager.current_state().mode != "managed":
@@ -229,22 +228,16 @@ class StreamPrepCoordinator:
     def is_background_child_mcp_deferred(
         *,
         request_metadata: Mapping[str, object],
-        effective_config: EffectiveRuntimeConfig,
+        config: RunConfig,
     ) -> bool:
         if request_metadata.get("background_run") is not True:
             return False
-        agent_binding = effective_config.agent.mcp_binding if effective_config.agent is not None else None
+        agent_binding = config.agent.mcp_binding if config.agent is not None else None
         if agent_binding is not None:
             return False
         return True
 
-    def should_skip_mcp_startup_for_request(
-        self,
-        *,
-        request_metadata: Mapping[str, object],
-        effective_config: EffectiveRuntimeConfig,
-    ) -> bool:
-        _ = request_metadata
+    def should_skip_mcp_startup_for_request(self) -> bool:
         if self._mcp_manager_is_injected:
             return False
         if self._mcp_manager is None:
@@ -254,4 +247,4 @@ class StreamPrepCoordinator:
         if not configured_servers <= builtin_servers:
             return False
         assert self._turn_producer_override_present_fn is not None
-        return effective_config.execution_engine == "deterministic" or self._turn_producer_override_present_fn()
+        return self._turn_producer_override_present_fn()

@@ -3,8 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 import subprocess
-import unicodedata
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -217,20 +216,6 @@ def _parse_marker_patch(patch_text: str) -> tuple[_MarkerHunk, ...]:
     return tuple(hunks)
 
 
-def _normalize_match_line(line: str) -> str:
-    normalized = unicodedata.normalize("NFKC", line.strip())
-    return (
-        normalized.replace("\u2018", "'")
-        .replace("\u2019", "'")
-        .replace("\u201c", '"')
-        .replace("\u201d", '"')
-        .replace("\u2013", "-")
-        .replace("\u2014", "-")
-        .replace("\u2026", "...")
-        .replace("\u00a0", " ")
-    )
-
-
 def _seek_sequence(
     lines: list[str],
     pattern: tuple[str, ...],
@@ -241,27 +226,19 @@ def _seek_sequence(
     if not pattern:
         return -1
 
-    def search_with(compare: Callable[[str, str], bool]) -> int:
-        if eof:
-            from_end = len(lines) - len(pattern)
-            if from_end >= start_index and all(compare(lines[from_end + offset], expected) for offset, expected in enumerate(pattern)):
-                return from_end
-        for line_index in range(start_index, len(lines) - len(pattern) + 1):
-            if all(compare(lines[line_index + offset], expected) for offset, expected in enumerate(pattern)):
-                return line_index
+    if eof:
+        from_end = len(lines) - len(pattern)
+        if from_end >= start_index and all(lines[from_end + offset] == expected for offset, expected in enumerate(pattern)):
+            return from_end
         return -1
 
-    comparators: tuple[Callable[[str, str], bool], ...] = (
-        lambda left, right: left == right,
-        lambda left, right: left.rstrip() == right.rstrip(),
-        lambda left, right: left.strip() == right.strip(),
-        lambda left, right: _normalize_match_line(left) == _normalize_match_line(right),
-    )
-    for comparator in comparators:
-        found = search_with(comparator)
-        if found != -1:
-            return found
-    return -1
+    found = -1
+    for line_index in range(start_index, len(lines) - len(pattern) + 1):
+        if all(lines[line_index + offset] == expected for offset, expected in enumerate(pattern)):
+            if found != -1:
+                return -2
+            found = line_index
+    return found
 
 
 def _derive_marker_update_content_from_text(
@@ -277,8 +254,9 @@ def _derive_marker_update_content_from_text(
     replacement chunks, and the context anchor line for context-anchored
     insertions. ``delta`` is the change in line count the chunks introduce.
     """
-    original_lines = original.split("\n")
-    if original_lines and original_lines[-1] == "":
+    final_newline = original.endswith("\n")
+    original_lines = original.split("\n") if original else []
+    if final_newline:
         original_lines.pop()
 
     replacements: list[tuple[int, int, tuple[str, ...]]] = []
@@ -292,6 +270,14 @@ def _derive_marker_update_content_from_text(
                 line_index,
                 eof=False,
             )
+            if context_index == -2:
+                raise_tool_diagnostic(
+                    message=f"Found multiple exact matches for context '{chunk.change_context}' in {file_path}.",
+                    error_kind="ambiguous_match",
+                    reason="ambiguous_marker_context",
+                    retry_guidance="Re-read the file and add enough marker context to identify one exact location.",
+                    details={"path": str(file_path), "context": chunk.change_context},
+                )
             if context_index == -1:
                 raise ValueError(f"Failed to find context '{chunk.change_context}' in {file_path}")
             line_index = context_index + 1
@@ -307,11 +293,15 @@ def _derive_marker_update_content_from_text(
         pattern = chunk.old_lines
         new_slice = chunk.new_lines
         found = _seek_sequence(original_lines, pattern, line_index, eof=chunk.is_end_of_file)
-        if found == -1 and pattern and pattern[-1] == "":
-            pattern = pattern[:-1]
-            if new_slice and new_slice[-1] == "":
-                new_slice = new_slice[:-1]
-            found = _seek_sequence(original_lines, pattern, line_index, eof=chunk.is_end_of_file)
+        if found == -2:
+            expected = "\n".join(chunk.old_lines)
+            raise_tool_diagnostic(
+                message=f"Found multiple exact matches for expected lines in {file_path}:\n{expected}",
+                error_kind="ambiguous_match",
+                reason="ambiguous_marker_match",
+                retry_guidance="Re-read the file and add enough marker context to identify one exact location.",
+                details={"path": str(file_path), "expected_preview": expected[:500]},
+            )
         if found == -1:
             expected = "\n".join(chunk.old_lines)
             lines = [
@@ -345,9 +335,10 @@ def _derive_marker_update_content_from_text(
     for start, old_len, new_segment in sorted(replacements, reverse=True):
         next_lines[start : start + old_len] = list(new_segment)
     delta = len(next_lines) - len(original_lines)
-    if not next_lines or next_lines[-1] != "":
-        next_lines.append("")
-    return "\n".join(next_lines), tuple(matched_ranges), delta
+    content = "\n".join(next_lines)
+    if final_newline and next_lines:
+        content += "\n"
+    return content, tuple(matched_ranges), delta
 
 
 def _resolve_patch_path(workspace: Path, raw_path: str) -> Path:

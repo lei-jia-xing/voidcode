@@ -22,9 +22,12 @@ from ..contracts import (
 )
 from ..events import (
     RUNTIME_APPROVAL_RESOLVED,
+    RUNTIME_QUESTION_ANSWERED,
+    RUNTIME_REQUEST_RECEIVED,
     RUNTIME_TODO_UPDATED,
     EventEnvelope,
     EventSource,
+    tool_result_batch_ids_from_events,
 )
 from ..execution.report_codec import parse_report_payload, report_payload
 from ..execution.turn_recovery import validated_composition_turn
@@ -231,9 +234,9 @@ class _SessionStorageMixin(_MixinBase):
           (secret scrubbing, length limits) — that is a safety bound, not
           context compaction. Context projection lives in ``context/window.py``.
         - When ``seal_terminal_status`` is False the row is written as
-          ``interrupted`` instead of the terminal status: a newer run on the
-          same session is still active, so the terminal seal must not clobber
-          it (the incremental event log means overlapping runs can coexist).
+          ``running`` instead of the terminal status: a newer run on the same
+          session is still active, so the row remains live while its checkpoint
+          retains a recoverable interrupted boundary.
         """
         session_id = response.session.session.id
         events = response.events
@@ -314,7 +317,7 @@ class _SessionStorageMixin(_MixinBase):
                 session_id=session_id,
             ),
         )
-        status = response.session.status if seal_terminal_status else "interrupted"
+        status = response.session.status if seal_terminal_status else "running"
         _ = connection.execute(
             """
             INSERT OR REPLACE INTO sessions (
@@ -526,10 +529,11 @@ class _SessionStorageMixin(_MixinBase):
         the terminal state and never regresses ``last_event_sequence``.
         Context assembly lives in ``context/window.py``.
 
-        ``seal_terminal_status=False`` writes the row and any terminal checkpoint
-        as ``interrupted`` instead of sealing the completed turn, because a
-        newer run on the same session is still active.
+        ``seal_terminal_status=False`` writes the row as ``running`` instead of
+        sealing the completed turn, because a newer run on the same session is
+        still active.
         """
+
         session_id = response.session.session.id
         with self._write_connect(workspace) as connection:
             # The durable event-log watermark — see ``_write_session_snapshot``.
@@ -822,11 +826,22 @@ class _SessionStorageMixin(_MixinBase):
                         json.dumps(event.payload, sort_keys=True),
                     ),
                 )
-                # Chain the batch: the next row follows this one. A skipped
-                # dedupe duplicate never reaches here, so it does not perturb
-                # either column.
                 parent_sequence = sequence
                 assigned.append(event)
+            if any(
+                event.source == "runtime"
+                and event.event_type
+                in {
+                    RUNTIME_REQUEST_RECEIVED,
+                    RUNTIME_APPROVAL_RESOLVED,
+                    RUNTIME_QUESTION_ANSWERED,
+                }
+                for event in assigned
+            ):
+                _ = connection.execute(
+                    "UPDATE sessions SET status = 'running' WHERE workspace_id = ? AND session_id = ?",
+                    (str(workspace), session_id),
+                )
             if approval_checkpoint_plan_state is not None and assigned:
                 if interrupted_checkpoint is not None:
                     raise ValueError("approval checkpoint update cannot compete with an interrupted checkpoint")
@@ -867,10 +882,26 @@ class _SessionStorageMixin(_MixinBase):
                             or old_plan_state.get("approval_request_id") != request_id
                         ):
                             raise ValueError("approval checkpoint plan state does not match the pending approval")
+                        metadata_row = fetch_row(
+                            connection,
+                            "SELECT metadata_json FROM sessions WHERE workspace_id = ? AND session_id = ?",
+                            (str(workspace), session_id),
+                        )
+                        if metadata_row is None:
+                            raise UnknownSessionError(f"unknown session: {session_id}")
+                        stored_metadata = json.loads(decode_row(metadata_row, SessionMetadataRow)["metadata_json"])
+                        if not isinstance(stored_metadata, dict) or stored_metadata.get("plan_state") != old_plan_state:
+                            raise ValueError("approval checkpoint plan state does not match stored session metadata")
+                        updated_metadata = {**stored_metadata, "plan_state": updated_plan_state}
                         checkpoint["session_metadata"] = {**checkpoint_metadata, "plan_state": updated_plan_state}
                         _ = connection.execute(
-                            "UPDATE sessions SET resume_checkpoint_json = ? WHERE workspace_id = ? AND session_id = ?",
-                            (json.dumps(checkpoint, sort_keys=True), str(workspace), session_id),
+                            "UPDATE sessions SET metadata_json = ?, resume_checkpoint_json = ? WHERE workspace_id = ? AND session_id = ?",
+                            (
+                                json.dumps(updated_metadata, sort_keys=True),
+                                json.dumps(checkpoint, sort_keys=True),
+                                str(workspace),
+                                session_id,
+                            ),
                         )
             if interrupted_checkpoint is not None and assigned:
                 checkpoint_metadata = interrupted_checkpoint.get("session_metadata")
@@ -940,9 +971,8 @@ class _SessionStorageMixin(_MixinBase):
         ``parent_session_id``, and it only runs at seal time).
 
         ``tool_results`` contains canonical ``ReportedCall`` payloads, serialized
-        by ``_tool_results_from_events`` from the durable ``runtime.tool_completed``
-        events. Each entry carries only ``tool_name``, ``status`` and
-        ``reported_call``; resume decodes that report through the strict codec.
+        by ``_tool_results_from_events`` from durable ``runtime.tool_completed``
+        events. Each entry also carries its exact model-turn batch identity.
         """
         if type(composition_ref) is not CompositionRef or composition_ref.workspace != str(workspace):
             raise ValueError("checkpoint requires its exact workspace composition reference")
@@ -1344,16 +1374,25 @@ class _SessionStorageMixin(_MixinBase):
         return max(below) if below else None
 
     @staticmethod
-    def _tool_results_from_events(events: tuple[EventEnvelope, ...]) -> list[dict[str, object]]:
+    def _tool_results_from_events(
+        events: tuple[EventEnvelope, ...],
+        *,
+        after_sequence: int | None = None,
+    ) -> list[dict[str, object]]:
+        batch_ids = tool_result_batch_ids_from_events(events)
         tool_results: list[dict[str, object]] = []
         for event in events:
-            if event.event_type != "runtime.tool_completed":
+            if event.event_type != "runtime.tool_completed" or (after_sequence is not None and event.sequence <= after_sequence):
                 continue
+            batch_id = batch_ids.get((event.session_id, event.sequence))
+            if batch_id is None:
+                raise ValueError("runtime.tool_completed event has no authoritative native batch identity")
             report = parse_report_payload(event.payload.get("reported_call"))
             tool_results.append(
                 {
                     "tool_name": report.final_tool_name,
                     "status": report.result.status,
+                    "tool_batch_id": batch_id,
                     "reported_call": report_payload(report),
                 }
             )

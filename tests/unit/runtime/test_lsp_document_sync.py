@@ -248,7 +248,7 @@ def test_runtime_lsp_rename_workspace_edit_uses_native_state_and_formatter(tmp_p
         report = ReportedCall(
             tool_call_id="read-before",
             final_tool_name="read",
-            authorized_arguments={"path": "sample.py"},
+            final_arguments={"path": "sample.py"},
             result=read_result,
         )
         tracking = read_tracking_for_tool_results(tool_results=(report,), workspace=tmp_path)
@@ -376,7 +376,7 @@ def test_runtime_lsp_rename_workspace_edit_uses_native_state_and_formatter(tmp_p
         after_report = ReportedCall(
             tool_call_id="read-after",
             final_tool_name="read",
-            authorized_arguments={"path": "sample.py"},
+            final_arguments={"path": "sample.py"},
             result=read_after,
         )
         after_tracking = read_tracking_for_tool_results(tool_results=(after_report,), workspace=tmp_path)

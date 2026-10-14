@@ -1,4 +1,4 @@
-"""``voidcode doctor``: capability readiness for external tools, formatters, LSP, and MCP."""
+"""``voidcode doctor``: command availability and configured capabilities."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from ..support import EXIT_CONFIG_ERROR, EXIT_RUNTIME_ERROR, EXIT_SUCCESS, EXIT_
 
 
 def _handle_doctor_command(args: DoctorArgs) -> int:
-    """Run the capability doctor to check external tool readiness."""
+    """Run the capability doctor and report local availability/configuration."""
     workspace = args.workspace
     verbose = args.verbose
     json_output = args.json
@@ -81,7 +81,10 @@ def _handle_doctor_command(args: DoctorArgs) -> int:
     return EXIT_SUCCESS if (report.is_healthy and config_error is None) else EXIT_RUNTIME_ERROR
 
 
-@click.command(name="doctor", help="Check runtime capability readiness (external tools, formatters, LSP, MCP).")
+@click.command(
+    name="doctor",
+    help="Check command availability and runtime capability configuration (tools, formatters, LSP, MCP).",
+)
 @workspace_option("Workspace root used to resolve runtime config.")
 @click.option("--verbose", "verbose", "-v", is_flag=True)
 @click.option("--fix", is_flag=True, help="Create a starter runtime config when none exists.")

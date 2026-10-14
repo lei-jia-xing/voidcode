@@ -7,6 +7,12 @@ from typing import Protocol
 from .turns import CallSeed, ModelTurnFact, ReportedCall, StreamFact, ToolCompletedFact, ToolRequestedFact, TurnFact
 
 
+def model_turn_batch_id(session_id: str, sequence: int) -> str:
+    if not session_id or isinstance(sequence, bool) or sequence < 1:
+        raise ValueError("native batch identity requires a persisted model-turn sequence")
+    return f"event:{session_id}:{sequence}"
+
+
 @dataclass(frozen=True, slots=True)
 class FactEntry:
     sequence: int
@@ -23,6 +29,9 @@ class FactPage:
 
 
 class FactStore(Protocol):
+    @property
+    def session_id(self) -> str | None: ...
+
     def append(self, facts: tuple[TurnFact, ...], *, dedupe_keys: tuple[str | None, ...] = ()) -> tuple[int, ...]: ...
 
     def read(self, *, after_sequence: int = 0, limit: int, leaf_sequence: int | None = None) -> FactPage: ...
@@ -56,7 +65,8 @@ def require_complete_tool_pairs(entries: tuple[FactEntry, ...]) -> None:
 class MemoryEventStore:
     """An isolated append-only fact tree with a movable leaf, not a runtime."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, session_id: str | None = None) -> None:
+        self.session_id = session_id
         self._entries: dict[int, FactEntry] = {}
         self._dedupe: dict[str, int] = {}
         self._leaf: int | None = None
@@ -155,6 +165,7 @@ class MemoryEventStore:
                 reasoning=batch.reasoning,
                 completed_reports=tuple(current),
                 run_step=batch.run_step,
+                tool_batch_id=batch.tool_batch_id,
             )
         )
 

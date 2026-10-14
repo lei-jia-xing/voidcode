@@ -51,8 +51,11 @@ def _probe_version(command: str, version_args: tuple[str, ...]) -> tuple[str | N
 class CapabilityCheckStatus(enum.Enum):
     """Status of a capability check."""
 
-    READY = "ready"
-    """Executable/command is available and working."""
+    AVAILABLE = "available"
+    """An executable command is on PATH; capability behavior is not verified."""
+
+    CONFIGURED = "configured"
+    """Configuration is present; remote connectivity is not verified."""
 
     NOT_FOUND = "not_found"
     """Required executable was not found in PATH."""
@@ -108,7 +111,7 @@ class ExecutableChecker:
                         error_message=probe_error,
                     )
                 return CapabilityCheckResult(
-                    status=CapabilityCheckStatus.READY,
+                    status=CapabilityCheckStatus.AVAILABLE,
                     name=self._name,
                     check_type=DoctorCheckType.EXECUTABLE.value,
                     details={"command": cmd, "version_info": version_info},
@@ -178,7 +181,7 @@ class FormatterPresetChecker:
         # Some commands are available
         if not missing:
             return CapabilityCheckResult(
-                status=CapabilityCheckStatus.READY,
+                status=CapabilityCheckStatus.AVAILABLE,
                 name=f"formatter:{self._preset_name}",
                 check_type=DoctorCheckType.FORMATTER_PRESET.value,
                 details={
@@ -191,7 +194,7 @@ class FormatterPresetChecker:
 
         # Partial availability (some fallbacks work)
         return CapabilityCheckResult(
-            status=CapabilityCheckStatus.READY,
+            status=CapabilityCheckStatus.AVAILABLE,
             name=f"formatter:{self._preset_name}",
             check_type=DoctorCheckType.FORMATTER_PRESET.value,
             details={
@@ -244,7 +247,7 @@ class LspServerChecker:
             if preset_id == self._server_name:
                 preset_id = None
             return CapabilityCheckResult(
-                status=CapabilityCheckStatus.READY,
+                status=CapabilityCheckStatus.AVAILABLE,
                 name=f"lsp:{self._server_name}",
                 check_type=DoctorCheckType.LSP_SERVER.value,
                 details={
@@ -273,7 +276,7 @@ class LspServerChecker:
 
 
 class McpServerChecker:
-    """Check MCP server command availability."""
+    """Classify local command availability or remote endpoint configuration."""
 
     def __init__(
         self,
@@ -284,11 +287,11 @@ class McpServerChecker:
         self._config = config
 
     def check(self) -> CapabilityCheckResult:
-        """Check if the MCP server command is available."""
+        """Check local command availability or remote configuration only."""
         command = self._config.command
         if self._config.transport == "remote-http":
             return CapabilityCheckResult(
-                status=CapabilityCheckStatus.READY,
+                status=CapabilityCheckStatus.CONFIGURED,
                 name=f"mcp:{self._server_name}",
                 check_type=DoctorCheckType.MCP_SERVER.value,
                 details={
@@ -323,7 +326,7 @@ class McpServerChecker:
 
         if shutil.which(executable) is not None:
             return CapabilityCheckResult(
-                status=CapabilityCheckStatus.READY,
+                status=CapabilityCheckStatus.AVAILABLE,
                 name=f"mcp:{self._server_name}",
                 check_type=DoctorCheckType.MCP_SERVER.value,
                 details={

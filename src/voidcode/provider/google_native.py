@@ -5,16 +5,18 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx2
 from google import genai
 from google.genai import types
+from google.genai.errors import APIError as GoogleAPIError
 from google.oauth2 import service_account
 
 from ..formats.json_values import json_wire_object
+from ..security.redaction import redact_mapping
 from ..tools.contracts import ToolCall
-from ..tools.output import redacted_argument_keys_for_tool, sanitize_tool_arguments, strip_redaction_sentinels_from_mapping
 from ._wire_common import resolve_extra_request_headers
 from .config import GoogleProviderConfig
-from .errors import redact_provider_error_details, redact_provider_error_message
+from .errors import parse_provider_api_error
 from .protocol import ProviderDoneReason, ProviderExecutionError, ProviderStreamEvent, ProviderTokenUsage, ProviderTurnRequest, ProviderTurnResult
 from .reasoning_effort import (
     REASONING_EFFORT_HIGH,
@@ -184,42 +186,80 @@ class GoogleGenAIProvider:
         return forward, reverse
 
     @staticmethod
-    def _visible_arguments(tool_name: str | None, arguments: Mapping[str, object]) -> dict[str, object]:
-        sanitized = sanitize_tool_arguments(dict(arguments))
-        return strip_redaction_sentinels_from_mapping(sanitized, redacted_keys=redacted_argument_keys_for_tool(tool_name))
+    def _visible_arguments(_tool_name: str | None, arguments: Mapping[str, object]) -> dict[str, object]:
+        return redact_mapping(json_wire_object(arguments))
 
     def _contents(self, request: ProviderTurnRequest) -> tuple[str | None, list[dict[str, object]]]:
         system: list[str] = []
         contents: list[dict[str, object]] = []
-        for segment in request.assembled_context.segments:
+        segments = request.assembled_context.segments
+        index = 0
+        while index < len(segments):
+            segment = segments[index]
             if segment.role == "system":
                 if segment.content:
                     system.append(segment.content)
+                index += 1
                 continue
-            role = "model" if segment.role == "assistant" else "user"
-            parts: list[dict[str, object]] = []
             if segment.role == "assistant" and segment.tool_name:
-                parts.append(
+                batch_id = segment.tool_batch_id
+                parts = [
                     {
                         "function_call": {
                             "name": segment.tool_name,
                             "args": self._visible_arguments(segment.tool_name, segment.tool_arguments or {}),
                         }
                     }
-                )
-            elif segment.role == "tool":
-                parts.append(
+                ]
+                index += 1
+                while batch_id is not None and index < len(segments):
+                    following = segments[index]
+                    if following.role != "assistant" or not following.tool_name or following.tool_batch_id != batch_id:
+                        break
+                    parts.append(
+                        {
+                            "function_call": {
+                                "name": following.tool_name,
+                                "args": self._visible_arguments(
+                                    following.tool_name,
+                                    following.tool_arguments or {},
+                                ),
+                            }
+                        }
+                    )
+                    index += 1
+                contents.append({"role": "model", "parts": parts})
+                continue
+            if segment.role == "tool":
+                batch_id = segment.tool_batch_id
+                parts = [
                     {
                         "function_response": {
                             "name": segment.tool_name,
                             "response": {"content": segment.content or ""},
                         }
                     }
-                )
-            elif segment.content:
-                parts.append({"text": segment.content})
-            if parts:
-                contents.append({"role": role, "parts": parts})
+                ]
+                index += 1
+                while batch_id is not None and index < len(segments):
+                    following = segments[index]
+                    if following.role != "tool" or following.tool_batch_id != batch_id:
+                        break
+                    parts.append(
+                        {
+                            "function_response": {
+                                "name": following.tool_name,
+                                "response": {"content": following.content or ""},
+                            }
+                        }
+                    )
+                    index += 1
+                contents.append({"role": "user", "parts": parts})
+                continue
+            role = "model" if segment.role == "assistant" else "user"
+            if segment.content:
+                contents.append({"role": role, "parts": [{"text": segment.content}]})
+            index += 1
         return ("\n\n".join(system) if system else None), contents
 
     def _config(self, request: ProviderTurnRequest, system: str | None) -> types.GenerateContentConfig:
@@ -298,6 +338,63 @@ class GoogleGenAIProvider:
         return "unknown"
 
     @staticmethod
+    def _finish_reason_reported(value: object) -> bool:
+        raw = getattr(value, "name", value)
+        token = str(raw).split(".")[-1].strip().upper()
+        return value is not None and bool(token) and token not in {"0", "FINISH_REASON_UNSPECIFIED"}
+
+    @staticmethod
+    def _raise_if_prompt_blocked(response: object, *, provider_name: str, model_name: str) -> None:
+        feedback = getattr(response, "prompt_feedback", None)
+        raw_reason = getattr(feedback, "block_reason", None)
+        token = str(getattr(raw_reason, "name", raw_reason)).split(".")[-1].strip().upper()
+        if raw_reason is not None and token and token not in {"0", "NONE", "BLOCK_REASON_UNSPECIFIED"}:
+            raise ProviderExecutionError(
+                kind="provider_error",
+                provider_name=provider_name,
+                model_name=model_name,
+                message="provider blocked the prompt",
+                retryable=False,
+                fallback_allowed=True,
+                details={"source": "api", "reason": "prompt_blocked", "block_reason": token},
+            )
+
+    @staticmethod
+    def _map_exception(exc: Exception, *, provider_name: str, model_name: str, source: str) -> ProviderExecutionError:
+        if isinstance(exc, ProviderExecutionError):
+            return exc
+        if isinstance(exc, GoogleAPIError):
+            payload = dict(exc.details) if isinstance(exc.details, Mapping) else {}
+            payload["status_code"] = exc.code
+            if isinstance(exc.message, str):
+                payload["message"] = exc.message
+            parsed = parse_provider_api_error(payload)
+            return ProviderExecutionError(
+                kind=parsed.kind,
+                provider_name=provider_name,
+                model_name=model_name,
+                message=parsed.message,
+                retryable=parsed.retryable,
+                fallback_allowed=parsed.fallback_allowed,
+                retry_after=parsed.retry_after,
+                details=parsed.details,
+            )
+        known_network_failure = isinstance(exc, httpx2.TransportError)
+        return ProviderExecutionError(
+            kind="provider_error",
+            provider_name=provider_name,
+            model_name=model_name,
+            message="provider request failed",
+            retryable=True if known_network_failure else False,
+            fallback_allowed=True,
+            details={
+                "source": source,
+                "exception_type": type(exc).__name__,
+                **({"network_failure": True} if known_network_failure else {}),
+            },
+        )
+
+    @staticmethod
     def _usage(response: object) -> ProviderTokenUsage | None:
         usage = getattr(response, "usage_metadata", None)
         if usage is None:
@@ -331,33 +428,29 @@ class GoogleGenAIProvider:
         if isinstance(parts, list):
             yield from parts
 
-    def _events_from_response(self, response: object, request: ProviderTurnRequest) -> Iterator[ProviderStreamEvent]:
-        reverse = self._tool_name_maps(request)[1]
-        ordinal = 0
+    def _events_from_response(self, response: object, request: ProviderTurnRequest, *, ordinal_offset: int = 0) -> Iterator[ProviderStreamEvent]:
+        ordinal = ordinal_offset
         for part in self._parts(response):
-            function_call = getattr(part, "function_call", None)
-            if function_call is not None:
-                name = getattr(function_call, "name", None)
-                if isinstance(name, str) and name:
-                    args = getattr(function_call, "args", {})
-                    parsed = dict(args) if isinstance(args, Mapping) else {}
-                    tool_id = f"{name}_{ordinal + 1}"
-                    yield ProviderStreamEvent(
-                        kind="tool_call_start",
-                        channel="tool",
-                        tool_call_id=tool_id,
-                        tool_name=reverse.get(name, name),
-                        tool_call_ordinal=ordinal,
-                    )
-                    yield ProviderStreamEvent(
-                        kind="tool_call_end",
-                        channel="tool",
-                        tool_call_id=tool_id,
-                        tool_name=reverse.get(name, name),
-                        tool_call_ordinal=ordinal,
-                        parsed_arguments=parsed,
-                    )
-                    ordinal += 1
+            if getattr(part, "function_call", None) is not None:
+                call = self._tool_call_from_part(part, request, ordinal=ordinal)
+                if call is None:
+                    continue
+                yield ProviderStreamEvent(
+                    kind="tool_call_start",
+                    channel="tool",
+                    tool_call_id=call.tool_call_id,
+                    tool_name=call.tool_name,
+                    tool_call_ordinal=ordinal,
+                )
+                yield ProviderStreamEvent(
+                    kind="tool_call_end",
+                    channel="tool",
+                    tool_call_id=call.tool_call_id,
+                    tool_name=call.tool_name,
+                    tool_call_ordinal=ordinal,
+                    parsed_arguments=dict(call.arguments),
+                )
+                ordinal += 1
                 continue
             text = getattr(part, "text", None)
             if isinstance(text, str) and text:
@@ -374,14 +467,24 @@ class GoogleGenAIProvider:
                 contents=contents,
                 config=self._config(request, system),
             )
-            text = getattr(response, "text", "") or ""
             candidates = getattr(response, "candidates", None)
-            raw_finish = getattr(candidates[0], "finish_reason", None) if isinstance(candidates, list) and candidates else None
+            if not isinstance(candidates, list) or not candidates:
+                self._raise_if_prompt_blocked(response, provider_name=provider_name, model_name=model_name)
+                raise ProviderExecutionError(
+                    kind="provider_error",
+                    provider_name=provider_name,
+                    model_name=model_name,
+                    message="provider response contained no candidates",
+                    retryable=False,
+                    fallback_allowed=True,
+                    details={"source": "api", "reason": "malformed_response"},
+                )
+            text = getattr(response, "text", "") or ""
+            raw_finish = getattr(candidates[0], "finish_reason", None)
             finish = self._finish_reason(raw_finish)
-            # Reported only when the candidate carried a finish reason: an omitted
-            # one is the silent-truncation case, while an unrecognized enum value is
-            # still a reported token.
-            finish_reason_reported = raw_finish is not None
+            # Missing and empty SDK values are not provider-reported reasons;
+            # unknown enum values remain reported and are retained for diagnostics.
+            finish_reason_reported = self._finish_reason_reported(raw_finish)
             tool_calls: list[ToolCall] = []
             reasoning_parts: list[str] = []
             ordinal = 0
@@ -412,29 +515,42 @@ class GoogleGenAIProvider:
         except ProviderExecutionError:
             raise
         except Exception as exc:
-            message = redact_provider_error_message(str(exc)) or "provider request failed"
-            raise ProviderExecutionError(
-                kind="transient_failure",
-                provider_name=provider_name,
-                model_name=model_name,
-                message=message,
-                retryable=True,
-                fallback_allowed=True,
-                details=redact_provider_error_details({"exception_type": type(exc).__name__, "exception_message": message}),
-            ) from exc
+            raise self._map_exception(exc, provider_name=provider_name, model_name=model_name, source="api") from exc
 
     def _tool_call_from_part(self, part: object, request: ProviderTurnRequest, *, ordinal: int) -> ToolCall | None:
         function_call = getattr(part, "function_call", None)
-        name = getattr(function_call, "name", None) if function_call is not None else None
-        if not isinstance(name, str) or not name:
+        if function_call is None:
             return None
-        args = getattr(function_call, "args", {})
+        provider_tool_name = getattr(function_call, "name", None)
+        args = getattr(function_call, "args", None)
+        if not isinstance(provider_tool_name, str) or not provider_tool_name:
+            raise ProviderExecutionError(
+                kind="provider_error",
+                provider_name=request.provider_name or self.name,
+                model_name=request.model_name or "unknown",
+                message="provider returned a malformed function call",
+                retryable=False,
+                fallback_allowed=True,
+                details={"source": "api", "reason": "malformed_tool_call"},
+            )
+        if args is None:
+            parsed_args: dict[str, object] = {}
+        elif isinstance(args, Mapping):
+            parsed_args = dict(args)
+        else:
+            raise ProviderExecutionError(
+                kind="provider_error",
+                provider_name=request.provider_name or self.name,
+                model_name=request.model_name or "unknown",
+                message="provider returned malformed function-call arguments",
+                retryable=False,
+                fallback_allowed=True,
+                details={"source": "api", "reason": "malformed_tool_call_arguments"},
+            )
         return ToolCall(
-            tool_name=self._tool_name_maps(request)[1].get(name, name),
-            arguments=dict(args) if isinstance(args, Mapping) else {},
-            # Mirrors the streaming ordinal so the same response yields the same
-            # ids on both paths, and repeated calls to one function stay distinct.
-            tool_call_id=f"{name}_{ordinal + 1}",
+            tool_name=self._tool_name_maps(request)[1].get(provider_tool_name, provider_tool_name),
+            arguments=parsed_args,
+            tool_call_id=f"{provider_tool_name}_{ordinal + 1}",
         )
 
     def stream_turn(self, request: ProviderTurnRequest) -> Iterator[ProviderStreamEvent]:
@@ -448,36 +564,52 @@ class GoogleGenAIProvider:
                 config=self._config(request, system),
             )
             last: object | None = None
+            raw_finish: object | None = None
+            saw_candidates = False
+            tool_call_ordinal = 0
             for chunk in stream:
                 last = chunk
-                yield from self._events_from_response(chunk, request)
-            candidates = getattr(last, "candidates", None)
-            raw_finish = getattr(candidates[0], "finish_reason", None) if isinstance(candidates, list) and candidates else None
-            # An unrecognized/omitted finish reason is still a terminal response: it
-            # resolves to the canonical ``unknown`` reason, which the graph treats as
-            # a completed, stop-equivalent state (never a user-visible failure).
+                self._raise_if_prompt_blocked(chunk, provider_name=provider_name, model_name=model_name)
+                candidates = getattr(chunk, "candidates", None)
+                if isinstance(candidates, list) and candidates:
+                    saw_candidates = True
+                candidate_finish = getattr(candidates[0], "finish_reason", None) if isinstance(candidates, list) and candidates else None
+                if self._finish_reason_reported(candidate_finish):
+                    raw_finish = candidate_finish
+                for stream_event in self._events_from_response(chunk, request, ordinal_offset=tool_call_ordinal):
+                    yield stream_event
+                    if stream_event.kind == "tool_call_end":
+                        tool_call_ordinal += 1
+            if raw_finish is None:
+                if not saw_candidates:
+                    raise ProviderExecutionError(
+                        kind="provider_error",
+                        provider_name=provider_name,
+                        model_name=model_name,
+                        message="provider stream contained no candidates",
+                        retryable=False,
+                        fallback_allowed=True,
+                        details={"source": "stream", "reason": "malformed_response"},
+                    )
+                raise ProviderExecutionError(
+                    kind="provider_error",
+                    provider_name=provider_name,
+                    model_name=model_name,
+                    message="provider stream ended without a terminal finish_reason",
+                    retryable=False,
+                    fallback_allowed=True,
+                    details={"source": "stream", "reason": "missing_terminal_event"},
+                )
             done_reason = self._finish_reason(raw_finish)
-            stream_metadata: dict[str, object] | None = None
-            if done_reason == "unknown" and raw_finish is not None:
-                # Reported but unrecognized: carry the token so the graph's
-                # finish_reason_reported diagnostics read it as reported.
-                stream_metadata = {"finish_reason_raw": str(getattr(raw_finish, "name", raw_finish))}
+            raw_token = str(getattr(raw_finish, "name", raw_finish))
+            stream_metadata: dict[str, object] | None = {"finish_reason_raw": raw_token} if done_reason == "unknown" else None
             yield ProviderStreamEvent(
                 kind="done", done_reason=done_reason, metadata=stream_metadata, usage=self._usage(last) if last is not None else None
             )
         except ProviderExecutionError:
             raise
         except Exception as exc:
-            message = redact_provider_error_message(str(exc)) or "provider request failed"
-            raise ProviderExecutionError(
-                kind="transient_failure",
-                provider_name=provider_name,
-                model_name=model_name,
-                message=message,
-                retryable=True,
-                fallback_allowed=True,
-                details=redact_provider_error_details({"exception_type": type(exc).__name__, "exception_message": message}),
-            ) from exc
+            raise self._map_exception(exc, provider_name=provider_name, model_name=model_name, source="stream") from exc
 
 
 __all__ = ["GoogleGenAIProvider"]

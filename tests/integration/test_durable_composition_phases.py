@@ -243,7 +243,6 @@ def installed_phases(tmp_path: Path, request: pytest.FixtureRequest | None = Non
 def _config(log: Path, decision: str = "allow") -> RuntimeConfig:
     return RuntimeConfig(
         model="phase_provider/test",
-        execution_engine="provider",
         approval_mode="yolo",
         mcp=RuntimeMcpConfig(enabled=False),
         permission=ExternalDirectoryPermissionConfig(rules=(PatternPermissionRule(decision=decision, tool="phase_tool"),)),

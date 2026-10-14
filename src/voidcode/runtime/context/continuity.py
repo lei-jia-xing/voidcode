@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 
 from ...core.transcript import ContextSegment, output_text, project_report
 from ...core.turns import ReportedCall
 from ..composition import CompositionRef, FrozenComposition
-from ..events import EventEnvelope
+from ..events import EventEnvelope, model_turn_batch_id
 from ..session_metadata_helpers import parse_runtime_state_metadata
 
 # Recoverable runtime context keys are a subset of the persisted runtime_state
@@ -26,6 +26,7 @@ _RECOVERABLE_RUNTIME_CONTEXT_KEYS = frozenset({"context_projection", "context_pr
 # The native call prefix is checkpoint-authoritative; resume validates it against events.
 _CHECKPOINT_PROGRESS_RUNTIME_STATE_KEYS = frozenset({"turn_batch", "pending_tool_intent"})
 _RECOVERABLE_TOP_LEVEL_CONTEXT_KEYS = frozenset({"context_window"})
+_ROW_AUTHORITATIVE_TOP_LEVEL_KEYS = frozenset({"provider_usage"})
 # Runtime-owned interaction queue (steer / follow-up) lives in session metadata
 # and is delivered at the next provider turn. It is not part of the
 # integrity-checked context-continuity truth: a steer enqueued while a session
@@ -43,83 +44,159 @@ def replayed_conversation_segments_from_events(
     *,
     output: object | None,
     reported_call_from_event: Callable[[EventEnvelope], ReportedCall | None],
+    current_request_event_id: tuple[str, int] | None = None,
 ) -> tuple[ContextSegment, ...]:
-    """Build replayable provider-context segments from bounded runtime events.
-
-    This remains a pure projection of supplied runtime events. The callback
-    parses each persisted event into its canonical report; this module only
-    projects that report into the provider transcript.
-    """
-    segments: list[ContextSegment] = []
+    """Replay only complete batches whose original membership was persisted."""
+    ordered_items: list[ContextSegment | str] = []
+    batch_reasoning: dict[str, str | None] = {}
+    batch_calls: dict[str, list[tuple[str, str, dict[str, object]]]] = {}
+    batch_requests: dict[str, list[str]] = {}
+    batch_results: dict[str, dict[str, ReportedCall]] = {}
+    invalid_batches: set[str] = set()
+    active_batch_id: str | None = None
     for event in events:
         if event.event_type == "runtime.request_received":
+            active_batch_id = None
             prompt = event.payload.get("prompt")
-            if not isinstance(prompt, str) or not prompt.strip():
-                continue
-            segments.append(
-                ContextSegment(
-                    role="user",
-                    content=prompt,
-                    metadata={
-                        "source": "replayed_conversation",
-                        "tier": "recent",
-                        "kind": "prior_user_prompt",
-                        "sequence": event.sequence,
-                    },
+            if isinstance(prompt, str) and prompt.strip():
+                is_current_request = (event.session_id, event.sequence) == current_request_event_id
+                ordered_items.append(
+                    ContextSegment(
+                        role="user",
+                        content=prompt,
+                        metadata={
+                            "source": "replayed_conversation",
+                            "tier": "recent",
+                            "kind": "current_user_prompt" if is_current_request else "prior_user_prompt",
+                            "sequence": event.sequence,
+                        },
+                    )
                 )
-            )
+            continue
+        if event.event_type == "runtime.reasoning_part":
+            continue
+        if event.event_type == "core.model_turn":
+            active_batch_id = model_turn_batch_id(event.session_id, event.sequence)
+            raw_calls = event.payload.get("tool_batch_calls")
+            calls: list[tuple[str, str, dict[str, object]]] = []
+            if raw_calls is not None:
+                if not isinstance(raw_calls, list):
+                    invalid_batches.add(active_batch_id)
+                else:
+                    seen_call_ids: set[str] = set()
+                    for raw_call in raw_calls:
+                        if not isinstance(raw_call, Mapping):
+                            invalid_batches.add(active_batch_id)
+                            break
+                        call_id = raw_call.get("tool_call_id")
+                        tool_name = raw_call.get("tool")
+                        arguments = raw_call.get("arguments")
+                        if (
+                            not isinstance(call_id, str)
+                            or not call_id.strip()
+                            or not isinstance(tool_name, str)
+                            or not tool_name.strip()
+                            or not isinstance(arguments, Mapping)
+                            or call_id in seen_call_ids
+                        ):
+                            invalid_batches.add(active_batch_id)
+                            break
+                        seen_call_ids.add(call_id)
+                        calls.append((call_id, tool_name, dict(arguments)))
+            reasoning = event.payload.get("tool_batch_reasoning")
+            if reasoning is not None and not isinstance(reasoning, str):
+                invalid_batches.add(active_batch_id)
+                reasoning = None
+            batch_reasoning[active_batch_id] = reasoning
+            batch_calls[active_batch_id] = calls
+            batch_requests[active_batch_id] = []
+            batch_results[active_batch_id] = {}
+            ordered_items.append(active_batch_id)
+            continue
+        if event.event_type == "core.tool_request_created":
+            batch_id = active_batch_id
+            if batch_id is None:
+                continue
+            calls = batch_calls[batch_id]
+            requests = batch_requests[batch_id]
+            call_index = len(requests)
+            call_id = event.payload.get("tool_call_id")
+            tool_name = event.payload.get("tool")
+            arguments = event.payload.get("arguments")
+            if (
+                call_index >= len(calls)
+                or not isinstance(call_id, str)
+                or not isinstance(tool_name, str)
+                or not isinstance(arguments, Mapping)
+                or calls[call_index] != (call_id, tool_name, dict(arguments))
+            ):
+                invalid_batches.add(batch_id)
+                continue
+            requests.append(call_id)
             continue
         if event.event_type != "runtime.tool_completed":
             continue
         report = reported_call_from_event(event)
         if report is None:
             continue
-        tool_name = report.final_tool_name
-        arguments = report.authorized_arguments
-        # Keep replayed history aligned with the eligible rehydrated result
-        # pool: only read-only inspection tools and shell commands are safe
-        # to place back into provider context.
-        if tool_name not in {"read", "grep", "glob", "ast_grep"}:
-            if tool_name != "shell_exec":
-                continue
-            command = arguments.get("command")
-            if not isinstance(command, str) or not command.strip():
-                continue
-        view = project_report(report)
-        bounds = view.output.bounds
-        reference = bounds.reference
-        segments.append(
-            ContextSegment(
-                role="assistant",
-                content=None,
-                tool_call_id=report.tool_call_id,
-                tool_name=tool_name,
-                tool_arguments=dict(arguments),
-                metadata={
-                    "source": "replayed_conversation",
-                    "tier": "recent",
-                    "kind": "prior_tool_call",
-                },
+        batch_id = active_batch_id
+        if batch_id is None or report.tool_call_id not in batch_requests[batch_id]:
+            continue
+        if report.tool_call_id in batch_results[batch_id]:
+            invalid_batches.add(batch_id)
+            continue
+        batch_results[batch_id][report.tool_call_id] = report
+
+    segments: list[ContextSegment] = []
+    for item in ordered_items:
+        if isinstance(item, ContextSegment):
+            segments.append(item)
+            continue
+        calls = batch_calls[item]
+        reports = batch_results[item]
+        requests = batch_requests[item]
+        if item in invalid_batches or not calls or len(requests) != len(calls) or any(call_id not in reports for call_id, _, _ in calls):
+            continue
+        for call_id, tool_name, arguments in calls:
+            segments.append(
+                ContextSegment(
+                    role="assistant",
+                    content=None,
+                    tool_call_id=call_id,
+                    tool_name=tool_name,
+                    tool_arguments=arguments,
+                    metadata={"source": "replayed_conversation", "tier": "recent", "kind": "prior_tool_call"},
+                    tool_batch_id=item,
+                )
             )
-        )
-        segments.append(
-            ContextSegment(
-                role="tool",
-                content=output_text(view.output) or "",
-                tool_call_id=report.tool_call_id,
-                tool_name=tool_name,
-                metadata={
-                    "source": "replayed_conversation",
-                    "tier": "recent",
-                    "kind": "prior_tool_result",
-                    "status": view.status,
-                    "error": view.error,
-                    "truncated": bounds.truncated,
-                    "partial": bounds.partial,
-                    "reference": None if reference is None else reference.uri,
-                },
+        for call_id, tool_name, _arguments in calls:
+            report = reports[call_id]
+            view = project_report(report)
+            bounds = view.output.bounds
+            reference = bounds.reference
+            metadata: dict[str, object] = {
+                "source": "replayed_conversation",
+                "tier": "recent",
+                "kind": "prior_tool_result",
+                "status": view.status,
+                "error": view.error,
+                "truncated": bounds.truncated,
+                "partial": bounds.partial,
+                "reference": None if reference is None else reference.uri,
+            }
+            reasoning = batch_reasoning[item]
+            if reasoning:
+                metadata["data"] = {"reasoning_content": reasoning}
+            segments.append(
+                ContextSegment(
+                    role="tool",
+                    content=output_text(view.output) or "",
+                    tool_call_id=call_id,
+                    tool_name=tool_name,
+                    metadata=metadata,
+                    tool_batch_id=item,
+                )
             )
-        )
     if isinstance(output, str) and output.strip():
         segments.append(
             ContextSegment(
@@ -164,6 +241,7 @@ def replayed_conversation_segments_from_segments(
                 tool_name=segment.tool_name,
                 tool_arguments=segment.tool_arguments,
                 metadata=dict(metadata),
+                tool_batch_id=segment.tool_batch_id,
             )
         )
     return tuple(replayed)
@@ -179,10 +257,12 @@ def verified_checkpoint_session_metadata(
     The checkpoint metadata is authoritative for resumable context snapshots
     and the atomically advanced native call prefix. Resume validates that prefix
     against the durable event path. Stored metadata may differ in these values,
-    reminder counters, and the interaction queue (``pending_messages``); any
-    other delta means session truth changed under the checkpoint and resume is
-    rejected (returns ``None``). The queue is merged from the row so a pre-seal
-    steer/follow-up survives resolution instead of poisoning the resume.
+    provider usage (which may be finalized after the checkpoint), reminder
+    counters, and the interaction queue (``pending_messages``); any other delta
+    means session truth changed under the checkpoint and resume is rejected
+    (returns ``None``). Provider usage and queued messages are merged from the
+    row; the queue preserves a pre-seal steer/follow-up, while the usage fields
+    preserve the latest measured-or-unreported provider totals.
     """
     if "execution_composition" in checkpoint_metadata:
         return None
@@ -211,6 +291,11 @@ def verified_checkpoint_session_metadata(
     if checkpoint_core != stored_core:
         return None
     merged = dict(checkpoint_metadata)
+    for key in _ROW_AUTHORITATIVE_TOP_LEVEL_KEYS:
+        if key in stored_metadata:
+            merged[key] = stored_metadata[key]
+        else:
+            merged.pop(key, None)
     raw_messages = stored_metadata.get("pending_messages")
     if isinstance(raw_messages, list):
         merged["pending_messages"] = raw_messages
@@ -240,7 +325,11 @@ def verified_checkpoint_session_metadata(
 
 
 def _without_recoverable_context(metadata: dict[str, object]) -> dict[str, object]:
-    stripped = {key: value for key, value in metadata.items() if key not in _RECOVERABLE_TOP_LEVEL_CONTEXT_KEYS | {"phase_records"}}
+    stripped = {
+        key: value
+        for key, value in metadata.items()
+        if key not in _RECOVERABLE_TOP_LEVEL_CONTEXT_KEYS | _ROW_AUTHORITATIVE_TOP_LEVEL_KEYS | {"phase_records"}
+    }
     runtime_state = stripped.get("runtime_state")
     if isinstance(runtime_state, dict):
         runtime_payload = {

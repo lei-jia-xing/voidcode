@@ -57,7 +57,7 @@ from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.tools.read import ReadTool
 from voidcode.tools.contracts import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess
 from voidcode.core.tool_context import ToolContext
-from voidcode.core.turns import FinalTurn, ToolTurn
+from voidcode.core.turns import FinalTurn, ModelTurnFact, ToolTurn
 
 SESSION_ID = "crash-tool-session"
 COUNTING_READ_TOOL = "counting_read"
@@ -111,16 +111,17 @@ class Producer:
         self._read_first = read_first
 
     def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> ToolTurn | FinalTurn:
-        _ = request, session
+        _ = session
+        fact = ModelTurnFact(request.run_step, "deterministic", request.prompt)
         if self._read_first:
             if len(tool_results) == 0:
-                return ToolTurn(calls=(ToolCall(tool_name=COUNTING_READ_TOOL, arguments={"path": "sample.txt"}),))
+                return ToolTurn(calls=(ToolCall(tool_name=COUNTING_READ_TOOL, arguments={"path": "sample.txt"}),), facts=(fact,))
             if len(tool_results) == 1:
-                return ToolTurn(calls=(ToolCall(tool_name=BLOCKING_TOOL, arguments={}),))
-            return FinalTurn(output="done")
+                return ToolTurn(calls=(ToolCall(tool_name=BLOCKING_TOOL, arguments={}),), facts=(fact,))
+            return FinalTurn(output="done", facts=(fact,))
         if len(tool_results) == 0:
-            return ToolTurn(calls=(ToolCall(tool_name=BLOCKING_TOOL, arguments={}),))
-        return FinalTurn(output="done")
+            return ToolTurn(calls=(ToolCall(tool_name=BLOCKING_TOOL, arguments={}),), facts=(fact,))
+        return FinalTurn(output="done", facts=(fact,))
 
 
 def build_runtime(workspace: Path, gate: Path, *, read_first: bool = True) -> VoidCodeRuntime:
@@ -128,7 +129,7 @@ def build_runtime(workspace: Path, gate: Path, *, read_first: bool = True) -> Vo
         workspace=workspace,
         tool_registry=ToolRegistry.from_tools([CountingReadTool(gate), BlockingTool(gate)]),
         turn_producer=Producer(read_first=read_first),
-        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), execution_engine="deterministic", approval_mode="yolo"),
+        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), approval_mode="yolo"),
         permission_policy=PermissionPolicy(mode="yolo"),
     )
 
@@ -225,11 +226,10 @@ def test_process_crash_during_a_tool_call_resumes_without_replaying_or_claiming_
 
     crashed_call_id = cast(str, (gate / "blocking_tool.calls").read_text(encoding="utf-8").splitlines()[-1].split(":", 1)[1])
 
-    # Persisted truth of the crashed run: interrupted row, the completed read
-    # durable once, and the in-flight call started-but-unfinished with a pending
-    # intent that forbids automatic replay.
+    # The raw snapshot retains the completed read and the in-flight call's
+    # pending intent; public recovery below interprets this durable boundary.
+    # A hard kill alone cannot write a terminal session status.
     stored = _session(workspace, child.SESSION_ID)
-    assert stored.session.status == "interrupted"
     assert _tool_call_ids(workspace, child.SESSION_ID, "runtime.tool_started", child.BLOCKING_TOOL) == [crashed_call_id]
     completed = [(event.payload.get("tool"), event.payload.get("status")) for event in stored.events if event.event_type == "runtime.tool_completed"]
     assert completed == [(child.COUNTING_READ_TOOL, "ok")]
@@ -400,7 +400,6 @@ def test_crash_before_the_first_safe_boundary_resumes_without_claiming_the_crash
 
     crashed_call_id = cast(str, (gate / "blocking_tool.calls").read_text(encoding="utf-8").splitlines()[-1].split(":", 1)[1])
     stored = _session(workspace, child.SESSION_ID)
-    assert stored.session.status == "interrupted"
     # No tool result was ever committed, and the in-flight call is not completed.
     assert [event.event_type for event in stored.events if event.event_type == "runtime.tool_completed"] == []
     assert _tool_call_ids(workspace, child.SESSION_ID, "runtime.tool_started", child.BLOCKING_TOOL) == [crashed_call_id]
@@ -457,7 +456,6 @@ def test_streaming_resume_on_a_settled_crash_completes_the_turn(tmp_path: Path) 
 
     _crash_child(workspace, gate, child.__file__, read_first=True)
     crashed_call_id = cast(str, (gate / "blocking_tool.calls").read_text(encoding="utf-8").splitlines()[-1].split(":", 1)[1])
-    assert _session(workspace, child.SESSION_ID).session.status == "interrupted"
 
     (gate / "release.txt").write_text("released", encoding="utf-8")
     runtime = child.build_runtime(workspace, gate)

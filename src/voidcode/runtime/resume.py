@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..core.questions import QuestionAnswer, QuestionCancellation
 from ..core.transcript import project_report
-from ..core.turns import CallSeed, ReportedCall, TurnRequest, report_call
+from ..core.turns import CallSeed, ModelTurnFact, ReportedCall, TurnRequest, report_call
 from ..provider.protocol import ProviderAbortSignal
 from ..tools.contracts import ToolCall
 from ..tools.question import QuestionTool
@@ -31,7 +31,7 @@ from .contracts import (
     RuntimeStreamChunk,
 )
 from .event_envelopes import resequence_event
-from .events import RUNTIME_QUESTION_ANSWERED, RUNTIME_SKILLS_BINDING_MISMATCH, EventEnvelope
+from .events import RUNTIME_QUESTION_ANSWERED, RUNTIME_SKILLS_BINDING_MISMATCH, EventEnvelope, model_turn_batch_id
 from .execution import chunk_builders
 from .execution.provider_execution_metadata import provider_attempt_from_metadata
 from .execution.resume_checkpoint import (
@@ -52,9 +52,10 @@ from .execution.resume_checkpoint import (
 from .execution.resume_checkpoint import (
     validated_resume_checkpoint_envelope as _validated_resume_checkpoint_envelope,
 )
-from .execution.seams import select_turn_producer_for_effective_config
+from .execution.seams import select_turn_producer_for_config
 from .execution.turn_adapter import turn_request_for_session, turn_session_snapshot
 from .execution.turn_recovery import AnsweredQuestion, ApprovedInvocation, InterruptedTurn, restored_turn_batch
+from .fact_codec import decode_fact
 from .hook_runtime import (
     HOOK_RECURSION_ENV_VAR,
     hook_execution_policy_from_metadata,
@@ -359,11 +360,11 @@ class RuntimeResumeCoordinator:
         )
         continuation = AnsweredQuestion(pending, question_call, question_answer_report, batch, batch_sequence)
 
-        effective_config = runtime.effective_runtime_config_from_metadata(session.metadata)
+        config = runtime.run_config_from_metadata(session.metadata)
         try:
             validate_reasoning_effort_capability(
-                effective_config,
-                runtime.reasoning_effort_capability(effective_config),
+                config,
+                runtime.reasoning_effort_capability(config),
             )
         except ValueError as exc:
             raise RuntimeRequestError(str(exc)) from exc
@@ -372,7 +373,7 @@ class RuntimeResumeCoordinator:
             session=session,
             sequence=max_stored_sequence,
             request_metadata=session.metadata,
-            effective_config=effective_config,
+            config=config,
             failure_kind="mcp_startup_failed",
         )
         persisted_mcp_events: list[EventEnvelope] = []
@@ -402,15 +403,20 @@ class RuntimeResumeCoordinator:
             return
         tool_registry = runtime.tool_registry_for_run(
             session=session,
-            effective_config=effective_config,
+            config=config,
             mcp_descriptors=mcp_descriptors,
         )
-        skill_registry = runtime.skill_registry_for_effective_config(effective_config)
+        skill_registry = runtime.skill_registry_for_config(config)
         resumed_skill_snapshot = runtime.build_skill_snapshot(
             skill_registry,
             metadata=session.metadata,
-            agent=effective_config.agent,
+            agent=config.agent,
             source="resume",
+        )
+        replayed_conversation_segments = runtime.replayed_conversation_segments_for_existing_session(
+            stored=stored,
+            parent_session_id=stored.session.session.parent_id,
+            include_current_request=True,
         )
         assembled_context = runtime.assemble_provider_context(
             prompt=prompt,
@@ -421,6 +427,7 @@ class RuntimeResumeCoordinator:
                 applied_context=resumed_skill_snapshot.skill_prompt_context,
                 selected_skill_names=resumed_skill_snapshot.selected_skill_names,
             ),
+            replayed_conversation_segments=replayed_conversation_segments,
             tool_registry=tool_registry,
         )
         session = session_with_context_window_payload_metadata(
@@ -431,7 +438,7 @@ class RuntimeResumeCoordinator:
             TurnRequest(
                 session=turn_session_snapshot(session),
                 prompt=prompt,
-                available_tools=runtime.provider_tool_definitions(tool_registry, effective_config),
+                available_tools=runtime.provider_tool_definitions(tool_registry, config),
                 # The assembled context compiled the provider view with the
                 # payload-aware budget; its window is the render authority.
                 context_window=assembled_context.context_window
@@ -443,14 +450,14 @@ class RuntimeResumeCoordinator:
                 assembled_context=assembled_context,
                 metadata={
                     **session.metadata,
-                    "agent_preset": serialize_runtime_agent_config(effective_config.agent),
+                    "agent_preset": serialize_runtime_agent_config(config.agent),
                     "resume": True,
                     "runtime_resume": True,
                     "approval_request_id": pending.request_id,
                     "provider_attempt": provider_attempt_from_metadata(session.metadata),
                     **(
-                        {"reasoning_effort": effective_config.reasoning_effort}
-                        if effective_config.reasoning_effort is not None and "reasoning_effort" not in session.metadata
+                        {"reasoning_effort": config.reasoning_effort}
+                        if config.reasoning_effort is not None and "reasoning_effort" not in session.metadata
                         else {}
                     ),
                 },
@@ -724,36 +731,41 @@ class RuntimeResumeCoordinator:
             run_id=run_id,
         )
         session = session_with_current_acp_metadata(session, self._acp_adapter.current_state())
-        effective_config = runtime.effective_runtime_config_from_metadata(session.metadata)
+        config = runtime.run_config_from_metadata(session.metadata)
         mcp_startup_chunks, session, _, mcp_failed_chunk, mcp_descriptors = runtime.materialize_mcp_tools_for_run(
             session=session,
             sequence=max_stored_sequence,
             request_metadata=session.metadata,
-            effective_config=effective_config,
+            config=config,
             failure_kind="mcp_startup_failed",
         )
-        effective_config = runtime.effective_runtime_config_from_metadata(session.metadata)
+        config = runtime.run_config_from_metadata(session.metadata)
         try:
             validate_reasoning_effort_capability(
-                effective_config,
-                runtime.reasoning_effort_capability(effective_config),
+                config,
+                runtime.reasoning_effort_capability(config),
             )
         except ValueError as exc:
             raise RuntimeRequestError(str(exc)) from exc
         tool_registry = runtime.tool_registry_for_run(
             session=session,
-            effective_config=effective_config,
+            config=config,
             mcp_descriptors=mcp_descriptors,
         )
-        skill_registry = runtime.skill_registry_for_effective_config(effective_config)
+        skill_registry = runtime.skill_registry_for_config(config)
 
         resumed_skill_snapshot = runtime.build_skill_snapshot(
             skill_registry,
             metadata=session.metadata,
-            agent=effective_config.agent,
+            agent=config.agent,
             source="resume",
         )
 
+        replayed_conversation_segments = runtime.replayed_conversation_segments_for_existing_session(
+            stored=stored,
+            parent_session_id=stored.session.session.parent_id,
+            include_current_request=True,
+        )
         assembled_context = runtime.assemble_provider_context(
             prompt=prompt,
             tool_results=tuple(project_report(report) for report in tool_results),
@@ -763,6 +775,7 @@ class RuntimeResumeCoordinator:
                 applied_context=resumed_skill_snapshot.skill_prompt_context,
                 selected_skill_names=resumed_skill_snapshot.selected_skill_names,
             ),
+            replayed_conversation_segments=replayed_conversation_segments,
             tool_registry=tool_registry,
         )
         session = session_with_context_window_payload_metadata(
@@ -773,7 +786,7 @@ class RuntimeResumeCoordinator:
             TurnRequest(
                 session=turn_session_snapshot(session),
                 prompt=prompt,
-                available_tools=runtime.provider_tool_definitions(tool_registry, effective_config),
+                available_tools=runtime.provider_tool_definitions(tool_registry, config),
                 # The assembled context compiled the provider view with the
                 # payload-aware budget; its window is the render authority.
                 context_window=assembled_context.context_window
@@ -785,12 +798,12 @@ class RuntimeResumeCoordinator:
                 assembled_context=assembled_context,
                 metadata={
                     **session.metadata,
-                    "agent_preset": serialize_runtime_agent_config(effective_config.agent),
+                    "agent_preset": serialize_runtime_agent_config(config.agent),
                     "runtime_resume": True,
                     "provider_attempt": provider_attempt_from_metadata(session.metadata),
                     **(
-                        {"reasoning_effort": effective_config.reasoning_effort}
-                        if effective_config.reasoning_effort is not None and "reasoning_effort" not in session.metadata
+                        {"reasoning_effort": config.reasoning_effort}
+                        if config.reasoning_effort is not None and "reasoning_effort" not in session.metadata
                         else {}
                     ),
                 },
@@ -802,8 +815,8 @@ class RuntimeResumeCoordinator:
         provider_attempt = provider_attempt_from_metadata(turn_request.metadata)
         producer = runtime.turn_producer_for_session_metadata(session.metadata)
         if provider_attempt > 0:
-            producer = select_turn_producer_for_effective_config(
-                config=runtime.effective_runtime_config_from_metadata(session.metadata),
+            producer = select_turn_producer_for_config(
+                config=runtime.run_config_from_metadata(session.metadata),
                 provider_attempt=provider_attempt,
             ).producer
 
@@ -1371,19 +1384,19 @@ class RuntimeResumeCoordinator:
             run_id=run_id,
         )
         session = session_with_current_acp_metadata(session, self._acp_adapter.current_state())
-        effective_config = runtime.effective_runtime_config_from_metadata(session.metadata)
+        config = runtime.run_config_from_metadata(session.metadata)
         try:
             validate_reasoning_effort_capability(
-                effective_config,
-                runtime.reasoning_effort_capability(effective_config),
+                config,
+                runtime.reasoning_effort_capability(config),
             )
         except ValueError as exc:
             raise RuntimeRequestError(str(exc)) from exc
-        skill_registry = runtime.skill_registry_for_effective_config(effective_config)
+        skill_registry = runtime.skill_registry_for_config(config)
         resumed_skill_snapshot = runtime.build_skill_snapshot(
             skill_registry,
             metadata=session.metadata,
-            agent=effective_config.agent,
+            agent=config.agent,
             source="resume",
         )
 
@@ -1419,19 +1432,19 @@ class RuntimeResumeCoordinator:
             session=session,
             sequence=startup_sequence,
             request_metadata=session.metadata,
-            effective_config=effective_config,
+            config=config,
             failure_kind="mcp_startup_failed",
         )
-        effective_config = runtime.effective_runtime_config_from_metadata(session.metadata)
+        config = runtime.run_config_from_metadata(session.metadata)
         tool_registry = runtime.tool_registry_for_run(
             session=session,
-            effective_config=effective_config,
+            config=config,
             mcp_descriptors=mcp_descriptors,
         )
         replayed_conversation_segments = runtime.replayed_conversation_segments_for_existing_session(
             stored=stored,
             parent_session_id=stored.session.session.parent_id,
-            current_prompt=prompt,
+            include_current_request=True,
         )
         assembled_context = runtime.assemble_provider_context(
             prompt=prompt,
@@ -1453,7 +1466,7 @@ class RuntimeResumeCoordinator:
             TurnRequest(
                 session=turn_session_snapshot(session),
                 prompt=prompt,
-                available_tools=runtime.provider_tool_definitions(tool_registry, effective_config),
+                available_tools=runtime.provider_tool_definitions(tool_registry, config),
                 # The assembled context compiled the provider view with the
                 # payload-aware budget; its window is the render authority.
                 context_window=assembled_context.context_window
@@ -1471,8 +1484,8 @@ class RuntimeResumeCoordinator:
                     "provider_stream": True,
                     **({"provider_failure_resume": True} if provider_failure_resume else {}),
                     **(
-                        {"reasoning_effort": effective_config.reasoning_effort}
-                        if effective_config.reasoning_effort is not None and "reasoning_effort" not in session.metadata
+                        {"reasoning_effort": config.reasoning_effort}
+                        if config.reasoning_effort is not None and "reasoning_effort" not in session.metadata
                         else {}
                     ),
                 },
@@ -1485,8 +1498,8 @@ class RuntimeResumeCoordinator:
         if provider_failure_resume:
             provider_attempt = provider_attempt_from_metadata(turn_request.metadata)
             if provider_attempt > 0:
-                producer = select_turn_producer_for_effective_config(
-                    config=effective_config,
+                producer = select_turn_producer_for_config(
+                    config=config,
                     provider_attempt=provider_attempt,
                 ).producer
         max_stored_sequence = startup_sequence
@@ -1691,16 +1704,27 @@ class RuntimeResumeCoordinator:
         if not isinstance(started, int) or isinstance(started, bool):
             raise ValueError("persisted native batch has no valid start sequence")
         path = self._events.session_path(workspace=self._workspace, session_id=session.session.id, sequence=sequence)
-        _, durable_results = prompt_and_tool_results_from_debug_events(tuple(event for event in path if event.sequence > started))
         if not path:
-            raw_calls = raw.get("calls")
-            ids = {call.get("tool_call_id") for call in raw_calls if isinstance(call, dict)} if isinstance(raw_calls, list) else set()
-            durable_results = [report for report in tool_results if report.tool_call_id in ids]
-        batch, sequence = restored_turn_batch(session.metadata, session_id=session.session.id, tool_results=durable_results)
-        ids = {call.tool_call_id for call in batch.calls}
-        tool_results[:] = [report for report in tool_results if report.tool_call_id not in ids]
-        tool_results.extend(batch.completed_reports)
-        return batch, sequence
+            raise ValueError("pending native batch has no event history for its canonical model-turn identity")
+        batch_events = tuple(event for event in path if event.sequence > started)
+        _, durable_results = prompt_and_tool_results_from_debug_events(batch_events)
+        batch, started_sequence = restored_turn_batch(session.metadata, session_id=session.session.id, tool_results=durable_results)
+        model_turns = tuple(
+            fact
+            for event in batch_events
+            if event.event_type == "core.model_turn" and model_turn_batch_id(event.session_id, event.sequence) == batch.tool_batch_id
+            if isinstance((fact := decode_fact(event)), ModelTurnFact)
+        )
+        if (
+            len(model_turns) != 1
+            or model_turns[0].run_step != batch.run_step
+            or model_turns[0].tool_batch_calls != batch.calls
+            or model_turns[0].tool_batch_reasoning != batch.reasoning
+        ):
+            raise ValueError("native continuation checkpoint does not match its canonical model-turn event")
+        batch_members = {(batch.tool_batch_id, call.tool_call_id) for call in batch.calls}
+        tool_results[:] = [report for report in tool_results if (report.tool_batch_id, report.tool_call_id) not in batch_members]
+        return batch, started_sequence
 
     def _load_pending_approval_context(
         self,

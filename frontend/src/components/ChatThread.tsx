@@ -45,6 +45,7 @@ import {
 import type {
   BackgroundTaskSummary,
   QuestionAnswer,
+  SessionStatus,
   ToolDiffPreview,
 } from "../lib/runtime/types";
 import {
@@ -57,7 +58,9 @@ type ChatTool = ChatMessage["tools"][number];
 
 interface ChatThreadProps {
   messages: ChatMessage[];
+  sessionStatus: SessionStatus | null;
   isRunning: boolean;
+  isLiveStreamActive: boolean;
   isWaitingApproval: boolean;
   isApprovalSubmitting: boolean;
   approvalError: string | null;
@@ -1904,7 +1907,7 @@ function ToolActivities({
     <div className="mb-3 space-y-2">
       {tools.map((tool, idx) => (
         <ToolActivity
-          key={tool.id ?? `${tool.name}-${idx}`}
+          key={tool.partKey ?? tool.id ?? `${tool.name}-${idx}`}
           tool={tool}
           onSelectSession={onSelectSession}
           backgroundTasksById={backgroundTasksById}
@@ -1918,12 +1921,14 @@ function ToolActivities({
 function OrderedMessageParts({
   message,
   language,
+  isStreaming,
   onSelectSession,
   backgroundTasksById,
   selectedBackgroundTaskOutput,
 }: {
   message: ChatMessage;
   language: string;
+  isStreaming: boolean;
   onSelectSession?: (sessionId: string) => void;
   backgroundTasksById?: Record<string, BackgroundTaskSummary>;
   selectedBackgroundTaskOutput?: {
@@ -1933,7 +1938,6 @@ function OrderedMessageParts({
   } | null;
 }) {
   const parts = message.parts ?? [];
-  const isStreaming = message.status === "in_progress";
   const lastTextPartIndex = (() => {
     for (let i = parts.length - 1; i >= 0; i -= 1) {
       if (parts[i].kind === "text") return i;
@@ -2225,16 +2229,30 @@ function ApprovalCard({
 function StatusIndicator({
   status,
   error,
+  isLiveStreamActive,
 }: {
-  status: ChatMessage["status"];
+  status: ChatMessage["status"] | "incomplete";
   error?: string | null;
+  isLiveStreamActive: boolean;
 }) {
   const { t } = useTranslation();
   if (status === "in_progress") {
     return (
       <span className="inline-flex items-center gap-1 text-[11px] text-[var(--vc-text-muted)]">
-        <LoaderCircle className="w-3 h-3 animate-spin" />
-        {t("chat.responding")}
+        {isLiveStreamActive ? (
+          <LoaderCircle className="w-3 h-3 animate-spin" />
+        ) : (
+          <CirclePause className="w-3 h-3" />
+        )}
+        {isLiveStreamActive ? t("chat.responding") : t("chat.runtimeRunActive")}
+      </span>
+    );
+  }
+  if (status === "incomplete") {
+    return (
+      <span className="inline-flex items-center gap-1 text-[11px] text-[var(--vc-text-muted)]">
+        <CircleQuestionMark className="w-3 h-3" />
+        {t("chat.outcomeUnconfirmed")}
       </span>
     );
   }
@@ -2274,7 +2292,9 @@ function StatusIndicator({
 // props (App wraps them in useCallback) for the shallow comparison to work.
 export const ChatThread = memo(function ChatThread({
   messages,
+  sessionStatus,
   isRunning,
+  isLiveStreamActive,
   isWaitingApproval,
   isApprovalSubmitting,
   approvalError,
@@ -2306,6 +2326,20 @@ export const ChatThread = memo(function ChatThread({
         )}
 
         {messages.map((message) => {
+          const displayStatus =
+            message.status !== "in_progress" || isRunning
+              ? message.status
+              : sessionStatus === "running"
+                ? "in_progress"
+                : sessionStatus === "waiting"
+                  ? "waiting"
+                  : sessionStatus === "completed"
+                    ? "completed"
+                    : sessionStatus === "failed"
+                      ? "failed"
+                      : sessionStatus === "interrupted"
+                        ? "interrupted"
+                        : "incomplete";
           if (message.role === "user") {
             return (
               <div
@@ -2344,14 +2378,18 @@ export const ChatThread = memo(function ChatThread({
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1 min-h-4">
                   <StatusIndicator
-                    status={message.status}
+                    status={displayStatus}
                     error={message.error}
+                    isLiveStreamActive={isLiveStreamActive}
                   />
                 </div>
                 <div className="space-y-3">
                   {message.parts !== undefined ? (
                     <OrderedMessageParts
                       message={message}
+                      isStreaming={
+                        displayStatus === "in_progress" && isLiveStreamActive
+                      }
                       language={i18n.language}
                       onSelectSession={onSelectSession}
                       backgroundTasksById={backgroundTasksById}
@@ -2379,11 +2417,13 @@ export const ChatThread = memo(function ChatThread({
                           they never run for the normal (parts-bearing) path. */}
                       <StreamingTextPart
                         text={message.content}
-                        active={message.status === "in_progress"}
+                        active={
+                          displayStatus === "in_progress" && isLiveStreamActive
+                        }
                       />
                     </>
                   )}
-                  {message.error && message.status !== "failed" && (
+                  {message.error && displayStatus !== "failed" && (
                     <div className="rounded-[var(--vc-radius-control)] border border-[color:var(--vc-danger-border)] bg-[var(--vc-danger-bg)] px-3 py-2 text-xs text-[var(--vc-danger-text)]">
                       {message.error}
                     </div>
@@ -2414,7 +2454,10 @@ export const ChatThread = memo(function ChatThread({
             <div className="flex items-start gap-3">
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1">
-                  <StatusIndicator status="in_progress" />
+                  <StatusIndicator
+                    status="in_progress"
+                    isLiveStreamActive={isLiveStreamActive}
+                  />
                 </div>
                 <div className="flex items-center gap-2 text-sm text-[var(--vc-text-muted)]">
                   <LoaderCircle className="w-4 h-4 animate-spin" />

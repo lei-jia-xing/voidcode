@@ -20,6 +20,7 @@ from voidcode.core.turns import (
     CallSeed,
     FinalTurn,
     LoopStepFact,
+    ModelTurnFact,
     ReportedCall,
     StreamFact,
     ToolCompletedFact,
@@ -40,7 +41,7 @@ from voidcode.runtime.bundle import (
     serialize_session_bundle,
 )
 from voidcode.runtime.contracts import RuntimeSessionCheckoutBoundaryError, RuntimeSessionForkBoundaryError
-from voidcode.runtime.events import EventEnvelope
+from voidcode.runtime.events import EventEnvelope, model_turn_batch_id
 from voidcode.runtime.execution.report_codec import parse_report_payload, report_payload
 from voidcode.runtime.execution.resume_checkpoint import tool_results_from_checkpoint
 from voidcode.runtime.execution.tool_result_projection import _serialized_tool_results
@@ -344,7 +345,7 @@ def test_legacy_missing_native_identity_refuses_branch_continuation_without_muta
         workspace=tmp_path,
         session_id="facts",
         events=(
-            ("graph.loop_step", "graph", {"step": 1, "phase": "plan"}, None),
+            ("core.loop_step", "core", {"step": 1, "phase": "plan"}, None),
             ("runtime.tool_started", "runtime", {"tool": "read"}, None),
             ("runtime.tool_completed", "runtime", {"tool": "read", "status": "ok"}, None),
         ),
@@ -393,7 +394,19 @@ def test_recorded_real_reader_prefix_restores_without_repeating_completed_io(
 
         def produce(self, request: TurnRequest, tool_results: tuple[ToolResultView, ...], *, session: TurnSession) -> ToolTurn | FinalTurn:
             if not tool_results:
-                return ToolTurn(calls, reasoning=reasoning)
+                return ToolTurn(
+                    calls,
+                    reasoning=reasoning,
+                    facts=(
+                        ModelTurnFact(
+                            request.run_step,
+                            "deterministic",
+                            request.prompt,
+                            tool_batch_calls=calls,
+                            tool_batch_reasoning=reasoning,
+                        ),
+                    ),
+                )
             context = request.assembled_context
             assert isinstance(context, MemoryContext)
             metadata = next(segment.metadata for segment in context.segments if segment.role == "tool")
@@ -403,7 +416,10 @@ def test_recorded_real_reader_prefix_restores_without_repeating_completed_io(
             replayed_reasoning = data["reasoning_content"]
             assert isinstance(replayed_reasoning, str)
             self.replayed_reasoning = replayed_reasoning
-            return FinalTurn(tool_result_output(tool_results[-1]) or "")
+            return FinalTurn(
+                tool_result_output(tool_results[-1]) or "",
+                facts=(ModelTurnFact(request.run_step, "deterministic", request.prompt),),
+            )
 
     reader = Reader()
     producer = Producer()
@@ -426,7 +442,12 @@ def test_recorded_real_reader_prefix_restores_without_repeating_completed_io(
                     "invoked_call_ids": [call.tool_call_id for call in calls],
                 },
                 "turn_batch": persisted_turn_batch(
-                    CallSeed(calls, reasoning=reasoning, run_step=1),
+                    CallSeed(
+                        calls,
+                        reasoning=reasoning,
+                        run_step=1,
+                        tool_batch_id=model_turn_batch_id("facts", 1),
+                    ),
                     session_id="facts",
                     run_id=request.run_id,
                     started_sequence=0,
@@ -469,9 +490,44 @@ def test_recorded_real_reader_prefix_restores_without_repeating_completed_io(
 def test_runtime_only_page_does_not_erase_authentic_completed_prefix(tmp_path: Path) -> None:
     (tmp_path / "page.txt").write_text("real body beyond the empty typed page", encoding="utf-8")
     call = ToolCall("read", {"path": "page.txt"}, "native-after-runtime-page")
-    batch = CallSeed((call,), reasoning="Original page-spanning reasoning.", run_step=1)
+    reasoning = "Original page-spanning reasoning."
+    database = tmp_path / "facts.sqlite3"
+    owner = SqliteSessionStore(database_path=database)
+    save_checkpoint(
+        owner,
+        workspace=tmp_path,
+        session_id="facts",
+        prompt="read beyond runtime-only page",
+        session_metadata={},
+        tool_results=(),
+        last_event_sequence=0,
+        create_if_missing=True,
+    )
+    owner.append_session_events(
+        workspace=tmp_path,
+        session_id="facts",
+        events=tuple(("runtime.request_received", "runtime", {"prompt": f"runtime-only row {index}"}, None) for index in range(100)),
+    )
+    facts = SqliteFactStore(events=owner, recovery=owner, workspace=tmp_path, session_id="facts")
+    model_turn_sequence = facts.append(
+        (
+            ModelTurnFact(
+                1,
+                "deterministic",
+                "read beyond runtime-only page",
+                tool_batch_calls=(call,),
+                tool_batch_reasoning=reasoning,
+            ),
+        )
+    )[0]
+    batch = CallSeed(
+        (call,),
+        reasoning=reasoning,
+        run_step=1,
+        tool_batch_id=model_turn_batch_id("facts", model_turn_sequence),
+    )
     metadata = session_metadata_with_runtime_state_updates(
-        {},
+        owner.load_session(workspace=tmp_path, session_id="facts").session.metadata,
         updates={
             "composition_turn_occurrence": 1,
             "composition_turn": {
@@ -482,11 +538,14 @@ def test_runtime_only_page_does_not_erase_authentic_completed_prefix(tmp_path: P
                 "completed": False,
                 "invoked_call_ids": ["native-after-runtime-page"],
             },
-            "turn_batch": persisted_turn_batch(batch, session_id="facts", run_id="producer", started_sequence=0),
+            "turn_batch": persisted_turn_batch(
+                batch,
+                session_id="facts",
+                run_id="producer",
+                started_sequence=model_turn_sequence - 1,
+            ),
         },
     )
-    database = tmp_path / "facts.sqlite3"
-    owner = SqliteSessionStore(database_path=database)
     save_checkpoint(
         owner,
         workspace=tmp_path,
@@ -494,24 +553,24 @@ def test_runtime_only_page_does_not_erase_authentic_completed_prefix(tmp_path: P
         prompt="read beyond runtime-only page",
         session_metadata=metadata,
         tool_results=(),
-        last_event_sequence=0,
-        create_if_missing=True,
+        last_event_sequence=model_turn_sequence,
     )
     owner.append_session_events(
         workspace=tmp_path,
         session_id="facts",
-        events=tuple(("runtime.request_received", "runtime", {"prompt": f"runtime-only row {index}"}, None) for index in range(100)),
+        events=tuple(("runtime.request_received", "runtime", {"prompt": f"runtime-only tail {index}"}, None) for index in range(100)),
     )
     actual = ReadTool().invoke(call, context=ToolContext(workspace=tmp_path, session_id="facts", invocation_id=call.tool_call_id))
-    facts = SqliteFactStore(events=owner, recovery=owner, workspace=tmp_path, session_id="facts")
     report = ReportedCall(call.tool_call_id or "", call.tool_name, call.arguments, actual)
     facts.append((ToolRequestedFact(call), ToolCompletedFact(report, batch=batch)))
     reopened = SqliteSessionStore(database_path=database)
     restored_store = SqliteFactStore(events=reopened, recovery=reopened, workspace=tmp_path, session_id="facts")
     empty = restored_store.read(limit=100)
     assert empty.entries == () and empty.next_after_sequence == 100
-    tail = restored_store.read(after_sequence=empty.next_after_sequence, limit=2, leaf_sequence=empty.leaf_sequence)
-    assert [(entry.sequence, entry.parent_sequence) for entry in tail.entries] == [(101, 100), (102, 101)]
+    tail = restored_store.read(after_sequence=empty.next_after_sequence, limit=100, leaf_sequence=empty.leaf_sequence)
+    assert [entry.sequence for entry in tail.entries] == [model_turn_sequence]
+    completed = restored_store.read(after_sequence=tail.next_after_sequence or 0, limit=100, leaf_sequence=tail.leaf_sequence)
+    assert [(entry.sequence, entry.parent_sequence) for entry in completed.entries] == [(202, 201), (203, 202)]
     restored = restored_store.restore_batch()
     assert restored.reasoning == batch.reasoning
     assert [report.tool_call_id for report in restored.completed_reports] == [call.tool_call_id]
@@ -686,7 +745,7 @@ def test_typed_report_replay_keeps_body_inert_and_restores_owned_state() -> None
     decoded = decode_fact(EventEnvelope("session", 1, encoded.event_type, encoded.source, encoded.payload))
     assert isinstance(decoded, ToolCompletedFact)
     assert decoded.report.tool_call_id == "native-call"
-    assert decoded.report.authorized_arguments["path"] == "authorized"
+    assert decoded.report.final_arguments["path"] == "authorized"
     assert decoded.report.result.control is None
     assert decoded.report.result.output == attachment
     assert decoded.report.result.body == body
@@ -712,6 +771,30 @@ def test_typed_report_replay_keeps_body_inert_and_restores_owned_state() -> None
     assert replayed_failure.result.execution == failure.result.execution
     assert replayed_failure.result.timeout_seconds == 7
     assert replayed_failure.result.error == failure.result.error
+
+
+def test_model_turn_fact_roundtrips_authoritative_tool_batch_manifest() -> None:
+    calls = (
+        ToolCall("read", {"path": "first.txt"}, tool_call_id="read_1"),
+        ToolCall("read", {"path": "second.txt"}, tool_call_id="read_2"),
+    )
+    fact = ModelTurnFact(
+        3,
+        "provider",
+        "inspect and update files",
+        provider="google",
+        model="gemini-2.5-flash",
+        tool_batch_calls=calls,
+        tool_batch_reasoning="Inspect both files, then apply the requested update.",
+    )
+    encoded = encode_fact(fact)
+    decoded = decode_fact(EventEnvelope("session", 1, encoded.event_type, encoded.source, encoded.payload))
+
+    assert decoded == fact
+    assert cast(dict[str, object], encoded.payload)["tool_batch_calls"] == [
+        {"tool": "read", "tool_call_id": "read_1", "arguments": {"path": "first.txt"}},
+        {"tool": "read", "tool_call_id": "read_2", "arguments": {"path": "second.txt"}},
+    ]
 
 
 def test_report_decoder_rejects_unknown_typed_fields_and_noninteger_version() -> None:

@@ -257,17 +257,18 @@ def parse_keymap(keymap: Mapping[str, str] | None) -> dict[str, Key]:
 
 
 @dataclass(frozen=True, slots=True)
-class _StreamCompleted:
-    """The runtime iterator returned normally; ``final_status`` is its last status."""
+class _StreamClosed:
+    """The runtime iterator returned normally; closure is not a run outcome."""
 
-    final_status: str
+    last_status: str
 
 
 @dataclass(frozen=True, slots=True)
 class _StreamFailed:
-    """The runtime iterator raised (transport failure)."""
+    """The runtime iterator raised; its last observed status is not terminal proof."""
 
     error: object
+    last_status: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,7 +341,7 @@ class TuiApp:
         self._overlay: Overlay | None = None
         self._overlay_request_id = ""
         self._tool_picker_active = False
-        self._artifact_detail: tuple[str, str, str | None, str] | None = None
+        self._artifact_detail: tuple[str, str | None, str | None, str] | None = None
         self._artifact_offsets: list[int] = []
         self._artifact_next_offset: int | None = None
 
@@ -353,7 +354,7 @@ class TuiApp:
         self._cache_read_tokens: int | None = None
         self._cache_write_tokens: int | None = None
         self._cache_hit_rate: float | None = None
-        self._context_tokens = 0
+        self._context_tokens: int | None = None
         #: Provider context window (0 = unknown) and the session's reasoning
         #: effort, both refreshed outside the frame path.
         self._context_window = 0
@@ -670,7 +671,7 @@ class TuiApp:
             path=str(self._workspace),
             lsp=self._lsp_label,
             cost_usd=self._cost_usd,
-            context_percent=self._context_tokens / window * 100 if window else None,
+            context_percent=(self._context_tokens / window * 100 if window and self._context_tokens is not None else None),
             context_window=window,
             context_tokens=self._context_tokens,
             input_tokens=self._input_tokens,
@@ -692,10 +693,10 @@ class TuiApp:
                 self._consume_chunk(item)
             elif isinstance(item, _PolledChunks):
                 self._consume_polled(item)
-            elif isinstance(item, _StreamCompleted):
-                self._finish_stream(item.final_status)
+            elif isinstance(item, _StreamClosed):
+                self._finish_stream(item.last_status)
             elif isinstance(item, _StreamFailed):
-                self._fail_stream(item.error)
+                self._fail_stream(item.error, item.last_status)
 
     def _consume_chunk(self, chunk: RuntimeStreamChunk, *, replay: bool = False) -> None:
         assert self._view is not None
@@ -716,7 +717,7 @@ class TuiApp:
             self._consume_output(chunk.output, replay=replay)
 
     def _consume_output(self, output: str, *, replay: bool = False) -> None:
-        """The graph writes the complete answer after the provider deltas.
+        """The runtime publishes the complete answer after the provider deltas.
 
         Render it only when no delta was streamed for this attempt, or the answer
         would appear twice (the old app's ``_streamed_provider_text`` rule; the
@@ -757,14 +758,11 @@ class TuiApp:
         self._refresh_context_window()
         self._dirty = True
 
-    def _fail_stream(self, error: object) -> None:
+    def _fail_stream(self, error: object, last_status: str) -> None:
         assert self._view is not None
         self._streaming = False
         self._cancel_requested = False
-        self._view.finish_stream("failed", error=error)
-        # A live approval/question whose answer never reached the runtime is
-        # re-armed by ``finish_stream``; re-open it instead of leaving the turn
-        # stuck at "Waiting input" (no further chunk arrives on a failed stream).
+        self._view.finish_stream(last_status, error=error)
         self._take_pending_overlay()
         self._refresh_context_window()
         self._dirty = True
@@ -781,16 +779,22 @@ class TuiApp:
             self._session_effort = effort
         conversation = metadata.get("context_window")
         if isinstance(conversation, Mapping):
-            tokens = conversation.get("usage_tokens_after", conversation.get("usage_tokens_before"))
-            if isinstance(tokens, int) and not isinstance(tokens, bool):
-                self._context_tokens = tokens
+            after = conversation.get("usage_tokens_after")
+            before = conversation.get("usage_tokens_before")
+            self._context_tokens = (
+                after
+                if isinstance(after, int) and not isinstance(after, bool)
+                else before
+                if isinstance(before, int) and not isinstance(before, bool)
+                else None
+            )
         usage = metadata.get("provider_usage")
-        cumulative = usage.get("cumulative") if isinstance(usage, Mapping) else None
-        cost = cumulative.get("cost_usd") if isinstance(cumulative, Mapping) else None
-        if isinstance(cost, (int, float)) and not isinstance(cost, bool):
-            self._cost_usd = float(cost)
+        if isinstance(usage, Mapping):
+            cumulative = usage.get("cumulative")
+            cost = cumulative.get("cost_usd") if isinstance(cumulative, Mapping) else None
+            self._cost_usd = float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None
         latest = usage.get("latest") if isinstance(usage, Mapping) else None
-        if isinstance(latest, Mapping):
+        if isinstance(usage, Mapping):
             token_fields = (
                 ("input_tokens", "_input_tokens"),
                 ("output_tokens", "_output_tokens"),
@@ -798,9 +802,13 @@ class TuiApp:
                 ("cache_write_tokens", "_cache_write_tokens"),
             )
             for key, attribute in token_fields:
-                value = latest.get(key)
-                setattr(self, attribute, value if isinstance(value, int) and not isinstance(value, bool) else None)
-            hit_rate = latest.get("cache_hit_rate")
+                value = latest.get(key) if isinstance(latest, Mapping) else None
+                setattr(
+                    self,
+                    attribute,
+                    value if isinstance(value, int) and not isinstance(value, bool) else None,
+                )
+            hit_rate = latest.get("cache_hit_rate") if isinstance(latest, Mapping) else None
             self._cache_hit_rate = float(hit_rate) if isinstance(hit_rate, (int, float)) and not isinstance(hit_rate, bool) else None
 
     def _track_background_task(self, event: EventEnvelope) -> None:
@@ -823,7 +831,7 @@ class TuiApp:
 
     def _pump_stream(self, open_stream: Callable[[], Iterator[RuntimeStreamChunk]]) -> None:
         """Drain one blocking runtime iterator into the queue (worker thread)."""
-        last_status = "Idle"
+        last_status = "unknown"
         saw_chunk = False
         try:
             for chunk in open_stream():
@@ -833,9 +841,9 @@ class TuiApp:
             if not saw_chunk:
                 raise ValueError("runtime stream emitted no chunks")
         except Exception as error:
-            self._queue.put(_StreamFailed(error))
+            self._queue.put(_StreamFailed(error, last_status))
             return
-        self._queue.put(_StreamCompleted(last_status))
+        self._queue.put(_StreamClosed(last_status))
 
     def _maybe_poll(self, now: float) -> None:
         """Replay the parent session's tail while idle with tracked background work.
@@ -1237,9 +1245,9 @@ class TuiApp:
             self._notice("Tool output details require an active session.")
             return
         entries = [
-            (block.tool_call_id, escape_terminal_controls(f"{block.title or block.tool}: {block.summary or 'output detail'}"))
+            (block.activity_id, escape_terminal_controls(f"{block.title or block.tool}: {block.summary or 'output detail'}"))
             for block in self._view.transcript().blocks
-            if isinstance(block, ToolBlock) and block.detail_available and block.tool_call_id
+            if isinstance(block, ToolBlock) and block.detail_available and block.tool_call_id and block.activity_id
         ]
         if not entries:
             self._notice("No tool output details are available in this transcript.")
@@ -1257,10 +1265,10 @@ class TuiApp:
         self._enter_alt_screen()
         self._dirty = True
 
-    def _select_tool_artifact(self, tool_call_id: str) -> None:
+    def _select_tool_artifact(self, activity_id: str) -> None:
         assert self._view is not None
         block = next(
-            (item for item in self._view.transcript().blocks if isinstance(item, ToolBlock) and item.tool_call_id == tool_call_id),
+            (item for item in self._view.transcript().blocks if isinstance(item, ToolBlock) and item.activity_id == activity_id),
             None,
         )
         if block is None or not block.detail_available:
@@ -1270,7 +1278,7 @@ class TuiApp:
         if not session_id:
             self._notice("Tool output has no session owner.")
             return
-        self._artifact_detail = (session_id, tool_call_id, block.artifact_id, block.title or block.tool)
+        self._artifact_detail = (session_id, block.tool_call_id, block.artifact_id, block.title or block.tool)
         self._artifact_offsets = [0]
         self._artifact_next_offset = None
         self._open_tool_artifact_page(0)
@@ -1349,7 +1357,7 @@ class TuiApp:
         self._cache_read_tokens = None
         self._cache_write_tokens = None
         self._cache_hit_rate = None
-        self._context_tokens = 0
+        self._context_tokens = None
         self._tracked_tasks.clear()
         self._next_poll_at = 0.0
         self._dirty = True
@@ -1478,8 +1486,8 @@ class TuiApp:
         self._view.reset_for_new_session()
         self._session_id = session_id
         try:
-            effective = self._runtime.effective_runtime_config(session_id=session_id)
-            self._approval_mode = effective.approval_mode
+            config = self._runtime.run_config(session_id=session_id)
+            self._approval_mode = config.approval_mode
         except (TypeError, ValueError) as error:
             logger.error("Failed to resolve session approval mode: %s", error)
             self._approval_mode = "unavailable"

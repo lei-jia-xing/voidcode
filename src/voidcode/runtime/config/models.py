@@ -58,14 +58,12 @@ ENV_SETTINGS_LOCK = Lock()
 TOP_LEVEL_ENV_VARS: tuple[str, ...] = (
     "VOIDCODE_APPROVAL_MODE",
     "VOIDCODE_MODEL",
-    "VOIDCODE_EXECUTION_ENGINE",
     "VOIDCODE_TOOL_TIMEOUT_SECONDS",
     "VOIDCODE_REASONING_EFFORT",
 )
 
 APPROVAL_MODE_ENV_VAR = "VOIDCODE_APPROVAL_MODE"
 MODEL_ENV_VAR = "VOIDCODE_MODEL"
-EXECUTION_ENGINE_ENV_VAR = "VOIDCODE_EXECUTION_ENGINE"
 TOOL_TIMEOUT_ENV_VAR = "VOIDCODE_TOOL_TIMEOUT_SECONDS"
 REASONING_EFFORT_ENV_VAR = "VOIDCODE_REASONING_EFFORT"
 
@@ -88,8 +86,6 @@ type TuiCommand = Literal[
 ]
 VALID_TUI_COMMANDS: tuple[str, ...] = get_args(TuiCommand.__value__)
 
-type ExecutionEngineName = Literal["deterministic", "provider"]
-VALID_EXECUTION_ENGINES: tuple[ExecutionEngineName, ...] = ("deterministic", "provider")
 type RuntimeProviderContextDiagnosticMode = Literal["off", "warn", "block"]
 type RuntimeContextTransformFailureMode = Literal["ignore", "warn", "block"]
 type RuntimeAgentPromptSource = Literal["builtin", "custom_markdown"]
@@ -378,13 +374,6 @@ def _parse_approval_mode_value(value: object, *, source: str) -> ApprovalMode:
     return value
 
 
-def _parse_execution_engine_name(value: object, *, source: str) -> ExecutionEngineName:
-    if not isinstance(value, str) or value not in VALID_EXECUTION_ENGINES:
-        allowed = ", ".join(VALID_EXECUTION_ENGINES)
-        raise ValueError(f"{source} must be one of: {allowed}")
-    return value
-
-
 @overload
 def parse_approval_mode(raw_value: object, *, source: str, allow_none: Literal[False]) -> ApprovalMode: ...
 @overload
@@ -403,12 +392,6 @@ def parse_permission_decision(raw_value: object, *, source: str, allow_none: boo
     if raw_value is None and allow_none:
         return None
     return _parse_permission_decision(raw_value, source=source)
-
-
-def parse_execution_engine(raw_value: object, *, source: str, allow_none: bool) -> ExecutionEngineName | None:
-    if raw_value is None and allow_none:
-        return None
-    return _parse_execution_engine_name(raw_value, source=source)
 
 
 def parse_tool_timeout_seconds(raw_value: object, *, source: str, allow_none: bool) -> int | None:
@@ -591,10 +574,6 @@ class EnvironmentRuntimeSettings(BaseSettings):
         validation_alias=APPROVAL_MODE_ENV_VAR,
     )
     model: str | None = Field(default=None, validation_alias=MODEL_ENV_VAR)
-    execution_engine: ExecutionEngineName | None = Field(
-        default=None,
-        validation_alias=EXECUTION_ENGINE_ENV_VAR,
-    )
     tool_timeout_seconds: int | None = Field(
         default=None,
         validation_alias=TOOL_TIMEOUT_ENV_VAR,
@@ -621,15 +600,6 @@ class EnvironmentRuntimeSettings(BaseSettings):
         if not isinstance(value, str) or not value:
             raise ValueError(f"environment variable {MODEL_ENV_VAR} must be a non-empty string")
         return value
-
-    @field_validator("execution_engine", mode="before")
-    @classmethod
-    def _validate_execution_engine(cls, value: object) -> ExecutionEngineName | None:
-        return parse_execution_engine(
-            value,
-            source=f"environment variable {EXECUTION_ENGINE_ENV_VAR}",
-            allow_none=True,
-        )
 
     @field_validator("tool_timeout_seconds", mode="before")
     @classmethod
@@ -919,7 +889,7 @@ HOOK_COMMAND_FIELDS: tuple[str, ...] = (
     "on_background_task_result_read",
     "on_delegated_result_available",
     "on_turn_progress",
-    "on_stuck_detected",
+    "on_tool_batch_repeated",
     "on_approval_requested",
     "on_question_asked",
     "on_before_compact",
@@ -948,7 +918,7 @@ class HooksPayload(_PayloadModel):
     on_background_task_result_read: CommandList | None = None
     on_delegated_result_available: CommandList | None = None
     on_turn_progress: CommandList | None = None
-    on_stuck_detected: CommandList | None = None
+    on_tool_batch_repeated: CommandList | None = None
     on_approval_requested: CommandList | None = None
     on_question_asked: CommandList | None = None
     on_before_compact: CommandList | None = None
@@ -1854,7 +1824,6 @@ class AgentPayload(_PayloadModel):
 class PersistedAgentPayload(AgentPayload):
     """Agent payload of the persisted session snapshot (adds runtime-owned keys)."""
 
-    execution_engine: ExecutionEngineName | None = None
     runtime_internal: AgentRuntimeInternalPayload | None = None
 
     @field_validator("runtime_internal", mode="before")
@@ -1865,15 +1834,6 @@ class PersistedAgentPayload(AgentPayload):
         if not isinstance(value, dict):
             raise ValueError("runtime config field 'agent.runtime_internal' must be an object when provided")
         return value
-
-    @field_validator("execution_engine", mode="before")
-    @classmethod
-    def _validate_execution_engine(cls, value: object) -> ExecutionEngineName | None:
-        return parse_execution_engine(
-            value,
-            source="runtime config field 'agent.execution_engine'",
-            allow_none=True,
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -1950,10 +1910,6 @@ class RuntimeConfigPayload(_PayloadModel):
     model: str | None = Field(
         default=None,
         description="Provider/model identifier in `provider/model` form.",
-    )
-    execution_engine: ExecutionEngineName | None = Field(
-        default=None,
-        description="Execution engine used when no request or environment override is set.",
     )
     # Item shape is published as contract metadata only; provider/config.py owns
     # the chain's rejection and messages.
@@ -2054,11 +2010,6 @@ class RuntimeConfigPayload(_PayloadModel):
     def _validate_approval_mode(cls, value: object, info: ValidationInfo) -> ApprovalMode | None:
         return parse_approval_mode(value, source=_config_field_source(info, "approval_mode"), allow_none=True)
 
-    @field_validator("execution_engine", mode="before")
-    @classmethod
-    def _validate_execution_engine(cls, value: object, info: ValidationInfo) -> ExecutionEngineName | None:
-        return parse_execution_engine(value, source=_config_field_source(info, "execution_engine"), allow_none=True)
-
     @field_validator("model", mode="before")
     @classmethod
     def _validate_model(cls, value: object) -> str | None:
@@ -2097,7 +2048,6 @@ class PersistedRuntimeConfigPayload(_PayloadModel):
     approval_mode: ApprovalMode
     permission: PermissionPayload
     policy: PolicyPayload | None = None
-    execution_engine: ExecutionEngineName
     tool_timeout_seconds: int | None
     reasoning_effort: ReasoningEffort | None = None
     model: str | None = None
@@ -2195,7 +2145,6 @@ SCHEMA_DEFINITION_NAMES: Mapping[str, str] = {
     # value-type aliases shared by several properties
     "ApprovalMode": "approvalMode",
     "PermissionDecision": "permissionDecision",
-    "ExecutionEngineName": "executionEngine",
     "RuntimeProviderContextDiagnosticMode": "providerContextDiagnosticMode",
     "RuntimeContextTransformFailureMode": "contextTransformFailureMode",
     "RuntimeHookFailureMode": "hookFailureMode",

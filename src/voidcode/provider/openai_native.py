@@ -8,13 +8,16 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 
 import httpx2
+from openai import APIConnectionError as OpenAIAPIConnectionError
 from openai import APIError as OpenAIAPIError
+from openai import APITimeoutError as OpenAIAPITimeoutError
 from openai import OpenAI, omit
 
 from ..core.transcript import tool_result_output
 from ..formats.json_values import json_wire_object
+from ..security.redaction import redact_mapping
 from ..tools.contracts import AttachmentOutput, ToolCall
-from ..tools.output import redacted_argument_keys_for_tool, sanitize_tool_arguments, sanitize_tool_result_data, strip_redaction_sentinels_from_mapping
+from ..tools.output import sanitize_tool_result_data
 from ._wire_common import (
     DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS,
     OwnedTransport,
@@ -28,8 +31,6 @@ from .config import OpenAIProviderConfig, ProviderEndpointConfig
 from .errors import (
     provider_execution_error_from_api_payload,
     provider_execution_error_from_stream_payload,
-    redact_provider_error_details,
-    redact_provider_error_message,
 )
 from .model_catalog import ProviderModelMetadata, ToolFeedbackMode
 from .protocol import (
@@ -127,12 +128,13 @@ class OpenAIChatCompletionsTransport:
     Stream framing must be spec-compliant: the SDK's SSE decoder dispatches an
     event only on the blank line that terminates it, so events separated by a
     single newline are never delivered and a final event without its
-    terminating blank line is discarded. A stream that ends without a
-    recognized finish reason is still a terminal response: the turn resolves to
-    the canonical ``unknown`` reason and the graph treats it as a completed,
-    stop-equivalent state (see ``_done_reason``). Events the decoder does emit
-    but cannot decode as a JSON object are reported as a bounded, non-leaking
-    stream error payload.
+    terminating blank line is discarded. A stream that ends without a finish
+    reason has an ``unknown`` terminal reason rather than an invented stop; an
+    unrecognized reported token is likewise preserved as ``unknown`` with its
+    raw value in metadata. The explicit transport terminal marker distinguishes
+    a complete model turn from a missing terminal event. Events the decoder
+    emits but cannot decode as a JSON object are reported as a bounded,
+    non-leaking stream error payload.
 
     Auth headers reproduce the configured ``auth_scheme``/``auth_header``
     contract exactly (see ``_auth_headers``): ``none`` -- or no key -- sends no
@@ -231,6 +233,9 @@ class OpenAIChatCompletionsTransport:
         headers = getattr(response, "headers", None)
         if isinstance(headers, Mapping):
             payload.setdefault("headers", dict(headers))
+        if isinstance(exc, (OpenAIAPITimeoutError, OpenAIAPIConnectionError)):
+            payload["network_failure"] = True
+            payload["exception_type"] = type(exc).__name__
         payload.setdefault("message", str(exc))
         return payload
 
@@ -285,7 +290,7 @@ def _usage(payload: Mapping[str, object]) -> ProviderTokenUsage | None:
 
 def _done_reason(value: object) -> ProviderDoneReason:
     if not isinstance(value, str) or not value.strip():
-        return "stop"
+        return "unknown"
     value = value.strip().lower()
     if value in {"stop", "end_turn"}:
         return "stop"
@@ -295,19 +300,15 @@ def _done_reason(value: object) -> ProviderDoneReason:
         return "function_call"
     if value in {"length", "max_tokens"}:
         return "length"
-    if value in {"content_filter", "error"}:
+    if value == "content_filter":
+        return "content_filter"
+    if value == "error":
         return "error"
     return "unknown"
 
 
 def _raw_finish_reason(value: object) -> str | None:
-    """Return the provider's finish-reason token verbatim, for failure diagnostics.
-
-    ``_done_reason`` collapses anything it does not recognize to ``"unknown"``, which
-    hides the provider's actual token in the failure a caller sees. The raw value is
-    carried as ``finish_reason_raw`` on turn-result/stream-event metadata so the
-    unsupported-finish-reason failure can name the token instead of only ``"unknown"``.
-    """
+    """Return a reported finish-reason token verbatim for diagnostics."""
     if isinstance(value, str):
         return value.strip() or None
     if value is None:
@@ -320,13 +321,13 @@ def _raw_finish_reason(value: object) -> str | None:
 
 def _raise_finish_reason_error(raw_reason: str, *, provider_name: str, model_name: str) -> None:
     raise ProviderExecutionError(
-        kind="transient_failure",
+        kind="provider_error",
         provider_name=provider_name,
         model_name=model_name,
-        message=f"provider finish_reason: {raw_reason}",
+        message=f"provider reported finish_reason={raw_reason}",
         retryable=False,
         fallback_allowed=True,
-        details={"source": "finish_reason", "reason": "unsupported_done_reason", "finish_reason_raw": raw_reason},
+        details={"source": "finish_reason", "reason": "provider_error", "finish_reason_raw": raw_reason},
     )
 
 
@@ -467,9 +468,8 @@ class OpenAIChatCompletionsProvider:
         return original, reverse
 
     @staticmethod
-    def _visible_arguments(tool_name: str | None, arguments: dict[str, object]) -> dict[str, object]:
-        sanitized = sanitize_tool_arguments(arguments)
-        return strip_redaction_sentinels_from_mapping(sanitized, redacted_keys=redacted_argument_keys_for_tool(tool_name))
+    def _visible_arguments(_tool_name: str | None, arguments: dict[str, object]) -> dict[str, object]:
+        return redact_mapping(json_wire_object(arguments))
 
     def _messages(self, request: ProviderTurnRequest) -> list[dict[str, object]]:
         original_to_provider, _ = self._tool_maps(request)
@@ -481,50 +481,77 @@ class OpenAIChatCompletionsProvider:
             # ``model_map`` alias onto a deepseek model must still replay.
             model_name=self._model_name(request),
         )
-        reasoning_content_by_tool_call_id: dict[str, str] = {}
+        reasoning_content_by_tool_batch_member: dict[tuple[str | None, str], str] = {}
         if requires_reasoning_content:
             for segment in request.assembled_context.segments:
                 if segment.role != "tool" or not segment.tool_call_id:
                     continue
                 reasoning_content = _reasoning_content_from_tool_data(segment)
                 if reasoning_content:
-                    reasoning_content_by_tool_call_id[segment.tool_call_id] = reasoning_content
+                    reasoning_content_by_tool_batch_member[(segment.tool_batch_id, segment.tool_call_id)] = reasoning_content
         messages: list[dict[str, object]] = []
-        for segment in request.assembled_context.segments:
+        segments = request.assembled_context.segments
+        index = 0
+        while index < len(segments):
+            segment = segments[index]
             if segment.role == "assistant" and segment.tool_name is not None:
-                if requires_reasoning_content and segment.tool_call_id not in reasoning_content_by_tool_call_id:
-                    raise ProviderExecutionError(
-                        kind="stream_tool_feedback_shape",
-                        provider_name=request.provider_name or self.name,
-                        model_name=self._model_name(request),
-                        message="tool-call replay requires the original provider reasoning content",
-                        retryable=False,
-                        fallback_allowed=False,
-                        details={"source": "messages", "reason": "missing_reasoning_content", "tool_call_id": segment.tool_call_id},
+                batch_segments = [segment]
+                index += 1
+                if segment.tool_batch_id is not None:
+                    while index < len(segments):
+                        following = segments[index]
+                        if following.role != "assistant" or following.tool_name is None or following.tool_batch_id != segment.tool_batch_id:
+                            break
+                        batch_segments.append(following)
+                        index += 1
+                tool_calls: list[dict[str, object]] = []
+                reasoning_content: str | None = None
+                for call_segment in batch_segments:
+                    call_id = call_segment.tool_call_id
+                    batch_member = None if call_id is None else (call_segment.tool_batch_id, call_id)
+                    if requires_reasoning_content and (batch_member is None or batch_member not in reasoning_content_by_tool_batch_member):
+                        raise ProviderExecutionError(
+                            kind="stream_tool_feedback_shape",
+                            provider_name=request.provider_name or self.name,
+                            model_name=self._model_name(request),
+                            message="tool-call replay requires the original provider reasoning content",
+                            retryable=False,
+                            fallback_allowed=False,
+                            details={"source": "messages", "reason": "missing_reasoning_content", "tool_call_id": call_id},
+                        )
+                    if requires_reasoning_content and reasoning_content is None:
+                        assert batch_member is not None
+                        reasoning_content = reasoning_content_by_tool_batch_member[batch_member]
+                    arguments = json.dumps(
+                        self._visible_arguments(call_segment.tool_name, call_segment.tool_arguments or {}),
+                        ensure_ascii=False,
+                        sort_keys=True,
                     )
-                arguments = json.dumps(self._visible_arguments(segment.tool_name, segment.tool_arguments or {}), ensure_ascii=False, sort_keys=True)
+                    tool_calls.append(
+                        {
+                            # Ingest normalised this id once; render it verbatim
+                            # rather than substituting the tool name, which two
+                            # calls to the same tool would share.
+                            "id": call_id,
+                            "type": "function",
+                            "function": {
+                                "name": original_to_provider.get(call_segment.tool_name, call_segment.tool_name),
+                                "arguments": arguments,
+                            },
+                        }
+                    )
                 messages.append(
                     {
                         "role": "assistant",
                         "content": segment.content,
                         # DeepSeek requires the prior reasoning_content on the
                         # assistant tool-call message of a replayed turn.
-                        **(
-                            {"reasoning_content": reasoning_content_by_tool_call_id[segment.tool_call_id or ""]} if requires_reasoning_content else {}
-                        ),
-                        "tool_calls": [
-                            {
-                                # Ingest normalised this id once; render it verbatim
-                                # rather than substituting the tool name, which two
-                                # calls to the same tool would share.
-                                "id": segment.tool_call_id,
-                                "type": "function",
-                                "function": {"name": original_to_provider.get(segment.tool_name, segment.tool_name), "arguments": arguments},
-                            }
-                        ],
+                        **({"reasoning_content": reasoning_content} if requires_reasoning_content else {}),
+                        "tool_calls": tool_calls,
                     }
                 )
-            elif segment.role == "tool":
+                continue
+            if segment.role == "tool":
                 metadata = segment.metadata or {}
                 raw_data = metadata.get("data")
                 data = sanitize_tool_result_data(raw_data) if isinstance(raw_data, dict) else {}
@@ -547,6 +574,7 @@ class OpenAIChatCompletionsProvider:
                 )
             else:
                 messages.append({"role": segment.role, "content": segment.content})
+            index += 1
         return messages
 
     def _tool_feedback_mode_for_request(self, request: ProviderTurnRequest) -> ToolFeedbackMode | None:
@@ -572,14 +600,14 @@ class OpenAIChatCompletionsProvider:
         completed tool results as a single user message instead, with prior-run
         results kept inside the replayed history.
         """
-        replayed_tool_call_ids = {
-            segment.tool_call_id
+        replayed_tool_batch_members = {
+            (segment.tool_batch_id, segment.tool_call_id)
             for segment in request.assembled_context.segments
             if segment.role == "tool" and segment.tool_call_id is not None and (segment.metadata or {}).get("source") == "replayed_conversation"
         }
         tool_feedback_lines: list[str] = []
         for result in request.assembled_context.tool_results:
-            if result.tool_call_id in replayed_tool_call_ids:
+            if (result.tool_batch_id, result.tool_call_id) in replayed_tool_batch_members:
                 continue
             arguments = self._visible_arguments(result.tool_name, dict(result.arguments))
             output = result.output
@@ -767,7 +795,7 @@ class OpenAIChatCompletionsProvider:
 
         The SDK tolerates event shapes it cannot model, so a non-object event (e.g. a
         JSON array) reaches the transport as a non-mapping and is re-typed here rather
-        than reported as an unclassified transient failure.
+        than being reported as a retryable network failure; it is a non-retryable malformed provider stream.
         """
         try:
             return OpenAIChatCompletionsProvider._response_payload(value)
@@ -781,41 +809,67 @@ class OpenAIChatCompletionsProvider:
         if isinstance(exc, OpenAITransportError):
             factory = provider_execution_error_from_stream_payload if source == "stream" else provider_execution_error_from_api_payload
             return factory(provider_name=provider_name, model_name=model_name, payload=exc.payload)
-        message = redact_provider_error_message(str(exc)) or "provider request failed"
-        details = redact_provider_error_details({"exception_type": type(exc).__name__, "exception_message": message})
+        known_network_failure = isinstance(exc, (httpx2.TransportError, OpenAIAPITimeoutError, OpenAIAPIConnectionError))
         return ProviderExecutionError(
-            kind="transient_failure",
+            kind="provider_error",
             provider_name=provider_name,
             model_name=model_name,
-            message=message,
-            retryable=True,
+            message="provider request failed",
+            retryable=known_network_failure,
             fallback_allowed=True,
-            details=details,
+            details={
+                "source": source,
+                "exception_type": type(exc).__name__,
+                **({"network_failure": True} if known_network_failure else {}),
+            },
         )
 
     @staticmethod
-    def _tool_calls(message: Mapping[str, object], reverse: Mapping[str, str]) -> tuple[ToolCall, ...]:
+    def _tool_calls(message: Mapping[str, object], reverse: Mapping[str, str], *, provider_name: str, model_name: str) -> tuple[ToolCall, ...]:
         raw_calls = message.get("tool_calls")
-        if not isinstance(raw_calls, list):
+        if raw_calls is None:
             return ()
+        if not isinstance(raw_calls, list):
+            raise ProviderExecutionError(
+                kind="provider_error",
+                provider_name=provider_name,
+                model_name=model_name,
+                message="provider returned malformed tool calls",
+                retryable=False,
+                fallback_allowed=True,
+                details={"source": "api", "reason": "malformed_tool_calls"},
+            )
         parsed: list[ToolCall] = []
         for index, item in enumerate(raw_calls):
             if not isinstance(item, Mapping) or not isinstance(item.get("function"), Mapping):
-                continue
+                raise ProviderExecutionError(
+                    kind="provider_error",
+                    provider_name=provider_name,
+                    model_name=model_name,
+                    message="provider returned a malformed tool call",
+                    retryable=False,
+                    fallback_allowed=True,
+                    details={"source": "api", "reason": "malformed_tool_call"},
+                )
             function = item["function"]
-            if not isinstance(function.get("name"), str):
-                continue
-            provider_name = function["name"]
-            runtime_name = reverse.get(provider_name, provider_name)
+            if not isinstance(function.get("name"), str) or not function["name"]:
+                raise ProviderExecutionError(
+                    kind="provider_error",
+                    provider_name=provider_name,
+                    model_name=model_name,
+                    message="provider returned a malformed tool call",
+                    retryable=False,
+                    fallback_allowed=True,
+                    details={"source": "api", "reason": "malformed_tool_call"},
+                )
+            provider_tool_name = function["name"]
+            runtime_name = reverse.get(provider_tool_name, provider_tool_name)
             explicit_id = item.get("id") if isinstance(item.get("id"), str) else None
-            # A tool name is not a call id: synthesise an ordinal, as the
-            # Anthropic and Google adapters do.
-            fallback = f"tool_call_{index + 1}"
             parsed.append(
                 ToolCall(
                     tool_name=runtime_name,
                     arguments=_parse_arguments(function.get("arguments")),
-                    tool_call_id=normalize_tool_call_id(explicit_id, fallback=fallback),
+                    tool_call_id=normalize_tool_call_id(explicit_id, fallback=f"tool_call_{index + 1}"),
                 )
             )
         return tuple(parsed)
@@ -832,20 +886,53 @@ class OpenAIChatCompletionsProvider:
             metadata = _response_metadata(response_payload)
             choices = response_payload.get("choices")
             if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
-                return ProviderTurnResult(output="", usage=usage, metadata=metadata)
+                raise ProviderExecutionError(
+                    kind="provider_error",
+                    provider_name=provider_name,
+                    model_name=model_name,
+                    message="provider response contained no valid choices",
+                    retryable=False,
+                    fallback_allowed=True,
+                    details={"source": "api", "reason": "malformed_response"},
+                )
             choice = choices[0]
             message = choice.get("message")
-            message_mapping = message if isinstance(message, Mapping) else {}
+            if not isinstance(message, Mapping):
+                raise ProviderExecutionError(
+                    kind="provider_error",
+                    provider_name=provider_name,
+                    model_name=model_name,
+                    message="provider response choice contained no valid message",
+                    retryable=False,
+                    fallback_allowed=True,
+                    details={"source": "api", "reason": "malformed_response"},
+                )
+            message_mapping = message
             content = message_mapping.get("content")
+            if content is not None and not isinstance(content, str):
+                raise ProviderExecutionError(
+                    kind="provider_error",
+                    provider_name=provider_name,
+                    model_name=model_name,
+                    message="provider response message content was not text",
+                    retryable=False,
+                    fallback_allowed=True,
+                    details={"source": "api", "reason": "malformed_response"},
+                )
             raw_finish_reason = choice.get("finish_reason")
             done_reason = _done_reason(raw_finish_reason)
             raw_token = _raw_finish_reason(raw_finish_reason)
-            if done_reason in {"error", "unknown"} and raw_token is not None:
+            if done_reason == "error" and raw_token is not None:
                 _raise_finish_reason_error(raw_token, provider_name=provider_name, model_name=model_name)
             if raw_token is None:
                 metadata["finish_reason_reported"] = False
             return ProviderTurnResult(
-                tool_calls=self._tool_calls(message_mapping, self._tool_maps(request)[1]),
+                tool_calls=self._tool_calls(
+                    message_mapping,
+                    self._tool_maps(request)[1],
+                    provider_name=provider_name,
+                    model_name=model_name,
+                ),
                 output=content if isinstance(content, str) else "",
                 reasoning=_reasoning(message_mapping),
                 usage=usage,
@@ -872,7 +959,7 @@ class OpenAIChatCompletionsProvider:
                 raise ValueError("provider stream transport did not return an iterator")
             latest_usage: ProviderTokenUsage | None = None
             metadata: dict[str, object] = {}
-            done_reason = "stop"
+            done_reason = "unknown"
             finish_reason_reported = False
             raw_finish_reason_token: str | None = None
             accumulators: dict[int, _ToolAccumulator] = {}
@@ -913,23 +1000,104 @@ class OpenAIChatCompletionsProvider:
                 if isinstance(content, str) and content:
                     yield ProviderStreamEvent(kind="delta", channel="text", text=content)
                 raw_tool_calls = delta.get("tool_calls")
-                if not isinstance(raw_tool_calls, list):
+                if raw_tool_calls is None:
                     continue
+                if not isinstance(raw_tool_calls, list):
+                    raise ProviderExecutionError(
+                        kind="provider_error",
+                        provider_name=provider_name,
+                        model_name=model_name,
+                        message="provider stream tool_calls was not a list",
+                        retryable=False,
+                        fallback_allowed=True,
+                        details={"source": "stream", "reason": "malformed_tool_calls"},
+                    )
                 for raw_tool in raw_tool_calls:
                     if not isinstance(raw_tool, Mapping):
-                        continue
-                    index = raw_tool.get("index") if isinstance(raw_tool.get("index"), int) else 0
+                        raise ProviderExecutionError(
+                            kind="provider_error",
+                            provider_name=provider_name,
+                            model_name=model_name,
+                            message="provider stream tool call was not an object",
+                            retryable=False,
+                            fallback_allowed=True,
+                            details={"source": "stream", "reason": "malformed_tool_call"},
+                        )
+                    raw_index = raw_tool.get("index")
+                    if raw_index is not None and (not isinstance(raw_index, int) or isinstance(raw_index, bool)):
+                        raise ProviderExecutionError(
+                            kind="provider_error",
+                            provider_name=provider_name,
+                            model_name=model_name,
+                            message="provider stream tool call index was malformed",
+                            retryable=False,
+                            fallback_allowed=True,
+                            details={"source": "stream", "reason": "malformed_tool_call"},
+                        )
+                    index = raw_index if isinstance(raw_index, int) else 0
                     previous = accumulators.get(index, _ToolAccumulator())
                     raw_id = raw_tool.get("id")
+                    if raw_id is not None and (not isinstance(raw_id, str) or not raw_id):
+                        raise ProviderExecutionError(
+                            kind="provider_error",
+                            provider_name=provider_name,
+                            model_name=model_name,
+                            message="provider stream tool call id was malformed",
+                            retryable=False,
+                            fallback_allowed=True,
+                            details={"source": "stream", "reason": "malformed_tool_call"},
+                        )
+                    if isinstance(raw_id, str) and previous.tool_call_id not in (None, raw_id):
+                        raise ProviderExecutionError(
+                            kind="provider_error",
+                            provider_name=provider_name,
+                            model_name=model_name,
+                            message="provider stream changed a tool call id",
+                            retryable=False,
+                            fallback_allowed=True,
+                            details={"source": "stream", "reason": "conflicting_tool_call_id"},
+                        )
                     tool_id = normalize_tool_call_id(raw_id if isinstance(raw_id, str) else previous.tool_call_id, fallback=f"tool_call_{index + 1}")
                     function = raw_tool.get("function")
+                    if function is not None and not isinstance(function, Mapping):
+                        raise ProviderExecutionError(
+                            kind="provider_error",
+                            provider_name=provider_name,
+                            model_name=model_name,
+                            message="provider stream function payload was malformed",
+                            retryable=False,
+                            fallback_allowed=True,
+                            details={"source": "stream", "reason": "malformed_tool_call"},
+                        )
                     name = previous.tool_name
                     fragment: str | None = None
                     if isinstance(function, Mapping):
-                        if isinstance(function.get("name"), str):
-                            name = function["name"]
-                        if isinstance(function.get("arguments"), str):
-                            fragment = function["arguments"]
+                        raw_name = function.get("name")
+                        if raw_name is not None and (not isinstance(raw_name, str) or not raw_name):
+                            raise ProviderExecutionError(
+                                kind="provider_error",
+                                provider_name=provider_name,
+                                model_name=model_name,
+                                message="provider stream function name was malformed",
+                                retryable=False,
+                                fallback_allowed=True,
+                                details={"source": "stream", "reason": "malformed_tool_call"},
+                            )
+                        if isinstance(raw_name, str):
+                            name = raw_name
+                        raw_arguments = function.get("arguments")
+                        if raw_arguments is not None and not isinstance(raw_arguments, str):
+                            raise ProviderExecutionError(
+                                kind="provider_error",
+                                provider_name=provider_name,
+                                model_name=model_name,
+                                message="provider stream function arguments were malformed",
+                                retryable=False,
+                                fallback_allowed=True,
+                                details={"source": "stream", "reason": "malformed_tool_call_arguments"},
+                            )
+                        if isinstance(raw_arguments, str):
+                            fragment = raw_arguments
                     complete_first = False
                     if fragment and not previous.fragments:
                         try:
@@ -964,37 +1132,56 @@ class OpenAIChatCompletionsProvider:
                     )
         except Exception as exc:
             raise self._map_exception(exc, provider_name=provider_name, model_name=model_name, source="stream") from exc
-        reverse = self._tool_maps(request)[1]
+        if not finish_reason_reported:
+            raise ProviderExecutionError(
+                kind="provider_error",
+                provider_name=provider_name,
+                model_name=model_name,
+                message="provider stream ended without a finish_reason",
+                retryable=False,
+                fallback_allowed=True,
+                details={"source": "stream", "reason": "missing_terminal_event"},
+            )
         completed: list[tuple[int, _ToolAccumulator, dict[str, object], str]] = []
         for index, accumulator in sorted(accumulators.items()):
             if accumulator.tool_name is None:
-                continue
+                raise ProviderExecutionError(
+                    kind="provider_error",
+                    provider_name=provider_name,
+                    model_name=model_name,
+                    message="provider stream contained a malformed tool call",
+                    retryable=False,
+                    fallback_allowed=True,
+                    details={"source": "stream", "reason": "malformed_tool_call"},
+                )
             try:
                 parsed = json.loads(accumulator.arguments)
             except json.JSONDecodeError as exc:
                 raise ProviderExecutionError(
-                    kind="stream_tool_feedback_shape",
+                    kind="provider_error",
                     provider_name=provider_name,
                     model_name=model_name,
-                    message="provider stream ended with incomplete tool-call arguments",
+                    message="provider stream ended with malformed tool-call arguments",
                     retryable=False,
                     fallback_allowed=True,
-                    details={"tool_name": accumulator.tool_name, "tool_call_id": accumulator.tool_call_id},
+                    details={"source": "stream", "reason": "malformed_tool_call_arguments"},
                 ) from exc
             if not isinstance(parsed, dict):
                 raise ProviderExecutionError(
-                    kind="stream_tool_feedback_shape",
+                    kind="provider_error",
                     provider_name=provider_name,
                     model_name=model_name,
                     message="provider stream tool-call arguments were not an object",
                     retryable=False,
                     fallback_allowed=True,
-                    details={"tool_name": accumulator.tool_name, "tool_call_id": accumulator.tool_call_id},
+                    details={"source": "stream", "reason": "malformed_tool_call_arguments"},
                 )
             runtime_name = reverse.get(accumulator.tool_name, accumulator.tool_name)
             completed.append((index, accumulator, parsed, runtime_name))
         if raw_finish_reason_token is not None:
-            _raise_finish_reason_error(raw_finish_reason_token, provider_name=provider_name, model_name=model_name)
+            if done_reason == "error":
+                _raise_finish_reason_error(raw_finish_reason_token, provider_name=provider_name, model_name=model_name)
+            metadata["finish_reason_raw"] = raw_finish_reason_token
         if any(accumulator.explicit_streaming for _index, accumulator, _parsed, _name in completed):
             for index, accumulator, parsed, runtime_name in completed:
                 if accumulator.explicit_streaming:

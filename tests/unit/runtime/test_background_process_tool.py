@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from voidcode.core.tool_context import ToolContext
-from voidcode.core.turns import FinalTurn, ToolTurn
+from voidcode.core.turns import FinalTurn, ModelTurnFact, ToolTurn, TurnRequest
 from voidcode.runtime.background.process import BackgroundProcessManager
 from voidcode.runtime.config.loading import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import RuntimeRequest
@@ -271,14 +271,34 @@ def test_native_process_send_reports_closed_stdin(tmp_path: Path, monkeypatch: p
         manager.stop_all()
 
 
-class _StartProcessGraph:
+def test_stop_reports_failure_when_termination_is_unconfirmed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    manager = BackgroundProcessManager(workspace=tmp_path)
+    runtime = _Runtime(manager)
+    context = ToolContext(workspace=tmp_path, session_id="owner")
+    started = _start(runtime, context, "import time\nprint('READY', flush=True)\ntime.sleep(60)\n")
+    process_id = _body(started).process_id
+    state = manager.load(process_id, workspace=tmp_path, owner_session_id="owner", enforce_owner=True)
+    assert state is not None
+    monkeypatch.setattr("voidcode.runtime.background.process._terminate_background_process_group", lambda _process: False)
+    try:
+        with pytest.raises(ValueError, match="termination is unconfirmed"):
+            _invoke(runtime, context, op="stop", process_id=process_id)
+    finally:
+        state.process.kill()
+        state.process.wait()
+        manager.stop_all()
+
+
+class _StartProcessProducer:
     def __init__(self, command: str) -> None:
         self.command = command
 
-    def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> FinalTurn | ToolTurn:
-        _ = request, session
+    def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: object) -> FinalTurn | ToolTurn:
+        _ = session
+        fact = ModelTurnFact(request.run_step, "deterministic", request.prompt)
         if tool_results:
-            return FinalTurn(output="started")
+            return FinalTurn(output="started", facts=(fact,))
         return ToolTurn(
             calls=(
                 ToolCall(
@@ -290,15 +310,16 @@ class _StartProcessGraph:
                         "ready_timeout": 5,
                     },
                 ),
-            )
+            ),
+            facts=(fact,),
         )
 
 
 def _service_runtime(workspace: Path, command: str) -> VoidCodeRuntime:
     return VoidCodeRuntime(
         workspace=workspace,
-        turn_producer=_StartProcessGraph(command),
-        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), execution_engine="deterministic"),
+        turn_producer=_StartProcessProducer(command),
+        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False)),
         permission_policy=PermissionPolicy(mode="yolo"),
     )
 
@@ -313,12 +334,12 @@ def _proc_state(pid: int) -> str | None:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="uses Linux /proc process state")
-def test_runtime_close_reaps_owned_process_group_and_restart_does_not_reattach(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_explicit_stop_reaps_owned_process_group_and_restart_does_not_reattach(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.delenv("VOIDCODE_DB_PATH", raising=False)
     command = _command(
         "import os, subprocess, sys, time\n"
-        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)'])\n"
         "print(f'PARENT_PID={os.getpid()}', flush=True)\n"
         "print(f'CHILD_PID={child.pid}', flush=True)\n"
         "print('READY', flush=True)\n"
@@ -339,6 +360,12 @@ def test_runtime_close_reaps_owned_process_group_and_restart_does_not_reattach(t
         parent_pid = int(next(line.removeprefix("PARENT_PID=") for line in output.splitlines() if line.startswith("PARENT_PID=")))
         child_pid = int(next(line.removeprefix("CHILD_PID=") for line in output.splitlines() if line.startswith("CHILD_PID=")))
         process_id = states[0].process_id
+        stopped = BackgroundProcessCommand(runtime=runtime).invoke(
+            ToolCall(tool_name="background_process", arguments={"op": "stop", "process_id": process_id}),
+            context=ToolContext(workspace=tmp_path, session_id=session_id),
+        )
+        assert isinstance(stopped, ToolSuccess)
+        assert _body(stopped).running is False
         runtime.__exit__(None, None, None)
         closed = True
         for pid in (parent_pid, child_pid):

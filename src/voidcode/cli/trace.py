@@ -60,18 +60,18 @@ class TracePrinter:
             self._close_open_streams()
             print(f"\n{notice}", flush=True)
             return
-        if event.event_type == "graph.model_turn":
+        if event.event_type == "core.model_turn":
             self._close_open_streams()
             provider = _trace_string(payload.get("provider"))
             model = _trace_string(payload.get("model"))
-            turn = payload.get("turn")
+            turn = payload.get("run_step")
             label = " · ".join(part for part in (provider, model) if part)
             if label:
                 print(f"\n● Model turn {turn}: {label}", flush=True)
             else:
                 print(f"\n● Model turn {turn}", flush=True)
             return
-        if event.event_type == "graph.provider_stream":
+        if event.event_type == "core.provider_stream":
             channel = _trace_string(payload.get("channel"))
             if channel == "text" and payload.get("kind") in {
                 "delta",
@@ -92,7 +92,7 @@ class TracePrinter:
             if text:
                 self._print_reasoning_text(text)
             return
-        if event.event_type == "graph.tool_request_created":
+        if event.event_type == "core.tool_request_created":
             self._close_open_streams()
             _print_trace_tool_request(payload)
             return

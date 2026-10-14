@@ -8,7 +8,7 @@ from typing import Literal
 
 from ...tools.contracts import TerminalYield, ToolSuccess
 from ..contracts import RuntimeResponse
-from ..events import GRAPH_RESPONSE_READY, RUNTIME_TOOL_COMPLETED, EventEnvelope
+from ..events import CORE_RESPONSE_READY, RUNTIME_TOOL_COMPLETED, EventEnvelope
 from ..fact_codec import reported_call_from_event
 
 
@@ -37,7 +37,7 @@ def child_completion_evidence(events: Sequence[EventEnvelope]) -> ChildCompletio
                 handoff = control
                 response_ready = False
                 continue
-        if handoff is not None and event.event_type == GRAPH_RESPONSE_READY:
+        if handoff is not None and event.event_type == CORE_RESPONSE_READY:
             response_ready = True
     return ChildCompletionEvidence(handoff=handoff, response_ready=response_ready)
 
@@ -49,17 +49,14 @@ def _child_terminal_decision(
 ) -> Literal["completed", "failed"] | None:
     if session_status == "completed":
         # A sealed child row is not sufficient proof: old sessions (or a
-        # graph that emitted plain output) may be completed without the
+        # producer that returned plain output) may be completed without the
         # new terminal yield. Surface that mismatch as a deterministic
         # failure rather than silently delivering a false handoff.
         return "completed" if evidence.completed else "failed"
     if session_status == "failed":
         return "failed"
-    if session_status == "interrupted" and evidence.completed:
-        return "completed"
-    # ``running`` (permission-denied tail) maps to ``failed``.
-    if session_status == "running":
-        return "failed"
+    if session_status in {"interrupted", "running"}:
+        return "completed" if evidence.completed else None
     return None
 
 

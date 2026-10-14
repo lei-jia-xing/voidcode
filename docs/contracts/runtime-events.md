@@ -9,8 +9,8 @@
 ## 状态
 
 此模式记录了当前 MVP 的运行时事件契约。它有意地比任何未来的多角色 / multi-agent 协议更窄。
-确定性的回退序列（fallback sequence）对于当前运行时仍然是规范的。未来的图模式（graph modes）可能会在现有阶段之间添加有序事件，而不会改变当前的回退行为。
-对于全新运行和审批后的恢复运行，运行时会将图端的终结事件重新编号为活跃的运行时序列，从而避免图端固定的序列值与插入的运行时事件发生冲突。
+确定性的回退序列（fallback sequence）对于当前运行时仍然是规范的。未来的执行模式可能会在现有阶段之间添加有序事件，而不会改变当前的回退行为。
+对于全新运行和审批后的恢复运行，运行时会将 turn engine 发出的终结 facts 重新编号为活跃的运行时序列，从而避免 turn-local 固定序列值与插入的运行时事件发生冲突。
 
 ## 规范信封
 
@@ -21,7 +21,7 @@ EventEnvelope(
     session_id: str,
     sequence: int,
     event_type: str,
-    source: Literal["runtime", "graph", "tool"],
+    source: Literal["runtime", "core", "tool"],
     payload: dict[str, object],
 )
 ```
@@ -31,7 +31,7 @@ EventEnvelope(
 - `session_id`：必填；标识所属会话
 - `sequence`：必填；在会话响应或重放中单调递增
 - `event_type`：必填；事件类型的字符串标识符
-- `source`：必填；`runtime`、`graph` 或 `tool` 之一
+- `source`：必填；`runtime`、`core` 或 `tool` 之一
 - `payload`：必填字段；可以是一个空对象
 
 ## MVP 不变量
@@ -44,26 +44,26 @@ EventEnvelope(
 
 ## 当前稳定事件词汇表
 
-以下事件当前属于稳定的运行时事件契约，与 `src/voidcode/runtime/events.py` 的 `KnownEventType`（即 `KNOWN_EVENT_TYPES`，`EMITTED_EVENT_TYPES` 与 `RUNTIME_EVENT_TYPES` 的无交并集）一致。它们覆盖当前 deterministic 与 provider 两条 execution engine 路径：
+以下事件当前属于稳定的运行时事件契约，与 `src/voidcode/runtime/events.py` 的 `KnownEventType`（即 `KNOWN_EVENT_TYPES`，`EMITTED_EVENT_TYPES` 与 `RUNTIME_EVENT_TYPES` 的无交并集）一致。它们覆盖当前 provider-backed runtime path；测试注入的 producers 共用同一事件契约：
 
 - 请求与技能：`runtime.request_received`、`runtime.skills_loaded`、`runtime.skills_applied`、`runtime.hook_presets_loaded`、`command.resolved`。当请求的 prompt 是斜杠命令时，运行时在解析命令后于流前导阶段持久化 `command.resolved`，payload 携带 `name`、`source`、`arguments`、`raw_arguments`、`original_prompt` 与 `rendered_prompt`
 - provider 治理：`runtime.provider_fallback`、`runtime.provider_transient_retry`、`runtime.provider_context_policy`。当被重启的那次尝试已经向客户端流出可见内容（assistant/reasoning 文本、tool-call 预览）时，事件 payload 增加 `discarded_streamed_output: true`，客户端据此丢弃该次尝试的实时投影（实时投影不进入持久化 transcript）；未流出任何内容的尝试不带此字段
-- provider 终态语义：无法识别的 `done_reason`（含缺失原因）按已完成的 stop 等价终态处理；`error` / `cancelled` 仍为失败终态
-- provider 终态诊断：`graph.response_ready` payload 记录 `finish_reason`（规范终态）与 `finish_reason_reported`。`finish_reason_reported` 为 `false` 表示上游声明终态但未给出可读取的原因，此时运行时以 `warning` 记录，使被截断但仍"正常结束"的流可被 `sessions debug` 之类检查发现；正常 `stop` 为 `true`
+- provider 终态语义：`done_reason=unknown` 表示 provider 已结束本次 model turn，但原因缺失或无法识别；这不证明用户回合或 session 已完成。`error` / `cancelled` 仍是失败终态
+- provider 终态诊断：`core.response_ready` payload 记录 `finish_reason`（规范终态）与 `finish_reason_reported`。缺失/空原因使其为 `unknown` 并以 `warning` 记录；可识别但未映射的原始 token 仍保留 `finish_reason_reported=true` 并只记录 `debug`
 - ACP：`runtime.acp_connected`、`runtime.acp_disconnected`、`runtime.acp_failed`、`runtime.acp_delegated_lifecycle`
 - LSP：`runtime.lsp_server_started`、`runtime.lsp_server_reused`、`runtime.lsp_server_startup_rejected`、`runtime.lsp_server_stopped`、`runtime.lsp_server_failed`
 - MCP：`runtime.mcp_server_started`、`runtime.mcp_server_reused`、`runtime.mcp_server_acquired`、`runtime.mcp_server_stopped`、`runtime.mcp_server_failed`
-- graph 阶段：`graph.loop_step`、`graph.model_turn`、`graph.tool_request_created`
+- core 阶段：`core.loop_step`、`core.model_turn`、`core.tool_request_created`
 - 工具执行边界：`runtime.tool_lookup_succeeded`、`runtime.tool_started`、`runtime.tool_progress`、`runtime.tool_completed`、`runtime.tool_timeout`、`runtime.tool_input_processed`、`runtime.tool_hook_pre`、`runtime.tool_hook_post`
 - 权限 / 审批 / 提问：`runtime.permission_resolved`、`runtime.approval_requested`、`runtime.approval_resolved`、`runtime.question_requested`、`runtime.question_answered`
-- 终结：`graph.response_ready`、`runtime.failed`
+- 终结：`core.response_ready`、`runtime.failed`
 
 Runtime hook surface 与其事件名称的内部对应关系由
 `src/voidcode/hook/surfaces.py::HOOK_SURFACE_DESCRIPTORS` 统一描述；该 catalog
 不改变本节既有事件名称、source、payload 或序列规则。
 
-在轮次中发出的所有事件（包括来自图端的事件）都会由运行时重新编号，变为每次响应或重放中单一的、单调递增的序列。
-这确保了图端局部（graph-local）的序列值在跨审批恢复运行时，不会与运行时插入的事件发生冲突。
+在 turn 中发出的所有事件（包括 turn-local facts）都会由运行时重新编号，变为每次响应或重放中单一的、单调递增的序列。
+这确保了 turn-local sequence values 在跨审批恢复运行时，不会与运行时插入的事件发生冲突。
 
 ## RuntimeEventType 扩展事件
 
@@ -71,7 +71,7 @@ Runtime hook surface 与其事件名称的内部对应关系由
 
 - 会话：`runtime.session_started`、`runtime.session_ended`、`runtime.session_idle`
 - 技能绑定：`runtime.skill_loaded`、`runtime.skills_binding_mismatch`
-- 任务状态与推理：`runtime.todo_updated`、`runtime.reasoning_part`、`runtime.reasoning_diagnostic`、`runtime.turn_progress`、`runtime.stuck_detected`
+- 任务状态与推理：`runtime.todo_updated`、`runtime.reasoning_part`、`runtime.reasoning_diagnostic`、`runtime.turn_progress`
 - 策略物化：无独立事件——它是 `runtime.request_received` payload 的 `runtime_policy.materialization` 嵌套标记（`kind == "runtime_policy_materialized"`），见下文 `runtime.request_received` 一节
 - 上下文变换：`runtime.context_compacted`、`runtime.context_transform_applied`（正式事件，由 `run_loop.py` 发射；payload 见下文）
 - 每轮提醒：`runtime.reminder_injected`（terminal 回合发出的 reminder 已通过 per-call 通道注入；payload 见下文）
@@ -117,17 +117,17 @@ Runtime hook surface 与其事件名称的内部对应关系由
 2. `runtime.skills_loaded`
 3. `runtime.acp_connected`（仅在 ACP 已启用且 startup/handshake 成功时出现）
 4. `runtime.skills_applied`（仅在本次 run 存在已启用 skill 时出现）
-5. `graph.loop_step`
-6. `graph.model_turn`
-7. `graph.tool_request_created`
+5. `core.loop_step`
+6. `core.model_turn`
+7. `core.tool_request_created`
 8. `runtime.tool_lookup_succeeded`
 9. 对于 `ask` 策略发出 `runtime.approval_requested`；或者对于 `allow`/`deny` 策略发出 `runtime.approval_resolved`；或者对于只读操作发出 `runtime.permission_resolved`
 10. `runtime.approval_resolved`（仅在 `ask` 后恢复运行时）
 11. `runtime.tool_started`
 12. `runtime.tool_progress`（仅支持增量输出的工具在执行中可发出 0 次或多次）
 13. `runtime.tool_completed`
-14. `graph.loop_step`
-15. `graph.response_ready`
+14. `core.loop_step`
+15. `core.response_ready`
 16. `runtime.acp_disconnected`（仅在 ACP 已启用且本次 run 结束时出现）
 
 当前已实现的最小 hooks 路径会在非只读工具的成功执行周围插入：
@@ -239,7 +239,6 @@ Runtime hook surface 与其事件名称的内部对应关系由
   - `question_request_id`
   - `routing`
   - `selected_preset`
-  - `selected_execution_engine`
   - `lifecycle_status`
   - `approval_blocked`
   - `result_available`
@@ -276,10 +275,10 @@ Runtime hook surface 与其事件名称的内部对应关系由
 - source: `runtime`
 - 当前 payload:
   - `mode: str`：`prune`（本地有界裁剪后重试同一次调用）或 `promote`（本地裁剪已用尽/不可行，改用既有 fallback 链升级）
-  - `window_tokens_before: int | None`：失败模型的有效输入窗口（catalog `max_input_tokens`，缺失且不可比较时为 null）
-  - `window_tokens_after: int | None`：被选中的升级 target 的有效窗口（未选出候选时为 null）
-  - `candidate_count: int`：参与窗口比较的链上候选数
-  - `promotion_reason: str`：`larger_window`（选到严格更大的窗口）、`no_larger_candidate`（无严格更大的候选，保持链顺序）或 `unavailable`（不可 fallback / 链已穷尽）
+- `window_tokens_before: int | None`：失败模型显式报告的输入 token cap（catalog `max_input_tokens`；缺失时为 null）
+- `window_tokens_after: int | None`：选中 target 显式报告的输入 cap（无 selection 或未知时为 null）
+- `candidate_count: int`：检查过的 fallback 链候选数；未知 cap 不参与大小比较，但仍计入链顺序检查
+- `promotion_reason: str`：`larger_window`（选到已知且严格更大的 cap）、`no_known_larger_candidate`（无法证明有更大的已知 cap，仍可能有未知候选，保持链顺序）或 `unavailable`（不可 fallback / 链已穷尽）
   - `outcome: str`（仅 `prune`）：`retry`（已重试）或 `unavailable`（无可裁剪内容，直接进入升级/失败）
   - `reason: str`：触发 kind，当前为 `context_limit`
   - `provider: str`、`model: str`：触发恢复的 provider/model
@@ -287,7 +286,7 @@ Runtime hook surface 与其事件名称的内部对应关系由
   - `usage_tokens_before` / `usage_tokens_after` 与 `measured_anchor_tokens` / `estimated_delta_tokens`：与 `runtime.context_compacted` 同义（`max(锚, 全量估算)`，inexact；after 为裁剪后重新组装的实际 segments 数字），并带 `usage_tokens_estimated`（估算侧胜出时 true）
   - `compaction_reason: str | None`：该次恢复组装的 compaction reason（含 `compaction_unsized` 等边界）
   - `provider_error_details: object`（可选，已 redact）
-- 升级是**窗口感知**的：候选仍来自既有 fallback 解析（同一 target 链、同一事件形状），但 `context_limit` lane 会按解析出的有效窗口（catalog `max_input_tokens`）跳过同窗/更小的候选，只挑**严格更大**的那个；没有严格更大的候选时保持既有链顺序，并在 `promotion_reason` 里如实标注 `no_larger_candidate`，不把「升了级」说成成功。该偏好只属于 `context_limit` lane，其它 provider 错误的 fallback 顺序不变。
+- 升级只按明确的 catalog `max_input_tokens` 比较；aggregate `context_window` 和 `max_output_tokens` 都不是 input cap，未知候选不可声称更小或更大。找不到已知更大 cap 时保留既有链顺序，并用 `no_known_larger_candidate` 如实标记；该偏好只属于 `context_limit` lane，其它 provider 错误的 fallback 顺序不变。
 - 恢复语义：`context_limit` 是 runtime-owned lane（解析层不再硬判终态）。每个 turn 最多一次本地裁剪重试、最多一次 fallback 升级；`mode=promote` 之后若仍失败，以 `runtime.failed`（payload 含 `provider_error_kind=context_limit`、`resumable=true`、`context_limit_recovery`、`guidance`）结束，且该失败保持可 resume。
 
 ### `runtime.reminder_injected`
@@ -301,32 +300,36 @@ Runtime hook surface 与其事件名称的内部对应关系由
 - 该事件表示运行时在一个 terminal assistant 回合（无待执行 tool call）通过临时 provider-context 尾部注入了一条提醒：提醒只存在于本次 provider context assembly，不写入 SQLite transcript。提醒文本本身不是持久化 truth，客户端不得把它当作会话历史或用户输入回显。
 - 触发点、触发阈值、每 cycle 预算、抑制条件与计数器持久化（含 `reminder_type = "todo_mid_run"` 的 mid-run nudge，对齐 upstream pi-coding-agent 的 todo tracker）由 `docs/contracts/runtime-config.md` 的 `reminders` 节定义，该节是这些语义的唯一 owner；本条只描述本事件的 payload 与「运行时注入了一条提醒」这一事实。
 
-### `graph.loop_step`
-- source: `graph`
+### `core.loop_step`
+- source: `core`
 - 当前稳定的 payload 字段：
   - `step: int`
   - `phase: str`（当前为 `plan` 或 `finalize`）
 
-### `graph.model_turn`
-- source: `graph`
+### `core.model_turn`
+- source: `core`
 - 当前稳定的 payload 字段：
-  - `turn: int`
+  - `run_step: int`（runtime run-loop step；不同于用户回合 `SessionState.turn`）
   - `mode: str`
   - `prompt: str`
-- 当前可追加的 payload 字段：
+- provider model turn 还有可选字段：
   - `provider: str`
   - `model: str`
-  - `streaming: bool` (如果为 true，reasoning 通道内容以 `runtime.reasoning_part` 事件表达；原始 provider stream 分片是 live-only 传输细节，不持久化、不属于 `KnownEventType`)
+  - `streaming: bool`
+  - `tool_batch_calls` / `tool_batch_reasoning`：对应 tool turn 的完整原始 batch manifest；调用参数与 reasoning 遵循既有脱敏和不可恢复策略。
 
-> 说明：`graph.provider_stream` 是 live-only 的客户端传输细节（运行时将其转换为 `runtime.reasoning_part` 后才持久化），它不是 `KnownEventType` 成员，不属于本词汇表。
+已持久化的 `core.model_turn` event envelope 是其 provider 原始 native tool batch 的唯一身份来源：runtime 先持久化 `ModelTurnFact` 及其 batch manifest，再把该 envelope 派生的 opaque batch identity 交回 core 提交候选 batch，并贯穿 `TurnBatch`、`ContextSegment`、`CallSeed` 与私有 checkpoint。原始 `tool_call_id` 仅在所属 batch 内唯一；replay、结果配对与 retained-result 去重必须按 `(batch identity, original tool_call_id)` 处理，不能跨 batch 按原始 ID 全局去重。没有权威 model-turn manifest 或未完成完整请求/结果配对的 batch 不进入重放历史。
+> `core.provider_stream` 是 live-only 的客户端传输细节（reasoning 内容转换为 `runtime.reasoning_part` 后才持久化），不是 `KnownEventType` 成员。
+ACP `session/update` 的 `toolCallId` 是 runtime 生成的活动身份，按 session、model-turn 和 ordinal 区分；同一个 provider 原始 `tool_call_id` 在不同 batch 重用时也必须对应不同 ACP 活动。客户端用返回的 `toolCallId` 关联后续 `tool_call_update`。原始 ID 留在 provider wire、batch manifest 与 provenance 中，不作为 ACP 活动 ID 转发。
 
 ### live-only 传输细节（非词汇表成员）
 
-`graph.provider_stream` 分片只在 provider streaming 开启时向客户端实时投射，不进入持久化 transcript，也不属于 `KnownEventType`。reasoning 通道内容以 `runtime.reasoning_part` 事件表达与持久化（见 `runtime_reasoning_part_from_provider_stream`）。
+`core.provider_stream` 分片只在 provider streaming 开启时向客户端实时投射，不进入持久化 transcript，也不属于 `KnownEventType`。reasoning 通道内容以 `runtime.reasoning_part` 事件表达与持久化（见 `runtime_reasoning_part_from_provider_stream`）。
+持久化重放把 `runtime.reasoning_part` 恢复到对应 provider `core.model_turn` 的工具调用上下文中，供要求原始推理字段的 provider-native tool-call replay 使用；它仍是隐藏的 provider 数据，不会当作普通 assistant 文本展示。
 
 ### resume 路径的事件持久化
 
-resume / answer 路径（`src/voidcode/runtime/resume.py`）上发出的会话事件与其他路径一视同仁地写入 `session_events`，顺序为 `runtime.question_requested` → `runtime.question_answered` → 该次回答的 `runtime.tool_completed` → 后续 graph loop 事件。正常回答的 `runtime.question_answered` payload 为 `{"request_id":"…","responses":[{"header":"…","answers":["…"]}]}`；取消 payload 为 `{"request_id":"…","cancelled":true}`，两者互斥，取消不伪装成某个 response。工具报告分别使用 `question_answered` 与 `question_cancelled` typed control。重放 transcript 因而保留回答或取消真相；`sessions.resume_checkpoint_json` 的 `tool_results[].data.responses` 仍是正常回答重建 provider context 的载体，但不再是唯一载体。该 resolution 行使同一 request ID 的陈旧重答不可能发生；无匹配 pending owner/request ID 的 answer 在写入前拒绝。
+resume / answer 路径（`src/voidcode/runtime/resume.py`）上发出的会话事件与其他路径一视同仁地写入 `session_events`，顺序为 `runtime.question_requested` → `runtime.question_answered` → 该次回答的 `runtime.tool_completed` → 后续 core loop 事件。正常回答的 `runtime.question_answered` payload 为 `{"request_id":"…","responses":[{"header":"…","answers":["…"]}]}`；取消 payload 为 `{"request_id":"…","cancelled":true}`，两者互斥，取消不伪装成某个 response。工具报告分别使用 `question_answered` 与 `question_cancelled` typed control。重放 transcript 因而保留回答或取消真相；`sessions.resume_checkpoint_json` 的 `tool_results[].data.responses` 仍是正常回答重建 provider context 的载体，但不再是唯一载体。该 resolution 行使同一 request ID 的陈旧重答不可能发生；无匹配 pending owner/request ID 的 answer 在写入前拒绝。
 
 仍保持 **live-only**、不写入 `session_events` 的 resume 投影只有一个：`runtime.skills_binding_mismatch`（payload 由 `src/voidcode/runtime/skills.py` 的 `skill_binding_mismatch_payload` 计算）。它是 resume 状态迁移的投影，没有对应的持久化行；它仍是 `KnownEventType` 成员，客户端可以在实时流上看到它，但重放 transcript 里不会出现。当前 TUI/CLI/frontend 都没有渲染该事件。
 
@@ -334,8 +337,8 @@ resume / answer 路径（`src/voidcode/runtime/resume.py`）上发出的会话�
 
 客户端契约：客户端必须容忍 `runtime.skills_binding_mismatch` 从不出现在重放的 transcript 中，且不得假设每个实时流事件最终都会成为一条已存储的行。
 
-### `graph.tool_call_start` / `graph.tool_call_delta` / `graph.tool_call_end`
-- source: `graph`
+### `core.tool_call_start` / `core.tool_call_delta` / `core.tool_call_end`
+- source: `core`
 - 非写工具保持既有参数增量字段（包括 `arguments_delta`，以及 end 时的 `parsed_arguments`）。
 - `write` 与 `edit` 的 live payload 使用 `diff_preview` 作为
   参数观察的 canonical 字段，并省略原始 `arguments_delta` / `parsed_arguments`，避免
@@ -346,11 +349,11 @@ resume / answer 路径（`src/voidcode/runtime/resume.py`）上发出的会话�
   模式可使用 `paths` 与 patch 格式 diff）。失败或缺字段时保持事件生命周期并返回稳定
   `reason`，不得抛出破坏执行主循环的异常。
 - 该 preview 不写入 session truth、checkpoint 或 replay。完整的
-  `graph.tool_request_created` 可附带 `phase: "final"` 的 `diff_preview`；最终
+  `core.tool_request_created` 可附带 `phase: "final"` 的 `diff_preview`；最终
   `runtime.tool_completed` 数据仍是实际执行 diff 的权威来源。
 
-### `graph.tool_request_created`
-- source: `graph`
+### `core.tool_request_created`
+- source: `core`
 - 当前 payload:
   - `tool: str`
   - `arguments: dict[str, object]`
@@ -401,7 +404,7 @@ resume / answer 路径（`src/voidcode/runtime/resume.py`）上发出的会话�
 
 当前稳定契约中，工具相关阶段的语义边界如下：
 
-1. `graph.tool_request_created`：graph 已经决定要请求哪个工具，以及请求参数是什么。
+1. `core.tool_request_created`：core/provider 已经决定要请求哪个工具，以及请求参数是什么。
 2. `runtime.tool_lookup_succeeded`：runtime 已经把该工具名称解析到真实的 tool definition / implementation。
 3. `runtime.tool_started`：runtime 已经通过 permission 与 pre-hook 边界，真实工具执行现在开始。
 4. `runtime.tool_completed`：工具执行已经返回结果（成功或失败结果都通过该事件 payload 暴露）。

@@ -18,8 +18,8 @@ type HookPresetKind = Literal["guidance", "guard", "continuation"]
 type HookPresetEventScope = Literal[
     "runtime.request_received",
     "runtime.hook_presets_loaded",
-    "graph.model_turn",
-    "graph.tool_request_created",
+    "core.model_turn",
+    "core.tool_request_created",
     "runtime.permission_resolved",
     "runtime.tool_started",
     "runtime.tool_completed",
@@ -33,15 +33,14 @@ type HookPresetEventScope = Literal[
     "runtime.delegated_result_available",
     "runtime.todo_updated",
     "runtime.turn_progress",
-    "runtime.stuck_detected",
 ]
 type HookPresetAction = Literal["observe", "report", "cancel", "guidance"]
 
 _VALID_HOOK_PRESET_EVENT_SCOPES: tuple[HookPresetEventScope, ...] = (
     "runtime.request_received",
     "runtime.hook_presets_loaded",
-    "graph.model_turn",
-    "graph.tool_request_created",
+    "core.model_turn",
+    "core.tool_request_created",
     "runtime.permission_resolved",
     "runtime.tool_started",
     "runtime.tool_completed",
@@ -55,7 +54,6 @@ _VALID_HOOK_PRESET_EVENT_SCOPES: tuple[HookPresetEventScope, ...] = (
     "runtime.delegated_result_available",
     "runtime.todo_updated",
     "runtime.turn_progress",
-    "runtime.stuck_detected",
 )
 _VALID_HOOK_PRESET_ACTIONS: tuple[HookPresetAction, ...] = (
     "observe",
@@ -187,7 +185,7 @@ _BUILTIN_HOOK_PRESETS: Mapping[HookPresetRef, HookPreset] = MappingProxyType(
             guidance=(
                 "Follow the active agent preset exactly: preserve its responsibility boundary, tool scope, and output obligations for this run."
             ),
-            event_scopes=("runtime.request_received", "graph.model_turn"),
+            event_scopes=("runtime.request_received", "core.model_turn"),
             allowed_actions=("guidance",),
         ),
         "delegation_guard": HookPreset(
@@ -199,7 +197,7 @@ _BUILTIN_HOOK_PRESETS: Mapping[HookPresetRef, HookPreset] = MappingProxyType(
                 "presets, and never bypass runtime tool, approval, or session governance."
             ),
             event_scopes=(
-                "graph.tool_request_created",
+                "core.tool_request_created",
                 "runtime.permission_resolved",
                 "runtime.tool_started",
             ),
@@ -280,7 +278,6 @@ _BUILTIN_HOOK_PRESETS: Mapping[HookPresetRef, HookPreset] = MappingProxyType(
             event_scopes=(
                 "runtime.todo_updated",
                 "runtime.turn_progress",
-                "runtime.stuck_detected",
             ),
             allowed_actions=("observe", "report", "guidance"),
         ),

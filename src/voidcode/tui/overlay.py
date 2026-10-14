@@ -835,9 +835,9 @@ class SessionPickerOverlay(_Base):
 #: overrun the row). Anything unlisted renders its own name.
 _ENTRY_LABELS: Mapping[str, str] = {
     "runtime.request_received": "user",
-    "graph.response_ready": "assistant",
-    "graph.provider_stream": "stream",
-    "graph.tool_request_created": "tool",
+    "core.response_ready": "assistant",
+    "core.provider_stream": "stream",
+    "core.tool_request_created": "tool",
     "runtime.tool_started": "tool",
     "runtime.tool_progress": "tool",
     "runtime.tool_completed": "tool",

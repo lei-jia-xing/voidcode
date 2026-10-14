@@ -29,7 +29,8 @@ import pytest
 
 from tests.runtime_composition import create_task, save_checkpoint, save_run
 from tests.runtime_storage import repositories_for_test_store
-from voidcode.core.turns import FinalTurn, ReportedCall, ToolTurn, TurnSession
+from tests.turn_producers import model_turn_fact
+from voidcode.core.turns import FinalTurn, ReportedCall, ToolTurn, TurnRequest, TurnSession
 from voidcode.runtime.background.models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
@@ -63,15 +64,15 @@ def _completed_response(session_id: str) -> RuntimeResponse:
             EventEnvelope(
                 session_id=session_id,
                 sequence=1,
-                event_type="graph.response_ready",
-                source="graph",
+                event_type="core.response_ready",
+                source="core",
             ),
         ),
         output="done",
     )
 
 
-class _BlockingTaskGraph:
+class _BlockingTaskProducer:
     """First child blocks on an event; further children finish immediately."""
 
     def __init__(self) -> None:
@@ -153,7 +154,7 @@ def test_shutdown_terminalized_queued_task_emits_interrupted_event(
 def runtime_factory(tmp_path: Path) -> VoidCodeRuntime:
     return VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_BlockingTaskGraph(),
+        turn_producer=_BlockingTaskProducer(),
         config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False)),
     )
 
@@ -550,20 +551,21 @@ def test_drain_terminalizes_running_task_without_live_worker(tmp_path: Path) -> 
 #       yield handoff are repaired ─────────────────────────────────────────
 
 
-class _YieldChildGraph:
+class _YieldChildProducer:
     """Top-level runs finish immediately; delegated children call yield."""
 
     def produce(
         self,
-        request: Any,
+        request: TurnRequest,
         tool_results: tuple[object, ...],
         *,
         session: TurnSession,
     ) -> Any:
-        _ = request, tool_results
+        fact = model_turn_fact(request)
+        _ = tool_results
         if session.metadata.get("parent_session_id") is not None:
-            return ToolTurn(calls=(ToolCall(tool_name="yield", arguments={"summary": request.prompt}),))
-        return FinalTurn(output=request.prompt)
+            return ToolTurn(calls=(ToolCall(tool_name="yield", arguments={"summary": request.prompt}),), facts=(fact,))
+        return FinalTurn(output=request.prompt, facts=(fact,))
 
 
 def _delegated_request(prompt: str, *, parent_session_id: str = "leader-session") -> RuntimeRequest:
@@ -575,7 +577,6 @@ def _delegated_request(prompt: str, *, parent_session_id: str = "leader-session"
                 "mode": "background",
                 "subagent_type": "execute",
                 "selected_preset": "execute",
-                "selected_execution_engine": "provider",
             }
         },
     )
@@ -589,9 +590,8 @@ def _seed_unsealed_completed_child(
     parent_session_id: str,
     child_session_id: str,
 ) -> tuple[EventEnvelope, ...]:
-    """Seed a task + child whose ROW is ``interrupted`` but whose transcript
-    proves a successful ``yield`` handoff (the unsealed-seal state the run
-    loop can leave behind when its generator-driven seal is skipped)."""
+    """Seed a task + child with an unsealed row and a transcript proving a
+    successful ``yield`` handoff."""
     save_checkpoint(
         store,
         workspace=workspace,
@@ -611,6 +611,30 @@ def _seed_unsealed_completed_child(
         events=(
             ("runtime.request_received", "runtime", {"prompt": "child probe"}, None),
             (
+                "core.model_turn",
+                "core",
+                {
+                    "run_step": 1,
+                    "mode": "provider",
+                    "prompt": "child probe",
+                    "provider": "test",
+                    "model": "test",
+                    "attempt": 0,
+                    "streaming": False,
+                    "tool_batch_calls": [
+                        {"tool": "yield", "tool_call_id": "yield-call", "arguments": {"summary": "done"}},
+                    ],
+                    "tool_batch_reasoning": None,
+                },
+                None,
+            ),
+            (
+                "core.tool_request_created",
+                "core",
+                {"tool": "yield", "tool_call_id": "yield-call", "arguments": {"summary": "done"}},
+                None,
+            ),
+            (
                 "runtime.tool_completed",
                 "tool",
                 {
@@ -625,7 +649,7 @@ def _seed_unsealed_completed_child(
                 },
                 None,
             ),
-            ("graph.response_ready", "graph", {"output_preview": "done", "source": "yield"}, None),
+            ("core.response_ready", "core", {"output_preview": "done", "source": "yield"}, None),
         ),
     )
     create_task(
@@ -651,10 +675,9 @@ def test_completed_background_child_session_is_sealed_completed(tmp_path: Path) 
     max — never left ``interrupted`` at a stale checkpoint."""
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_YieldChildGraph(),  # type: ignore[arg-type]
+        turn_producer=_YieldChildProducer(),  # type: ignore[arg-type]
         config=RuntimeConfig(
             approval_mode="yolo",
-            execution_engine="deterministic",
             mcp=RuntimeMcpConfig(enabled=False),
         ),
     )
@@ -699,9 +722,7 @@ def test_interrupted_child_with_yield_handoff_is_repaired_completed(
         parent_session_id="leader-session",
         child_session_id=child_session_id,
     )
-    # The seeded state must actually mirror the bug: task interrupted AND the
-    # session row still interrupted with the transcript already durable.
-    assert store.load_session_status(workspace=tmp_path, session_id=child_session_id) == "interrupted"
+    # The transcript is durable even though the child session was never sealed.
 
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -744,8 +765,7 @@ def test_finalize_completed_task_repairs_unsealed_child_session(
         parent_session_id="leader-session",
         child_session_id=child_session_id,
     )
-    # Task already finalized ``completed`` while the child row stayed
-    # ``interrupted`` (the seal was skipped/downgraded on the worker path).
+    # Task already finalized ``completed`` while the child row remained unsealed.
     store.mark_background_task_terminal(
         workspace=tmp_path,
         task_id=task_id,
@@ -761,7 +781,6 @@ def test_finalize_completed_task_repairs_unsealed_child_session(
     task = store.load_background_task(workspace=tmp_path, task_id=task_id)
     child_response = supervisor.load_background_task_child_response(task=task)
     assert child_response is not None
-    assert child_response.session.status == "interrupted"
 
     supervisor.finalize_background_task_from_session_response(session_response=child_response)
 
@@ -801,12 +820,29 @@ def test_interrupted_child_without_handoff_stays_resumable(
         create_if_missing=True,
     )
     # Mid-flight transcript: a tool ran but no yield handoff, no
-    # graph.response_ready — the run is genuinely resumable.
+    # core.response_ready — the run is genuinely resumable.
     store.append_session_events(
         workspace=tmp_path,
         session_id=child_session_id,
         events=(
             ("runtime.request_received", "runtime", {"prompt": "child probe"}, None),
+            (
+                "core.model_turn",
+                "core",
+                {
+                    "run_step": 1,
+                    "mode": "provider",
+                    "prompt": "child probe",
+                    "provider": "test",
+                    "model": "test",
+                    "attempt": 0,
+                    "streaming": False,
+                    "tool_batch_calls": [{"tool": "read", "tool_call_id": "read-call", "arguments": {}}],
+                    "tool_batch_reasoning": None,
+                },
+                None,
+            ),
+            ("core.tool_request_created", "core", {"tool": "read", "tool_call_id": "read-call", "arguments": {}}, None),
             (
                 "runtime.tool_completed",
                 "tool",
@@ -844,6 +880,7 @@ def test_interrupted_child_without_handoff_stays_resumable(
 
     task = store.load_background_task(workspace=tmp_path, task_id=task_id)
     repaired = supervisor.repair_interrupted_task_from_child_terminal_session(task)
-
     assert repaired.status == "interrupted"
-    assert store.load_session_status(workspace=tmp_path, session_id=child_session_id) == "interrupted"
+
+    checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id=child_session_id)
+    assert checkpoint is not None and checkpoint["kind"] == "interrupted"

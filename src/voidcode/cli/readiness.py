@@ -38,10 +38,11 @@ def _readiness_check_result(
         "context_window": readiness.context_window,
         "max_output_tokens": readiness.max_output_tokens,
         "fallback_chain": list(readiness.fallback_chain),
-        "status": readiness.status,
+        "configuration_status": "configured" if readiness.ok else readiness.status,
+        "verification_scope": "configuration_only",
     }
     return CapabilityCheckResult(
-        status=CapabilityCheckStatus.READY if readiness.ok else CapabilityCheckStatus.ERROR,
+        status=CapabilityCheckStatus.CONFIGURED if readiness.ok else CapabilityCheckStatus.ERROR,
         name="provider.readiness",
         check_type=DoctorCheckType.PROVIDER_READINESS.value,
         details=details,
@@ -114,7 +115,7 @@ def _run_readiness_actions(
     workspace_arg = f"--workspace {shlex.quote(str(workspace))}"
     actions: list[dict[str, str]] = []
     remediation = _provider_remediation(
-        details.get("provider_status"),
+        details.get("provider_config_status"),
         provider_name if isinstance(provider_name, str) and provider_name else None,
         workspace_arg,
     )

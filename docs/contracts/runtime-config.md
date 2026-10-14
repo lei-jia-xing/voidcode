@@ -22,6 +22,8 @@
 - `src/voidcode/runtime/policy.py`：policy 语义与错误消息
 - `src/voidcode/provider/config.py`：provider payload 边界模型与解析
 
+
+类型名称也保留这条边界：`runtime/config/loading.py::RuntimeConfig` 是加载后的配置聚合；`runtime/config/materializer.py::RunConfig` 是解析当前运行时使用的配置快照（包含已绑定的 provider）。二者不是别名，持久化会话键仍为 `runtime_config`。Runtime API 使用 `run_config*` accessor 表示 materialized snapshot。
 因此，如果需要新增“在多个来源之间选择”或“解释某个值含义”的规则，它不属于 `src/voidcode/runtime/config/models.py`。
 
 随包发布的编辑器 schema `schema/voidcode.config.schema.json` 由上述模型生成，不再是手写产物：
@@ -39,7 +41,6 @@ uv run python scripts/generate_config_schema.py --check  # 校验是否过期（
 
 - `approval_mode`
 - `model`
-- `execution_engine`
 - `tool_timeout_seconds`
 - `reasoning_effort`
 - `hooks`
@@ -56,8 +57,8 @@ uv run python scripts/generate_config_schema.py --check  # 校验是否过期（
 
 目前 hooks/config 的 MVP 收敛目标已经锁定：
 
-- hooks 继续保持 runtime-owned，但当前已不再只限 `pre_tool` / `post_tool`，而是同时包含 `session_start`、`session_end`、`session_idle`、`background_task_registered`、`background_task_started`、`background_task_progress`、`background_task_completed`、`background_task_failed`、`background_task_cancelled`、`background_task_notification_enqueued`、`background_task_result_read`、`delegated_result_available`、`turn_progress` 与 `stuck_detected` 等已解析的 lifecycle hook phases
-- 显式 / 仓库本地 / 环境 / 用户 / 默认值这条完整优先级链当前适用于 `approval_mode` 与 `model`；`execution_engine` 和 `reasoning_effort` 仍为显式 / 仓库本地 / 环境 / 默认值（用户级文件不接受这两个键）
+- hooks 继续保持 runtime-owned，但当前已不再只限 `pre_tool` / `post_tool`，而是同时包含 `session_start`、`session_end`、`session_idle`、`background_task_registered`、`background_task_started`、`background_task_progress`、`background_task_completed`、`background_task_failed`、`background_task_cancelled`、`background_task_notification_enqueued`、`background_task_result_read`、`delegated_result_available` 与 `turn_progress` 等已解析的 lifecycle hook phases
+- 显式 / 仓库本地 / 环境 / 用户 / 默认值这条完整优先级链当前适用于 `approval_mode` 与 `model`；`reasoning_effort` 仍为显式 / 仓库本地 / 环境 / 默认值（用户级文件不接受该键）
 - 单一可见检查面为 CLI：`voidcode config show --workspace <path> [--session <id>]`
 - 当前 schema-backed 配置 UX 包含 `voidcode config schema` 与 `voidcode config init`
 - 恢复会话的配置覆盖仍存放在 `SessionState.metadata["runtime_config"]`，并继续覆盖新的 runtime 默认值
@@ -84,7 +85,6 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
   "workspace": "/workspace/project",
   "model": "opencode-zen/gpt-5.4",
   "approval_mode": "yolo",
-  "execution_engine": "provider",
   "hooks": {
     "enabled": true,
     "pre_tool": [["python", "scripts/pre_tool.py"]],
@@ -101,8 +101,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
     "on_background_task_notification_enqueued": [["python", "scripts/background_task_notification.py"]],
     "on_background_task_result_read": [["python", "scripts/background_task_result_read.py"]],
     "on_delegated_result_available": [["python", "scripts/delegated_result.py"]],
-    "on_turn_progress": [["python", "scripts/turn_progress.py"]],
-    "on_stuck_detected": [["python", "scripts/stuck_detected.py"]]
+    "on_turn_progress": [["python", "scripts/turn_progress.py"]]
   },
   "tools": {
     "builtin": {
@@ -119,8 +118,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
   },
   "agent": {
     "preset": "default",
-    "model": "opencode-zen/gpt-5.4",
-    "execution_engine": "provider"
+    "model": "opencode-zen/gpt-5.4"
   },
   "lsp": {
     "enabled": false,
@@ -134,7 +132,6 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `workspace`：引导（bootstrap）字段，用于在发现仓库本地配置之前确定运行时工作区根目录，随后重用于工具执行和持久化
 - `model`：OpenCode `provider/model` 格式的供应商/模型标识符
 - `approval_mode`：由运行时治理的工具所使用的最小审批模式（`ask` / `write` / `yolo`）：决定按工具 tier 自动放行 `read` / `write` / `execute` 中哪些调用，其余进入审批。默认 `yolo`（全部放行）。tier 语义、未知工具默认 `execute` 与解析优先级见 `docs/contracts/approval-flow.md`。
-- `execution_engine`：当前接受 `deterministic` 或 `provider`。`provider` 是产品默认主路径；`deterministic` 保留为显式 test/dev/no-key harness（参考/debug）。
 - `hooks`：运行时拥有的最小钩子配置对象，覆盖 pre/post tool 与当前已解析的 lifecycle hook phases
 - `tools`：内置工具启用、仓库本地自定义 tool manifest 发现，以及 provider 可见工具收窄的最小配置；所有 tool 都通过 runtime registry / allowlist / permission 路径治理
 - `skills`：技能发现启用的最小配置，以及额外的技能搜索路径
@@ -148,14 +145,6 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `agents`：按 agent preset 配置 model / fallback defaults。这里是“已发现 preset 的配置覆盖/别名入口”，不是 manifest 定义入口；内置 preset key 与已发现本地 manifest key 可省略 `preset`，其他 alias key 必须显式声明 `preset`。
 - `reasoning_effort`：可选的 runtime-owned reasoning-effort hint（例如 `low` / `medium` / `high`）。能力判定**只**以 model 自身的 catalog metadata（`supports_reasoning_effort` / `supported_effort_levels` / `default_reasoning_effort`）为准，没有 provider 级判定：model metadata 显式 `supports_reasoning_effort=false` 时 runtime 在请求早期 fail-fast，显式 `true` 时通过；metadata 缺省的 model 一律按 best-effort 透传，并在 readiness 中标记为 `status="forwarded_unverified"`（`reason="model_capability_unknown"`），不静默当作已支持。这条判定对所有 provider（含多上游网关 `opencode-go`）一致：model metadata 是唯一权威，provider 名不再参与能力结论。`supported_effort_levels` 同时决定 clamp：转发前会向下对齐到该 model 真实支持的档位。`off` 是「关闭推理」的请求状态而不是 ladder 档位：它仍是 CLI / config / frontend 接受的输入，转发形态由 `provider/thinking_rules.json` 中该 provider/model 行的 `disable_mode` 数据解析（实现见 `src/voidcode/provider/reasoning_effort.py::disabled_reasoning_kwargs`）。
 
-### Execution engine 生命周期决策
-
-当前生命周期约定为：
-
-- `provider`：产品默认主路径；执行前必须配置 `model = "provider/model"`（或等价环境变量），否则 runtime 会在 run preflight 阶段返回清晰的 provider/model 配置错误。
-- `deterministic`：保留为显式支持的 test/dev/no-key harness，并继续承担 core turn-engine harness 与确定性回归测试。
-- `voidcode config init` 默认不写入 `execution_engine`，避免 repo-local config 锁死 provider/no-model 状态；若显式写入 `execution_engine = "provider"`，应同时写入 `model`。
-- 会话 replay/resume 必须读取持久化 runtime config 元数据，不得被新默认值覆盖。
 
 ## 当前实现的仓库本地形状
 
@@ -185,7 +174,6 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `hooks.on_background_task_result_read`：命令数组的数组
 - `hooks.on_delegated_result_available`：命令数组的数组
 - `hooks.on_turn_progress`：命令数组的数组
-- `hooks.on_stuck_detected`：命令数组的数组
 - `hooks.formatter_presets`：对象，用于覆盖或扩展 formatter preset
 - `tools.builtin.enabled`：布尔值
 - `tools.local.enabled`：布尔值；显式为 `true` 时 runtime 才会发现仓库本地自定义 tool manifest
@@ -219,13 +207,13 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - catalog 未描述该 model（`context_window` 无法解析）时**不裁剪**，并以明确的 `compaction_reason`（`compaction_unsized:...`）暴露该边界，不静默返回无界视图
 - `context_limit` 恢复：provider 报 `context_limit` 时**不再由解析层硬判终态**（`retryable=None`，与 `rate_limit` 同属 runtime-owned lane），由 run loop 按顺序处理：
   1. **一次性本地裁剪重试**：用 `context_window.compaction.*` 的 knob 重新组装 provider view，恢复目标比常规触发更狠——整个 view 要落回 `catalog window − reserve`（等价于临时把 tool 预算压到「阈值 − 指令与 prompt 的估算」）；若实际发生缩减，则重试**同一次** provider 调用一次。provider 已明确拒绝请求时，即使估算预算认为无需裁剪，也至少裁掉一条符合保护规则和单条下限的结果再尝试；如果无可裁剪结果则继续升级/失败。每个 turn 最多一次（run-local 状态，不写入会话元数据、不影响 resume）。
-  2. **升级窗口（窗口感知）**：本地裁剪不可行或重试后仍 `context_limit` 时，走**既有** provider fallback 机制（同一 target 链解析、`runtime.provider_fallback` 事件与决策形状）切换目标后重试，但候选按**有效窗口**排序：用 catalog 的 `max_input_tokens`（缺失且不可由 `context_window - max_output_tokens` 推导时为未知，不参与比较）与失败模型自己的窗口比较，只挑**严格更大**的候选；同窗或更小的候选不会因「链上在前」而被选。无严格更大候选时保持既有链顺序，并在 `runtime.provider_context_recovery` 的 `promotion_reason`（`larger_window` / `no_larger_candidate`）与 `window_tokens_before`/`window_tokens_after` 里如实记录。该偏好仅作用于 `context_limit` lane，其它 provider 错误的 fallback 顺序不变。本 turn 同样最多升级一次。
+- **升级窗口（窗口感知）**：本地裁剪不可行或重试后仍 `context_limit` 时，走既有 fallback 机制；候选只按双方明确的 catalog `max_input_tokens` 比较，未知 cap 不得用 aggregate `context_window` 或 output cap 推成已知更大 input window。只选择已知且严格更大的候选；否则保留链顺序，并记录 `promotion_reason=no_known_larger_candidate`（不声称更大候选不存在），未知的 `window_tokens_before` / `window_tokens_after` 为 `null`。该偏好仅作用于 `context_limit` lane。
   3. **可恢复失败**：两者都不可行时以 `runtime.failed` 结束，payload 带 `provider_error_kind=context_limit`、`resumable=true`、`context_limit_recovery`（`prune` / `unavailable`）与可执行 `guidance`（缩减上下文或配置更大窗口的模型后 `voidcode sessions resume`）。该失败**保持可 resume**（`provider_failure_retryable` checkpoint 的 kind 判定已包含 `context_limit`），失败态不会被 seal 成不可恢复。
 - 裁剪本身仍是可判定函数（给定预算 + 结果顺序 → 确定结果），恢复只在其上叠加「一次性」与「升级」两条有界策略。
-- compaction 的窗口由随包 catalog 提供：`max_input_tokens`（无上游 `limit.input` 时由 `context_window - max_output_tokens` 派生）优先，否则 `context_window`；调用方显式提供的 `context_window` / `threshold_tokens` / `reserve_tokens` 仍然优先于它，catalog 未描述的 model 则让 compaction 保持 unsized
-- 阈值 = `window − reserve`，其中 `reserve = max(floor(0.15 × window), 16384)`（对齐上游；显式 `context_window.compaction.reserve_tokens` 最高优先）。锚点不可用（无 provider usage）时仍按同一阈值做纯估算判定，并在 `usage_tokens_estimated` 里标为纯估算
+- compaction 可用显式 `max_input_tokens` 作为输入预算；否则 aggregate `context_window` 仅作为总窗口基数，再减去实际配置/默认的 output reserve 形成请求 allocation，不能当作已报告的 input limit。调用方显式提供的 `context_window` / `threshold_tokens` / `reserve_tokens` 仍优先；catalog 未描述的 model 保持 unsized。
 - token usage 只来自 provider response/terminal stream，并保留 `None`（未报告）与 `0`（观测到零）的区别；它是后验 turn usage，不是下一轮 transcript 余额
 - `provider_usage.latest.cost_usd` / `provider_usage.cumulative.cost_usd`：USD 金额，由 `core.provider_turns.ProviderTurnProducer` 根据该 turn 自己的 usage 与 catalog 扁平 `cost_per_*` 费率（加可选的 long-context 政策 tier）计算一次，写入 `latest` 并累加到 `cumulative`；token 桶保持整数、金额是 float，持久化的 usage 不会被重新计价。前端在 composer 的上下文行显示 `cumulative.cost_usd`（`$1.50 spent`），未定价的 model 整个省略而不是显示 `$0.00`
+- `cost_usd: null` 表示该回合无法可靠定价（需要的 token 用量或费率未知），不是免费；明确观测到的零用量/零费率仍可产生数值 `$0.00`。累计成本只要包含无法定价的回合就保持 `null`，前端不得把未知显示成零。
 - `lsp.enabled`：布尔值；默认 `true`（未声明即开启，显式 `false` 关闭；未配置 `servers` 时不启动任何 server 进程）
 - `lsp.servers`：对象
 
@@ -262,7 +250,6 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `agent.preset`：agent preset id。可解析 builtin `default`、`execute`、`review`、`explore`、`research`、`plan`，以及本地发现的 markdown manifest id（见下方“本地 markdown agent manifest”）。旧 builtin id `leader`、`worker`、`advisor`、`researcher`、`product` 及旧 prompt-profile keys 已移除，不提供 aliases 或迁移；旧存储 routes 可能自然失败。Custom manifest namespace 不受 builtin 旧名称约束：custom id `leader` 是独立 custom agent，不是兼容 alias。
 - Builtin display labels are `default` → Default, `execute` → Execute, `review` → Review, `explore` → Explore, `research` → Research, and `plan` → Planning.
 - `agent.model`：字符串；对 active agent 覆盖顶层 `model`
-- `agent.execution_engine`：`deterministic` 或 `provider`；`default` 省略时从内置 manifest 回填为 `provider`
 - `agent.tools`：与顶层 `tools` 相同的配置 shape；当前作为 active agent tool boundary 解析、序列化和持久化
 - `agent.tools.allowlist`：字符串数组；与 manifest allowlist 一起收窄 active agent 可见/可调用工具集合
 - `agent.tools.default`：字符串数组；在 allowlist 允许范围内进一步收窄默认暴露工具
@@ -296,7 +283,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - reminder 是 runtime-owned 的临时 provider-context 尾部注入：它只存在于本次 provider context assembly，不追加到 SQLite transcript；可持久化的只有 cycle 计数器（`SessionState.metadata["runtime_state"]["reminders"]`）与一条 `runtime.reminder_injected` 事件（见 `docs/contracts/runtime-events.md`）。
 - mid-run nudge 无独立开关：它随 `reminders.enabled` 启用，阈值（累计 12 次变更类工具调用）与每 cycle 上限（2 条）是命名常量（对齐上游），不提供配置键。
 - 第一个 reminder 类型是 todo 完成提醒：terminal assistant 回合结束时若仍有 `pending` / `in_progress` todo，runtime 注入一条 `<system-reminder>` 尾巴并继续同一 run（而不是结束回合）；提醒文本列出未完成的 phase/task 与 `(Reminder k/max)`。
-- 抑制条件：`reminders.enabled = false`、execution engine 不是 `provider`（deterministic producer 没有可注入的 provider 调用）、todo 全部完成、上一条 reminder 之后的回合没有产生新的 tool result（仍在等待 agent 行动）、本 cycle 已达 `reminders.todo.max_per_cycle`、assistant 已停在等待用户回答（`plan_state.status` 为 `waiting_question` / `waiting_approval`）、父会话仍有会重新唤醒 loop 的 background task，或当前是被委派的 child session（必须通过 `yield` 终止）。
+- 抑制条件：`reminders.enabled = false`、todo 全部完成、上一条 reminder 之后的回合没有产生新的 tool result（仍在等待 agent 行动）、本 cycle 已达 `reminders.todo.max_per_cycle`、assistant 已停在等待用户回答（`plan_state.status` 为 `waiting_question` / `waiting_approval`）、父会话仍有会重新唤醒 loop 的 background task，或当前是被委派的 child session（必须通过 `yield` 终止）。
 - cycle 由 run 标识：每次 `run` / `resume` 都是新的 cycle，`attempts` 随之复位；持久化的 `runtime_state.reminders` 因此不携带跨 run 的累计语义，也不参与 context checkpoint 的完整性校验（见 `context/continuity.py`）。
 - 该配置是仓库本地（`.voidcode.json`）配置面；像 `background_task` 一样，它随会话的 `runtime_config` 快照持久化，缺省时以当前进程解析出的默认值补齐。
 
@@ -465,7 +452,6 @@ frontmatter 是标准 YAML：未加引号的标量中 ` #` 会开始注释（`de
 - `preset`
 - `prompt` / manifest body：作为所选 agent 的 system prompt
 - `model`：覆盖本次运行的 resolved provider model
-- `execution_engine`：`default` 与 `plan` 默认进入 runtime-managed `provider` 路径
 - `tools`：收窄 provider 可见工具与实际 tool lookup / invocation 边界；manifest allowlist、`agent.tools.allowlist`、`agent.tools.default` 按交集生效，`agent.tools.builtin.enabled=false` 只移除内置工具名集合，仍保留已通过 allowlist 的 runtime-managed MCP / 注入工具
 - `skills`：覆盖本次运行的 skill registry discovery 与 applied skill payload / prompt context；active manifest 的 `skill_refs` 会作为默认 skill selection 进入 application，并与 request metadata `skills` 去重合并
 - `provider_fallback`：runtime 内部解析后的 fallback model chain
@@ -520,7 +506,7 @@ theme、statusline、composer 与 brand 按字段递归覆盖；workspace 只需
 2. 随后在该工作区内发现仓库本地配置
 3. 普通运行时配置优先级适用于非引导字段，如 `model`、`approval_mode` 和 `hooks`
 
-对于 harness/runtime 这条配置链，`approval_mode`、`model`、`execution_engine` 和 `reasoning_effort` 的固定优先级与运行时 policy 一致，按下列顺序解释：
+对于 harness/runtime 这条配置链，`approval_mode`、`model` 和 `reasoning_effort` 的固定优先级与运行时 policy 一致，按下列顺序解释：
 
 1. Hardcoded safety denylist and workspace/session invariants.
 2. Explicit request `read_only` policy.
@@ -534,7 +520,7 @@ theme、statusline、composer 与 brand 按字段递归覆盖；workspace 只需
 
 其余领域仍保持浅层仓库本地配置语义，不在此轨道中获得这条完整优先级引擎。
 
-对于 fresh run，`RuntimeRequest.metadata["reasoning_effort"]` 可以作为窄范围的请求级覆盖；`execution_engine` 同样会进入显式 / 仓库本地 / 环境 / 默认值解析，并在会话恢复时优先采用持久化的会话配置。未知 metadata 会因 request schema 拒绝，不能静默忽略。
+对于 fresh run，`RuntimeRequest.metadata["reasoning_effort"]` 可以作为窄范围的请求级覆盖，并在会话恢复时优先采用持久化的会话配置。未知 metadata 会因 request schema 拒绝，不能静默忽略。
 
 `reasoning_effort` 的 capability-aware 校验由 runtime 在请求处理早期完成，判定顺序固定为：先取解析后的 `provider/model` 的 model metadata `supports_reasoning_effort`（显式 `False` → 抛 `RuntimeRequestError`；显式 `True` → 通过），metadata 缺省即视为未知（没有 provider 级 allowlist / denylist 判定），此时按 best-effort 透传，并在 provider readiness 中报告 `capability_source="unknown"` 与 `status="forwarded_unverified"`。readiness payload 不再声明具体的 provider 参数名：不同 adapter 使用 `extra_body.thinking.type`、`extra_body.reasoning_effort`、`thinking`、`thinking_config` 等不同字段，凭 provider 名猜测会给出错误信息。
 
@@ -559,7 +545,7 @@ theme、statusline、composer 与 brand 按字段递归覆盖；workspace 只需
 
 对于恢复的会话，持久化在 `SessionState.metadata["runtime_config"]` 中的 `approval_mode` / `model` 就是会话覆盖，并且优先级高于新的 CLI / 客户端覆盖。
 
-持久化 runtime config 使用单一当前 shape。`approval_mode`、`permission`、`execution_engine`、`tool_timeout_seconds` 和 `fallback_models` 均为必填字段；缺失字段、无效类型或未知字段直接失败。resume/replay 不迁移、不丢弃未知字段，也不从当前进程默认值补齐。
+持久化 runtime config 使用单一当前 shape。`approval_mode`、`permission`、`tool_timeout_seconds` 和 `fallback_models` 均为必填字段；缺失字段、无效类型或未知字段直接失败。resume/replay 不迁移、不丢弃未知字段，也不从当前进程默认值补齐。
 
 
 ## 计划的会话覆盖形状
@@ -571,13 +557,12 @@ theme、statusline、composer 与 brand 按字段递归覆盖；workspace 只需
   "runtime_config": {
     "model": "opencode-zen/gpt-5.4-pro",
     "approval_mode": "yolo",
-    "execution_engine": "provider",
     "reasoning_effort": "high"
   }
 }
 ```
 
-这有意设计得很窄：在 MVP 中，`approval_mode`、`model`、`execution_engine` 与 `reasoning_effort` 是恢复关键字段，并在会话启动后转化为持久化会话配置。
+这有意设计得很窄：在 MVP 中，`approval_mode`、`model` 与 `reasoning_effort` 是恢复关键字段，并在会话启动后转化为持久化会话配置。
 
 ## 会话持久化设置
 
@@ -612,7 +597,6 @@ voidcode config init --workspace <path> [--force] [--print] [--with-examples]
 - `workspace`
 - `session_id`
 - `approval_mode`
-- `execution_engine`
 - `model`
 - `fallback_models`（provider fallback 链；未配置时为空数组）
 - `reasoning_effort`（仅当配置或会话覆盖该字段时出现）
@@ -643,14 +627,12 @@ https://raw.githubusercontent.com/lei-jia-xing/voidcode/master/schema/voidcode.c
 - 用户无需编辑代码即可更改运行时行为
 - 优先级必须是确定性的
 - 持久化会话必须携带足够的配置，以便进行有意义的重放或恢复
-- MVP 配置界面必须专注于运行时驱动的确定性执行路径
+- MVP 配置界面必须专注于 runtime-managed provider execution path
 
 ## 当前限制
 
-- hooks 在此轨道中已包含 `pre_tool` / `post_tool` 以及 `session_start`、`session_end`、`session_idle`、`background_task_completed`、`background_task_failed`、`background_task_cancelled`、`delegated_result_available`、`turn_progress`、`stuck_detected` 这些 lifecycle hook phases；但仍不包含 render/message-transform 一类更宽的展示层阶段
+- hooks 在此轨道中已包含 `pre_tool` / `post_tool` 以及 `session_start`、`session_end`、`session_idle`、`background_task_completed`、`background_task_failed`、`background_task_cancelled`、`delegated_result_available` 与 `turn_progress` 这些 lifecycle hook phases；但仍不包含 render/message-transform 一类更宽的展示层阶段
 - hooks 不得改变工具参数或结果，只能观察与失败中止
-- 除 `approval_mode` / `model` / `execution_engine` / `reasoning_effort` 外，其余扩展领域继续保持浅层仓库本地配置
-- 仅 `approval_mode` / `model` / `execution_engine` / `reasoning_effort` 在此轨道中具备恢复关键的优先级行为
 - 当前 request metadata 已是受限的 runtime schema：顶层字段必须属于稳定 allowlist（内部字段仅由 runtime 使用），`command` / `delegation` 等嵌套对象也会拒绝未知字段或无效类型；入口统一 fail-fast，详见 `src/voidcode/runtime/contracts.py::validate_runtime_request_metadata`。
 
 ## 非目标

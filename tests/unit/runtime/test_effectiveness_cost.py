@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from voidcode.runtime.effectiveness import project_tool_effectiveness
+from voidcode.runtime.effectiveness import ToolEffectivenessEvent, project_tool_effectiveness
+from voidcode.runtime.events import EventEnvelope
 
 
 def _metadata(cost: object) -> dict[str, object]:
@@ -45,4 +46,65 @@ def test_an_unpriced_usage_reports_no_cost_rather_than_zero() -> None:
     )
 
     assert report.cost_usd is None
+
+
+def test_unknown_session_cost_is_not_summed_as_zero() -> None:
+    report = project_tool_effectiveness(
+        workspace_id="w",
+        session_ids=("priced", "unknown"),
+        session_metadata={"priced": _metadata(0.25), "unknown": _metadata(None)},
+        events=(),
+    )
+
+    assert report.cost_usd is None
     assert report.to_payload()["provider_usage"]["cost_usd"] is None  # type: ignore[index]
+
+
+def test_unknown_usage_count_is_not_reported_as_a_partial_total() -> None:
+    report = project_tool_effectiveness(
+        workspace_id="w",
+        session_ids=("known", "unknown"),
+        session_metadata={
+            "known": _metadata(0.25),
+            "unknown": {
+                "provider_usage": {
+                    "cumulative": {
+                        "input_tokens": None,
+                        "output_tokens": 10,
+                        "cache_read_tokens": None,
+                        "cache_write_tokens": 0,
+                        "uncached_input_tokens": None,
+                        "cost_usd": 0.25,
+                    }
+                }
+            },
+        },
+        events=(),
+    )
+
+    assert report.input_tokens is None
+    assert report.output_tokens == 40
+    assert report.cache_hit_rate is None
+
+
+def test_provider_turn_without_usage_metadata_makes_totals_unknown() -> None:
+    event = ToolEffectivenessEvent(
+        session_id="unreported",
+        event=EventEnvelope(
+            session_id="unreported",
+            sequence=1,
+            event_type="core.model_turn",
+            source="core",
+            payload={"mode": "provider"},
+        ),
+    )
+    report = project_tool_effectiveness(
+        workspace_id="w",
+        session_ids=("priced", "unreported"),
+        session_metadata={"priced": _metadata(0.25)},
+        events=(event,),
+    )
+
+    assert report.input_tokens is None
+    assert report.output_tokens is None
+    assert report.cost_usd is None

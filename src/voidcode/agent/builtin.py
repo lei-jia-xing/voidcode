@@ -44,7 +44,6 @@ DEFAULT_AGENT_MANIFEST = AgentManifest(
     mode="primary",
     description="General user-facing assistant; runtime owns policy and tool scope.",
     prompt_profile="default",
-    execution_engine="provider",
     tool_allowlist=_DEFAULT_TOOL_ALLOWLIST,
     preset_hook_refs=_DEFAULT_PRESET_HOOK_REFS,
     top_level_selectable=True,
@@ -62,7 +61,6 @@ EXECUTE_AGENT_MANIFEST = AgentManifest(
     mode="subagent",
     description="Delegated execution of an assigned task; runtime enforces the active tool scope.",
     prompt_profile="execute",
-    execution_engine="provider",
     tool_allowlist=(
         *_WORKSPACE_DISCOVERY_TOOLS,
         "write",
@@ -89,7 +87,6 @@ REVIEW_AGENT_MANIFEST = AgentManifest(
     mode="subagent",
     description="Delegated review of evidence, risks, and options.",
     prompt_profile="review",
-    execution_engine="provider",
     tool_allowlist=(*_WORKSPACE_DISCOVERY_TOOLS, *_CHILD_HANDOFF_TOOLS),
     preset_hook_refs=_DELEGATED_PRESET_HOOK_REFS,
     top_level_selectable=False,
@@ -107,7 +104,6 @@ EXPLORE_AGENT_MANIFEST = AgentManifest(
     mode="subagent",
     description="Delegated read-only discovery of relevant workspace evidence.",
     prompt_profile="explore",
-    execution_engine="provider",
     tool_allowlist=(*_WORKSPACE_DISCOVERY_TOOLS, *_CHILD_HANDOFF_TOOLS),
     preset_hook_refs=_DELEGATED_PRESET_HOOK_REFS,
     top_level_selectable=False,
@@ -125,7 +121,6 @@ RESEARCH_AGENT_MANIFEST = AgentManifest(
     mode="subagent",
     description="Delegated research using public sources and external evidence.",
     prompt_profile="research",
-    execution_engine="provider",
     tool_allowlist=("web_search", "web_fetch", *_CHILD_HANDOFF_TOOLS),
     preset_hook_refs=_DELEGATED_PRESET_HOOK_REFS,
     top_level_selectable=False,
@@ -152,7 +147,6 @@ PLAN_AGENT_MANIFEST = AgentManifest(
     mode="subagent",
     description="Delegated read-only planning grounded in the request and relevant evidence.",
     prompt_profile="plan",
-    execution_engine="provider",
     tool_allowlist=_PLAN_TOOL_ALLOWLIST,
     preset_hook_refs=_DELEGATED_PRESET_HOOK_REFS,
     top_level_selectable=False,
@@ -181,8 +175,6 @@ def validate_builtin_agent_manifests(
             raise ValueError(f"builtin agent manifest '{manifest.id}' must declare a builtin prompt_profile")
         if render_builtin_prompt_profile(manifest.prompt_profile) is None:
             raise ValueError(f"builtin agent manifest '{manifest.id}' references unknown prompt profile '{manifest.prompt_profile}'")
-        if manifest.execution_engine is None:
-            raise ValueError(f"builtin agent manifest '{manifest.id}' must declare an execution_engine")
         if len(manifest.tool_allowlist) != len(set(manifest.tool_allowlist)):
             raise ValueError(f"builtin agent manifest '{manifest.id}' must not contain duplicate tool patterns")
         if len(manifest.preset_hook_refs) != len(set(manifest.preset_hook_refs)):

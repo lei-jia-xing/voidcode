@@ -15,7 +15,7 @@ from .checker import CapabilityCheckResult, CapabilityCheckStatus
 
 @dataclass
 class FirstTaskReadiness:
-    """Readiness summary for the first provider-backed coding task."""
+    """Local configuration summary; provider authentication and execution are not verified."""
 
     status: str
     summary: str
@@ -25,7 +25,7 @@ class FirstTaskReadiness:
     details: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert readiness summary to JSON-safe payload."""
+        """Convert the first-task configuration summary to a JSON-safe payload."""
         return {
             "status": self.status,
             "summary": self.summary,
@@ -48,12 +48,12 @@ class CapabilityReport:
 
     @property
     def has_errors(self) -> bool:
-        """Return True if there are any errors or missing items."""
+        """Return True if any check reports an issue."""
         return bool(self.errors)
 
     @property
     def is_healthy(self) -> bool:
-        """Return True if all critical capabilities are ready."""
+        """Return True if critical checks have no missing command or error."""
         return self.summary["missing"] == 0 and self.summary["errors"] == 0
 
     def to_dict(self) -> dict[str, Any]:
@@ -90,10 +90,12 @@ def create_report(
     Returns:
         A CapabilityReport with categorized results
     """
-    errors = [r for r in results if r.status != CapabilityCheckStatus.READY]
+    successes = {CapabilityCheckStatus.AVAILABLE, CapabilityCheckStatus.CONFIGURED}
+    errors = [r for r in results if r.status not in successes]
     summary = {
         "total": len(results),
-        "ready": sum(1 for r in results if r.status == CapabilityCheckStatus.READY),
+        "available": sum(1 for r in results if r.status == CapabilityCheckStatus.AVAILABLE),
+        "configured": sum(1 for r in results if r.status == CapabilityCheckStatus.CONFIGURED),
         "missing": sum(1 for r in results if r.status == CapabilityCheckStatus.NOT_FOUND),
         "errors": sum(1 for r in results if r.status == CapabilityCheckStatus.ERROR),
         "not_configured": sum(1 for r in results if r.status == CapabilityCheckStatus.NOT_CONFIGURED),
@@ -114,11 +116,11 @@ def _create_first_task_readiness(results: list[CapabilityCheckResult], workspace
     doctor_command = f"voidcode doctor{workspace_arg}"
     run_command = f'voidcode run "read README.md"{workspace_arg}'
 
-    if config_result is not None and config_result.status != CapabilityCheckStatus.READY and config_result.error_message:
+    if config_result is not None and config_result.status != CapabilityCheckStatus.CONFIGURED and config_result.error_message:
         message = config_result.error_message
         return FirstTaskReadiness(
             status="not_ready",
-            summary="VoidCode cannot evaluate first-task readiness until runtime config is valid.",
+            summary="VoidCode cannot assess first-task configuration until runtime config is valid.",
             next_step=f"Fix .voidcode.json, then run `{doctor_command}` again.",
             blockers=[message],
             details={
@@ -131,12 +133,12 @@ def _create_first_task_readiness(results: list[CapabilityCheckResult], workspace
     if provider_result is None:
         return FirstTaskReadiness(
             status="not_ready",
-            summary="No provider-backed readiness check ran for the first coding task.",
+            summary="No provider configuration check ran for a first coding task.",
             next_step=(
                 f'Set "model": "<provider>/<model>" in {RUNTIME_CONFIG_FILE_NAME} (or run '
                 f"`voidcode config init --model <provider>/<model>{workspace_arg}`), then run `{doctor_command}` again."
             ),
-            blockers=["provider.readiness check is missing"],
+            blockers=["provider configuration check is missing"],
             details={
                 "workspace_config_valid": True,
                 "local_tools": _local_tool_availability(results),
@@ -144,14 +146,14 @@ def _create_first_task_readiness(results: list[CapabilityCheckResult], workspace
         )
 
     provider_details = dict(provider_result.details)
-    if provider_result.status != CapabilityCheckStatus.READY:
-        provider_status = str(provider_details["status"])
-        blocker = provider_result.error_message or "Provider/model readiness is incomplete."
+    if provider_result.status != CapabilityCheckStatus.CONFIGURED:
+        provider_config_status = str(provider_details["configuration_status"])
+        blocker = provider_result.error_message or "Provider/model configuration is incomplete."
         return FirstTaskReadiness(
             status="not_ready",
-            summary=f"First provider-backed coding task is blocked: {provider_status}.",
+            summary=f"First provider-backed task is blocked by configuration: {provider_config_status}.",
             next_step=_next_step_for_provider_status(
-                provider_status,
+                provider_config_status,
                 workspace_arg,
                 provider=provider_details.get("provider"),
             ),
@@ -162,20 +164,28 @@ def _create_first_task_readiness(results: list[CapabilityCheckResult], workspace
     warnings = [
         f"{result.name}: {result.error_message or result.status.value}"
         for result in results
-        if result.status != CapabilityCheckStatus.READY and result.name != "provider.readiness" and result.name != "runtime.config"
+        if result.status not in {CapabilityCheckStatus.AVAILABLE, CapabilityCheckStatus.CONFIGURED}
+        and result.name != "provider.readiness"
+        and result.name != "runtime.config"
     ]
     if warnings:
         return FirstTaskReadiness(
             status="degraded",
-            summary=("Provider/model/auth are ready, but local tooling may reduce first-task quality."),
-            next_step=f"You can try `{run_command}` now, then address the warnings below.",
+            summary=(
+                "Provider/model configuration passed, but local tooling may limit a first-task attempt; "
+                "credential validity, provider connectivity, and task execution are unverified."
+            ),
+            next_step=f"Attempt `{run_command}`, then address the warnings below.",
             warnings=warnings,
             details=_first_task_details(provider_result, results),
         )
 
     return FirstTaskReadiness(
-        status="ready",
-        summary="Provider/model/auth and local checks are ready for a first coding task.",
+        status="configured",
+        summary=(
+            "Local provider/model configuration passed. Credential validity, provider connectivity, and task "
+            "execution are not verified and are not guaranteed."
+        ),
         next_step=f"Try `{run_command}`.",
         details=_first_task_details(provider_result, results),
     )
@@ -196,10 +206,10 @@ def _first_task_details(result: CapabilityCheckResult, results: list[CapabilityC
         "provider": provider,
         "provider_label": _provider_name_for_display(provider),
         "model": details.get("model"),
-        "provider_status": details.get("status"),
+        "provider_config_status": details.get("configuration_status"),
+        "provider_verification_scope": details.get("verification_scope"),
         "auth_present": details.get("auth_present"),
         "context_window": details.get("context_window"),
-        "max_output_tokens": details.get("max_output_tokens"),
         "fallback_chain": list(details.get("fallback_chain") or []),
         "local_tools": _local_tool_availability(results),
     }
@@ -262,7 +272,8 @@ def format_report(report: CapabilityReport, *, verbose: bool = False) -> str:
     # Summary
     lines.append("\nSummary:")
     lines.append(f"  Total checks: {report.summary['total']}")
-    lines.append(f"  {CHECK_ICON} Ready: {report.summary['ready']}")
+    lines.append(f"  {CHECK_ICON} Available: {report.summary['available']}")
+    lines.append(f"  {CHECK_ICON} Configured: {report.summary['configured']}")
     if report.summary["missing"] > 0:
         lines.append(f"  {CROSS_ICON} Missing: {report.summary['missing']}")
     if report.summary["errors"] > 0:
@@ -271,7 +282,7 @@ def format_report(report: CapabilityReport, *, verbose: bool = False) -> str:
         lines.append(f"  {CIRCLE_ICON} Not configured: {report.summary['not_configured']}")
 
     if report.first_task_readiness is not None:
-        lines.append("\nFirst task readiness:")
+        lines.append("\nFirst task configuration:")
         readiness = report.first_task_readiness
         lines.append(f"  status: {readiness.status}")
         lines.append(f"  summary: {readiness.summary}")
@@ -285,6 +296,8 @@ def format_report(report: CapabilityReport, *, verbose: bool = False) -> str:
             lines.append(f"  model: {details['model']}")
         if "auth_present" in details:
             lines.append(f"  auth_present: {details['auth_present']}")
+        if "provider_verification_scope" in details:
+            lines.append(f"  provider verification scope: {details['provider_verification_scope']}")
         if "context_window" in details and details["context_window"] is not None:
             lines.append(f"  context_window: {details['context_window']}")
         if "max_output_tokens" in details and details["max_output_tokens"] is not None:
@@ -308,10 +321,9 @@ def format_report(report: CapabilityReport, *, verbose: bool = False) -> str:
 
     if not verbose:
         # Only show problems by default
-        problem_results = [r for r in report.results if r.status != CapabilityCheckStatus.READY]
+        problem_results = [r for r in report.results if r.status not in {CapabilityCheckStatus.AVAILABLE, CapabilityCheckStatus.CONFIGURED}]
         if not problem_results:
-            lines.append("  All capabilities are ready!")
-            return "\n".join(lines)
+            lines.append("  All checks are available or configured.")
 
         for result in problem_results:
             lines.append(_format_result(result, CHECK_ICON, CROSS_ICON, WARN_ICON, CIRCLE_ICON))
@@ -339,7 +351,8 @@ def _format_result(
 ) -> str:
     """Format a single check result."""
     status_icon_map = {
-        CapabilityCheckStatus.READY: check_icon,
+        CapabilityCheckStatus.AVAILABLE: check_icon,
+        CapabilityCheckStatus.CONFIGURED: check_icon,
         CapabilityCheckStatus.NOT_FOUND: cross_icon,
         CapabilityCheckStatus.ERROR: warn_icon,
         CapabilityCheckStatus.NOT_CONFIGURED: circle_icon,
@@ -347,7 +360,8 @@ def _format_result(
     status_icon = status_icon_map[result.status]
 
     status_text = {
-        CapabilityCheckStatus.READY: "ready",
+        CapabilityCheckStatus.AVAILABLE: "available",
+        CapabilityCheckStatus.CONFIGURED: "configured",
         CapabilityCheckStatus.NOT_FOUND: "not found",
         CapabilityCheckStatus.ERROR: "error",
         CapabilityCheckStatus.NOT_CONFIGURED: "not configured",
@@ -355,7 +369,7 @@ def _format_result(
 
     lines = [f"  {status_icon} {result.name}: {status_text}"]
 
-    if result.error_message and result.status != CapabilityCheckStatus.READY:
+    if result.error_message and result.status not in {CapabilityCheckStatus.AVAILABLE, CapabilityCheckStatus.CONFIGURED}:
         # Indent error message
         for line in result.error_message.split("\n"):
             lines.append(f"    {line}")
@@ -374,10 +388,12 @@ def _format_details(result: CapabilityCheckResult) -> list[str]:
     details: list[str] = []
     d = result.details
 
-    if "command" in d and result.status != CapabilityCheckStatus.READY:
+    if "command" in d:
         details.append(f"command: {d['command']}")
     if "transport" in d:
         details.append(f"transport: {d['transport']}")
+    if "verification_scope" in d:
+        details.append(f"verification scope: {d['verification_scope']}")
     if "configured_enabled" in d:
         details.append(f"configured_enabled: {d['configured_enabled']}")
     if "configured_server_count" in d:

@@ -3,12 +3,15 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
+from dataclasses import replace
 from pathlib import Path
 from typing import Literal, cast
 
 import pytest
 
 import voidcode.runtime.config.loading as runtime_config
+from tests.provider_loopback import OpenAILoopbackServer, configure_openai_provider, openai_response
 from voidcode.agent import AgentPromptMaterialization, get_builtin_agent_manifest
 from voidcode.agent.models import AgentMcpBindingIntent
 from voidcode.formatter import RuntimeFormatterPresetConfig, default_formatter_presets
@@ -24,7 +27,6 @@ from voidcode.provider.config import (
 )
 from voidcode.runtime.config.loading import (
     APPROVAL_MODE_ENV_VAR,
-    EXECUTION_ENGINE_ENV_VAR,
     MODEL_ENV_VAR,
     REASONING_EFFORT_ENV_VAR,
     RUNTIME_CONFIG_FILE_NAME,
@@ -88,7 +90,6 @@ def test_runtime_config_defaults_to_yolo_without_file_or_env(tmp_path: Path) -> 
 
     assert config.approval_mode == "yolo"
     assert config.model is None
-    assert config.execution_engine == "provider"
     assert config.background_task == RuntimeBackgroundTaskConfig()
     assert config.hooks is None
     assert config.permission.read.rules == (("*", "allow"),)
@@ -240,21 +241,6 @@ def test_runtime_config_rejects_unknown_background_task_keys(tmp_path: Path) -> 
         _ = load_runtime_config(tmp_path, env={})
 
 
-def test_runtime_config_supports_provider_first_opt_in_with_stub_model(
-    tmp_path: Path,
-) -> None:
-    config = load_runtime_config(
-        tmp_path,
-        env={
-            EXECUTION_ENGINE_ENV_VAR: "provider",
-            MODEL_ENV_VAR: "opencode-zen/gpt-5.4",
-        },
-    )
-
-    assert config.execution_engine == "provider"
-    assert config.model == "opencode-zen/gpt-5.4"
-
-
 def test_runtime_config_loads_context_window_policy_from_repo_file(tmp_path: Path) -> None:
     config_path = tmp_path / RUNTIME_CONFIG_FILE_NAME
     config_path.write_text(
@@ -306,24 +292,27 @@ def test_runtime_context_window_config_serializes_for_session_resume() -> None:
     assert parsed == config
 
 
-def test_runtime_persists_context_window_config_for_resume(tmp_path: Path) -> None:
-    _ = (tmp_path / "AGENTS.md").write_text("context window\n", encoding="utf-8")
+def test_runtime_persists_context_window_config_for_resume(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     context_window = RuntimeContextWindowConfig(
         default_tool_result_chars=500,
         per_tool_result_chars={"shell_exec": 400},
     )
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(
-            execution_engine="deterministic",
-            context_window=context_window,
-        ),
-    )
-
-    response = runtime.run(RuntimeRequest(prompt="read AGENTS.md"))
-    payload = cast(dict[str, object], response.session.metadata["runtime_config"])
-
-    assert payload["context_window"] == serialize_runtime_context_window_config(context_window)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
+    server = OpenAILoopbackServer([openai_response(message={"role": "assistant", "content": "done"}, finish="stop")])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    try:
+        thread.start()
+        configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_port}/v1")
+        config = replace(load_runtime_config(tmp_path, env={}), context_window=context_window)
+        with VoidCodeRuntime(workspace=tmp_path, config=config) as runtime:
+            response = runtime.run(RuntimeRequest(prompt="persist config"))
+            payload = cast(dict[str, object], response.session.metadata["runtime_config"])
+            assert payload["context_window"] == serialize_runtime_context_window_config(context_window)
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
 
 
 def test_runtime_config_uses_environment_when_repo_file_missing(tmp_path: Path) -> None:
@@ -336,14 +325,6 @@ def test_runtime_config_uses_model_environment_when_repo_file_missing(tmp_path: 
     config = load_runtime_config(tmp_path, env={MODEL_ENV_VAR: "opencode-zen/gpt-5.4"})
 
     assert config.model == "opencode-zen/gpt-5.4"
-
-
-def test_runtime_config_uses_execution_engine_environment_when_repo_file_missing(
-    tmp_path: Path,
-) -> None:
-    config = load_runtime_config(tmp_path, env={EXECUTION_ENGINE_ENV_VAR: "provider"})
-
-    assert config.execution_engine == "provider"
 
 
 def test_runtime_config_uses_tool_timeout_environment_when_repo_file_missing(
@@ -477,7 +458,6 @@ def test_runtime_config_parses_async_lifecycle_hook_surfaces(tmp_path: Path) -> 
                 "on_background_task_result_read": [["python", "scripts/task_result_read.py"]],
                 "on_delegated_result_available": [["python", "scripts/delegated_result.py"]],
                 "on_turn_progress": [["python", "scripts/turn_progress.py"]],
-                "on_stuck_detected": [["python", "scripts/stuck_detected.py"]],
             }
         },
     )
@@ -501,7 +481,6 @@ def test_runtime_config_parses_async_lifecycle_hook_surfaces(tmp_path: Path) -> 
         on_background_task_result_read=(("python", "scripts/task_result_read.py"),),
         on_delegated_result_available=(("python", "scripts/delegated_result.py"),),
         on_turn_progress=(("python", "scripts/turn_progress.py"),),
-        on_stuck_detected=(("python", "scripts/stuck_detected.py"),),
     )
 
 
@@ -527,14 +506,6 @@ def test_runtime_config_prefers_repo_file_model_over_environment(tmp_path: Path)
     assert config.model == "repo/model"
 
 
-def test_runtime_config_loads_repo_file_execution_engine(tmp_path: Path) -> None:
-    _write_runtime_config(tmp_path, {"execution_engine": "deterministic"})
-
-    config = load_runtime_config(tmp_path, env={EXECUTION_ENGINE_ENV_VAR: "provider"})
-
-    assert config.execution_engine == "deterministic"
-
-
 def test_runtime_config_prefers_repo_file_tool_timeout_over_environment(tmp_path: Path) -> None:
     _write_runtime_config(tmp_path, {"tool_timeout_seconds": 4})
 
@@ -551,18 +522,6 @@ def test_runtime_config_treats_null_repo_file_tool_timeout_as_explicit_override(
     config = load_runtime_config(tmp_path, env={TOOL_TIMEOUT_ENV_VAR: "7"})
 
     assert config.tool_timeout_seconds is None
-
-
-def test_runtime_config_explicit_execution_engine_still_overrides_environment(
-    tmp_path: Path,
-) -> None:
-    config = load_runtime_config(
-        tmp_path,
-        execution_engine="provider",
-        env={EXECUTION_ENGINE_ENV_VAR: "deterministic"},
-    )
-
-    assert config.execution_engine == "provider"
 
 
 def test_runtime_config_prefers_explicit_tool_timeout_over_repo_file_and_environment(
@@ -651,7 +610,6 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
 
     config = load_runtime_config(tmp_path, env={})
 
-    assert config.execution_engine == "provider"
     assert config.tools == RuntimeToolsConfig(
         builtin=RuntimeToolsBuiltinConfig(enabled=True),
         local=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
@@ -898,15 +856,6 @@ def test_runtime_config_leaves_lsp_unset_when_no_derived_defaults_exist(tmp_path
     assert config.lsp is None
 
 
-def test_runtime_config_accepts_provider_execution_engine(tmp_path: Path) -> None:
-    _write_runtime_config(tmp_path, {"model": "opencode-zen/gpt-5.4"})
-
-    config = load_runtime_config(tmp_path, env={})
-
-    assert config.execution_engine == "provider"
-    assert config.model == "opencode-zen/gpt-5.4"
-
-
 def test_runtime_config_parses_agent_preset_from_repo_file(tmp_path: Path) -> None:
     _write_runtime_config(
         tmp_path,
@@ -928,7 +877,6 @@ def test_runtime_config_parses_agent_preset_from_repo_file(tmp_path: Path) -> No
         preset="default",
         prompt_profile="default",
         model="opencode-zen/gpt-5.4",
-        execution_engine="provider",
         tools=RuntimeToolsConfig(
             builtin=RuntimeToolsBuiltinConfig(enabled=True),
         ),
@@ -1145,7 +1093,6 @@ def test_runtime_agent_payload_round_trips_explicit_empty_tool_boundaries() -> N
     assert agent == RuntimeAgentConfig(
         preset="default",
         prompt_profile="default",
-        execution_engine="provider",
         tools=RuntimeToolsConfig(allowlist=(), default=()),
     )
     assert serialize_runtime_agent_config(agent, include_runtime_internal=True) == {
@@ -1179,11 +1126,7 @@ def test_runtime_agent_payload_resolves_through_builtin_agent_manifest() -> None
 
     agent = parse_runtime_agent_payload({"preset": "default"}, source="test payload")
 
-    assert agent == RuntimeAgentConfig(
-        preset="default",
-        prompt_profile=manifest.prompt_profile,
-        execution_engine=manifest.execution_engine,
-    )
+    assert agent == RuntimeAgentConfig(preset="default", prompt_profile=manifest.prompt_profile)
 
 
 def test_runtime_agent_payload_rejects_removed_leader_mode() -> None:
@@ -1200,11 +1143,7 @@ def test_runtime_agent_payload_rejects_removed_leader_mode() -> None:
 def test_runtime_agent_payload_accepts_builtin_role_presets() -> None:
     agent = parse_runtime_agent_payload({"preset": "execute"}, source="test payload")
 
-    assert agent == RuntimeAgentConfig(
-        preset="execute",
-        prompt_profile="execute",
-        execution_engine="provider",
-    )
+    assert agent == RuntimeAgentConfig(preset="execute", prompt_profile="execute")
 
 
 def test_runtime_agent_payload_parses_prompt_and_hook_references() -> None:
@@ -1229,7 +1168,6 @@ def test_runtime_agent_payload_parses_prompt_and_hook_references() -> None:
             prompt_source="builtin",
         ),
         hook_refs=("role_reminder", "delegation_guard"),
-        execution_engine="provider",
     )
 
 
@@ -1278,7 +1216,6 @@ def test_runtime_agent_payload_parses_context_transform_references() -> None:
         preset="default",
         prompt_profile="default",
         context_transform_refs=("hook_preset_guidance", "runtime_file_rules"),
-        execution_engine="provider",
     )
 
 
@@ -1370,18 +1307,8 @@ def test_runtime_config_parses_agents_map_with_builtin_keys(tmp_path: Path) -> N
 
     assert config.agents is not None
     assert set(config.agents.keys()) == {"default", "execute"}
-    assert config.agents["default"] == RuntimeAgentConfig(
-        preset="default",
-        prompt_profile="default",
-        model="opencode-zen/gpt-5.4",
-        execution_engine="provider",
-    )
-    assert config.agents["execute"] == RuntimeAgentConfig(
-        preset="execute",
-        prompt_profile="execute",
-        model="anthropic/claude-3-5-sonnet",
-        execution_engine="provider",
-    )
+    assert config.agents["default"] == RuntimeAgentConfig(preset="default", prompt_profile="default", model="opencode-zen/gpt-5.4")
+    assert config.agents["execute"] == RuntimeAgentConfig(preset="execute", prompt_profile="execute", model="anthropic/claude-3-5-sonnet")
 
 
 def test_runtime_config_parses_agents_fallback_models_shorthand(tmp_path: Path) -> None:
@@ -1440,17 +1367,8 @@ def test_runtime_config_parses_agents_map_with_custom_keys(tmp_path: Path) -> No
     config = load_runtime_config(tmp_path, env={})
 
     assert config.agents is not None
-    assert config.agents["my_helper"] == RuntimeAgentConfig(
-        preset="review",
-        prompt_profile="review",
-        model="anthropic/claude-3-5-sonnet",
-        execution_engine="provider",
-    )
-    assert config.agents["code-finder"] == RuntimeAgentConfig(
-        preset="explore",
-        prompt_profile="explore",
-        execution_engine="provider",
-    )
+    assert config.agents["my_helper"] == RuntimeAgentConfig(preset="review", prompt_profile="review", model="anthropic/claude-3-5-sonnet")
+    assert config.agents["code-finder"] == RuntimeAgentConfig(preset="explore", prompt_profile="explore")
 
 
 def test_runtime_config_rejects_internal_agent_references_in_repo_config(tmp_path: Path) -> None:
@@ -1482,12 +1400,7 @@ def test_runtime_config_parses_agent_context_transform_refs(tmp_path: Path) -> N
 
     config = load_runtime_config(tmp_path, env={})
 
-    assert config.agent == RuntimeAgentConfig(
-        preset="default",
-        prompt_profile="default",
-        context_transform_refs=("runtime_file_rules",),
-        execution_engine="provider",
-    )
+    assert config.agent == RuntimeAgentConfig(preset="default", prompt_profile="default", context_transform_refs=("runtime_file_rules",))
 
 
 def test_runtime_config_rejects_removed_categories_field(tmp_path: Path) -> None:
@@ -1795,27 +1708,9 @@ def test_runtime_config_lsp_diagnostics_on_write_defaults_off(tmp_path: Path) ->
     assert config.lsp.diagnostics_on_write is False
 
 
-def test_runtime_config_explicit_approval_mode_does_not_affect_environment_execution_engine(
-    tmp_path: Path,
-) -> None:
-    config = load_runtime_config(
-        tmp_path,
-        approval_mode="yolo",
-        env={EXECUTION_ENGINE_ENV_VAR: "provider"},
-    )
-
-    assert config.approval_mode == "yolo"
-    assert config.execution_engine == "provider"
-
-
 def test_runtime_config_rejects_invalid_environment_approval_mode(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match=APPROVAL_MODE_ENV_VAR):
         _ = load_runtime_config(tmp_path, env={APPROVAL_MODE_ENV_VAR: "maybe"})
-
-
-def test_runtime_config_rejects_invalid_environment_execution_engine(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match=EXECUTION_ENGINE_ENV_VAR):
-        _ = load_runtime_config(tmp_path, env={EXECUTION_ENGINE_ENV_VAR: "agent"})
 
 
 @pytest.mark.parametrize("raw_value", ["0", "-1", "four"])
@@ -1846,13 +1741,6 @@ def test_runtime_config_rejects_invalid_repo_local_approval_mode(tmp_path: Path)
     _write_runtime_config(tmp_path, {"approval_mode": "maybe"})
 
     with pytest.raises(ValueError, match="approval_mode"):
-        _ = load_runtime_config(tmp_path, env={})
-
-
-def test_runtime_config_rejects_invalid_repo_local_execution_engine(tmp_path: Path) -> None:
-    _write_runtime_config(tmp_path, {"execution_engine": "agent"})
-
-    with pytest.raises(ValueError, match="execution_engine"):
         _ = load_runtime_config(tmp_path, env={})
 
 
@@ -2639,7 +2527,6 @@ def test_runtime_config_uses_opencode_go_environment_credentials_without_provide
         tmp_path,
         env={
             MODEL_ENV_VAR: "opencode-go/glm-5",
-            EXECUTION_ENGINE_ENV_VAR: "provider",
             "OPENCODE_API_KEY": "opencode-go-env-key",
             "XDG_CONFIG_HOME": str(tmp_path / "xdg-config"),
             "HOME": str(tmp_path / "home"),
@@ -2647,7 +2534,6 @@ def test_runtime_config_uses_opencode_go_environment_credentials_without_provide
     )
 
     assert config.model == "opencode-go/glm-5"
-    assert config.execution_engine == "provider"
     assert config.providers is not None
     assert config.providers.opencode_go == OpenAICompatibleProviderConfig(api_key="opencode-go-env-key")
 
@@ -2681,29 +2567,18 @@ def test_runtime_config_resume_prefers_persisted_session_values_over_fresh_defau
     standin_providers = RuntimeProvidersConfig(custom={"session": ProviderEndpointConfig(), "fresh": ProviderEndpointConfig()})
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(
-            providers=standin_providers,
-            approval_mode="yolo",
-            model="session/model",
-            execution_engine="deterministic",
-        ),
+        config=RuntimeConfig(providers=standin_providers, approval_mode="yolo", model="session/model"),
     )
     _ = initial_runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="resume-config-precedence"))
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(
-            providers=standin_providers,
-            approval_mode="ask",
-            model="fresh/model",
-            execution_engine="deterministic",
-        ),
+        config=RuntimeConfig(providers=standin_providers, approval_mode="ask", model="fresh/model"),
     )
-    effective = resumed_runtime.effective_runtime_config(session_id="resume-config-precedence")
+    config = resumed_runtime.run_config(session_id="resume-config-precedence")
 
-    assert effective.approval_mode == "yolo"
-    assert effective.model == "session/model"
-    assert effective.execution_engine == "deterministic"
+    assert config.approval_mode == "yolo"
+    assert config.model == "session/model"
 
 
 def test_runtime_config_parses_policy_config_contract(tmp_path: Path) -> None:

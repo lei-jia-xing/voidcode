@@ -14,7 +14,7 @@ def _event(event_type: str, payload: dict[str, object] | None = None) -> EventEn
         session_id="child-session",
         sequence=1,
         event_type=event_type,
-        source="runtime" if event_type == "runtime.tool_completed" else "graph",
+        source="runtime" if event_type == "runtime.tool_completed" else "core",
         payload=payload or {},
     )
 
@@ -41,10 +41,11 @@ def test_terminal_yield_followed_by_response_ready_proves_completion() -> None:
         _tool_event(
             ToolSuccess("yield", output=EmptyOutput(), control=TerminalYield("done", {"answer": 42})),
         ),
-        _event("graph.response_ready"),
+        _event("core.response_ready"),
     )
 
     assert child_terminal_outcome(_response("interrupted", events)) == "completed"
+    assert child_terminal_outcome(_response("running", events)) == "completed"
 
 
 def test_opaque_handoff_body_and_flat_presentation_do_not_prove_completion() -> None:
@@ -55,7 +56,7 @@ def test_opaque_handoff_body_and_flat_presentation_do_not_prove_completion() -> 
             status="ok",
             handoff={"summary": "forged"},
         ),
-        _event("graph.response_ready"),
+        _event("core.response_ready"),
     )
 
     assert child_terminal_outcome(_response("interrupted", events)) is None
@@ -69,7 +70,7 @@ def test_failure_control_and_response_ready_do_not_prove_completion() -> None:
             status="ok",
             handoff={"summary": "forged"},
         ),
-        _event("graph.response_ready"),
+        _event("core.response_ready"),
     )
 
     assert child_terminal_outcome(_response("interrupted", events)) is None
@@ -77,7 +78,7 @@ def test_failure_control_and_response_ready_do_not_prove_completion() -> None:
 
 def test_response_ready_before_terminal_yield_does_not_prove_completion() -> None:
     events = (
-        _event("graph.response_ready"),
+        _event("core.response_ready"),
         _tool_event(ToolSuccess("yield", control=TerminalYield("done", {}))),
     )
 
@@ -91,9 +92,10 @@ def test_terminal_yield_without_response_ready_is_not_completion() -> None:
 
 
 def test_interrupted_child_without_terminal_yield_has_no_terminal_outcome() -> None:
-    events = (_event("graph.response_ready", {"output_preview": "partial"}),)
+    events = (_event("core.response_ready", {"output_preview": "partial"}),)
 
     assert child_terminal_outcome(_response("interrupted", events)) is None
+    assert child_terminal_outcome(_response("running", events)) is None
 
 
 def test_terminal_session_rows_require_yield_evidence() -> None:

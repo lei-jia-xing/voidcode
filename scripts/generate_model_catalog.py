@@ -95,37 +95,22 @@ def _decode(content: bytes) -> dict[str, object]:
     return json.loads(content)
 
 
-def _per_token(cost: dict[str, object], key: str) -> float:
-    # ponytail: a bucket upstream does not carry is written as 0.0, so the runtime
-    # cannot tell "upstream prices this at zero" from "upstream says nothing", and a
-    # partially-priced model is reported cheaper than it is (never more expensive).
-    # Upgrade path: emit the bucket as absent and carry ``float | None`` through
-    # ``LongContextRates``/``usage_cost_usd``, which already returns ``None`` for
-    # "unpriced".
+def _per_token(cost: dict[str, object], key: str) -> float | None:
     value = cost.get(key)
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value) / 1_000_000
-    return 0.0
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    return float(value) / 1_000_000
 
 
 def _reasoning_effort_fields(raw: dict[str, object]) -> dict[str, object]:
-    """Reasoning-effort capability from upstream `reasoning_options[]`.
-
-    Any option means the model exposes a reasoning control, so the capability
-    flag is present for every model: `True` when upstream lists options,
-    `False` when it does not. The model's own levels come from the `effort`
-    option's `values`, reduced to the canonical ladder and re-ordered by it;
-    upstream tokens outside the ladder (`none`, `default`) are not effort
-    levels, and `off` is expressed by omitting a level, not by one.
-
-    Upstream carries no per-model default-effort signal, so
-    `default_reasoning_effort` is not emitted; the runtime/frontend fall back
-    to the cheapest level the model supports.
-    """
     options = raw.get("reasoning_options")
-    if not isinstance(options, list) or not options:
-        return {"supports_reasoning_effort": False}
-    fields: dict[str, object] = {"supports_reasoning_effort": True}
+    if not isinstance(options, list):
+        return {}
+    has_effort = any(isinstance(option, dict) and option.get("type") == "effort" for option in options)
+    has_budget = any(isinstance(option, dict) and option.get("type") == "budget_tokens" for option in options)
+    fields: dict[str, object] = {"supports_reasoning_effort": has_effort}
+    if has_budget:
+        fields["supports_thinking_budget"] = True
     values = next(
         (option.get("values") for option in options if isinstance(option, dict) and option.get("type") == "effort"),
         None,
@@ -179,13 +164,15 @@ def _model_entry(raw: dict[str, object], api: str) -> dict[str, object] | None:
     entry: dict[str, object] = {
         "api": api,
         "context_window": context_window,
-        "cost_per_input_token": _per_token(cost, "input"),
-        "cost_per_output_token": _per_token(cost, "output"),
-        "cost_per_cache_read_token": _per_token(cost, "cache_read"),
-        "cost_per_cache_write_token": _per_token(cost, "cache_write"),
-        "supports_tools": bool(raw.get("tool_call")),
-        "supports_reasoning": bool(raw.get("reasoning")),
     }
+    for key in ("tool_call", "reasoning"):
+        value = raw.get(key)
+        if isinstance(value, bool):
+            entry["supports_tools" if key == "tool_call" else "supports_reasoning"] = value
+    for bucket in ("input", "output", "cache_read", "cache_write"):
+        rate = _per_token(cost, bucket)
+        if rate is not None:
+            entry[f"cost_per_{bucket}_token"] = rate
     if isinstance(max_output_tokens, int) and not isinstance(max_output_tokens, bool) and max_output_tokens > 0:
         entry["max_output_tokens"] = max_output_tokens
     if isinstance(max_input_tokens, int) and not isinstance(max_input_tokens, bool) and max_input_tokens > 0:
@@ -200,15 +187,13 @@ def _model_entry(raw: dict[str, object], api: str) -> dict[str, object] | None:
     if isinstance(modalities_input, list):
         entry["supports_vision"] = "image" in modalities_input
         entry["modalities_input"] = modalities_input
-    else:
-        entry["supports_vision"] = False
-        entry["modalities_input"] = ["text"]
     modalities_output = modalities.get("output") if isinstance(modalities, dict) else None
     if isinstance(modalities_output, list):
         entry["modalities_output"] = modalities_output
 
     status = raw.get("status")
-    entry["model_status"] = status if isinstance(status, str) and status else "active"
+    if isinstance(status, str) and status:
+        entry["model_status"] = status
     entry.update(_reasoning_effort_fields(raw))
     return entry
 
@@ -250,6 +235,34 @@ def _provider_catalog_entries(
     return provider_models
 
 
+def _refresh_existing_prices(catalog: dict[str, dict[str, dict[str, object]]], payload: dict[str, object]) -> int:
+    refreshed = 0
+    for provider_id, models in catalog.items():
+        source_models: dict[str, dict[str, object]] = {}
+        for key in PROVIDER_KEYS.get(provider_id, ()):
+            provider = payload.get(key)
+            raw_models = provider.get("models") if isinstance(provider, dict) else None
+            if isinstance(raw_models, dict):
+                source_models.update(
+                    (model_id.strip().lower(), raw) for model_id, raw in raw_models.items() if isinstance(model_id, str) and isinstance(raw, dict)
+                )
+        for model_id, entry in models.items():
+            raw = source_models.get(model_id)
+            if raw is None:
+                continue
+            cost = raw.get("cost")
+            cost = cost if isinstance(cost, dict) else {}
+            for bucket in ("input", "output", "cache_read", "cache_write"):
+                field = f"cost_per_{bucket}_token"
+                rate = _per_token(cost, bucket)
+                if rate is None:
+                    entry.pop(field, None)
+                else:
+                    entry[field] = rate
+            refreshed += 1
+    return refreshed
+
+
 def _tag_tokenizers(catalog: dict[str, dict[str, dict[str, object]]], routing: Mapping[tuple[str, str], str]) -> int:
     """Stamp ``tokenizer`` onto every catalog entry omp routes to an encoding."""
     tagged = 0
@@ -266,34 +279,43 @@ def _tag_tokenizers(catalog: dict[str, dict[str, dict[str, object]]], routing: M
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--retag-only",
-        action="store_true",
-        help="re-stamp `tokenizer` on the committed catalog without re-fetching models.dev",
-    )
+    parser.add_argument("--source", type=Path, help="local models.json.zstd or JSON snapshot; defaults to the canonical mirror")
+    parser.add_argument("--retag-only", action="store_true", help="re-stamp tokenizers without reading the mirror")
+    parser.add_argument("--pricing-only", action="store_true", help="refresh price fields on existing rows, preserving all other catalog data")
     args = parser.parse_args(argv)
+    if args.retag_only and (args.source is not None or args.pricing_only):
+        parser.error("--retag-only cannot be combined with --source or --pricing-only")
     routing = _tokenizer_routing()
 
     if args.retag_only:
-        # Editing the shipped catalog in place keeps one commit's diff equal to
-        # one change: a full regeneration also picks up whatever models.dev
-        # drifted since the last one, and that belongs in its own commit.
         catalog = json.loads(OUTPUT_PATH.read_text(encoding="utf-8"))
     else:
-        payload = _decode(_fetch_raw())
-        catalog = {}
-        for provider_id, keys in PROVIDER_KEYS.items():
-            provider_models = _provider_catalog_entries(provider_id, keys, payload)
-            if provider_models:
-                catalog[provider_id] = provider_models
+        source = args.source.read_bytes() if args.source is not None else _fetch_raw()
+        payload = _decode(source)
+        if args.pricing_only:
+            catalog = json.loads(OUTPUT_PATH.read_text(encoding="utf-8"))
+            refreshed = _refresh_existing_prices(catalog, payload)
+        else:
+            catalog = {}
+            for provider_id, keys in PROVIDER_KEYS.items():
+                provider_models = _provider_catalog_entries(provider_id, keys, payload)
+                if provider_models:
+                    catalog[provider_id] = provider_models
 
-    tagged = _tag_tokenizers(catalog, routing)
+    tagged = (
+        _tag_tokenizers(catalog, routing)
+        if not args.pricing_only
+        else sum("tokenizer" in entry for models in catalog.values() for entry in models.values())
+    )
     OUTPUT_PATH.write_text(json.dumps(catalog, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     total = sum(len(models) for models in catalog.values())
-    if not args.retag_only:
+    if not args.retag_only and not args.pricing_only:
         for provider_id, models in catalog.items():
             print(f"{provider_id}: {len(models)} models")
-    print(f"tokenizer routing: {tagged}/{total} catalog entries tagged ({tagged / total:.1%})")
+    if args.pricing_only:
+        print(f"pricing provenance: {args.source if args.source is not None else CATALOG_URL}; refreshed {refreshed} existing rows")
+    else:
+        print(f"tokenizer routing: {tagged}/{total} catalog entries tagged ({tagged / total:.1%})")
     return 0
 
 

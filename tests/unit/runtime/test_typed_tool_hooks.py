@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.turn_producers import model_turn_fact
 from voidcode.core.tool_context import ToolContext
 from voidcode.core.turns import FinalTurn, ToolTurn, TurnRequest
 from voidcode.hook.typed import (
@@ -46,8 +47,8 @@ class _OneToolProducer:
         *,
         session: object,
     ) -> ToolTurn | FinalTurn:
-        _ = request, session
-        return ToolTurn(calls=(self.call,)) if not tool_results else FinalTurn(output="done")
+        fact = model_turn_fact(request)
+        return ToolTurn(calls=(self.call,), facts=(fact,)) if not tool_results else FinalTurn(output="done", facts=(fact,))
 
 
 class _CaptureTool:
@@ -91,7 +92,7 @@ def _runtime(
         workspace=workspace,
         tool_registry=ToolRegistry.from_tools(tools),
         turn_producer=_OneToolProducer(initial_call or ToolCall(tool_name="capture", arguments={"path": "./input.txt"})),
-        config=RuntimeConfig(execution_engine="deterministic", approval_mode=approval_mode, mcp=RuntimeMcpConfig(enabled=False)),
+        config=RuntimeConfig(approval_mode=approval_mode, mcp=RuntimeMcpConfig(enabled=False)),
         permission_policy=PermissionPolicy(mode=approval_mode),
         tool_input_handler_registry=registry,
     )
@@ -122,7 +123,7 @@ def _registry(name: str, handler: ToolInputHandler) -> ToolInputHandlerRegistry:
     )
 
 
-def test_typed_rewrite_preserves_raw_graph_args_uses_final_execution_args_and_canonical_started_id(tmp_path: Path) -> None:
+def test_typed_rewrite_preserves_raw_tool_request_args_uses_final_execution_args_and_canonical_started_id(tmp_path: Path) -> None:
     tool = _CaptureTool()
     registry = _registry("canonicalize", _canonicalizer("canonical.txt"))
     response = _runtime(
@@ -137,10 +138,10 @@ def test_typed_rewrite_preserves_raw_graph_args_uses_final_execution_args_and_ca
     ).run(RuntimeRequest(prompt="capture"))
     assert response.session.status == "completed"
     assert [call.arguments for call in tool.calls] == [{"path": "canonical.txt"}]
-    graph_request = next(event for event in response.events if event.event_type == "graph.tool_request_created")
-    assert graph_request.payload["arguments"] == {"path": "./input.txt"}
+    tool_request = next(event for event in response.events if event.event_type == "core.tool_request_created")
+    assert tool_request.payload["arguments"] == {"path": "./input.txt"}
     types = [event.event_type for event in response.events]
-    assert types.index("graph.tool_request_created") < types.index("runtime.tool_lookup_succeeded") < types.index("runtime.tool_input_processed")
+    assert types.index("core.tool_request_created") < types.index("runtime.tool_lookup_succeeded") < types.index("runtime.tool_input_processed")
     trace = next(event for event in response.events if event.event_type == "runtime.tool_input_processed")
     assert trace.payload["surface"] == "typed_input"
     assert trace.payload["hook_status"] == "ok"
@@ -237,7 +238,7 @@ def test_invoke_tool_outer_is_not_rewritten_and_inner_runs_once(tmp_path: Path) 
     assert handler_calls == ["capture"]
     assert [call.arguments for call in tool.calls] == [{"path": "inner-final.txt"}]
     inner_request = next(
-        event for event in response.events if event.event_type == "graph.tool_request_created" and event.payload.get("tool") == "capture"
+        event for event in response.events if event.event_type == "core.tool_request_created" and event.payload.get("tool") == "capture"
     )
     lookup = next(
         event for event in response.events if event.event_type == "runtime.tool_lookup_succeeded" and event.payload.get("tool") == "capture"
@@ -277,7 +278,7 @@ def test_invoke_inner_block_emits_lookup_then_typed_trace_before_feedback(tmp_pa
     assert handler_calls == ["capture"]
     assert tool.calls == []
     inner_request = next(
-        event for event in response.events if event.event_type == "graph.tool_request_created" and event.payload.get("tool") == "capture"
+        event for event in response.events if event.event_type == "core.tool_request_created" and event.payload.get("tool") == "capture"
     )
     lookup = next(
         event for event in response.events if event.event_type == "runtime.tool_lookup_succeeded" and event.payload.get("tool") == "capture"

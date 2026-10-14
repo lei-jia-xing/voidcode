@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Protocol
@@ -15,11 +14,6 @@ if TYPE_CHECKING:
     from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 
 RULE_URI_PREFIX = "voidcode://rule/"
-
-
-class EditSchema(StrEnum):
-    FLEXIBLE = "flexible"
-    STRICT = "strict"
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,7 +302,6 @@ class ToolContext:
     read_whole_files: frozenset[tuple[str, str]] = frozenset()
     read_hash: str | None = None
     model: str | None = None
-    edit_schema: EditSchema = EditSchema.FLEXIBLE
     todo_phases: tuple[TodoPhase, ...] = ()
     tool_timeout_seconds: int | None = None
     abort_signal: ProviderAbortSignal | None = None

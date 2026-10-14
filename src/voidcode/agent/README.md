@@ -48,14 +48,14 @@
 
 本目录描述的是“一个角色默认希望带什么组合”，不是“runtime 今天已经能怎样执行它”。
 
-- `default`：通用顶层助手；`preset` / `prompt_profile` / `model` / `execution_engine` / `tools` / `skills` / `provider_fallback` 会进入 runtime config truth 并随 session 持久化
+- `default`：通用顶层助手；`preset` / `prompt_profile` / `model` / `tools` / `skills` / `provider_fallback` 会进入 runtime config truth 并随 session 持久化
 - `execute`：delegated executor；仅通过 runtime 的 child execution path 运行
 - `review`：delegated reviewer；仅通过 runtime 的 child execution path 运行
 - `explore`：delegated workspace discovery；仅通过 runtime 的 child execution path 运行
 - `research`：delegated external research；仅通过 runtime 的 child execution path 运行
 - `plan`：delegated read-only planning；仅通过 runtime 的 child execution path 运行
 
-当前 builtin preset 都有 agent-owned prompt profile；active / delegated agent 的 manifest allowlist 会收窄 provider 可见的 `available_tools`，并且同一边界也会约束实际 tool lookup / invocation。builtin `prompt_profile` 由 `src/voidcode/agent/` 统一 materialize 后进入 provider system message，`model_preference` / `execution_engine` 会作为 manifest live defaults 被 runtime 解析，manifest `skill_refs` 会作为默认 skill selection 进入 runtime skill application，agent manifest 的 `preset_hook_refs` 必须引用 `src/voidcode/hook/presets.py` 中的 builtin hook preset catalog，`agent.skills` 会覆盖本次运行使用的 runtime-managed skill discovery / application policy。
+当前 builtin preset 都有 agent-owned prompt profile；active / delegated agent 的 manifest allowlist 会收窄 provider 可见的 `available_tools`，并且同一边界也会约束实际 tool lookup / invocation。builtin `prompt_profile` 由 `src/voidcode/agent/` 统一 materialize 后进入 provider system message，`model_preference` 会作为 manifest live default 被 runtime 解析，manifest `skill_refs` 会作为默认 skill selection 进入 runtime skill application，agent manifest 的 `preset_hook_refs` 必须引用 `src/voidcode/hook/presets.py` 中的 builtin hook preset catalog，`agent.skills` 会覆盖本次运行使用的 runtime-managed skill discovery / application policy。
 
 `prompt_materialization` 是 prompt 审计元数据：它声明 builtin prompt profile、materialization version、source/format。当前 builtin agents 使用各自默认 profile；profile 选择规则属于 agent declaration 层，最终 provider system message 的组装仍由 runtime/provider 路径负责。
 

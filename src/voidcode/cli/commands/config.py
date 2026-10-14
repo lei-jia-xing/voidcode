@@ -32,7 +32,7 @@ def _handle_config_show_command(args: ConfigArgs) -> int:
 
     session_id = args.session_id
     with open_runtime(workspace) as runtime, runtime_error_boundary():
-        effective_config = runtime.effective_runtime_config(session_id=session_id)
+        config = runtime.run_config(session_id=session_id)
         readiness = runtime.provider_readiness(session_id=session_id)
         agents = runtime.effective_agent_model_config(session_id=session_id)
         status = runtime.current_status()
@@ -41,14 +41,13 @@ def _handle_config_show_command(args: ConfigArgs) -> int:
         {
             "workspace": str(workspace),
             "session_id": session_id,
-            "approval_mode": effective_config.approval_mode,
-            "execution_engine": effective_config.execution_engine,
-            "model": effective_config.model,
-            "fallback_models": (list(effective_config.provider_fallback.fallback_models) if effective_config.provider_fallback is not None else []),
-            "reasoning_effort": effective_config.reasoning_effort,
-            "agent": serialize_runtime_agent_config(effective_config.agent),
+            "approval_mode": config.approval_mode,
+            "model": config.model,
+            "fallback_models": (list(config.provider_fallback.fallback_models) if config.provider_fallback is not None else []),
+            "reasoning_effort": config.reasoning_effort,
+            "agent": serialize_runtime_agent_config(config.agent),
             "agents": agents,
-            "resolved_provider": resolved_provider_snapshot(effective_config.resolved_provider),
+            "resolved_provider": resolved_provider_snapshot(config.resolved_provider),
             "provider_readiness": provider_readiness_payload(readiness),
             "context_budget": {
                 "context_window": readiness.context_window,

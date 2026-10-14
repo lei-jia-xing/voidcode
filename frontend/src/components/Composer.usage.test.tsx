@@ -15,7 +15,10 @@ const agent: AgentSummary = {
   fallback_chain: [],
 };
 
-function renderUsage(costUsd: number | null): string {
+function renderUsage(
+  costUsd: number | null,
+  totalTokens: number | null = 1_500_000,
+): string {
   render(
     <Composer
       disabled={false}
@@ -24,7 +27,7 @@ function renderUsage(costUsd: number | null): string {
       sessionContextUsage={{
         usedTokens: 24_000,
         contextWindow: 200_000,
-        totalTokens: 1_500_000,
+        totalTokens,
         cacheHitRate: 0.5,
         costUsd,
       }}
@@ -48,5 +51,11 @@ describe("composer session usage line", () => {
 
     expect(label).toContain("1.5M total");
     expect(label).not.toContain("$");
+  });
+  it("labels unreported counts as unavailable, not a zero total", () => {
+    const label = renderUsage(null, null);
+
+    expect(label).toContain("total unavailable");
+    expect(label).not.toContain("0 total");
   });
 });

@@ -8,6 +8,7 @@ input, the request field is the contract.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, cast
 
 from voidcode.core.transcript import AssembledContext, ContextSegment
@@ -73,7 +74,16 @@ class _Models:
 
     def generate_content(self, **kwargs: object) -> object:
         self.last_config = kwargs.get("config")
-        return type("_Response", (), {"text": "ok", "function_calls": (), "usage_metadata": None})()
+        return SimpleNamespace(
+            text="ok",
+            candidates=[
+                SimpleNamespace(
+                    content=SimpleNamespace(parts=[]),
+                    finish_reason=SimpleNamespace(name="STOP"),
+                )
+            ],
+            usage_metadata=None,
+        )
 
 
 class _Client:

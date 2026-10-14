@@ -44,6 +44,13 @@ class TurnBatch:
     provider_usage: ProviderTokenUsage | None = None
     run_step: int = 1
     results: list[ReportedCall] = field(default_factory=list)
+    tool_batch_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TurnObservation:
+    continue_run: bool
+    tool_batch_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -67,31 +74,49 @@ class EngineState:
     def cancelled(self) -> bool:
         return self.request.abort_signal is not None and self.request.abort_signal.cancelled
 
-    def begin_batch(self, plan: ToolTurn) -> None:
+    def prepare_batch(self, plan: ToolTurn) -> tuple[ToolTurn, TurnBatch]:
         if self.pending:
             raise RuntimeError("cannot replace an unfinished tool batch")
         calls = tuple(call if call.tool_call_id is not None else replace(call, tool_call_id=f"call-{uuid4().hex}") for call in plan.calls)
         if len({call.tool_call_id for call in calls}) != len(calls):
             raise ValueError("native batch contains duplicate tool call identities")
-        self.plan = replace(plan, calls=calls)
-        batch = TurnBatch(calls, plan.reasoning, plan.provider_usage, self.request.run_step)
+        normalized = replace(plan, calls=calls)
+        return normalized, TurnBatch(calls, plan.reasoning, plan.provider_usage, self.request.run_step)
+
+    def append_batch(self, plan: ToolTurn, batch: TurnBatch, *, tool_batch_id: str | None) -> None:
+        if self.pending:
+            raise RuntimeError("cannot replace an unfinished tool batch")
+        if batch.calls != plan.calls or batch.run_step != self.request.run_step:
+            raise ValueError("observed native batch no longer matches its normalized plan")
+        batch.tool_batch_id = tool_batch_id
+        self.plan = plan
         self.batches.append(batch)
         self.transcript.append(batch)
-        self.pending.extend(calls)
+        self.pending.extend(batch.calls)
 
     def advance(self, call: ToolCall, report: ReportedCall) -> None:
         if not self.pending or self.pending[0] != call:
             raise RuntimeError("tool result does not advance the active batch")
         if report.tool_call_id != call.tool_call_id:
             raise ValueError("reported result does not match the active native identity")
-        owned = replace(report)
+        batch_id = self.batches[-1].tool_batch_id
+        if report.tool_batch_id is not None and report.tool_batch_id != batch_id:
+            raise ValueError("reported result does not match the active native batch")
+        owned = replace(report, tool_batch_id=batch_id)
         self.results.append(owned)
         self.batches[-1].results.append(owned)
         self.pending.popleft()
         self.request = replace(self.request, run_step=self.request.run_step + 1)
 
     def transcript_segments(self, tool_results: Sequence[ToolResultView] | None = None) -> tuple[ContextSegment, ...]:
-        views = None if tool_results is None else {result.tool_call_id: result for result in tool_results}
+        views = None
+        if tool_results is not None:
+            views = {}
+            for result in tool_results:
+                key = (result.tool_batch_id, result.tool_call_id)
+                if key in views:
+                    raise ValueError("tool result views duplicate a native batch member")
+                views[key] = result
         segments: list[ContextSegment] = []
         for entry in self.transcript:
             if isinstance(entry, ContextSegment):
@@ -100,16 +125,32 @@ class EngineState:
             batch = entry
             if len(batch.results) != len(batch.calls):
                 continue
+            projected_batch: list[tuple[ToolCall, ToolResultView]] = []
             for call, report in zip(batch.calls, batch.results, strict=True):
-                if views is not None:
-                    projected = views.get(report.tool_call_id)
-                    if projected is None:
-                        continue
-                else:
-                    projected = project_report(report)
+                key = (batch.tool_batch_id, call.tool_call_id)
+                projected = project_report(report) if views is None else views.get(key)
+                if projected is None:
+                    projected_batch.clear()
+                    break
+                projected_batch.append((call, projected))
+            if len(projected_batch) != len(batch.calls):
+                continue
+            batch_id = batch.tool_batch_id
+            for call, _projected in projected_batch:
+                segments.append(
+                    ContextSegment(
+                        "assistant",
+                        None,
+                        call.tool_call_id,
+                        call.tool_name,
+                        json_wire_object(call.arguments),
+                        tool_batch_id=batch_id,
+                    )
+                )
+            for call, projected in projected_batch:
                 data: dict[str, object] = {
-                    "tool_call_id": report.tool_call_id,
-                    "arguments": json_wire_object(report.authorized_arguments),
+                    "tool_call_id": call.tool_call_id,
+                    "arguments": json_wire_object(call.arguments),
                 }
                 if batch.reasoning is not None:
                     data["reasoning_content"] = batch.reasoning
@@ -123,23 +164,21 @@ class EngineState:
                             data["attachment_reference"] = projected.output.bounds.reference.uri
                 content = tool_result_output(projected)
                 bounds = projected.output.bounds
-                segments.extend(
-                    (
-                        ContextSegment("assistant", None, call.tool_call_id, call.tool_name, json_wire_object(call.arguments)),
-                        ContextSegment(
-                            "tool",
-                            projected.error if content is None else content,
-                            call.tool_call_id,
-                            call.tool_name,
-                            metadata={
-                                "status": projected.status,
-                                "error": projected.error,
-                                "data": data,
-                                "truncated": bounds.truncated or projected.clipped or projected.pruned,
-                                "partial": bounds.partial or projected.clipped or projected.pruned,
-                                "reference": bounds.reference.uri if bounds.reference is not None else None,
-                            },
-                        ),
+                segments.append(
+                    ContextSegment(
+                        "tool",
+                        projected.error if content is None else content,
+                        call.tool_call_id,
+                        call.tool_name,
+                        metadata={
+                            "status": projected.status,
+                            "error": projected.error,
+                            "data": data,
+                            "truncated": bounds.truncated or projected.clipped or projected.pruned,
+                            "partial": bounds.partial or projected.clipped or projected.pruned,
+                            "reference": bounds.reference.uri if bounds.reference is not None else None,
+                        },
+                        tool_batch_id=batch_id,
                     )
                 )
         return tuple(segments)
@@ -158,7 +197,7 @@ class TurnHost[T](Protocol):
 
     def invoke(self, producer: TurnProducer, state: EngineState) -> Generator[T, None, TurnPlan | None]: ...
 
-    def observe(self, plan: TurnPlan, state: EngineState) -> Generator[T, None, bool]: ...
+    def observe(self, plan: TurnPlan, state: EngineState, batch: TurnBatch | None) -> Generator[T, None, TurnObservation]: ...
 
     def execute(self, call: ToolCall, state: EngineState) -> Generator[T, None, CallOutcome]: ...
 
@@ -183,18 +222,19 @@ class TurnEngine:
     ) -> Generator[T, None, EngineResult]:
         state = EngineState(request, list(tool_results))
         if seed is not None:
-            completed_result_ids = {report.tool_call_id for report in state.results}
             if seed.run_step is not None:
                 state.request = replace(state.request, run_step=seed.run_step)
-            state.begin_batch(ToolTurn(calls=seed.calls, reasoning=seed.reasoning))
+            plan, batch = state.prepare_batch(ToolTurn(calls=seed.calls, reasoning=seed.reasoning))
+            state.append_batch(plan, batch, tool_batch_id=seed.tool_batch_id)
             for report in seed.completed_reports:
                 if not state.pending or report.tool_call_id != state.pending[0].tool_call_id:
                     raise ValueError("restored results must be the completed prefix of the original batch")
-                owned = replace(report)
+                key = (seed.tool_batch_id, report.tool_call_id)
+                if any((item.tool_batch_id, item.tool_call_id) == key for item in state.results):
+                    raise ValueError("restored results are already present for this native batch member")
+                owned = replace(report, tool_batch_id=seed.tool_batch_id)
                 state.batches[-1].results.append(owned)
-                if report.tool_call_id not in completed_result_ids:
-                    state.results.append(owned)
-                    completed_result_ids.add(report.tool_call_id)
+                state.results.append(owned)
                 state.pending.popleft()
             state.request = replace(state.request, run_step=state.request.run_step + len(seed.completed_reports))
             state.plan = ToolTurn(calls=tuple(state.pending), reasoning=seed.reasoning) if state.pending else None
@@ -215,16 +255,23 @@ class TurnEngine:
             if state.pending:
                 plan = state.plan
                 assert plan is not None
+                batch = state.batches[-1]
+                new_batch = False
             else:
                 plan = yield from host.invoke(self.producer, state)
                 if plan is None:
                     return self._result(state, "stopped")
-                if isinstance(plan, ToolTurn):
-                    state.begin_batch(plan)
-                    plan = state.plan
-                    assert plan is not None
-            if not (yield from host.observe(plan, state)):
+                new_batch = isinstance(plan, ToolTurn)
+                if new_batch:
+                    plan, batch = state.prepare_batch(plan)
+                else:
+                    batch = None
+            observation = yield from host.observe(plan, state, batch)
+            if not observation.continue_run:
                 return self._result(state, "stopped")
+            if new_batch:
+                assert batch is not None and isinstance(plan, ToolTurn)
+                state.append_batch(plan, batch, tool_batch_id=observation.tool_batch_id)
             if state.cancelled:
                 return self._result(state, "aborted")
             if isinstance(plan, FinalTurn):

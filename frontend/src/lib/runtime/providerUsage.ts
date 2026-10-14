@@ -16,11 +16,11 @@ function objectValue(
 function numericValue(
   source: Record<string, unknown> | undefined,
   key: string,
-): number {
+): number | null {
   const value = source?.[key];
-  return typeof value === "number" && Number.isFinite(value) && value > 0
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
     ? value
-    : 0;
+    : null;
 }
 
 /**
@@ -39,11 +39,12 @@ export function providerContextTokens(
   if (!latest) {
     return null;
   }
-  const total =
-    numericValue(latest, "input_tokens") +
-    numericValue(latest, "cache_write_tokens") +
-    numericValue(latest, "output_tokens");
-  return total > 0 ? total : null;
+  const input = numericValue(latest, "input_tokens");
+  const cacheWrite = numericValue(latest, "cache_write_tokens");
+  const output = numericValue(latest, "output_tokens");
+  return input !== null && cacheWrite !== null && output !== null
+    ? input + cacheWrite + output
+    : null;
 }
 
 /** Cumulative (whole-session) token total. */
@@ -57,43 +58,43 @@ export function providerTotalTokens(
   }
   // cumulative.input_tokens already includes cache_read_tokens, so only
   // cache_write_tokens is additive (consistent with providerContextTokens).
-  const total =
-    numericValue(cumulative, "input_tokens") +
-    numericValue(cumulative, "output_tokens") +
-    numericValue(cumulative, "cache_write_tokens");
-  return total > 0 ? total : null;
+  const input = numericValue(cumulative, "input_tokens");
+  const output = numericValue(cumulative, "output_tokens");
+  const cacheWrite = numericValue(cumulative, "cache_write_tokens");
+  return input !== null && output !== null && cacheWrite !== null
+    ? input + output + cacheWrite
+    : null;
 }
 
 /**
- * Cumulative USD for the session, or `null` when the model had no shipped rates
- * (an unpriced model must not read as a free one).
+ * Cumulative session cost, or `null` unless the runtime can account for the
+ * whole session.
  */
 export function providerCostUsd(
   metadata: Record<string, unknown> | undefined,
 ): number | null {
-  const providerUsage = objectValue(metadata, "provider_usage");
-  const cumulative = objectValue(providerUsage, "cumulative");
-  if (cumulative && typeof cumulative.cost_usd === "number") {
-    return cumulative.cost_usd;
-  }
-  const latest = objectValue(providerUsage, "latest");
-  if (latest && typeof latest.cost_usd === "number") {
-    return latest.cost_usd;
-  }
-  return null;
+  const cumulative = objectValue(
+    objectValue(metadata, "provider_usage"),
+    "cumulative",
+  );
+  const cost = cumulative?.cost_usd;
+  return typeof cost === "number" && Number.isFinite(cost) && cost >= 0
+    ? cost
+    : null;
 }
 
 export function providerCacheHitRate(
   metadata: Record<string, unknown> | undefined,
 ): number | null {
-  const providerUsage = objectValue(metadata, "provider_usage");
-  const cumulative = objectValue(providerUsage, "cumulative");
-  if (cumulative && typeof cumulative.cache_hit_rate === "number") {
-    return cumulative.cache_hit_rate;
-  }
-  const latest = objectValue(providerUsage, "latest");
-  if (latest && typeof latest.cache_hit_rate === "number") {
-    return latest.cache_hit_rate;
-  }
-  return null;
+  const cumulative = objectValue(
+    objectValue(metadata, "provider_usage"),
+    "cumulative",
+  );
+  const rate = cumulative?.cache_hit_rate;
+  return typeof rate === "number" &&
+    Number.isFinite(rate) &&
+    rate >= 0 &&
+    rate <= 1
+    ? rate
+    : null;
 }

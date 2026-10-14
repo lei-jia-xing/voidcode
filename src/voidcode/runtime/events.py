@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Final, Literal
 
+from ..core.event_store import model_turn_batch_id
+
 # Event vocabulary — single source of truth.
 # KnownEventType (CoreEventType | RuntimeEventType) is the authoritative stored/
 # persisted event vocabulary. EMITTED_EVENT_TYPES (Core) and RUNTIME_EVENT_TYPES
@@ -14,11 +16,11 @@ from typing import Final, Literal
 # is why runtime.mcp_server_released was deleted).
 # waiting_approval lives only in DelegatedLifecycleStatus / the delegated event
 # layer and must never be promoted to a stored task/session status.
-# graph.provider_stream is a live-only client transport detail (converted to
+# core.provider_stream is a live-only client transport detail (converted to
 # runtime.reasoning_part, never persisted) and is intentionally NOT a member of
 # KnownEventType; do not add it here.
 
-type EventSource = Literal["runtime", "graph", "tool"]
+type EventSource = Literal["runtime", "core", "tool"]
 
 type CoreEventType = Literal[
     "runtime.request_received",
@@ -41,19 +43,19 @@ type CoreEventType = Literal[
     "runtime.mcp_server_acquired",
     "runtime.mcp_server_stopped",
     "runtime.mcp_server_failed",
-    "graph.loop_step",
-    "graph.model_turn",
-    "graph.tool_call_start",
-    "graph.tool_call_delta",
-    "graph.tool_call_end",
-    "graph.tool_request_created",
+    "core.loop_step",
+    "core.model_turn",
+    "core.tool_call_start",
+    "core.tool_call_delta",
+    "core.tool_call_end",
+    "core.tool_request_created",
     "runtime.tool_lookup_succeeded",
     "runtime.tool_started",
     "runtime.permission_resolved",
     "runtime.tool_hook_pre",
     "runtime.tool_hook_post",
     "runtime.tool_completed",
-    "graph.response_ready",
+    "core.response_ready",
     "runtime.approval_requested",
     "runtime.approval_resolved",
     "runtime.question_requested",
@@ -88,8 +90,8 @@ type RuntimeEventType = Literal[
     "runtime.reasoning_part",
     "runtime.reasoning_diagnostic",
     "runtime.turn_progress",
-    "runtime.stuck_detected",
-    "runtime.before_compact",
+    "runtime.tool_batch_repeated",
+    "runtime.lifecycle_hook",
     "runtime.tool_input_processed",
     "runtime.tool_timeout",
     "runtime.provider_context_policy",
@@ -154,19 +156,19 @@ RUNTIME_MCP_SERVER_REUSED: Final[CoreEventType] = "runtime.mcp_server_reused"
 RUNTIME_MCP_SERVER_ACQUIRED: Final[CoreEventType] = "runtime.mcp_server_acquired"
 RUNTIME_MCP_SERVER_STOPPED: Final[CoreEventType] = "runtime.mcp_server_stopped"
 RUNTIME_MCP_SERVER_FAILED: Final[CoreEventType] = "runtime.mcp_server_failed"
-GRAPH_LOOP_STEP: Final[CoreEventType] = "graph.loop_step"
-GRAPH_MODEL_TURN: Final[CoreEventType] = "graph.model_turn"
-GRAPH_TOOL_CALL_START: Final[CoreEventType] = "graph.tool_call_start"
-GRAPH_TOOL_CALL_DELTA: Final[CoreEventType] = "graph.tool_call_delta"
-GRAPH_TOOL_CALL_END: Final[CoreEventType] = "graph.tool_call_end"
-GRAPH_TOOL_REQUEST_CREATED: Final[CoreEventType] = "graph.tool_request_created"
+CORE_LOOP_STEP: Final[CoreEventType] = "core.loop_step"
+CORE_MODEL_TURN: Final[CoreEventType] = "core.model_turn"
+CORE_TOOL_CALL_START: Final[CoreEventType] = "core.tool_call_start"
+CORE_TOOL_CALL_DELTA: Final[CoreEventType] = "core.tool_call_delta"
+CORE_TOOL_CALL_END: Final[CoreEventType] = "core.tool_call_end"
+CORE_TOOL_REQUEST_CREATED: Final[CoreEventType] = "core.tool_request_created"
 RUNTIME_TOOL_HOOK_PRE: Final[CoreEventType] = "runtime.tool_hook_pre"
 RUNTIME_TOOL_HOOK_POST: Final[CoreEventType] = "runtime.tool_hook_post"
 RUNTIME_TOOL_COMPLETED: Final[CoreEventType] = "runtime.tool_completed"
 RUNTIME_TOOL_LOOKUP_SUCCEEDED: Final[CoreEventType] = "runtime.tool_lookup_succeeded"
 RUNTIME_TOOL_STARTED: Final[CoreEventType] = "runtime.tool_started"
 RUNTIME_PERMISSION_RESOLVED: Final[CoreEventType] = "runtime.permission_resolved"
-GRAPH_RESPONSE_READY: Final[CoreEventType] = "graph.response_ready"
+CORE_RESPONSE_READY: Final[CoreEventType] = "core.response_ready"
 RUNTIME_APPROVAL_REQUESTED: Final[CoreEventType] = "runtime.approval_requested"
 RUNTIME_APPROVAL_RESOLVED: Final[CoreEventType] = "runtime.approval_resolved"
 RUNTIME_QUESTION_REQUESTED: Final[CoreEventType] = "runtime.question_requested"
@@ -200,8 +202,8 @@ RUNTIME_TODO_UPDATED: Final[RuntimeEventType] = "runtime.todo_updated"
 RUNTIME_REASONING_PART: Final[RuntimeEventType] = "runtime.reasoning_part"
 RUNTIME_REASONING_DIAGNOSTIC: Final[RuntimeEventType] = "runtime.reasoning_diagnostic"
 RUNTIME_TURN_PROGRESS: Final[RuntimeEventType] = "runtime.turn_progress"
-RUNTIME_STUCK_DETECTED: Final[RuntimeEventType] = "runtime.stuck_detected"
-RUNTIME_BEFORE_COMPACT: Final[RuntimeEventType] = "runtime.before_compact"
+RUNTIME_TOOL_BATCH_REPEATED: Final[RuntimeEventType] = "runtime.tool_batch_repeated"
+RUNTIME_LIFECYCLE_HOOK: Final[RuntimeEventType] = "runtime.lifecycle_hook"
 RUNTIME_TOOL_INPUT_PROCESSED: Final[RuntimeEventType] = "runtime.tool_input_processed"
 RUNTIME_TOOL_TIMEOUT: Final[RuntimeEventType] = "runtime.tool_timeout"
 RUNTIME_PROVIDER_CONTEXT_POLICY: Final[RuntimeEventType] = "runtime.provider_context_policy"
@@ -239,19 +241,19 @@ EMITTED_EVENT_TYPES: Final[tuple[CoreEventType, ...]] = (
     RUNTIME_MCP_SERVER_ACQUIRED,
     RUNTIME_MCP_SERVER_STOPPED,
     RUNTIME_MCP_SERVER_FAILED,
-    GRAPH_LOOP_STEP,
-    GRAPH_MODEL_TURN,
-    GRAPH_TOOL_CALL_START,
-    GRAPH_TOOL_CALL_DELTA,
-    GRAPH_TOOL_CALL_END,
-    GRAPH_TOOL_REQUEST_CREATED,
+    CORE_LOOP_STEP,
+    CORE_MODEL_TURN,
+    CORE_TOOL_CALL_START,
+    CORE_TOOL_CALL_DELTA,
+    CORE_TOOL_CALL_END,
+    CORE_TOOL_REQUEST_CREATED,
     RUNTIME_TOOL_LOOKUP_SUCCEEDED,
     RUNTIME_TOOL_STARTED,
     RUNTIME_PERMISSION_RESOLVED,
     RUNTIME_TOOL_HOOK_PRE,
     RUNTIME_TOOL_HOOK_POST,
     RUNTIME_TOOL_COMPLETED,
-    GRAPH_RESPONSE_READY,
+    CORE_RESPONSE_READY,
     RUNTIME_APPROVAL_REQUESTED,
     RUNTIME_APPROVAL_RESOLVED,
     RUNTIME_QUESTION_REQUESTED,
@@ -286,8 +288,8 @@ RUNTIME_EVENT_TYPES: Final[tuple[RuntimeEventType, ...]] = (
     RUNTIME_REASONING_PART,
     RUNTIME_REASONING_DIAGNOSTIC,
     RUNTIME_TURN_PROGRESS,
-    RUNTIME_STUCK_DETECTED,
-    RUNTIME_BEFORE_COMPACT,
+    RUNTIME_TOOL_BATCH_REPEATED,
+    RUNTIME_LIFECYCLE_HOOK,
     RUNTIME_TOOL_INPUT_PROCESSED,
     RUNTIME_TOOL_TIMEOUT,
     RUNTIME_PROVIDER_CONTEXT_POLICY,
@@ -481,7 +483,7 @@ def runtime_reasoning_part_from_provider_stream(
 def is_reasoning_payload(event_type: str, payload: Mapping[str, object]) -> bool:
     if event_type == RUNTIME_REASONING_PART:
         return True
-    return event_type == "graph.provider_stream" and payload.get("channel") == "reasoning"
+    return event_type == "core.provider_stream" and payload.get("channel") == "reasoning"
 
 
 def redact_reasoning_payload(
@@ -614,7 +616,6 @@ class DelegatedExecutionPayload:
     question_request_id: str | None = None
     routing: DelegatedRoutingPayload | None = None
     selected_preset: str | None = None
-    selected_execution_engine: str | None = None
     lifecycle_status: DelegatedLifecycleStatus | None = None
     approval_blocked: bool = False
     result_available: bool = False
@@ -630,7 +631,6 @@ class DelegatedExecutionPayload:
             "question_request_id": self.question_request_id,
             "routing": self.routing.as_payload() if self.routing is not None else None,
             "selected_preset": self.selected_preset,
-            "selected_execution_engine": self.selected_execution_engine,
             "lifecycle_status": self.lifecycle_status,
             "approval_blocked": self.approval_blocked,
             "result_available": self.result_available,
@@ -655,7 +655,6 @@ class DelegatedExecutionPayload:
             question_request_id=_string_or_none(payload.get("question_request_id")),
             routing=nested_routing,
             selected_preset=_string_or_none(payload.get("selected_preset")),
-            selected_execution_engine=_string_or_none(payload.get("selected_execution_engine")),
             lifecycle_status=parsed_status if parsed_status is not None else lifecycle_status,
             approval_blocked=_bool_or_default(payload.get("approval_blocked")),
             result_available=_bool_or_default(payload.get("result_available")),
@@ -759,3 +758,101 @@ class EventEnvelope:
     @property
     def delegated_lifecycle(self) -> DelegatedLifecycleEventPayload | None:
         return DelegatedLifecycleEventPayload.from_event(self)
+
+
+def _invoke_tool_request_matches_batch_member(
+    batch_member: tuple[str, str, dict[str, object]],
+    tool_request: tuple[str, str, dict[str, object]],
+) -> bool:
+    call_id, tool_name, arguments = batch_member
+    request_id, request_tool, request_arguments = tool_request
+    if call_id != request_id or tool_name != "invoke_tool" or set(arguments) - {"name", "arguments"}:
+        return False
+    inner_tool = arguments.get("name")
+    inner_arguments = arguments.get("arguments", {})
+    if inner_arguments is None:
+        inner_arguments = {}
+    return (
+        isinstance(inner_tool, str)
+        and bool(inner_tool.strip())
+        and inner_tool.strip() == request_tool
+        and isinstance(inner_arguments, Mapping)
+        and dict(inner_arguments) == request_arguments
+    )
+
+
+def tool_result_batch_ids_from_events(events: tuple[EventEnvelope, ...]) -> dict[tuple[str, int], str]:
+    """Resolve results through native calls, including their governed invoke_tool dispatch."""
+    batch_id: str | None = None
+    calls: list[tuple[str, str, dict[str, object]]] | None = None
+    requests: list[str] = []
+    completed: set[str] = set()
+    dispatched: set[str] = set()
+    batch_ids: dict[tuple[str, int], str] = {}
+    for event in events:
+        if event.event_type == "runtime.request_received":
+            batch_id = None
+            calls = None
+            requests = []
+            completed = set()
+            dispatched = set()
+        elif event.event_type == "core.model_turn":
+            batch_id = model_turn_batch_id(event.session_id, event.sequence)
+            raw_calls = event.payload.get("tool_batch_calls")
+            if raw_calls is None:
+                calls = None
+            elif not isinstance(raw_calls, list):
+                raise ValueError("model-turn batch manifest must be an array")
+            else:
+                calls = []
+                seen: set[str] = set()
+                for raw_call in raw_calls:
+                    if not isinstance(raw_call, Mapping):
+                        raise ValueError("model-turn batch member must be an object")
+                    call_id = raw_call.get("tool_call_id")
+                    tool_name = raw_call.get("tool")
+                    arguments = raw_call.get("arguments")
+                    if (
+                        not isinstance(call_id, str)
+                        or not call_id.strip()
+                        or call_id in seen
+                        or not isinstance(tool_name, str)
+                        or not tool_name.strip()
+                        or not isinstance(arguments, Mapping)
+                    ):
+                        raise ValueError("model-turn batch member has invalid identity")
+                    seen.add(call_id)
+                    calls.append((call_id, tool_name, dict(arguments)))
+            requests = []
+            completed = set()
+            dispatched = set()
+        elif event.event_type == "core.tool_request_created":
+            if batch_id is None or calls is None:
+                raise ValueError("tool request has no authoritative native batch")
+            call_id = event.payload.get("tool_call_id")
+            tool_name = event.payload.get("tool")
+            arguments = event.payload.get("arguments")
+            if not isinstance(call_id, str) or not isinstance(tool_name, str) or not isinstance(arguments, Mapping):
+                raise ValueError("tool request does not match its model-turn batch member")
+            tool_request = (call_id, tool_name, dict(arguments))
+            index = len(requests)
+            if (
+                index > 0
+                and requests[-1] == call_id
+                and call_id not in dispatched
+                and calls[index - 1][1] == "invoke_tool"
+                and _invoke_tool_request_matches_batch_member(calls[index - 1], tool_request)
+            ):
+                dispatched.add(call_id)
+            elif index < len(calls) and calls[index] == tool_request:
+                requests.append(call_id)
+            else:
+                raise ValueError("tool request does not match its model-turn batch member")
+        elif event.event_type == "runtime.tool_completed":
+            raw_report = event.payload.get("reported_call")
+            call_id = raw_report.get("tool_call_id") if isinstance(raw_report, Mapping) else None
+            if batch_id is None or calls is None or not isinstance(call_id, str) or call_id not in requests or call_id in completed:
+                raise ValueError("tool result has no authoritative native batch member")
+            completed.add(call_id)
+            batch_ids[(event.session_id, event.sequence)] = batch_id
+    return batch_ids

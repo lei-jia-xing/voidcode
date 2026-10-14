@@ -30,7 +30,7 @@
   - `background_task_result_read`
   - `delegated_result_available`
   - `turn_progress`
-  - `stuck_detected`
+  - `tool_batch_repeated`
   - `approval_requested`
   - `question_asked`
   - `before_compact`
@@ -81,7 +81,7 @@ runtime 内部重复映射，不改变既有外部配置字段、argv 执行协�
 
 - 客户端猜测触发
 - hook 自身链式触发
-- graph prompt 文本暗示触发
+- model prompt 文本暗示触发
 
 ### Principle 2：Hook 是通知与干预面，不是 authority
 
@@ -107,7 +107,8 @@ replay 的职责是重放存量事件 truth，而不是重新执行 hook 命令�
 
 ### Structured stdout
 
-Hook 命令 stdout 可返回 JSON：
+Hook stdout may be empty or plain text; plain text is ignored. A JSON object may
+return:
 
 ```json
 {
@@ -117,7 +118,12 @@ Hook 命令 stdout 可返回 JSON：
 }
 ```
 
-当前 `action` 只接受 `continue` / `cancel`；`diagnostic` 与 `guidance` 只进入 hook event payload，不得改写 runtime truth。
+If `action` is present, it must be the string `continue` or `cancel`; a present
+`diagnostic` or `guidance` must be a string or `null`. Invalid structured fields
+are hook errors, never implicit consent to continue. A `pre_tool` hook fails
+closed on this error; advisory surfaces record an error event without a
+successful action. Valid `diagnostic` and `guidance` enter the hook event
+payload only and do not rewrite runtime truth.
 
 ### `session_start`
 
@@ -244,7 +250,7 @@ executor 循环在所有 surface 上形状一致：按 plan 顺序执行、累�
 | surface | `cancel` 语义 |
 |---|---|
 | `pre_tool` / `post_tool` | gate：短路（`pre_tool` 下工具永不执行） |
-| `turn_progress` / `stuck_detected` | gate：终止本次 run |
+| `turn_progress` / `tool_batch_repeated` | gate：终止本次 run |
 | `approval_requested` | gate：以 diagnostic 作为 deny reason |
 | `before_compact` | gate：跳过本次 compaction |
 | `session_start` / `session_end` / `session_idle` / `question_asked` / `delegated_result_available` / `background_task_*` | advisory：`cancel` 被忽略并记日志，diagnostic + guidance 保留，循环继续 |

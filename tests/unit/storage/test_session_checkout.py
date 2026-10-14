@@ -80,7 +80,7 @@ def test_checkout_moves_leaf_and_keeps_the_abandoned_events(tmp_path: Path) -> N
         ("runtime.request_received", "runtime", {"prompt": "run"}),
         ("runtime.tool_started", "runtime", {"tool": "read", "tool_call_id": "call-1"}),
         ("runtime.tool_completed", "tool", {"tool": "read", "tool_call_id": "call-1", "status": "ok"}),
-        ("graph.response_ready", "graph", {"summary": "done"}),
+        ("core.response_ready", "core", {"summary": "done"}),
     )
     _seed_session(store, workspace=workspace, session_id="s1", events=events)
     before = _rows(store._resolve_database_path(), "s1")
@@ -111,14 +111,14 @@ def test_event_pages_pin_a_branch_and_keep_the_durable_watermark(tmp_path: Path)
             ("runtime.request_received", "runtime", {"prompt": "run"}),
             ("runtime.tool_started", "runtime", {"tool": "read", "tool_call_id": "call-1"}),
             ("runtime.tool_completed", "tool", {"tool": "read", "tool_call_id": "call-1", "status": "ok"}),
-            ("graph.response_ready", "graph", {"summary": "original"}),
+            ("core.response_ready", "core", {"summary": "original"}),
         ),
     )
     store.checkout_session(workspace=workspace, session_id="paged", sequence=1)
     store.append_session_events(
         workspace=workspace,
         session_id="paged",
-        events=(("graph.response_ready", cast(EventSource, "graph"), {"summary": "new branch"}, None),),
+        events=(("core.response_ready", cast(EventSource, "core"), {"summary": "new branch"}, None),),
     )
 
     first = store.read_session_event_page(
@@ -314,9 +314,9 @@ def test_checkout_makes_a_completed_session_continuable(tmp_path: Path) -> None:
         session_id="s6",
         events=(
             ("runtime.request_received", "runtime", {"prompt": "A"}),
-            ("graph.response_ready", "graph", {"summary": "A done"}),
+            ("core.response_ready", "core", {"summary": "A done"}),
             ("runtime.request_received", "runtime", {"prompt": "B"}),
-            ("graph.response_ready", "graph", {"summary": "B done"}),
+            ("core.response_ready", "core", {"summary": "B done"}),
         ),
     )
     database_path = store._resolve_database_path()

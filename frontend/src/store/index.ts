@@ -8,6 +8,7 @@ import {
   failureMessageFromEvent,
   isRuntimeCancellationEvent,
   preferFailureMessage,
+  providerAttemptErrorFromEvent,
 } from "../lib/runtime/event-parser";
 import {
   currentWorkspaceScope,
@@ -55,10 +56,9 @@ import {
  */
 const DEFAULT_SESSION_SIDEBAR_WIDTH = 344;
 
-// The active run's AbortController. runTask creates one per run and passes its
-// signal to RuntimeClient.runStream; cancelCurrentRun aborts it to
-// deterministically tear down the stream. Module scope (not store state) keeps
-// the controller out of the persisted store.
+// The active run's AbortController lets workspace changes stop its client
+// stream. Cancel requests leave the stream attached until runtime settles it.
+// Module scope (not store state) keeps the controller out of persisted state.
 let activeRunAbortController: AbortController | null = null;
 let activeRunIdentity: { sessionId: string; runId: string } | null = null;
 // The transcript read of the current selection (child-context probe + replay).
@@ -101,10 +101,9 @@ interface AppState {
   resumeStatus: AsyncStatus;
   resumeError: string | null;
 
-  runStatus: "idle" | "running" | "cancelling" | "success" | "error";
+  runStatus: "idle" | "running" | "cancelling" | "incomplete" | "error";
   runOrigin: "local" | "external" | null;
   runError: string | null;
-  cancelRequested: boolean;
   approvalStatus: "idle" | "submitting" | "success" | "error";
   approvalError: string | null;
   questionStatus: "idle" | "submitting" | "success" | "error";
@@ -233,6 +232,20 @@ function getPendingQuestionRequestId(events: EventEnvelope[]): string | null {
 function runStatusForReplay(session: SessionState): AppState["runStatus"] {
   return session.status === "running" ? "running" : "idle";
 }
+function runStatusForSession(
+  status: SessionState["status"] | null | undefined,
+): AppState["runStatus"] {
+  if (status === "running") return "running";
+  if (status === "failed") return "error";
+  if (
+    status === "completed" ||
+    status === "interrupted" ||
+    status === "waiting"
+  ) {
+    return "idle";
+  }
+  return "incomplete";
+}
 
 function isRunLocked(runStatus: AppState["runStatus"]): boolean {
   return runStatus === "running" || runStatus === "cancelling";
@@ -241,12 +254,12 @@ function isRunLocked(runStatus: AppState["runStatus"]): boolean {
 // Live-only provider output: the runtime never persists these events, so they are
 // the client's in-flight projection of the current attempt. A transient retry or
 // provider fallback that restarts the attempt must drop them; the persisted
-// transcript (and its single graph.response_ready) is untouched.
+// transcript (and its single core.response_ready) is untouched.
 const LIVE_STREAM_EVENT_TYPES: Record<string, true> = {
-  "graph.provider_stream": true,
-  "graph.tool_call_start": true,
-  "graph.tool_call_delta": true,
-  "graph.tool_call_end": true,
+  "core.provider_stream": true,
+  "core.tool_call_start": true,
+  "core.tool_call_delta": true,
+  "core.tool_call_end": true,
 };
 
 function applyLiveStreamEvent(
@@ -351,7 +364,6 @@ export const useAppStore = create<AppState>()(
       runStatus: "idle",
       runOrigin: null,
       runError: null,
-      cancelRequested: false,
       approvalStatus: "idle",
       approvalError: null,
       questionStatus: "idle",
@@ -417,7 +429,6 @@ export const useAppStore = create<AppState>()(
           runStatus: "idle",
           runOrigin: null,
           runError: null,
-          cancelRequested: false,
           approvalStatus: "idle",
           approvalError: null,
           questionStatus: "idle",
@@ -520,7 +531,28 @@ export const useAppStore = create<AppState>()(
           previous.status !== session.status ||
           previous.turn !== session.turn ||
           previous.session.parent_id !== session.session.parent_id;
-        set({ currentSessionState: session });
+        const followsRun = state.runOrigin === "external";
+        set({
+          currentSessionState: session,
+          ...(followsRun
+            ? {
+                runStatus:
+                  state.runStatus === "cancelling" &&
+                  session.status === "running"
+                    ? "cancelling"
+                    : session.status === "running"
+                      ? "running"
+                      : session.status === "failed"
+                        ? "error"
+                        : "idle",
+                runOrigin: session.status === "running" ? "external" : null,
+                runError:
+                  session.status === "failed"
+                    ? i18n.t("runtime.sessionFailed")
+                    : null,
+              }
+            : {}),
+        });
         return moved;
       },
 
@@ -756,6 +788,8 @@ export const useAppStore = create<AppState>()(
           !isResumable ||
           get().resumeStatus === "loading" ||
           isRunLocked(get().runStatus) ||
+          (get().runStatus === "incomplete" &&
+            get().currentSessionId !== null) ||
           get().replayStatus === "loading" ||
           get().currentSessionId !== targetSessionId
         ) {
@@ -814,7 +848,11 @@ export const useAppStore = create<AppState>()(
       },
 
       runTask: async (prompt: string, workspaceScope, options) => {
-        if (get().replayStatus === "loading" || isRunLocked(get().runStatus)) {
+        if (
+          get().replayStatus === "loading" ||
+          isRunLocked(get().runStatus) ||
+          (get().runStatus === "incomplete" && get().currentSessionId !== null)
+        ) {
           return;
         }
 
@@ -826,7 +864,7 @@ export const useAppStore = create<AppState>()(
           runStatus: "running",
           runOrigin: "local",
           runError: null,
-          cancelRequested: false,
+          currentSessionState: null,
           currentSessionOutput: null,
           approvalStatus: "idle",
           approvalError: null,
@@ -851,11 +889,6 @@ export const useAppStore = create<AppState>()(
         const forwardMetadata = Object.fromEntries(
           Object.entries(rawMetadata).filter(
             ([key]) => key !== "agent" && key !== "reasoning_effort",
-          ),
-        );
-        const forwardAgentMetadata = Object.fromEntries(
-          Object.entries(rawAgentMetadata).filter(
-            ([key]) => key !== "execution_engine",
           ),
         );
 
@@ -890,9 +923,14 @@ export const useAppStore = create<AppState>()(
               catalog.providers,
               catalog.models,
             ),
-            ...forwardAgentMetadata,
+            ...rawAgentMetadata,
           },
         };
+
+        let streamFailureMessage: string | null = null;
+        let streamFailed = false;
+        let streamInterrupted = false;
+        let streamedSessionStatus: SessionState["status"] | null = null;
 
         try {
           const stream = RuntimeClient.runStream(
@@ -904,10 +942,12 @@ export const useAppStore = create<AppState>()(
             abortController.signal,
           );
 
-          let streamFailureMessage: string | null = null;
-          let streamInterrupted = false;
           for await (const chunk of stream) {
-            if (get().replayRequestId !== nextReplayRequestId) return;
+            if (get().replayRequestId !== nextReplayRequestId) continue;
+            if (chunk.session) {
+              streamedSessionStatus = chunk.session.status;
+            }
+
             const runtimeState = chunk.session?.metadata.runtime_state;
             if (
               chunk.session &&
@@ -925,10 +965,17 @@ export const useAppStore = create<AppState>()(
             if (chunk.event) {
               streamInterrupted =
                 isRuntimeCancellationEvent(chunk.event) || streamInterrupted;
+              if (
+                chunk.event.event_type === "runtime.failed" &&
+                !isRuntimeCancellationEvent(chunk.event)
+              ) {
+                streamFailed = true;
+              }
               streamFailureMessage =
                 preferFailureMessage(
                   streamFailureMessage,
-                  failureMessageFromEvent(chunk.event),
+                  failureMessageFromEvent(chunk.event) ??
+                    providerAttemptErrorFromEvent(chunk.event),
                 ) ?? null;
             }
             set((state) => {
@@ -949,26 +996,33 @@ export const useAppStore = create<AppState>()(
             });
           }
 
-          // A run is interrupted when any signal agrees: an SSE cancellation
-          // event, the user's cancel request (cancelRequested / cancelling),
-          // or the authoritative backend session row landed as "interrupted"
-          // even if no cancellation event accompanied the stream close.
+          // A terminal run result comes from the runtime.failed fact or the
+          // current session row. EOF, response_ready, and client cancel intent
+          // are not outcomes by themselves.
           if (get().replayRequestId !== nextReplayRequestId) return;
-          const sessionStatus = get().currentSessionState?.status;
+          const sessionStatus =
+            get().currentSessionState?.status ?? streamedSessionStatus;
+          const failed = streamFailed || sessionStatus === "failed";
           const interrupted =
-            streamInterrupted ||
-            get().runStatus === "cancelling" ||
-            get().cancelRequested ||
-            sessionStatus === "interrupted";
-          const failed =
-            !interrupted &&
-            (streamFailureMessage !== null || sessionStatus === "failed");
+            !failed && (streamInterrupted || sessionStatus === "interrupted");
+          const stillRunning =
+            !interrupted && !failed && sessionStatus === "running";
+          const incomplete =
+            !interrupted && !failed && !stillRunning && sessionStatus === null;
           set({
-            runStatus: interrupted ? "idle" : failed ? "error" : "success",
+            runStatus: interrupted
+              ? "idle"
+              : failed
+                ? "error"
+                : stillRunning
+                  ? "running"
+                  : incomplete
+                    ? "incomplete"
+                    : "idle",
+            runOrigin: stillRunning ? "external" : null,
             runError: failed
-              ? (streamFailureMessage ?? "runtime session failed")
+              ? (streamFailureMessage ?? i18n.t("runtime.sessionFailed"))
               : null,
-            cancelRequested: false,
           });
           await refreshAfterMutation(
             {
@@ -983,19 +1037,34 @@ export const useAppStore = create<AppState>()(
           );
         } catch (err) {
           if (get().replayRequestId !== nextReplayRequestId) return;
-          // A torn-down stream during a user interrupt surfaces as an
-          // AbortError (or any rejection once the cancel flag is set), and the
-          // backend session row may already be interrupted.
-          const errName = (err as Error)?.name;
+          // A fetch rejection describes the stream, not the runtime outcome.
+          const sessionStatus =
+            get().currentSessionState?.status ?? streamedSessionStatus;
+          const failed = streamFailed || sessionStatus === "failed";
           const interrupted =
-            errName === "AbortError" ||
-            get().runStatus === "cancelling" ||
-            get().cancelRequested ||
-            get().currentSessionState?.status === "interrupted";
+            !failed && (streamInterrupted || sessionStatus === "interrupted");
+          const stillRunning =
+            !interrupted && !failed && sessionStatus === "running";
+          const incomplete =
+            !interrupted && !failed && !stillRunning && sessionStatus === null;
           set({
-            runStatus: interrupted ? "idle" : "error",
-            runError: interrupted ? null : errorMessage(err),
-            cancelRequested: false,
+            runStatus: interrupted
+              ? "idle"
+              : failed
+                ? "error"
+                : stillRunning
+                  ? "running"
+                  : incomplete
+                    ? "incomplete"
+                    : "idle",
+            runOrigin: stillRunning ? "external" : null,
+            runError: failed
+              ? (streamFailureMessage ?? i18n.t("runtime.sessionFailed"))
+              : interrupted || sessionStatus === "completed"
+                ? null
+                : i18n.t("runtime.streamError", {
+                    message: errorMessage(err),
+                  }),
           });
         }
       },
@@ -1018,42 +1087,78 @@ export const useAppStore = create<AppState>()(
             : currentSessionId && externalRunId
               ? { sessionId: currentSessionId, runId: externalRunId }
               : null;
-        set({ runStatus: "cancelling", runError: null, cancelRequested: true });
-        if (runOrigin === "local") activeRunAbortController?.abort();
-        // Before the first local snapshot, disconnect cancellation owns the run.
-        // Never send an unqualified POST that could cancel a subsequent run.
+        set({ runStatus: "cancelling", runError: null });
+        // Before the first local snapshot, never send an unqualified POST that
+        // could cancel a subsequent run.
         if (!target) {
-          if (runOrigin !== "local")
-            set({
-              runStatus: "error",
-              runError: i18n.t("chat.cancelIdentityUnavailable"),
-              cancelRequested: false,
-            });
+          const status = currentSessionState?.status;
+          const stillRunning =
+            status === "running" || (status == null && runOrigin === "local");
+          set({
+            runStatus: stillRunning ? "running" : runStatusForSession(status),
+            runOrigin: stillRunning ? runOrigin : null,
+            runError:
+              status === "failed"
+                ? i18n.t("runtime.sessionFailed")
+                : i18n.t("chat.cancelIdentityUnavailable"),
+          });
           return;
         }
         const requestId = get().replayRequestId;
         try {
-          await RuntimeClient.cancelSession(target.sessionId, target.runId);
+          const result = await RuntimeClient.cancelSession(
+            target.sessionId,
+            target.runId,
+          );
           if (
-            runOrigin !== "local" &&
-            requestId === get().replayRequestId &&
-            get().currentSessionId === target.sessionId &&
-            get().runStatus === "cancelling"
-          ) {
-            set({ runStatus: "idle", cancelRequested: false });
-          }
+            requestId !== get().replayRequestId ||
+            get().currentSessionId !== target.sessionId ||
+            get().runStatus !== "cancelling"
+          )
+            return;
+          // Keep draining the stream: a cancellation acknowledgement is not a
+          // substitute for the runtime's final failure/completion outcome.
+          if (result.status === "interrupted") return;
+          const status = get().currentSessionState?.status;
+          const stillRunning =
+            status === "running" || (status == null && runOrigin === "local");
+          const terminal =
+            status === "completed" ||
+            status === "failed" ||
+            status === "interrupted";
+          set({
+            runStatus: stillRunning ? "running" : runStatusForSession(status),
+            runOrigin: stillRunning ? runOrigin : null,
+            runError:
+              status === "failed"
+                ? i18n.t("runtime.sessionFailed")
+                : terminal
+                  ? null
+                  : i18n.t("chat.cancelNotConfirmed"),
+          });
         } catch (err) {
           if (
-            runOrigin !== "local" &&
-            requestId === get().replayRequestId &&
-            get().currentSessionId === target.sessionId
-          ) {
-            set({
-              runStatus: "error",
-              runError: errorMessage(err),
-              cancelRequested: false,
-            });
-          }
+            requestId !== get().replayRequestId ||
+            get().currentSessionId !== target.sessionId ||
+            get().runStatus !== "cancelling"
+          )
+            return;
+          const status = get().currentSessionState?.status;
+          const stillRunning =
+            status === "running" || (status == null && runOrigin === "local");
+          const terminal = status === "completed" || status === "interrupted";
+          set({
+            runStatus: stillRunning ? "running" : runStatusForSession(status),
+            runOrigin: stillRunning ? runOrigin : null,
+            runError:
+              status === "failed"
+                ? i18n.t("runtime.sessionFailed")
+                : terminal
+                  ? null
+                  : i18n.t("runtime.cancelError", {
+                      message: errorMessage(err),
+                    }),
+          });
         }
       },
 
@@ -1078,8 +1183,6 @@ export const useAppStore = create<AppState>()(
         // request shown by the current event projection for this POST; an
         // authoritative replay here would make the click wait on a slow GET.
         const requestId = getPendingApprovalRequestId(currentSessionEvents);
-        set({ approvalStatus: "submitting", approvalError: null });
-
         if (!requestId) {
           set({
             approvalStatus: "error",
@@ -1087,6 +1190,12 @@ export const useAppStore = create<AppState>()(
           });
           return;
         }
+        const requestGeneration = replayRequestId + 1;
+        set({
+          replayRequestId: requestGeneration,
+          approvalStatus: "submitting",
+          approvalError: null,
+        });
 
         // A concurrent replay may advance the generation while the POST is
         // in flight. The response and failure paths below keep that newer
@@ -1100,7 +1209,7 @@ export const useAppStore = create<AppState>()(
           );
           if (
             get().currentSessionId !== currentSessionId ||
-            get().replayRequestId !== replayRequestId
+            get().replayRequestId !== requestGeneration
           ) {
             if (get().currentSessionId === currentSessionId) {
               set({ approvalStatus: "idle", approvalError: null });
@@ -1128,7 +1237,7 @@ export const useAppStore = create<AppState>()(
         } catch (err) {
           if (
             get().currentSessionId !== currentSessionId ||
-            get().replayRequestId !== replayRequestId
+            get().replayRequestId !== requestGeneration
           ) {
             if (get().currentSessionId === currentSessionId) {
               set({ approvalStatus: "idle", approvalError: null });
@@ -1153,7 +1262,7 @@ export const useAppStore = create<AppState>()(
               await RuntimeClient.getSessionReplay(currentSessionId);
             if (
               get().currentSessionId === currentSessionId &&
-              get().replayRequestId === replayRequestId
+              get().replayRequestId === requestGeneration
             ) {
               const hasPendingApproval =
                 replay.session.status === "waiting" &&
@@ -1179,7 +1288,7 @@ export const useAppStore = create<AppState>()(
       },
 
       answerQuestion: async (answers) => {
-        const requestGeneration = get().replayRequestId;
+        const requestGeneration = get().replayRequestId + 1;
         const {
           currentSessionId,
           currentSessionEvents,
@@ -1218,7 +1327,11 @@ export const useAppStore = create<AppState>()(
         // paused awaiting input, so the answer is not blocked by a stale
         // run-lock; the backend still rejects answers whose request is no longer
         // pending.
-        set({ questionStatus: "submitting", questionError: null });
+        set({
+          replayRequestId: requestGeneration,
+          questionStatus: "submitting",
+          questionError: null,
+        });
 
         try {
           const response = await RuntimeClient.answerQuestion(

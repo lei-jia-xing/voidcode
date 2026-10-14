@@ -70,7 +70,7 @@ def test_native_ast_replace_returns_formatted_hash_diff_and_readback(tmp_path: P
     read_report = ReportedCall(
         tool_call_id="read-before",
         final_tool_name="read",
-        authorized_arguments={"path": "sample.py"},
+        final_arguments={"path": "sample.py"},
         result=read_result,
     )
     tracking = read_tracking_for_tool_results(tool_results=(read_report,), workspace=tmp_path)
@@ -189,7 +189,7 @@ def test_native_ast_replace_preflights_and_formats_directory_targets(tmp_path: P
             ReportedCall(
                 tool_call_id=call_id,
                 final_tool_name="read",
-                authorized_arguments={"path": relative_path},
+                final_arguments={"path": relative_path},
                 result=result,
             ),
             content_hash,

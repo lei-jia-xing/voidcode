@@ -476,11 +476,9 @@ OpenCode Zen 与 OpenCode Go 是不同 provider：Zen 使用 `opencode-zen/<mode
 - 成本落在既有的 `provider_usage` 记录上：`core.provider_turns.ProviderTurnProducer` 在该 turn 用它自己的 usage 计算一次，写入
   `latest.cost_usd` 并累加到 `cumulative.cost_usd`；token 桶保持整数，金额是 float，持久化的 usage
   不会被重新计价。
-- **compaction 预算**：随包 catalog 的 `max_input_tokens`（无上游 `limit.input` 时由
-  `context_window - max_output_tokens` 派生）优先、否则 `context_window`，经
-  `stream_prep._context_budget_for` 传给 `prepare_provider_context(context_window=...)` 作为 compaction
-  窗口；调用方显式传入的 `context_window` / `threshold_*` / `reserve_tokens` 仍然优先，catalog 未描述的
-  model 则让 compaction 保持 unsized（与之前一致）。runtime 拥有预算，catalog 只提供数字。
+- 缺失的 rate 或 usage bucket 表示**未知成本**，不是零；只有上游明确给出的 `0` 才是免费费率。
+  回合和累计 `cost_usd` 都会在无法可靠定价时保留为 `null`。
+- **compaction 预算**：随包 catalog 显式 `max_input_tokens` 可用时优先；否则用 aggregate `context_window` 作为总窗口，再由 compaction 的配置/默认 output reserve 形成请求裁剪预算。这只是 compaction allocation，不是模型声明的 input cap。`stream_prep._context_budget_for` 将其传给 `prepare_provider_context(context_window=...)`；调用方显式传入的 `context_window` / `threshold_*` / `reserve_tokens` 仍然优先，catalog 未描述的 model 则让 compaction 保持 unsized。context-limit fallback 只比较显式 input cap；未知值不可比较。
 - **图片**：今天没有任何图片进入 provider 请求——read 工具把附件作为 tool-result **data** 返回
   （`tools/read.py:301-316`），`ContextSegment.content` 只有 `str | None`，adapter 只发文本，
   因此没有可丢弃的 image part，也无需 vision gate。
@@ -515,17 +513,17 @@ SDK 负责 HTTP、SSE 解码与异常类型；adapter 只把 SDK 事件投影成
 - `channel`: 数据通道 (`text`, `tool`, `reasoning`, `error`).
 - `text`: 流片段文本（仅 `delta` / `content`）。
 - `error`: 已脱敏的错误描述（仅 `error`）。
-- `error_kind`: 错误分类（包括 `missing_auth`, `invalid_model`, `not_configured`, `rate_limit`, `context_limit`, `transient_failure`, `unsupported_feature`, `stream_tool_feedback_shape`, `cancelled`）。
-- `done_reason`: 上游终态原因。成功终态为 `stop`、`tool_calls`、`function_call`、`length`、`content_filter`；`unknown` 表示上游未给出可识别的原因，仍被视为已完成（等价于 `stop`）的终态，不会作为面向用户的失败。`error` / `cancelled` 仍是失败终态。
-- `finish_reason_reported`: 仅当上游确实携带了可用的 finish reason 值（键存在且非 null/空）时为 `true`。`done_reason` 为 `unknown` 且该值为 `false` 时属于"无原因即结束"，运行时以 `warning` 记录（可能是被截断的流），并在持久化的 `graph.response_ready` 中写入 `finish_reason` / `finish_reason_reported` 供 `sessions debug` 之类检查；可识别但未映射的 token 仍为 `true`，只记录 `debug`。
+- `error_kind`: 错误分类（包括 `missing_auth`, `invalid_model`, `not_configured`, `rate_limit`, `context_limit`, `transient_failure`, `provider_error`, `unsupported_feature`, `stream_tool_feedback_shape`, `cancelled`）。
+- `done_reason`: 上游终态原因。可识别原因包含 `stop`、`tool_calls`、`function_call`、`length`、`content_filter`；`unknown` 表示 provider 已结束本次 model turn，但原因缺失或无法识别，不证明用户回合或 session 已完成。`error` / `cancelled` 仍是失败终态。
+- `finish_reason_reported`: 仅当上游确实携带了可用的 finish reason 值（键存在且非 null/空）时为 `true`。`done_reason` 为 `unknown` 且该值为 `false` 时属于“无原因即结束”，运行时以 `warning` 记录；持久化的 `core.response_ready` 会写入 `finish_reason` / `finish_reason_reported` 供诊断。可识别但未映射的 token 仍为 `true`，只记录 `debug`。
 
 ### 错误边界
 
 - `ProviderExecutionError.message` 是 provider 原始错误的已脱敏可读文本，不应包含 SDK wrapper 前缀。
 - `details` 保存有界、递归脱敏后的诊断信息；认证 token、cookie、header secret 不得进入持久化事件或 trace。
 - `retryable`、`fallback_allowed` 和 `retry_after` 是 runtime 恢复策略的输入；显式 `False` 会覆盖按错误种类推导出的默认策略。
-- **4xx 终态由状态码决定，不由消息决定**：非 408/429 的 4xx 一律 `retryable=False`，即使消息没匹配到任何 marker（fallback 仍允许，链上的另一个 provider 可能能服务）。402 与 429 都是 usage/limit（OMP `isUsageLimitStatus`），归为 `rate_limit`，永远不会被当作 `transient_failure`。
-- **usage/limit 不进 provider 内联重试 lane**：解析层对一个 `rate_limit` 答案不下 `retryable` 判决（`None`），`PROVIDER_TRANSIENT_RETRYABLE_KINDS` 也不含它，`decide_provider_error_policy` 里有独立分支——因此一个 429/402 **不可能**变成 `ProviderTransientRetryDecision`。它只有两条出路：runtime 为该次运行武装了 rate-limit lane（后台任务）时，产生 `ProviderTerminalDecision(kind="background_rate_limit_retry")`，延后重试并按 `retry_after` 等待；否则交给 fallback 链上的下一个 provider。402 因为同时是"非 408/429 的 4xx"而带显式 `retryable=False`，两条路都走 fallback（不延后）。OMP 把这两类交给凭据轮换，voidcode 没有轮换，所以落点是 runtime 自己已有的这条 lane，不新增机制。
+- **4xx 终态由状态码决定，不由消息决定**：非 408/429 的 4xx 一律 `retryable=False`；402 分类为 `provider_error`（可 fallback、不可重试），429 分类为 `rate_limit`。
+- **429 不进 provider 内联重试 lane**：`rate_limit` 的 retry 由已配置的 runtime rate-limit lane 决定；该 lane 未武装时交给 fallback 链。402 不是 rate-limit，不会进入延后重试。
 - **`retry_after` 多来源取最大**：`retry-after-ms` / `retry-after` / `x-ratelimit-reset-ms` / `x-ratelimit-reset` 四个 header 与消息文本里的时序提示（`Please retry in 12s`、`reset after 1h2m3s`、`Resets in 2hr 15min`、`"retryDelay": "2500ms"`、`retry-after-ms=7200000` 等）在同一最大值里竞争；`x-ratelimit-reset*` 的数字大到像绝对 epoch 时按目标时间解释（OMP `parseResetHeader`）。解析出的 `0` 表示立即重试，不会被当作"没有提示"丢弃；例外是 **header** 形式的 `retry-after-ms`，它是正数毫秒增量，`<= 0` 直接忽略（OMP `parseRetryAfterMsHeader`），而 body 里的 `retry-after-ms=0` 仍是立即重试。带时区的 `reset at` 时间戳直接换算，无时区的按 UTC 读取且只在没有任何相对提示时生效（voidcode 不携带 per-provider 时区数据）。
 - `retry_after` 最终被限制在 3600 秒以内，并覆盖同一次 retry 的指数退避延迟（仍受 runtime 最大延迟限制）；OMP 在超过自己的 `maxDelayMs` 时改为快速失败，voidcode 保留这个上限。
 - **带内错误（HTTP 200 + error body）不识别：有意分歧**。OMP 会从 200 响应体里推断错误（`error/body-error.ts`）并按它可以推断出的 kind 重试；voidcode 只对非 2xx 响应与 stream 上的 `error` 事件分类，一个状态码为 200 的带内 `rate_limit` code 因此不会得到 OMP 那套推断结果。这条在 `.omo/plans/error-retry-rules-draft-notes.md` §2 的 `should_not_copy` 里，属于**有意不复制**（该特性的触发形态需要独立设计），不是缺口。
@@ -536,7 +534,7 @@ SDK 负责 HTTP、SSE 解码与异常类型；adapter 只把 SDK 事件投影成
 - **分片超时**: transport 在相邻分片之间执行配置的 timeout 检查（`providers.<id>.timeout_seconds`，默认 300s），并报告 `transient_failure` / `provider stream chunk timeout exceeded`。
 - **首事件看门狗**: 首个分片单独计时（`DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS = 300`），报告 `transient_failure` / `provider stream first-event timeout exceeded`。它不会低于分片超时：实际等待是 `max(first_event, timeout_seconds)`，因为首个 token 合法地可能比分片间隔更久（OMP `getOpenAIStreamFirstEventTimeoutMs` 的 `max(base, idleTimeoutMs)`）——两者默认都是 300s，配置更长的 `timeout_seconds` 会同时放宽首 token 的等待。
 - **abort 归因**: 等待超时时若 caller 已经取消，报 `cancelled`（不可重试、不允许 fallback）而不是 timeout —— caller 意图优先。
-- **不完整 tool call**: stream 结束时仍未形成完整 JSON object 的 tool call 会报告 `stream_tool_feedback_shape`，不会静默丢弃。
+- **不完整或格式错误的 tool call**: provider arguments 不是完整 JSON object 时报告 `provider_error` 且不重试；因缺少原始 reasoning 而无法安全回放仍报告 `stream_tool_feedback_shape`。
 
 ## 代码结构
 

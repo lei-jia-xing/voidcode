@@ -23,40 +23,34 @@ function nonEmptyFailureValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-/** Extract the most useful provider/runtime failure text from an event. */
+/** Extract failure text from the runtime's authoritative terminal event. */
 export function failureMessageFromEvent(event: EventEnvelope): string | null {
+  if (event.event_type !== "runtime.failed") return null;
   const payload = event.payload ?? {};
-  if (event.event_type === "runtime.failed") {
-    const diagnostics = objectPayload(payload.diagnostics);
-    const diagnosticDetails = objectPayload(diagnostics?.details);
-    const providerDetails =
-      objectPayload(payload.provider_error_details) ??
-      objectPayload(diagnosticDetails?.provider_error_details);
-    return (
-      nonEmptyFailureValue(providerDetails?.exception_message) ??
-      nonEmptyFailureValue(providerDetails?.message) ??
-      nonEmptyFailureValue(diagnosticDetails?.exception_message) ??
-      nonEmptyFailureValue(diagnosticDetails?.message) ??
-      nonEmptyFailureValue(diagnostics?.summary) ??
-      nonEmptyFailureValue(payload.error) ??
-      nonEmptyFailureValue(payload.message)
-    );
-  }
-
-  if (
-    event.event_type === "graph.provider_stream" &&
-    (payload.channel === "error" || payload.kind === "error")
-  ) {
-    const diagnostics = objectPayload(payload.diagnostics);
-    return (
-      nonEmptyFailureValue(payload.error) ??
-      nonEmptyFailureValue(payload.text) ??
-      nonEmptyFailureValue(diagnostics?.summary) ??
-      nonEmptyFailureValue(payload.message)
-    );
-  }
-
-  return null;
+  const diagnostics = objectPayload(payload.diagnostics);
+  const diagnosticDetails = objectPayload(diagnostics?.details);
+  const providerDetails =
+    objectPayload(payload.provider_error_details) ??
+    objectPayload(diagnosticDetails?.provider_error_details);
+  return (
+    nonEmptyFailureValue(providerDetails?.exception_message) ??
+    nonEmptyFailureValue(providerDetails?.message) ??
+    nonEmptyFailureValue(diagnosticDetails?.exception_message) ??
+    nonEmptyFailureValue(diagnosticDetails?.message) ??
+    nonEmptyFailureValue(diagnostics?.summary) ??
+    nonEmptyFailureValue(payload.error) ??
+    nonEmptyFailureValue(payload.message)
+  );
+}
+/** Provider-attempt detail is only a fallback if the overall run later fails. */
+export function providerAttemptErrorFromEvent(
+  event: EventEnvelope,
+): string | null {
+  if (event.event_type !== "core.provider_stream") return null;
+  const payload = objectPayload(event.payload);
+  return payload?.channel === "error" && payload.kind === "error"
+    ? nonEmptyFailureValue(payload.error)
+    : null;
 }
 function isGenericFailureMessage(message: string): boolean {
   const normalized = message.trim().toLowerCase();
@@ -96,6 +90,7 @@ export interface ChatMessage {
     display?: ToolDisplay;
     copyable?: Record<string, unknown>;
     status: "pending" | "running" | "completed" | "failed";
+    provisional?: boolean;
     arguments?: Record<string, unknown>;
     partialArguments?: string;
     partialArgumentsPreview?: string;
@@ -206,9 +201,9 @@ function toolStatusFromPayload(status: unknown): ChatTool["status"] | null {
 
 function findTool(
   tools: ChatMessage["tools"],
-  id: string,
+  activityKey: string,
 ): ChatTool | undefined {
-  return tools.find((tool) => tool.id === id);
+  return tools.find((tool) => (tool.partKey ?? tool.id) === activityKey);
 }
 
 /** Structural equality for the plain-data shapes the transcript fold produces. */
@@ -248,11 +243,10 @@ function upsertTool(
   sequence: number,
 ): ChatTool | null {
   if (!currentAssistant) return null;
-  const existing = tool.id
-    ? findTool(currentAssistant.tools, tool.id)
-    : undefined;
+  const key = tool.partKey ?? tool.id;
+  const existing = key ? findTool(currentAssistant.tools, key) : undefined;
   if (!existing) {
-    const partKey = tool.partKey ?? tool.id ?? `${tool.name}#${sequence}`;
+    const partKey = key ?? `${tool.name}#${sequence}`;
     const newTool = { ...tool, partKey };
     currentAssistant.tools.push(newTool);
     appendToolPart(currentAssistant, sequence, partKey);
@@ -274,6 +268,7 @@ function upsertTool(
     existing.argumentsStreamEnded = tool.argumentsStreamEnded;
   if (tool.argumentsStreamDegraded !== undefined)
     existing.argumentsStreamDegraded = tool.argumentsStreamDegraded;
+  if (tool.provisional !== undefined) existing.provisional = tool.provisional;
   existing.result = tool.result ?? existing.result;
   if (tool.content !== undefined) existing.content = tool.content;
   existing.diffPreview = tool.diffPreview ?? existing.diffPreview;
@@ -326,16 +321,13 @@ function appendToolPart(
 function appendHookToTool(
   currentAssistant: ChatMessage | null,
   event: EventEnvelope,
+  activityKey: string | undefined,
 ) {
   if (!currentAssistant) return;
-  const toolId =
-    typeof event.payload?.tool_call_id === "string"
-      ? event.payload.tool_call_id
-      : null;
   const phase =
     typeof event.payload?.phase === "string" ? event.payload.phase : null;
-  if (!toolId || !phase) return;
-  const matchingTool = findTool(currentAssistant.tools, toolId);
+  if (!activityKey || !phase) return;
+  const matchingTool = findTool(currentAssistant.tools, activityKey);
   if (!matchingTool) return;
   matchingTool.hooks = [
     ...(matchingTool.hooks ?? []),
@@ -501,6 +493,7 @@ function applyToolEvent(
   currentAssistant: ChatMessage | null,
   event: EventEnvelope,
   diffPreviewState: Map<string, DiffPreviewState>,
+  activityKey: string,
 ) {
   if (!currentAssistant) return;
 
@@ -517,7 +510,7 @@ function applyToolEvent(
   const label = nonEmptyString(toolStatus?.label) ?? display?.summary;
   const summary = display?.summary;
   const status =
-    event.event_type === "graph.tool_request_created"
+    event.event_type === "core.tool_request_created"
       ? "pending"
       : event.event_type === "runtime.tool_started"
         ? "running"
@@ -539,18 +532,25 @@ function applyToolEvent(
       ? payload
       : undefined;
 
-  const diffPreview = updateDiffPreview(diffPreviewState, id, name, event);
+  const diffPreview = updateDiffPreview(
+    diffPreviewState,
+    activityKey,
+    name,
+    event,
+  );
 
   upsertTool(
     currentAssistant,
     {
       id,
+      partKey: activityKey,
       name,
       label,
       summary,
       display,
       copyable: display?.copyable,
       status,
+      provisional: false,
       arguments: toolArgumentsFromPayload(payload),
       result,
       content,
@@ -575,15 +575,16 @@ function applyToolCallEvent(
   event: EventEnvelope,
   argumentsState: Map<string, ToolArgumentsState>,
   diffPreviewState: Map<string, DiffPreviewState>,
+  activityKey: string,
 ) {
   if (!currentAssistant) return;
   const payload = event.payload ?? {};
   const id = nonEmptyString(payload.tool_call_id);
   if (!id) return;
   const type = event.event_type;
-  const existing = findTool(currentAssistant.tools, id);
+  const existing = findTool(currentAssistant.tools, activityKey);
   const name = nonEmptyString(payload.tool_name) ?? existing?.name;
-  const state = argumentsState.get(id) ?? {
+  const state = argumentsState.get(activityKey) ?? {
     text: "",
     preview: "",
     lastFragmentOrdinal: -1,
@@ -595,7 +596,7 @@ function applyToolCallEvent(
     (typeof payload.dropped_count === "number" && payload.dropped_count > 0)
   )
     state.degraded = true;
-  if (type === "graph.tool_call_delta") {
+  if (type === "core.tool_call_delta") {
     const fragment =
       typeof payload.arguments_delta === "string"
         ? payload.arguments_delta
@@ -620,13 +621,20 @@ function applyToolCallEvent(
         state.degraded = true;
     }
   }
-  argumentsState.set(id, state);
+  argumentsState.set(activityKey, state);
   if (!name) return;
-  const diffPreview = updateDiffPreview(diffPreviewState, id, name, event);
+  const diffPreview = updateDiffPreview(
+    diffPreviewState,
+    activityKey,
+    name,
+    event,
+  );
   upsertTool(
     currentAssistant,
     {
       id,
+      partKey: activityKey,
+      provisional: true,
       name,
       status:
         existing?.status === "completed" || existing?.status === "failed"
@@ -635,7 +643,7 @@ function applyToolCallEvent(
       partialArguments: state.text || undefined,
       partialArgumentsPreview: state.preview || undefined,
       argumentsStreamEnded:
-        type === "graph.tool_call_end" || existing?.argumentsStreamEnded,
+        type === "core.tool_call_end" || existing?.argumentsStreamEnded,
       argumentsStreamDegraded:
         state.degraded || existing?.argumentsStreamDegraded,
       diffPreview,
@@ -665,6 +673,7 @@ function applyToolProgress(
   currentAssistant: ChatMessage | null,
   event: EventEnvelope,
   progressState: Map<string, ShellProgressState>,
+  activityKey: string,
 ) {
   if (
     !currentAssistant ||
@@ -685,9 +694,9 @@ function applyToolProgress(
   const loss =
     payload.gap === true ||
     (typeof payload.dropped_count === "number" && payload.dropped_count > 0);
-  const tool = findTool(currentAssistant.tools, id);
+  const tool = findTool(currentAssistant.tools, activityKey);
   if (!tool || tool.status === "completed" || tool.status === "failed") return;
-  const state = progressState.get(id) ?? {
+  const state = progressState.get(activityKey) ?? {
     stdout: "",
     stderr: "",
     offsets: { stdout: 0, stderr: 0 },
@@ -702,6 +711,7 @@ function applyToolProgress(
         currentAssistant,
         {
           id,
+          partKey: activityKey,
           name: tool.name,
           status: "running",
           liveOutput: {
@@ -712,7 +722,7 @@ function applyToolProgress(
         },
         event.sequence,
       );
-      progressState.set(id, state);
+      progressState.set(activityKey, state);
     }
     return;
   }
@@ -728,7 +738,7 @@ function applyToolProgress(
   if (offset !== null && offset < expectedOffset) {
     state.degraded = true;
     state.seen.add(dedupe);
-    progressState.set(id, state);
+    progressState.set(activityKey, state);
     return;
   }
   if (offset !== null && offset > expectedOffset) state.degraded = true;
@@ -741,11 +751,12 @@ function applyToolProgress(
     state.stderr.length === SHELL_PREVIEW_LIMIT
   )
     state.degraded = true;
-  progressState.set(id, state);
+  progressState.set(activityKey, state);
   upsertTool(
     currentAssistant,
     {
       id,
+      partKey: activityKey,
       name,
       status: "running",
       liveOutput: {
@@ -770,7 +781,7 @@ function reasoningTextFromEvent(event: EventEnvelope): string {
     return "";
   }
   if (
-    event.event_type === "graph.provider_stream" &&
+    event.event_type === "core.provider_stream" &&
     payload.channel === "reasoning" &&
     typeof payload.text === "string"
   ) {
@@ -782,10 +793,24 @@ function reasoningTextFromEvent(event: EventEnvelope): string {
 function isReasoningEvent(event: EventEnvelope): boolean {
   if (event.event_type === "runtime.reasoning_part") return true;
   return (
-    event.event_type === "graph.provider_stream" &&
+    event.event_type === "core.provider_stream" &&
     event.payload?.channel === "reasoning"
   );
 }
+
+type StreamedToolActivity = {
+  toolCallId: string;
+  partKey: string;
+  ordinal: number;
+};
+
+type StreamedToolBatch = {
+  sessionId: string;
+  cursor: number;
+  turnSequence: number | null;
+  byId: Map<string, StreamedToolActivity>;
+  byOrdinal: Map<number, StreamedToolActivity>;
+};
 
 export function deriveChatMessages(
   events: EventEnvelope[],
@@ -799,6 +824,9 @@ export function deriveChatMessages(
   const progressState = new Map<string, ShellProgressState>();
   const argumentsState = new Map<string, ToolArgumentsState>();
   const diffPreviewState = new Map<string, DiffPreviewState>();
+  const activityKeyByCallId = new Map<string, string>();
+  let currentTurnSequence: number | null = null;
+  let streamedToolBatch: StreamedToolBatch | null = null;
   for (const event of events) {
     const messageSessionId = event.session_id || fallbackSessionId || "session";
 
@@ -808,6 +836,9 @@ export function deriveChatMessages(
       progressState.clear();
       argumentsState.clear();
       diffPreviewState.clear();
+      activityKeyByCallId.clear();
+      currentTurnSequence = null;
+      streamedToolBatch = null;
 
       if (currentAssistant?.status === "in_progress") {
         currentAssistant.status = "completed";
@@ -877,31 +908,101 @@ export function deriveChatMessages(
           );
         }
       }
-    } else if (event.event_type === "runtime.tool_progress") {
-      applyToolProgress(currentAssistant, event, progressState);
-    } else if (
-      event.event_type === "graph.tool_call_start" ||
-      event.event_type === "graph.tool_call_delta" ||
-      event.event_type === "graph.tool_call_end"
-    ) {
-      applyToolCallEvent(
-        currentAssistant,
-        event,
-        argumentsState,
-        diffPreviewState,
-      );
-    } else if (
-      event.event_type === "graph.loop_step" ||
-      event.event_type === "graph.model_turn"
-    ) {
+    } else if (event.event_type === "core.model_turn") {
       streamedReasoningText = "";
-    } else if (event.event_type === "graph.provider_stream") {
-      if (currentAssistant) {
-        const failureMessage = failureMessageFromEvent(event);
-        currentAssistant.error = preferFailureMessage(
-          currentAssistant.error,
-          failureMessage,
+      activityKeyByCallId.clear();
+      const calls = Array.isArray(event.payload?.tool_batch_calls)
+        ? event.payload.tool_batch_calls
+        : [];
+      const matchingStreamBatch =
+        streamedToolBatch?.sessionId === messageSessionId &&
+        (currentTurnSequence !== null
+          ? streamedToolBatch.turnSequence === currentTurnSequence
+          : event.sequence > streamedToolBatch.cursor &&
+            event.sequence <= streamedToolBatch.cursor + 2)
+          ? streamedToolBatch
+          : null;
+      const seenIds = new Set<string>();
+      calls.forEach((rawCall, ordinal) => {
+        const call = objectPayload(rawCall);
+        const id = nonEmptyString(call?.tool_call_id);
+        if (!id || seenIds.has(id)) return;
+        seenIds.add(id);
+        const streamed = matchingStreamBatch?.byOrdinal.get(ordinal);
+        const activityKey =
+          streamed?.toolCallId === id
+            ? streamed.partKey
+            : `turn:${messageSessionId}:${event.sequence}:${ordinal}`;
+        activityKeyByCallId.set(id, activityKey);
+      });
+      streamedToolBatch = null;
+    } else if (event.event_type === "core.loop_step") {
+      streamedReasoningText = "";
+      if (event.payload?.phase === "plan") {
+        currentTurnSequence = event.sequence;
+        activityKeyByCallId.clear();
+        streamedToolBatch = null;
+      }
+    } else if (
+      event.event_type === "core.tool_call_start" ||
+      event.event_type === "core.tool_call_delta" ||
+      event.event_type === "core.tool_call_end"
+    ) {
+      const id = nonEmptyString(event.payload?.tool_call_id);
+      if (id) {
+        const turnSequence = currentTurnSequence;
+        if (
+          !streamedToolBatch ||
+          streamedToolBatch.sessionId !== messageSessionId ||
+          streamedToolBatch.turnSequence !== turnSequence ||
+          streamedToolBatch.cursor !== event.sequence
+        ) {
+          streamedToolBatch = {
+            sessionId: messageSessionId,
+            cursor: event.sequence,
+            turnSequence,
+            byId: new Map(),
+            byOrdinal: new Map(),
+          };
+        }
+        let streamed = streamedToolBatch.byId.get(id);
+        if (!streamed) {
+          const payloadOrdinal = event.payload?.ordinal;
+          let ordinal =
+            typeof payloadOrdinal === "number" &&
+            Number.isInteger(payloadOrdinal) &&
+            payloadOrdinal >= 0
+              ? payloadOrdinal
+              : streamedToolBatch.byOrdinal.size;
+          while (streamedToolBatch.byOrdinal.has(ordinal)) ordinal += 1;
+          streamed = {
+            toolCallId: id,
+            partKey: `stream:${messageSessionId}:${turnSequence ?? event.sequence}:${ordinal}`,
+            ordinal,
+          };
+          streamedToolBatch.byId.set(id, streamed);
+          streamedToolBatch.byOrdinal.set(ordinal, streamed);
+        }
+        activityKeyByCallId.set(id, streamed.partKey);
+        applyToolCallEvent(
+          currentAssistant,
+          event,
+          argumentsState,
+          diffPreviewState,
+          streamed.partKey,
         );
+      }
+    } else if (event.event_type === "runtime.tool_progress") {
+      const id = nonEmptyString(event.payload?.tool_call_id);
+      if (id) {
+        const activityKey =
+          activityKeyByCallId.get(id) ??
+          `event:${messageSessionId}:${event.sequence}`;
+        activityKeyByCallId.set(id, activityKey);
+        applyToolProgress(currentAssistant, event, progressState, activityKey);
+      }
+    } else if (event.event_type === "core.provider_stream") {
+      if (currentAssistant) {
         const delta =
           event.payload?.channel === "text" &&
           typeof event.payload.text === "string"
@@ -913,12 +1014,24 @@ export function deriveChatMessages(
         }
       }
     } else if (
-      event.event_type === "graph.tool_request_created" ||
+      event.event_type === "core.tool_request_created" ||
       event.event_type === "runtime.tool_started" ||
       event.event_type === "runtime.tool_completed"
     ) {
       if (currentAssistant) {
-        applyToolEvent(currentAssistant, event, diffPreviewState);
+        const id = nonEmptyString(event.payload?.tool_call_id);
+        if (id) {
+          const activityKey =
+            activityKeyByCallId.get(id) ??
+            `event:${messageSessionId}:${event.sequence}`;
+          activityKeyByCallId.set(id, activityKey);
+          applyToolEvent(
+            currentAssistant,
+            event,
+            diffPreviewState,
+            activityKey,
+          );
+        }
         const payload = event.payload;
         if (
           event.event_type === "runtime.tool_completed" &&
@@ -941,7 +1054,10 @@ export function deriveChatMessages(
             ? event.payload.tool_call_id
             : null;
         const pendingTool = blockedToolId
-          ? findTool(currentAssistant.tools, blockedToolId)
+          ? findTool(
+              currentAssistant.tools,
+              activityKeyByCallId.get(blockedToolId) ?? blockedToolId,
+            )
           : undefined;
         if (pendingTool) {
           pendingTool.status = "pending";
@@ -979,7 +1095,8 @@ export function deriveChatMessages(
           const pendingTool = currentAssistant.approval?.toolCallId
             ? findTool(
                 currentAssistant.tools,
-                currentAssistant.approval.toolCallId,
+                activityKeyByCallId.get(currentAssistant.approval.toolCallId) ??
+                  currentAssistant.approval.toolCallId,
               )
             : undefined;
           if (pendingTool) {
@@ -990,7 +1107,7 @@ export function deriveChatMessages(
         }
         currentAssistant.approval = null;
       }
-    } else if (event.event_type === "graph.response_ready") {
+    } else if (event.event_type === "core.response_ready") {
       if (currentAssistant) {
         const output = responseTextFromPayload(event.payload) ?? "";
         if (output) {
@@ -1015,7 +1132,13 @@ export function deriveChatMessages(
       event.event_type === "runtime.tool_hook_pre" ||
       event.event_type === "runtime.tool_hook_post"
     ) {
-      appendHookToTool(currentAssistant, event);
+      appendHookToTool(
+        currentAssistant,
+        event,
+        activityKeyByCallId.get(
+          nonEmptyString(event.payload?.tool_call_id) ?? "",
+        ),
+      );
     }
   }
 

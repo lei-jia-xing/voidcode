@@ -9,12 +9,10 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class McpToolSafety:
-    """Governance metadata derived from MCP tool annotations.
+    """Advisory metadata derived from MCP server-provided safety hints.
 
-    MCP servers may publish advisory safety hints for tools. VoidCode keeps
-    those hints in the capability layer so the runtime can map them onto its
-    own approval model without treating every discovered MCP tool as the same
-    mutating capability.
+    These values are retained for inspection only; runtime permissions and
+    replay eligibility come from local policy and never from remote hints.
     """
 
     read_only: bool = False

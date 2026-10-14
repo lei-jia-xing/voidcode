@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from ..core.tool_context import ArtifactBinary, ArtifactInvalid, ArtifactMissing, ArtifactPage, ArtifactUnavailable
 from ..core.turns import ReportedCall
 from ..tools.output import read_tool_output_artifact
@@ -9,7 +11,7 @@ from .contracts import (
     RuntimeSessionDebugToolSummary,
     RuntimeSessionResult,
 )
-from .events import EventEnvelope
+from .events import EventEnvelope, tool_result_batch_ids_from_events
 from .fact_codec import reported_call_from_event
 from .permissions.policy import PendingApproval
 from .question import PendingQuestion
@@ -197,6 +199,7 @@ def prompt_and_tool_results_from_debug_events(
     events: tuple[EventEnvelope, ...],
 ) -> tuple[str, list[ReportedCall]]:
     prompt = prompt_from_events(events)
+    batch_ids = tool_result_batch_ids_from_events(events)
     reports: list[ReportedCall] = []
     for event in events:
         report = reported_call_from_event(event)
@@ -204,7 +207,10 @@ def prompt_and_tool_results_from_debug_events(
             if event.event_type == "runtime.tool_completed":
                 raise ValueError("runtime.tool_completed event has no canonical report")
             continue
-        reports.append(report)
+        batch_id = batch_ids.get((event.session_id, event.sequence))
+        if batch_id is None:
+            raise ValueError("runtime.tool_completed event has no authoritative native batch identity")
+        reports.append(replace(report, tool_batch_id=batch_id))
     return prompt, reports
 
 

@@ -20,7 +20,7 @@ RuntimeHookSurface = Literal[
     "background_task_result_read",
     "delegated_result_available",
     "turn_progress",
-    "stuck_detected",
+    "tool_batch_repeated",
     "approval_requested",
     "question_asked",
     "before_compact",
@@ -35,40 +35,29 @@ class HookSurfaceDescriptor:
     surface: RuntimeHookSurface
     config_attribute: str
     phase: HookSurfacePhase
-    event_type: str
 
 
 HOOK_SURFACE_DESCRIPTORS: Final[tuple[HookSurfaceDescriptor, ...]] = (
-    HookSurfaceDescriptor("pre_tool", "pre_tool", "foreground", "runtime.tool_hook_pre"),
-    HookSurfaceDescriptor("post_tool", "post_tool", "foreground", "runtime.tool_hook_post"),
-    HookSurfaceDescriptor("session_start", "on_session_start", "foreground", "runtime.session_started"),
-    HookSurfaceDescriptor("session_end", "on_session_end", "foreground", "runtime.session_ended"),
-    HookSurfaceDescriptor("session_idle", "on_session_idle", "foreground", "runtime.session_idle"),
-    HookSurfaceDescriptor(
-        "background_task_registered",
-        "on_background_task_registered",
-        "background",
-        "runtime.background_task_registered",
-    ),
-    HookSurfaceDescriptor("background_task_started", "on_background_task_started", "background", "runtime.background_task_started"),
-    HookSurfaceDescriptor("background_task_progress", "on_background_task_progress", "background", "runtime.background_task_progress"),
-    HookSurfaceDescriptor("background_task_completed", "on_background_task_completed", "background", "runtime.background_task_completed"),
-    HookSurfaceDescriptor("background_task_failed", "on_background_task_failed", "background", "runtime.background_task_failed"),
-    HookSurfaceDescriptor("background_task_cancelled", "on_background_task_cancelled", "background", "runtime.background_task_cancelled"),
-    HookSurfaceDescriptor("background_task_interrupted", "on_background_task_interrupted", "background", "runtime.background_task_interrupted"),
-    HookSurfaceDescriptor(
-        "background_task_notification_enqueued",
-        "on_background_task_notification_enqueued",
-        "background",
-        "runtime.background_task_notification_enqueued",
-    ),
-    HookSurfaceDescriptor("background_task_result_read", "on_background_task_result_read", "background", "runtime.background_task_result_read"),
-    HookSurfaceDescriptor("delegated_result_available", "on_delegated_result_available", "background", "runtime.delegated_result_available"),
-    HookSurfaceDescriptor("turn_progress", "on_turn_progress", "foreground", "runtime.turn_progress"),
-    HookSurfaceDescriptor("stuck_detected", "on_stuck_detected", "foreground", "runtime.stuck_detected"),
-    HookSurfaceDescriptor("approval_requested", "on_approval_requested", "foreground", "runtime.approval_requested"),
-    HookSurfaceDescriptor("question_asked", "on_question_asked", "foreground", "runtime.question_requested"),
-    HookSurfaceDescriptor("before_compact", "on_before_compact", "foreground", "runtime.before_compact"),
+    HookSurfaceDescriptor("pre_tool", "pre_tool", "foreground"),
+    HookSurfaceDescriptor("post_tool", "post_tool", "foreground"),
+    HookSurfaceDescriptor("session_start", "on_session_start", "foreground"),
+    HookSurfaceDescriptor("session_end", "on_session_end", "foreground"),
+    HookSurfaceDescriptor("session_idle", "on_session_idle", "foreground"),
+    HookSurfaceDescriptor("background_task_registered", "on_background_task_registered", "background"),
+    HookSurfaceDescriptor("background_task_started", "on_background_task_started", "background"),
+    HookSurfaceDescriptor("background_task_progress", "on_background_task_progress", "background"),
+    HookSurfaceDescriptor("background_task_completed", "on_background_task_completed", "background"),
+    HookSurfaceDescriptor("background_task_failed", "on_background_task_failed", "background"),
+    HookSurfaceDescriptor("background_task_cancelled", "on_background_task_cancelled", "background"),
+    HookSurfaceDescriptor("background_task_interrupted", "on_background_task_interrupted", "background"),
+    HookSurfaceDescriptor("background_task_notification_enqueued", "on_background_task_notification_enqueued", "background"),
+    HookSurfaceDescriptor("background_task_result_read", "on_background_task_result_read", "background"),
+    HookSurfaceDescriptor("delegated_result_available", "on_delegated_result_available", "background"),
+    HookSurfaceDescriptor("turn_progress", "on_turn_progress", "foreground"),
+    HookSurfaceDescriptor("tool_batch_repeated", "on_tool_batch_repeated", "foreground"),
+    HookSurfaceDescriptor("approval_requested", "on_approval_requested", "foreground"),
+    HookSurfaceDescriptor("question_asked", "on_question_asked", "foreground"),
+    HookSurfaceDescriptor("before_compact", "on_before_compact", "foreground"),
 )
 
 _SURFACE_DESCRIPTORS: Final[dict[str, HookSurfaceDescriptor]] = {descriptor.surface: descriptor for descriptor in HOOK_SURFACE_DESCRIPTORS}

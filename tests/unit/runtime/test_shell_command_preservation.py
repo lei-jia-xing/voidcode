@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.turn_producers import model_turn_fact
 from voidcode.core.turns import FinalTurn, ToolTurn, TurnRequest, TurnSession
 from voidcode.runtime.config.loading import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import RuntimeRequest
@@ -25,10 +26,11 @@ class _ShellCall:
         *,
         session: TurnSession,
     ) -> ToolTurn | FinalTurn:
-        _ = request, session
+        fact = model_turn_fact(request)
+        _ = session
         if tool_results:
-            return FinalTurn(output="finished")
-        return ToolTurn(calls=(ToolCall("shell_exec", {"command": self._command}),))
+            return FinalTurn(output="finished", facts=(fact,))
+        return ToolTurn(calls=(ToolCall("shell_exec", {"command": self._command}),), facts=(fact,))
 
 
 def test_runtime_passes_raw_shell_command_to_native_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -54,7 +56,6 @@ def test_runtime_passes_raw_shell_command_to_native_process(tmp_path: Path, monk
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="yolo",
-            execution_engine="deterministic",
             tool_timeout_seconds=None,
         ),
     )

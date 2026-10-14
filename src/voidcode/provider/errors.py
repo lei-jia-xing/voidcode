@@ -10,40 +10,6 @@ from typing import Any, overload
 
 from .protocol import ProviderErrorKind, ProviderExecutionError
 
-_CONTEXT_OVERFLOW_PATTERNS = (
-    re.compile(r"prompt is too long", re.IGNORECASE),
-    re.compile(r"input is too long for requested model", re.IGNORECASE),
-    re.compile(r"exceeds the context window", re.IGNORECASE),
-    re.compile(r"input token count.*exceeds the maximum", re.IGNORECASE),
-    re.compile(r"maximum prompt length is \d+", re.IGNORECASE),
-    re.compile(r"reduce the length of the messages", re.IGNORECASE),
-    re.compile(r"maximum context length is \d+ tokens", re.IGNORECASE),
-    re.compile(r"exceeds the limit of \d+", re.IGNORECASE),
-    re.compile(r"exceeds the available context size", re.IGNORECASE),
-    re.compile(r"greater than the context length", re.IGNORECASE),
-    re.compile(r"context window exceeds limit", re.IGNORECASE),
-    re.compile(r"exceeded model token limit", re.IGNORECASE),
-    re.compile(r"context[_ ]length[_ ]exceeded", re.IGNORECASE),
-    re.compile(r"request entity too large", re.IGNORECASE),
-    re.compile(r"context length is only \d+ tokens", re.IGNORECASE),
-    re.compile(r"input length.*exceeds.*context length", re.IGNORECASE),
-    re.compile(r"prompt too long; exceeded (?:max )?context length", re.IGNORECASE),
-    re.compile(r"too large for model with \d+ maximum context length", re.IGNORECASE),
-    re.compile(r"model_context_window_exceeded", re.IGNORECASE),
-    re.compile(r"context window", re.IGNORECASE),
-    re.compile(r"context limit", re.IGNORECASE),
-    re.compile(r"maximum context", re.IGNORECASE),
-    re.compile(r"maximum context length", re.IGNORECASE),
-    re.compile(r"token limit", re.IGNORECASE),
-)
-
-_INVALID_MODEL_PATTERNS = (
-    re.compile(r"model .* not found", re.IGNORECASE),
-    re.compile(r"unknown model", re.IGNORECASE),
-    re.compile(r"invalid model", re.IGNORECASE),
-    re.compile(r"model_not_found", re.IGNORECASE),
-)
-
 _SENSITIVE_DETAIL_KEY_MARKERS = (
     "api_key",
     "apikey",
@@ -179,27 +145,19 @@ class ParsedProviderError:
 
 def _recovery_policy_for_kind(kind: ProviderErrorKind) -> tuple[bool | None, bool]:
     if kind == "context_limit":
-        # The request did not fit the model's window, but *why* it did not fits
-        # is runtime knowledge (bounded pruning can shrink the provider view, and
-        # a bigger-window target may exist). Both lanes therefore belong to the
-        # runtime policy, exactly like ``rate_limit``: parsing only names the
-        # kind, it does not decide the recovery.
+        # The runtime owns bounded pruning and larger-window fallback policy.
         return None, True
     if kind in {
         "missing_auth",
         "invalid_model",
         "not_configured",
+        "provider_error",
         "unsupported_feature",
         "stream_tool_feedback_shape",
     }:
         return False, True
     if kind == "rate_limit":
-        # A usage/limit answer is not a provider-lane retry: OMP's
-        # ``isProviderRetryableError`` returns false for ``isUsageLimit`` and hands
-        # both 402 and 429 to credential rotation (``error/retryable.ts:45-46``,
-        # ``error/rate-limit.ts:354-376``). voidcode has no rotation, so the decision
-        # belongs to the runtime policy (its rate-limit lane, else fallback) rather
-        # than to a parse-time ``True``.
+        # The runtime's rate-limit lane owns deferral; otherwise use configured fallback.
         return None, True
     if kind == "cancelled":
         return False, False
@@ -207,12 +165,7 @@ def _recovery_policy_for_kind(kind: ProviderErrorKind) -> tuple[bool | None, boo
 
 
 def guidance_for_provider_error_kind(kind: str) -> str:
-    """Guidance for a provider-error kind token, generic for one nothing recognizes.
-
-    Total over strings on purpose: the caller may hold a *persisted* token, and the
-    final branch already answers any unrecognized value, so the parameter is the
-    token's real type rather than the closed set of kinds this build knows.
-    """
+    """Guidance for a provider-error kind token, generic for one nothing recognizes."""
     if kind == "missing_auth":
         return "Configure the provider API key or auth method, then retry."
     if kind == "invalid_model":
@@ -223,13 +176,78 @@ def guidance_for_provider_error_kind(kind: str) -> str:
         return "Retry later, reduce request volume, or configure a fallback model."
     if kind == "context_limit":
         return "Reduce prompt/tool-result context or switch to a model with a larger context window."
+    if kind == "provider_error":
+        return "Inspect the structured provider error details or configure a fallback provider/model."
     if kind == "unsupported_feature":
         return "Disable the unsupported provider feature or choose a model/provider that supports it."
     if kind == "stream_tool_feedback_shape":
         return "Report this provider stream/tool-call shape; VoidCode could not normalize it safely."
     if kind == "cancelled":
         return "The request was cancelled; rerun when ready."
-    return "Retry the request or configure a fallback provider/model."
+    return "Inspect the provider error details or configure a fallback provider/model."
+
+
+def _classify_api_error_kind(*, status_code: int | None, code: str | None) -> ProviderErrorKind:
+    normalized_code = None if code is None else code.lower()
+    if normalized_code in {"context_length_exceeded", "model_context_window_exceeded"}:
+        return "context_limit"
+    if normalized_code in {"rate_limit", "rate_limit_exceeded"} or status_code == 429:
+        return "rate_limit"
+    if normalized_code == "missing_api_key":
+        return "missing_auth"
+    if normalized_code in {"invalid_model", "model_not_found"}:
+        return "invalid_model"
+    return "provider_error"
+
+
+def parse_provider_api_error(payload: dict[str, Any]) -> ParsedProviderError:
+    return _parse_provider_error(payload, source="api", default_message="provider api error")
+
+
+def parse_provider_stream_error(payload: dict[str, Any]) -> ParsedProviderError:
+    return _parse_provider_error(payload, source="stream", default_message="provider stream error")
+
+
+def _is_terminal_client_status(status_code: int | None) -> bool:
+    """Whether a status is a permanent client error: 4xx except 408 and 429."""
+    return status_code is not None and 400 <= status_code < 500 and status_code not in {408, 429}
+
+
+def _parse_provider_error(payload: dict[str, Any], *, source: str, default_message: str) -> ParsedProviderError:
+    message = _extract_error_message(payload) or default_message
+    status_code = _extract_status_code(payload)
+    code = _extract_error_code(payload)
+    kind = _classify_api_error_kind(status_code=status_code, code=code)
+    retryable, fallback_allowed = _recovery_policy_for_kind(kind)
+    if payload.get("network_failure") is True:
+        # SDK-recognized connection/time-out classes opt into retry without
+        # relabeling the causal provider error as a generic transient failure.
+        retryable = True
+    elif status_code == 408 or (status_code is not None and status_code >= 500):
+        # These statuses authorize retry policy; they do not classify the cause as transient.
+        retryable = True
+    elif _is_terminal_client_status(status_code):
+        retryable = False
+    details = _provider_error_details(payload)
+    guidance = guidance_for_provider_error_kind(kind)
+    retry_after = _extract_retry_after(payload)
+    details.update(
+        {
+            "source": source,
+            "status_code": status_code,
+            "error_code": code,
+            "guidance": guidance,
+        }
+    )
+    return ParsedProviderError(
+        kind=kind,
+        message=redact_provider_error_message(message),
+        details=details,
+        retryable=retryable,
+        fallback_allowed=fallback_allowed,
+        retry_after=retry_after,
+        guidance=guidance,
+    )
 
 
 def _extract_error_message(payload: dict[str, Any]) -> str | None:
@@ -468,157 +486,6 @@ def _extract_retry_after(payload: dict[str, Any]) -> float | None:
     return min(max(candidates), 3600.0)
 
 
-def _is_context_overflow(message: str, status_code: int | None, code: str | None) -> bool:
-    if status_code == 413:
-        return True
-    if code is not None and code.lower() == "context_length_exceeded":
-        return True
-    return any(pattern.search(message) is not None for pattern in _CONTEXT_OVERFLOW_PATTERNS)
-
-
-# Message markers, in the order they are tried: the first table whose marker
-# appears in the lowered message decides the kind.
-_MESSAGE_MARKER_KINDS: tuple[tuple[ProviderErrorKind, tuple[str, ...]], ...] = (
-    (
-        "invalid_model",
-        ("insufficient balance", "insufficient quota", "quota exceeded", "billing balance", "payment required"),
-    ),
-    (
-        "missing_auth",
-        ("api key is missing", "missing api key", "invalid api key", "authentication failed", "unauthorized"),
-    ),
-    (
-        "unsupported_feature",
-        (
-            "unsupported stream",
-            "streaming is not supported",
-            "tools are not supported",
-            "tool calling is not supported",
-            "invalid schema for function",
-            "invalid function schema",
-        ),
-    ),
-    (
-        "stream_tool_feedback_shape",
-        ("invalid tool call", "tool_calls must", "malformed tool call", "stream tool"),
-    ),
-)
-_MODEL_ACCESS_MARKERS = ("not authorized for model", "model access", "model unavailable", "permission to access model", "usage not included")
-
-
-def _kind_from_message_markers(lowered_message: str) -> ProviderErrorKind | None:
-    return next(
-        (kind for kind, markers in _MESSAGE_MARKER_KINDS if any(marker in lowered_message for marker in markers)),
-        None,
-    )
-
-
-def _classify_api_error_kind(
-    *,
-    message: str,
-    status_code: int | None,
-    code: str | None,
-) -> ProviderErrorKind:
-    if _is_context_overflow(message, status_code, code):
-        return "context_limit"
-
-    normalized_code = None if code is None else code.lower()
-    if status_code in {402, 429} or normalized_code in {"rate_limit", "rate_limit_exceeded", "insufficient_balance", "payment_required"}:
-        # 402 and 429 are both usage/limit errors (OMP ``isUsageLimitStatus``,
-        # ``error/rate-limit.ts:321-323``): the runtime's own retry lane, never a
-        # transient provider failure.
-        return "rate_limit"
-
-    if normalized_code in {
-        "missing_api_key",
-        "invalid_api_key",
-        "authentication_error",
-        "unauthorized",
-    }:
-        return "missing_auth"
-
-    if normalized_code in {
-        "invalid_model",
-        "model_not_found",
-        "insufficient_quota",
-        "usage_not_included",
-    }:
-        return "invalid_model"
-
-    if status_code == 401:
-        return "missing_auth"
-
-    if status_code == 404:
-        return "invalid_model"
-
-    lowered_message = message.lower()
-    marker_kind = _kind_from_message_markers(lowered_message)
-    if marker_kind is not None:
-        return marker_kind
-
-    if status_code == 403:
-        if any(pattern.search(message) is not None for pattern in _INVALID_MODEL_PATTERNS):
-            return "invalid_model"
-        if any(marker in lowered_message for marker in _MODEL_ACCESS_MARKERS):
-            return "invalid_model"
-        return "missing_auth"
-
-    if any(pattern.search(message) is not None for pattern in _INVALID_MODEL_PATTERNS):
-        return "invalid_model"
-
-    if status_code is not None and status_code >= 500:
-        return "transient_failure"
-
-    return "transient_failure"
-
-
-def parse_provider_api_error(payload: dict[str, Any]) -> ParsedProviderError:
-    return _parse_provider_error(payload, source="api", default_message="provider api error")
-
-
-def parse_provider_stream_error(payload: dict[str, Any]) -> ParsedProviderError:
-    return _parse_provider_error(payload, source="stream", default_message="provider stream error")
-
-
-def _is_terminal_client_status(status_code: int | None) -> bool:
-    """Whether a status is a permanent client error: 4xx except 408 and 429."""
-    return status_code is not None and 400 <= status_code < 500 and status_code not in {408, 429}
-
-
-def _parse_provider_error(payload: dict[str, Any], *, source: str, default_message: str) -> ParsedProviderError:
-    message = _extract_error_message(payload) or default_message
-    status_code = _extract_status_code(payload)
-    code = _extract_error_code(payload)
-    kind = _classify_api_error_kind(message=message, status_code=status_code, code=code)
-    retryable, fallback_allowed = _recovery_policy_for_kind(kind)
-    if _is_terminal_client_status(status_code):
-        # OMP: every 4xx except 408/429 is terminal (``error/retryable.ts:44-63``),
-        # so a permanent client error is never retried -- whatever kind its message
-        # markers happened to match. Fallback stays allowed: another provider in the
-        # chain may serve the request.
-        retryable = False
-    details = _provider_error_details(payload)
-    guidance = guidance_for_provider_error_kind(kind)
-    retry_after = _extract_retry_after(payload)
-    details.update(
-        {
-            "source": source,
-            "status_code": status_code,
-            "error_code": code,
-            "guidance": guidance,
-        }
-    )
-    return ParsedProviderError(
-        kind=kind,
-        message=redact_provider_error_message(message),
-        details=details,
-        retryable=retryable,
-        fallback_allowed=fallback_allowed,
-        retry_after=retry_after,
-        guidance=guidance,
-    )
-
-
 def provider_execution_error_from_api_payload(
     *,
     provider_name: str,
@@ -657,14 +524,6 @@ def provider_execution_error_from_stream_payload(
     )
 
 
-class ProviderError(ValueError):
-    """Base runtime-classified provider error."""
-
-
-class ProviderContextLimitError(ProviderError):
-    """Provider failure caused by context window exhaustion."""
-
-
 def format_invalid_provider_config_error(field_path: str, reason: str) -> str:
     return f"invalid provider config: {field_path} {reason}"
 
@@ -684,17 +543,3 @@ def validation_reason_from_error(error: Mapping[str, object]) -> str:
                 return str(nested_error)
     message = error.get("msg", "is invalid")
     return message if isinstance(message, str) else "is invalid"
-
-
-def classify_provider_error(exc: Exception) -> ProviderError | None:
-    message = str(exc).lower()
-    context_limit_markers = (
-        "context window",
-        "context limit",
-        "maximum context",
-        "maximum context length",
-        "token limit",
-    )
-    if any(marker in message for marker in context_limit_markers):
-        return ProviderContextLimitError(str(exc))
-    return None

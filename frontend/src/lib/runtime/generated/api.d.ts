@@ -938,8 +938,6 @@ export interface components {
             /** Result Available */
             result_available: boolean;
             routing?: components["schemas"]["SubagentRoutingBody"] | null;
-            /** Selected Execution Engine */
-            selected_execution_engine?: string | null;
             /** Selected Preset */
             selected_preset?: string | null;
         };
@@ -1016,7 +1014,7 @@ export interface components {
             source: components["schemas"]["EventSource"];
         };
         /** @enum {string} */
-        EventSource: "runtime" | "graph" | "tool";
+        EventSource: "runtime" | "core" | "tool";
         /**
          * GitStatusBody
          * @description ``_serialize_git_status_snapshot``: the workspace's git readiness.

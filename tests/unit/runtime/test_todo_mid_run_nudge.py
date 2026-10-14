@@ -35,9 +35,9 @@ from voidcode.tools.write import WriteTool
 from .test_todo_reminder import (
     _TODO_INIT_CALL,
     SESSION_ID,
-    _provider_engine_config,
     _reminder_segments,
-    _ScriptedGraph,
+    _reminder_test_config,
+    _ScriptedTurnProducer,
 )
 
 #: ``write`` is the allowlisted mutating builtin with ``ToolEffect.WRITE``, so
@@ -52,29 +52,31 @@ def _mutations(start: int, count: int = TODO_MID_RUN_MUTATION_THRESHOLD) -> list
     ]
 
 
-class _NudgeGraph(_ScriptedGraph):
-    """Scripted graph that keeps serving its last step: extra provider calls are tolerated."""
+class _NudgeProducer(_ScriptedTurnProducer):
+    """Scripted producer that keeps serving its last step: extra provider calls are tolerated."""
 
     def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> Any:
+        _ = tool_results, session
         self.seen_segments.append(tuple(request.assembled_context.segments))
         if not self._script:
-            raise AssertionError("the scripted graph ran out of steps")
-        return self._script[0] if len(self._script) == 1 else self._script.pop(0)
+            raise AssertionError("the scripted producer ran out of steps")
+        turn = self._script[0] if len(self._script) == 1 else self._script.pop(0)
+        return self._with_model_turn_fact(request, turn)
 
 
 def _run(
     tmp_path: Path, script: list[ToolTurn | FinalTurn], *, tools: tuple[Any, ...] = (TodoTool(), GlobTool(), WriteTool())
-) -> tuple[list[Any], _ScriptedGraph]:
-    graph = _NudgeGraph(script)
+) -> tuple[list[Any], _ScriptedTurnProducer]:
+    producer = _NudgeProducer(script)
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools(list(tools)),
-        turn_producer=graph,
-        config=_provider_engine_config(reminders=RuntimeRemindersConfig()),
+        turn_producer=producer,
+        config=_reminder_test_config(reminders=RuntimeRemindersConfig()),
         permission_policy=PermissionPolicy(mode="yolo"),
     )
     chunks = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id=SESSION_ID)))
-    return chunks, graph
+    return chunks, producer
 
 
 def _events(chunks: list[Any], event_type: str) -> list[Any]:
@@ -102,7 +104,7 @@ def _stored_state(tmp_path: Path) -> TodoMidRunState:
 
 
 def test_stale_todos_earn_one_mid_run_nudge_without_ending_the_turn(tmp_path: Path) -> None:
-    chunks, graph = _run(
+    chunks, producer = _run(
         tmp_path,
         _mutation_script(TODO_MID_RUN_MUTATION_THRESHOLD, tail=[FinalTurn("done")]),
     )
@@ -117,10 +119,10 @@ def test_stale_todos_earn_one_mid_run_nudge_without_ending_the_turn(tmp_path: Pa
     # Exactly one provider call carried the nudge -- a later call than the first,
     # because the mutation window had to accumulate first -- and the run went on to
     # its own terminal step instead of ending.
-    carrying_calls = [index for index, context in enumerate(graph.seen_segments) if _nudge_segments(context)]
+    carrying_calls = [index for index, context in enumerate(producer.seen_segments) if _nudge_segments(context)]
     assert len(carrying_calls) == 1
     assert carrying_calls[0] > 1
-    text = _nudge_segments(graph.seen_segments[carrying_calls[0]])[0].content or ""
+    text = _nudge_segments(producer.seen_segments[carrying_calls[0]])[0].content or ""
     assert "todo_stale" in text
     assert f"{payload['mutation_count']} mutating tool call(s)" in text
     assert chunks[-1].session.status == "completed"
@@ -128,7 +130,7 @@ def test_stale_todos_earn_one_mid_run_nudge_without_ending_the_turn(tmp_path: Pa
 
 
 def test_below_the_threshold_no_nudge(tmp_path: Path) -> None:
-    chunks, _graph = _run(
+    chunks, _producer = _run(
         tmp_path,
         _mutation_script(TODO_MID_RUN_MUTATION_THRESHOLD - 1, tail=[FinalTurn("done")]),
     )
@@ -138,7 +140,7 @@ def test_below_the_threshold_no_nudge(tmp_path: Path) -> None:
 
 def test_the_nudge_is_budgeted_per_cycle(tmp_path: Path) -> None:
     """Two windows of 12 mutations earn two nudges; the third window earns none."""
-    chunks, _graph = _run(
+    chunks, _producer = _run(
         tmp_path,
         [ToolTurn((_TODO_INIT_CALL,)), *_mutations(0), *_mutations(12), *_mutations(24), FinalTurn("done")],
     )
@@ -149,7 +151,7 @@ def test_the_nudge_is_budgeted_per_cycle(tmp_path: Path) -> None:
 
 def test_a_todo_touch_resets_the_mutation_counter(tmp_path: Path) -> None:
     """A successful todo call clears the counter, so the next window starts over."""
-    chunks, _graph = _run(
+    chunks, _producer = _run(
         tmp_path,
         [
             ToolTurn((_TODO_INIT_CALL,)),
@@ -185,7 +187,7 @@ def test_no_active_todo_tool_means_no_nudge() -> None:
 
 
 def test_nudge_text_stays_out_of_the_persisted_transcript(tmp_path: Path) -> None:
-    chunks, _graph = _run(
+    chunks, _producer = _run(
         tmp_path,
         _mutation_script(TODO_MID_RUN_MUTATION_THRESHOLD, tail=[FinalTurn("done")]),
     )
@@ -202,7 +204,7 @@ def test_nudge_text_stays_out_of_the_persisted_transcript(tmp_path: Path) -> Non
 
 def test_both_reminder_kinds_count_independently(tmp_path: Path) -> None:
     """One run: the mid-run nudge and the terminal completion reminder each keep their own budget."""
-    chunks, _graph = _run(
+    chunks, _producer = _run(
         tmp_path,
         _mutation_script(TODO_MID_RUN_MUTATION_THRESHOLD, tail=[FinalTurn("stopping"), FinalTurn("done")]),
     )

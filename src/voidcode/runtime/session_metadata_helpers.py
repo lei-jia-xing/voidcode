@@ -188,7 +188,7 @@ def parse_delegation_metadata(raw: object) -> RuntimeSubagentRoutingMetadata:
     if not is_routing_mode(mode):
         raise ValueError("persisted delegation field 'mode' must be one of: sync, background")
     normalized["mode"] = mode
-    for field in ("subagent_type", "description", "command", "selected_preset", "selected_execution_engine", "parallel_group_id"):
+    for field in ("subagent_type", "description", "command", "selected_preset", "parallel_group_id"):
         if field not in payload:
             continue
         value = payload[field]

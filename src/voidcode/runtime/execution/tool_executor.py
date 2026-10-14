@@ -10,7 +10,6 @@ from pathlib import Path
 
 from ...core.tool_context import (
     ArtifactRead,
-    EditSchema,
     LspDiagnostics,
     LspDocumentStateReader,
     LspRequester,
@@ -237,7 +236,6 @@ class RuntimeToolExecutor:
     read_transcript: Callable[..., TranscriptRead] | None = None
     read_rule: RuleReader | None = None
     resolve_skill: Callable[[str], SkillMetadata] | None = None
-    resolve_edit_schema: Callable[[str | None], EditSchema] | None = None
     lsp_request: LspRequester | None = None
     lsp_document_state: LspDocumentStateReader | None = None
     mcp_request: McpRequester | None = None
@@ -283,11 +281,6 @@ class RuntimeToolExecutor:
             workspace=self.workspace,
             emit_tool_progress=emit_tool_progress,
             abort_signal=cancel_signal if cancel_signal is not None else invocation.context.abort_signal,
-            edit_schema=(
-                self.resolve_edit_schema(invocation.context.model)
-                if self.resolve_edit_schema is not None and tool_name == "edit"
-                else invocation.context.edit_schema
-            ),
             lsp=self.lsp if diagnostics_enabled else None,
             lsp_diagnostics_on_write=diagnostics_enabled,
             tool_catalog=None,

@@ -43,7 +43,8 @@ class _EffectivenessStorageMixin(_MixinBase):
                         'runtime.tool_completed',
                         'runtime.request_received',
                         'runtime.context_compacted',
-                        'runtime.approval_requested'
+                        'runtime.approval_requested',
+                        'core.model_turn'
                     )
                     ORDER BY session_id ASC, sequence ASC
                     """,

@@ -359,8 +359,8 @@ class ThinkingBlock(Block):
 
     omp hides reasoning entirely once the answer starts
     (``assistant-message.ts`` ``#hideThinkingBlock``); voidcode keeps it
-    reachable behind ``ctrl+o``, so the collapsed form is a single dim summary
-    row carrying the line count and the table-driven expand hint.
+    reachable with ``ctrl+o`` while live. Once committed, its collapsed summary
+    no longer advertises an expansion that scrollback cannot perform.
     """
 
     text: str = ""
@@ -372,7 +372,7 @@ class ThinkingBlock(Block):
             lines = len(self.text.splitlines()) or 1
             glyph = theme.symbol(f"thinking.{self.level}") or theme.symbol("thinking.medium")
             summary = theme.fg("dim", f"{glyph} Thinking {theme.symbol('sep.dot')} {lines} {'line' if lines == 1 else 'lines'}")
-            hint = renderer.hints.expand_hint(theme, expanded=False)
+            hint = renderer.hints.expand_hint(theme, expanded=False, has_more=not self.settled)
             trailer = f" {hint}" if hint else ""
             return [f" {summary}{trailer}"]
         rows = renderer.markdown(self.text, max(1, renderer.width - 2))
@@ -394,6 +394,7 @@ class ToolBlock(Block):
     #: ``False`` renders an unframed header + preview (omp's plain tool card).
     frame: bool = True
     tool_call_id: str | None = None
+    activity_id: str | None = None
     session_id: str | None = None
     artifact_id: str | None = None
     detail_available: bool = False
@@ -405,15 +406,18 @@ class ToolBlock(Block):
         limit = PREVIEW_LIMITS["OUTPUT_EXPANDED"] if self.expanded else PREVIEW_LIMITS["OUTPUT_COLLAPSED"]
         visible = body[:limit]
         hidden = max(0, len(body) - len(visible))
+        more_lines_hint = renderer.hints.more_lines_hint(theme, hidden)
+        if hidden and self.settled:
+            more_lines_hint = theme.fg("dim", f"{theme.symbol('text.truncation')} {hidden} more lines")
         if self.frame and self.expanded:
             rows = self._framed(renderer, header, visible)
             if hidden:
-                rows.append(f" {renderer.hints.more_lines_hint(theme, hidden)}")
+                rows.append(f" {more_lines_hint}")
         else:
             rows = [header]
             rows.extend(self._body_rows(renderer, visible))
             if hidden:
-                rows.append(f" {renderer.hints.more_lines_hint(theme, hidden)}")
+                rows.append(f" {more_lines_hint}")
         if self.streaming:
             rows.append(self._streaming_row(renderer))
         return rows

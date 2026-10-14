@@ -16,7 +16,6 @@ from ..permissions.policy import (
 from ..permissions.responses import approval_mode_or_none, permission_decision_or_none
 from ..policy import RuntimePolicyConfig, serialize_runtime_policy_config
 from .loading import (
-    ExecutionEngineName,
     ExternalDirectoryPermissionConfig,
     RuntimeAgentConfig,
     RuntimeContextWindowConfig,
@@ -49,11 +48,10 @@ PERSISTED_RUNTIME_CONFIG_REQUIRED_KEYS = config_model_keys(PersistedRuntimeConfi
 
 
 @dataclass(frozen=True, slots=True)
-class EffectiveRuntimeConfig:
+class RunConfig:
     approval_mode: ApprovalMode
     permission: ExternalDirectoryPermissionConfig
     model: str | None
-    execution_engine: ExecutionEngineName
     tool_timeout_seconds: int | None = None
     reasoning_effort: str | None = None
     provider_fallback: RuntimeProviderFallbackConfig | None = None
@@ -74,7 +72,6 @@ class PersistedRuntimeConfigMaterialization:
     permission: ExternalDirectoryPermissionConfig
     policy: RuntimePolicyConfig | None
     model: str | None
-    execution_engine: ExecutionEngineName
     tool_timeout_seconds: int | None
     reasoning_effort: str | None
     providers: RuntimeProvidersConfig | None
@@ -87,12 +84,11 @@ class PersistedRuntimeConfigMaterialization:
     raw_resolved_provider: object | None
 
 
-def serialize_runtime_config_core(config: EffectiveRuntimeConfig) -> dict[str, object]:
+def serialize_runtime_config_core(config: RunConfig) -> dict[str, object]:
     runtime_config_metadata: dict[str, object] = {
         "config_schema_version": CONFIG_SCHEMA_VERSION,
         "approval_mode": config.approval_mode,
         "permission": serialize_external_permission_config(config.permission),
-        "execution_engine": config.execution_engine,
         "tool_timeout_seconds": config.tool_timeout_seconds,
         "fallback_models": (
             list(config.provider_fallback.fallback_models) if config.provider_fallback is not None and config.model is not None else []
@@ -240,16 +236,11 @@ def parse_persisted_runtime_config(
                 )
             ) from exc
 
-    execution_engine = execution_engine_or_none(runtime_config["execution_engine"])
-    if execution_engine is None:
-        raise ValueError("persisted runtime_config execution_engine is invalid")
-
     return PersistedRuntimeConfigMaterialization(
         approval_mode=approval_mode,
         permission=permission,
         policy=policy,
         model=model,
-        execution_engine=execution_engine,
         tool_timeout_seconds=tool_timeout_seconds,
         reasoning_effort=reasoning_effort,
         providers=providers,
@@ -293,66 +284,63 @@ def parse_persisted_provider_fallback(
 
 
 def apply_request_runtime_config_overrides(
-    resolved: EffectiveRuntimeConfig,
+    config: RunConfig,
     *,
     reasoning_effort: object,
     context_transform_refs: tuple[str, ...] | None,
-) -> EffectiveRuntimeConfig:
+) -> RunConfig:
     if isinstance(reasoning_effort, str) and reasoning_effort:
-        resolved = EffectiveRuntimeConfig(
-            approval_mode=resolved.approval_mode,
-            permission=resolved.permission,
-            model=resolved.model,
-            execution_engine=resolved.execution_engine,
-            tool_timeout_seconds=resolved.tool_timeout_seconds,
+        config = RunConfig(
+            approval_mode=config.approval_mode,
+            permission=config.permission,
+            model=config.model,
+            tool_timeout_seconds=config.tool_timeout_seconds,
             reasoning_effort=reasoning_effort,
-            provider_fallback=resolved.provider_fallback,
-            providers=resolved.providers,
-            resolved_provider=resolved.resolved_provider,
-            agent=resolved.agent,
-            context_window=resolved.context_window,
-            tools=resolved.tools,
-            policy=resolved.policy,
-            reminders=resolved.reminders,
-            components=resolved.components,
+            provider_fallback=config.provider_fallback,
+            providers=config.providers,
+            resolved_provider=config.resolved_provider,
+            agent=config.agent,
+            context_window=config.context_window,
+            tools=config.tools,
+            policy=config.policy,
+            reminders=config.reminders,
+            components=config.components,
         )
     if context_transform_refs is not None:
-        resolved = EffectiveRuntimeConfig(
-            approval_mode=resolved.approval_mode,
-            permission=resolved.permission,
-            model=resolved.model,
-            execution_engine=resolved.execution_engine,
-            tool_timeout_seconds=resolved.tool_timeout_seconds,
-            reasoning_effort=resolved.reasoning_effort,
-            provider_fallback=resolved.provider_fallback,
-            providers=resolved.providers,
-            resolved_provider=resolved.resolved_provider,
+        config = RunConfig(
+            approval_mode=config.approval_mode,
+            permission=config.permission,
+            model=config.model,
+            tool_timeout_seconds=config.tool_timeout_seconds,
+            reasoning_effort=config.reasoning_effort,
+            provider_fallback=config.provider_fallback,
+            providers=config.providers,
+            resolved_provider=config.resolved_provider,
             agent=(
                 RuntimeAgentConfig(
-                    preset=resolved.agent.preset,
-                    prompt_profile=resolved.agent.prompt_profile,
-                    prompt=resolved.agent.prompt,
-                    prompt_append=resolved.agent.prompt_append,
-                    runtime_internal=resolved.agent.runtime_internal,
-                    hook_refs=resolved.agent.hook_refs,
+                    preset=config.agent.preset,
+                    prompt_profile=config.agent.prompt_profile,
+                    prompt=config.agent.prompt,
+                    prompt_append=config.agent.prompt_append,
+                    runtime_internal=config.agent.runtime_internal,
+                    hook_refs=config.agent.hook_refs,
                     context_transform_refs=context_transform_refs,
-                    model=resolved.agent.model,
-                    execution_engine=resolved.agent.execution_engine,
-                    tools=resolved.agent.tools,
-                    skills=resolved.agent.skills,
-                    mcp_binding=resolved.agent.mcp_binding,
-                    provider_fallback=resolved.agent.provider_fallback,
+                    model=config.agent.model,
+                    tools=config.agent.tools,
+                    skills=config.agent.skills,
+                    mcp_binding=config.agent.mcp_binding,
+                    provider_fallback=config.agent.provider_fallback,
                 )
-                if resolved.agent is not None
+                if config.agent is not None
                 else None
             ),
-            context_window=resolved.context_window,
-            tools=resolved.tools,
-            policy=resolved.policy,
-            reminders=resolved.reminders,
-            components=resolved.components,
+            context_window=config.context_window,
+            tools=config.tools,
+            policy=config.policy,
+            reminders=config.reminders,
+            components=config.components,
         )
-    return resolved
+    return config
 
 
 def serialize_external_permission_config(
@@ -501,7 +489,3 @@ def runtime_provider_config_metadata(
         if "transient_retry" in raw_provider:
             retained[provider_name] = {"transient_retry": raw_provider["transient_retry"]}
     return retained or None
-
-
-def execution_engine_or_none(value: object) -> ExecutionEngineName | None:
-    return value if isinstance(value, str) and value in ("deterministic", "provider") else None

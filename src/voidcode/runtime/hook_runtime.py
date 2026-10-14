@@ -30,7 +30,7 @@ class RuntimeHookOutcome:
     chunks: tuple[RuntimeStreamChunk, ...]
     last_sequence: int
     failed_error: str | None = None
-    action: Literal["continue", "cancel"] = "continue"
+    action: Literal["continue", "cancel"] | None = "continue"
     guidance: tuple[str, ...] = ()
 
 

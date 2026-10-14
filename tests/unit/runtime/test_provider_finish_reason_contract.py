@@ -48,7 +48,7 @@ from voidcode.runtime.storage import SqliteSessionStore
 def _streamed_text(chunks: list[RuntimeStreamChunk]) -> list[str]:
     fragments: list[str] = []
     for chunk in chunks:
-        if chunk.event is None or chunk.event.event_type != "graph.provider_stream":
+        if chunk.event is None or chunk.event.event_type != "core.provider_stream":
             continue
         payload = chunk.event.payload
         if payload.get("kind") == "delta" and payload.get("channel") == "text":
@@ -64,7 +64,7 @@ def _events_of_type(chunks: list[RuntimeStreamChunk], event_type: str) -> list[d
 
 def _response_ready_payloads(store: SqliteSessionStore, *, workspace: Path, session_id: str) -> list[dict[str, object]]:
     persisted = store.load_session(workspace=workspace, session_id=session_id).events
-    return [dict(event.payload) for event in persisted if event.event_type == "graph.response_ready"]
+    return [dict(event.payload) for event in persisted if event.event_type == "core.response_ready"]
 
 
 class _UnknownThenStopStreamingProvider:
@@ -83,7 +83,11 @@ class _UnknownThenStopStreamingProvider:
         _ = request
         self.attempts += 1
         yield ProviderStreamEvent(kind="delta", channel="text", text="hi")
-        yield ProviderStreamEvent(kind="done", done_reason="unknown" if self.attempts == 1 else "stop")
+        done_reason = "unknown" if self.attempts == 1 else "stop"
+        metadata: dict[str, object] = {"finish_reason_reported": True}
+        if done_reason == "unknown":
+            metadata["finish_reason_raw"] = "eos_token"
+        yield ProviderStreamEvent(kind="done", done_reason=done_reason, metadata=metadata)
 
 
 class _RestartStreamingProvider:
@@ -111,7 +115,11 @@ class _RestartStreamingProvider:
                 model_name="gpt-5.4",
                 message="temporary ssl failure",
             )
-        yield ProviderStreamEvent(kind="done", done_reason=self._finish_reason)
+        yield ProviderStreamEvent(
+            kind="done",
+            done_reason=self._finish_reason,
+            metadata={"finish_reason_reported": self._finish_reason != "unknown"},
+        )
 
 
 def _run_turn_engine(
@@ -138,7 +146,6 @@ def _run_turn_engine(
         model_provider_registry=provider_registry,
         config=RuntimeConfig(
             approval_mode="yolo",
-            execution_engine="provider",
             model="opencode-zen/gpt-5.4",
         ),
     )
@@ -283,7 +290,6 @@ def test_transient_failure_after_streamed_text_falls_back_and_announces_the_disc
             repositories=repositories_for_test_store(SqliteSessionStore()),
             config=RuntimeConfig(
                 approval_mode="yolo",
-                execution_engine="provider",
                 model="primary/m1",
                 provider_fallback=RuntimeProviderFallbackConfig(
                     preferred_model="primary/m1",

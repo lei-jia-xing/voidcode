@@ -4,7 +4,6 @@ import json
 import logging
 import os
 import threading
-import time
 from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -28,7 +27,7 @@ from ..command import (
 )
 from ..command.models import CommandDefinition
 from ..core.questions import QuestionAnswer
-from ..core.tool_context import ArtifactRead, EditSchema, TranscriptRead
+from ..core.tool_context import ArtifactRead, TranscriptRead
 from ..core.transcript import ContextSegment, ToolResultView, project_report
 from ..core.turns import ReportedCall, TurnProducer, TurnRequest
 from ..formats.json_values import json_wire_object
@@ -144,7 +143,6 @@ from .composition import (
     ValidatedConfig,
 )
 from .config.loading import (
-    ExecutionEngineName,
     RuntimeAgentConfig,
     RuntimeAgentInternalState,
     RuntimeConfig,
@@ -158,7 +156,7 @@ from .config.loading import (
     serialize_runtime_agents_config,
 )
 from .config.materializer import (
-    EffectiveRuntimeConfig,
+    RunConfig,
     parse_persisted_runtime_config,
     serialize_runtime_config_core,
 )
@@ -227,7 +225,6 @@ from .contracts import (
 from .coordinators.finalize import FinalizeCoordinator
 from .coordinators.inspection import InspectionCoordinator
 from .coordinators.stream_prep import StreamPrepCoordinator
-from .edit_schema_policy import EditSchemaResolver, select_edit_schema
 from .effectiveness import ToolEffectivenessReport
 from .event_envelopes import (
     envelopes_for_mcp_events,
@@ -252,13 +249,13 @@ from .execution.provider_execution_metadata import (
 )
 from .execution.resume_checkpoint import validated_resume_checkpoint_envelope
 from .execution.seams import (
-    provider_model_required_message,
     resolve_runtime_session_routing,
-    select_turn_producer_for_effective_config,
+    select_turn_producer_for_config,
 )
 from .execution.tool_executor import RuntimeToolExecutor
 from .execution.tool_resources import ToolCatalogReader, WorkspaceDiagnostics
 from .execution.turn_adapter import turn_request_for_session, turn_session_snapshot
+from .fact_codec import reported_call_from_event
 from .hook_preset_metadata import (
     hook_preset_event_payload_from_session_metadata,
     hook_preset_refs_for_agent,
@@ -439,20 +436,8 @@ def _continuity_summary_input(tool_results: Sequence[ReportedCall | ToolResultVi
     return "\n\n".join(parts)[:_CONTINUITY_SUMMARY_INPUT_CHARS]
 
 
-def _agent_effective_execution_engine(
-    base_engine: ExecutionEngineName,
-    agent: RuntimeAgentConfig | None,
-) -> ExecutionEngineName:
-    if base_engine == "deterministic":
-        return "deterministic"
-    if agent is not None and agent.execution_engine is not None:
-        return agent.execution_engine
-    return base_engine
-
-
 _SKILL_BINDING_SCOPE_KEYS = (
     "approval_mode",
-    "execution_engine",
     "tool_timeout_seconds",
     "reasoning_effort",
     "model",
@@ -657,7 +642,7 @@ def _builtin_runtime_package(root: Path, provider_names: Iterable[str]) -> Built
 
 @final
 class VoidCodeRuntime(RuntimeSurface):
-    """Headless runtime entrypoint for one local deterministic request."""
+    """Headless runtime entrypoint for a local request."""
 
     _workspace: Path
     _base_tool_registry: ToolRegistry
@@ -666,7 +651,7 @@ class VoidCodeRuntime(RuntimeSurface):
     _turn_producer: TurnProducer | None
     _turn_producer_override: TurnProducer | None
     _config: RuntimeConfig
-    _initial_effective_config: EffectiveRuntimeConfig
+    _initial_config: RunConfig
     _permission_policy: PermissionPolicy
     _repositories: RuntimeRepositories
     _model_provider_registry: ModelProviderRegistry
@@ -680,7 +665,6 @@ class VoidCodeRuntime(RuntimeSurface):
     _mcp_manager: McpManager
     _mcp_manager_is_injected: bool
     _acp_adapter: AcpAdapter
-    _turn_producer_cache: dict[tuple[ExecutionEngineName, str], TurnProducer]
     _context_window_config_override: RuntimeContextWindowConfig | None
     _agent_registry: AgentManifestRegistry
     _run_loop_coordinator: RuntimeRunLoopCoordinator
@@ -797,7 +781,7 @@ class VoidCodeRuntime(RuntimeSurface):
         self._provider_summary_projector = ProviderSummaryProjector()
         self._hydrate_provider_model_catalog_cache()
         initial_agent = self._config.agent
-        if initial_agent is None and self._config.execution_engine == "provider":
+        if initial_agent is None:
             initial_agent = RuntimeAgentConfig(preset="default")
         if initial_agent is not None:
             initial_agent = parse_runtime_agent_payload(
@@ -813,10 +797,6 @@ class VoidCodeRuntime(RuntimeSurface):
                 source="runtime config agent",
             )
         initial_model = initial_agent.model if initial_agent is not None and initial_agent.model is not None else self._config.model
-        initial_execution_engine = _agent_effective_execution_engine(
-            self._config.execution_engine,
-            initial_agent,
-        )
         initial_provider_fallback = (
             initial_agent.provider_fallback
             if initial_agent is not None and initial_agent.provider_fallback is not None
@@ -876,14 +856,12 @@ class VoidCodeRuntime(RuntimeSurface):
         self._tool_materializer = RuntimeToolMaterializer(self._base_tool_registry, base_provenance)
         self._tool_materialization = self._tool_materializer.base()
         self._turn_producer_override = turn_producer
-        self._turn_producer_cache = {}
         self._context_window_config_override = context_window_config_from_policy(context_window_policy)
         initial_context_window = self._context_window_config_override or self._config.context_window
-        self._initial_effective_config = EffectiveRuntimeConfig(
+        self._initial_config = RunConfig(
             approval_mode=self._config.approval_mode,
             permission=self._config.permission,
             model=initial_model,
-            execution_engine=initial_execution_engine,
             tool_timeout_seconds=self._config.tool_timeout_seconds,
             provider_fallback=initial_provider_fallback,
             providers=self._config.providers,
@@ -895,12 +873,6 @@ class VoidCodeRuntime(RuntimeSurface):
             reminders=self._config.reminders,
             components=self._config.components,
         )
-        if turn_producer is not None:
-            self._turn_producer = turn_producer
-        elif self._can_build_turn_producer_for_effective_config(self._initial_effective_config):
-            self._turn_producer = self._build_turn_producer_for_engine_from_config(self._initial_effective_config)
-        else:
-            self._turn_producer = None
         self._permission_policy = permission_policy or PermissionPolicy(mode=self._config.approval_mode)
         if repositories is None:
             sqlite_store = SqliteSessionStore()
@@ -957,7 +929,6 @@ class VoidCodeRuntime(RuntimeSurface):
                 read_transcript=self.read_tool_transcript,
                 read_rule=read_rule_uri,
                 resolve_skill=self._skill_registry.resolve,
-                resolve_edit_schema=self._edit_schema_resolver(),
                 lsp_request=self.request_lsp,
                 lsp_document_state=self._lsp_manager.document_state,
                 mcp_request=self.request_mcp_tool,
@@ -1124,45 +1095,18 @@ class VoidCodeRuntime(RuntimeSurface):
             definitions = tuple(definition for definition in definitions if definition.name != "lsp")
         return ToolRegistry.from_definitions(definitions)
 
-    def _edit_schema_resolver(self) -> EditSchemaResolver:
-        """Resolve the per-model edit schema from observed edit effectiveness.
-
-        The persisted effectiveness report is cached briefly so per-edit
-        resolution does not rescan the event log on every call. Any lookup
-        failure degrades to the flexible profile: policy selection must never
-        break an edit.
-        """
-        cached_report: ToolEffectivenessReport | None = None
-        cached_until = 0.0
-        ttl_seconds = 5.0
-
-        def resolve(model: str | None) -> EditSchema:
-            nonlocal cached_report, cached_until
-            if model is None:
-                return EditSchema.FLEXIBLE
-            now = time.monotonic()
-            if cached_report is None or now >= cached_until:
-                try:
-                    cached_report = self._repositories.maintenance.tool_effectiveness_report(workspace=self._workspace)
-                except Exception:
-                    return EditSchema.FLEXIBLE
-                cached_until = now + ttl_seconds
-            return select_edit_schema(model, cached_report)
-
-        return resolve
-
     @property
     def background_process_manager(self) -> BackgroundProcessManager:
         return self._background_process_manager
 
     def _tool_materialization_with_effective_local_tools(
         self,
-        effective_config: EffectiveRuntimeConfig,
+        config: RunConfig,
     ) -> RuntimeToolMaterialization:
-        local_config = effective_config.tools.local if effective_config.tools is not None else None
+        local_config = config.tools.local if config.tools is not None else None
         manifests = workspace_local_tool_manifests_provider(self._workspace)(local_config)
         return materialize_unscoped(
-            effective_config,
+            config,
             materialization=self._tool_materialization,
             materializer=self._tool_materializer,
             local_tool_manifests_provider=lambda _: manifests,
@@ -1202,34 +1146,8 @@ class VoidCodeRuntime(RuntimeSurface):
             updated_session = session_with_current_acp_metadata(updated_session, self._acp_adapter.current_state())
         return emitted, updated_session, last_sequence or sequence, None
 
-    def _build_turn_producer_for_engine_from_config(
-        self,
-        config: EffectiveRuntimeConfig,
-        *,
-        use_cache: bool = True,
-    ) -> TurnProducer:
-        return select_turn_producer_for_effective_config(
-            config=config,
-            cache=self._turn_producer_cache,
-            force_rebuild=not use_cache,
-        ).producer
-
-    @staticmethod
-    def _can_build_turn_producer_for_effective_config(config: EffectiveRuntimeConfig) -> bool:
-        # Provider adapters are constructed only after their immutable composition
-        # binding and initial checkpoint have been reloaded from storage.
-        return config.execution_engine != "provider"
-
-    @staticmethod
-    def _validate_provider_execution_ready(config: EffectiveRuntimeConfig) -> None:
-        if config.execution_engine != "provider":
-            return
-        if config.resolved_provider.active_target.descriptor is not None:
-            return
-        raise RuntimeRequestError(provider_model_required_message())
-
-    def runtime_config_for_request(self, request: RuntimeRequest) -> EffectiveRuntimeConfig:
-        return self._stream_prep_coordinator.runtime_config_for_request(request)
+    def run_config_for_request(self, request: RuntimeRequest) -> RunConfig:
+        return self._stream_prep_coordinator.run_config_for_request(request)
 
     def _provider_component_config(self, provider_name: str) -> dict[str, object]:
         payload = serialize_provider_configs(self._config.providers, include_secrets=False) or {}
@@ -1241,10 +1159,10 @@ class VoidCodeRuntime(RuntimeSurface):
             selected = {"custom": {provider_name: custom[provider_name]}} if isinstance(custom, dict) and provider_name in custom else {}
         return {"provider_name": provider_name, "providers": selected}
 
-    def prepare_execution_composition(self, config: EffectiveRuntimeConfig) -> FrozenComposition:
+    def prepare_execution_composition(self, config: RunConfig) -> FrozenComposition:
         return self._prepare_execution_composition(config)
 
-    def _prepare_execution_composition(self, config: EffectiveRuntimeConfig) -> FrozenComposition:
+    def _prepare_execution_composition(self, config: RunConfig) -> FrozenComposition:
         selections = list(config.components)
         selected = {(item.distribution, item.slot, item.name) for item in selections}
         package_providers = {item.name for item in selections if item.slot == "provider"}
@@ -1258,7 +1176,7 @@ class VoidCodeRuntime(RuntimeSurface):
                         slot=slot,
                         name=name,
                         configuration=configuration,
-                        provenance=("effective_runtime_config",),
+                        provenance=("run_config",),
                     )
                 )
                 selected.add(identity)
@@ -1300,11 +1218,11 @@ class VoidCodeRuntime(RuntimeSurface):
     def _activate_execution_composition(
         self,
         prep: _PreparedStreamSession,
-    ) -> EffectiveRuntimeConfig:
+    ) -> RunConfig:
         return self._activate_frozen_composition(
             prep.frozen_composition,
             composition_ref=prep.composition_ref,
-            base_config=prep.effective_config,
+            config=prep.config,
         )
 
     def _activate_frozen_composition(
@@ -1312,8 +1230,8 @@ class VoidCodeRuntime(RuntimeSurface):
         frozen: FrozenComposition,
         *,
         composition_ref: CompositionRef,
-        base_config: EffectiveRuntimeConfig,
-    ) -> EffectiveRuntimeConfig:
+        config: RunConfig,
+    ) -> RunConfig:
         if composition_ref.workspace != str(self._workspace):
             raise ValueError("composition reference names a different workspace")
         active = self._composition_owner.activate(
@@ -1377,9 +1295,9 @@ class VoidCodeRuntime(RuntimeSurface):
         )
         self._activated_provider_bindings[composition_ref] = (resolved, bound)
         self._active_compositions[composition_ref] = active
-        return replace(base_config, resolved_provider=resolved, bound_provider=bound)
+        return replace(config, resolved_provider=resolved, bound_provider=bound)
 
-    def _activate_existing_session_composition(self, session_id: str) -> EffectiveRuntimeConfig:
+    def _activate_existing_session_composition(self, session_id: str) -> RunConfig:
         stored = self._repositories.sessions.load_session(workspace=self._workspace, session_id=session_id)
         metadata = json_wire_object(stored.session.metadata)
         composition_ref = composition_ref_from_session_metadata(metadata)
@@ -1387,7 +1305,7 @@ class VoidCodeRuntime(RuntimeSurface):
         return self._activate_frozen_composition(
             frozen,
             composition_ref=composition_ref,
-            base_config=self.effective_runtime_config_from_metadata(metadata),
+            config=self.run_config_from_metadata(metadata),
         )
 
     def active_composition(self, *, session_id: str) -> ActiveComposition:
@@ -1633,11 +1551,11 @@ class VoidCodeRuntime(RuntimeSurface):
             target_chain=ResolvedProviderChain(preferred=targets[0], all_targets=tuple(targets)),
         )
 
-    def skill_registry_for_effective_config(
+    def skill_registry_for_config(
         self,
-        effective_config: EffectiveRuntimeConfig,
+        config: RunConfig,
     ) -> SkillRegistry:
-        return self._stream_prep_coordinator.skill_registry_for_effective_config(effective_config)
+        return self._stream_prep_coordinator.skill_registry_for_config(config)
 
     def _list_mcp_descriptors(self) -> tuple[McpToolDescriptor, ...]:
         return self._stream_prep_coordinator.list_mcp_descriptors()
@@ -1649,16 +1567,13 @@ class VoidCodeRuntime(RuntimeSurface):
         self,
         *,
         request_metadata: Mapping[str, object],
-        effective_config: EffectiveRuntimeConfig,
+        config: RunConfig,
     ) -> bool:
         return not (
-            self.should_skip_mcp_startup_for_request(
-                request_metadata=request_metadata,
-                effective_config=effective_config,
-            )
+            self.should_skip_mcp_startup_for_request()
             or StreamPrepCoordinator.is_background_child_mcp_deferred(
                 request_metadata=request_metadata,
-                effective_config=effective_config,
+                config=config,
             )
         )
 
@@ -1674,11 +1589,11 @@ class VoidCodeRuntime(RuntimeSurface):
         session: SessionState,
         sequence: int,
         request_metadata: Mapping[str, object],
-        effective_config: EffectiveRuntimeConfig,
+        config: RunConfig,
         failure_kind: str,
     ) -> tuple[tuple[RuntimeStreamChunk, ...], SessionState, int, RuntimeStreamChunk | None, tuple[McpToolDescriptor, ...]]:
         """Materialize the actual descriptor surface at run start."""
-        if not self.mcp_tools_available_for_run(request_metadata=request_metadata, effective_config=effective_config):
+        if not self.mcp_tools_available_for_run(request_metadata=request_metadata, config=config):
             self._tool_materialization = self._tool_materializer.base()
             return (), session, sequence, None, ()
         if self._mcp_manager_is_injected:
@@ -1708,19 +1623,19 @@ class VoidCodeRuntime(RuntimeSurface):
         self,
         *,
         session: SessionState,
-        effective_config: EffectiveRuntimeConfig,
+        config: RunConfig,
         mcp_descriptors: tuple[McpToolDescriptor, ...],
         tool_materialization: RuntimeToolMaterialization | None = None,
         local_manifests: tuple[LocalCustomToolManifest, ...] | None = None,
     ) -> ToolRegistry:
         """Bind only descriptors captured for this activated run."""
         if local_manifests is None:
-            local_config = effective_config.tools.local if effective_config.tools is not None else None
+            local_config = config.tools.local if config.tools is not None else None
             local_manifests = workspace_local_tool_manifests_provider(self._workspace)(local_config)
         if tool_materialization is None:
             base = self._tool_materializer.materialize_mcp_descriptors(mcp_descriptors)
-            tool_materialization = self._tool_materialization_for_effective_config(
-                effective_config,
+            tool_materialization = self._tool_materialization_for_config(
+                config,
                 session.metadata,
                 materialization=base,
                 local_manifests=local_manifests,
@@ -1786,31 +1701,23 @@ class VoidCodeRuntime(RuntimeSurface):
             return emitted, session, last_sequence, None, ()
         return (), session, sequence, None, descriptors
 
-    def should_skip_mcp_startup_for_request(
-        self,
-        *,
-        request_metadata: Mapping[str, object],
-        effective_config: EffectiveRuntimeConfig,
-    ) -> bool:
-        return self._stream_prep_coordinator.should_skip_mcp_startup_for_request(
-            request_metadata=request_metadata,
-            effective_config=effective_config,
-        )
+    def should_skip_mcp_startup_for_request(self) -> bool:
+        return self._stream_prep_coordinator.should_skip_mcp_startup_for_request()
 
-    def tool_registry_for_effective_config(
+    def tool_registry_for_config(
         self,
-        effective_config: EffectiveRuntimeConfig,
+        config: RunConfig,
         metadata: dict[str, object] | None = None,
     ) -> ToolRegistry:
-        return self._tool_materialization_for_effective_config(
-            effective_config,
+        return self._tool_materialization_for_config(
+            config,
             metadata,
         ).registry
 
     def provider_tool_definitions(
         self,
         tool_registry: ToolRegistry,
-        effective_config: EffectiveRuntimeConfig,
+        config: RunConfig,
     ) -> tuple[ToolDefinition, ...]:
         """Provider-visible tool definitions for a request.
 
@@ -1819,10 +1726,10 @@ class VoidCodeRuntime(RuntimeSurface):
         tools stay registered and reachable via ``invoke_tool`` dispatch.
         Disabled (default) keeps the historical all-tools-top-level behavior.
         """
-        if effective_config.tools is None or effective_config.tools.essential_only is not True:
+        if config.tools is None or config.tools.essential_only is not True:
             return tool_registry.definitions()
         return tool_registry.provider_definitions(
-            allowlist_patterns=agent_required_tool_patterns(effective_config.agent),
+            allowlist_patterns=agent_required_tool_patterns(config.agent),
         )
 
     @staticmethod
@@ -1832,23 +1739,23 @@ class VoidCodeRuntime(RuntimeSurface):
             item.tool_name for item in materialization.provenance if item.source_kind == "mcp" and item.tool_name.startswith(builtin_server_prefixes)
         )
 
-    def _tool_materialization_for_effective_config(
+    def _tool_materialization_for_config(
         self,
-        effective_config: EffectiveRuntimeConfig,
+        config: RunConfig,
         metadata: dict[str, object] | None = None,
         *,
         materialization: RuntimeToolMaterialization | None = None,
         local_manifests: tuple[LocalCustomToolManifest, ...] | None = None,
         builtin_mcp_tool_names: tuple[str, ...] | None = None,
     ) -> RuntimeToolMaterialization:
-        local_config = effective_config.tools.local if effective_config.tools is not None else None
+        local_config = config.tools.local if config.tools is not None else None
         captured_manifests = workspace_local_tool_manifests_provider(self._workspace)(local_config) if local_manifests is None else local_manifests
         source_materialization = self._tool_materialization if materialization is None else materialization
         captured_builtin_mcp_names = (
             self._builtin_mcp_tool_names_for_materialization(source_materialization) if builtin_mcp_tool_names is None else builtin_mcp_tool_names
         )
         return materialize(
-            effective_config,
+            config,
             materialization=source_materialization,
             materializer=self._tool_materializer,
             local_tool_manifests_provider=lambda _: captured_manifests,
@@ -1863,11 +1770,11 @@ class VoidCodeRuntime(RuntimeSurface):
         session: SessionState,
         tool_name: str,
     ) -> ToolPolicyDecision | None:
-        effective_config = self.effective_runtime_config_from_metadata(session.metadata)
-        materialization = self._tool_materialization_with_effective_local_tools(effective_config)
+        config = self.run_config_from_metadata(session.metadata)
+        materialization = self._tool_materialization_with_effective_local_tools(config)
         return self._tool_scope_resolver.denial(
             materialization.registry,
-            agent=effective_config.agent,
+            agent=config.agent,
             metadata=session.metadata,
             tool_name=tool_name,
             builtin_mcp_tool_names=self._builtin_mcp_tool_names_for_materialization(materialization),
@@ -1888,8 +1795,8 @@ class VoidCodeRuntime(RuntimeSurface):
         )
         if route is None:
             return None
-        effective_config = self.effective_runtime_config_from_metadata(session.metadata)
-        agent = effective_config.agent
+        config = self.run_config_from_metadata(session.metadata)
+        agent = config.agent
         return self._tool_scope_resolver.delegation_policy_error(
             delegated_child=True,
             agent=agent,
@@ -2264,7 +2171,7 @@ class VoidCodeRuntime(RuntimeSurface):
         )
         prepared = replace(
             prepared,
-            effective_config=self._activate_execution_composition(prepared),
+            config=self._activate_execution_composition(prepared),
         )
         session, sequence = yield from self._emit_stream_prelude_events(
             prepared,
@@ -2320,9 +2227,7 @@ class VoidCodeRuntime(RuntimeSurface):
         self, request: RuntimeRequest, *, session_id: str | None, run_id: str | None
     ) -> _PreparedStreamSession:
         resolved_session_id = session_id or resolve_runtime_session_routing(request).session_id
-        effective_config = self.runtime_config_for_request(request)
-        if self._turn_producer_override is None:
-            self._validate_provider_execution_ready(effective_config)
+        config = self.run_config_for_request(request)
         existing_session = self._load_existing_session_if_present(session_id=resolved_session_id)
         raw_composition_ref = request.metadata.get("composition_ref")
         raw_task_id = request.metadata.get("background_task_id")
@@ -2349,7 +2254,7 @@ class VoidCodeRuntime(RuntimeSurface):
             frozen_composition = self._repositories.recovery.load_execution_composition(ref=composition_ref)
             self._composition_owner.refresh(frozen_composition)
         else:
-            frozen_composition = self._prepare_execution_composition(effective_config)
+            frozen_composition = self._prepare_execution_composition(config)
             composition_ref = frozen_composition.reference(
                 workspace=str(self._workspace),
                 owner=SessionCompositionOwner(kind="session", session_id=resolved_session_id),
@@ -2402,16 +2307,16 @@ class VoidCodeRuntime(RuntimeSurface):
         if resolved_hook_plan is None:
             resolved_hook_plan = materialize_hook_plan(
                 self._config.hooks,
-                agent_hook_refs=hook_preset_refs_for_agent(effective_config.agent),
-                agent_source=(effective_config.agent.preset if effective_config.agent is not None else "default"),
+                agent_hook_refs=hook_preset_refs_for_agent(config.agent),
+                agent_source=(config.agent.preset if config.agent is not None else "default"),
             )
         resolved_hook_presets = self._build_hook_preset_snapshot(
-            effective_config.agent,
+            config.agent,
         )
         return _PreparedStreamSession(
             request=request,
             resolved_session_id=resolved_session_id,
-            effective_config=effective_config,
+            config=config,
             frozen_composition=frozen_composition,
             composition_ref=composition_ref,
             request_metadata=request_metadata,
@@ -2425,7 +2330,7 @@ class VoidCodeRuntime(RuntimeSurface):
     def _assemble_stream_session_metadata(self, prep: _PreparedStreamSession, *, run_id: str | None) -> SessionState:
         request = prep.request
         resolved_session_id = prep.resolved_session_id
-        effective_config = prep.effective_config
+        config = prep.config
         request_metadata = prep.request_metadata
         existing_session = prep.existing_session
         resolved_hook_presets = prep.resolved_hook_presets
@@ -2457,16 +2362,16 @@ class VoidCodeRuntime(RuntimeSurface):
                 **session_request_metadata,
                 "workspace": str(self._workspace),
                 "runtime_config": self._runtime_config_metadata(
-                    effective_config,
+                    config,
                 ),
                 "runtime_policy": materialize_runtime_policy_snapshot(
                     persisted_session_policy=persisted_runtime_policy,
-                    agent_preset=effective_config.agent.preset if effective_config.agent is not None else "default",
-                    agent_manifest_id=effective_config.agent.preset if effective_config.agent is not None else "default",
+                    agent_preset=config.agent.preset if config.agent is not None else "default",
+                    agent_manifest_id=config.agent.preset if config.agent is not None else "default",
                     callable_subagent_presets=self._agent_registry.executable_subagent_ids(),
                     runtime_config={
                         **self._runtime_config_metadata(
-                            effective_config,
+                            config,
                         ),
                     },
                     request_metadata=request_metadata,
@@ -2484,7 +2389,7 @@ class VoidCodeRuntime(RuntimeSurface):
         composition_ref_payload = composition_ref.model_dump(mode="json")
         session = self._session_with_agent_capability_snapshot(
             session=session,
-            effective_config=effective_config,
+            config=config,
             request_metadata=request_metadata,
             resolved_hook_presets=resolved_hook_presets,
             tool_materialization=self._tool_materialization,
@@ -2532,12 +2437,12 @@ class VoidCodeRuntime(RuntimeSurface):
         self, prep: _PreparedStreamSession, session: SessionState, sequence: int
     ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, int]]:
         request = prep.request
-        effective_config = prep.effective_config
+        config = prep.config
         request_metadata = prep.request_metadata
         runtime_policy_snapshot = session.metadata.get("runtime_policy")
         request_received_payload: dict[str, object] = {
             "prompt": request.prompt,
-            **({"agent_preset": active_agent.preset} if (active_agent := effective_config.agent) is not None else {}),
+            **({"agent_preset": active_agent.preset} if (active_agent := config.agent) is not None else {}),
         }
         if isinstance(runtime_policy_snapshot, dict):
             request_received_payload["runtime_policy"] = runtime_policy_observability_payload(runtime_policy_snapshot)
@@ -2554,7 +2459,7 @@ class VoidCodeRuntime(RuntimeSurface):
             event=request_received_envelope,
         )
 
-        reasoning_diagnostic = self._reasoning_controls_diagnostic_for_config(effective_config)
+        reasoning_diagnostic = self._reasoning_controls_diagnostic_for_config(config)
         if reasoning_diagnostic is not None:
             envelope = self._persist_emitted_event(
                 session_id=session.session.id,
@@ -2655,7 +2560,7 @@ class VoidCodeRuntime(RuntimeSurface):
         self, prep: _PreparedStreamSession, session: SessionState, sequence: int
     ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, int, ToolRegistry, SkillRegistry, tuple[str, ...]] | None]:
         request = prep.request
-        effective_config = prep.effective_config
+        config = prep.config
         request_metadata = prep.request_metadata
         resolved_hook_presets = prep.resolved_hook_presets
         (
@@ -2668,7 +2573,7 @@ class VoidCodeRuntime(RuntimeSurface):
             session=session,
             sequence=sequence,
             request_metadata=request_metadata,
-            effective_config=effective_config,
+            config=config,
             failure_kind="mcp_startup_failed",
         )
         for chunk in mcp_startup_chunks:
@@ -2679,15 +2584,15 @@ class VoidCodeRuntime(RuntimeSurface):
             yield self._persist_emitted_chunk(mcp_failed_chunk)
             return None
 
-        local_config = effective_config.tools.local if effective_config.tools is not None else None
+        local_config = config.tools.local if config.tools is not None else None
         local_manifests = workspace_local_tool_manifests_provider(self._workspace)(local_config)
         mcp_materialization = self._tool_materializer.materialize_mcp_descriptors(mcp_descriptors)
         builtin_mcp_servers = {descriptor.name for descriptor in list_builtin_mcp_descriptors()}
         builtin_mcp_tool_names = tuple(
             mcp_tool_definition(descriptor).name for descriptor in mcp_descriptors if descriptor.server_name in builtin_mcp_servers
         )
-        tool_materialization = self._tool_materialization_for_effective_config(
-            effective_config,
+        tool_materialization = self._tool_materialization_for_config(
+            config,
             session.metadata,
             materialization=mcp_materialization,
             local_manifests=local_manifests,
@@ -2695,7 +2600,7 @@ class VoidCodeRuntime(RuntimeSurface):
         )
         session = self._session_with_agent_capability_snapshot(
             session=session,
-            effective_config=effective_config,
+            config=config,
             request_metadata=request_metadata,
             resolved_hook_presets=resolved_hook_presets,
             tool_materialization=tool_materialization,
@@ -2703,12 +2608,12 @@ class VoidCodeRuntime(RuntimeSurface):
         )
         tool_registry = self.tool_registry_for_run(
             session=session,
-            effective_config=effective_config,
+            config=config,
             tool_materialization=tool_materialization,
             mcp_descriptors=mcp_descriptors,
             local_manifests=local_manifests,
         )
-        skill_registry = self.skill_registry_for_effective_config(effective_config)
+        skill_registry = self.skill_registry_for_config(config)
 
         start_hook_outcome = run_lifecycle_hooks_for_session(
             hooks=self._config.hooks,
@@ -2775,7 +2680,7 @@ class VoidCodeRuntime(RuntimeSurface):
         hook_guidance: tuple[str, ...] = (),
     ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, int, TurnProducer, TurnRequest, list[ReportedCall]] | None]:
         request = prep.request
-        effective_config = prep.effective_config
+        config = prep.config
         request_metadata = prep.request_metadata
         provider_prompt = prep.provider_prompt if prep.provider_prompt is not None else request.prompt
         rehydrated_conversation_segments = prep.rehydrated_conversation_segments
@@ -2797,7 +2702,7 @@ class VoidCodeRuntime(RuntimeSurface):
         skill_snapshot = self.build_skill_snapshot(
             skill_registry,
             metadata=session.metadata,
-            agent=effective_config.agent,
+            agent=config.agent,
             source="run",
         )
         catalog_skill_context = skills.catalog_skill_context(
@@ -2904,7 +2809,7 @@ class VoidCodeRuntime(RuntimeSurface):
             TurnRequest(
                 session=turn_session_snapshot(session),
                 prompt=provider_prompt,
-                available_tools=self.provider_tool_definitions(tool_registry, effective_config),
+                available_tools=self.provider_tool_definitions(tool_registry, config),
                 context_window=assembled_context.context_window
                 or self.prepare_provider_context_window(
                     prompt=provider_prompt,
@@ -2915,12 +2820,12 @@ class VoidCodeRuntime(RuntimeSurface):
                 assembled_context=assembled_context,
                 metadata={
                     **request_metadata,
-                    "agent_preset": serialize_runtime_agent_config(self.effective_runtime_config_from_metadata(session.metadata).agent),
+                    "agent_preset": serialize_runtime_agent_config(self.run_config_from_metadata(session.metadata).agent),
                     "provider_attempt": 0,
                     "provider_stream": request_metadata.get("provider_stream", False),
                     **(
-                        {"reasoning_effort": effective_config.reasoning_effort}
-                        if effective_config.reasoning_effort is not None and "reasoning_effort" not in request_metadata
+                        {"reasoning_effort": config.reasoning_effort}
+                        if config.reasoning_effort is not None and "reasoning_effort" not in request_metadata
                         else {}
                     ),
                 },
@@ -2946,7 +2851,7 @@ class VoidCodeRuntime(RuntimeSurface):
         last_chunk: RuntimeStreamChunk | None = None
         last_sequence = sequence
         deferred_failed_chunk: RuntimeStreamChunk | None = None
-        graph_loop_error: Exception | None = None
+        turn_error: Exception | None = None
         try:
             for chunk in self._run_loop_coordinator.execute_turn_engine(
                 producer=producer,
@@ -2965,22 +2870,22 @@ class VoidCodeRuntime(RuntimeSurface):
                         continue
                 yield chunk
         except Exception as exc:
-            graph_loop_error = exc
+            turn_error = exc
 
-        return last_chunk, last_sequence, deferred_failed_chunk, graph_loop_error
+        return last_chunk, last_sequence, deferred_failed_chunk, turn_error
 
     def _finalize_stream_run(
         self,
         last_chunk: RuntimeStreamChunk | None,
         last_sequence: int,
         deferred_failed_chunk: RuntimeStreamChunk | None,
-        graph_loop_error: Exception | None,
+        turn_error: Exception | None,
     ) -> Generator[RuntimeStreamChunk]:
         yield from self._finalize_coordinator.finalize_stream_run(
             last_chunk=last_chunk,
             last_sequence=last_sequence,
             deferred_failed_chunk=deferred_failed_chunk,
-            graph_loop_error=graph_loop_error,
+            turn_error=turn_error,
         )
 
     def persist_response(self, *, request: RuntimeRequest, response: RuntimeResponse) -> None:
@@ -3050,7 +2955,7 @@ class VoidCodeRuntime(RuntimeSurface):
         sequence: int,
         permission_policy: PermissionPolicy,
     ) -> PermissionOutcome:
-        effective_permission = self.effective_runtime_config_from_metadata(session.metadata).permission
+        effective_permission = self.run_config_from_metadata(session.metadata).permission
         eval_result = self._permission_engine.evaluate(
             tool=tool,
             tool_instance=tool_instance,
@@ -3358,7 +3263,7 @@ class VoidCodeRuntime(RuntimeSurface):
 
     def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState:
         validated_request = self._validated_request(request)
-        composition = self._prepare_execution_composition(self.runtime_config_for_request(validated_request))
+        composition = self._prepare_execution_composition(self.run_config_for_request(validated_request))
         return self._background_task_supervisor.start_background_task(
             validated_request,
             composition=composition,
@@ -3722,8 +3627,8 @@ class VoidCodeRuntime(RuntimeSurface):
     def reset_runtime_storage(self) -> dict[str, object]:
         return self._inspection_coordinator.reset_runtime_storage()
 
-    def effective_runtime_config(self, *, session_id: str | None = None) -> EffectiveRuntimeConfig:
-        return self._inspection_coordinator.effective_runtime_config(session_id=session_id)
+    def run_config(self, *, session_id: str | None = None) -> RunConfig:
+        return self._inspection_coordinator.run_config(session_id=session_id)
 
     def effective_agent_model_config(self, *, session_id: str | None = None) -> dict[str, object]:
         return self._inspection_coordinator.effective_agent_model_config(session_id=session_id)
@@ -3744,7 +3649,7 @@ class VoidCodeRuntime(RuntimeSurface):
     def _hydrate_provider_model_catalog_cache(self) -> None:
         self._provider_catalog_cache.hydrate()
 
-    def reasoning_effort_capability(self, config: EffectiveRuntimeConfig) -> ReasoningEffortCapability:
+    def reasoning_effort_capability(self, config: RunConfig) -> ReasoningEffortCapability:
         """Resolve the reasoning-effort capability of a config's active provider/model target.
 
         Reasoning effort belongs to the model, so the model's own catalog metadata
@@ -3764,9 +3669,9 @@ class VoidCodeRuntime(RuntimeSurface):
 
     def _reasoning_controls_diagnostic_for_config(
         self,
-        effective_config: EffectiveRuntimeConfig,
+        config: RunConfig,
     ) -> dict[str, object] | None:
-        return self._inspection_coordinator._reasoning_controls_diagnostic_for_config(effective_config)
+        return self._inspection_coordinator._reasoning_controls_diagnostic_for_config(config)
 
     def inspect_provider(self, provider_name: str) -> ProviderInspectResult:
         return self._inspection_coordinator.inspect_provider(provider_name)
@@ -3885,27 +3790,20 @@ class VoidCodeRuntime(RuntimeSurface):
             resolver=provider_auth_resolver,
             env=os.environ,
         )
-        provider_fallback = self._initial_effective_config.provider_fallback
+        provider_fallback = self._initial_config.provider_fallback
         resolved_provider_config = resolve_provider_config(
             model,
             provider_fallback,
             registry=provider_registry,
         )
-        effective_config = replace(
-            self._initial_effective_config,
+        config = replace(
+            self._initial_config,
             model=model,
             providers=refreshed_config.providers,
             resolved_provider=resolved_provider_config,
         )
-        new_producer: TurnProducer | None
-        if self._turn_producer_override is not None:
-            new_producer = self._turn_producer_override
-        elif self._can_build_turn_producer_for_effective_config(effective_config):
-            new_producer = self._build_turn_producer_for_engine_from_config(effective_config, use_cache=False)
-        else:
-            new_producer = None
 
-        # Commit only after all parsing, provider resolution, and graph creation
+        # Commit only after all parsing, provider resolution, and turn-producer creation
         # succeeded. No collaborator that owns local governance is replaced by
         # this provider/model-only reload.
         self._config = replace(self._config, model=model, providers=refreshed_config.providers)
@@ -3918,9 +3816,7 @@ class VoidCodeRuntime(RuntimeSurface):
         self._resolved_provider_config = resolved_provider_config
         self._provider_model = resolved_provider_config.active_target
         self._provider_chain = resolved_provider_config.target_chain
-        self._initial_effective_config = effective_config
-        self._turn_producer_cache = {}
-        self._turn_producer = new_producer
+        self._initial_config = config
         self._inspection_coordinator.update_provider_state(
             config=self._config,
             model_provider_registry=provider_registry,
@@ -3980,29 +3876,28 @@ class VoidCodeRuntime(RuntimeSurface):
         self,
         *,
         assembled_context: RuntimeAssembledContext,
-        effective_config: EffectiveRuntimeConfig,
+        config: RunConfig,
     ) -> RuntimeProviderContextSnapshot:
-        active_target = effective_config.resolved_provider.active_target
+        active_target = config.resolved_provider.active_target
         provider = active_target.selection.provider or "unknown"
         model = active_target.selection.model or active_target.selection.raw_model or "unknown"
-        tool_registry = self.tool_registry_for_effective_config(effective_config)
-        context_window_config = effective_config.context_window or RuntimeContextWindowConfig()
+        tool_registry = self.tool_registry_for_config(config)
+        context_window_config = config.context_window or RuntimeContextWindowConfig()
         return inspect_provider_context(
             assembled_context=assembled_context,
             provider=provider,
             model=model,
-            execution_engine=effective_config.execution_engine,
-            available_tool_count=len(self.provider_tool_definitions(tool_registry, effective_config)),
-            tool_feedback_mode=self._tool_feedback_mode_for_effective_config(effective_config),
+            available_tool_count=len(self.provider_tool_definitions(tool_registry, config)),
+            tool_feedback_mode=self._tool_feedback_mode_for_config(config),
             oversized_tool_feedback_chars=(context_window_config.provider_context_oversized_feedback_chars),
             diagnostic_policy_mode=context_window_config.provider_context_diagnostics,
         )
 
     @staticmethod
-    def _tool_feedback_mode_for_effective_config(
-        effective_config: EffectiveRuntimeConfig,
+    def _tool_feedback_mode_for_config(
+        config: RunConfig,
     ) -> ToolFeedbackMode:
-        active_target = effective_config.resolved_provider.active_target
+        active_target = config.resolved_provider.active_target
         if active_target.metadata is not None and active_target.metadata.tool_feedback_mode is not None:
             return active_target.metadata.tool_feedback_mode
         return "standard"
@@ -4011,11 +3906,11 @@ class VoidCodeRuntime(RuntimeSurface):
         self,
         *,
         turn_request: TurnRequest,
-        effective_config: EffectiveRuntimeConfig,
+        config: RunConfig,
     ) -> RuntimeProviderContextPolicyDecision | None:
         return self._inspection_coordinator.provider_context_policy_decision_for_turn_request(
             turn_request=turn_request,
-            effective_config=effective_config,
+            config=config,
         )
 
     def _debug_skill_prompt_context(self, metadata: dict[str, object]) -> str:
@@ -4534,8 +4429,8 @@ class VoidCodeRuntime(RuntimeSurface):
         }:
             status = response_session.status
         elif response_session.status == "completed" and (
-            event.event_type == "graph.response_ready"
-            or (event.event_type == "graph.loop_step" and event.payload.get("phase") == "finalize")
+            event.event_type == "core.response_ready"
+            or (event.event_type == "core.loop_step" and event.payload.get("phase") == "finalize")
             or event.event_type
             in {
                 "runtime.acp_disconnected",
@@ -4788,7 +4683,7 @@ class VoidCodeRuntime(RuntimeSurface):
             session_id=stored.session.session.id,
         )
         _prompt, tool_results = prompt_and_tool_results_from_debug_events(path_events)
-        return tuple(self._eligible_rehydrated_tool_results(tool_results))
+        return tuple(tool_results)
 
     def replayed_conversation_segments_for_existing_session(
         self,
@@ -4796,7 +4691,7 @@ class VoidCodeRuntime(RuntimeSurface):
         stored: RuntimeResponse | None = None,
         session_id: str | None = None,
         parent_session_id: str | None,
-        current_prompt: str | None = None,
+        include_current_request: bool = False,
     ) -> tuple[ContextSegment, ...]:
         if stored is None and session_id is not None:
             return ()
@@ -4817,41 +4712,24 @@ class VoidCodeRuntime(RuntimeSurface):
             workspace=self._workspace,
             session_id=stored.session.session.id,
         )
-        if current_prompt is not None:
-            matching_requests = [
-                event.sequence
-                for event in replay_events
-                if event.event_type == "runtime.request_received" and event.payload.get("prompt") == current_prompt
-            ]
-            current_request_sequence = matching_requests[-1] if matching_requests else None
-            if current_request_sequence is not None:
-                replay_events = tuple(event for event in replay_events if event.sequence < current_request_sequence)
+        current_request_event_id = next(
+            (
+                (event.session_id, event.sequence)
+                for event in reversed(replay_events)
+                if include_current_request and event.event_type == "runtime.request_received" and event.session_id == stored.session.session.id
+            ),
+            None,
+        )
 
         def report_from_event(event: EventEnvelope) -> ReportedCall | None:
-            _prompt, reports = prompt_and_tool_results_from_debug_events((event,))
-            return reports[0] if reports else None
+            return reported_call_from_event(event)
 
         return replayed_conversation_segments_from_events(
             replay_events,
             output=stored.output,
             reported_call_from_event=report_from_event,
+            current_request_event_id=current_request_event_id,
         )
-
-    @staticmethod
-    def _eligible_rehydrated_tool_results(
-        tool_results: list[ReportedCall],
-    ) -> list[ReportedCall]:
-        eligible: list[ReportedCall] = []
-        for report in tool_results:
-            if report.final_tool_name in {"read", "grep", "glob", "ast_grep"}:
-                eligible.append(report)
-                continue
-            if report.final_tool_name != "shell_exec":
-                continue
-            command = report.authorized_arguments.get("command")
-            if isinstance(command, str) and command.strip():
-                eligible.append(report)
-        return eligible
 
     def assemble_provider_context(
         self,
@@ -4869,17 +4747,17 @@ class VoidCodeRuntime(RuntimeSurface):
         continuity_summary_override: str | None = None,
         continuity_summary_kind: ContinuitySummaryKind | None = None,
     ) -> RuntimeAssembledContext:
-        effective_config = self.effective_runtime_config_from_metadata(session_metadata)
+        config = self.run_config_from_metadata(session_metadata)
         if tool_registry is None:
-            tool_registry = self.tool_registry_for_effective_config(
-                effective_config,
+            tool_registry = self.tool_registry_for_config(
+                config,
                 metadata=session_metadata,
             )
         tool_catalog_context = tool_registry.capability_catalog_prompt(
-            essential_only=(effective_config.tools is not None and effective_config.tools.essential_only is True),
-            allowlist_patterns=agent_required_tool_patterns(effective_config.agent),
+            essential_only=(config.tools is not None and config.tools.essential_only is True),
+            allowlist_patterns=agent_required_tool_patterns(config.agent),
         )
-        policy = context_window_policy_from_config(effective_config.context_window)
+        policy = context_window_policy_from_config(config.context_window)
         raw_loaded = session_metadata.get("loaded_skills", [])
         loaded_skills: tuple[dict[str, object], ...] = ()
         if isinstance(raw_loaded, list):
@@ -4893,7 +4771,7 @@ class VoidCodeRuntime(RuntimeSurface):
                             entry[k] = v
                     typed.append(entry)
             loaded_skills = tuple(typed)
-        agent = effective_config.agent
+        agent = config.agent
         agent_prompt_materialization: AgentPromptMaterialization | None = None
         if agent is not None:
             internal = agent.runtime_internal
@@ -4903,9 +4781,9 @@ class VoidCodeRuntime(RuntimeSurface):
                 manifest = self._agent_registry.get(agent.preset)
                 if manifest is not None:
                     agent_prompt_materialization = manifest.prompt_materialization
-        tool_feedback_mode = self._tool_feedback_mode_for_effective_config(effective_config)
+        tool_feedback_mode = self._tool_feedback_mode_for_config(config)
         agent_prompt_context = render_agent_prompt(agent_prompt_materialization) or ""
-        hook_preset_context = self._hook_preset_context_for_agent(agent=effective_config.agent)
+        hook_preset_context = self._hook_preset_context_for_agent(agent=config.agent)
         comp_ref = None
         if session_metadata is not None and ("composition_ref" in session_metadata or "agent_capability_snapshot" in session_metadata):
             try:
@@ -4916,11 +4794,9 @@ class VoidCodeRuntime(RuntimeSurface):
             workspace=self._workspace,
             tool_results=tool_results,
             hook_preset_context=hook_preset_context,
-            failure_policy=effective_config.context_window.context_transform_failure_policy
-            if effective_config.context_window is not None
-            else "warn",
+            failure_policy=config.context_window.context_transform_failure_policy if config.context_window is not None else "warn",
             registry=self._context_transform_registry_for_agent(
-                effective_config.agent,
+                config.agent,
                 composition_ref=comp_ref,
             ),
         )
@@ -4929,8 +4805,8 @@ class VoidCodeRuntime(RuntimeSurface):
             # truth; a caller that does not supply a budget still gets the
             # sized one so pruning (or its explicit "unsized" reason) happens.
             compaction_budget = compaction_budget_from_config(
-                effective_config.context_window,
-                context_window=self._stream_prep_coordinator.context_budget_for_effective_config(effective_config),
+                config.context_window,
+                context_window=self._stream_prep_coordinator.context_budget_for_config(config),
                 anchor_tokens=provider_usage_anchor_tokens(session_metadata),
             )
         assembled_context = assemble_provider_context(
@@ -4979,7 +4855,7 @@ class VoidCodeRuntime(RuntimeSurface):
 
         Owned spirit: :mod:`voidcode.runtime.context` stays transport-free, so the
         provider call lives here. One provider request through the same
-        ``turn_provider()`` seam the graph uses; provider/model/credential
+        ``turn_provider()`` seam as normal turns; provider/model/credential
         resolution and the timeout are settled below. Any failure, a blank answer
         or a timeout returns ``None`` -- this never raises into the run, and the
         caller falls back to the deterministic projection.
@@ -4988,8 +4864,8 @@ class VoidCodeRuntime(RuntimeSurface):
         if not prompt:
             return None
         try:
-            resolved = self.effective_runtime_config_from_metadata(session_metadata)
-            bound_target = resolved.bound_provider.active_target if resolved.bound_provider is not None else None
+            config = self.run_config_from_metadata(session_metadata)
+            bound_target = config.bound_provider.active_target if config.bound_provider is not None else None
             if bound_target is None:
                 return None
             provider = bound_target.provider
@@ -5051,10 +4927,10 @@ class VoidCodeRuntime(RuntimeSurface):
         ordinary policy knobs (``context_window.compaction.*``) are reused
         unchanged -- recovery adds a target, not a second configuration.
         """
-        effective_config = self.effective_runtime_config_from_metadata(session_metadata)
+        config = self.run_config_from_metadata(session_metadata)
         budget = compaction_budget_from_config(
-            effective_config.context_window,
-            context_window=self._stream_prep_coordinator.context_budget_for_effective_config(effective_config),
+            config.context_window,
+            context_window=self._stream_prep_coordinator.context_budget_for_config(config),
             anchor_tokens=provider_usage_anchor_tokens(session_metadata),
         )
         return self.assemble_provider_context(
@@ -5169,7 +5045,7 @@ class VoidCodeRuntime(RuntimeSurface):
             if isinstance(raw_runtime_config, dict):
                 source_runtime_config = raw_runtime_config
         if source_runtime_config is None:
-            source_runtime_config = self._runtime_config_metadata(self.effective_runtime_config_from_metadata(metadata))
+            source_runtime_config = self._runtime_config_metadata(self.run_config_from_metadata(metadata))
         snapshot: dict[str, object] = {}
         for key in _SKILL_BINDING_SCOPE_KEYS:
             if key in source_runtime_config:
@@ -5185,7 +5061,7 @@ class VoidCodeRuntime(RuntimeSurface):
     def _agent_capability_snapshot(
         self,
         *,
-        effective_config: EffectiveRuntimeConfig,
+        config: RunConfig,
         tool_materialization: RuntimeToolMaterialization,
         metadata: dict[str, object],
         request_metadata: dict[str, object],
@@ -5195,7 +5071,7 @@ class VoidCodeRuntime(RuntimeSurface):
     ) -> dict[str, object]:
         runtime_config = metadata.get("runtime_config")
         runtime_config_payload: dict[str, object] = runtime_config if isinstance(runtime_config, dict) else {}
-        agent = effective_config.agent
+        agent = config.agent
         manifest = self._agent_registry.get(agent.preset) if agent is not None else None
         force_load_skills = self._request_skill_names_from_metadata(
             request_metadata,
@@ -5270,18 +5146,15 @@ class VoidCodeRuntime(RuntimeSurface):
             "mcp": mcp_snapshot,
             "delegation": delegation_snapshot,
             "runtime": {
-                "approval_mode": effective_config.approval_mode,
-                "tool_timeout_seconds": effective_config.tool_timeout_seconds,
+                "approval_mode": config.approval_mode,
+                "tool_timeout_seconds": config.tool_timeout_seconds,
                 "permission": runtime_config_payload.get("permission"),
             },
             "execution": {
-                "execution_engine": effective_config.execution_engine,
-                "model": effective_config.model,
-                "fallback_models": (
-                    list(effective_config.provider_fallback.fallback_models) if effective_config.provider_fallback is not None else []
-                ),
+                "model": config.model,
+                "fallback_models": (list(config.provider_fallback.fallback_models) if config.provider_fallback is not None else []),
                 "resolved_provider": runtime_config_payload.get("resolved_provider"),
-                "reasoning_effort": effective_config.reasoning_effort,
+                "reasoning_effort": config.reasoning_effort,
             },
         }
 
@@ -5289,7 +5162,7 @@ class VoidCodeRuntime(RuntimeSurface):
         self,
         *,
         session: SessionState,
-        effective_config: EffectiveRuntimeConfig,
+        config: RunConfig,
         request_metadata: dict[str, object],
         resolved_hook_presets: ResolvedHookPresetSnapshot,
         tool_materialization: RuntimeToolMaterialization,
@@ -5303,7 +5176,7 @@ class VoidCodeRuntime(RuntimeSurface):
             metadata={
                 **session.metadata,
                 "agent_capability_snapshot": self._agent_capability_snapshot(
-                    effective_config=effective_config,
+                    config=config,
                     tool_materialization=tool_materialization,
                     metadata=session.metadata,
                     request_metadata=request_metadata,
@@ -5401,13 +5274,13 @@ class VoidCodeRuntime(RuntimeSurface):
 
     def _runtime_config_metadata(
         self,
-        config: EffectiveRuntimeConfig | None = None,
+        config: RunConfig | None = None,
     ) -> dict[str, object]:
-        effective_config = config or self.effective_runtime_config_from_metadata(None)
-        runtime_config_metadata = serialize_runtime_config_core(effective_config)
-        runtime_config_metadata["resolved_provider"] = resolved_provider_snapshot(effective_config.resolved_provider)
+        config = config or self.run_config_from_metadata(None)
+        runtime_config_metadata = serialize_runtime_config_core(config)
+        runtime_config_metadata["resolved_provider"] = resolved_provider_snapshot(config.resolved_provider)
         resolved_hook_presets = self._build_hook_preset_snapshot(
-            effective_config.agent,
+            config.agent,
         )
         if resolved_hook_presets.presets:
             runtime_config_metadata["resolved_hook_presets"] = resolved_hook_presets.to_payload()
@@ -5430,11 +5303,11 @@ class VoidCodeRuntime(RuntimeSurface):
 
     def _config_with_request_agent_override(
         self,
-        resolved: EffectiveRuntimeConfig,
+        config: RunConfig,
         raw_agent: object,
         *,
         allow_subagent_presets: bool = False,
-    ) -> EffectiveRuntimeConfig:
+    ) -> RunConfig:
         raw_agent_payload = raw_agent if isinstance(raw_agent, dict) else {}
         raw_agent_prompt_profile = raw_agent_payload.get("prompt_profile")
         raw_agent_prompt = raw_agent_payload.get("prompt")
@@ -5444,11 +5317,11 @@ class VoidCodeRuntime(RuntimeSurface):
             raw_agent_prompt is None
             and raw_agent_prompt_append is not None
             and raw_agent_prompt_profile is None
-            and resolved.agent is not None
-            and isinstance(resolved.agent.runtime_internal, RuntimeAgentInternalState)
-            and resolved.agent.preset == raw_agent_payload.get("preset")
+            and config.agent is not None
+            and isinstance(config.agent.runtime_internal, RuntimeAgentInternalState)
+            and config.agent.preset == raw_agent_payload.get("preset")
         ):
-            inherited_materialization = resolved.agent.runtime_internal.prompt_materialization
+            inherited_materialization = config.agent.runtime_internal.prompt_materialization
             inherited_body = inherited_materialization.body if inherited_materialization is not None else None
             if inherited_body is not None:
                 agent_payload_for_parse = {**raw_agent_payload, "prompt": inherited_body}
@@ -5466,9 +5339,8 @@ class VoidCodeRuntime(RuntimeSurface):
             source="request metadata 'agent'",
             allow_subagent_presets=allow_subagent_presets,
         )
-        model = agent.model if agent.model is not None else resolved.model
-        execution_engine = _agent_effective_execution_engine(resolved.execution_engine, agent)
-        provider_fallback = agent.provider_fallback if agent.provider_fallback is not None else resolved.provider_fallback
+        model = agent.model if agent.model is not None else config.model
+        provider_fallback = agent.provider_fallback if agent.provider_fallback is not None else config.provider_fallback
         request_runtime_internal = agent.runtime_internal
         if (
             request_runtime_internal is not None
@@ -5476,32 +5348,31 @@ class VoidCodeRuntime(RuntimeSurface):
             and raw_agent_prompt is None
             and raw_agent_prompt_append is None
             and raw_agent_prompt_profile is None
-            and (resolved.agent is None or agent.preset == resolved.agent.preset)
+            and (config.agent is None or agent.preset == config.agent.preset)
         ):
-            request_runtime_internal = resolved.agent.runtime_internal if resolved.agent is not None else None
+            request_runtime_internal = config.agent.runtime_internal if config.agent is not None else None
         merged_agent = RuntimeAgentConfig(
             preset=agent.preset,
             prompt_profile=(
-                agent.prompt_profile if agent.prompt_profile is not None else resolved.agent.prompt_profile if resolved.agent is not None else None
+                agent.prompt_profile if agent.prompt_profile is not None else config.agent.prompt_profile if config.agent is not None else None
             ),
-            prompt=(agent.prompt if agent.prompt is not None else resolved.agent.prompt if resolved.agent is not None else None),
+            prompt=(agent.prompt if agent.prompt is not None else config.agent.prompt if config.agent is not None else None),
             prompt_append=(
-                agent.prompt_append if agent.prompt_append is not None else resolved.agent.prompt_append if resolved.agent is not None else None
+                agent.prompt_append if agent.prompt_append is not None else config.agent.prompt_append if config.agent is not None else None
             ),
             runtime_internal=request_runtime_internal,
-            hook_refs=(agent.hook_refs if agent.hook_refs else resolved.agent.hook_refs if resolved.agent is not None else ()),
+            hook_refs=(agent.hook_refs if agent.hook_refs else config.agent.hook_refs if config.agent is not None else ()),
             context_transform_refs=(
                 agent.context_transform_refs
                 if agent.context_transform_refs
-                else resolved.agent.context_transform_refs
-                if resolved.agent is not None
+                else config.agent.context_transform_refs
+                if config.agent is not None
                 else ()
             ),
             model=model,
-            execution_engine=execution_engine,
-            tools=(agent.tools if agent.tools is not None else resolved.agent.tools if resolved.agent is not None else None),
-            skills=(agent.skills if agent.skills is not None else resolved.agent.skills if resolved.agent is not None else None),
-            mcp_binding=(agent.mcp_binding if agent.mcp_binding is not None else resolved.agent.mcp_binding if resolved.agent is not None else None),
+            tools=(agent.tools if agent.tools is not None else config.agent.tools if config.agent is not None else None),
+            skills=(agent.skills if agent.skills is not None else config.agent.skills if config.agent is not None else None),
+            mcp_binding=(agent.mcp_binding if agent.mcp_binding is not None else config.agent.mcp_binding if config.agent is not None else None),
             provider_fallback=provider_fallback,
         )
         resolved_provider = resolve_provider_config(
@@ -5509,21 +5380,20 @@ class VoidCodeRuntime(RuntimeSurface):
             provider_fallback,
             registry=self._model_provider_registry,
         )
-        return EffectiveRuntimeConfig(
-            approval_mode=resolved.approval_mode,
-            permission=resolved.permission,
+        return RunConfig(
+            approval_mode=config.approval_mode,
+            permission=config.permission,
             model=model,
-            execution_engine=execution_engine,
-            tool_timeout_seconds=resolved.tool_timeout_seconds,
-            reasoning_effort=resolved.reasoning_effort,
+            tool_timeout_seconds=config.tool_timeout_seconds,
+            reasoning_effort=config.reasoning_effort,
             provider_fallback=provider_fallback,
-            providers=resolved.providers,
+            providers=config.providers,
             resolved_provider=resolved_provider,
             agent=merged_agent,
-            context_window=resolved.context_window,
-            tools=resolved.tools,
-            policy=resolved.policy,
-            components=resolved.components,
+            context_window=config.context_window,
+            tools=config.tools,
+            policy=config.policy,
+            components=config.components,
         )
 
     def _validate_runtime_agent_for_execution(
@@ -5571,7 +5441,6 @@ class VoidCodeRuntime(RuntimeSurface):
             raise RuntimeRequestError("request metadata 'delegation' must be an object when provided")
         delegation_metadata: dict[str, object] = dict(raw_delegation_metadata)
         delegation_metadata["selected_preset"] = resolved_route.selected_preset
-        delegation_metadata["selected_execution_engine"] = resolved_route.execution_engine
 
         raw_agent = normalized_metadata.get("agent")
         if raw_agent is None:
@@ -5681,16 +5550,13 @@ class VoidCodeRuntime(RuntimeSurface):
     ) -> str | None:
         return waiting_request_id_from_response(response, request_kind=request_kind)
 
-    def effective_runtime_config_from_metadata(self, metadata: dict[str, object] | None) -> EffectiveRuntimeConfig:
+    def run_config_from_metadata(self, metadata: dict[str, object] | None) -> RunConfig:
         approval_mode: ApprovalMode = self._config.approval_mode
         model = self._config.model
-        execution_engine = self._config.execution_engine
         reasoning_effort = self._config.reasoning_effort
         providers = self._config.providers
         provider_fallback = self._config.provider_fallback
-        agent = self._config.agent
-        if agent is None and execution_engine == "provider":
-            agent = RuntimeAgentConfig(preset="default")
+        agent = self._config.agent or RuntimeAgentConfig(preset="default")
         context_window = self._context_window_config_override or self._config.context_window
         allow_persisted_subagent_presets = False
         if metadata is not None:
@@ -5714,24 +5580,8 @@ class VoidCodeRuntime(RuntimeSurface):
                 agent,
                 source="runtime config agent",
             )
-        elif execution_engine == "provider":
-            agent = parse_runtime_agent_payload(
-                serialize_runtime_agent_config(RuntimeAgentConfig(preset="default"), include_runtime_internal=True),
-                source="runtime config agent",
-                hooks=self._config.hooks,
-                agent_registry=self._agent_registry,
-                allow_runtime_internal=True,
-            )
-            assert agent is not None
-            self._validate_runtime_agent_for_execution(
-                agent,
-                source="runtime config agent",
-            )
-        execution_engine_override = agent.execution_engine if agent is not None and agent.execution_engine is not None else None
         model_override = agent.model if agent is not None and agent.model is not None else None
         provider_fallback_override = agent.provider_fallback if agent is not None and agent.provider_fallback is not None else None
-        if execution_engine != "deterministic" and execution_engine_override is not None:
-            execution_engine = execution_engine_override
         if model_override is not None:
             model = model_override
         if provider_fallback_override is not None:
@@ -5742,11 +5592,10 @@ class VoidCodeRuntime(RuntimeSurface):
             registry=self._model_provider_registry,
         )
         if metadata is None:
-            return EffectiveRuntimeConfig(
+            return RunConfig(
                 approval_mode=approval_mode,
                 permission=self._config.permission,
                 model=model,
-                execution_engine=execution_engine,
                 tool_timeout_seconds=self._config.tool_timeout_seconds,
                 reasoning_effort=reasoning_effort,
                 provider_fallback=provider_fallback,
@@ -5770,7 +5619,6 @@ class VoidCodeRuntime(RuntimeSurface):
         permission = materialized.permission
         policy = materialized.policy
         model = materialized.model
-        execution_engine = materialized.execution_engine
         tool_timeout_seconds = materialized.tool_timeout_seconds
         reasoning_effort = materialized.reasoning_effort
         providers = materialized.providers
@@ -5817,11 +5665,10 @@ class VoidCodeRuntime(RuntimeSurface):
                 provider_fallback,
                 registry=self._model_provider_registry,
             )
-        return EffectiveRuntimeConfig(
+        return RunConfig(
             approval_mode=approval_mode,
             permission=permission,
             model=model,
-            execution_engine=execution_engine,
             tool_timeout_seconds=tool_timeout_seconds,
             reasoning_effort=reasoning_effort,
             provider_fallback=provider_fallback,
@@ -5841,29 +5688,8 @@ class VoidCodeRuntime(RuntimeSurface):
     def turn_producer_for_session_metadata(self, metadata: dict[str, object] | None) -> TurnProducer:
         if self._turn_producer_override is not None:
             return self._turn_producer_override
-
-        effective_config = self.effective_runtime_config_from_metadata(metadata)
-        if isinstance((metadata or {}).get("command"), dict):
-            return self._build_turn_producer_for_engine_from_config(effective_config, use_cache=False)
-
-        # Reuse self._graph if the session's config matches the runtime's config
-        if (
-            effective_config.execution_engine != "provider"
-            and effective_config.execution_engine == self._initial_effective_config.execution_engine
-            and effective_config.model == self._initial_effective_config.model
-            and effective_config.reasoning_effort == self._initial_effective_config.reasoning_effort
-            and effective_config.provider_fallback == self._initial_effective_config.provider_fallback
-            and effective_config.providers == self._initial_effective_config.providers
-            and effective_config.agent == self._initial_effective_config.agent
-            and effective_config.context_window == self._initial_effective_config.context_window
-        ):
-            if self._turn_producer is not None:
-                return self._turn_producer
-            self._turn_producer = self._build_turn_producer_for_engine_from_config(effective_config)
-            return self._turn_producer
-
-        # Otherwise use cached graph or build new one
-        return self._build_turn_producer_for_engine_from_config(effective_config)
+        config = self.run_config_from_metadata(metadata)
+        return select_turn_producer_for_config(config=config).producer
 
     def _load_existing_session_if_present(self, *, session_id: str) -> RuntimeResponse | None:
         return self._finalize_coordinator.load_existing_session_if_present(session_id=session_id)
@@ -5936,7 +5762,7 @@ class VoidCodeRuntime(RuntimeSurface):
 class _PreparedStreamSession:
     request: RuntimeRequest
     resolved_session_id: str
-    effective_config: EffectiveRuntimeConfig
+    config: RunConfig
     composition_ref: CompositionRef
     frozen_composition: FrozenComposition
     request_metadata: dict[str, object]

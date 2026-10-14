@@ -28,6 +28,7 @@ class ToolResultView:
     original_content_chars: int | None = None
     content_char_limit: int | None = None
     pruned: bool = False
+    tool_batch_id: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "arguments", own_json_object(self.arguments))
@@ -38,11 +39,12 @@ def project_report(report: ReportedCall) -> ToolResultView:
     return ToolResultView(
         tool_call_id=report.tool_call_id,
         tool_name=report.final_tool_name,
-        arguments=report.authorized_arguments,
+        arguments=report.final_arguments,
         output=result.output,
         status=result.status,
         error=result.error if isinstance(result, ToolFailure) else None,
         diagnostics=result.diagnostics if isinstance(result, ToolFailure) else None,
+        tool_batch_id=report.tool_batch_id,
     )
 
 
@@ -66,6 +68,7 @@ class ContextSegment:
     tool_name: str | None = None
     tool_arguments: dict[str, object] | None = None
     metadata: dict[str, object] | None = None
+    tool_batch_id: str | None = None
 
 
 @runtime_checkable

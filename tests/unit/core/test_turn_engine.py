@@ -7,13 +7,13 @@ from typing import Any
 
 import pytest
 
-from voidcode.core.deterministic_turns import DeterministicTurnProducer
 from voidcode.core.engine import TurnEngine
+from voidcode.core.event_store import model_turn_batch_id
 from voidcode.core.memory_host import MemoryHost
 from voidcode.core.provider_turns import ProviderTurnProducer
 from voidcode.core.tool_context import ToolContext
 from voidcode.core.transcript import ContextSegment, output_text, tool_result_output
-from voidcode.core.turns import CallSeed, FinalTurn, StreamFact, ToolTurn, TurnRequest, TurnSessionSnapshot, report_call
+from voidcode.core.turns import CallSeed, FinalTurn, ModelTurnFact, StreamFact, ToolTurn, TurnRequest, TurnSessionSnapshot, report_call
 from voidcode.provider.protocol import (
     ProviderErrorKind,
     ProviderExecutionError,
@@ -27,7 +27,7 @@ from voidcode.runtime.context.window import (
     RuntimeAssembledContext,
     RuntimeContextWindow,
 )
-from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult
+from voidcode.tools.contracts import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult, ToolSuccess
 from voidcode.tools.read import ReadTool
 
 
@@ -354,18 +354,18 @@ class _StreamMissingDoneTurnProvider:
         return iter((ProviderStreamEvent(kind="delta", channel="text", text="partial"),))
 
 
-def test_provider_provider_graph_requests_tool_on_first_turn() -> None:
+def test_provider_turn_producer_requests_tool_on_first_turn() -> None:
     provider_model = resolve_provider_model(
         "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    graph = ProviderTurnProducer(
+    producer = ProviderTurnProducer(
         provider=_StubTurnProvider(name="opencode-zen"),
         provider_model=provider_model,
     )
 
     request_context = RuntimeContextWindow(prompt="read sample.txt")
-    step = graph.produce(
+    step = producer.produce(
         request=TurnRequest(
             session=_session(),
             prompt="read sample.txt",
@@ -381,38 +381,18 @@ def test_provider_provider_graph_requests_tool_on_first_turn() -> None:
     assert step.calls[0].tool_name == "read"
 
 
-def test_deterministic_read_preserves_actual_body_whitespace(tmp_path: Path) -> None:
-    body = "\n    alpha: beta\n(parenthetical user text)\n\n  gamma\n"
-    (tmp_path / "sample.txt").write_text(body, encoding="utf-8")
-    tool = ReadTool()
-    result = tool.invoke(ToolCall("read", {"path": "sample.txt"}), context=ToolContext(workspace=tmp_path))
-    context = RuntimeContextWindow(prompt="read sample.txt", tool_results=(result,))
-    request = TurnRequest(
-        session=_session(),
-        prompt="read sample.txt",
-        available_tools=(tool.definition,),
-        context_window=context,
-        assembled_context=_assembled_from_context_window(context),
-        run_step=2,
-    )
-
-    plan = DeterministicTurnProducer().produce(request, (result,), session=request.session)
-
-    assert plan.output.endswith(body)
-
-
-def test_provider_provider_graph_prefers_nonstream_tool_call_over_text() -> None:
+def test_provider_turn_producer_prefers_nonstream_tool_call_over_text() -> None:
     provider_model = resolve_provider_model(
         "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    graph = ProviderTurnProducer(
+    producer = ProviderTurnProducer(
         provider=_MixedNonStreamingTurnProvider(),
         provider_model=provider_model,
     )
 
     request_context = RuntimeContextWindow(prompt="read sample.txt")
-    step = graph.produce(
+    step = producer.produce(
         request=TurnRequest(
             session=_session(),
             prompt="read sample.txt",
@@ -428,12 +408,12 @@ def test_provider_provider_graph_prefers_nonstream_tool_call_over_text() -> None
     assert step.calls[0].tool_name == "read"
 
 
-def test_provider_provider_graph_rejects_nonstream_missing_terminal_outcome() -> None:
+def test_provider_turn_producer_rejects_nonstream_missing_terminal_outcome() -> None:
     provider_model = resolve_provider_model(
         "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    graph = ProviderTurnProducer(
+    producer = ProviderTurnProducer(
         provider=_EmptyNonStreamingTurnProvider(),
         provider_model=provider_model,
     )
@@ -442,7 +422,7 @@ def test_provider_provider_graph_rejects_nonstream_missing_terminal_outcome() ->
         ProviderExecutionError,
         match="neither output nor tool calls",
     ) as exc_info:
-        _ = graph.produce(
+        _ = producer.produce(
             request=TurnRequest(
                 session=_session(),
                 prompt="read sample.txt",
@@ -454,10 +434,10 @@ def test_provider_provider_graph_rejects_nonstream_missing_terminal_outcome() ->
             session=_session(),
         )
 
-    assert exc_info.value.kind == "transient_failure"
+    assert exc_info.value.kind == "provider_error"
 
 
-def test_provider_graph_treats_unrecognized_nonstream_finish_reason_as_completed() -> None:
+def test_provider_turn_producer_treats_unrecognized_nonstream_finish_reason_as_completed() -> None:
     provider_model = resolve_provider_model(
         "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
@@ -475,9 +455,9 @@ def test_provider_graph_treats_unrecognized_nonstream_finish_reason_as_completed
                 metadata={"finish_reason_raw": "eos_token"},
             )
 
-    graph = ProviderTurnProducer(provider=_UnknownDoneReasonTurnProvider(), provider_model=provider_model)
+    producer = ProviderTurnProducer(provider=_UnknownDoneReasonTurnProvider(), provider_model=provider_model)
 
-    step = graph.produce(
+    step = producer.produce(
         request=TurnRequest(
             session=_session(),
             prompt="read sample.txt",
@@ -495,7 +475,7 @@ def test_provider_graph_treats_unrecognized_nonstream_finish_reason_as_completed
     assert step.output == "done"
 
 
-def test_provider_graph_treats_unrecognized_stream_finish_reason_as_completed() -> None:
+def test_provider_turn_producer_treats_unrecognized_stream_finish_reason_as_completed() -> None:
     provider_model = resolve_provider_model(
         "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
@@ -517,9 +497,9 @@ def test_provider_graph_treats_unrecognized_stream_finish_reason_as_completed() 
                 )
             )
 
-    graph = ProviderTurnProducer(provider=_UnknownDoneReasonStreamTurnProvider(), provider_model=provider_model)
+    producer = ProviderTurnProducer(provider=_UnknownDoneReasonStreamTurnProvider(), provider_model=provider_model)
 
-    step = graph.produce(
+    step = producer.produce(
         request=TurnRequest(
             session=_session(),
             prompt="read sample.txt",
@@ -536,7 +516,7 @@ def test_provider_graph_treats_unrecognized_stream_finish_reason_as_completed() 
     assert step.output == "done"
 
 
-def test_provider_graph_treats_omitted_finish_reason_as_completed() -> None:
+def test_provider_turn_producer_accepts_unrecognized_finish_without_raw_token() -> None:
     provider_model = resolve_provider_model(
         "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
@@ -547,7 +527,7 @@ def test_provider_graph_treats_omitted_finish_reason_as_completed() -> None:
 
         def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
             _ = request
-            # No metadata: the mapped reason is all the graph has to go on.
+            # No metadata: the mapped reason is all the provider turn producer has to go on.
             return ProviderTurnResult(output="done", done_reason="unknown", finish_reason_reported=True)
 
     class _UnknownStreamingTurnProvider:
@@ -568,8 +548,8 @@ def test_provider_graph_treats_omitted_finish_reason_as_completed() -> None:
 
     cases = ((_UnknownNonStreamingTurnProvider(), {}), (_UnknownStreamingTurnProvider(), {"provider_stream": True}))
     for provider, metadata in cases:
-        graph = ProviderTurnProducer(provider=provider, provider_model=provider_model)
-        step = graph.produce(
+        producer = ProviderTurnProducer(provider=provider, provider_model=provider_model)
+        step = producer.produce(
             request=TurnRequest(
                 session=_session(),
                 prompt="read sample.txt",
@@ -586,7 +566,42 @@ def test_provider_graph_treats_omitted_finish_reason_as_completed() -> None:
         assert step.output == "done"
 
 
-def test_provider_provider_graph_preserves_stream_error_details() -> None:
+def test_provider_turn_producer_rejects_nonstream_missing_finish_marker() -> None:
+    provider_model = resolve_provider_model(
+        "opencode-zen/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+
+    class _MissingFinishProvider:
+        name = "opencode-zen"
+
+        def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
+            _ = request
+            return ProviderTurnResult(
+                output="partial",
+                done_reason="unknown",
+                finish_reason_reported=False,
+            )
+
+    producer = ProviderTurnProducer(provider=_MissingFinishProvider(), provider_model=provider_model)
+    with pytest.raises(ProviderExecutionError) as exc_info:
+        producer.produce(
+            request=TurnRequest(
+                session=_session(),
+                prompt="read sample.txt",
+                available_tools=_tool_definitions(),
+                context_window=RuntimeContextWindow(prompt="read sample.txt"),
+                assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
+            ),
+            tool_results=(),
+            session=_session(),
+        )
+
+    assert exc_info.value.kind == "provider_error"
+    assert exc_info.value.details["reason"] == "missing_terminal_event"
+
+
+def test_provider_turn_producer_preserves_stream_error_details() -> None:
     provider_model = resolve_provider_model(
         "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
@@ -620,13 +635,13 @@ def test_provider_provider_graph_preserves_stream_error_details() -> None:
                 )
             )
 
-    graph = ProviderTurnProducer(
+    producer = ProviderTurnProducer(
         provider=_DetailedStreamErrorTurnProvider(),
         provider_model=provider_model,
     )
 
     with pytest.raises(ProviderExecutionError, match="network interrupted") as exc_info:
-        _ = graph.produce(
+        _ = producer.produce(
             request=TurnRequest(
                 session=_session(),
                 prompt="read sample.txt",
@@ -651,7 +666,7 @@ def test_provider_provider_graph_preserves_stream_error_details() -> None:
     assert exc_info.value.kind == "rate_limit"
 
 
-def test_provider_provider_graph_prefers_parsed_stream_error_kind_over_generic_transient() -> None:
+def test_provider_turn_producer_prefers_parsed_stream_error_kind_over_generic_transient() -> None:
     provider_model = resolve_provider_model(
         "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
@@ -684,7 +699,7 @@ def test_provider_provider_graph_prefers_parsed_stream_error_kind_over_generic_t
                 )
             )
 
-    graph = ProviderTurnProducer(
+    producer = ProviderTurnProducer(
         provider=_ContextLimitStreamErrorTurnProvider(),
         provider_model=provider_model,
     )
@@ -693,7 +708,7 @@ def test_provider_provider_graph_prefers_parsed_stream_error_kind_over_generic_t
         ProviderExecutionError,
         match="prompt exceeds the context window",
     ) as exc_info:
-        _ = graph.produce(
+        _ = producer.produce(
             request=TurnRequest(
                 session=_session(),
                 prompt="read sample.txt",
@@ -713,7 +728,7 @@ def test_provider_provider_graph_prefers_parsed_stream_error_kind_over_generic_t
     "error_kind",
     ["missing_auth", "unsupported_feature", "stream_tool_feedback_shape"],
 )
-def test_provider_provider_graph_preserves_explicit_stream_error_kind(
+def test_provider_turn_producer_preserves_explicit_stream_error_kind(
     error_kind: ProviderErrorKind,
 ) -> None:
     provider_model = resolve_provider_model(
@@ -741,13 +756,13 @@ def test_provider_provider_graph_preserves_explicit_stream_error_kind(
                 )
             )
 
-    graph = ProviderTurnProducer(
+    producer = ProviderTurnProducer(
         provider=_ExplicitKindStreamErrorTurnProvider(),
         provider_model=provider_model,
     )
 
     with pytest.raises(ProviderExecutionError, match="provider stream failed") as exc_info:
-        _ = graph.produce(
+        _ = producer.produce(
             request=TurnRequest(
                 session=_session(),
                 prompt="read sample.txt",
@@ -763,17 +778,17 @@ def test_provider_provider_graph_preserves_explicit_stream_error_kind(
     assert exc_info.value.kind == error_kind
 
 
-def test_provider_provider_graph_streams_ordered_events_and_deterministic_output() -> None:
+def test_provider_turn_producer_streams_ordered_events_and_deterministic_output() -> None:
     provider_model = resolve_provider_model(
         "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    graph = ProviderTurnProducer(
+    producer = ProviderTurnProducer(
         provider=_StreamOutputTurnProvider(),
         provider_model=provider_model,
     )
 
-    step = graph.produce(
+    step = producer.produce(
         request=TurnRequest(
             session=_session(),
             prompt="read sample.txt",
@@ -792,17 +807,17 @@ def test_provider_provider_graph_streams_ordered_events_and_deterministic_output
     assert [event.event.kind for event in stream_events] == ["delta", "delta", "done"]
 
 
-def test_provider_graph_preserves_reasoning_stream_metadata() -> None:
+def test_provider_turn_producer_preserves_reasoning_stream_metadata() -> None:
     provider_model = resolve_provider_model(
         "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    graph = ProviderTurnProducer(
+    producer = ProviderTurnProducer(
         provider=_StreamReasoningMetadataTurnProvider(),
         provider_model=provider_model,
     )
 
-    step = graph.produce(
+    step = producer.produce(
         request=TurnRequest(
             session=_session(),
             prompt="think",
@@ -823,16 +838,16 @@ def test_provider_graph_preserves_reasoning_stream_metadata() -> None:
     assert step.output == "answer"
 
 
-def test_provider_provider_graph_stream_done_without_text_is_rejected() -> None:
+def test_provider_turn_producer_stream_done_without_text_is_rejected() -> None:
     provider_model = resolve_provider_model(
         "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
     provider = _StreamNoTextDoneTurnProvider()
-    graph = ProviderTurnProducer(provider=provider, provider_model=provider_model)
+    producer = ProviderTurnProducer(provider=provider, provider_model=provider_model)
 
     with pytest.raises(ProviderExecutionError) as exc_info:
-        _ = graph.produce(
+        _ = producer.produce(
             request=TurnRequest(
                 session=_session(),
                 prompt="read sample.txt",
@@ -846,7 +861,7 @@ def test_provider_provider_graph_stream_done_without_text_is_rejected() -> None:
         )
     assert provider.stream_calls == 1
     assert provider.propose_calls == 0
-    assert exc_info.value.kind == "transient_failure"
+    assert exc_info.value.kind == "provider_error"
     assert exc_info.value.details["reason"] == "missing_terminal_outcome"
 
 
@@ -858,17 +873,17 @@ def test_provider_provider_graph_stream_done_without_text_is_rejected() -> None:
         pytest.param(_StreamToolSnapshotTurnProvider, id="latest-complete-snapshot"),
     ),
 )
-def test_provider_provider_graph_parses_streamed_tool_call(provider_class: type[Any]) -> None:
+def test_provider_turn_producer_parses_streamed_tool_call(provider_class: type[Any]) -> None:
     provider_model = resolve_provider_model(
         "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    graph = ProviderTurnProducer(
+    producer = ProviderTurnProducer(
         provider=provider_class(),
         provider_model=provider_model,
     )
 
-    step = graph.produce(
+    step = producer.produce(
         request=TurnRequest(
             session=_session(),
             prompt="read sample.txt",
@@ -886,17 +901,17 @@ def test_provider_provider_graph_parses_streamed_tool_call(provider_class: type[
     assert step.calls[0].arguments == {"path": "sample.txt"}
 
 
-def test_provider_provider_graph_prefers_streamed_tool_call_over_text() -> None:
+def test_provider_turn_producer_prefers_streamed_tool_call_over_text() -> None:
     provider_model = resolve_provider_model(
         "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    graph = ProviderTurnProducer(
+    producer = ProviderTurnProducer(
         provider=_MixedStreamingTurnProvider(),
         provider_model=provider_model,
     )
 
-    step = graph.produce(
+    step = producer.produce(
         request=TurnRequest(
             session=_session(),
             prompt="read sample.txt",
@@ -913,18 +928,18 @@ def test_provider_provider_graph_prefers_streamed_tool_call_over_text() -> None:
     assert step.calls[0].tool_name == "read"
 
 
-def test_provider_provider_graph_rejects_malformed_streamed_tool_payload() -> None:
+def test_provider_turn_producer_rejects_malformed_streamed_tool_payload() -> None:
     provider_model = resolve_provider_model(
         "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    graph = ProviderTurnProducer(
+    producer = ProviderTurnProducer(
         provider=_StreamMalformedToolTurnProvider(),
         provider_model=provider_model,
     )
 
     with pytest.raises(ProviderExecutionError, match="malformed tool payload") as exc_info:
-        _ = graph.produce(
+        _ = producer.produce(
             request=TurnRequest(
                 session=_session(),
                 prompt="read sample.txt",
@@ -937,21 +952,21 @@ def test_provider_provider_graph_rejects_malformed_streamed_tool_payload() -> No
             session=_session(),
         )
 
-    assert exc_info.value.kind == "transient_failure"
+    assert exc_info.value.kind == "provider_error"
 
 
-def test_provider_provider_graph_requires_done_event_for_stream_completion() -> None:
+def test_provider_turn_producer_requires_done_event_for_stream_completion() -> None:
     provider_model = resolve_provider_model(
         "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    graph = ProviderTurnProducer(
+    producer = ProviderTurnProducer(
         provider=_StreamMissingDoneTurnProvider(),
         provider_model=provider_model,
     )
 
     with pytest.raises(ProviderExecutionError, match="without a done event") as exc_info:
-        _ = graph.produce(
+        _ = producer.produce(
             request=TurnRequest(
                 session=_session(),
                 prompt="read sample.txt",
@@ -964,10 +979,10 @@ def test_provider_provider_graph_requires_done_event_for_stream_completion() -> 
             session=_session(),
         )
 
-    assert exc_info.value.kind == "transient_failure"
+    assert exc_info.value.kind == "provider_error"
 
 
-def test_provider_graph_maps_tool_call_lifecycle_and_builds_final_call() -> None:
+def test_provider_turn_producer_maps_tool_call_lifecycle_and_builds_final_call() -> None:
     class _LifecycleProvider:
         name = "opencode-zen"
 
@@ -1011,12 +1026,12 @@ def test_provider_graph_maps_tool_call_lifecycle_and_builds_final_call() -> None
                 )
             )
 
-    graph = ProviderTurnProducer(
+    producer = ProviderTurnProducer(
         provider=_LifecycleProvider(),
         provider_model=resolve_provider_model("opencode-zen/gpt-5.4", registry=ModelProviderRegistry.with_defaults()),
     )
     context = RuntimeContextWindow(prompt="read sample.txt")
-    step = graph.produce(
+    step = producer.produce(
         TurnRequest(
             session=_session(),
             prompt=context.prompt,
@@ -1038,7 +1053,7 @@ def test_provider_graph_maps_tool_call_lifecycle_and_builds_final_call() -> None
     ]
 
 
-def test_provider_graph_rejects_incomplete_lifecycle_call() -> None:
+def test_provider_turn_producer_rejects_incomplete_lifecycle_call() -> None:
     class _IncompleteProvider:
         name = "opencode-zen"
 
@@ -1068,13 +1083,13 @@ def test_provider_graph_rejects_incomplete_lifecycle_call() -> None:
                 )
             )
 
-    graph = ProviderTurnProducer(
+    producer = ProviderTurnProducer(
         provider=_IncompleteProvider(),
         provider_model=resolve_provider_model("opencode-zen/gpt-5.4", registry=ModelProviderRegistry.with_defaults()),
     )
     context = RuntimeContextWindow(prompt="read sample.txt")
     with pytest.raises(ProviderExecutionError) as exc_info:
-        graph.produce(
+        producer.produce(
             TurnRequest(
                 session=_session(),
                 prompt=context.prompt,
@@ -1086,11 +1101,11 @@ def test_provider_graph_rejects_incomplete_lifecycle_call() -> None:
             (),
             session=_session(),
         )
-    assert exc_info.value.kind == "transient_failure"
+    assert exc_info.value.kind == "provider_error"
     assert exc_info.value.details["reason"] == "incomplete_tool_call"
 
 
-def test_provider_graph_rejects_nonobject_lifecycle_arguments() -> None:
+def test_provider_turn_producer_rejects_nonobject_lifecycle_arguments() -> None:
     class _NonobjectArgumentsProvider:
         name = "opencode-zen"
 
@@ -1109,14 +1124,14 @@ def test_provider_graph_rejects_nonobject_lifecycle_arguments() -> None:
                 )
             )
 
-    graph = ProviderTurnProducer(
+    producer = ProviderTurnProducer(
         provider=_NonobjectArgumentsProvider(),
         provider_model=resolve_provider_model("opencode-zen/gpt-5.4", registry=ModelProviderRegistry.with_defaults()),
     )
     context = RuntimeContextWindow(prompt="read sample.txt")
 
     with pytest.raises(ProviderExecutionError) as exc_info:
-        graph.produce(
+        producer.produce(
             TurnRequest(
                 session=_session(),
                 prompt=context.prompt,
@@ -1129,11 +1144,11 @@ def test_provider_graph_rejects_nonobject_lifecycle_arguments() -> None:
             session=_session(),
         )
 
-    assert exc_info.value.kind == "transient_failure"
+    assert exc_info.value.kind == "provider_error"
     assert exc_info.value.details["reason"] == "invalid_tool_arguments"
 
 
-def test_provider_graph_merges_explicit_and_complete_streamed_tool_calls() -> None:
+def test_provider_turn_producer_uses_complete_calls_without_merging_lifecycle() -> None:
     class _MixedToolCallProvider:
         name = "opencode-zen"
 
@@ -1183,12 +1198,12 @@ def test_provider_graph_merges_explicit_and_complete_streamed_tool_calls() -> No
                 )
             )
 
-    graph = ProviderTurnProducer(
+    producer = ProviderTurnProducer(
         provider=_MixedToolCallProvider(),
         provider_model=resolve_provider_model("opencode-zen/gpt-5.4", registry=ModelProviderRegistry.with_defaults()),
     )
     context = RuntimeContextWindow(prompt="read and write")
-    step = graph.produce(
+    step = producer.produce(
         TurnRequest(
             session=_session(),
             prompt=context.prompt,
@@ -1204,6 +1219,202 @@ def test_provider_graph_merges_explicit_and_complete_streamed_tool_calls() -> No
     assert isinstance(step, ToolTurn)
     assert [call.tool_call_id for call in step.calls] == ["complete", "explicit"]
     assert [call.tool_name for call in step.calls] == ["read", "write"]
+
+
+def test_provider_turn_producer_rejects_duplicate_nonstream_call_ids() -> None:
+    class _ToolCallProvider:
+        name = "opencode-zen"
+
+        def __init__(self, calls: tuple[ToolCall, ...]) -> None:
+            self.calls = calls
+
+        def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
+            _ = request
+            return ProviderTurnResult(tool_calls=self.calls)
+
+    provider_model = resolve_provider_model("opencode-zen/gpt-5.4", registry=ModelProviderRegistry.with_defaults())
+    context = RuntimeContextWindow(prompt="read sample.txt")
+
+    def produce(calls: tuple[ToolCall, ...]) -> object:
+        producer = ProviderTurnProducer(provider=_ToolCallProvider(calls), provider_model=provider_model)
+        return producer.produce(
+            TurnRequest(
+                session=_session(),
+                prompt=context.prompt,
+                available_tools=_tool_definitions(),
+                context_window=context,
+                assembled_context=_assembled_from_context_window(context),
+            ),
+            (),
+            session=_session(),
+        )
+
+    duplicate_id = "call-duplicate"
+    identical = ToolCall("read", {"path": "sample.txt"}, duplicate_id)
+    for calls in (
+        (identical, identical),
+        (identical, ToolCall("read", {"path": "other.txt"}, duplicate_id)),
+        (
+            ToolCall("read", {"value": 1}, duplicate_id),
+            ToolCall("read", {"value": True}, duplicate_id),
+        ),
+    ):
+        with pytest.raises(ProviderExecutionError) as exc_info:
+            produce(calls)
+        assert exc_info.value.kind == "provider_error"
+        assert exc_info.value.details["reason"] == "duplicate_tool_call_id"
+
+
+def test_native_duplicate_array_fails_and_complete_calls_are_authoritative() -> None:
+    class _CountingTool:
+        definition = _tool_definitions()[0]
+
+        def __init__(self) -> None:
+            self.invocations = 0
+            self.calls: list[ToolCall] = []
+
+        def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+            _ = context
+            self.invocations += 1
+            self.calls.append(call)
+            return ToolSuccess("read", output=TextOutput("executed"))
+
+    class _StreamProvider:
+        name = "opencode-zen"
+
+        def __init__(
+            self,
+            *,
+            duplicate_array: bool,
+            cross_channel_arguments: tuple[object, object] | None,
+            conflicting_lifecycle: bool,
+        ) -> None:
+            self.duplicate_array = duplicate_array
+            self.cross_channel_arguments = cross_channel_arguments
+            self.conflicting_lifecycle = conflicting_lifecycle
+            self.stream_count = 0
+
+        def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
+            _ = request
+            return ProviderTurnResult(output="unused")
+
+        def stream_turn(self, request: ProviderTurnRequest):
+            _ = request
+            self.stream_count += 1
+            if self.stream_count > 1:
+                return iter(
+                    (
+                        ProviderStreamEvent(kind="content", channel="text", text="done"),
+                        ProviderStreamEvent(kind="done", done_reason="stop"),
+                    )
+                )
+            if self.conflicting_lifecycle:
+                return iter(
+                    (
+                        ProviderStreamEvent(
+                            kind="tool_call_start",
+                            channel="tool",
+                            tool_call_id="same-id",
+                            tool_name="read",
+                            tool_call_ordinal=0,
+                        ),
+                        ProviderStreamEvent(
+                            kind="tool_call_start",
+                            channel="tool",
+                            tool_call_id="same-id",
+                            tool_name="read",
+                            tool_call_ordinal=1,
+                        ),
+                    )
+                )
+            payload_arguments = {"path": "sample.txt"}
+            lifecycle_arguments = payload_arguments
+            if self.cross_channel_arguments is not None:
+                payload_value, lifecycle_value = self.cross_channel_arguments
+                payload_arguments = {"value": payload_value}
+                lifecycle_arguments = {"value": lifecycle_value}
+            payload_calls = [{"tool_name": "read", "tool_call_id": "same-id", "arguments": payload_arguments}]
+            if self.duplicate_array:
+                payload_calls.append(dict(payload_calls[0]))
+            events = [
+                ProviderStreamEvent(
+                    kind="content",
+                    channel="tool",
+                    text=json.dumps({"tool_calls": payload_calls}),
+                )
+            ]
+            if not self.duplicate_array:
+                events.extend(
+                    (
+                        ProviderStreamEvent(
+                            kind="tool_call_start",
+                            channel="tool",
+                            tool_call_id="same-id",
+                            tool_name="read",
+                            tool_call_ordinal=0,
+                        ),
+                        ProviderStreamEvent(
+                            kind="tool_call_end",
+                            channel="tool",
+                            tool_call_id="same-id",
+                            parsed_arguments=lifecycle_arguments,
+                        ),
+                    )
+                )
+            events.append(ProviderStreamEvent(kind="done", done_reason="tool_calls"))
+            return iter(events)
+
+    provider_model = resolve_provider_model("opencode-zen/gpt-5.4", registry=ModelProviderRegistry.with_defaults())
+
+    def run(
+        duplicate_array: bool,
+        cross_channel_arguments: tuple[object, object] | None = None,
+        *,
+        conflicting_lifecycle: bool = False,
+    ) -> tuple[object, _CountingTool]:
+        tool = _CountingTool()
+        host = MemoryHost(tools=(tool,))
+        producer = ProviderTurnProducer(
+            provider=_StreamProvider(
+                duplicate_array=duplicate_array,
+                cross_channel_arguments=cross_channel_arguments,
+                conflicting_lifecycle=conflicting_lifecycle,
+            ),
+            provider_model=provider_model,
+        )
+        request = replace(host.request("read sample.txt"), metadata={"provider_stream": True})
+        engine = TurnEngine(producer).run(request, host=host)
+        if duplicate_array or conflicting_lifecycle:
+            with pytest.raises(ProviderExecutionError) as exc_info:
+                while True:
+                    next(engine)
+            assert exc_info.value.kind == "provider_error"
+            expected_reason = "duplicate_tool_call_id" if duplicate_array else "conflicting_tool_call_id"
+            assert exc_info.value.details["reason"] == expected_reason
+            return None, tool
+        while True:
+            try:
+                next(engine)
+            except StopIteration as completed:
+                return completed.value, tool
+
+    result, duplicate_tool = run(duplicate_array=True)
+    assert result is None
+    assert duplicate_tool.invocations == 0
+
+    result, dual_tool = run(duplicate_array=False)
+    assert result.status == "completed"
+    assert dual_tool.invocations == 1
+
+    for values in ((True, 1), (1, 1.0)):
+        result, mismatched_tool = run(duplicate_array=False, cross_channel_arguments=values)
+        assert result.status == "completed"
+        assert mismatched_tool.invocations == 1
+        assert mismatched_tool.calls[0].arguments == {"value": values[0]}
+
+    result, conflicting_tool = run(duplicate_array=False, conflicting_lifecycle=True)
+    assert result is None
+    assert conflicting_tool.invocations == 0
 
 
 def test_turn_engine_restores_completed_seed_result_without_replaying_it(tmp_path: Path) -> None:
@@ -1236,10 +1447,27 @@ def test_turn_engine_restores_completed_seed_result_without_replaying_it(tmp_pat
     invocations_before = tuple(tool.call_ids)
 
     host = MemoryHost(tools=(tool,))
-    engine = TurnEngine(DeterministicTurnProducer()).run(
+    host.event_store.append(
+        (
+            ModelTurnFact(
+                1,
+                "deterministic",
+                "read sample.txt",
+                tool_batch_calls=(call,),
+            ),
+        )
+    )
+    provider_model = resolve_provider_model("opencode-zen/gpt-5.4", registry=ModelProviderRegistry.with_defaults())
+    producer = ProviderTurnProducer(provider=_StubTurnProvider(name="opencode-zen"), provider_model=provider_model)
+    engine = TurnEngine(producer).run(
         host.request("read sample.txt"),
         host=host,
-        seed=CallSeed((call,), completed_reports=(seed_report,)),
+        seed=CallSeed(
+            (call,),
+            completed_reports=(seed_report,),
+            run_step=1,
+            tool_batch_id=model_turn_batch_id(host.session.session_id, 1),
+        ),
     )
     while True:
         try:

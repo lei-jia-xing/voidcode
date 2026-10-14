@@ -33,7 +33,7 @@ The roadmap remains intentionally narrow: ship a stable, demoable single-agent M
 
 The recommended setup uses `uv` for Python and Bun for the frontend. Supported Python version: **3.14**.
 
-> **Current state:** the repository has a real CLI → runtime loop with session persistence, resumable approval/question waits, and a minimal HTTP/SSE transport. Provider-backed execution is the product path; deterministic execution is the repeatable no-key path used for local demos and tests.
+> **Current state:** the repository has a real CLI → runtime loop with session persistence, resumable approval/question waits, and a minimal HTTP/SSE transport. Provider-backed execution is the only runtime path; tests inject their own producers and do not provide a no-key production mode.
 
 ```bash
 # Install toolchain and Python dependencies
@@ -43,15 +43,13 @@ uv sync --extra dev --extra syntax
 # Explore the CLI
 uv run voidcode --help
 
-# Deterministic, offline first run (no credentials and no model ambiguity)
-VOIDCODE_EXECUTION_ENGINE=deterministic uv run voidcode run "read README.md" --workspace .
 
-# Optional provider path: configure one provider and one model explicitly
+# Configure one provider and model explicitly
 OPENAI_API_KEY=... VOIDCODE_MODEL=openai/gpt-4o-mini \
-  uv run voidcode run "read README.md" --workspace .
+  uv run voidcode run "Read README.md and summarize its main points." --workspace .
 
 # A write task pauses for approval in a TTY (the ask mode prompts for write/exec)
-uv run voidcode run "write hello.txt hello world" --workspace . --approval-mode ask
+uv run voidcode run "Create hello.txt containing hello world." --workspace . --approval-mode ask
 
 # List main sessions; add --include-children for delegated child sessions
 uv run voidcode sessions list --workspace .
@@ -68,17 +66,12 @@ contract as `doctor` and prints copyable next steps without exposing credentials
 uv run voidcode doctor --workspace .
 
 # Machine-readable readiness and recovery actions
-uv run voidcode run "read README.md" --workspace . --json
+uv run voidcode run "Summarize README.md." --workspace . --json
 ```
 
 When readiness is blocked, `run` exits with the existing config/provider exit
 code and suggests `voidcode doctor` or `voidcode config init --model
-provider/model`. It never silently switches a provider run to the deterministic
-engine. Select deterministic explicitly for the offline harness:
-
-```bash
-VOIDCODE_EXECUTION_ENGINE=deterministic uv run voidcode run "read README.md" --workspace .
-```
+provider/model`. It never falls back to a successful-looking no-key run.
 
 The JSON preflight payload has stable `status`, `error`, `actions`, and
 `first_task_readiness` fields. Credentials and secret-like configuration values
@@ -90,7 +83,7 @@ are not included.
 
 | Command | Purpose |
 | --- | --- |
-| `voidcode run REQUEST` | Run one request through the configured provider, or through the deterministic harness when `VOIDCODE_EXECUTION_ENGINE=deterministic`. |
+| `voidcode run REQUEST` | Run one request through the configured provider. |
 | `voidcode tui` | Run the interactive inline client (native scrollback, no alternate screen). |
 | `voidcode serve` | Serve the local HTTP runtime transport. |
 | `voidcode web` | Start the web launcher (auto-assigned port; opens a browser unless `--no-open`). |
@@ -144,7 +137,6 @@ Workspace-local runtime config lives in `.voidcode.json` at the workspace root (
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/lei-jia-xing/voidcode/master/schema/voidcode.config.schema.json",
-  "execution_engine": "deterministic",
   "approval_mode": "yolo"
 }
 ```
@@ -152,7 +144,7 @@ Workspace-local runtime config lives in `.voidcode.json` at the workspace root (
 For a provider path, use one explicit model such as `"model": "openai/gpt-4o-mini"` and provide `OPENAI_API_KEY` through the environment. User-level provider/TUI/Web settings resolve from `~/.config/voidcode/config.json`; environment variables are field-specific inputs rather than a blanket override: for top-level runtime fields, explicit/request and repo-local values take precedence over environment values, while provider configs merge repo-local > environment > user. See [`.env.example`](./.env.example).
 ## Architecture overview
 
-VoidCode keeps runtime governance separate from core turn progression: `core.engine.TurnEngine` advances provider and deterministic producer batches through one host boundary, while `runtime.run_loop.RuntimeHost` supplies governed execution and durable lifecycle.
+VoidCode keeps runtime governance separate from core turn progression: `core.engine.TurnEngine` advances provider turns through one host boundary, while `runtime.run_loop.RuntimeHost` supplies governed execution and durable lifecycle.
 
 - The runtime owns session state, permissions, tool governance and execution, storage, streaming, and recovery.
 - Core owns producer contracts and host-agnostic turn/batch progression; it does not own sessions, SQLite, or policy.
@@ -162,7 +154,7 @@ VoidCode keeps runtime governance separate from core turn progression: `core.eng
 
 Key backend boundaries:
 
-- `src/voidcode/core/` — `TurnEngine`, producer contracts, and deterministic/provider producers
+- `src/voidcode/core/` — `TurnEngine`, producer contracts, and provider-backed turn progression
 - `src/voidcode/runtime/` — runtime services, host, governance, and execution boundary
 - `src/voidcode/tools/` — built-in tools and tool metadata
 - `src/voidcode/hook/` — hook configuration and executor

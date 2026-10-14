@@ -388,8 +388,9 @@ describes a non-essential tool; it is not an authorization decision.
 - 参数：
 
 ```json
-{"path": "docs/new.md", "content": "# New\n"}
+{"path": "docs/existing.md", "content": "# Replacement\n", "expectedHash": "<sha256 from read>"}
 ```
+For an existing file, `expectedHash` is required and must come from a fresh `read`; a stale hash is rejected before writing. Omit it only when creating a new file.
 
 - 成功返回：
 
@@ -425,6 +426,7 @@ describes a non-essential tool; it is not an authorization decision.
 ```
 
 `replaceAll` 可省略，默认 `false`。批量模式传 `{ "path", "expectedHash", "edits": [...] }`；各 edit 按数组顺序基于前一步文本匹配。所有 edit 会先在内存中预检，通过后才写一次文件；预检失败不会写入任何改动，诊断会提供失败索引与可重试的完整 batch 提示。Patch 模式传 `{ "patch": "...", "expectedHashes": { "existing/path": "<sha256>" } }`；已有文件的修改与删除必须提供读取所得哈希。
+Marker patch 的旧行按原样、按顺序精确匹配，不会模糊归一化空白；若剩余搜索区存在多个完全相同的命中，会拒绝 patch，而不会猜测第一处。
 
 - 成功返回：
 

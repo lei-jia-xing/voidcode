@@ -101,7 +101,7 @@ def report_payload(report: ReportedCall) -> dict[str, object]:
         "version": 1,
         "tool_call_id": report.tool_call_id,
         "final_tool_name": report.final_tool_name,
-        "arguments": json_wire_object(report.authorized_arguments),
+        "arguments": json_wire_object(report.final_arguments),
         "result": None,
     }
     encoded_result: dict[str, object] = {

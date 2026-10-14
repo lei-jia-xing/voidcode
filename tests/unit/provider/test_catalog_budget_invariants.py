@@ -1,4 +1,4 @@
-"""Catalog-wide invariants for the derived context budget and the Google usage split."""
+"""Catalog invariants for reported input caps and provider usage pricing."""
 
 from __future__ import annotations
 
@@ -8,50 +8,25 @@ from voidcode.provider.pricing_rules import usage_cost_usd
 from voidcode.provider.thinking_rules import thinking_rule_for
 
 
-def test_every_shipped_row_has_a_sane_input_budget() -> None:
-    """The resolved budget is either the vendor's own ``limit.input`` or at least half
-    the window: the derived form can never collapse to a token or two.
-
-    Upstream sometimes reports an output cap equal to the whole window, which the
-    old ``max(1, context - output)`` turned into a 1-token budget for 48 of 432
-    shipped rows (e.g. ``xai/grok-4.6``: context 500000 -> budget 1), compacting
-    every prompt.
-    """
-    offenders: list[str] = []
+def test_shipped_catalog_input_limits_are_optional_positive_values() -> None:
     catalog = _load_static_catalog()
-    # A wiped or truncated artifact would make every loop below iterate nothing:
-    # assert the precondition so the suite fails instead of passing vacuously.
-    assert catalog, "the shipped catalog is empty"
-    empty = sorted(provider_id for provider_id, models in catalog.items() if not models)
-    assert not empty, f"providers without catalog rows: {empty}"
-
-    for provider_id, models in catalog.items():
-        for model_id, metadata in models.items():
-            context_window = metadata.context_window
-            budget = metadata.max_input_tokens
-            if context_window is None or budget is None:
-                offenders.append(f"{provider_id}/{model_id}: no budget (context={context_window})")
-                continue
-            if metadata.derived_max_input_tokens and budget < context_window // 2:
-                offenders.append(f"{provider_id}/{model_id}: derived budget {budget} < half of {context_window}")
-            if budget <= 0:
-                offenders.append(f"{provider_id}/{model_id}: budget {budget}")
-
-    assert not offenders, "insane input budget:\n" + "\n".join(offenders)
+    assert catalog
+    for models in catalog.values():
+        for metadata in models.values():
+            if metadata.max_input_tokens is not None:
+                assert metadata.max_input_tokens > 0
 
 
-def test_a_window_sized_output_cap_falls_back_to_the_whole_window() -> None:
-    """The exact shape that used to collapse: output cap == context window."""
+def test_context_window_and_output_cap_do_not_invent_an_input_limit() -> None:
     metadata = ProviderModelMetadata(context_window=500000, max_output_tokens=500000)
+    assert metadata.max_input_tokens is None
 
-    assert metadata.max_input_tokens == 500000
-    assert metadata.derived_max_input_tokens is True
+    metadata = _load_static_catalog()["openai"]["gpt-4o"]
+    assert metadata.context_window == 128000
+    assert metadata.max_input_tokens is None
 
-
-def test_a_small_but_real_output_cap_still_derives() -> None:
-    metadata = ProviderModelMetadata(context_window=200000, max_output_tokens=32000)
-
-    assert metadata.max_input_tokens == 168000
+    explicit = _load_static_catalog()["openai"]["gpt-5"]
+    assert explicit.max_input_tokens == 272000
 
 
 def test_google_usage_splits_the_prompt_total_into_uncached() -> None:
@@ -75,8 +50,7 @@ def test_google_usage_splits_the_prompt_total_into_uncached() -> None:
 
     metadata = _load_static_catalog()["google"]["gemini-2.5-pro"]
     cost = usage_cost_usd(provider_id="google", model_id="gemini-2.5-pro", usage=usage, metadata=metadata)
-    assert cost is not None
-    assert cost > (metadata.cost_per_output_token or 0.0) * 100
+    assert cost is None  # Google's cache-write bucket was not reported, so total cost is unknown.
 
 
 def test_the_kimi_family_flag_is_exactly_the_kimi_model_lineage() -> None:

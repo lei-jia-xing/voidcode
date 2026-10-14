@@ -251,7 +251,7 @@ def _tool_completed_payload(
     """Assemble the stable event projection from the authoritative report."""
     tool_result = report.result
     tool_call_id = report.tool_call_id
-    sanitized_arguments = sanitize_tool_arguments(report.authorized_arguments)
+    sanitized_arguments = sanitize_tool_arguments(report.final_arguments)
     data = dict(tool_result.body.as_payload()) if tool_result.body is not None else {}
     bounds = tool_result.output.bounds
     if bounds.truncated:
@@ -369,6 +369,7 @@ def _serialized_tool_results(tool_results: Sequence[ReportedCall]) -> tuple[dict
         {
             "tool_name": report.final_tool_name,
             "status": report.result.status,
+            "tool_batch_id": report.tool_batch_id,
             "reported_call": report_payload(report),
         }
         for report in tool_results

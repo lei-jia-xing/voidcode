@@ -683,7 +683,7 @@ function formatTotalUsage(
   t: (key: string, options?: Record<string, unknown>) => string,
 ): string {
   const parts: string[] = [];
-  if (usage && typeof usage.totalTokens === "number" && usage.totalTokens > 0) {
+  if (usage && typeof usage.totalTokens === "number") {
     parts.push(
       t("chat.totalUsage", { total: formatTokenCount(usage.totalTokens) }),
     );

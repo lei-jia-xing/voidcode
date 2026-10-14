@@ -37,6 +37,7 @@ from ...core.tool_context import (
     TranscriptRead,
 )
 from ...core.transcript import AssembledContext
+from ...core.turns import ReportedCall
 from ...mcp.redaction import redact_mcp_command
 from ...provider.auth import ProviderAuthResolver
 from ...provider.model_catalog import ToolFeedbackMode
@@ -77,9 +78,10 @@ from ..config.loading import (
     serialize_runtime_agent_config,
 )
 from ..config.materializer import (
-    EffectiveRuntimeConfig,
+    RunConfig,
     parse_persisted_runtime_config,
 )
+from ..context.continuity import replayed_conversation_segments_from_events
 from ..context.provider import inspect_provider_context
 from ..context.window import RuntimeAssembledContext
 from ..contracts import (
@@ -125,6 +127,7 @@ from ..events import (
     runtime_policy_observability_payload,
 )
 from ..execution.provider_execution_metadata import run_id_from_session_metadata
+from ..fact_codec import reported_call_from_event
 from ..hook_preset_metadata import debug_hook_preset_snapshot
 from ..lsp import LspManager, LspManagerState, LspRequest, LspRequestResult
 from ..mcp import McpManager
@@ -327,10 +330,10 @@ def _should_prefer_active_debug_snapshot(
     return isinstance(active_prompt, str) and active_prompt != result.prompt
 
 
-def _tool_feedback_mode_for_effective_config(
-    effective_config: EffectiveRuntimeConfig,
+def _tool_feedback_mode_for_config(
+    config: RunConfig,
 ) -> ToolFeedbackMode:
-    active_target = effective_config.resolved_provider.active_target
+    active_target = config.resolved_provider.active_target
     if active_target.metadata is not None and active_target.metadata.tool_feedback_mode is not None:
         return active_target.metadata.tool_feedback_mode
     return "standard"
@@ -948,15 +951,15 @@ class InspectionCoordinator:
         )
 
     def _session_bundle_config_summary(self, *, session_id: str) -> dict[str, object]:
-        effective_config = self.effective_runtime_config(session_id=session_id)
+        config = self.run_config(session_id=session_id)
         return {
             "session_id": session_id,
-            "approval_mode": effective_config.approval_mode,
-            "model": effective_config.model,
-            "fallback_models": (list(effective_config.provider_fallback.fallback_models) if effective_config.provider_fallback is not None else []),
-            "reasoning_effort": effective_config.reasoning_effort,
-            "agent": serialize_runtime_agent_config(effective_config.agent),
-            "resolved_provider": resolved_provider_snapshot(effective_config.resolved_provider),
+            "approval_mode": config.approval_mode,
+            "model": config.model,
+            "fallback_models": (list(config.provider_fallback.fallback_models) if config.provider_fallback is not None else []),
+            "reasoning_effort": config.reasoning_effort,
+            "agent": serialize_runtime_agent_config(config.agent),
+            "resolved_provider": resolved_provider_snapshot(config.resolved_provider),
         }
 
     def _session_bundle_provider_summary(self, *, session_id: str) -> dict[str, object]:
@@ -1055,7 +1058,7 @@ class InspectionCoordinator:
                         RUNTIME_QUESTION_ANSWERED,
                         "runtime.failed",
                         "runtime.tool_completed",
-                        "graph.response_ready",
+                        "core.response_ready",
                     }
                 ),
                 result.transcript[-1] if result.transcript else None,
@@ -1169,7 +1172,26 @@ class InspectionCoordinator:
         prompt, tool_results = prompt_and_tool_results_from_debug_events(path_events)
         if not prompt:
             prompt = result.prompt
+        current_request_event_id = next(
+            (
+                (event.session_id, event.sequence)
+                for event in reversed(path_events)
+                if event.event_type == "runtime.request_received" and event.session_id == result.session.session.id
+            ),
+            None,
+        )
+
+        def report_from_event(event: EventEnvelope) -> ReportedCall | None:
+            return reported_call_from_event(event)
+
+        replayed_segments = replayed_conversation_segments_from_events(
+            path_events,
+            output=result.output,
+            reported_call_from_event=report_from_event,
+            current_request_event_id=current_request_event_id,
+        )
         assembled_context = self._surface.assemble_provider_context(
+            replayed_conversation_segments=replayed_segments,
             prompt=prompt,
             tool_results=tuple(tool_results),
             session_metadata=result.session.metadata,
@@ -1190,30 +1212,29 @@ class InspectionCoordinator:
                     },
                     loaded_skills=assembled_context.loaded_skills,
                 )
-        effective_config = self._surface.effective_runtime_config_from_metadata(result.session.metadata)
+        config = self._surface.run_config_from_metadata(result.session.metadata)
         return self._provider_context_snapshot_for_assembled_context(
             assembled_context=assembled_context,
-            effective_config=effective_config,
+            config=config,
         )
 
     def _provider_context_snapshot_for_assembled_context(
         self,
         *,
         assembled_context: AssembledContext,
-        effective_config: EffectiveRuntimeConfig,
+        config: RunConfig,
     ) -> RuntimeProviderContextSnapshot:
-        active_target = effective_config.resolved_provider.active_target
+        active_target = config.resolved_provider.active_target
         provider = active_target.selection.provider or "unresolved"
         model = active_target.selection.model or active_target.selection.raw_model or "unresolved"
-        tool_registry = self._surface.tool_registry_for_effective_config(effective_config)
-        context_window_config = effective_config.context_window or self._surface_context_window_default()
+        tool_registry = self._surface.tool_registry_for_config(config)
+        context_window_config = config.context_window or self._surface_context_window_default()
         return inspect_provider_context(
             assembled_context=assembled_context,
             provider=provider,
             model=model,
-            execution_engine=effective_config.execution_engine,
-            available_tool_count=len(self._surface.provider_tool_definitions(tool_registry, effective_config)),
-            tool_feedback_mode=_tool_feedback_mode_for_effective_config(effective_config),
+            available_tool_count=len(self._surface.provider_tool_definitions(tool_registry, config)),
+            tool_feedback_mode=_tool_feedback_mode_for_config(config),
             oversized_tool_feedback_chars=(context_window_config.provider_context_oversized_feedback_chars),
             diagnostic_policy_mode=context_window_config.provider_context_diagnostics,
         )
@@ -1253,12 +1274,12 @@ class InspectionCoordinator:
             operator_guidance="Session is currently active in the runtime.",
         )
 
-    def effective_runtime_config(self, *, session_id: str | None = None) -> EffectiveRuntimeConfig:
+    def run_config(self, *, session_id: str | None = None) -> RunConfig:
         if session_id is None:
-            return self._surface.effective_runtime_config_from_metadata(None)
+            return self._surface.run_config_from_metadata(None)
         validate_id(session_id)
         response = self._load_stored_response(session_id=session_id)
-        return self._surface.effective_runtime_config_from_metadata(response.session.metadata)
+        return self._surface.run_config_from_metadata(response.session.metadata)
 
     def effective_agent_model_config(self, *, session_id: str | None = None) -> dict[str, object]:
         agents, base_model, base_provider_fallback = self._display_routing_config(session_id=session_id)
@@ -1339,7 +1360,7 @@ class InspectionCoordinator:
     def _metadata_for_provider_model(self, provider_name: str, model_name: str) -> ProviderModelMetadata | None:
         return self._provider_catalog_query.metadata_for_model(provider_name, model_name)
 
-    def reasoning_effort_capability(self, config: EffectiveRuntimeConfig) -> ReasoningEffortCapability:
+    def reasoning_effort_capability(self, config: RunConfig) -> ReasoningEffortCapability:
         """Resolve the reasoning-effort capability of a config's active provider/model target."""
         selection = config.resolved_provider.active_target.selection
         provider_name = selection.provider
@@ -1373,14 +1394,14 @@ class InspectionCoordinator:
         )
 
     def provider_readiness(self, *, session_id: str | None = None) -> ProviderReadinessResult:
-        effective_config = self.effective_runtime_config(session_id=session_id)
-        return self._provider_readiness_for_effective_config(effective_config)
+        config = self.run_config(session_id=session_id)
+        return self._provider_readiness_for_config(config)
 
-    def _provider_readiness_for_effective_config(self, effective_config: EffectiveRuntimeConfig) -> ProviderReadinessResult:
-        active_target = effective_config.resolved_provider.active_target
+    def _provider_readiness_for_config(self, config: RunConfig) -> ProviderReadinessResult:
+        active_target = config.resolved_provider.active_target
         provider_name = active_target.selection.provider
         model_name = active_target.selection.model
-        fallback_chain = tuple(_provider_target_label(target) for target in effective_config.resolved_provider.target_chain.all_targets)
+        fallback_chain = tuple(_provider_target_label(target) for target in config.resolved_provider.target_chain.all_targets)
         streaming_configured = None
         streaming_supported = None
         context_window = None
@@ -1407,7 +1428,7 @@ class InspectionCoordinator:
                 max_output_tokens=max_output_tokens,
                 fallback_chain=fallback_chain,
                 reasoning_controls=self._reasoning_controls_diagnostic(
-                    effective_config=effective_config,
+                    config=config,
                     provider_name=provider_name,
                     model_name=model_name,
                 ),
@@ -1417,12 +1438,12 @@ class InspectionCoordinator:
     def _reasoning_controls_diagnostic(
         self,
         *,
-        effective_config: EffectiveRuntimeConfig,
+        config: RunConfig,
         provider_name: str | None,
         model_name: str | None,
     ) -> dict[str, object]:
         """Report what the runtime will do with the configured reasoning-effort hint."""
-        effort = effective_config.reasoning_effort
+        effort = config.reasoning_effort
         payload: dict[str, object] = {
             "reasoning_effort_requested": effort is not None,
             "reasoning_effort": effort,
@@ -1456,15 +1477,13 @@ class InspectionCoordinator:
 
     def _reasoning_controls_diagnostic_for_config(
         self,
-        effective_config: EffectiveRuntimeConfig,
+        config: RunConfig,
     ) -> dict[str, object] | None:
-        if effective_config.execution_engine != "provider":
-            return None
-        active_target = effective_config.resolved_provider.active_target.selection
+        active_target = config.resolved_provider.active_target.selection
         provider_name = active_target.provider
         model_name = active_target.model
         diagnostic = self._reasoning_controls_diagnostic(
-            effective_config=effective_config,
+            config=config,
             provider_name=provider_name,
             model_name=model_name,
         )
@@ -1549,13 +1568,6 @@ class InspectionCoordinator:
             if manifest.mode != "primary":
                 continue
             agent_config = configured_agent if configured_agent is not None and configured_agent.preset == manifest.id else None
-            execution_engine = (
-                agent_config.execution_engine
-                if agent_config is not None and agent_config.execution_engine is not None
-                else manifest.execution_engine
-                if manifest.execution_engine is not None
-                else self._config.execution_engine
-            )
             agent_model = agent_config.model if agent_config is not None else None
             model = (
                 agent_model
@@ -1600,7 +1612,6 @@ class InspectionCoordinator:
                     configured=configured,
                     source_scope=manifest.source_scope,
                     source_path=manifest.source_path,
-                    execution_engine=execution_engine,
                     model=resolved_model,
                     model_label=active_selection.model,
                     model_source=model_source,
@@ -1821,26 +1832,24 @@ class InspectionCoordinator:
 
     def web_settings(self) -> dict[str, object]:
         settings = load_global_web_settings()
-        effective_config = self._surface.effective_runtime_config_from_metadata(None)
+        config = self._surface.run_config_from_metadata(None)
         return {
             "provider": settings.provider,
             "provider_api_key_present": settings.provider_api_key_present,
-            "model": effective_config.model,
+            "model": config.model,
         }
 
     def provider_context_policy_decision_for_turn_request(
         self,
         *,
         turn_request: TurnRequest,
-        effective_config: EffectiveRuntimeConfig,
+        config: RunConfig,
     ) -> RuntimeProviderContextPolicyDecision | None:
-        if effective_config.execution_engine != "provider":
-            return None
-        context_window_config = effective_config.context_window or self._surface_context_window_default()
+        context_window_config = config.context_window or self._surface_context_window_default()
         if context_window_config.provider_context_diagnostics == "off" and context_window_config.context_transform_failure_policy != "block":
             return None
         snapshot = self._provider_context_snapshot_for_assembled_context(
             assembled_context=turn_request.assembled_context,
-            effective_config=effective_config,
+            config=config,
         )
         return snapshot.policy_decision

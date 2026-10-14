@@ -424,7 +424,6 @@ async function resetStoreForTest() {
     runStatus: "idle",
     runOrigin: null,
     runError: null,
-    cancelRequested: false,
     approvalStatus: "idle",
     approvalError: null,
     questionStatus: "idle",
@@ -601,9 +600,9 @@ describe("useAppStore integration flow", () => {
     );
     const responseReady = makeEvent(
       5,
-      "graph.response_ready",
+      "core.response_ready",
       { output_preview: "hello" },
-      "graph",
+      "core",
       sessionId,
     );
     const completedResponse = makeRuntimeResponse(
@@ -640,7 +639,7 @@ describe("useAppStore integration flow", () => {
     expect(state.currentSessionEvents.map((event) => event.event_type)).toEqual(
       ["runtime.request_received", "runtime.approval_requested"],
     );
-    expect(state.runStatus).toBe("success");
+    expect(state.runStatus).toBe("idle");
 
     await state.resolveApproval("allow");
 
@@ -658,7 +657,7 @@ describe("useAppStore integration flow", () => {
         "runtime.approval_requested",
         "runtime.approval_resolved",
         "runtime.tool_completed",
-        "graph.response_ready",
+        "core.response_ready",
       ],
     );
     // The settled run refreshes the session list by invalidating it.
@@ -675,6 +674,113 @@ describe("useAppStore integration flow", () => {
     expect(state.currentSessionOutput).toBe("hello");
     expect(state.currentSessionEvents).toEqual(completedResponse.events);
   });
+  it.each(["approval", "question"] as const)(
+    "keeps a %s resume result over a late initial stream snapshot",
+    async (resolution) => {
+      const sessionId = `${resolution}-stream-race`;
+      const requestId = `${resolution}-race`;
+      const requestReceived = makeEvent(
+        1,
+        "runtime.request_received",
+        { prompt: "continue after user input" },
+        "runtime",
+        sessionId,
+      );
+      const waitingEvent = makeEvent(
+        2,
+        resolution === "approval"
+          ? "runtime.approval_requested"
+          : "runtime.question_requested",
+        resolution === "approval"
+          ? { request_id: requestId, tool: "write", decision: "ask" }
+          : {
+              request_id: requestId,
+              tool: "question",
+              question_count: 1,
+              questions: [
+                {
+                  header: "Direction",
+                  question: "Which path?",
+                  multiple: false,
+                  options: [],
+                },
+              ],
+            },
+        "runtime",
+        sessionId,
+      );
+      const resolvedEvent = makeEvent(
+        3,
+        resolution === "approval"
+          ? "runtime.approval_resolved"
+          : "runtime.question_answered",
+        resolution === "approval"
+          ? { request_id: requestId, decision: "allow" }
+          : { request_id: requestId },
+        "runtime",
+        sessionId,
+      );
+      const responseReady = makeEvent(
+        4,
+        "core.response_ready",
+        { output_preview: "authoritative result" },
+        "core",
+        sessionId,
+      );
+      const completedResponse = makeRuntimeResponse(
+        sessionId,
+        "completed",
+        [requestReceived, waitingEvent, resolvedEvent, responseReady],
+        "authoritative result",
+      );
+      const waitingStream = createDeferred<void>();
+      const lateStream = createDeferred<void>();
+
+      async function* stream() {
+        yield makeStreamChunk(sessionId, "running", requestReceived);
+        yield makeStreamChunk(sessionId, "waiting", waitingEvent);
+        waitingStream.resolve();
+        await lateStream.promise;
+        yield makeStreamChunk(sessionId, "interrupted", null, "stale output");
+      }
+
+      runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+      if (resolution === "approval") {
+        runtimeClientMocks.resolveApprovalMock.mockResolvedValue(
+          completedResponse,
+        );
+      } else {
+        runtimeClientMocks.answerQuestionMock.mockResolvedValue(
+          completedResponse,
+        );
+      }
+      seedSessions([]);
+
+      const runPromise = useAppStore
+        .getState()
+        .runTask("continue after user input", WORKSPACE_PATH);
+      await waitingStream.promise;
+      expect(useAppStore.getState().currentSessionState?.status).toBe(
+        "waiting",
+      );
+
+      if (resolution === "approval") {
+        await useAppStore.getState().resolveApproval("allow");
+      } else {
+        await useAppStore
+          .getState()
+          .answerQuestion([{ header: "Direction", answers: ["left"] }]);
+      }
+      lateStream.resolve();
+      await runPromise;
+
+      const state = useAppStore.getState();
+      expect(state.currentSessionState?.status).toBe("completed");
+      expect(state.currentSessionOutput).toBe("authoritative result");
+      expect(state.currentSessionEvents).toEqual(completedResponse.events);
+      expect(state.runStatus).toBe("idle");
+    },
+  );
   it("handles run -> waiting question -> answer through the real store", async () => {
     const sessionId = "session-question";
     const requestId = "question-1";
@@ -713,9 +819,9 @@ describe("useAppStore integration flow", () => {
     );
     const responseReady = makeEvent(
       4,
-      "graph.response_ready",
+      "core.response_ready",
       { output: "continued" },
-      "graph",
+      "core",
       sessionId,
     );
     const completedResponse = makeRuntimeResponse(
@@ -799,9 +905,9 @@ describe("useAppStore integration flow", () => {
     );
     const responseReady = makeEvent(
       4,
-      "graph.response_ready",
+      "core.response_ready",
       { output: "continued" },
-      "graph",
+      "core",
       sessionId,
     );
     const completedResponse = makeRuntimeResponse(
@@ -1022,11 +1128,11 @@ describe("useAppStore integration flow", () => {
     );
     const resumedEvent = makeEvent(
       2,
-      "graph.response_ready",
+      "core.response_ready",
       {
         output: "continued",
       },
-      "graph",
+      "core",
       sessionId,
     );
     const response = makeRuntimeResponse(
@@ -1321,9 +1427,9 @@ describe("useAppStore integration flow", () => {
           ),
           makeEvent(
             2,
-            "graph.response_ready",
+            "core.response_ready",
             { output: "parent output" },
-            "graph",
+            "core",
             "session-parent",
           ),
         ],
@@ -1377,7 +1483,7 @@ describe("useAppStore integration flow", () => {
     expect(state.approvalError).toBe("No pending approval request found.");
   });
 
-  it("keeps run status running while the stream is still open", async () => {
+  it("does not treat response_ready or EOF as completion while the session is running", async () => {
     const gate = createDeferred<void>();
     const sessionId = "slow-session";
     const requestReceived = makeEvent(
@@ -1387,9 +1493,22 @@ describe("useAppStore integration flow", () => {
       "runtime",
       sessionId,
     );
+    const responseReady = makeEvent(
+      2,
+      "core.response_ready",
+      { output_preview: "slow response" },
+      "core",
+      sessionId,
+    );
 
     async function* stream() {
       yield makeStreamChunk(sessionId, "running", requestReceived);
+      yield makeStreamChunk(
+        sessionId,
+        "running",
+        responseReady,
+        "slow response",
+      );
       await gate.promise;
     }
 
@@ -1406,7 +1525,90 @@ describe("useAppStore integration flow", () => {
     gate.resolve();
     await runPromise;
 
-    expect(useAppStore.getState().runStatus).toBe("success");
+    expect(useAppStore.getState().runStatus).toBe("running");
+    expect(useAppStore.getState().currentSessionState?.status).toBe("running");
+  });
+  it("cancels the exact run after its run stream has closed", async () => {
+    const sessionId = "closed-stream-cancel-session";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "read sample.txt" },
+      "runtime",
+      sessionId,
+    );
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "running", requestReceived);
+    }
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+
+    await useAppStore.getState().runTask("read sample.txt", WORKSPACE_PATH);
+    expect(useAppStore.getState().runStatus).toBe("running");
+    expect(useAppStore.getState().runOrigin).toBe("external");
+
+    await useAppStore.getState().cancelCurrentRun();
+
+    expect(runtimeClientMocks.cancelSessionMock).toHaveBeenCalledWith(
+      sessionId,
+      `run-${sessionId}`,
+    );
+  });
+
+  it("marks a clean EOF incomplete when the current run has no session status", async () => {
+    const sessionId = "missing-status-session";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "say hello" },
+      "runtime",
+      sessionId,
+    );
+    useAppStore.setState({
+      currentSessionId: sessionId,
+      currentSessionState: makeSessionState(sessionId, "completed"),
+      currentSessionEvents: [],
+      runStatus: "idle",
+    });
+
+    async function* stream() {
+      yield {
+        kind: "event" as const,
+        session: null,
+        event: requestReceived,
+        output: null,
+      };
+    }
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+
+    await useAppStore.getState().runTask("say hello", WORKSPACE_PATH);
+
+    const state = useAppStore.getState();
+    expect(state.currentSessionState).toBeNull();
+    expect(state.runStatus).toBe("incomplete");
+    expect(state.runError).toBeNull();
+  });
+
+  it("keeps a transport failure distinct from runtime task failure", async () => {
+    const sessionId = "transport-failure-session";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "read file" },
+      "runtime",
+      sessionId,
+    );
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "running", requestReceived);
+      throw new Error("socket closed");
+    }
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+
+    await useAppStore.getState().runTask("read file", WORKSPACE_PATH);
+
+    const state = useAppStore.getState();
+    expect(state.runStatus).toBe("running");
+    expect(state.runError).toBe("Runtime stream error: socket closed");
   });
 
   it("interrupts the active current session run", async () => {
@@ -1423,6 +1625,14 @@ describe("useAppStore integration flow", () => {
     async function* stream() {
       yield makeStreamChunk(sessionId, "running", requestReceived);
       await gate.promise;
+      const interrupted = makeEvent(
+        2,
+        "runtime.failed",
+        { kind: "interrupted" },
+        "runtime",
+        sessionId,
+      );
+      yield makeStreamChunk(sessionId, "interrupted", interrupted);
     }
 
     runtimeClientMocks.runStreamMock.mockReturnValue(stream());
@@ -1450,7 +1660,58 @@ describe("useAppStore integration flow", () => {
 
     expect(useAppStore.getState().runStatus).toBe("idle");
   });
-  it("settles to idle without an error when cancelling aborts the stream mid-run", async () => {
+  it("keeps a failed cancellation request separate from run failure", async () => {
+    const sessionId = "cancel-request-failure-session";
+    useAppStore.setState({
+      currentSessionId: sessionId,
+      currentSessionState: {
+        ...makeSessionState(sessionId, "running"),
+        metadata: { runtime_state: { run_id: `run-${sessionId}` } },
+      },
+      runStatus: "running",
+      runOrigin: "external",
+    });
+    runtimeClientMocks.cancelSessionMock.mockRejectedValue(
+      new Error("cancel endpoint unavailable"),
+    );
+
+    await useAppStore.getState().cancelCurrentRun();
+
+    const state = useAppStore.getState();
+    expect(state.runStatus).toBe("running");
+    expect(state.runError).toBe(
+      "Unable to cancel run: cancel endpoint unavailable",
+    );
+  });
+  it("keeps an unconfirmed cancellation active", async () => {
+    const sessionId = "cancel-not-confirmed-session";
+    useAppStore.setState({
+      currentSessionId: sessionId,
+      currentSessionState: {
+        ...makeSessionState(sessionId, "running"),
+        metadata: { runtime_state: { run_id: `run-${sessionId}` } },
+      },
+      runStatus: "running",
+      runOrigin: "external",
+    });
+    runtimeClientMocks.cancelSessionMock.mockResolvedValue({
+      session_id: sessionId,
+      status: "not_active",
+      interrupted: false,
+      cancelled: false,
+      run_id: `run-${sessionId}`,
+      reason: "web user interrupt",
+    });
+
+    await useAppStore.getState().cancelCurrentRun();
+
+    expect(useAppStore.getState().runStatus).toBe("running");
+    expect(useAppStore.getState().currentSessionState?.status).toBe("running");
+    expect(useAppStore.getState().runError).toBe(
+      "Runtime did not confirm cancellation; the run may still be active.",
+    );
+  });
+  it("does not infer cancellation from an aborted client stream", async () => {
     const sessionId = "abort-session";
     const requestReceived = makeEvent(
       1,
@@ -1460,46 +1721,18 @@ describe("useAppStore integration flow", () => {
       sessionId,
     );
 
-    // The mock mirrors a real fetch aborted mid-read: the generator rejects
-    // with AbortError the moment the store's controller aborts.
-    runtimeClientMocks.runStreamMock.mockImplementation(async function* (
-      _request,
-      signal?: AbortSignal,
-    ) {
+    async function* stream() {
       yield makeStreamChunk(sessionId, "running", requestReceived);
-      await new Promise<never>((_, reject) => {
-        signal?.addEventListener(
-          "abort",
-          () =>
-            reject(
-              new DOMException("The operation was aborted.", "AbortError"),
-            ),
-          { once: true },
-        );
-      });
-    });
+      throw new DOMException("The operation was aborted.", "AbortError");
+    }
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
 
-    const runPromise = useAppStore
-      .getState()
-      .runTask("read slow.txt", WORKSPACE_PATH);
-    await Promise.resolve();
-    await Promise.resolve();
+    await useAppStore.getState().runTask("read slow.txt", WORKSPACE_PATH);
 
     expect(useAppStore.getState().runStatus).toBe("running");
-    // The run's AbortSignal is handed to the stream, not just a plain request.
-    expect(runtimeClientMocks.runStreamMock.mock.calls[0][1]).toBeInstanceOf(
-      AbortSignal,
+    expect(useAppStore.getState().runError).toBe(
+      "Runtime stream error: The operation was aborted.",
     );
-
-    const cancelPromise = useAppStore.getState().cancelCurrentRun();
-    await cancelPromise;
-    await runPromise;
-
-    // A torn-down stream during a user interrupt is not a failure: the run
-    // settles to idle with no error banner, even though no SSE cancellation
-    // event was ever emitted.
-    expect(useAppStore.getState().runStatus).toBe("idle");
-    expect(useAppStore.getState().runError).toBeNull();
   });
   it("settles a run to idle when the stream ends with an interrupted session status and no cancellation event", async () => {
     const sessionId = "interrupted-final-session";
@@ -1586,14 +1819,14 @@ describe("useAppStore integration flow", () => {
     );
     const providerError = makeEvent(
       2,
-      "graph.provider_stream",
+      "core.provider_stream",
       {
         channel: "error",
         kind: "error",
         error: "Provider authentication failed for deepseek.",
         error_kind: "missing_auth",
       },
-      "graph",
+      "core",
       sessionId,
     );
 
@@ -1626,31 +1859,43 @@ describe("useAppStore integration flow", () => {
       sessionId,
     );
     const firstAttemptDelta = makeEvent(
-      1,
-      "graph.provider_stream",
+      2,
+      "core.provider_stream",
       { kind: "delta", channel: "text", text: "first attempt" },
-      "graph",
+      "core",
+      sessionId,
+    );
+    const providerError = makeEvent(
+      3,
+      "core.provider_stream",
+      {
+        channel: "error",
+        kind: "error",
+        error: "Provider authentication failed for deepseek.",
+        error_kind: "missing_auth",
+      },
+      "core",
       sessionId,
     );
     const retryEvent = makeEvent(
-      2,
+      4,
       "runtime.provider_transient_retry",
       { reason: "transient_failure", discarded_streamed_output: true },
       "runtime",
       sessionId,
     );
     const secondAttemptDelta = makeEvent(
-      2,
-      "graph.provider_stream",
+      5,
+      "core.provider_stream",
       { kind: "delta", channel: "text", text: "second attempt" },
-      "graph",
+      "core",
       sessionId,
     );
     const responseReady = makeEvent(
-      3,
-      "graph.response_ready",
+      6,
+      "core.response_ready",
       { output_preview: "second attempt" },
-      "graph",
+      "core",
       sessionId,
     );
 
@@ -1669,6 +1914,7 @@ describe("useAppStore integration flow", () => {
     async function* stream() {
       yield makeStreamChunk(sessionId, "running", requestReceived);
       yield makeStreamChunk(sessionId, "running", firstAttemptDelta);
+      yield makeStreamChunk(sessionId, "running", providerError);
       yield makeStreamChunk(sessionId, "running", retryEvent);
       renderedAfterChunk.push(latestAssistantText());
       yield makeStreamChunk(sessionId, "running", secondAttemptDelta);
@@ -1704,6 +1950,8 @@ describe("useAppStore integration flow", () => {
     );
     const assistant = assistants[assistants.length - 1];
     expect(assistant?.content).toBe("second attempt");
+    expect(useAppStore.getState().runStatus).toBe("idle");
+    expect(useAppStore.getState().runError).toBeNull();
   });
 
   it("uses the generic fallback when a failed session has no error event", async () => {
@@ -1992,9 +2240,9 @@ describe("useAppStore integration flow", () => {
           .mergeSessionEvent(
             makeEvent(
               4,
-              "graph.provider_stream",
+              "core.provider_stream",
               { kind: "delta", channel: "text", text },
-              "graph",
+              "core",
               "child-session",
             ),
           ),
@@ -2036,9 +2284,9 @@ describe("useAppStore integration flow", () => {
       .mergeSessionEvent(
         makeEvent(
           7,
-          "graph.provider_stream",
+          "core.provider_stream",
           { kind: "delta", channel: "text", text: "child delta" },
-          "graph",
+          "core",
           "child-session",
         ),
       );
@@ -2050,9 +2298,9 @@ describe("useAppStore integration flow", () => {
       .mergeSessionEvent(
         makeEvent(
           8,
-          "graph.provider_stream",
+          "core.provider_stream",
           { kind: "delta", channel: "text", text: "parent delta" },
-          "graph",
+          "core",
           "session-parent",
         ),
       );
@@ -2071,6 +2319,27 @@ describe("useAppStore integration flow", () => {
         .mergeSessionState(makeSessionState("session-parent", "running")),
     ).toBe(false);
     expect(store.getState().currentSessionState?.status).toBe("completed");
+  });
+
+  it("keeps an external cancellation pending until the runtime settles", async () => {
+    const { useAppStore: store } = await import("./store");
+    store.setState({
+      currentSessionId: "external-cancel",
+      currentSessionState: makeSessionState("external-cancel", "running"),
+      runStatus: "cancelling",
+      runOrigin: "external",
+    });
+
+    store
+      .getState()
+      .mergeSessionState(makeSessionState("external-cancel", "running"));
+    expect(store.getState().runStatus).toBe("cancelling");
+
+    store
+      .getState()
+      .mergeSessionState(makeSessionState("external-cancel", "interrupted"));
+    expect(store.getState().runStatus).toBe("idle");
+    expect(store.getState().currentSessionState?.status).toBe("interrupted");
   });
 
   it("drops a re-pushed live delta whose payload the transcript already holds", async () => {
@@ -2095,9 +2364,9 @@ describe("useAppStore integration flow", () => {
     const delta = (text: string) =>
       makeEvent(
         4,
-        "graph.provider_stream",
+        "core.provider_stream",
         { kind: "delta", channel: "text", text },
-        "graph",
+        "core",
         "session-1",
       );
 

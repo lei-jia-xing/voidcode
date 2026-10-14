@@ -713,6 +713,7 @@ class CapabilityRegistry(Protocol):
 
 当前工作树还存在一项文档漂移：[`docs/README.md`](../README.md) 链接 `docs/audits/omp-alignment.md`，但该文件在当前工作树中不存在。本审计文档补齐 `docs/audits/`，不把缺失历史审计当作当前代码行为证据。
 
+
 ### pi upstream
 
 - [`pi-agent-core README`](https://github.com/badlogic/pi-mono/blob/main/packages/agent/README.md) — 独立 Agent state machine、event flow、tool execution 与 continuation seam

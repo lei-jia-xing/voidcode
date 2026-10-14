@@ -10,7 +10,6 @@ from .builtin import (
     validate_builtin_agent_manifests,
 )
 from .models import (
-    AgentExecutionEngineName,
     AgentManifest,
     AgentManifestId,
     AgentManifestKey,
@@ -38,7 +37,6 @@ from .registry import (
 )
 
 __all__ = [
-    "AgentExecutionEngineName",
     "AgentManifest",
     "AgentManifestId",
     "AgentManifestKey",

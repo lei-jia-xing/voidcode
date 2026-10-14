@@ -15,7 +15,9 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.turn_producers import model_turn_fact
 from voidcode.core.tool_context import ToolContext
+from voidcode.core.turns import FinalTurn, ToolTurn, TurnRequest
 from voidcode.runtime.background.models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
@@ -25,12 +27,12 @@ from voidcode.runtime.execution.delegation.task import TaskCommand
 from voidcode.tools.contracts import ToolCall
 from voidcode.tools.delegation.task import TaskTool
 
-pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
+pytestmark = pytest.mark.usefixtures("disable_default_mcp")
 
 
 @pytest.fixture
-def force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
+def disable_default_mcp(monkeypatch: pytest.MonkeyPatch) -> None:
+
     config_module = importlib.import_module("voidcode.runtime.config.loading")
     monkeypatch.setattr(
         config_module,
@@ -83,9 +85,29 @@ class RuntimeLike(Protocol):
     def shutdown_background_tasks(self, *, timeout_seconds: float = 2.0) -> None: ...
 
 
+class _ReadProducer:
+    def __init__(self) -> None:
+        self._run_id: str | None = None
+        self._read_requested = False
+
+    def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: object) -> FinalTurn | ToolTurn:
+        _ = tool_results, session
+        if request.run_id != self._run_id:
+            self._run_id = request.run_id
+            self._read_requested = False
+        fact = model_turn_fact(request)
+        if not self._read_requested:
+            self._read_requested = True
+            return ToolTurn(calls=(ToolCall(tool_name="read", arguments={"path": "sample.txt"}),), facts=(fact,))
+        return FinalTurn(output="read complete", facts=(fact,))
+
+
 def _runtime(tmp_path: Path) -> RuntimeLike:
     service_module = importlib.import_module("voidcode.runtime.service")
-    runtime = cast(RuntimeLike, service_module.VoidCodeRuntime(workspace=tmp_path))
+    runtime = cast(
+        RuntimeLike,
+        service_module.VoidCodeRuntime(workspace=tmp_path, turn_producer=_ReadProducer()),
+    )
     return runtime
 
 

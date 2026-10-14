@@ -62,8 +62,8 @@ describe("Tool Status Contract", () => {
       {
         session_id: "test",
         sequence: 2,
-        event_type: "graph.tool_request_created",
-        source: "graph",
+        event_type: "core.tool_request_created",
+        source: "core",
         payload: {
           tool: "read",
           tool_call_id: "native-1",
@@ -202,8 +202,8 @@ describe("Tool Status Contract", () => {
       {
         session_id: "test",
         sequence: 2,
-        event_type: "graph.tool_request_created",
-        source: "graph",
+        event_type: "core.tool_request_created",
+        source: "core",
         payload: {
           tool: "write",
           tool_call_id: "call_write",
@@ -274,8 +274,8 @@ describe("Tool Status Contract", () => {
       {
         session_id: "test",
         sequence: 2,
-        event_type: "graph.tool_request_created",
-        source: "graph",
+        event_type: "core.tool_request_created",
+        source: "core",
         payload: {
           tool: "shell_exec",
           tool_call_id: "shell-approval-1",
@@ -324,8 +324,8 @@ describe("Tool Status Contract", () => {
       {
         session_id: "test",
         sequence: 2,
-        event_type: "graph.tool_request_created",
-        source: "graph",
+        event_type: "core.tool_request_created",
+        source: "core",
         payload: {
           tool: "shell_exec",
           tool_call_id: "shell-deny-1",
@@ -403,11 +403,8 @@ describe("Tool Status Contract", () => {
       arguments: { path: "README.md" },
       content: "contents",
     });
-    expect(assistantMessage?.parts).toEqual([
-      { kind: "tool", sequence: 2, toolKey: "call_read" },
-    ]);
   });
-  it("correlates raw graph request, started, and completed events", () => {
+  it("correlates raw core request, started, and completed events", () => {
     const events: EventEnvelope[] = [
       {
         session_id: "test",
@@ -419,8 +416,8 @@ describe("Tool Status Contract", () => {
       {
         session_id: "test",
         sequence: 2,
-        event_type: "graph.tool_request_created",
-        source: "graph",
+        event_type: "core.tool_request_created",
+        source: "core",
         payload: {
           tool: "read",
           tool_call_id: "call_raw",
@@ -466,9 +463,6 @@ describe("Tool Status Contract", () => {
       arguments: { path: "README.md", line_start: 1 },
       content: "file contents",
     });
-    expect(assistantMessage?.parts).toEqual([
-      { kind: "tool", sequence: 2, toolKey: "call_raw" },
-    ]);
   });
   it("ignores tool-channel provider text while retaining one lifecycle tool", () => {
     const rawToolCall = '{"name":"read","arguments":{"path":"README.md"}}';
@@ -483,15 +477,15 @@ describe("Tool Status Contract", () => {
       {
         session_id: "test",
         sequence: 2,
-        event_type: "graph.provider_stream",
-        source: "graph",
+        event_type: "core.provider_stream",
+        source: "core",
         payload: { channel: "tool", kind: "content", text: rawToolCall },
       },
       {
         session_id: "test",
         sequence: 3,
-        event_type: "graph.tool_request_created",
-        source: "graph",
+        event_type: "core.tool_request_created",
+        source: "core",
         payload: {
           tool: "read",
           tool_call_id: "call-tool-channel",
@@ -541,9 +535,6 @@ describe("Tool Status Contract", () => {
 
     expect(assistantMessage?.content).not.toContain(rawToolCall);
     expect(assistantMessage?.tools).toHaveLength(1);
-    expect(assistantMessage?.parts).toEqual([
-      { kind: "tool", sequence: 3, toolKey: "call-tool-channel" },
-    ]);
   });
   it("records frontend receive time for reasoning duration when present", () => {
     const events: EventEnvelope[] = [
@@ -557,16 +548,16 @@ describe("Tool Status Contract", () => {
       {
         session_id: "test",
         sequence: 2,
-        event_type: "graph.provider_stream",
-        source: "graph",
+        event_type: "core.provider_stream",
+        source: "core",
         payload: { channel: "reasoning", kind: "delta", text: "first" },
         received_at: 1000,
       },
       {
         session_id: "test",
         sequence: 3,
-        event_type: "graph.provider_stream",
-        source: "graph",
+        event_type: "core.provider_stream",
+        source: "core",
         payload: { channel: "reasoning", kind: "delta", text: "second" },
         received_at: 2500,
       },
@@ -1038,14 +1029,14 @@ describe("Interrupted Status Contract", () => {
     );
     expect(assistantMessage?.status).toBe("failed");
   });
-  it("preserves provider stream error text on the failed assistant message", () => {
+  it("does not render a provider-attempt diagnostic as failure after success", () => {
     const events: EventEnvelope[] = [
       requestEvent(1),
       {
         session_id: "test",
         sequence: 2,
-        event_type: "graph.provider_stream",
-        source: "graph",
+        event_type: "core.provider_stream",
+        source: "core",
         payload: {
           channel: "error",
           kind: "error",
@@ -1055,19 +1046,52 @@ describe("Interrupted Status Contract", () => {
       {
         session_id: "test",
         sequence: 3,
-        event_type: "runtime.failed",
-        source: "runtime",
-        payload: { error: "provider retry exhausted" },
+        event_type: "core.response_ready",
+        source: "core",
+        payload: { output: "Fallback succeeded." },
       },
     ];
 
-    const messages = deriveChatMessages(events, null);
-    const assistantMessage = messages.find(
+    const assistantMessage = deriveChatMessages(events, null).find(
+      (message) => message.role === "assistant",
+    );
+    expect(assistantMessage?.status).toBe("completed");
+    expect(assistantMessage?.error).toBeFalsy();
+  });
+  it("uses provider diagnostics from the terminal runtime failure only", () => {
+    const events: EventEnvelope[] = [
+      requestEvent(1),
+      {
+        session_id: "test",
+        sequence: 2,
+        event_type: "core.provider_stream",
+        source: "core",
+        payload: {
+          channel: "error",
+          kind: "error",
+          error: "A transient provider attempt failed.",
+        },
+      },
+      {
+        session_id: "test",
+        sequence: 3,
+        event_type: "runtime.failed",
+        source: "runtime",
+        payload: {
+          error: "provider retry exhausted",
+          provider_error_details: {
+            exception_message: "Final provider failure.",
+          },
+        },
+      },
+    ];
+
+    const assistantMessage = deriveChatMessages(events, null).find(
       (message) => message.role === "assistant",
     );
     expect(assistantMessage).toMatchObject({
       status: "failed",
-      error: "Provider authentication failed for deepseek.",
+      error: "Final provider failure.",
     });
   });
 
@@ -1115,8 +1139,8 @@ describe("Interrupted Status Contract", () => {
 describe("Live Stream Reasoning Contract", () => {
   it("deduplicates each turn's aggregated reasoning_part against only that turn's streamed deltas", () => {
     // Live wire order per turn (backend): streamed reasoning deltas (client
-    // only), then one aggregated runtime.reasoning_part, then the turn-head
-    // bookmarks (graph.loop_step / graph.model_turn), then tool events. The
+    // only), then one aggregated runtime.reasoning_part, then run-step
+    // bookmarks (core.loop_step / core.model_turn), then tool events. The
     // `thinking` accumulator spans the whole assistant turn sequence, so the
     // aggregate must be deduplicated against the CURRENT turn's deltas only;
     // comparing against all accumulated thinking would miss for every turn
@@ -1132,8 +1156,8 @@ describe("Live Stream Reasoning Contract", () => {
       {
         session_id: "test",
         sequence: 2,
-        event_type: "graph.provider_stream",
-        source: "graph",
+        event_type: "core.provider_stream",
+        source: "core",
         payload: {
           channel: "reasoning",
           kind: "delta",
@@ -1143,8 +1167,8 @@ describe("Live Stream Reasoning Contract", () => {
       {
         session_id: "test",
         sequence: 2,
-        event_type: "graph.provider_stream",
-        source: "graph",
+        event_type: "core.provider_stream",
+        source: "core",
         payload: { channel: "reasoning", kind: "delta", text: "one" },
       },
       {
@@ -1164,22 +1188,22 @@ describe("Live Stream Reasoning Contract", () => {
       {
         session_id: "test",
         sequence: 4,
-        event_type: "graph.loop_step",
-        source: "graph",
+        event_type: "core.loop_step",
+        source: "core",
         payload: { step: 1, phase: "plan" },
       },
       {
         session_id: "test",
         sequence: 5,
-        event_type: "graph.model_turn",
-        source: "graph",
-        payload: { turn: 1, mode: "provider" },
+        event_type: "core.model_turn",
+        source: "core",
+        payload: { run_step: 1, mode: "provider" },
       },
       {
         session_id: "test",
         sequence: 6,
-        event_type: "graph.tool_request_created",
-        source: "graph",
+        event_type: "core.tool_request_created",
+        source: "core",
         payload: {
           tool: "read",
           tool_call_id: "call_1",
@@ -1199,8 +1223,8 @@ describe("Live Stream Reasoning Contract", () => {
       {
         session_id: "test",
         sequence: 7,
-        event_type: "graph.provider_stream",
-        source: "graph",
+        event_type: "core.provider_stream",
+        source: "core",
         payload: {
           channel: "reasoning",
           kind: "delta",
@@ -1210,8 +1234,8 @@ describe("Live Stream Reasoning Contract", () => {
       {
         session_id: "test",
         sequence: 7,
-        event_type: "graph.provider_stream",
-        source: "graph",
+        event_type: "core.provider_stream",
+        source: "core",
         payload: { channel: "reasoning", kind: "delta", text: "two" },
       },
       {
@@ -1231,22 +1255,22 @@ describe("Live Stream Reasoning Contract", () => {
       {
         session_id: "test",
         sequence: 9,
-        event_type: "graph.loop_step",
-        source: "graph",
+        event_type: "core.loop_step",
+        source: "core",
         payload: { step: 2, phase: "plan" },
       },
       {
         session_id: "test",
         sequence: 10,
-        event_type: "graph.model_turn",
-        source: "graph",
-        payload: { turn: 2, mode: "provider" },
+        event_type: "core.model_turn",
+        source: "core",
+        payload: { run_step: 2, mode: "provider" },
       },
       {
         session_id: "test",
         sequence: 11,
-        event_type: "graph.response_ready",
-        source: "graph",
+        event_type: "core.response_ready",
+        source: "core",
         payload: { output_preview: "final complete answer" },
       },
     ];
@@ -1308,8 +1332,8 @@ describe("Live Stream Reasoning Contract", () => {
       {
         session_id: "test",
         sequence: 2,
-        event_type: "graph.provider_stream",
-        source: "graph",
+        event_type: "core.provider_stream",
+        source: "core",
         payload: {
           channel: "reasoning",
           kind: "delta",
@@ -1548,7 +1572,7 @@ describe("Provider tool-call delta contract", () => {
     session_id: "test",
     sequence,
     event_type,
-    source: "graph",
+    source: "core",
     payload,
   });
   const base = event(1, "runtime.request_received", { prompt: "build" });
@@ -1557,16 +1581,16 @@ describe("Provider tool-call delta contract", () => {
     const messages = deriveChatMessages(
       [
         base,
-        event(2, "graph.tool_call_start", {
+        event(1, "core.tool_call_start", {
           tool_call_id: "call-a",
           tool_name: "write",
         }),
-        event(3, "graph.tool_call_delta", {
+        event(1, "core.tool_call_delta", {
           tool_call_id: "call-a",
           arguments_delta: '{"path":',
           fragment_ordinal: 0,
         }),
-        event(4, "graph.tool_call_end", { tool_call_id: "call-a" }),
+        event(1, "core.tool_call_end", { tool_call_id: "call-a" }),
       ],
       null,
     );
@@ -1575,6 +1599,7 @@ describe("Provider tool-call delta contract", () => {
       id: "call-a",
       name: "write",
       status: "running",
+      provisional: true,
       partialArguments: '{"path":',
       argumentsStreamEnded: true,
     });
@@ -1584,8 +1609,8 @@ describe("Provider tool-call delta contract", () => {
     const messages = deriveChatMessages(
       [
         base,
-        event(2, "graph.tool_call_start", { tool_call_id: "call-stream" }),
-        event(3, "graph.tool_call_delta", {
+        event(1, "core.tool_call_start", { tool_call_id: "call-stream" }),
+        event(1, "core.tool_call_delta", {
           tool_call_id: "call-stream",
           tool_name: "write",
           arguments_delta: '{"path":',
@@ -1607,7 +1632,7 @@ describe("Provider tool-call delta contract", () => {
     const messages = deriveChatMessages(
       [
         base,
-        event(2, "graph.tool_call_start", {
+        event(1, "core.tool_call_start", {
           tool_call_id: "call-diff",
           tool_name: "write",
           diff_preview: { path: "note.txt", diff: "@@ -1 +1 @@\n-old\n+new" },
@@ -1622,11 +1647,11 @@ describe("Provider tool-call delta contract", () => {
     expect(messages[1].tools[0].result).toBeUndefined();
   });
 
-  it("captures canonical diff previews from raw graph tool requests", () => {
+  it("captures canonical diff previews from raw core tool requests", () => {
     const messages = deriveChatMessages(
       [
         base,
-        event(2, "graph.tool_request_created", {
+        event(2, "core.tool_request_created", {
           tool_call_id: "raw-diff",
           tool: "edit",
           diff_preview: { path: "src/app.ts", diff: "@@ -1 +1 @@\n-old\n+new" },
@@ -1645,30 +1670,30 @@ describe("Provider tool-call delta contract", () => {
     const messages = deriveChatMessages(
       [
         base,
-        event(2, "graph.tool_call_start", {
+        event(1, "core.tool_call_start", {
           tool_call_id: "a",
           tool_name: "write",
         }),
-        event(3, "graph.tool_call_start", {
+        event(1, "core.tool_call_start", {
           tool_call_id: "b",
           tool_name: "write",
         }),
-        event(4, "graph.tool_call_delta", {
+        event(1, "core.tool_call_delta", {
           tool_call_id: "a",
           arguments_delta: "A",
           fragment_ordinal: 1,
         }),
-        event(5, "graph.tool_call_delta", {
+        event(1, "core.tool_call_delta", {
           tool_call_id: "a",
           arguments_delta: "old",
           fragment_ordinal: 0,
         }),
-        event(6, "graph.tool_call_delta", {
+        event(1, "core.tool_call_delta", {
           tool_call_id: "a",
           arguments_delta: "A",
           fragment_ordinal: 1,
         }),
-        event(7, "graph.tool_call_delta", {
+        event(1, "core.tool_call_delta", {
           tool_call_id: "b",
           arguments_delta: "B",
           fragment_ordinal: 0,
@@ -1681,12 +1706,144 @@ describe("Provider tool-call delta contract", () => {
       "B",
     ]);
   });
+  it("keeps repeated native tool IDs in separate batches with their own streamed state and results", () => {
+    const manifest = {
+      tool_batch_calls: [
+        {
+          tool: "read",
+          tool_call_id: "read_1",
+          arguments: { path: "note.txt" },
+        },
+      ],
+    };
+    const events: EventEnvelope[] = [
+      base,
+      event(2, "core.loop_step", { phase: "plan" }),
+      event(1, "core.tool_call_start", {
+        tool_call_id: "read_1",
+        tool_name: "read",
+        ordinal: 0,
+      }),
+      event(1, "core.tool_call_delta", {
+        tool_call_id: "read_1",
+        arguments_delta: '{"path":"note.txt"}',
+        ordinal: 0,
+        fragment_ordinal: 0,
+      }),
+      event(1, "core.tool_call_end", { tool_call_id: "read_1", ordinal: 0 }),
+      event(2, "runtime.reasoning_part", {
+        text: "I will inspect the current file.",
+      }),
+      event(3, "core.model_turn", manifest),
+      event(4, "core.tool_request_created", {
+        tool: "read",
+        tool_call_id: "read_1",
+        arguments: { path: "note.txt" },
+      }),
+      event(5, "runtime.tool_started", {
+        tool: "read",
+        tool_call_id: "read_1",
+      }),
+      event(6, "runtime.tool_progress", {
+        tool: "read",
+        tool_call_id: "read_1",
+        stream: "stdout",
+        chunk: "first progress",
+        offset: 0,
+        ordinal: 0,
+      }),
+      event(7, "runtime.tool_completed", {
+        tool: "read",
+        tool_call_id: "read_1",
+        status: "ok",
+        content: "first file result",
+      }),
+      event(8, "core.loop_step", { phase: "plan" }),
+      event(1, "core.tool_call_start", {
+        tool_call_id: "read_1",
+        tool_name: "read",
+        ordinal: 0,
+      }),
+      event(1, "core.tool_call_delta", {
+        tool_call_id: "read_1",
+        arguments_delta: '{"path":"note.txt"}',
+        ordinal: 0,
+        fragment_ordinal: 0,
+      }),
+      event(1, "core.tool_call_end", { tool_call_id: "read_1", ordinal: 0 }),
+      event(8, "runtime.reasoning_part", {
+        text: "I will read it again after the update.",
+      }),
+      event(9, "core.model_turn", manifest),
+      event(10, "core.tool_request_created", {
+        tool: "read",
+        tool_call_id: "read_1",
+        arguments: { path: "note.txt" },
+      }),
+      event(11, "runtime.tool_started", {
+        tool: "read",
+        tool_call_id: "read_1",
+      }),
+      event(12, "runtime.tool_progress", {
+        tool: "read",
+        tool_call_id: "read_1",
+        stream: "stdout",
+        chunk: "second progress",
+        offset: 0,
+        ordinal: 0,
+      }),
+      event(13, "runtime.tool_completed", {
+        tool: "read",
+        tool_call_id: "read_1",
+        status: "ok",
+        content: "second file result",
+      }),
+    ];
+
+    const assistant = deriveChatMessages(events, null).find(
+      (message) => message.role === "assistant",
+    );
+
+    expect(assistant?.tools).toHaveLength(2);
+    expect(assistant?.tools.map(({ id }) => id)).toEqual(["read_1", "read_1"]);
+    expect(assistant?.tools.map(({ partKey }) => partKey)).toEqual([
+      "stream:test:2:0",
+      "stream:test:8:0",
+    ]);
+    expect(assistant?.tools.map(({ status }) => status)).toEqual([
+      "completed",
+      "completed",
+    ]);
+    expect(
+      assistant?.tools.map(
+        ({ partialArguments, content, liveOutput, provisional }) => ({
+          partialArguments,
+          content,
+          provisional,
+          stdout: liveOutput?.stdout,
+        }),
+      ),
+    ).toEqual([
+      {
+        provisional: false,
+        partialArguments: '{"path":"note.txt"}',
+        content: "first file result",
+        stdout: "first progress",
+      },
+      {
+        provisional: false,
+        partialArguments: '{"path":"note.txt"}',
+        content: "second file result",
+        stdout: "second progress",
+      },
+    ]);
+  });
 
   it("tracks UTF-8 byte offsets independently from JavaScript character length", () => {
     const messages = deriveChatMessages(
       [
         base,
-        event(2, "graph.tool_call_start", {
+        event(1, "core.tool_call_start", {
           tool_call_id: "shell",
           tool_name: "shell_exec",
         }),
@@ -1717,7 +1874,7 @@ describe("Provider tool-call delta contract", () => {
     const messages = deriveChatMessages(
       [
         base,
-        event(2, "graph.tool_call_start", {
+        event(1, "core.tool_call_start", {
           tool_call_id: "call-degraded",
           tool_name: "write",
           diff_preview: {
@@ -1745,11 +1902,11 @@ describe("Provider tool-call delta contract", () => {
     const messages = deriveChatMessages(
       [
         base,
-        event(2, "graph.tool_call_start", {
+        event(1, "core.tool_call_start", {
           tool_call_id: "same",
           tool_name: "write",
         }),
-        event(3, "graph.tool_call_delta", {
+        event(1, "core.tool_call_delta", {
           tool_call_id: "same",
           arguments_delta: huge,
           fragment_ordinal: 0,
@@ -1757,11 +1914,11 @@ describe("Provider tool-call delta contract", () => {
         }),
         event(4, "runtime.completed", { output: "done" }),
         event(5, "runtime.request_received", { prompt: "again" }),
-        event(6, "graph.tool_call_start", {
+        event(5, "core.tool_call_start", {
           tool_call_id: "same",
           tool_name: "read",
         }),
-        event(7, "graph.tool_call_delta", {
+        event(5, "core.tool_call_delta", {
           tool_call_id: "same",
           arguments_delta: "new",
           fragment_ordinal: 0,

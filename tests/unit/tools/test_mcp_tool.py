@@ -13,9 +13,10 @@ from pathlib import Path
 import pytest
 
 import voidcode.tools.mcp as mcp_module
+from tests.turn_producers import model_turn_fact
 from voidcode.core.tool_context import ArtifactBinary, ArtifactPage, ToolContext
 from voidcode.core.transcript import ToolResultView, project_report
-from voidcode.core.turns import FinalTurn, ToolTurn
+from voidcode.core.turns import FinalTurn, ToolTurn, TurnRequest
 from voidcode.mcp.types import McpToolCallResult, McpToolDescriptor
 from voidcode.runtime.config.loading import RuntimeConfig, RuntimeMcpConfig, RuntimeMcpServerConfig
 from voidcode.runtime.contracts import RuntimeRequest
@@ -345,13 +346,14 @@ def _stdio_media_server_source(png_one: bytes, png_two: bytes, svg: bytes, audio
     )
 
 
-class _McpMediaGraph:
+class _McpMediaProducer:
     def __init__(self) -> None:
         self._next_call = 0
         self.final_tool_results: tuple[object, ...] = ()
 
-    def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> FinalTurn | ToolTurn:
-        _ = request, session
+    def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: object) -> FinalTurn | ToolTurn:
+        fact = model_turn_fact(request)
+        _ = session
         if self._next_call == 0:
             name, call_id = "mcp/media/media_bundle", "media-bundle"
         elif self._next_call == 1:
@@ -360,9 +362,9 @@ class _McpMediaGraph:
             name, call_id = "mcp/media/partial_error", "partial-error"
         else:
             self.final_tool_results = tool_results
-            return FinalTurn(output="MCP native media proof complete")
+            return FinalTurn(output="MCP native media proof complete", facts=(fact,))
         self._next_call += 1
-        return ToolTurn(calls=(ToolCall(tool_name=name, tool_call_id=call_id, arguments={}),))
+        return ToolTurn(calls=(ToolCall(tool_name=name, tool_call_id=call_id, arguments={}),), facts=(fact,))
 
 
 def test_stdio_mcp_media_and_large_results_through_engine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -375,12 +377,11 @@ def test_stdio_mcp_media_and_large_results_through_engine(tmp_path: Path, monkey
     server = tmp_path / "media_server.py"
     server.write_text(_stdio_media_server_source(png_one, png_two, svg, audio, pdf), encoding="utf-8")
     session_id = "mcp-native-media-engine"
-    graph = _McpMediaGraph()
+    producer = _McpMediaProducer()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=graph,
+        turn_producer=producer,
         config=RuntimeConfig(
-            execution_engine="deterministic",
             mcp=RuntimeMcpConfig(
                 enabled=True,
                 servers={"media": RuntimeMcpServerConfig(command=(sys.executable, str(server)))},
@@ -507,7 +508,7 @@ def test_stdio_mcp_media_and_large_results_through_engine(tmp_path: Path, monkey
         assert f"Full MCP result JSON: {single_json_artifact['uri']}" in single_view.output.presentation
         image_artifact = next(artifact for artifact in _artifacts(single_body) if artifact["kind"] == "mcp-image")
         hydrated_single = next(
-            result for result in graph.final_tool_results if isinstance(result, ToolResultView) and result.tool_name == "mcp/media/single_png"
+            result for result in producer.final_tool_results if isinstance(result, ToolResultView) and result.tool_name == "mcp/media/single_png"
         )
         assert isinstance(hydrated_single.output, AttachmentOutput)
         assert hydrated_single.output.data_uri is not None
@@ -552,7 +553,7 @@ def test_stdio_mcp_media_and_large_results_through_engine(tmp_path: Path, monkey
         assert partial_view.output.bounds.reference is not None
         assert partial_view.output.bounds.reference.uri == partial_image["uri"]
         hydrated_partial = next(
-            result for result in graph.final_tool_results if isinstance(result, ToolResultView) and result.tool_name == "mcp/media/partial_error"
+            result for result in producer.final_tool_results if isinstance(result, ToolResultView) and result.tool_name == "mcp/media/partial_error"
         )
         assert isinstance(hydrated_partial.output, AttachmentOutput)
         assert hydrated_partial.output.data_uri is not None

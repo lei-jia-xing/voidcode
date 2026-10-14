@@ -42,7 +42,8 @@ acceptance run. Never replace terminal responses with fabricated bytes.
   with `sample.txt` created inside that isolated workspace.
 - TUI: use a private temporary workspace, `HOME`, `APPDATA`, `LOCALAPPDATA`, XDG config,
   state, cache, and data roots, plus an explicit private `VOIDCODE_DB_PATH` and
-  deterministic no-LLM configuration. Use a real PTY on Linux/macOS or a native
+  an isolated configured provider (a private OpenAI-compatible loopback for
+  offline tests; no no-provider runtime mode). Use a real PTY on Linux/macOS or
   Windows Console session on Windows; record OS, terminal, width, and height.
   Inspect startup, native caret and exact restoration, actions bound by the
   private test keymap (F1/F2/F3 have no defaults), minimum-size overlays,

@@ -14,7 +14,6 @@ type AgentManifestId = Literal[
 ]
 type AgentManifestKey = AgentManifestId | str
 type AgentMode = Literal["primary", "subagent", "all"]
-type AgentExecutionEngineName = Literal["deterministic", "provider"]
 type AgentPromptSource = Literal["builtin", "custom_markdown"]
 type AgentPromptFormat = Literal["text", "markdown"]
 type AgentSourceScope = Literal["builtin", "package", "project", "user"]
@@ -150,7 +149,6 @@ class AgentManifest:
     source_path: str | None = None
     source_id: str | None = None
     prompt_profile: str | None = None
-    execution_engine: AgentExecutionEngineName | None = None
     model_preference: str | None = None
     fallback_models: tuple[str, ...] = ()
     tool_allowlist: tuple[str, ...] = ()
@@ -181,7 +179,5 @@ class AgentManifest:
             values = getattr(self, field_name)
             if not isinstance(values, tuple) or any(not isinstance(value, str) or not value.strip() for value in values):
                 raise ValueError(f"agent manifest {field_name} must be a tuple of non-empty strings")
-        if self.execution_engine is not None and self.execution_engine not in ("deterministic", "provider"):
-            raise ValueError("invalid agent execution engine")
         if type(self.top_level_selectable) is not bool:
             raise ValueError("agent top_level_selectable must be a boolean")

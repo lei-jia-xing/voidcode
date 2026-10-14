@@ -147,8 +147,49 @@ def test_post_tool_crash_does_not_cancel(tmp_path: Path) -> None:
         phase="post",
         hooks=RuntimeHooksConfig(post_tool=(_crash_command(),)),
     )
-    assert outcome.action == "continue"
+    assert outcome.action is None
     assert outcome.failed_error is not None
+
+
+def test_pre_tool_malformed_structured_json_command_fails_closed(tmp_path: Path) -> None:
+    response = '{"action":'
+    command = (sys.executable, "-c", f"import sys; sys.stdout.write({response!r})")
+    outcome = _tool(
+        tmp_path,
+        tool_name="write",
+        hooks=RuntimeHooksConfig(pre_tool=(command,)),
+    )
+
+    assert outcome.action == "cancel"
+    assert outcome.failed_error is not None
+    assert "malformed JSON" in outcome.failed_error
+    assert outcome.events[0].payload["status"] == "error"
+
+
+def test_pre_tool_invalid_structured_action_fails_closed(tmp_path: Path) -> None:
+    for action in ("cancel_typo", 17, None):
+        outcome = _tool(
+            tmp_path,
+            tool_name="write",
+            hooks=RuntimeHooksConfig(pre_tool=(("echo", json.dumps({"action": action})),)),
+        )
+        assert outcome.action == "cancel"
+        assert outcome.failed_error is not None
+        assert outcome.diagnostics == (outcome.failed_error,)
+        event = outcome.events[0]
+        assert event.payload["status"] == "error"
+        assert event.payload["diagnostic"] == outcome.failed_error
+        assert "action" not in event.payload
+
+
+def test_advisory_invalid_structured_field_records_error_without_action(tmp_path: Path) -> None:
+    outcome = _lifecycle(tmp_path, "session_start", ("echo", json.dumps({"action": "continue", "diagnostic": 17})))
+    assert outcome.action is None
+    assert outcome.failed_error is not None
+    event = outcome.events[0]
+    assert event.payload["hook_status"] == "error"
+    assert event.payload["diagnostic"] == outcome.failed_error
+    assert "action" not in event.payload
 
 
 def test_read_only_policy_denial_skips_without_cancelling(tmp_path: Path) -> None:

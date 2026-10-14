@@ -9,7 +9,7 @@ from voidcode.provider.protocol import ProviderTokenUsage
 from voidcode.runtime.config.loading import RuntimeConfig, RuntimeContextWindowConfig, RuntimeRemindersConfig, RuntimeTodoReminderConfig
 from voidcode.runtime.config.materializer import (
     PERSISTED_RUNTIME_CONFIG_KEYS,
-    EffectiveRuntimeConfig,
+    RunConfig,
     parse_persisted_runtime_config,
     serialize_runtime_config_core,
 )
@@ -25,11 +25,10 @@ from voidcode.runtime.session_metadata_helpers import plan_state_from_metadata
 def _current_runtime_config_payload() -> dict[str, object]:
     defaults = RuntimeConfig()
     return serialize_runtime_config_core(
-        EffectiveRuntimeConfig(
+        RunConfig(
             approval_mode=defaults.approval_mode,
             permission=defaults.permission,
             model=defaults.model,
-            execution_engine=defaults.execution_engine,
             tool_timeout_seconds=defaults.tool_timeout_seconds,
         )
     )
@@ -40,7 +39,6 @@ def _current_runtime_config_payload() -> dict[str, object]:
     (
         "approval_mode",
         "permission",
-        "execution_engine",
         "tool_timeout_seconds",
         "fallback_models",
     ),
@@ -100,7 +98,6 @@ def _accepted_persisted_runtime_config_values() -> dict[str, object]:
             "enabled": True,
             "version": "v1",
         },
-        "execution_engine": "deterministic",
         "tool_timeout_seconds": None,
         "reasoning_effort": "medium",
         "model": "provider/model",
@@ -157,8 +154,6 @@ def test_persisted_runtime_config_accepts_representative_value_for_each_key(fiel
     elif field == "policy":
         assert materialized.policy is not None
         assert materialized.policy.version == "v1"
-    elif field == "execution_engine":
-        assert materialized.execution_engine == "deterministic"
     elif field == "tool_timeout_seconds":
         assert materialized.tool_timeout_seconds is None
     elif field == "reasoning_effort":
@@ -196,7 +191,6 @@ def test_persisted_runtime_config_accepts_representative_value_for_each_key(fiel
             "persisted runtime_config permission is missing required field\\(s\\): external_directory_read, external_directory_write",
         ),
         ("policy", [], "persisted runtime_config.policy must be an object when provided"),
-        ("execution_engine", "invalid", "persisted runtime_config execution_engine is invalid"),
         ("tool_timeout_seconds", 0, "persisted runtime_config tool_timeout_seconds must be at least 1"),
         ("reasoning_effort", "invalid", "reasoning_effort must be one of:"),
         ("model", 7, "persisted runtime_config model must be a string or null"),

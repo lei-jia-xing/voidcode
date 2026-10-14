@@ -27,7 +27,7 @@ def test_f2_saves_appearance_to_selected_scope(scope: str, tmp_path: Path, monke
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
-    monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
+
     monkeypatch.delenv("VOIDCODE_APPROVAL_MODE", raising=False)
     for key in tuple(os.environ):
         if key.endswith("_API_KEY"):

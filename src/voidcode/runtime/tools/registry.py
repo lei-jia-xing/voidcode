@@ -31,7 +31,7 @@ ESSENTIAL_TOOL_NAMES = frozenset(
         "todo",
         # Skill loading is a first-class runtime mechanism.
         "skill",
-        # Terminal output contract: the graph loop completes on yield.
+        # Terminal output contract: the runtime turn loop completes on yield.
         "yield",
         # On-demand access mechanisms (dispatch + doc read).
         "invoke_tool",
@@ -182,7 +182,7 @@ class ToolRegistry:
                 visibility=("essential" if definition.name in ESSENTIAL_TOOL_NAMES else "discoverable"),
                 read_only=is_read_tier(definition.effects),
                 documentation_uri=f"voidcode://tool/{definition.name}",
-                replay_policy=definition.effective_replay_policy,
+                replay_policy=definition.replay_policy_for(),
             )
             for definition in self._provider_definitions(
                 essential_only=essential_only,

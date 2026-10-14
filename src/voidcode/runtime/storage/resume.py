@@ -341,7 +341,7 @@ class _ResumeStorageMixin(_MixinBase):
         appended.  In that case the waiting row and approval checkpoint are
         stale even though replay already contains the side effect.  Convert
         the row to an interrupted checkpoint carrying the durable tool result;
-        the normal interrupted-resume path then advances the graph without
+        the normal interrupted-resume path then continues the turn without
         invoking the approved tool again.  A durable runtime failure is already
         terminal and is sealed as failed instead.
         """
@@ -431,7 +431,7 @@ class _ResumeStorageMixin(_MixinBase):
                 raise RuntimeError("persisted approval resume checkpoint tool_results must be a list")
             checkpoint["tool_results"] = [
                 *cast(list[object], raw_tool_results),
-                *self._tool_results_from_events(tool_events),
+                *self._tool_results_from_events(events, after_sequence=resolution_event.sequence),
             ]
             last_sequence = max((event.sequence for event in events), default=0)
             checkpoint["last_event_sequence"] = last_sequence
@@ -450,7 +450,7 @@ class _ResumeStorageMixin(_MixinBase):
             checkpoint.pop("pending_approval_owner_session_id", None)
             checkpoint.pop("pending_approval_owner_parent_session_id", None)
             checkpoint.pop("pending_approval_delegated_task_id", None)
-            # ``graph.response_ready`` is intentionally not used to infer the
+            # ``core.response_ready`` is intentionally not used to infer the
             # output: interrupted replay rebuilds the exact terminal output.
             _ = connection.execute(
                 """

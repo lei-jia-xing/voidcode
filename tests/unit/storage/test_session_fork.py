@@ -93,7 +93,7 @@ def test_fork_copies_prefix_own_watermark_and_leaves_source_unchanged(tmp_path: 
     store = SqliteSessionStore()
     events = _event_tuple(
         ("runtime.request_received", "runtime", {"prompt": "hello"}),
-        ("graph.response_ready", "graph", {"summary": "done"}),
+        ("core.response_ready", "core", {"summary": "done"}),
     )
     _seed_session(store, workspace=tmp_path, session_id="source-1", prompt="hello", events=events)
 
@@ -109,7 +109,7 @@ def test_fork_copies_prefix_own_watermark_and_leaves_source_unchanged(tmp_path: 
     assert [event.sequence for event in copied.events] == [1, 2]
     assert [event.event_type for event in copied.events] == [
         "runtime.request_received",
-        "graph.response_ready",
+        "core.response_ready",
     ]
     assert copied.session.session.parent_id is None
 
@@ -129,7 +129,7 @@ def test_fork_refuses_boundary_that_splits_a_tool_call(tmp_path: Path) -> None:
         ("runtime.request_received", "runtime", {"prompt": "run"}),
         ("runtime.tool_started", "runtime", {"tool": "read", "tool_call_id": "call-1"}),
         ("runtime.tool_completed", "tool", {"tool": "read", "tool_call_id": "call-1", "status": "ok"}),
-        ("graph.response_ready", "graph", {"summary": "done"}),
+        ("core.response_ready", "core", {"summary": "done"}),
     )
     _seed_session(store, workspace=tmp_path, session_id="source-3", prompt="run", events=events)
 
@@ -144,7 +144,7 @@ def test_lineage_walks_fork_ancestry_oldest_first(tmp_path: Path) -> None:
     store = SqliteSessionStore()
     events = _event_tuple(
         ("runtime.request_received", "runtime", {"prompt": "root"}),
-        ("graph.response_ready", "graph", {"summary": "root"}),
+        ("core.response_ready", "core", {"summary": "root"}),
     )
     _seed_session(store, workspace=tmp_path, session_id="root-1", prompt="root", events=events)
     child = store.fork_session(workspace=tmp_path, session_id="root-1")
@@ -179,7 +179,7 @@ def test_fork_carries_session_config_but_drops_run_position_state(tmp_path: Path
     """
     database_path = tmp_path / "fork-config.sqlite3"
     store = SqliteSessionStore(database_path=database_path)
-    events = _event_tuple(("graph.response_ready", "graph", {"summary": "done"}))
+    events = _event_tuple(("core.response_ready", "core", {"summary": "done"}))
     _seed_session(store, workspace=tmp_path, session_id="source-cfg", prompt="hi", events=events)
     # Patch the row directly: the point is what the fork copies, and the public
     # metadata writer validates runtime_policy against the full snapshot schema.
@@ -211,7 +211,7 @@ def test_fork_provenance_survives_a_later_run_seal(tmp_path: Path) -> None:
     to be read back and carried forward the same way ``title`` is.
     """
     store = SqliteSessionStore()
-    events = _event_tuple(("graph.response_ready", "graph", {"summary": "done"}))
+    events = _event_tuple(("core.response_ready", "core", {"summary": "done"}))
     _seed_session(store, workspace=tmp_path, session_id="source-run", prompt="hi", events=events)
     forked = store.fork_session(workspace=tmp_path, session_id="source-run", at_sequence=1)
 
@@ -236,7 +236,7 @@ def test_session_forest_keeps_the_parent_above_a_continued_fork(tmp_path: Path) 
     forks at depth 1, parent first.
     """
     store = SqliteSessionStore()
-    events = _event_tuple(("graph.response_ready", "graph", {"summary": "root"}))
+    events = _event_tuple(("core.response_ready", "core", {"summary": "root"}))
     _seed_session(store, workspace=tmp_path, session_id="root", prompt="root", events=events)
     first_fork = store.fork_session(workspace=tmp_path, session_id="root")
     second_fork = store.fork_session(workspace=tmp_path, session_id="root")
@@ -272,7 +272,7 @@ def test_session_forest_orders_siblings_and_grandchildren_parent_first(tmp_path:
     indentation is a valid tree.
     """
     store = SqliteSessionStore()
-    events = _event_tuple(("graph.response_ready", "graph", {"summary": "root"}))
+    events = _event_tuple(("core.response_ready", "core", {"summary": "root"}))
     _seed_session(store, workspace=tmp_path, session_id="root", prompt="root", events=events)
     first_fork = store.fork_session(workspace=tmp_path, session_id="root", at_sequence=1)
     grandchild = store.fork_session(workspace=tmp_path, session_id=first_fork.session.id, at_sequence=1)
@@ -317,7 +317,7 @@ def test_session_forest_excludes_delegated_children(tmp_path: Path) -> None:
     surface (CLI/HTTP list) filters these out, so the forest must too.
     """
     store = SqliteSessionStore()
-    events = _event_tuple(("graph.response_ready", "graph", {"summary": "root"}))
+    events = _event_tuple(("core.response_ready", "core", {"summary": "root"}))
     _seed_session(store, workspace=tmp_path, session_id="root", prompt="root", events=events)
     save_checkpoint(
         store,
@@ -347,7 +347,7 @@ def test_session_forest_keeps_a_fork_of_a_delegated_child_as_a_root(tmp_path: Pa
     vanishing from the tree.
     """
     store = SqliteSessionStore()
-    events = _event_tuple(("graph.response_ready", "graph", {"summary": "root"}))
+    events = _event_tuple(("core.response_ready", "core", {"summary": "root"}))
     _seed_session(store, workspace=tmp_path, session_id="root", prompt="root", events=events)
     save_checkpoint(
         store,
@@ -405,7 +405,7 @@ def test_session_forest_orders_roots_by_recency_but_children_by_provenance(tmp_p
     fork, so recency must apply to the roots only.
     """
     store = SqliteSessionStore()
-    events = _event_tuple(("graph.response_ready", "graph", {"summary": "root"}))
+    events = _event_tuple(("core.response_ready", "core", {"summary": "root"}))
     _seed_session(store, workspace=tmp_path, session_id="first", prompt="first", events=events)
     first_fork = store.fork_session(workspace=tmp_path, session_id="first")
     _seed_session(store, workspace=tmp_path, session_id="second", prompt="second", events=events)
@@ -442,7 +442,7 @@ def test_session_forest_orders_roots_by_recency_but_children_by_provenance(tmp_p
 def test_session_forest_keeps_a_grandchild_under_a_continued_fork(tmp_path: Path) -> None:
     """A grandchild follows the fork it branched from, never the newest-row order."""
     store = SqliteSessionStore()
-    events = _event_tuple(("graph.response_ready", "graph", {"summary": "root"}))
+    events = _event_tuple(("core.response_ready", "core", {"summary": "root"}))
     _seed_session(store, workspace=tmp_path, session_id="root", prompt="root", events=events)
     fork = store.fork_session(workspace=tmp_path, session_id="root", at_sequence=1)
     grandchild = store.fork_session(workspace=tmp_path, session_id=fork.session.id, at_sequence=1)
@@ -472,7 +472,7 @@ def test_session_forest_keeps_siblings_under_their_parent_when_one_is_newer(tmp_
     store = SqliteSessionStore()
     events = _event_tuple(
         ("runtime.request_received", "runtime", {"prompt": "root"}),
-        ("graph.response_ready", "graph", {"summary": "root"}),
+        ("core.response_ready", "core", {"summary": "root"}),
     )
     _seed_session(store, workspace=tmp_path, session_id="root", prompt="root", events=events)
     older = store.fork_session(workspace=tmp_path, session_id="root", at_sequence=1)

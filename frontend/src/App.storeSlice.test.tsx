@@ -110,12 +110,10 @@ describe("App store slice", () => {
     render(renderShell());
     await settleShell();
 
-    // Fields the slice does not carry: the review mode (painted by the review
-    // panel only when it asks), the cancel flag (read by the cancel action, not
-    // painted), and the replay token (lifecycle bookkeeping).
+    // Fields the slice does not carry: the review mode and replay token
+    // (lifecycle bookkeeping).
     const skipped: Array<Array<[string, unknown]>> = [
       [["reviewMode", "files"]],
-      [["cancelRequested", true]],
       [["replayRequestId", 7]],
     ];
     for (const writes of skipped) {

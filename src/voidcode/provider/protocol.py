@@ -12,9 +12,9 @@ type ProviderStreamEventKind = Literal["delta", "content", "tool_call_start", "t
 type ProviderStreamChannel = Literal["text", "tool", "reasoning", "error"]
 type ProviderCacheRetention = Literal["none", "short", "long"]
 # Provider-native finish reasons are intentionally preserved at the adapter boundary.
-# ``unknown`` means the upstream omitted or used an unrecognized reason; the graph maps
-# it to a completed, stop-equivalent terminal state rather than a failure.
-type ProviderDoneReason = Literal["stop", "tool_calls", "length", "content_filter", "function_call", "cancelled", "error", "unknown"]
+# ``unknown`` means the upstream omitted or used an unrecognized reason; the turn
+# producer maps it to a completed, stop-equivalent terminal state rather than a failure.
+type ProviderDoneReason = Literal["stop", "tool_calls", "length", "content_filter", "function_call", "cancelled", "error", "unknown", "completed"]
 type ProviderErrorKind = Literal[
     "missing_auth",
     "invalid_model",
@@ -22,6 +22,7 @@ type ProviderErrorKind = Literal[
     "rate_limit",
     "transient_failure",
     "context_limit",
+    "provider_error",
     "unsupported_feature",
     "stream_tool_feedback_shape",
     "cancelled",
@@ -141,7 +142,9 @@ class ProviderTurnResult:
     # message.reasoning / thinking_blocks) so non-streaming turns can persist
     # the same runtime.reasoning_part the streaming path aggregates.
     reasoning: str | None = None
-    done_reason: ProviderDoneReason = "unknown"
+    # Returning this value is an explicit terminal response for simple providers;
+    # native adapters use ``unknown`` when the wire omitted its terminal marker.
+    done_reason: ProviderDoneReason = "completed"
     finish_reason_reported: bool = False
     metadata: dict[str, object] | None = None
 
@@ -176,7 +179,7 @@ class ProviderStreamEvent:
     done_reason: ProviderDoneReason | None = None
     usage: ProviderTokenUsage | None = None
     # Tool-call lifecycle fields are deliberately separate from ``text``. An
-    # arguments delta is an opaque JSON fragment; only the graph/provider may
+    # arguments delta is an opaque JSON fragment; only the provider turn producer may
     # aggregate and validate it into a ToolCall at the end of a turn.
     tool_call_id: str | None = None
     tool_name: str | None = None
@@ -208,7 +211,7 @@ class ProviderWireMaterialization:
     prefix: WirePrefixDescriptor
 
 
-@dataclass(frozen=True, slots=True, eq=False)
+@dataclass(slots=True, eq=False)
 class ProviderExecutionError(ValueError):
     kind: ProviderErrorKind
     provider_name: str

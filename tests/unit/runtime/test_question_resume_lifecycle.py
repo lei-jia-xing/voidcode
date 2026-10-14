@@ -9,7 +9,7 @@ import pytest
 
 from voidcode.core.questions import QuestionCancellation, QuestionResponse
 from voidcode.core.tool_context import ToolContext
-from voidcode.core.turns import FinalTurn, ToolTurn, TurnRequest, TurnSession
+from voidcode.core.turns import FinalTurn, ModelTurnFact, ToolTurn, TurnRequest, TurnSession
 from voidcode.runtime.config.loading import RuntimeConfig, RuntimeHooksConfig
 from voidcode.runtime.fact_store import SqliteFactStore
 from voidcode.runtime.paths import sessions_db_path
@@ -23,8 +23,9 @@ from voidcode.tools.question import QuestionTool
 from voidcode.tools.write import WriteTool
 
 
-class _QuestionThenWriteGraph:
+class _QuestionThenWriteProducer:
     def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: TurnSession) -> ToolTurn | FinalTurn:
+        fact = ModelTurnFact(request.run_step, "deterministic", request.prompt)
         if not tool_results:
             return ToolTurn(
                 calls=(
@@ -42,25 +43,39 @@ class _QuestionThenWriteGraph:
                             ]
                         },
                     ),
-                )
+                ),
+                facts=(fact,),
             )
         if len(tool_results) == 1:
-            return ToolTurn(calls=(ToolCall(tool_name="write", arguments={"path": "answered.txt", "content": "answered"}),))
-        return FinalTurn(output="done")
+            return ToolTurn(calls=(ToolCall(tool_name="write", arguments={"path": "answered.txt", "content": "answered"}),), facts=(fact,))
+        return FinalTurn(output="done", facts=(fact,))
 
 
-class _QuestionThenFinishGraph(_QuestionThenWriteGraph):
+class _QuestionThenFinishProducer(_QuestionThenWriteProducer):
     def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: TurnSession) -> ToolTurn | FinalTurn:
         if not tool_results:
             return super().produce(request, tool_results, session=session)
-        return FinalTurn(output="cancelled")
+        return FinalTurn(
+            output="cancelled",
+            facts=(ModelTurnFact(request.run_step, "deterministic", request.prompt),),
+        )
+
+
+class _ApprovalWriteProducer:
+    def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: TurnSession) -> ToolTurn | FinalTurn:
+        _ = session
+        fact = ModelTurnFact(request.run_step, "deterministic", request.prompt)
+        if not tool_results:
+            return ToolTurn(
+                calls=(ToolCall(tool_name="write", arguments={"path": "approved.txt", "content": "approved-once"}),),
+                facts=(fact,),
+            )
+        return FinalTurn(output="done", facts=(fact,))
 
 
 @pytest.mark.parametrize("outcome", ["complete", "interrupt", "raise"])
 def test_sync_question_answer_tracks_active_lifecycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str) -> None:
-    with VoidCodeRuntime(
-        workspace=tmp_path, turn_producer=_QuestionThenWriteGraph(), config=RuntimeConfig(execution_engine="deterministic", approval_mode="yolo")
-    ) as runtime:
+    with VoidCodeRuntime(workspace=tmp_path, turn_producer=_QuestionThenWriteProducer(), config=RuntimeConfig(approval_mode="yolo")) as runtime:
         session_id = "sync-question-lifecycle"
         waiting = runtime.run(RuntimeRequest(prompt="ask", session_id=session_id))
         request_id = next(str(event.payload["request_id"]) for event in waiting.events if event.event_type == "runtime.question_requested")
@@ -96,7 +111,8 @@ def test_sync_approval_resume_tracks_active_lifecycle(
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="deterministic", approval_mode="ask"),
+        turn_producer=_ApprovalWriteProducer(),
+        config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
     session_id = "sync-approval-lifecycle"
@@ -140,9 +156,7 @@ def test_question_answer_is_durable_in_session_events_and_replay(tmp_path: Path)
     keeps carrying the same answers for the resume path, but it is no longer the
     only place they survive.
     """
-    with VoidCodeRuntime(
-        workspace=tmp_path, turn_producer=_QuestionThenWriteGraph(), config=RuntimeConfig(execution_engine="deterministic", approval_mode="yolo")
-    ) as runtime:
+    with VoidCodeRuntime(workspace=tmp_path, turn_producer=_QuestionThenWriteProducer(), config=RuntimeConfig(approval_mode="yolo")) as runtime:
         session_id = "question-answer-durable-carrier"
         waiting = runtime.run(RuntimeRequest(prompt="ask", session_id=session_id))
         request_id = next(str(event.payload["request_id"]) for event in waiting.events if event.event_type == "runtime.question_requested")
@@ -213,13 +227,13 @@ def test_question_write_resumes_after_close_without_replaying_effect(tmp_path: P
     def repositories(store: SqliteSessionStore) -> RuntimeRepositories:
         return RuntimeRepositories(store, store, store, store, store, store, store)
 
-    config = RuntimeConfig(execution_engine="deterministic", approval_mode="yolo")
+    config = RuntimeConfig(approval_mode="yolo")
     session_id = "question-write-resume"
     with VoidCodeRuntime(
         workspace=tmp_path,
         repositories=repositories(owner),
         tool_registry=tools(),
-        turn_producer=_QuestionThenWriteGraph(),
+        turn_producer=_QuestionThenWriteProducer(),
         config=config,
     ) as runtime:
         waiting = runtime.run(RuntimeRequest(prompt="ask", session_id=session_id))
@@ -258,7 +272,7 @@ def test_question_write_resumes_after_close_without_replaying_effect(tmp_path: P
         workspace=tmp_path,
         repositories=repositories(reopened),
         tool_registry=tools(),
-        turn_producer=_QuestionThenWriteGraph(),
+        turn_producer=_QuestionThenWriteProducer(),
         config=config,
     ) as runtime:
         resumed = runtime.resume(session_id)
@@ -272,7 +286,7 @@ def test_question_write_resumes_after_close_without_replaying_effect(tmp_path: P
 def test_freeform_question_answer_resumes_after_cold_runtime_reopen(tmp_path: Path) -> None:
     database = tmp_path / "cold-question.sqlite3"
     session_id = "cold-freeform-question"
-    config = RuntimeConfig(execution_engine="deterministic", approval_mode="yolo")
+    config = RuntimeConfig(approval_mode="yolo")
 
     def repositories(store: SqliteSessionStore) -> RuntimeRepositories:
         return RuntimeRepositories(store, store, store, store, store, store, store)
@@ -285,7 +299,7 @@ def test_freeform_question_answer_resumes_after_cold_runtime_reopen(tmp_path: Pa
         workspace=tmp_path,
         repositories=repositories(owner),
         tool_registry=tools(),
-        turn_producer=_QuestionThenWriteGraph(),
+        turn_producer=_QuestionThenWriteProducer(),
         config=config,
     ) as runtime:
         waiting = runtime.run(RuntimeRequest(prompt="ask", session_id=session_id))
@@ -299,7 +313,7 @@ def test_freeform_question_answer_resumes_after_cold_runtime_reopen(tmp_path: Pa
         workspace=tmp_path,
         repositories=repositories(reopened),
         tool_registry=tools(),
-        turn_producer=_QuestionThenWriteGraph(),
+        turn_producer=_QuestionThenWriteProducer(),
         config=config,
     ) as runtime:
         with pytest.raises(ValueError, match="unknown session"):
@@ -334,7 +348,7 @@ def test_question_cancellation_survives_cold_reopen_and_is_not_replayable(tmp_pa
 
     database = tmp_path / "cold-question-cancel.sqlite3"
     session_id = "cold-question-cancel"
-    config = RuntimeConfig(execution_engine="deterministic", approval_mode="yolo")
+    config = RuntimeConfig(approval_mode="yolo")
 
     def repositories(store: SqliteSessionStore) -> RuntimeRepositories:
         return RuntimeRepositories(store, store, store, store, store, store, store)
@@ -347,7 +361,7 @@ def test_question_cancellation_survives_cold_reopen_and_is_not_replayable(tmp_pa
         workspace=tmp_path,
         repositories=repositories(owner),
         tool_registry=tools(),
-        turn_producer=_QuestionThenFinishGraph(),
+        turn_producer=_QuestionThenFinishProducer(),
         config=config,
     ) as runtime:
         waiting = runtime.run(RuntimeRequest(prompt="ask", session_id=session_id))
@@ -358,7 +372,7 @@ def test_question_cancellation_survives_cold_reopen_and_is_not_replayable(tmp_pa
         workspace=tmp_path,
         repositories=repositories(reopened),
         tool_registry=tools(),
-        turn_producer=_QuestionThenFinishGraph(),
+        turn_producer=_QuestionThenFinishProducer(),
         config=config,
     ) as runtime:
         response = runtime.answer_question(
@@ -418,7 +432,6 @@ def test_completed_approved_write_reopens_once_with_frozen_hook_semantics(tmp_pa
     tools = ToolRegistry.from_tools([QuestionTool(), writer])
     command = (sys.executable, "-c", "from pathlib import Path; Path('frozen-hook.txt').write_text('frozen')")
     config = RuntimeConfig(
-        execution_engine="deterministic",
         approval_mode="ask",
         hooks=RuntimeHooksConfig(enabled=True, on_session_end=(command,)),
     )
@@ -426,6 +439,7 @@ def test_completed_approved_write_reopens_once_with_frozen_hook_semantics(tmp_pa
     target = tmp_path / "approved.txt"
     with VoidCodeRuntime(
         workspace=tmp_path,
+        turn_producer=_ApprovalWriteProducer(),
         repositories=RuntimeRepositories(owner, owner, owner, owner, owner, owner, owner),
         tool_registry=tools,
         config=config,
@@ -454,6 +468,7 @@ def test_completed_approved_write_reopens_once_with_frozen_hook_semantics(tmp_pa
     marker.unlink(missing_ok=True)
     with VoidCodeRuntime(
         workspace=tmp_path,
+        turn_producer=_ApprovalWriteProducer(),
         repositories=RuntimeRepositories(reopened, reopened, reopened, reopened, reopened, reopened, reopened),
         tool_registry=tools,
         config=replace(config, hooks=RuntimeHooksConfig(enabled=False)),

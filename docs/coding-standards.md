@@ -11,7 +11,7 @@ VoidCode 当前更重视代码的清晰性、小规模变更以及可重复的�
 
 ## Python
 
-- 符合现有的运行时 (runtime)/图 (graph)/工具 (tools) 边界。
+- 符合现有的 runtime 治理、core turn engine 与 tool capability 边界。
 - 中立 transcript 类型从 `voidcode.core.transcript` 导入；provider/tool 类与 helper 从定义模块导入，不使用 package facade。raw history、预算、redaction、policy 和持久化仍由 runtime owner 处理。
 - 在可行的情况下保持函数短小且确定性。
 - Runtime changes must follow the current contracts in `docs/contracts/`; implementation ownership remains in `src/voidcode/runtime/`.
@@ -26,7 +26,7 @@ VoidCode 当前更重视代码的清晰性、小规模变更以及可重复的�
 - `cast` 只在**命名边界**上使用，并在代码里写明边界：JSON/HTTP 解码（`json.loads` → `dict[str, object]`）、SQLite 行解码（`runtime/storage/rows.py::decode_row`）、第三方 SDK 桩（`Any` kwargs、`Omit` 哨兵、联合返回）、无类型动态查找（ASGI `Scope`、`__dict__` monkeypatch）、pydantic `errors()` 字典、已落盘 JSON blob 上对 `raw_*`/`payload`/`metadata`/`state` 的 `.get(...)`/`["..."]`，以及 CLI 参数边界（四个命令模块统一 `click.Choice(...)` 收窄并在调用点注明边界，不在路由处 `cast`）。
 - 全仓（`src/voidcode` + `scripts`）`cast(` 约 100 处，全部落在上述命名边界，不再有过度防御。
 - **已关闭的上限（不是遗忘）**：约 152 处对内部无类型 `dict[str, object]` 状态的容器 `cast` 已按每个状态对象一个 `TypedDict` 消除（`_PlannedTurn`、`_StreamedToolCallState`、`HookPresetPayload` 等）；10 处对未校验 dict 的 TypedDict 断言已改为**构造即校验**——逐字段构造 + `TypeIs` 谓词收窄 literal/enum（范例 `provider_table.py`、`is_routing_mode`、`is_tool_intent_status`）。持久化/序列化状态仍是普通 `dict`（`TypedDict` 只用于内存态），不用 dataclass 取代。
-- **仍存在的上限**：`runtime/storage/**` 里 `decode_row` 之外仍按查询各留一套行形状，尚未合并为表级解码器（升级路径：每表一个 `row → TypedDict`）；个别结构适配 `cast`——`runtime/service.py` 的 `BackgroundProcessPersistence`（升级路径：拆出 Protocol）、`runtime/run_loop.py` 的 graph 请求 `context_window`（升级路径：graph 侧给该字段具体类型）。
+- **仍存在的上限**：`runtime/storage/**` 里 `decode_row` 之外仍按查询各留一套行形状，尚未合并为表级解码器（升级路径：每表一个 `row → TypedDict`）；个别结构适配 `cast`——`runtime/service.py` 的 `BackgroundProcessPersistence`（升级路径：拆出 Protocol）、`runtime/run_loop.py` 的 `TurnRequest.context_window`（升级路径：给该字段提供具体 runtime context-window 类型）。
 - fallback 判定已定案，不再重开：真正可选值上的 `is not None else`、带声明优先级的来源合并、恒等映射（`.get(name, name)`）都合法；约 40 处"替换成具体值"的三元与 3 处契约键 `.get(k, default)` 候选是低风险保留。
 - 读无类型 payload 时，只读用途优先标注 `Mapping[str, object]`：它表达的是**只读、协变的契约**（值类型更窄的 `dict[str, str]` 之类源仍可赋值），而不是类型检查器的硬性要求；源本身就是本地新建的 `dict` 时，直接写 `dict[str, object]`。
 - 边界解析的范例是 `src/voidcode/provider/provider_table.py`：每个字段一种校验器（`_string_tuple` 形状），`Literal` 集合用 `TypeIs` 谓词收窄（`model_match.is_matcher`），而不是每个调用点一个 `cast`；容器边界处的 `cast(dict[str, object], ...)` 用来阻止 `Any` 向下游扩散。

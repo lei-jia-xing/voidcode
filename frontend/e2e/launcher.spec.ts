@@ -2,21 +2,18 @@ import { test, expect, type Page } from "@playwright/test";
 import { spawn, ChildProcess } from "child_process";
 import * as os from "os";
 import * as path from "path";
+import { mkdirSync, mkdtempSync } from "fs";
 import { fileURLToPath } from "url";
 
 let proc: ChildProcess;
 let launcherUrl: string;
+let launcherWorkspace: string;
 
 let stdoutData = "";
 let stderrData = "";
 
 type JsonValue =
-  | null
-  | boolean
-  | number
-  | string
-  | JsonValue[]
-  | { [key: string]: JsonValue };
+  null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
 function jsonResponse(payload: JsonValue) {
   return {
@@ -225,8 +222,8 @@ async function installMockRuntime(page: Page) {
   const responseEvent = {
     session_id: "browser-session",
     sequence: 6,
-    event_type: "graph.response_ready",
-    source: "graph",
+    event_type: "core.response_ready",
+    source: "core",
     payload: { output: "Browser QA completed." },
   };
 
@@ -284,17 +281,14 @@ async function installMockRuntime(page: Page) {
       }),
     ),
   );
-  await page.route(
-    "**/api/sessions/browser-session/events*",
-    async (route) => {
-      await sessionEventsReleased;
-      await route.fulfill({
-        status: 200,
-        contentType: "text/event-stream",
-        body: "",
-      });
-    },
-  );
+  await page.route("**/api/sessions/browser-session/events*", async (route) => {
+    await sessionEventsReleased;
+    await route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      body: "",
+    });
+  });
 
   await page.route("**/api/sessions/browser-session/debug", async (route) =>
     route.fulfill(
@@ -483,6 +477,20 @@ test.describe("VoidCode Web Launcher", () => {
       path.dirname(fileURLToPath(import.meta.url)),
       "../..",
     );
+    launcherWorkspace = mkdtempSync(
+      path.join(os.tmpdir(), "voidcode-launcher-workspace-"),
+    );
+    const isolatedPaths = {
+      appData: path.join(launcherWorkspace, "appdata"),
+      cache: path.join(launcherWorkspace, "cache"),
+      config: path.join(launcherWorkspace, "config"),
+      data: path.join(launcherWorkspace, "data"),
+      home: path.join(launcherWorkspace, "home"),
+      state: path.join(launcherWorkspace, "state"),
+    };
+    for (const directory of Object.values(isolatedPaths)) {
+      mkdirSync(directory, { recursive: true });
+    }
     const port = Math.floor(Math.random() * 50000) + 10000;
 
     proc = spawn(
@@ -495,11 +503,23 @@ test.describe("VoidCode Web Launcher", () => {
         "--port",
         port.toString(),
         "--workspace",
-        rootDir,
+        launcherWorkspace,
       ],
       {
         cwd: rootDir,
-        env: { ...process.env, PYTHONUNBUFFERED: "1" },
+        env: {
+          ...process.env,
+          APPDATA: isolatedPaths.config,
+          HOME: isolatedPaths.home,
+          LOCALAPPDATA: isolatedPaths.appData,
+          PYTHONUNBUFFERED: "1",
+          USERPROFILE: isolatedPaths.home,
+          VOIDCODE_DB_PATH: path.join(launcherWorkspace, "voidcode.sqlite3"),
+          XDG_CACHE_HOME: isolatedPaths.cache,
+          XDG_CONFIG_HOME: isolatedPaths.config,
+          XDG_DATA_HOME: isolatedPaths.data,
+          XDG_STATE_HOME: isolatedPaths.state,
+        },
       },
     );
 
@@ -649,7 +669,6 @@ test.describe("VoidCode Web Launcher", () => {
       },
     );
 
-
     await page.route(
       "**/api/sessions/question-session/question*",
       async (route) => {
@@ -714,8 +733,8 @@ test.describe("VoidCode Web Launcher", () => {
               {
                 session_id: "question-session",
                 sequence: 4,
-                event_type: "graph.response_ready",
-                source: "graph",
+                event_type: "core.response_ready",
+                source: "core",
                 payload: { output: "question answered" },
               },
             ],
@@ -810,10 +829,9 @@ test.describe("VoidCode Web Launcher", () => {
     releaseQuestionEvents();
   });
 
-  test("should cover browser UI controls and monochrome tool layout", async (
-    { page },
-    testInfo,
-  ) => {
+  test("should cover browser UI controls and monochrome tool layout", async ({
+    page,
+  }, testInfo) => {
     test.setTimeout(60000);
 
     const releaseSessionEvents = await installMockRuntime(page);
@@ -886,12 +904,16 @@ test.describe("VoidCode Web Launcher", () => {
     await input.fill("browser QA tool surfaces");
     await input.press("Enter");
 
-    const readToggle = page.getByRole("button", {
-      name: /show details for read/i,
-    }).first();
-    const grepToggle = page.getByRole("button", {
-      name: /show details for grep/i,
-    }).first();
+    const readToggle = page
+      .getByRole("button", {
+        name: /show details for read/i,
+      })
+      .first();
+    const grepToggle = page
+      .getByRole("button", {
+        name: /show details for grep/i,
+      })
+      .first();
     await expect(readToggle).toBeVisible();
     await expect(grepToggle).toBeVisible();
     await readToggle.click();
@@ -899,9 +921,11 @@ test.describe("VoidCode Web Launcher", () => {
     await grepToggle.click();
     await expect(page.getByText("src/app.ts:42: // TODO")).toBeVisible();
 
-    const shellToggle = page.getByRole("button", {
-      name: /show details for shell/i,
-    }).first();
+    const shellToggle = page
+      .getByRole("button", {
+        name: /show details for shell/i,
+      })
+      .first();
     await expect(shellToggle).toBeVisible();
     await expect(
       page.getByText("bun run --cwd frontend lint", { exact: true }),
@@ -947,14 +971,17 @@ test.describe("VoidCode Web Launcher", () => {
       throw new Error("Runtime status toggle should control a detail popover");
     const statusDetail = page.locator(`[id="${statusDetailId}"]`);
     await page.getByRole("tab", { name: "MCP" }).click();
-    await expect(statusDetail.getByText("local", { exact: true })).toBeVisible();
-    await expect(statusDetail.getByText("stopped", { exact: true })).toBeVisible();
+    await expect(
+      statusDetail.getByText("local", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      statusDetail.getByText("stopped", { exact: true }),
+    ).toBeVisible();
     await expect(
       statusDetail.getByText("stage: idle", { exact: true }),
     ).toBeVisible();
     const retryRequest = page.waitForRequest(
-      (request) =>
-        new URL(request.url()).pathname === "/api/status/mcp/retry",
+      (request) => new URL(request.url()).pathname === "/api/status/mcp/retry",
     );
     await page.getByRole("button", { name: "Retry MCP" }).click();
     await retryRequest;
@@ -964,7 +991,10 @@ test.describe("VoidCode Web Launcher", () => {
     await page.getByRole("button", { name: "Provider & Model" }).click();
     await expect(page.getByText("Configured providers")).toBeVisible();
     await expect(page.getByText("DeepSeek", { exact: true })).toBeVisible();
-    await page.getByRole("dialog", { name: "Settings" }).getByLabel("Close").click();
+    await page
+      .getByRole("dialog", { name: "Settings" })
+      .getByLabel("Close")
+      .click();
 
     await page.getByRole("button", { name: "Open Project" }).first().click();
     await expect(

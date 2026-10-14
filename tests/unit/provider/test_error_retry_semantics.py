@@ -25,11 +25,10 @@ def test_a_429_with_a_retry_after_header_carries_the_wait_and_no_retry_verdict()
     assert parsed.retry_after == 7.0
 
 
-def test_a_generic_400_is_terminal() -> None:
-    """A permanent client error must not be retried, whatever kind its message matched."""
+def test_a_generic_400_remains_an_unknown_provider_error() -> None:
     parsed = parse_provider_api_error({"status_code": 400, "code": "invalid_request_error", "message": "Invalid request"})
 
-    assert parsed.kind == "transient_failure"
+    assert parsed.kind == "provider_error"
     assert parsed.retryable is False
     assert parsed.fallback_allowed is True
     assert parsed.retry_after is None
@@ -41,16 +40,17 @@ def test_every_4xx_except_408_and_429_is_terminal(status: int) -> None:
 
 
 @pytest.mark.parametrize("status", [408, 500, 502, 503])
-def test_408_and_5xx_stay_retryable(status: int) -> None:
-    assert parse_provider_api_error({"status_code": status, "message": "later"}).retryable is True
+def test_408_and_5xx_authorize_retry_without_claiming_a_transient_cause(status: int) -> None:
+    parsed = parse_provider_api_error({"status_code": status, "message": "later"})
+
+    assert parsed.kind == "provider_error"
+    assert parsed.retryable is True
 
 
-def test_a_402_is_a_usage_limit_error_not_a_transient_failure() -> None:
+def test_a_402_is_not_a_rate_limit_without_a_structured_rate_limit_code() -> None:
     parsed = parse_provider_api_error({"status_code": 402, "message": "Payment Required"})
 
-    assert parsed.kind == "rate_limit"
-    # Terminal for the provider lane (a 4xx that is not 408/429); the runtime routes
-    # the rate_limit kind to its own quota lane rather than the provider retry lane.
+    assert parsed.kind == "provider_error"
     assert parsed.retryable is False
 
 
@@ -153,10 +153,9 @@ def test_a_non_positive_retry_after_ms_header_is_not_a_hint_but_its_body_form_is
     assert parse_provider_api_error({"status_code": 429, "message": "retry-after-ms=0"}).retry_after == 0.0
 
 
-def test_an_unknown_stop_reason_is_a_success() -> None:
-    """OMP maps an unrecognized stop reason to a normal stop; voidcode keeps that."""
+def test_unknown_stop_reason_remains_unknown() -> None:
     assert _done_reason("something_new") == "unknown"
-    assert _done_reason("") == "stop"
+    assert _done_reason("") == "unknown"
     assert _done_reason("length") == "length"
 
 

@@ -21,8 +21,9 @@ from typing import Any, cast
 
 import pytest
 
+from tests.turn_producers import model_turn_fact
 from voidcode.core.tool_context import ToolContext
-from voidcode.core.turns import FinalTurn, ToolTurn
+from voidcode.core.turns import FinalTurn, ToolTurn, TurnRequest
 from voidcode.runtime.config.loading import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeRequestError
 from voidcode.runtime.permissions.policy import PermissionPolicy
@@ -50,22 +51,23 @@ class _GatedTool:
         return ToolSuccess(tool_name=self.definition.name, output=TextOutput("gated done"))
 
 
-class _SingleToolGraph:
+class _SingleToolProducer:
     def __init__(self, tool_name: str, *, output: str = "done") -> None:
         self._tool_name = tool_name
         self._output = output
 
-    def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> FinalTurn | ToolTurn:
-        _ = request, session
+    def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: object) -> FinalTurn | ToolTurn:
+        fact = model_turn_fact(request)
+        _ = session
         if not tool_results:
-            return ToolTurn(calls=(ToolCall(tool_name=self._tool_name, arguments={}),))
-        return FinalTurn(output=self._output)
+            return ToolTurn(calls=(ToolCall(tool_name=self._tool_name, arguments={}),), facts=(fact,))
+        return FinalTurn(output=self._output, facts=(fact,))
 
 
-class _ImmediateGraph:
-    def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> FinalTurn:
-        _ = request, tool_results, session
-        return FinalTurn(output="second run done")
+class _ImmediateProducer:
+    def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: object) -> FinalTurn:
+        _ = tool_results, session
+        return FinalTurn(output="second run done", facts=(model_turn_fact(request),))
 
 
 def _runtime(workspace: Path, *, tool: object | None, turn_producer: object) -> VoidCodeRuntime:
@@ -74,7 +76,7 @@ def _runtime(workspace: Path, *, tool: object | None, turn_producer: object) -> 
         workspace=workspace,
         tool_registry=ToolRegistry.from_tools(tools),
         turn_producer=turn_producer,
-        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), execution_engine="deterministic"),
+        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False)),
         permission_policy=PermissionPolicy(mode="yolo"),
     )
 
@@ -127,16 +129,16 @@ def test_a_second_run_appends_without_rewriting_the_in_flight_history(tmp_path: 
     active run, so the still-running first run keeps a writable row.
     """
     tool = _GatedTool()
-    first = _InFlightRun(_runtime(tmp_path, tool=tool, turn_producer=_SingleToolGraph(_GATED_TOOL)), tool)
+    first = _InFlightRun(_runtime(tmp_path, tool=tool, turn_producer=_SingleToolProducer(_GATED_TOOL)), tool)
     in_flight_prompt = "steer while the first run is in flight"
     # ``queue_steering`` is the queued re-entry path: accepted while the run is
     # active, delivered to the next run, never injected mid-run.
     assert len(first.runtime.queue_steering(SESSION_ID, content=in_flight_prompt)) == 1
     before = _entries(tmp_path)
-    assert _status(tmp_path) == "interrupted"
+    assert _status(tmp_path) == "running"
 
     second_chunks = list(
-        _runtime(tmp_path, tool=None, turn_producer=_ImmediateGraph()).run_stream(RuntimeRequest(prompt="second run", session_id=SESSION_ID))
+        _runtime(tmp_path, tool=None, turn_producer=_ImmediateProducer()).run_stream(RuntimeRequest(prompt="second run", session_id=SESSION_ID))
     )
 
     assert second_chunks[-1].session.status == "completed"
@@ -148,7 +150,7 @@ def test_a_second_run_appends_without_rewriting_the_in_flight_history(tmp_path: 
     assert len(after_second) > len(before)
     # ...and the row is still writable for the run that is still in flight: the
     # seal belongs to the last active run, not to the first one to finish.
-    assert _status(tmp_path) == "interrupted"
+    assert _status(tmp_path) == "running"
 
     first.finish()
     final = _entries(tmp_path)
@@ -159,7 +161,8 @@ def test_a_second_run_appends_without_rewriting_the_in_flight_history(tmp_path: 
     # Every event survived the other run's seal: the second run's appends are
     # still in the log and the tool result of the first run is durable once.
     assert set(after_second).issubset(final)
-    assert len(final) == len(after_second) + 1
+    assert len(final) > len(after_second)
+    assert any(entry.endswith(":runtime.tool_completed") for entry in final[len(after_second) :])
     assert sum(1 for entry in final if entry.endswith(":runtime.tool_completed")) == 1
 
 
@@ -170,12 +173,12 @@ def test_resume_is_refused_while_a_run_owns_the_session_and_rewrites_nothing(tmp
     under a live run would delete events that run still owns.
     """
     tool = _GatedTool()
-    first = _InFlightRun(_runtime(tmp_path, tool=tool, turn_producer=_SingleToolGraph(_GATED_TOOL)), tool)
+    first = _InFlightRun(_runtime(tmp_path, tool=tool, turn_producer=_SingleToolProducer(_GATED_TOOL)), tool)
     before = _entries(tmp_path)
     checkpoint_before = _checkpoint(tmp_path)
-    assert before and _status(tmp_path) == "interrupted"
+    assert before
 
-    resume_runtime = _runtime(tmp_path, tool=None, turn_producer=_ImmediateGraph())
+    resume_runtime = _runtime(tmp_path, tool=None, turn_producer=_ImmediateProducer())
     with pytest.raises(RuntimeRequestError, match="has a run in flight"):
         resume_runtime.resume(SESSION_ID)
     with pytest.raises(RuntimeRequestError, match="has a run in flight"):
@@ -184,7 +187,6 @@ def test_resume_is_refused_while_a_run_owns_the_session_and_rewrites_nothing(tmp
     # The refused resume rewrote nothing: same events, same checkpoint.
     assert _entries(tmp_path) == before
     assert _checkpoint(tmp_path) == checkpoint_before
-    assert _status(tmp_path) == "interrupted"
 
     first.finish()
     final = _entries(tmp_path)
@@ -193,7 +195,7 @@ def test_resume_is_refused_while_a_run_owns_the_session_and_rewrites_nothing(tmp
     assert sum(1 for entry in final if entry.endswith(":runtime.tool_completed")) == 1
 
 
-class _PromptRecordingGraph:
+class _PromptRecordingProducer:
     """One tool call, then finish — recording every prompt the loop hands it."""
 
     def __init__(self, tool_name: str) -> None:
@@ -201,13 +203,14 @@ class _PromptRecordingGraph:
         self.prompts: list[str] = []
         self._lock = threading.Lock()
 
-    def produce(self, request: Any, tool_results: tuple[object, ...], *, session: object) -> FinalTurn | ToolTurn:
+    def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: object) -> FinalTurn | ToolTurn:
+        fact = model_turn_fact(request)
         _ = session
         with self._lock:
-            self.prompts.append(cast(str, request.prompt))
+            self.prompts.append(request.prompt)
         if not tool_results:
-            return ToolTurn(calls=(ToolCall(tool_name=self._tool_name, arguments={}),))
-        return FinalTurn(output="done")
+            return ToolTurn(calls=(ToolCall(tool_name=self._tool_name, arguments={}),), facts=(fact,))
+        return FinalTurn(output="done", facts=(fact,))
 
 
 def test_steering_while_a_run_is_in_flight_is_queued_until_the_next_turn(tmp_path: Path) -> None:
@@ -218,8 +221,8 @@ def test_steering_while_a_run_is_in_flight_is_queued_until_the_next_turn(tmp_pat
     has consumed it.
     """
     tool = _GatedTool()
-    graph = _PromptRecordingGraph(_GATED_TOOL)
-    first = _InFlightRun(_runtime(tmp_path, tool=tool, turn_producer=graph), tool)
+    producer = _PromptRecordingProducer(_GATED_TOOL)
+    first = _InFlightRun(_runtime(tmp_path, tool=tool, turn_producer=producer), tool)
     before = _entries(tmp_path)
 
     queued = first.runtime.queue_steering(SESSION_ID, content="queued steering")
@@ -235,7 +238,7 @@ def test_steering_while_a_run_is_in_flight_is_queued_until_the_next_turn(tmp_pat
     assert not any("queued steering" in entry for entry in _entries(tmp_path))
     # The message reached the live run's next turn as prompt content, and the
     # outbox was drained by that turn.
-    assert "queued steering" not in graph.prompts[0]
-    assert "queued steering" in graph.prompts[-1]
+    assert "queued steering" not in producer.prompts[0]
+    assert "queued steering" in producer.prompts[-1]
     reloaded = SqliteSessionStore().load_session(workspace=tmp_path, session_id=SESSION_ID)
     assert "pending_messages" not in reloaded.session.metadata

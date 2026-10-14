@@ -53,6 +53,6 @@ class McpErrorCode:
 # 6. Protocol Version: Runtime initialize handshakes use the official Python SDK's
 #    latest supported protocol version.
 #
-# 7. Tool Governance: MCP tool annotations are mapped into McpToolSafety. Tools
-#    default to mutating unless the server explicitly marks them read-only and
-#    non-destructive.
+# 7. Tool Governance: MCP safety annotations are advisory server metadata only.
+#    They never grant local read classification, approval bypass, or replay
+#    eligibility. Remote tools always retain runtime write/network governance.

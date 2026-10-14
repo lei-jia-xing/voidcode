@@ -173,7 +173,6 @@ class RuntimeSubagentRoutingMetadata(TypedDict, total=False):
     depth: int
     remaining_spawn_budget: int
     selected_preset: str
-    selected_execution_engine: str
     parallel_group_id: str
     parallel_group_size: int
     output_schema: dict[str, object]
@@ -394,14 +393,6 @@ def validate_runtime_subagent_routing_metadata(
             routing_metadata["selected_preset"],
             field_name="delegation.selected_preset",
         )
-    if "selected_execution_engine" in routing_metadata:
-        selected_execution_engine = _validate_optional_runtime_metadata_string(
-            routing_metadata["selected_execution_engine"],
-            field_name="delegation.selected_execution_engine",
-        )
-        if selected_execution_engine != "provider":
-            raise RuntimeRequestError("request metadata 'delegation.selected_execution_engine' must be 'provider'")
-        normalized["selected_execution_engine"] = selected_execution_engine
     if "parallel_group_id" in routing_metadata:
         normalized["parallel_group_id"] = _validate_optional_runtime_metadata_string(
             routing_metadata["parallel_group_id"],
@@ -475,13 +466,6 @@ def runtime_subagent_route_from_metadata(
         raise RuntimeRequestError("request metadata 'delegation.selected_preset' must be a non-empty string")
     if persisted_selected_preset != resolved.selected_preset:
         raise RuntimeRequestError("request metadata 'delegation.selected_preset' does not match the resolved child preset")
-    persisted_execution_engine = routing_metadata.get("selected_execution_engine")
-    if persisted_execution_engine is None:
-        return resolved
-    if not isinstance(persisted_execution_engine, str):
-        raise RuntimeRequestError("request metadata 'delegation.selected_execution_engine' must be 'provider'")
-    if persisted_execution_engine != resolved.execution_engine:
-        raise RuntimeRequestError("request metadata 'delegation.selected_execution_engine' does not match the resolved child execution engine")
     return resolved
 
 
@@ -814,7 +798,6 @@ class AgentSummary:
     mode: str | None = None
     selectable: bool = True
     configured: bool = False
-    execution_engine: str | None = None
     model: str | None = None
     model_label: str | None = None
     model_source: str | None = None
@@ -1019,7 +1002,6 @@ class RuntimeProviderMessageSnapshot:
 class RuntimeProviderContextSnapshot:
     provider: str
     model: str
-    execution_engine: str
     segment_count: int
     message_count: int
     context_window: dict[str, object] = field(default_factory=dict)
@@ -1144,7 +1126,6 @@ class BackgroundTaskResult:
     def delegated_execution(self) -> DelegatedExecutionPayload:
         metadata = self.subagent_execution
         selected_preset = None
-        selected_execution_engine = None
         if self.routing is not None:
             route = runtime_subagent_route_from_metadata(
                 {
@@ -1158,7 +1139,6 @@ class BackgroundTaskResult:
             )
             if route is not None:
                 selected_preset = route.selected_preset
-                selected_execution_engine = route.execution_engine
         lifecycle_status: Literal[
             "queued",
             "running",
@@ -1178,7 +1158,6 @@ class BackgroundTaskResult:
             question_request_id=metadata.correlation.question_request_id,
             routing=self.delegated_routing,
             selected_preset=selected_preset,
-            selected_execution_engine=selected_execution_engine,
             lifecycle_status=lifecycle_status,
             approval_blocked=self.approval_blocked,
             result_available=self.result_available,

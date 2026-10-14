@@ -229,7 +229,6 @@ def _manifest_from_payload(
         source_path=source_path,
         source_id=source_id,
         prompt_profile=manifest_id,
-        execution_engine="provider",
         model_preference=_require_optional_string(payload, "model"),
         fallback_models=_string_list(payload.get("fallback_models"), field="fallback_models"),
         tool_allowlist=tool_allowlist,

@@ -78,21 +78,6 @@
         "null"
       ]
     },
-    "execution_engine": {
-      "description": "Execution engine used when no request or environment override is set.",
-      "anyOf": [
-        {
-          "enum": [
-            "deterministic",
-            "provider"
-          ],
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
     "fallback_models": {
       "description": "Ordered fallback models tried after the primary model.",
       "items": {
@@ -946,7 +931,7 @@
             }
           ]
         },
-        "on_stuck_detected": {
+        "on_tool_batch_repeated": {
           "anyOf": [
             {
               "$ref": "#/$defs/commandList"
@@ -1327,7 +1312,7 @@
               "background_task_result_read",
               "delegated_result_available",
               "turn_progress",
-              "stuck_detected",
+              "tool_batch_repeated",
               "approval_requested",
               "question_asked",
               "before_compact"

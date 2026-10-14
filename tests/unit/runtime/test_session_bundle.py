@@ -146,7 +146,7 @@ def test_cli_import_dry_run_leaves_absent_state_uninitialized(tmp_path: Path, mo
     result = _cli_import_dry_run(bundle_path, workspace)
 
     assert result["dry_run"] is True
-    assert result["schema_version"] == 2
+    assert result["schema_version"] == 3
     assert _tree_state(state_root) is None
     assert _tree_state(workspace) == workspace_before
 
@@ -162,7 +162,7 @@ def test_cli_import_dry_run_reads_committed_wal_without_mutating_state(tmp_path:
 
     writer = sqlite3.connect(database_path)
     try:
-        assert writer.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert writer.execute("PRAGMA user_version").fetchone()[0] == 3
         assert writer.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
         database_before_insert = hashlib.sha256(database_path.read_bytes()).hexdigest()
         writer.execute(

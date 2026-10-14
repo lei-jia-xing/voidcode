@@ -13,6 +13,7 @@ from voidcode.core.tool_context import ToolContext
 from voidcode.core.transcript import ToolResultView, output_text
 from voidcode.core.turns import (
     FinalTurn,
+    ModelTurnFact,
     ToolCompletedFact,
     ToolRequestedFact,
     ToolTurn,
@@ -75,7 +76,10 @@ def test_local_workflow_multi_turn_tool_execution(tmp_path: Path) -> None:
 
     producer = StepTurnProducer(
         [
-            lambda req, res: ToolTurn(calls=(ToolCall("read", {"path": "sample.txt"}, tool_call_id="call-read-1"),)),
+            lambda req, res: ToolTurn(
+                calls=(ToolCall("read", {"path": "sample.txt"}, tool_call_id="call-read-1"),),
+                facts=(ModelTurnFact(req.run_step, "deterministic", req.prompt),),
+            ),
             lambda req, res: FinalTurn(output=f"Read output: {(output_text(res[0].output) or '').strip()}"),
         ]
     )
@@ -113,7 +117,10 @@ def test_local_workflow_hierarchical_task_delegation_without_runtime_service(tmp
 
         child_producer = StepTurnProducer(
             [
-                lambda req, res: ToolTurn(calls=(ToolCall("read", {"path": "subtask_data.json"}, tool_call_id="c-call-1"),)),
+                lambda req, res: ToolTurn(
+                    calls=(ToolCall("read", {"path": "subtask_data.json"}, tool_call_id="c-call-1"),),
+                    facts=(ModelTurnFact(req.run_step, "deterministic", req.prompt),),
+                ),
                 lambda req, res: FinalTurn(output=f"Child read: {(output_text(res[0].output) or '').strip()}"),
             ]
         )
@@ -158,7 +165,8 @@ def test_local_workflow_hierarchical_task_delegation_without_runtime_service(tmp
                         },
                         tool_call_id="p-call-1",
                     ),
-                )
+                ),
+                facts=(ModelTurnFact(req.run_step, "deterministic", req.prompt),),
             ),
             lambda req, res: FinalTurn(output=f"Parent received: {output_text(res[0].output) or ''}"),
         ]
@@ -230,7 +238,10 @@ def test_local_workflow_abort_signal() -> None:
 
     producer = StepTurnProducer(
         [
-            lambda req, res: ToolTurn(calls=(ToolCall("read", {"path": "missing.txt"}, tool_call_id="c1"),)),
+            lambda req, res: ToolTurn(
+                calls=(ToolCall("read", {"path": "missing.txt"}, tool_call_id="c1"),),
+                facts=(ModelTurnFact(req.run_step, "deterministic", req.prompt),),
+            ),
         ]
     )
     engine = TurnEngine(producer)

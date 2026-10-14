@@ -89,12 +89,12 @@ from voidcode.runtime.transport import http_models
 from voidcode.runtime.transport.http_models import ResponseModel
 from voidcode.runtime.workspace import WorkspaceRuntimeCoordinator
 
-pytestmark = pytest.mark.usefixtures("_deterministic_engine")
+pytestmark = pytest.mark.usefixtures("_disable_default_mcp")
 
 
 @pytest.fixture
-def _deterministic_engine(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
+def _disable_default_mcp(monkeypatch: pytest.MonkeyPatch) -> None:
+
     config_module = importlib.import_module("voidcode.runtime.config.loading")
     monkeypatch.setattr(
         config_module,
@@ -169,7 +169,6 @@ def _delegated_event(rich: bool, sequence: int) -> EventEnvelope:
             "question_request_id": None,
             "routing": {"mode": "background", "subagent_type": "execute", "description": "do work", "command": "task"},
             "selected_preset": "execute",
-            "selected_execution_engine": "provider",
             "lifecycle_status": "completed",
             "approval_blocked": False,
             "result_available": True,
@@ -200,8 +199,8 @@ def _plain_event(sequence: int) -> EventEnvelope:
     return EventEnvelope(
         session_id="sess-1",
         sequence=sequence,
-        event_type="graph.response_ready",
-        source="graph",
+        event_type="core.response_ready",
+        source="core",
         payload={"content": "hi", "usage": {"input_tokens": 5}},
     )
 
@@ -331,7 +330,6 @@ def _provider_context(rich: bool) -> RuntimeProviderContextSnapshot | None:
     return RuntimeProviderContextSnapshot(
         provider=_OPENCODE,
         model="gpt-5.4",
-        execution_engine="provider",
         segment_count=1,
         message_count=1,
         context_window={"limit": 200000, "used": 20},
@@ -417,7 +415,7 @@ def _debug_snapshot(rich: bool) -> RuntimeSessionDebugSnapshot:
         ),
         last_event_sequence=2,
         last_relevant_event=(
-            RuntimeSessionDebugEvent(sequence=2, event_type="graph.response_ready", source="graph", payload={"content": "hi"}) if rich else None
+            RuntimeSessionDebugEvent(sequence=2, event_type="core.response_ready", source="core", payload={"content": "hi"}) if rich else None
         ),
         last_failure_event=None,
         failure=RuntimeSessionDebugFailure(classification="provider_error", message="boom") if rich else None,
@@ -598,7 +596,7 @@ class _FixtureRuntime:
             return ()
         return (
             SessionEntrySummary(sequence=1, event_type="runtime.request_received", parent_sequence=None, on_current_path=True, preview="hello"),
-            SessionEntrySummary(sequence=2, event_type="graph.response_ready", parent_sequence=1, on_current_path=False, preview="answer"),
+            SessionEntrySummary(sequence=2, event_type="core.response_ready", parent_sequence=1, on_current_path=False, preview="answer"),
         )
 
     def checkout_session(self, *, session_id: str, sequence: int) -> int:

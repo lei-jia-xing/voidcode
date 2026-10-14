@@ -5,7 +5,9 @@
 ## Boundaries
 
 - **Prompt commands / slash commands** render into runtime prompts before core turn execution.
-- **Tool instructions** (`read`, `grep`, `run`, `write`) are parsed here so prompt paths share one implementation.
+- **Tool instructions** are not interpreted by the runtime; model-generated tool calls use registered tools through runtime governance.
+TODO: 支持 !<shell 指令> 用户入口；执行仍经 runtime 权限、审批、持久化与取消边界。尚未实现。
+TODO: 重新评估 `$ARGUMENTS` / `$1`–`$9` 的字面量与递归展开边界，并比较 hook 组装与纯模板；暂不实现。
 - **TUI commands** are local UI actions identified by stable IDs and are intentionally separate from prompt commands.
 
 ## Sources

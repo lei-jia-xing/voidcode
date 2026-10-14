@@ -12,6 +12,7 @@ type AcpDelegatedLifecycleStatus = Literal[
     "failed",
     "cancelled",
 ]
+type AcpStopReason = Literal["end_turn", "max_tokens", "max_turn_requests", "refusal", "cancelled"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,7 +37,6 @@ class AcpDelegatedExecution:
     routing_description: str | None = None
     routing_command: str | None = None
     selected_preset: str | None = None
-    selected_execution_engine: str | None = None
     lifecycle_status: AcpDelegatedLifecycleStatus | None = None
     approval_blocked: bool = False
     result_available: bool = False
@@ -55,7 +55,6 @@ class AcpDelegatedExecution:
             "routing_description": self.routing_description,
             "routing_command": self.routing_command,
             "selected_preset": self.selected_preset,
-            "selected_execution_engine": self.selected_execution_engine,
             "lifecycle_status": self.lifecycle_status,
             "approval_blocked": self.approval_blocked,
             "result_available": self.result_available,

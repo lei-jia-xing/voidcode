@@ -58,7 +58,7 @@ def test_progress_capable_running_tool_interrupts_on_abort_signal(tmp_path: Path
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([tool]),
-        config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
+        config=RuntimeConfig(approval_mode="yolo"),
     )
     stream = RuntimeToolExecutor(
         workspace=tmp_path,

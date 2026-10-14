@@ -64,7 +64,8 @@ def mcp_tool_definition(descriptor: McpToolDescriptor) -> ToolDefinition:
         name=f"mcp/{descriptor.server_name}/{descriptor.tool_name}",
         description=descriptor.description,
         input_schema=descriptor.input_schema,
-        effects=frozenset({ToolEffect.READ if descriptor.safety.read_only else ToolEffect.WRITE, ToolEffect.NETWORK}),
+        effects=frozenset({ToolEffect.WRITE, ToolEffect.NETWORK}),
+        replay_policy="never",
     )
 
 

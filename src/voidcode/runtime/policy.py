@@ -41,7 +41,7 @@ _ALLOWED_HOOK_SCOPES = (
     "background_task_result_read",
     "delegated_result_available",
     "turn_progress",
-    "stuck_detected",
+    "tool_batch_repeated",
     "approval_requested",
     "question_asked",
     "before_compact",

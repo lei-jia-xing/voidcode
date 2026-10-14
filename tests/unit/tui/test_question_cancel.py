@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from voidcode.core.questions import QuestionCancellation
-from voidcode.core.turns import FinalTurn, ToolTurn, TurnRequest, TurnSession
+from voidcode.core.turns import FinalTurn, ModelTurnFact, ToolTurn, TurnRequest, TurnSession
 from voidcode.runtime.config.loading import RuntimeConfig
 from voidcode.runtime.contracts import NoPendingQuestionError
 from voidcode.runtime.service import VoidCodeRuntime
@@ -24,6 +24,7 @@ class _QuestionThenFinish:
         *,
         session: TurnSession,
     ) -> ToolTurn | FinalTurn:
+        fact = ModelTurnFact(request.run_step, "deterministic", request.prompt)
         if not tool_results:
             return ToolTurn(
                 calls=(
@@ -41,9 +42,10 @@ class _QuestionThenFinish:
                             ]
                         },
                     ),
-                )
+                ),
+                facts=(fact,),
             )
-        return FinalTurn(output="cancelled")
+        return FinalTurn(output="cancelled", facts=(fact,))
 
 
 def test_question_escape_cancels_and_persists_public_runtime_answer(tmp_path: Path, monkeypatch) -> None:
@@ -61,7 +63,7 @@ def test_question_escape_cancels_and_persists_public_runtime_answer(tmp_path: Pa
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
-    monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
+
     for key in tuple(os.environ):
         if key.endswith("_API_KEY"):
             monkeypatch.delenv(key, raising=False)
@@ -69,7 +71,7 @@ def test_question_escape_cancels_and_persists_public_runtime_answer(tmp_path: Pa
     runtime = VoidCodeRuntime(
         workspace=workspace,
         turn_producer=_QuestionThenFinish(),
-        config=RuntimeConfig(execution_engine="deterministic", approval_mode="yolo"),
+        config=RuntimeConfig(approval_mode="yolo"),
     )
     output = (tmp_path / "terminal.log").open("wb", buffering=0)
     terminal = Terminal(output_fd=output.fileno(), is_tty=False, size=(80, 24), color_system=None)

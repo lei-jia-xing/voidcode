@@ -123,10 +123,10 @@ _DEFAULT_ICONS: Final = frozenset({"model", "path", "context_pct", "lsp"})
 _DROPPABLE: Final = frozenset(_DROP_PRIORITY) - {"status", "mode"}
 
 
-def format_context_usage(percent: float | None, window: int, tokens: int = 0) -> str:
+def format_context_usage(percent: float | None, window: int, tokens: int | None) -> str:
     """Format known context usage without inventing a percentage."""
     if window <= 0:
-        return f"{format_number(tokens)}/?"
+        return "?" if tokens is None else f"{format_number(tokens)}/?"
     label = "?" if percent is None else f"{percent:.1f}%"
     return f"{label}/{format_number(window)}"
 
@@ -204,7 +204,7 @@ class StatusSegmentData:
     cost_usd: float | None = None
     context_percent: float | None = None
     context_window: int = 0
-    context_tokens: int = 0
+    context_tokens: int | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
     cache_read_tokens: int | None = None
@@ -267,7 +267,7 @@ class StatusLine:
         if segment == "path":
             return _path_text(data.path) if data.path else ""
         if segment == "context_pct":
-            if data.context_percent is None and not data.context_window and not data.context_tokens:
+            if data.context_percent is None and not data.context_window and data.context_tokens is None:
                 return ""
             return format_context_usage(data.context_percent, data.context_window, data.context_tokens)
         if segment == "cost":

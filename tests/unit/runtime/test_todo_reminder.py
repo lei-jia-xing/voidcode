@@ -12,13 +12,14 @@ session keeps counters, the client gets one event, the transcript keeps nothing.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
 from tests.runtime_storage import repositories_for_test_store
-from voidcode.core.turns import FinalTurn, ToolTurn
+from voidcode.core.turns import FinalTurn, ModelTurnFact, ToolTurn
 from voidcode.provider.config import ProviderConfigs, ProviderEndpointConfig
 from voidcode.runtime.background.models import BackgroundTaskRef, StoredBackgroundTaskSummary
 from voidcode.runtime.config.loading import RuntimeConfig, RuntimeMcpConfig, RuntimeRemindersConfig
@@ -57,28 +58,40 @@ _TODO_INIT_CALL = ToolCall(
 )
 
 
-class _FinalGraph:
+class _FinalProducer:
     def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> FinalTurn:
-        _ = request, tool_results, session
-        return FinalTurn(output="done")
+        _ = tool_results, session
+        return FinalTurn(
+            output="done",
+            facts=(ModelTurnFact(request.run_step, "deterministic", request.prompt),),
+        )
 
 
 _TODO_DONE_CALL = ToolCall(tool_name="todo", arguments={"op": "done"})
 
 
-class _ScriptedGraph:
+class _ScriptedTurnProducer:
     """Hands out scripted steps in order and records every assembled context."""
 
     def __init__(self, script: list[ToolTurn | FinalTurn]) -> None:
         self._script = list(script)
         self.seen_segments: list[tuple[Any, ...]] = []
 
+    @staticmethod
+    def _with_model_turn_fact(request: Any, turn: ToolTurn | FinalTurn) -> ToolTurn | FinalTurn:
+        if any(isinstance(fact, ModelTurnFact) for fact in turn.facts):
+            return turn
+        return replace(
+            turn,
+            facts=(*turn.facts, ModelTurnFact(request.run_step, "deterministic", request.prompt)),
+        )
+
     def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> ToolTurn | FinalTurn:
         _ = tool_results, session
         self.seen_segments.append(tuple(request.assembled_context.segments))
         if not self._script:
-            raise AssertionError("the scripted graph ran out of steps")
-        return self._script.pop(0)
+            raise AssertionError("the scripted turn producer ran out of steps")
+        return self._with_model_turn_fact(request, self._script.pop(0))
 
 
 class _PendingBackgroundTaskStore(SqliteSessionStore):
@@ -99,17 +112,9 @@ class _PendingBackgroundTaskStore(SqliteSessionStore):
         )
 
 
-def _provider_engine_config(*, reminders: RuntimeRemindersConfig) -> RuntimeConfig:
-    """Provider-engine config resolved against a declared stand-in provider.
-
-    The scripted graph replaces the model call, so the run is offline while the
-    runtime still takes its provider-engine path (the reminder channel targets a
-    model call, so it is gated on that engine).
-    """
-
+def _reminder_test_config(*, reminders: RuntimeRemindersConfig) -> RuntimeConfig:
     return RuntimeConfig(
         mcp=RuntimeMcpConfig(enabled=False),
-        execution_engine="provider",
         model=f"session/{MODEL_NAME}",
         providers=ProviderConfigs(custom={"session": ProviderEndpointConfig()}),
         reminders=reminders,
@@ -118,33 +123,24 @@ def _provider_engine_config(*, reminders: RuntimeRemindersConfig) -> RuntimeConf
 
 def _runtime(
     tmp_path: Path,
-    graph: _ScriptedGraph,
+    producer: _ScriptedTurnProducer,
     *,
     reminders: RuntimeRemindersConfig | None = None,
     store: SqliteSessionStore | None = None,
-    execution_engine: str = "provider",
 ) -> VoidCodeRuntime:
-    config = (
-        _provider_engine_config(reminders=reminders or RuntimeRemindersConfig())
-        if execution_engine == "provider"
-        else RuntimeConfig(
-            mcp=RuntimeMcpConfig(enabled=False),
-            execution_engine="deterministic",
-            reminders=reminders or RuntimeRemindersConfig(),
-        )
-    )
+    config = _reminder_test_config(reminders=reminders or RuntimeRemindersConfig())
     return VoidCodeRuntime(
         workspace=tmp_path,
         repositories=(repositories_for_test_store(store) if store is not None else None),
         tool_registry=ToolRegistry.from_tools([TodoTool(), GlobTool()]),
-        turn_producer=graph,
+        turn_producer=producer,
         config=config,
         permission_policy=PermissionPolicy(mode="yolo"),
     )
 
 
-def graph_calls(graph: _ScriptedGraph) -> int:
-    return len(graph.seen_segments)
+def producer_calls(producer: _ScriptedTurnProducer) -> int:
+    return len(producer.seen_segments)
 
 
 def _reminder_segments(segments: tuple[Any, ...]) -> list[Any]:
@@ -153,13 +149,12 @@ def _reminder_segments(segments: tuple[Any, ...]) -> list[Any]:
 
 def _run(
     tmp_path: Path,
-    graph: _ScriptedGraph,
+    producer: _ScriptedTurnProducer,
     *,
     reminders: RuntimeRemindersConfig | None = None,
     store: SqliteSessionStore | None = None,
-    execution_engine: str = "provider",
 ) -> list[Any]:
-    runtime = _runtime(tmp_path, graph, reminders=reminders, store=store, execution_engine=execution_engine)
+    runtime = _runtime(tmp_path, producer, reminders=reminders, store=store)
     return list(runtime.run_stream(RuntimeRequest(prompt="go", session_id=SESSION_ID)))
 
 
@@ -179,9 +174,9 @@ def _stored_session(tmp_path: Path) -> Any:
 
 
 def test_terminal_turn_with_unfinished_todos_injects_one_per_call_reminder(tmp_path: Path) -> None:
-    graph = _ScriptedGraph([ToolTurn(calls=(_TODO_INIT_CALL,)), FinalTurn(output="done for now"), FinalTurn(output="finished")])
+    producer = _ScriptedTurnProducer([ToolTurn(calls=(_TODO_INIT_CALL,)), FinalTurn(output="done for now"), FinalTurn(output="finished")])
 
-    chunks = _run(tmp_path, graph)
+    chunks = _run(tmp_path, producer)
 
     reminders = _reminder_events(chunks)
     assert [
@@ -190,10 +185,10 @@ def test_terminal_turn_with_unfinished_todos_injects_one_per_call_reminder(tmp_p
     ] == [("todo", 1, 3, 2)]
     # The reminder is a per-call tail segment of the continuation turn, appended
     # after everything the prompt assembly produced.
-    assert _reminder_segments(graph.seen_segments[0]) == []
-    reminder_segments = _reminder_segments(graph.seen_segments[2])
+    assert _reminder_segments(producer.seen_segments[0]) == []
+    reminder_segments = _reminder_segments(producer.seen_segments[2])
     assert len(reminder_segments) == 1
-    assert graph.seen_segments[2][-1].content == reminder_segments[0].content
+    assert producer.seen_segments[2][-1].content == reminder_segments[0].content
     assert reminder_segments[0].content == (
         "<system-reminder>\n"
         "You stopped with 2 incomplete todo item(s):\n"
@@ -206,7 +201,7 @@ def test_terminal_turn_with_unfinished_todos_injects_one_per_call_reminder(tmp_p
         "</system-reminder>"
     )
     # The continuation turn ended the run: the reminder is not re-injected.
-    assert len(graph.seen_segments) == 3
+    assert len(producer.seen_segments) == 3
     assert chunks[-1].session.status == "completed"
     assert todo_reminder_state_from_metadata(_stored_session(tmp_path).session.metadata) == TodoReminderState(
         attempts=1,
@@ -225,22 +220,22 @@ def test_reminder_budget_stops_after_max_per_cycle_attempts(tmp_path: Path) -> N
         script.append(FinalTurn(output="stopping"))
         script.append(ToolTurn(calls=(_PROGRESS_CALL,)))
     script.append(FinalTurn(output="stopping"))
-    graph = _ScriptedGraph(script)
+    producer = _ScriptedTurnProducer(script)
 
-    chunks = _run(tmp_path, graph)
+    chunks = _run(tmp_path, producer)
 
     assert [event.payload["attempt"] for event in _reminder_events(chunks)] == [1, 2, 3]
     # The budget is spent: the fourth terminal turn ran to completion unreminded.
-    assert graph_calls(graph) == 8
+    assert producer_calls(producer) == 8
     assert todo_reminder_state_from_metadata(_stored_session(tmp_path).session.metadata).attempts == 3
 
 
 def test_repeated_stop_without_progress_does_not_repeat_the_reminder(tmp_path: Path) -> None:
     """A reminder still awaiting agent action suppresses the next one."""
 
-    graph = _ScriptedGraph([ToolTurn(calls=(_TODO_INIT_CALL,)), FinalTurn(output="stopping"), FinalTurn(output="stopping again")])
+    producer = _ScriptedTurnProducer([ToolTurn(calls=(_TODO_INIT_CALL,)), FinalTurn(output="stopping"), FinalTurn(output="stopping again")])
 
-    chunks = _run(tmp_path, graph)
+    chunks = _run(tmp_path, producer)
 
     assert len(_reminder_events(chunks)) == 1
     assert todo_reminder_state_from_metadata(_stored_session(tmp_path).session.metadata).attempts == 1
@@ -265,7 +260,7 @@ def test_counters_from_a_previous_cycle_are_ignored() -> None:
 
 
 def test_completed_todos_never_earn_a_reminder(tmp_path: Path) -> None:
-    graph = _ScriptedGraph(
+    producer = _ScriptedTurnProducer(
         [
             ToolTurn(calls=(_TODO_INIT_CALL,)),
             ToolTurn(calls=(_TODO_DONE_CALL,)),
@@ -273,7 +268,7 @@ def test_completed_todos_never_earn_a_reminder(tmp_path: Path) -> None:
         ]
     )
 
-    chunks = _run(tmp_path, graph)
+    chunks = _run(tmp_path, producer)
 
     assert _reminder_events(chunks) == []
     assert chunks[-1].session.status == "completed"
@@ -282,38 +277,27 @@ def test_completed_todos_never_earn_a_reminder(tmp_path: Path) -> None:
 
 
 def test_disabled_reminders_never_inject(tmp_path: Path) -> None:
-    graph = _ScriptedGraph([ToolTurn(calls=(_TODO_INIT_CALL,)), FinalTurn(output="stopping")])
+    producer = _ScriptedTurnProducer([ToolTurn(calls=(_TODO_INIT_CALL,)), FinalTurn(output="stopping")])
 
-    chunks = _run(tmp_path, graph, reminders=RuntimeRemindersConfig(enabled=False))
+    chunks = _run(tmp_path, producer, reminders=RuntimeRemindersConfig(enabled=False))
 
     assert _reminder_events(chunks) == []
     assert REMINDERS_RUNTIME_STATE_KEY not in _stored_session(tmp_path).session.metadata["runtime_state"]
-
-
-def test_non_provider_engine_never_injects(tmp_path: Path) -> None:
-    """The channel nudges a model call; a non-provider graph has none."""
-
-    graph = _ScriptedGraph([ToolTurn(calls=(_TODO_INIT_CALL,)), FinalTurn(output="stopping")])
-
-    chunks = _run(tmp_path, graph, execution_engine="deterministic")
-
-    assert _reminder_events(chunks) == []
-    assert graph_calls(graph) == 2
 
 
 # --- (e) the reminder is per-call only --------------------------------------
 
 
 def test_reminder_text_stays_out_of_the_persisted_transcript(tmp_path: Path) -> None:
-    graph = _ScriptedGraph([ToolTurn(calls=(_TODO_INIT_CALL,)), FinalTurn(output="stopping"), FinalTurn(output="finished")])
+    producer = _ScriptedTurnProducer([ToolTurn(calls=(_TODO_INIT_CALL,)), FinalTurn(output="stopping"), FinalTurn(output="finished")])
 
-    _run(tmp_path, graph)
+    _run(tmp_path, producer)
 
     stored = _stored_session(tmp_path)
     persisted = json.dumps({"events": [event.payload for event in stored.events], "metadata": stored.session.metadata}, sort_keys=True)
     assert "<system-reminder>" not in persisted
     assert "You stopped with" not in persisted
-    reminder = _reminder_segments(graph.seen_segments[2])
+    reminder = _reminder_segments(producer.seen_segments[2])
     assert len(reminder) == 1
 
 
@@ -324,8 +308,8 @@ def test_reminder_counters_survive_checkpoint_verification(tmp_path: Path) -> No
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         repositories=repositories_for_test_store(store),
-        turn_producer=_FinalGraph(),
-        config=RuntimeConfig(execution_engine="deterministic", mcp=RuntimeMcpConfig(enabled=False)),
+        turn_producer=_FinalProducer(),
+        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False)),
         permission_policy=PermissionPolicy(mode="yolo"),
     )
     _ = runtime.run(RuntimeRequest(prompt="done", session_id="todo-owner"))
@@ -345,8 +329,11 @@ def test_reminder_counters_survive_checkpoint_verification(tmp_path: Path) -> No
     stored_state["reminders"] = {"todo": TodoReminderState(attempts=1, awaiting_progress=True, progress_watermark=2, cycle_run_id="run-1").payload()}
     checkpoint_metadata["runtime_state"] = checkpoint_state
     stored_metadata["runtime_state"] = stored_state
+    checkpoint_metadata["provider_usage"] = {"cumulative": {"cost_usd": 1.0}}
+    stored_usage = {"latest": None, "cumulative": {"cost_usd": None}}
+    stored_metadata["provider_usage"] = stored_usage
     verified = verified_checkpoint_session_metadata(checkpoint_metadata=checkpoint_metadata, stored_metadata=stored_metadata)
-    assert verified == checkpoint_metadata
+    assert verified == {**checkpoint_metadata, "provider_usage": stored_usage}
 
 
 # --- skip conditions and budget boundaries (decision level) ------------------
@@ -396,11 +383,11 @@ def test_runtime_waits_for_user_reads_the_parked_plan_state() -> None:
 
 
 def test_reminder_segment_is_never_replayed_history(tmp_path: Path) -> None:
-    graph = _ScriptedGraph([ToolTurn(calls=(_TODO_INIT_CALL,)), FinalTurn(output="stopping"), FinalTurn(output="finished")])
+    producer = _ScriptedTurnProducer([ToolTurn(calls=(_TODO_INIT_CALL,)), FinalTurn(output="stopping"), FinalTurn(output="finished")])
 
-    _run(tmp_path, graph)
+    _run(tmp_path, producer)
 
-    reminder = _reminder_segments(graph.seen_segments[2])
+    reminder = _reminder_segments(producer.seen_segments[2])
     assert len(reminder) == 1
     # Replay keeps only ``replayed_conversation`` segments, so the reminder can
     # never come back as prior history on the next run or resume.
@@ -408,9 +395,9 @@ def test_reminder_segment_is_never_replayed_history(tmp_path: Path) -> None:
 
 
 def test_pending_background_task_suppresses_the_reminder_end_to_end(tmp_path: Path) -> None:
-    graph = _ScriptedGraph([ToolTurn(calls=(_TODO_INIT_CALL,)), FinalTurn(output="stopping")])
+    producer = _ScriptedTurnProducer([ToolTurn(calls=(_TODO_INIT_CALL,)), FinalTurn(output="stopping")])
 
-    chunks = _run(tmp_path, graph, store=_PendingBackgroundTaskStore())
+    chunks = _run(tmp_path, producer, store=_PendingBackgroundTaskStore())
 
     assert _reminder_events(chunks) == []
     assert chunks[-1].session.status == "completed"

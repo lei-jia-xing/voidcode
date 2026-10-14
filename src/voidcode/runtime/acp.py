@@ -375,7 +375,6 @@ def delegated_execution_for_task(
     # object-validated, so read it as a mapping and check each field.
     delegation: Mapping[str, object] = delegation_metadata if isinstance(delegation_metadata, dict) else {}
     raw_selected_preset = delegation.get("selected_preset")
-    raw_selected_execution_engine = delegation.get("selected_execution_engine")
     return AcpDelegatedExecution(
         parent_session_id=task.parent_session_id,
         requested_child_session_id=task.request.session_id,
@@ -388,7 +387,6 @@ def delegated_execution_for_task(
         routing_description=routing.description if routing is not None else None,
         routing_command=routing.command if routing is not None else None,
         selected_preset=(raw_selected_preset if isinstance(raw_selected_preset, str) else None),
-        selected_execution_engine=(raw_selected_execution_engine if isinstance(raw_selected_execution_engine, str) else None),
         # Boundary: ACP's declared delegated-lifecycle token set. The runtime also
         # feeds BackgroundTaskStatus "interrupted", which that union omits (widening it is an api.d.ts change).
         lifecycle_status=cast(

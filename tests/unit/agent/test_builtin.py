@@ -24,7 +24,7 @@ _MUTATING_TOOL_PATTERNS = frozenset(
 )
 
 
-def test_builtin_agent_manifests_have_materialized_prompt_profiles_and_execution_engines() -> None:
+def test_builtin_agent_manifests_have_materialized_prompt_profiles() -> None:
     manifests = list_builtin_agent_manifests()
 
     assert manifests
@@ -35,7 +35,6 @@ def test_builtin_agent_manifests_have_materialized_prompt_profiles_and_execution
         assert manifest.prompt_materialization.source == "builtin"
         assert manifest.prompt_materialization.format == "text"
         assert manifest.prompt_materialization.version >= 1
-        assert manifest.execution_engine == "provider"
         prompt = render_builtin_prompt_profile(manifest.prompt_profile)
         assert prompt is not None
         assert prompt
@@ -115,7 +114,6 @@ def test_validate_builtin_agent_manifests_rejects_unknown_preset_hook_ref() -> N
                     mode="primary",
                     description="Primary preset",
                     prompt_profile="default",
-                    execution_engine="provider",
                     preset_hook_refs=("missing_hook",),
                     top_level_selectable=True,
                     prompt_materialization=AgentPromptMaterialization(profile="default"),

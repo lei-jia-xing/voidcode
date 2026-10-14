@@ -306,3 +306,104 @@ def test_edit_patch_preflights_all_stale_hashes_before_writing(tmp_path: Path) -
 
     assert first.read_text(encoding="utf-8") == "first\n"
     assert second.read_text(encoding="utf-8") == "second\n"
+
+
+def test_edit_patch_requires_exact_ordered_anchors_before_writing(tmp_path: Path) -> None:
+    target = tmp_path / "sample.txt"
+    original = "first\nmiddle block  \nlast\n"
+    target.write_text(original, encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Update File: sample.txt",
+            "@@",
+            "-first",
+            "+updated first",
+            "@@",
+            "-middle block",
+            "+updated middle",
+            "*** End Patch",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Failed to find expected lines"):
+        EditTool().invoke(
+            ToolCall(
+                tool_name="edit",
+                arguments={
+                    "patch": patch_text,
+                    "expectedHashes": {"sample.txt": _content_hash(target)},
+                },
+            ),
+            context=ToolContext(workspace=tmp_path),
+        )
+
+    assert target.read_text(encoding="utf-8") == original
+
+
+def test_edit_patch_rejects_ambiguous_exact_marker_matches(tmp_path: Path) -> None:
+    target = tmp_path / "sample.txt"
+    original = "target\nkeep\ntarget\n"
+    target.write_text(original, encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Update File: sample.txt",
+            "@@",
+            "-target",
+            "+updated",
+            "*** End Patch",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="multiple exact matches"):
+        EditTool().invoke(
+            ToolCall(
+                tool_name="edit",
+                arguments={"patch": patch_text, "expectedHashes": {"sample.txt": _content_hash(target)}},
+            ),
+            context=ToolContext(workspace=tmp_path),
+        )
+
+    assert target.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize(
+    ("original", "expected"),
+    [
+        ("first\nmiddle\nlast", "first\nupdated\nlast"),
+        ("first\nmiddle\nlast\n", "first\nupdated\nlast\n"),
+        ("first\nmiddle\nlast\n\n", "first\nupdated\nlast\n\n"),
+    ],
+)
+def test_edit_patch_preserves_eof_newlines(
+    tmp_path: Path,
+    original: str,
+    expected: str,
+) -> None:
+    target = tmp_path / "sample.txt"
+    target.write_text(original, encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Update File: sample.txt",
+            "@@",
+            "-middle",
+            "+updated",
+            "*** End Patch",
+        ]
+    )
+
+    result = EditTool().invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={
+                "patch": patch_text,
+                "expectedHashes": {"sample.txt": _content_hash(target)},
+            },
+        ),
+        context=ToolContext(workspace=tmp_path),
+    )
+
+    assert result.status == "ok"
+    assert target.read_bytes() == expected.encode("utf-8")

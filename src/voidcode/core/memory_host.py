@@ -8,13 +8,14 @@ from uuid import uuid4
 
 from ..provider.protocol import ProviderAbortSignal
 from ..tools.contracts import Tool, ToolCall, ToolFailure
-from .engine import CallOutcome, CallReported, EngineState, TurnBatch
-from .event_store import FactStore, MemoryEventStore
+from .engine import CallOutcome, CallReported, EngineState, TurnBatch, TurnObservation
+from .event_store import FactStore, MemoryEventStore, model_turn_batch_id
 from .tool_context import ToolContext
 from .transcript import ContextSegment, ToolResultView, project_report
 from .turns import (
     CallSeed,
     FinalTurn,
+    ModelTurnFact,
     StreamFact,
     StreamingTurnProducer,
     ToolCompletedFact,
@@ -64,6 +65,8 @@ class MemoryHost:
         self.session = TurnSessionSnapshot(f"memory-{uuid4().hex}")
         self.facts: list[TurnFact] = []
         self.event_store = MemoryEventStore() if event_store is None else event_store
+        if isinstance(self.event_store, MemoryEventStore) and self.event_store.session_id is None:
+            self.event_store.session_id = self.session.session_id
         self._steering: deque[str] = deque()
         self._followup: deque[str] = deque()
         self._current_batch: TurnBatch | None = None
@@ -103,7 +106,7 @@ class MemoryHost:
         context = MemoryContext(
             state.request.prompt,
             views,
-            state.transcript_segments(views),
+            state.transcript_segments(),
         )
         yield from ()
         return replace(state.request, assembled_context=context, abort_signal=self.abort_signal)
@@ -125,14 +128,50 @@ class MemoryHost:
             return plan
         return producer.produce(request, context.tool_results, session=request.session)
 
-    def observe(self, plan: TurnPlan, state: EngineState) -> Generator[TurnFact, None, bool]:
-        if state.batches and self._current_batch is not state.batches[-1]:
-            self._current_batch = state.batches[-1]
-            self._batch_seed = CallSeed(self._current_batch.calls, reasoning=self._current_batch.reasoning, run_step=self._current_batch.run_step)
+    def observe(self, plan: TurnPlan, state: EngineState, batch: TurnBatch | None) -> Generator[TurnFact, None, TurnObservation]:
+        is_new_batch = batch is not None and all(batch is not current for current in state.batches)
+        if is_new_batch:
+            assert batch is not None
+            model_turn_facts = tuple(fact for fact in plan.facts if isinstance(fact, ModelTurnFact))
+            if len(model_turn_facts) != 1 or model_turn_facts[0].run_step != batch.run_step:
+                raise ValueError("tool batch requires its authoritative model-turn fact")
+            plan = replace(
+                plan,
+                facts=tuple(
+                    replace(fact, tool_batch_calls=batch.calls, tool_batch_reasoning=batch.reasoning) if isinstance(fact, ModelTurnFact) else fact
+                    for fact in plan.facts
+                ),
+            )
+        elif batch is not None:
+            if not isinstance(batch.tool_batch_id, str) or not batch.tool_batch_id.strip():
+                raise ValueError("pending native batch has no persisted model-turn identity")
+            if any(isinstance(fact, ModelTurnFact) for fact in plan.facts):
+                raise ValueError("pending tool execution cannot persist a second model-turn fact")
+        model_turn_sequence: int | None = None
         for fact in plan.facts:
-            self._record(fact)
+            self.facts.append(fact)
+            sequences = self.event_store.append((fact,))
+            if isinstance(fact, ModelTurnFact):
+                if len(sequences) != 1:
+                    raise ValueError("model-turn fact did not receive a persisted sequence")
+                model_turn_sequence = sequences[0]
             yield fact
-        return not state.cancelled
+        if is_new_batch:
+            assert batch is not None
+            if model_turn_sequence is None:
+                raise ValueError("tool batch requires its persisted model-turn fact")
+            session_id = self.event_store.session_id
+            assert session_id is not None
+            batch.tool_batch_id = model_turn_batch_id(session_id, model_turn_sequence)
+        if batch is not None and self._current_batch is not batch:
+            self._current_batch = batch
+            self._batch_seed = CallSeed(
+                batch.calls,
+                reasoning=batch.reasoning,
+                run_step=batch.run_step,
+                tool_batch_id=batch.tool_batch_id,
+            )
+        return TurnObservation(not state.cancelled, None if batch is None else batch.tool_batch_id)
 
     def execute(self, call: ToolCall, state: EngineState) -> Generator[TurnFact, None, CallOutcome]:
         requested = ToolRequestedFact(call)

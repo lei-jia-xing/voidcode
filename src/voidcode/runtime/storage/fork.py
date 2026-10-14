@@ -51,9 +51,9 @@ if TYPE_CHECKING:
 else:
     _MixinBase = object
 
-# A normalized graph request and governed runtime start describe the same native
+# A normalized core tool request and governed runtime start describe the same native
 # identity, even when input governance rewrites its name/arguments.
-_TOOL_REQUEST_TYPES = frozenset({"graph.tool_request_created", RUNTIME_TOOL_STARTED})
+_TOOL_REQUEST_TYPES = frozenset({"core.tool_request_created", RUNTIME_TOOL_STARTED})
 _REQUEST_PAIRS = (
     (RUNTIME_APPROVAL_REQUESTED, RUNTIME_APPROVAL_RESOLVED),
     (RUNTIME_QUESTION_REQUESTED, RUNTIME_QUESTION_ANSWERED),

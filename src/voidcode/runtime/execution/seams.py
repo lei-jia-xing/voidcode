@@ -4,16 +4,15 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
-from ...core.deterministic_turns import DeterministicTurnProducer
 from ...core.provider_turns import ProviderTurnProducer
 from ...core.turns import TurnProducer
 from ...provider.errors import ProviderExecutionError
 from ...provider.models import BoundProviderModel, ResolvedProviderChain, ResolvedProviderModel
-from ..config.loading import MODEL_ENV_VAR, RUNTIME_CONFIG_FILE_NAME, ExecutionEngineName, serialize_runtime_agent_config
+from ..config.loading import MODEL_ENV_VAR, RUNTIME_CONFIG_FILE_NAME
 from .provider_fallback import fallback_allowed
 
 if TYPE_CHECKING:
-    from ..config.materializer import EffectiveRuntimeConfig
+    from ..config.materializer import RunConfig
     from ..contracts import RuntimeRequest
 
 
@@ -34,7 +33,7 @@ def provider_model_required_message() -> str:
         "provider execution requires a configured provider/model. "
         f'Set "model": "<provider>/<model>" in {RUNTIME_CONFIG_FILE_NAME} (or {MODEL_ENV_VAR}), '
         "for example \"openai/gpt-4o\", or run 'voidcode config init --model <provider>/<model>'. "
-        "For test/dev workflows without a provider, use the deterministic test harness env var."
+        "Configure a provider/model before running; no offline prompt interpreter is available."
     )
 
 
@@ -49,101 +48,51 @@ def resolve_runtime_session_routing(request: RuntimeRequest) -> RuntimeSessionRo
 
 def build_runtime_turn_producer(
     *,
-    engine_name: ExecutionEngineName,
     provider_model: ResolvedProviderModel,
     bound_provider_model: BoundProviderModel | None = None,
 ) -> TurnProducer:
-    if engine_name == "deterministic":
-        return DeterministicTurnProducer()
     if bound_provider_model is None:
-        raise ValueError(provider_model_required_message())
+        selection = provider_model.selection
+        raise ProviderExecutionError(
+            kind="not_configured",
+            provider_name=selection.provider or "unknown",
+            model_name=selection.model or selection.raw_model or "unknown",
+            message=provider_model_required_message(),
+            retryable=False,
+            fallback_allowed=True,
+        )
     return ProviderTurnProducer(
         provider=bound_provider_model.provider.turn_provider(),
         provider_model=provider_model,
     )
 
 
-def cache_key_for_effective_config(
-    config: EffectiveRuntimeConfig,
+def select_turn_producer_for_config(
     *,
+    config: RunConfig,
     provider_attempt: int = 0,
-) -> tuple[ExecutionEngineName, str]:
-    # Key must cover every config field that selection/build reads: engine,
-    # model identity, fallback chain, resolved chain selections, and agent.
-    # Deliberately excluded: provider endpoint configs (they reach producer selection
-    # only through the resolved chain selections below), approval/permission policy,
-    # tools, and context window (never read by producer selection, so sharing across
-    # them is correct, not a collision).
-    agent_payload = serialize_runtime_agent_config(config.agent, include_runtime_internal=True)
-    agent_key = "" if agent_payload is None else str(sorted(agent_payload.items()))
-    provider_fallback_key = (
-        ""
-        if config.provider_fallback is None
-        else "|".join(
-            (
-                config.provider_fallback.preferred_model,
-                *config.provider_fallback.fallback_models,
-            )
-        )
-    )
-    chain_key = "|".join(
-        f"{target.selection.provider}/{target.selection.model}/{target.selection.raw_model}"
-        for target in config.resolved_provider.target_chain.all_targets
-    )
-    model_key = config.model or ""
-    reasoning_key = config.reasoning_effort or ""
-    return (config.execution_engine, f"{provider_attempt}::{model_key}::{reasoning_key}::{provider_fallback_key}::{chain_key}::{agent_key}")
-
-
-def select_turn_producer_for_effective_config(
-    *,
-    config: EffectiveRuntimeConfig,
-    provider_attempt: int = 0,
-    cache: dict[tuple[ExecutionEngineName, str], TurnProducer] | None = None,
-    force_rebuild: bool = False,
 ) -> RuntimeTurnProducerSelection:
     provider_target = config.resolved_provider.target_chain.target_at(provider_attempt)
     if provider_target is None:
         provider_target = config.resolved_provider.active_target
         provider_attempt = 0
+    bound_config = config.bound_provider
     bound_target: BoundProviderModel | None = None
-    if config.execution_engine == "provider":
-        bound_config = config.bound_provider
-        if bound_config is None:
-            raise ValueError("provider execution has no activated composition binding")
+    if bound_config is not None:
         bound_target = bound_config.target_chain.target_at(provider_attempt)
         if bound_target is None or bound_target.selection != provider_target.selection:
             raise ValueError("bound provider target does not match its frozen selection")
-    cache_key = cache_key_for_effective_config(config, provider_attempt=provider_attempt)
-    if config.execution_engine != "provider" and cache is not None and not force_rebuild and cache_key in cache:
-        cached = cache[cache_key]
-        return RuntimeTurnProducerSelection(producer=cached, provider_attempt=provider_attempt, provider_target=provider_target)
-    selection = RuntimeTurnProducerSelection(
-        producer=build_runtime_turn_producer(
-            engine_name=config.execution_engine,
-            provider_model=provider_target,
-            bound_provider_model=bound_target,
-        ),
+    return RuntimeTurnProducerSelection(
+        producer=build_runtime_turn_producer(provider_model=provider_target, bound_provider_model=bound_target),
         provider_attempt=provider_attempt,
         provider_target=provider_target,
     )
-    if config.execution_engine != "provider" and cache is not None and not force_rebuild:
-        cache[cache_key] = selection.producer
-    return selection
 
 
 def provider_target_window_tokens(target: ResolvedProviderModel | None) -> int | None:
-    """Effective input window of one resolved provider target.
-
-    Reads the catalog's ``max_input_tokens``, which ``ProviderModelMetadata``
-    already derives from ``context_window - max_output_tokens`` when upstream
-    carries no explicit input limit. ``None`` means the catalog does not describe
-    the model, so two targets cannot be compared.
-    """
+    """Return a target's explicitly reported input-token limit, if known."""
     metadata = None if target is None else target.metadata
-    if metadata is None:
-        return None
-    return metadata.max_input_tokens or metadata.context_window
+    return None if metadata is None else metadata.max_input_tokens
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,26 +104,23 @@ class ContextLimitPromotion:
     window_tokens_after: int | None
     candidate_count: int
     #: ``larger_window`` (a strictly larger candidate was picked),
-    #: ``no_larger_candidate`` (none existed; the generic chain-order target is
-    #: kept) or ``unavailable`` (fallback not permitted / chain exhausted).
-    promotion_reason: Literal["larger_window", "no_larger_candidate", "unavailable"]
+    #: ``no_known_larger_candidate`` means no candidate had a known input cap
+    #: strictly above the active target; unknown caps remain incomparable.
+    promotion_reason: Literal["larger_window", "no_known_larger_candidate", "unavailable"]
 
 
 def context_limit_promotion_for_provider_error(
     *,
     error: ProviderExecutionError,
     provider_chain: ResolvedProviderChain,
-    config: EffectiveRuntimeConfig,
+    config: RunConfig,
     provider_attempt: int,
 ) -> ContextLimitPromotion:
-    """Choose the escalation target for a ``context_limit`` failure, window-aware.
+    """Choose a context-limit fallback using comparable explicit input caps.
 
-    Candidates are exactly the chain entries the generic fallback considers, in
-    chain order; the first candidate whose effective catalog window is *strictly*
-    larger than the failing target's wins. A same-or-smaller window is never
-    selected just because it comes first in the chain. With no strictly larger
-    candidate the generic chain-order selection is returned unchanged (and the
-    event says so), so every other provider error keeps its existing ordering.
+    The first candidate with a known ``max_input_tokens`` strictly above the
+    failing target wins. Unknown caps are not compared; if no upgrade is proven,
+    the existing chain-order fallback remains available and is labeled as such.
     """
     before = provider_target_window_tokens(provider_chain.target_at(provider_attempt))
     next_attempt = provider_attempt + 1
@@ -192,21 +138,13 @@ def context_limit_promotion_for_provider_error(
     if chosen_attempt is not None:
         target = provider_chain.target_at(chosen_attempt)
         assert target is not None
-        bound_target: BoundProviderModel | None = None
-        if config.execution_engine == "provider":
-            bound_config = config.bound_provider
-            if bound_config is None:
-                raise ValueError("provider execution has no activated composition binding")
-            bound_target = bound_config.target_chain.target_at(chosen_attempt)
-            if bound_target is None or bound_target.selection != target.selection:
-                raise ValueError("bound provider target does not match its frozen fallback selection")
+        bound_config = config.bound_provider
+        bound_target = None if bound_config is None else bound_config.target_chain.target_at(chosen_attempt)
+        if bound_config is not None and (bound_target is None or bound_target.selection != target.selection):
+            raise ValueError("bound provider target does not match its frozen fallback selection")
         return ContextLimitPromotion(
             selection=RuntimeTurnProducerSelection(
-                producer=build_runtime_turn_producer(
-                    engine_name=config.execution_engine,
-                    provider_model=target,
-                    bound_provider_model=bound_target,
-                ),
+                producer=build_runtime_turn_producer(provider_model=target, bound_provider_model=bound_target),
                 provider_attempt=chosen_attempt,
                 provider_target=target,
             ),
@@ -226,7 +164,7 @@ def context_limit_promotion_for_provider_error(
         window_tokens_before=before,
         window_tokens_after=None if selection is None else provider_target_window_tokens(selection.provider_target),
         candidate_count=candidate_count,
-        promotion_reason="no_larger_candidate" if selection is not None else "unavailable",
+        promotion_reason="no_known_larger_candidate" if selection is not None else "unavailable",
     )
 
 
@@ -234,7 +172,7 @@ def fallback_turn_producer_for_provider_error(
     *,
     error: ProviderExecutionError,
     provider_chain: ResolvedProviderChain,
-    config: EffectiveRuntimeConfig,
+    config: RunConfig,
     provider_attempt: int,
 ) -> RuntimeTurnProducerSelection | None:
     next_attempt = provider_attempt + 1
@@ -243,20 +181,12 @@ def fallback_turn_producer_for_provider_error(
         return None
     if next_target is None:
         return None
-    bound_target: BoundProviderModel | None = None
-    if config.execution_engine == "provider":
-        bound_config = config.bound_provider
-        if bound_config is None:
-            raise ValueError("provider execution has no activated composition binding")
-        bound_target = bound_config.target_chain.target_at(next_attempt)
-        if bound_target is None or bound_target.selection != next_target.selection:
-            raise ValueError("bound provider target does not match its frozen fallback selection")
+    bound_config = config.bound_provider
+    bound_target = None if bound_config is None else bound_config.target_chain.target_at(next_attempt)
+    if bound_config is not None and (bound_target is None or bound_target.selection != next_target.selection):
+        raise ValueError("bound provider target does not match its frozen fallback selection")
     return RuntimeTurnProducerSelection(
-        producer=build_runtime_turn_producer(
-            engine_name=config.execution_engine,
-            provider_model=next_target,
-            bound_provider_model=bound_target,
-        ),
+        producer=build_runtime_turn_producer(provider_model=next_target, bound_provider_model=bound_target),
         provider_attempt=next_attempt,
         provider_target=next_target,
     )

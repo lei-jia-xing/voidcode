@@ -14,6 +14,7 @@ import pytest
 from tests.runtime_composition import create_task, save_checkpoint
 from tests.runtime_storage import repositories_for_test_store
 from voidcode.core.tool_context import ToolContext
+from voidcode.core.transcript import TextOutput
 from voidcode.core.turns import ReportedCall
 from voidcode.formats.json_values import json_wire_object
 from voidcode.runtime import VoidCodeRuntime
@@ -76,10 +77,7 @@ def _seed_interrupted_child_with_handoff(
     delegation: dict[str, object] | None = None,
     opaque_handoff: bool = False,
 ) -> None:
-    """Seed a task + child whose ROW is ``interrupted`` but whose transcript
-    proves a successful ``yield`` handoff — the exact unsealed-seal state the
-    run loop can leave behind and the shape a keep-alive final turn takes
-    before finalize upgrades it."""
+    """Seed an interrupted task with an unsealed child and transcript evidence."""
     save_checkpoint(
         store,
         workspace=workspace,
@@ -107,8 +105,25 @@ def _seed_interrupted_child_with_handoff(
         session_id=child_session_id,
         events=(
             ("runtime.request_received", "runtime", {"prompt": "child probe"}, None),
+            (
+                "core.model_turn",
+                "core",
+                {
+                    "run_step": 1,
+                    "mode": "provider",
+                    "prompt": "child probe",
+                    "provider": "test",
+                    "model": "test",
+                    "attempt": 0,
+                    "streaming": False,
+                    "tool_batch_calls": [{"tool": "yield", "tool_call_id": "yield-call", "arguments": {}}],
+                    "tool_batch_reasoning": None,
+                },
+                None,
+            ),
+            ("core.tool_request_created", "core", {"tool": "yield", "tool_call_id": "yield-call", "arguments": {}}, None),
             ("runtime.tool_completed", "runtime", tool_payload, None),
-            ("graph.response_ready", "graph", {"output_preview": "done", "source": "yield"}, None),
+            ("core.response_ready", "core", {"output_preview": "done", "source": "yield"}, None),
         ),
     )
     metadata: dict[str, object] = {}
@@ -271,7 +286,8 @@ def test_opaque_handoff_is_not_sealed_or_schema_validated(
     assert task.status == "interrupted"
     assert task.schema_validation is None
     assert task.structured_output is None
-    assert store.load_session_status(workspace=tmp_path, session_id=child_session_id) == "interrupted"
+    checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id=child_session_id)
+    assert checkpoint is not None and checkpoint["kind"] == "interrupted"
 
 
 def test_missing_data_is_validated_as_empty_object(
@@ -329,7 +345,7 @@ def test_keep_alive_intermediate_turn_without_handoff_is_not_validated(
     task_id = "task-intermediate"
     child_session_id = "child-intermediate"
     # Mid-flight transcript: a tool ran but no yield handoff and no
-    # graph.response_ready — the turn is genuinely resumable (keep-alive).
+    # core.response_ready — the turn is genuinely resumable (keep-alive).
     save_checkpoint(
         store,
         workspace=tmp_path,
@@ -348,7 +364,46 @@ def test_keep_alive_intermediate_turn_without_handoff_is_not_validated(
         session_id=child_session_id,
         events=(
             ("runtime.request_received", "runtime", {"prompt": "child probe"}, None),
-            ("runtime.tool_completed", "tool", {"tool": "read", "status": "ok", "content": "probe"}, None),
+            (
+                "core.model_turn",
+                "core",
+                {
+                    "run_step": 1,
+                    "mode": "provider",
+                    "prompt": "child probe",
+                    "provider": "test",
+                    "model": "test",
+                    "attempt": 0,
+                    "streaming": False,
+                    "tool_batch_calls": [{"tool": "read", "tool_call_id": "read-call", "arguments": {"path": "probe"}}],
+                    "tool_batch_reasoning": None,
+                },
+                None,
+            ),
+            (
+                "core.tool_request_created",
+                "core",
+                {"tool": "read", "tool_call_id": "read-call", "arguments": {"path": "probe"}},
+                None,
+            ),
+            (
+                "runtime.tool_completed",
+                "tool",
+                {
+                    "tool": "read",
+                    "status": "ok",
+                    "content": "probe",
+                    "reported_call": report_payload(
+                        ReportedCall(
+                            "read-call",
+                            "read",
+                            {"path": "probe"},
+                            ToolSuccess("read", output=TextOutput("probe")),
+                        )
+                    ),
+                },
+                None,
+            ),
         ),
     )
     create_task(
@@ -378,7 +433,8 @@ def test_keep_alive_intermediate_turn_without_handoff_is_not_validated(
     assert terminal.status == "interrupted"
     assert terminal.schema_validation is None
     assert terminal.structured_output is None
-    assert store.load_session_status(workspace=tmp_path, session_id=child_session_id) == "interrupted"
+    checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id=child_session_id)
+    assert checkpoint is not None and checkpoint["kind"] == "interrupted"
 
 
 def _task_with_delegation(

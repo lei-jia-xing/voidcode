@@ -64,7 +64,6 @@ from .models import (
     CompactionPayload,
     ContextWindowPayload,
     EnvironmentRuntimeSettings,
-    ExecutionEngineName,
     FormatterPayload,
     FormatterPresetPayload,
     HooksPayload,
@@ -111,9 +110,6 @@ from .models import (
     APPROVAL_MODE_ENV_VAR as APPROVAL_MODE_ENV_VAR,
 )
 from .models import (
-    EXECUTION_ENGINE_ENV_VAR as EXECUTION_ENGINE_ENV_VAR,
-)
-from .models import (
     MODEL_ENV_VAR as MODEL_ENV_VAR,
 )
 from .models import (
@@ -137,9 +133,6 @@ RUNTIME_CONFIG_FILE_NAME = ".voidcode.json"
 
 def _running_on_windows() -> bool:
     return sys.platform == "win32"
-
-
-DEFAULT_EXECUTION_ENGINE: ExecutionEngineName = "provider"
 
 
 @dataclass(frozen=True, slots=True)
@@ -376,7 +369,6 @@ class RuntimeAgentConfig:
     hook_refs: tuple[str, ...] = ()
     context_transform_refs: tuple[str, ...] = ()
     model: str | None = None
-    execution_engine: ExecutionEngineName | None = None
     tools: RuntimeToolsConfig | None = None
     skills: RuntimeSkillsConfig | None = None
     mcp_binding: AgentMcpBindingIntent | None = None
@@ -390,7 +382,6 @@ class RuntimeConfig:
     permission: ExternalDirectoryPermissionConfig = field(default_factory=ExternalDirectoryPermissionConfig)
     policy: RuntimePolicyConfig | None = None
     model: str | None = None
-    execution_engine: ExecutionEngineName = DEFAULT_EXECUTION_ENGINE
     tool_timeout_seconds: int | None = None
     reasoning_effort: str | None = None
     hooks: RuntimeHooksConfig | None = None
@@ -417,7 +408,6 @@ class RuntimeConfigOverrides:
     permission: ExternalDirectoryPermissionConfig | None = None
     policy: RuntimePolicyConfig | None = None
     model: str | None = None
-    execution_engine: ExecutionEngineName | None = None
     tool_timeout_seconds: int | None = None
     tool_timeout_seconds_configured: bool = False
     reasoning_effort: str | None = None
@@ -480,7 +470,6 @@ def load_runtime_config(
     *,
     approval_mode: ApprovalMode | None = None,
     model: str | None = None,
-    execution_engine: ExecutionEngineName | None = None,
     tool_timeout_seconds: int | None = None,
     reasoning_effort: str | None = None,
     env: Mapping[str, str] | None = None,
@@ -520,11 +509,6 @@ def load_runtime_config(
             repo_local=repo_local.model,
             environment=env_overrides.model,
             user=global_config.model,
-        ),
-        execution_engine=_resolve_execution_engine(
-            explicit=execution_engine,
-            repo_local=repo_local.execution_engine,
-            environment=env_overrides.execution_engine,
         ),
         tool_timeout_seconds=_resolve_tool_timeout_seconds(
             explicit=tool_timeout_seconds,
@@ -620,7 +604,6 @@ def _load_repo_local_config(
         permission=_permission_config_from_payload(config_payload.permission),
         policy=policy,
         model=config_payload.model,
-        execution_engine=config_payload.execution_engine,
         tool_timeout_seconds=config_payload.tool_timeout_seconds,
         tool_timeout_seconds_configured="tool_timeout_seconds" in config_payload.model_fields_set,
         reasoning_effort=config_payload.reasoning_effort,
@@ -731,7 +714,7 @@ def _hooks_config_from_payload(payload: HooksPayload | None) -> RuntimeHooksConf
         on_background_task_result_read=payload.on_background_task_result_read or (),
         on_delegated_result_available=payload.on_delegated_result_available or (),
         on_turn_progress=payload.on_turn_progress or (),
-        on_stuck_detected=payload.on_stuck_detected or (),
+        on_tool_batch_repeated=payload.on_tool_batch_repeated or (),
         on_approval_requested=payload.on_approval_requested or (),
         on_question_asked=payload.on_question_asked or (),
         on_before_compact=payload.on_before_compact or (),
@@ -813,7 +796,7 @@ def _apply_formatter_config(
         on_background_task_result_read=base_hooks.on_background_task_result_read,
         on_delegated_result_available=base_hooks.on_delegated_result_available,
         on_turn_progress=base_hooks.on_turn_progress,
-        on_stuck_detected=base_hooks.on_stuck_detected,
+        on_tool_batch_repeated=base_hooks.on_tool_batch_repeated,
         on_approval_requested=base_hooks.on_approval_requested,
         on_question_asked=base_hooks.on_question_asked,
         on_before_compact=base_hooks.on_before_compact,
@@ -1124,7 +1107,6 @@ def _agent_config_from_payload(
         hook_refs=_validate_agent_hook_refs(payload.hook_refs or ()),
         context_transform_refs=_validate_agent_context_transform_refs(payload.context_transform_refs or ()),
         model=payload.model,
-        execution_engine=(payload.execution_engine if isinstance(payload, PersistedAgentPayload) else None),
         tools=_tools_config_from_payload(payload.tools),
         skills=_skills_config_from_payload(payload.skills),
         mcp_binding=_agent_mcp_binding_from_payload(payload.mcp_binding),
@@ -1250,7 +1232,6 @@ def _resolve_agent_config(
         hook_refs=agent.hook_refs,
         context_transform_refs=agent.context_transform_refs,
         model=model,
-        execution_engine=agent.execution_engine or manifest.execution_engine,
         tools=agent.tools,
         skills=agent.skills,
         mcp_binding=(agent.mcp_binding if agent.mcp_binding is not None else manifest.mcp_binding),
@@ -1967,7 +1948,6 @@ def _load_environment_runtime_config(env: Mapping[str, str] | None) -> RuntimeCo
     return RuntimeConfigOverrides(
         approval_mode=settings.approval_mode,
         model=settings.model,
-        execution_engine=settings.execution_engine,
         tool_timeout_seconds=settings.tool_timeout_seconds,
         reasoning_effort=settings.reasoning_effort,
     )
@@ -2040,21 +2020,6 @@ def _resolve_model(
     if user is not None:
         return user
     return None
-
-
-def _resolve_execution_engine(
-    *,
-    explicit: ExecutionEngineName | None,
-    repo_local: ExecutionEngineName | None,
-    environment: ExecutionEngineName | None,
-) -> ExecutionEngineName:
-    if explicit is not None:
-        return explicit
-    if repo_local is not None:
-        return repo_local
-    if environment is not None:
-        return environment
-    return DEFAULT_EXECUTION_ENGINE
 
 
 def _resolve_tool_timeout_seconds(

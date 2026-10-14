@@ -23,17 +23,11 @@ if TYPE_CHECKING:
 
 @dataclass
 class CapabilityDoctor:
-    """Unified capability readiness checker for VoidCode.
+    """Check availability/configuration for external tools and capabilities.
 
-    This doctor checks the availability and readiness of external tools
-    and capabilities that VoidCode depends on, including:
-    - ast-grep binary
-    - Formatter presets and their executables
-    - LSP server commands
-    - MCP server commands
-
-    The doctor is non-blocking and provides structured output suitable
-    for both CLI users and agents.
+    The report covers executable presence, formatter commands, LSP commands,
+    MCP configuration, and provider configuration; it does not prove those
+    capabilities will work when executed.
     """
 
     workspace: Path | None = None
@@ -221,51 +215,52 @@ def create_doctor_for_config(
         for server_name, server_config in mcp_config.servers.items():
             doctor.add_mcp_server_check(server_name, server_config)
 
-    if config.execution_engine == "provider" or config.model is not None:
-        from ..runtime.service import VoidCodeRuntime
+    from ..runtime.service import VoidCodeRuntime
 
-        runtime: VoidCodeRuntime | None = None
-        try:
-            runtime = VoidCodeRuntime(workspace=workspace, config=config)
-            readiness = runtime.provider_readiness()
-        except ValueError as exc:
-            doctor.add_result(
-                CapabilityCheckResult(
-                    status=CapabilityCheckStatus.ERROR,
-                    name="provider.readiness",
-                    check_type=DoctorCheckType.PROVIDER_READINESS.value,
-                    details={
-                        "model": config.model,
-                        "fallback_models": (list(config.provider_fallback.fallback_models) if config.provider_fallback is not None else []),
-                        "status": "invalid_config",
-                    },
-                    error_message=str(exc),
-                )
-            )
-            return doctor
-        finally:
-            if runtime is not None:
-                runtime.__exit__(None, None, None)
-        status = CapabilityCheckStatus.READY if readiness.ok else CapabilityCheckStatus.ERROR
+    runtime: VoidCodeRuntime | None = None
+    try:
+        runtime = VoidCodeRuntime(workspace=workspace, config=config)
+        readiness = runtime.provider_readiness()
+    except ValueError as exc:
         doctor.add_result(
             CapabilityCheckResult(
-                status=status,
+                status=CapabilityCheckStatus.ERROR,
                 name="provider.readiness",
                 check_type=DoctorCheckType.PROVIDER_READINESS.value,
                 details={
-                    "provider": readiness.provider,
-                    "model": readiness.model,
-                    "configured": readiness.configured,
-                    "auth_present": readiness.auth_present,
-                    "streaming_configured": readiness.streaming_configured,
-                    "streaming_supported": readiness.streaming_supported,
-                    "context_window": readiness.context_window,
-                    "max_output_tokens": readiness.max_output_tokens,
-                    "fallback_chain": list(readiness.fallback_chain),
-                    "status": readiness.status,
+                    "model": config.model,
+                    "fallback_models": (list(config.provider_fallback.fallback_models) if config.provider_fallback is not None else []),
+                    "configuration_status": "invalid_config",
+                    "verification_scope": "configuration_only",
                 },
-                error_message=None if readiness.ok else readiness.guidance,
+                error_message=str(exc),
             )
         )
+        return doctor
+    finally:
+        if runtime is not None:
+            runtime.__exit__(None, None, None)
+    status = CapabilityCheckStatus.CONFIGURED if readiness.ok else CapabilityCheckStatus.ERROR
+    doctor.add_result(
+        CapabilityCheckResult(
+            status=status,
+            name="provider.readiness",
+            check_type=DoctorCheckType.PROVIDER_READINESS.value,
+            details={
+                "provider": readiness.provider,
+                "model": readiness.model,
+                "configured": readiness.configured,
+                "auth_present": readiness.auth_present,
+                "streaming_configured": readiness.streaming_configured,
+                "streaming_supported": readiness.streaming_supported,
+                "context_window": readiness.context_window,
+                "max_output_tokens": readiness.max_output_tokens,
+                "fallback_chain": list(readiness.fallback_chain),
+                "configuration_status": "configured" if readiness.ok else readiness.status,
+                "verification_scope": "configuration_only",
+            },
+            error_message=None if readiness.ok else readiness.guidance,
+        )
+    )
 
     return doctor

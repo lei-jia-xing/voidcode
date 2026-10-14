@@ -56,6 +56,7 @@ class AcpSessionBinding:
     active_run_id: str | None = None
     active: bool = False
     cancel_requested: bool = False
+    cancel_confirmed: bool = False
 
 
 @dataclass(slots=True)
@@ -200,6 +201,7 @@ class StdioAcpServer:
         binding.active = True
         binding.active_run_id = None
         binding.cancel_requested = False
+        binding.cancel_confirmed = False
         thread = threading.Thread(
             target=self._handle_session_prompt,
             args=(request_id, acp_session_id, prompt, binding),
@@ -229,10 +231,12 @@ class StdioAcpServer:
         prompt: str,
         binding: AcpSessionBinding,
     ) -> None:
-        stop_reason = "end_turn"
+        cancel_confirmed = False
         failed_execution = False
         failure_message: str | None = None
         final_session_status: object = None
+        tool_activity_ids: dict[str, str] = {}
+        pending_tool_activity_ids: set[str] = set()
         try:
             request = RuntimeRequest(
                 prompt=prompt,
@@ -242,29 +246,48 @@ class StdioAcpServer:
             )
             chunks = self.runtime.run_stream(request)
             while True:
-                if binding.cancel_requested:
-                    stop_reason = "cancelled"
-                    break
                 try:
                     with contextlib.redirect_stdout(self.stderr):
                         chunk = next(chunks)
                 except StopIteration:
                     break
-                if binding.cancel_requested:
-                    stop_reason = "cancelled"
-                    break
-                if binding.runtime_session_id is None:
-                    binding.runtime_session_id = chunk.session.session.id
-                if binding.active_run_id is None:
-                    binding.active_run_id = _session_run_id(chunk.session)
+                cancel_target: tuple[str, str] | None = None
+                with self._runtime_lock:
+                    if binding.runtime_session_id is None:
+                        binding.runtime_session_id = chunk.session.session.id
+                    if binding.active_run_id is None:
+                        binding.active_run_id = _session_run_id(chunk.session)
+                    if (
+                        binding.cancel_requested
+                        and chunk.session.status == "running"
+                        and binding.runtime_session_id is not None
+                        and binding.active_run_id is not None
+                    ):
+                        binding.cancel_requested = False
+                        cancel_target = (binding.runtime_session_id, binding.active_run_id)
+                if cancel_target is not None:
+                    with contextlib.redirect_stdout(self.stderr):
+                        cancel_result = self.runtime.cancel_session(
+                            cancel_target[0],
+                            run_id=cancel_target[1],
+                            reason="acp session/cancel",
+                        )
+                    cancel_confirmed = cancel_result.interrupted or cancel_confirmed
+                    with self._runtime_lock:
+                        binding.cancel_confirmed = binding.cancel_confirmed or cancel_result.interrupted
                 final_session_status = chunk.session.status
                 if chunk.event is not None:
                     if chunk.event.event_type == "runtime.failed":
-                        failed_execution = True
-                        failure_message = _runtime_failure_summary(chunk.event.payload)
+                        payload = chunk.event.payload
+                        interrupted_event = payload.get("cancelled") is True or payload.get("kind") in {"interrupted", "cancelled"}
+                        if not interrupted_event:
+                            failed_execution = True
+                            failure_message = _runtime_failure_summary(payload)
                     self._write_runtime_event_update(
                         acp_session_id=acp_session_id,
                         event=chunk.event,
+                        tool_activity_ids=tool_activity_ids,
+                        pending_tool_activity_ids=pending_tool_activity_ids,
                     )
                 if chunk.kind == "output":
                     self._write_session_update(
@@ -274,10 +297,10 @@ class StdioAcpServer:
                             "content": {"type": "text", "text": chunk.output or ""},
                         },
                     )
+            with self._runtime_lock:
+                cancel_confirmed = cancel_confirmed or binding.cancel_confirmed
             if binding.runtime_session_id is None:
                 raise RuntimeError("runtime stream emitted no chunks")
-            if binding.cancel_requested:
-                stop_reason = "cancelled"
             if failed_execution or final_session_status == "failed":
                 self._write_error(
                     request_id,
@@ -285,10 +308,25 @@ class StdioAcpServer:
                     failure_message or "runtime execution failed",
                 )
                 return
-            self._write_result(
-                request_id,
-                {"stopReason": stop_reason},
-            )
+            elif final_session_status == "completed":
+                stop_reason = "end_turn"
+            elif final_session_status == "interrupted" or cancel_confirmed:
+                stop_reason = "cancelled"
+            elif final_session_status == "waiting":
+                self._write_error(
+                    request_id,
+                    _ERROR_INTERNAL,
+                    "Runtime is waiting for approval or a question, which this ACP stdio facade does not support.",
+                )
+                return
+            else:
+                self._write_error(
+                    request_id,
+                    _ERROR_INTERNAL,
+                    f"Runtime stream ended with nonterminal status {final_session_status!r}; outcome is unknown.",
+                )
+                return
+            self._write_result(request_id, {"stopReason": stop_reason})
         except Exception as exc:
             self._log_exception("ACP prompt failed", exc)
             summary = _runtime_failure_summary({"error": str(exc)})
@@ -311,23 +349,38 @@ class StdioAcpServer:
         binding = self._sessions.get(acp_session_id)
         if binding is None:
             raise ValueError(f"unknown ACP session id: {acp_session_id}")
-        binding.cancel_requested = True
+        cancel_target: tuple[str, str] | None = None
+        with self._runtime_lock:
+            if not binding.active:
+                binding.cancel_requested = False
+                queued = False
+            elif binding.runtime_session_id is not None and binding.active_run_id is not None:
+                binding.cancel_requested = False
+                queued = False
+                cancel_target = (binding.runtime_session_id, binding.active_run_id)
+            else:
+                binding.cancel_requested = True
+                queued = True
         cancel_payload: dict[str, object] | None = None
-        can_cancel_runtime = binding.active and binding.runtime_session_id is not None and binding.active_run_id is not None
-        if can_cancel_runtime:
+        if cancel_target is not None:
             result = self.runtime.cancel_session(
-                binding.runtime_session_id,
-                run_id=binding.active_run_id,
+                cancel_target[0],
+                run_id=cancel_target[1],
                 reason="acp session/cancel",
             )
             cancel_payload = result.as_payload()
-        interrupted = bool(cancel_payload.get("interrupted")) if cancel_payload is not None else False
+            interrupted = result.interrupted
+            with self._runtime_lock:
+                binding.cancel_confirmed = binding.cancel_confirmed or interrupted
+        else:
+            interrupted = False
         return {
             "sessionId": acp_session_id,
             "runtimeSessionId": binding.runtime_session_id,
             "cancelled": interrupted,
-            "stopReason": "cancelled" if interrupted or binding.active else "not_active",
-            "supported": cancel_payload is not None,
+            "stopReason": "cancelled" if interrupted else "not_active",
+            "supported": cancel_payload is not None or queued,
+            "queued": queued,
             "runtimeCancel": cancel_payload,
         }
 
@@ -336,17 +389,47 @@ class StdioAcpServer:
         *,
         acp_session_id: str,
         event: EventEnvelope,
+        tool_activity_ids: dict[str, str],
+        pending_tool_activity_ids: set[str],
     ) -> None:
         event_type = event.event_type
         payload = event.payload
-        if event_type == "graph.tool_request_created":
+        if event_type == "core.loop_step" and payload.get("phase") == "plan":
+            tool_activity_ids.clear()
+            pending_tool_activity_ids.clear()
+            return
+        if event_type == "core.model_turn":
+            tool_activity_ids.clear()
+            pending_tool_activity_ids.clear()
+            raw_calls = payload.get("tool_batch_calls")
+            if isinstance(raw_calls, list):
+                for ordinal, raw_call in enumerate(raw_calls):
+                    if not isinstance(raw_call, Mapping):
+                        continue
+                    call_id = raw_call.get("tool_call_id")
+                    if isinstance(call_id, str) and call_id:
+                        tool_activity_ids[call_id] = f"voidcode:{event.session_id}:{event.sequence}:{ordinal}"
+                        pending_tool_activity_ids.add(call_id)
+            return
+        if event_type in {
+            "core.tool_call_start",
+            "core.tool_call_delta",
+            "core.tool_call_end",
+        }:
+            return
+        if event_type == "core.provider_stream" and payload.get("channel") == "tool":
+            return
+        if event_type == "core.tool_request_created":
             tool_name = _required_payload_string(payload, "tool")
             tool_call_id = _required_payload_string(payload, "tool_call_id")
+            if tool_call_id not in pending_tool_activity_ids:
+                tool_activity_ids[tool_call_id] = f"voidcode:{event.session_id}:{event.sequence}:0"
+            pending_tool_activity_ids.discard(tool_call_id)
             self._write_session_update(
                 acp_session_id,
                 {
                     "sessionUpdate": "tool_call",
-                    "toolCallId": tool_call_id,
+                    "toolCallId": tool_activity_ids[tool_call_id],
                     "title": tool_name,
                     "kind": "other",
                     "status": "pending",
@@ -364,16 +447,21 @@ class StdioAcpServer:
                 status = "failed"
             else:
                 raise ValueError(f"unsupported or missing tool completion status: {raw_status!r}")
+            activity_id = tool_activity_ids.get(tool_call_id)
+            if activity_id is None:
+                raise ValueError("tool completion has no matching ACP activity identity")
             self._write_session_update(
                 acp_session_id,
                 {
                     "sessionUpdate": "tool_call_update",
-                    "toolCallId": tool_call_id,
+                    "toolCallId": activity_id,
                     "status": status,
                 },
             )
             return
         if event_type == "runtime.failed":
+            if payload.get("kind") == "interrupted" or payload.get("cancelled") is True:
+                return
             summary = _runtime_failure_summary(payload)
             self._write_session_update(
                 acp_session_id,
@@ -386,13 +474,22 @@ class StdioAcpServer:
                 },
             )
             return
+        projected_payload = dict(payload)
+        tool_call_id = projected_payload.pop("tool_call_id", None)
+        if isinstance(tool_call_id, str):
+            activity_id = tool_activity_ids.get(tool_call_id)
+            if activity_id is not None:
+                projected_payload["activity_id"] = activity_id
         self._write_session_update(
             acp_session_id,
             {
                 "sessionUpdate": "agent_thought_chunk",
                 "content": {
                     "type": "text",
-                    "text": json.dumps(_event_payload(event), separators=(",", ":")),
+                    "text": json.dumps(
+                        _event_payload(event, payload=projected_payload),
+                        separators=(",", ":"),
+                    ),
                 },
             },
         )
@@ -485,13 +582,17 @@ def _validate_prompt_length(prompt: str) -> str:
     return prompt
 
 
-def _event_payload(event: EventEnvelope) -> JsonObject:
+def _event_payload(
+    event: EventEnvelope,
+    *,
+    payload: Mapping[str, object] | None = None,
+) -> JsonObject:
     return {
         "sessionId": event.session_id,
         "sequence": event.sequence,
         "type": event.event_type,
         "source": event.source,
-        "payload": event.payload,
+        "payload": dict(payload if payload is not None else event.payload),
     }
 
 

@@ -10,7 +10,7 @@ from .session_metadata_helpers import parse_delegation_metadata
 from .tools.builtins import BUILTIN_TOOL_NAMES
 from .tools.registry import ToolRegistry
 
-AGENT_CAPABILITY_SNAPSHOT_VERSION = 4
+AGENT_CAPABILITY_SNAPSHOT_VERSION = 5
 
 
 class AgentCapabilitySnapshotVersionError(ValueError):
@@ -57,7 +57,7 @@ def validate_agent_capability_snapshot(
     )
     raw_composition_ref = snapshot["composition_ref"]
     if not isinstance(raw_composition_ref, dict):
-        raise AgentCapabilitySnapshotVersionError("agent_capability_snapshot v4 requires a canonical composition_ref object")
+        raise AgentCapabilitySnapshotVersionError("agent_capability_snapshot v5 requires a canonical composition_ref object")
     try:
         CompositionRef.model_validate(raw_composition_ref)
     except Exception as error:
@@ -70,7 +70,7 @@ def validate_agent_capability_snapshot(
         "mcp": frozenset({"binding_intent", "configured_enabled", "mode", "configured_servers", "governance"}),
         "delegation": frozenset({"selected_preset", "allowed_child_presets", "denied", "parent_bounded", "can_expand_parent_policy"}),
         "runtime": frozenset({"approval_mode", "tool_timeout_seconds", "permission"}),
-        "execution": frozenset({"execution_engine", "model", "fallback_models", "resolved_provider", "reasoning_effort"}),
+        "execution": frozenset({"model", "fallback_models", "resolved_provider", "reasoning_effort"}),
         "tools": frozenset(
             {
                 "manifest_allowlist",
@@ -87,7 +87,7 @@ def validate_agent_capability_snapshot(
     for name, expected in expected_sections.items():
         value = snapshot[name]
         if not isinstance(value, dict):
-            raise AgentCapabilitySnapshotVersionError(f"agent_capability_snapshot v4 requires a {name} object")
+            raise AgentCapabilitySnapshotVersionError(f"agent_capability_snapshot v5 requires a {name} object")
         _require_exact_fields(value, name=name, expected=expected)
         sections[name] = value
 
@@ -109,7 +109,7 @@ def validate_agent_capability_snapshot(
 
     generation = sections["tools"]["generation"]
     if not isinstance(generation, str) or not generation:
-        raise AgentCapabilitySnapshotVersionError("agent_capability_snapshot v4 requires tools.generation")
+        raise AgentCapabilitySnapshotVersionError("agent_capability_snapshot v5 requires tools.generation")
     return snapshot
 
 

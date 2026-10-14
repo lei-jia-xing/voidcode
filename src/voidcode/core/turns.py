@@ -61,15 +61,16 @@ class ReportedCall:
 
     tool_call_id: str
     final_tool_name: str
-    authorized_arguments: Mapping[str, object]
+    final_arguments: Mapping[str, object]
     result: ToolResult
+    tool_batch_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.tool_call_id:
             raise ValueError("reported call requires the original native identity")
         if self.result.tool_name != self.final_tool_name:
             raise ValueError("reported result does not match the authorized tool")
-        object.__setattr__(self, "authorized_arguments", own_json_object(self.authorized_arguments))
+        object.__setattr__(self, "final_arguments", own_json_object(self.final_arguments))
         if self.result.body is not None:
             object.__setattr__(self, "result", replace(self.result, body=_deepcopy_tool_body(self.result.body)))
 
@@ -85,6 +86,7 @@ class CallSeed:
     reasoning: str | None = None
     completed_reports: tuple[ReportedCall, ...] = ()
     run_step: int | None = None
+    tool_batch_id: str | None = None
 
 
 def report_call(
@@ -108,13 +110,15 @@ class LoopStepFact:
 
 @dataclass(frozen=True, slots=True)
 class ModelTurnFact:
-    turn: int
+    run_step: int
     mode: Literal["deterministic", "provider"]
     prompt: str
     provider: str | None = None
     model: str | None = None
     attempt: int = 0
     streaming: bool = False
+    tool_batch_calls: tuple[ToolCall, ...] | None = None
+    tool_batch_reasoning: str | None = None
     kind: ClassVar[Literal["model_turn"]] = "model_turn"
 
 

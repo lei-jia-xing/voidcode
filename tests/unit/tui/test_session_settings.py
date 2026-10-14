@@ -1,8 +1,12 @@
+import json
 import os
+import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
-from voidcode.runtime.config.loading import RuntimeConfig
+from tests.provider_loopback import OpenAILoopbackServer, configure_openai_provider, openai_response
+from voidcode.runtime.config.loading import load_runtime_config
 from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.service import VoidCodeRuntime
 from voidcode.tui.app import TuiApp
@@ -27,15 +31,25 @@ def test_f1_uses_resumed_session_approval_mode_over_global_mode(tmp_path: Path, 
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
-    monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
+
     monkeypatch.setenv("VOIDCODE_APPROVAL_MODE", "yolo")
     for key in tuple(os.environ):
         if key.endswith("_API_KEY"):
             monkeypatch.delenv(key, raising=False)
 
+    provider = OpenAILoopbackServer([openai_response(message={"role": "assistant", "content": "done"}, finish="stop")])
+    provider_thread = threading.Thread(target=provider.serve_forever, daemon=True)
+    configure_openai_provider(
+        workspace,
+        f"http://127.0.0.1:{provider.server_address[1]}/v1",
+    )
+    workspace_config = json.loads((workspace / ".voidcode.json").read_text(encoding="utf-8"))
+    workspace_config["approval_mode"] = "yolo"
+    (workspace / ".voidcode.json").write_text(json.dumps(workspace_config), encoding="utf-8")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
     runtime = VoidCodeRuntime(
         workspace=workspace,
-        config=RuntimeConfig(execution_engine="deterministic", approval_mode="ask"),
+        config=replace(load_runtime_config(workspace), approval_mode="ask"),
     )
     output = (tmp_path / "terminal.log").open("wb", buffering=0)
     terminal = Terminal(output_fd=output.fileno(), is_tty=False, size=(80, 24), color_system=None)
@@ -44,7 +58,13 @@ def test_f1_uses_resumed_session_approval_mode_over_global_mode(tmp_path: Path, 
     try:
         runtime.__enter__()
         runtime_entered = True
-        response = runtime.run(RuntimeRequest(prompt="read settings.txt", session_id="session-settings-resume"))
+        provider_thread.start()
+        response = runtime.run(
+            RuntimeRequest(
+                prompt="persist a session with ask mode",
+                session_id="session-settings-resume",
+            )
+        )
         session_id = response.session.session.id
 
         app = TuiApp(workspace, runtime=runtime, keymap={"f1": "app.help"})
@@ -72,4 +92,7 @@ def test_f1_uses_resumed_session_approval_mode_over_global_mode(tmp_path: Path, 
             runtime.__exit__(None, None, None)
         else:
             terminal.close()
-        output.close()
+        if provider_thread.is_alive():
+            provider.shutdown()
+            provider_thread.join(timeout=5)
+        provider.server_close()

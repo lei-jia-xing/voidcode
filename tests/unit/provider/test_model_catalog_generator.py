@@ -26,24 +26,19 @@ _spec.loader.exec_module(generator)
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        # Upstream advertises discrete effort values: the ladder order wins and
-        # tokens that are not levels (``none``) are dropped.
         (
             {"reasoning_options": [{"type": "effort", "values": ["none", "high", "low", "max"]}]},
             {"supports_reasoning_effort": True, "supported_effort_levels": ["low", "high", "max"]},
         ),
-        # Toggle and budget models expose a reasoning control but no ladder.
-        ({"reasoning_options": [{"type": "toggle"}]}, {"supports_reasoning_effort": True}),
+        ({"reasoning_options": [{"type": "toggle"}]}, {"supports_reasoning_effort": False}),
         (
             {"reasoning_options": [{"type": "budget_tokens", "min": 1024}]},
-            {"supports_reasoning_effort": True},
+            {"supports_reasoning_effort": False, "supports_thinking_budget": True},
         ),
-        # An effort option whose values hold no level still means "capable".
         ({"reasoning_options": [{"type": "effort", "values": ["none"]}]}, {"supports_reasoning_effort": True}),
-        # No options: an explicit False, which is what makes the runtime refuse.
         ({"reasoning_options": []}, {"supports_reasoning_effort": False}),
-        ({}, {"supports_reasoning_effort": False}),
-        ({"reasoning_options": None}, {"supports_reasoning_effort": False}),
+        ({}, {}),
+        ({"reasoning_options": None}, {}),
     ],
 )
 def test_reasoning_effort_fields(raw: dict[str, object], expected: dict[str, object]) -> None:
@@ -82,6 +77,19 @@ def test_model_entry_only_emits_loader_known_fields() -> None:
     assert entry["display_name"] == "Test Model"
     assert entry["modalities_output"] == ["text"]
     assert entry["max_input_tokens"] == 100000
+
+
+def test_missing_costs_remain_unknown_but_explicit_zero_is_preserved() -> None:
+    assert generator._per_token({}, "input") is None
+    assert generator._per_token({"input": 0}, "input") == 0.0
+
+    entry = generator._model_entry(
+        {"limit": {"context": 128000}, "cost": {"input": 0}, "tool_call": True},
+        "openai-completions",
+    )
+    assert entry is not None
+    assert entry["cost_per_input_token"] == 0.0
+    assert "cost_per_output_token" not in entry
 
 
 def test_model_api_prefers_the_route_pin_then_the_npm_hint_then_the_provider_wire() -> None:

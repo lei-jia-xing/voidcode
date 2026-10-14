@@ -37,7 +37,7 @@ from .sessions import _SessionStorageMixin
 
 # The storage schema is a cutover, not a migration: older database generations
 # are refused before any schema or repository mutation.
-SCHEMA_VERSION: Final[int] = 2
+SCHEMA_VERSION: Final[int] = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -716,8 +716,8 @@ class SqliteSessionStore(
     def _parse_event_source(value: str) -> EventSource:
         if value == "runtime":
             return "runtime"
-        if value == "graph":
-            return "graph"
+        if value == "core":
+            return "core"
         if value == "tool":
             return "tool"
         raise ValueError(f"invalid event source: {value}")

@@ -55,7 +55,7 @@ runtime/
 - MCP servers are managed at runtime scope through `runtime/mcp.py`; do not document or implement workspace-scoped MCP lifecycle without a separate explicit task.
 
 ## HOTSPOTS
-- `service.py` is the central composition point. Read the owning module before changing `_build_turn_producer_for_engine_from_config`, `tool_registry_for_effective_config`, `start_background_task`, or resume helpers; the runtime turn adapter is `run_loop.py::RuntimeRunLoopCoordinator.execute_turn_engine` with `run_loop.py::RuntimeHost`.
+- `service.py` is the central composition point. Read the owning module before changing `run_config_for_request`, `run_config_from_metadata`, `turn_producer_for_session_metadata`, `tool_registry_for_config`, `start_background_task`, or resume helpers; the run-loop adapter is `run_loop.py::RuntimeRunLoopCoordinator.execute_turn_engine` with `run_loop.py::RuntimeHost`.
 - `storage/` owns schema evolution and terminal-state bookkeeping. Runtime SQLite persistence is user-global at the XDG state path resolved by `runtime/paths.py`, via `sessions_db_path()` for sessions and `provider_catalog_cache_path()` for the provider model catalog cache. The canonical runtime schema uses `workspace_id` columns and SQLite `PRAGMA user_version`; schema/version mismatch handling is fail-fast and does not migrate old schemas unless a task explicitly requires migration support. `SqliteSessionStore._connect` verifies that schema at most once per database file per process (`_ensure_schema_once`, keyed on the file identity plus the connection's own `PRAGMA user_version` / `PRAGMA schema_version` / sequence-row sentinels), because every storage read opens a connection; keep those sentinels authoritative instead of assuming a warm cache.
 - `context/` owns provider-facing context assembly and projection. Keep runtime governance, persistence, and provider transport outside this package.
 - `execution/` owns runtime-to-core/provider seams and authenticated recovery helpers. It must not become a second turn engine or grant authority through a continuation seed.
@@ -70,8 +70,8 @@ runtime/
 
 ## KEY FLOWS
 - **Run path:** `VoidCodeRuntime.run_stream()` → `_stream_chunks()` → `RuntimeRunLoopCoordinator.execute_turn_engine()` → `TurnEngine.run(..., host=RuntimeHost(...))`.
-- **Producer selection:** `runtime_config_for_request()` / `effective_runtime_config_from_metadata()` → `_build_turn_producer_for_engine_from_config()`.
-- **Tool scoping:** `tool_registry_for_effective_config()` applies builtin registry, agent manifest allowlist, and per-request tool config.
+- **Producer selection:** `run_config_for_request()` / `run_config_from_metadata()` → `turn_producer_for_session_metadata()` → `select_turn_producer_for_config()` → `build_runtime_turn_producer()`. Explicit producer injection is for tests; an unbound production provider raises `not_configured`.
+- **Tool scoping:** `tool_registry_for_config()` applies builtin registry, agent manifest allowlist, and per-request tool config.
 - **Delegated routing:** `task` tool routing validates supported child presets before `start_background_task()` creates a child session lineage.
 - **Resume path:** approval, question, and interrupted continuations enter the same `TurnEngine.run` path after runtime admission. Preserve authentic original batch IDs/arguments and completed prefixes. A pending `never` intent is not replayed or claimed; restore the safe checkpoint branch and obtain a genuine new provider invocation.
 - **Background tasks:** `start_background_task()` persists queued state, spawns worker threads, and finalizes lifecycle hooks and notifications. The model-facing `background_task` facade provides bounded output/roster reads plus cancel/steer controls; all truth and ownership remain runtime-owned.

@@ -117,7 +117,7 @@ def test_static_catalog_metadata_lowercases_and_looks_up(
     assert model_catalog.static_catalog_metadata("openai", "nope") is None
 
 
-def test_discover_available_models_recomputes_input_limit_for_remote_context_override() -> None:
+def test_discover_available_models_does_not_infer_an_input_cap_from_context_window() -> None:
     result = discover_available_models(
         "openai",
         ProviderEndpointConfig(base_url="https://api.openai.com"),
@@ -135,7 +135,7 @@ def test_discover_available_models_recomputes_input_limit_for_remote_context_ove
     metadata = result.model_metadata["gpt-4o"]
     assert metadata.context_window == 64_000
     assert metadata.max_output_tokens == 16_384
-    assert metadata.max_input_tokens == 47_616
+    assert metadata.max_input_tokens is None
 
 
 def test_provider_model_metadata_payload_includes_limits_and_capabilities() -> None:
@@ -161,7 +161,6 @@ def test_provider_model_metadata_payload_includes_limits_and_capabilities() -> N
 
     assert payload == {
         "context_window": 128_000,
-        "max_input_tokens": 111_616,
         "max_output_tokens": 16_384,
         "supports_tools": True,
         "supports_vision": False,

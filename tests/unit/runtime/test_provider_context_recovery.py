@@ -11,10 +11,11 @@ existing fallback chain or fails in a way that ``sessions resume`` can retry.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from voidcode.core.turns import FinalTurn, ToolTurn
+from voidcode.core.turns import FinalTurn, ModelTurnFact, ToolTurn
 from voidcode.provider.config import ProviderConfigs, ProviderEndpointConfig, ProviderFallbackConfig
 from voidcode.provider.openai_native import OpenAIChatCompletionsProvider, OpenAITransportError
 from voidcode.provider.protocol import ProviderExecutionError
@@ -63,7 +64,16 @@ class _OverflowScript:
                 model_name=self._model,
                 message="prompt is too long: 250000 tokens > 200000 maximum",
             )
-        return nxt  # type: ignore[return-value]
+        if not isinstance(nxt, ToolTurn | FinalTurn):
+            raise AssertionError(f"unknown scripted turn: {nxt!r}")
+        fact = ModelTurnFact(
+            request.run_step,
+            "provider",
+            request.prompt,
+            provider=self._provider,
+            model=self._model,
+        )
+        return replace(nxt, facts=(*nxt.facts, fact))
 
 
 #: Enough read payload that pruning clears the policy's savings floor (the
@@ -82,14 +92,13 @@ def _reads() -> list[ToolTurn]:
     return [ToolTurn(calls=(ToolCall(tool_name="read", arguments={"path": f"big-{index}.txt"}),)) for index in range(READ_COUNT)]
 
 
-def _runtime(tmp_path: Path, graph: _OverflowScript, *, threshold: int = 2_000) -> VoidCodeRuntime:
+def _runtime(tmp_path: Path, producer: _OverflowScript, *, threshold: int = 2_000) -> VoidCodeRuntime:
     return VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ReadTool()]),
-        turn_producer=graph,
+        turn_producer=producer,
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
-            execution_engine="provider",
             model="session/model",
             providers=ProviderConfigs(custom={"session": ProviderEndpointConfig()}),
             context_window=RuntimeContextWindowConfig(
@@ -105,7 +114,7 @@ def _runtime(tmp_path: Path, graph: _OverflowScript, *, threshold: int = 2_000) 
 
 def _chain_runtime(
     tmp_path: Path,
-    graph: _OverflowScript,
+    producer: _OverflowScript,
     *,
     model: str,
     fallback_models: tuple[str, ...],
@@ -114,10 +123,9 @@ def _chain_runtime(
     return VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ReadTool()]),
-        turn_producer=graph,
+        turn_producer=producer,
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
-            execution_engine="provider",
             model=model,
             provider_fallback=ProviderFallbackConfig(preferred_model=model, fallback_models=fallback_models),
             context_window=RuntimeContextWindowConfig(
@@ -146,7 +154,7 @@ def test_promotion_prefers_a_strictly_larger_window_candidate(tmp_path: Path) ->
             transport_requests.append(payload)
             model = payload["model"]
             model_calls = sum(call["model"] == model for call in transport_requests)
-            if model == "gpt-4o" and model_calls <= READ_COUNT:
+            if model == "gpt-5-mini" and model_calls <= READ_COUNT:
                 index = model_calls - 1
                 return {
                     "choices": [
@@ -167,11 +175,11 @@ def test_promotion_prefers_a_strictly_larger_window_candidate(tmp_path: Path) ->
                         }
                     ]
                 }
-            if model == "gpt-4.1":
+            if model == "gpt-5.4":
                 return {
                     "choices": [
                         {
-                            "message": {"content": "answered by the larger-window target"},
+                            "message": {"content": "answered by the larger-input-cap target"},
                             "finish_reason": "stop",
                         }
                     ]
@@ -179,7 +187,7 @@ def test_promotion_prefers_a_strictly_larger_window_candidate(tmp_path: Path) ->
             raise OpenAITransportError(
                 {
                     "error": {
-                        "message": "prompt is too long: 250000 tokens > 200000 maximum context length",
+                        "message": "prompt is too long",
                         "type": "invalid_request_error",
                         "code": "context_length_exceeded",
                     }
@@ -200,11 +208,10 @@ def test_promotion_prefers_a_strictly_larger_window_candidate(tmp_path: Path) ->
         model_provider_registry=provider_registry,
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
-            execution_engine="provider",
-            model="openai/gpt-4o",
+            model="openai/gpt-5-mini",
             provider_fallback=ProviderFallbackConfig(
-                preferred_model="openai/gpt-4o",
-                fallback_models=("openai/gpt-4o-mini", "openai/gpt-4.1"),
+                preferred_model="openai/gpt-5-mini",
+                fallback_models=("openai/gpt-5", "openai/gpt-5.4"),
             ),
             context_window=RuntimeContextWindowConfig(compaction=RuntimeCompactionConfig(threshold_tokens=2_000, keep_recent_tool_tokens=100)),
         ),
@@ -213,26 +220,25 @@ def test_promotion_prefers_a_strictly_larger_window_candidate(tmp_path: Path) ->
     chunks = list(runtime.run_stream(RuntimeRequest(prompt=PROMPT, session_id=SESSION_ID, metadata={"provider_stream": False})))
 
     requested_models = [call["model"] for call in transport_requests]
-    assert requested_models[0] == "gpt-4o"
-    assert requested_models[-1] == "gpt-4.1"
-    assert "gpt-4o-mini" not in requested_models
-    assert chunks[-1].output == "answered by the larger-window target"
+    assert requested_models[0] == "gpt-5-mini"
+    assert requested_models[-1] == "gpt-5.4"
+    assert "gpt-5" not in requested_models
+    assert chunks[-1].output == "answered by the larger-input-cap target"
 
     promote = [event for event in _events(chunks, RUNTIME_PROVIDER_CONTEXT_RECOVERY) if event.payload["mode"] == "promote"]
     assert len(promote) == 1
     payload = promote[0].payload
     assert payload["promotion_reason"] == "larger_window"
     assert payload["candidate_count"] == 2
-    assert payload["window_tokens_before"] is not None and payload["window_tokens_after"] is not None
-    assert payload["window_tokens_after"] > payload["window_tokens_before"]
+    assert payload["window_tokens_before"] == 272000
+    assert payload["window_tokens_after"] == 922000
     fallback = _events(chunks, RUNTIME_PROVIDER_FALLBACK)
-    assert [(event.payload["from_model"], event.payload["to_model"]) for event in fallback] == [("gpt-4o", "gpt-4.1")]
+    assert [(event.payload["from_model"], event.payload["to_model"]) for event in fallback] == [("gpt-5-mini", "gpt-5.4")]
 
 
-def test_promotion_without_a_larger_candidate_keeps_the_chain_order_target(tmp_path: Path) -> None:
-    """No strictly larger candidate: the existing chain order applies and the event says so."""
+def test_promotion_with_unknown_candidate_cap_keeps_chain_order_and_says_unknown(tmp_path: Path) -> None:
     _workspace(tmp_path)
-    graph = _OverflowScript(
+    producer = _OverflowScript(
         [
             *_reads(),
             "overflow",
@@ -240,33 +246,32 @@ def test_promotion_without_a_larger_candidate_keeps_the_chain_order_target(tmp_p
         ],
         repeat_last=True,
         provider="openai",
-        model="gpt-4.1",
+        model="gpt-5.4",
     )
 
     chunks = list(
         _chain_runtime(
             tmp_path,
-            graph,
-            model="openai/gpt-4.1",  # 1.01M
-            fallback_models=("openai/gpt-4o",),  # 111k: smaller, never claimed as an upgrade
+            producer,
+            model="openai/gpt-5.4",
+            fallback_models=("openai/gpt-4.1",),  # larger aggregate context, but no reported input cap
         ).run_stream(RuntimeRequest(prompt=PROMPT, session_id=SESSION_ID))
     )
 
     promote = [event for event in _events(chunks, RUNTIME_PROVIDER_CONTEXT_RECOVERY) if event.payload["mode"] == "promote"]
     assert len(promote) == 1
     payload = promote[0].payload
-    assert payload["promotion_reason"] == "no_larger_candidate"
-    assert payload["window_tokens_before"] is not None and payload["window_tokens_after"] is not None
-    assert payload["window_tokens_after"] < payload["window_tokens_before"]
+    assert payload["promotion_reason"] == "no_known_larger_candidate"
+    assert payload["window_tokens_before"] == 922000
+    assert payload["window_tokens_after"] is None
     fallback = _events(chunks, RUNTIME_PROVIDER_FALLBACK)
-    # Existing behaviour preserved for this lane: the chain-order next target.
-    assert [(event.payload["from_model"], event.payload["to_model"]) for event in fallback] == [("gpt-4.1", "gpt-4o")]
+    assert [(event.payload["from_model"], event.payload["to_model"]) for event in fallback] == [("gpt-5.4", "gpt-4.1")]
 
 
 def test_promotion_without_catalog_metadata_falls_back_without_crashing(tmp_path: Path) -> None:
     """A model the catalog does not describe cannot be compared; the run still ends."""
     _workspace(tmp_path)
-    graph = _OverflowScript(
+    producer = _OverflowScript(
         [
             *_reads(),
             "overflow",
@@ -275,20 +280,20 @@ def test_promotion_without_catalog_metadata_falls_back_without_crashing(tmp_path
         repeat_last=True,
     )
 
-    chunks = list(_runtime(tmp_path, graph).run_stream(RuntimeRequest(prompt=PROMPT, session_id=SESSION_ID)))
+    chunks = list(_runtime(tmp_path, producer).run_stream(RuntimeRequest(prompt=PROMPT, session_id=SESSION_ID)))
 
     promote = [event for event in _events(chunks, RUNTIME_PROVIDER_CONTEXT_RECOVERY) if event.payload["mode"] == "promote"]
     assert len(promote) == 1
     payload = promote[0].payload
     assert payload["window_tokens_before"] is None
     assert payload["window_tokens_after"] is None
-    assert payload["promotion_reason"] in {"no_larger_candidate", "unavailable"}
+    assert payload["promotion_reason"] in {"no_known_larger_candidate", "unavailable"}
     assert chunks[-1].session.status == "failed"
 
 
 def test_context_limit_prunes_and_retries_the_same_call(tmp_path: Path) -> None:
     _workspace(tmp_path)
-    graph = _OverflowScript(
+    producer = _OverflowScript(
         [
             *_reads(),
             "overflow",
@@ -296,7 +301,7 @@ def test_context_limit_prunes_and_retries_the_same_call(tmp_path: Path) -> None:
         ]
     )
 
-    chunks = list(_runtime(tmp_path, graph).run_stream(RuntimeRequest(prompt=PROMPT, session_id=SESSION_ID)))
+    chunks = list(_runtime(tmp_path, producer).run_stream(RuntimeRequest(prompt=PROMPT, session_id=SESSION_ID)))
 
     recovery = _events(chunks, RUNTIME_PROVIDER_CONTEXT_RECOVERY)
     assert [(event.payload["mode"], event.payload["outcome"]) for event in recovery] == [("prune", "retry")]
@@ -306,7 +311,7 @@ def test_context_limit_prunes_and_retries_the_same_call(tmp_path: Path) -> None:
     assert recovery[0].payload["usage_tokens_after"] < recovery[0].payload["usage_tokens_before"]
     assert recovery[0].payload["usage_tokens_estimated"] is True
     # The retried (last) call received the pruned view: pairing preserved, content replaced.
-    retried_tool_segments = [segment for segment in graph.calls[-1].segments if segment.role == "tool"]
+    retried_tool_segments = [segment for segment in producer.calls[-1].segments if segment.role == "tool"]
     assert len(retried_tool_segments) == READ_COUNT
     assert all((segment.metadata or {}).get("pruned") is True for segment in retried_tool_segments)
     assert chunks[-1].session.status == "completed"
@@ -318,7 +323,7 @@ def test_recovery_flag_tracks_the_max_winner_not_a_constant(tmp_path: Path) -> N
     from voidcode.provider.protocol import ProviderTokenUsage
 
     _workspace(tmp_path)
-    graph = _OverflowScript(
+    producer = _OverflowScript(
         [
             ToolTurn(
                 calls=(ToolCall(tool_name="read", arguments={"path": "big-0.txt"}),),
@@ -329,7 +334,7 @@ def test_recovery_flag_tracks_the_max_winner_not_a_constant(tmp_path: Path) -> N
         ]
     )
 
-    chunks = list(_runtime(tmp_path, graph).run_stream(RuntimeRequest(prompt=PROMPT, session_id=SESSION_ID)))
+    chunks = list(_runtime(tmp_path, producer).run_stream(RuntimeRequest(prompt=PROMPT, session_id=SESSION_ID)))
 
     recovery = _events(chunks, RUNTIME_PROVIDER_CONTEXT_RECOVERY)
     assert [(event.payload["mode"], event.payload["outcome"]) for event in recovery] == [("prune", "retry")]
@@ -341,7 +346,7 @@ def test_recovery_flag_tracks_the_max_winner_not_a_constant(tmp_path: Path) -> N
 def test_a_small_overshoot_is_still_pruned_by_recovery(tmp_path: Path) -> None:
     """Recovery ignores the routine savings floor: a tiny reclaim must still retry."""
     _workspace(tmp_path)
-    graph = _OverflowScript(
+    producer = _OverflowScript(
         [
             ToolTurn(calls=(ToolCall(tool_name="read", arguments={"path": "big-0.txt"}),)),
             "overflow",
@@ -349,7 +354,7 @@ def test_a_small_overshoot_is_still_pruned_by_recovery(tmp_path: Path) -> None:
         ]
     )
 
-    chunks = list(_runtime(tmp_path, graph).run_stream(RuntimeRequest(prompt=PROMPT, session_id=SESSION_ID)))
+    chunks = list(_runtime(tmp_path, producer).run_stream(RuntimeRequest(prompt=PROMPT, session_id=SESSION_ID)))
 
     recovery = _events(chunks, RUNTIME_PROVIDER_CONTEXT_RECOVERY)
     assert [(event.payload["mode"], event.payload["outcome"]) for event in recovery] == [("prune", "retry")]
@@ -362,7 +367,7 @@ def test_repeated_context_limit_recovers_once_then_fails_resumably(tmp_path: Pat
     _workspace(tmp_path)
     # Every later provider call overflows too: the runtime may try the promotion
     # path before giving up, and the assertions below only pin the invariants.
-    graph = _OverflowScript(
+    producer = _OverflowScript(
         [
             *_reads(),
             "overflow",
@@ -371,7 +376,7 @@ def test_repeated_context_limit_recovers_once_then_fails_resumably(tmp_path: Pat
         repeat_last=True,
     )
 
-    chunks = list(_runtime(tmp_path, graph).run_stream(RuntimeRequest(prompt=PROMPT, session_id=SESSION_ID)))
+    chunks = list(_runtime(tmp_path, producer).run_stream(RuntimeRequest(prompt=PROMPT, session_id=SESSION_ID)))
 
     recovery = _events(chunks, RUNTIME_PROVIDER_CONTEXT_RECOVERY)
     # One pruning retry per turn; the second failure is a promotion decision.
@@ -389,14 +394,13 @@ def test_repeated_context_limit_recovers_once_then_fails_resumably(tmp_path: Pat
     checkpoint = SqliteSessionStore().load_resume_checkpoint(workspace=tmp_path, session_id=SESSION_ID)
     assert checkpoint is not None
 
-    resumed_graph = _OverflowScript([FinalTurn(output="resumed after shrinking")])
+    resumed_producer = _OverflowScript([FinalTurn(output="resumed after shrinking")])
     resumed = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ReadTool()]),
-        turn_producer=resumed_graph,
+        turn_producer=resumed_producer,
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
-            execution_engine="provider",
             model="session/model",
             providers=ProviderConfigs(custom={"session": ProviderEndpointConfig()}),
         ),
