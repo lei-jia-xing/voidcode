@@ -1,190 +1,44 @@
 <p align="center">
-  <a href="./LICENSE">
-    <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License" />
-  </a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License" /></a>
   <img src="https://img.shields.io/badge/python-3.14-blue.svg" alt="Python 3.14" />
-  <img src="https://img.shields.io/badge/bun-1.3+-fbf0df.svg" alt="Bun 1.3+" />
-  <img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs welcome" />
+  <img src="https://img.shields.io/badge/bun-1.4.2-fbf0df.svg" alt="Bun 1.4.2" />
 </p>
 
 # VoidCode
 
-VoidCode is a local-first coding agent runtime inspired by OpenCode and Claude Code.
+VoidCode is an open-source, local-first coding agent runtime inspired by OpenCode and Claude Code. It enables LLMs to inspect workspaces, edit files, execute shell commands, and coordinate delegated background tasks under configurable approval modes with local SQLite persistence.
 
-> **Status:** VoidCode is shipping its first productionized release of the runtime control plane. The current focus is tightening runtime boundaries, improving the execution control plane, and shipping a repeatable end-to-end single-agent loop.
+## Key Features
 
-> **Documentation note:** contributor-facing documents at the repository root are in English. Internal design and planning documents under `docs/` are currently mostly written in Chinese.
+- **Local-First Architecture**: Sessions, event logs, and checkpoints reside locally in SQLite (POSIX default: `~/.local/state/voidcode/sessions.sqlite3`, overridable via `XDG_STATE_HOME` or `VOIDCODE_DB_PATH`).
+- **Configurable Approvals**: Supports `yolo` (default), `ask`, and `write` modes to govern tool execution permissions.
+- **Durable Event-Sourced Sessions**: Every turn, tool invocation, and approval is persisted as an append-only event log. Sessions can be resumed, inspected, forked, or rolled back (`undo`, `revert`, `checkout`).
+- **Multi-Interface Access**: Interact through a fast CLI, an interactive inline Terminal UI (with native scrollback), a modern React 19 web interface, or an ACP stdio JSON-RPC facade for editor integrations.
+- **Hierarchical Task Delegation**: Primary sessions can delegate specialized background work to child agents (`explore`, `review`, `research`, `execute`, `plan`) with structured result reporting.
 
-## What VoidCode aims to provide
+## Architecture
 
-VoidCode is built around a local developer workflow with these core capabilities:
+VoidCode separates runtime governance from turn progression:
 
-- conversational task execution
-- code reading and search
-- controlled tool calls and file editing
-- approval checkpoints for risky operations
-- hooks and observable runtime events
-- local session persistence and resume
-- a headless runtime separated from CLI and future UI clients
-
-The roadmap remains intentionally narrow: ship a stable, demoable single-agent MVP first, then expand from a runtime-owned control plane rather than growing outward too early.
-
-## Quick start
-
-The recommended setup uses `uv` for Python and Bun for the frontend. Supported Python version: **3.14**.
-
-> **Current state:** the repository has a real CLI → runtime loop with session persistence, resumable approval/question waits, and a minimal HTTP/SSE transport. Provider-backed execution is the only runtime path; tests inject their own producers and do not provide a no-key production mode.
-
-```bash
-# Install toolchain and Python dependencies
-mise install
-uv sync --extra dev --extra syntax
-
-# Explore the CLI
-uv run voidcode --help
-
-
-# Configure one provider and model explicitly
-OPENAI_API_KEY=... VOIDCODE_MODEL=openai/gpt-4o-mini \
-  uv run voidcode run "Read README.md and summarize its main points." --workspace .
-
-# A write task pauses for approval in a TTY (the ask mode prompts for write/exec)
-uv run voidcode run "Create hello.txt containing hello world." --workspace . --approval-mode ask
-
-# List main sessions; add --include-children for delegated child sessions
-uv run voidcode sessions list --workspace .
+```mermaid
+graph TD
+    User["Developer / Editor"] --> Clients["Client Interfaces (CLI / TUI / Web / ACP)"]
+    Clients --> Runtime["Runtime Control Plane (VoidCodeRuntime)"]
+    Runtime --> Storage["Local SQLite Store (~/.local/state/voidcode/sessions.sqlite3)"]
+    Runtime --> Permissions["Permission & Approval Gates"]
+    Runtime --> Host["RuntimeHost Seam"]
+    Host --> Engine["Core TurnEngine"]
+    Engine --> Providers["LLM Providers (OpenAI, Anthropic, Google)"]
+    Host --> Tools["Tools (read, write, edit, shell_exec, task)"]
 ```
 
-### First-run readiness
+For an in-depth explanation, see the [Architecture Overview](./docs/architecture.md).
 
-Provider-backed runs fail closed when the workspace has no valid provider/model or
-configuration. Before starting a provider run, the CLI uses the same readiness
-contract as `doctor` and prints copyable next steps without exposing credentials:
+## Quickstart
 
-```bash
-# Inspect provider/model, local tools, and first-task readiness
-uv run voidcode doctor --workspace .
+### Prerequisites
 
-# Machine-readable readiness and recovery actions
-uv run voidcode run "Summarize README.md." --workspace . --json
-```
-
-When readiness is blocked, `run` exits with the existing config/provider exit
-code and suggests `voidcode doctor` or `voidcode config init --model
-provider/model`. It never falls back to a successful-looking no-key run.
-
-The JSON preflight payload has stable `status`, `error`, `actions`, and
-`first_task_readiness` fields. Credentials and secret-like configuration values
-are not included.
-
-## CLI reference
-
-`voidcode --help` lists the full surface, and every command supports `--help`.
-
-| Command | Purpose |
-| --- | --- |
-| `voidcode run REQUEST` | Run one request through the configured provider. |
-| `voidcode tui` | Run the interactive inline client (native scrollback, no alternate screen). |
-| `voidcode serve` | Serve the local HTTP runtime transport. |
-| `voidcode web` | Start the web launcher (auto-assigned port; opens a browser unless `--no-open`). |
-| `voidcode acp` | Run the minimal external-facing ACP stdio JSON-RPC facade. |
-| `voidcode sessions` | `list`, `resume`, `answer`, `export`, `import`, `debug`, `undo`, `revert`, and `unrevert` persisted sessions. |
-| `voidcode tasks` | `list`, `status`, `output`, `cancel`, `retry`, and `steer` delegated background tasks. |
-| `voidcode storage` | `diagnostics`, `prune`, and `reset` the local runtime SQLite store. |
-| `voidcode stats tools` | Summarize persisted tool success, errors, retries, and output pressure. |
-| `voidcode config` | `show` effective configuration, print the `schema`, or `init` a starter `.voidcode.json`. |
-| `voidcode provider` | `models` (optionally `--refresh`) and `inspect` provider metadata. |
-| `voidcode commands` | `list` and `show` discovered prompt commands. |
-| `voidcode agents` | `list` built-in and local custom agent manifests. |
-| `voidcode mcp` | `list` configured MCP servers and passive runtime status. |
-| `voidcode doctor` | Check capability readiness (external tools, formatters, LSP, MCP). |
-
-Shared plumbing: `--workspace PATH` (default `.`) resolves the workspace for every command, and the
-root-level `--db-path FILE` pins the SQLite store for one invocation (equivalent to exporting
-`VOIDCODE_DB_PATH`).
-
-Machine-readable output: `--json` is available on `run`, `sessions list`, `sessions answer`,
-`tasks *`, `stats tools`, `commands *`, `agents list`, `mcp list`, and `doctor`. The commands whose
-whole purpose is a payload always print JSON: `provider models`, `provider inspect`,
-`sessions debug`, `sessions resume --dry-run`, `sessions export --format json`, `sessions import`,
-`sessions undo|revert|unrevert`, `storage diagnostics`, `storage prune`, `storage reset`,
-`config show`, `config schema`, and `config init`.
-
-`voidcode sessions import BUNDLE --dry-run` validates the bundle and destination owner IDs without
-initializing a missing session database or modifying the original session/state files, SQLite sidecars,
-or destination workspace. It reads a private temporary copy of the database plus any WAL or rollback
-journal, removes that copy on return, and fails closed if those source files change during the copy.
-
-`run --trace` streams a human-readable transcript (model turns, one block per tool call with its
-output, TODO updates, and reasoning behind `--show-thinking`) for manual QA; `--json` and `--trace`
-are mutually exclusive. Live provider output is client-only: when a provider attempt is retried or
-falls back after streaming text, the transcript announces it once
-(`↻ Provider retry: the failed attempt's partial output was discarded; restarting the turn.`, or the
-fallback variant naming the new provider) so the restarted attempt's text never reads as a duplicated
-reply.
-
-Exit codes are part of the contract: `0` success, `1` general error, `2` usage error,
-`10` invalid runtime config, `11` provider not ready, `12` runtime error, `13` approval denied,
-`14` cancelled, `15` unknown prompt command, `16` invalid resource (missing workspace, missing
-pending question), `17` approval required in a non-interactive run, and `130` for Ctrl-C during
-`run`. Errors are reported on stderr as a single `error: ...` line, and payloads never mix with
-diagnostics on stdout.
-
-## Configuration
-
-Workspace-local runtime config lives in `.voidcode.json` at the workspace root (not `.voidcode/config.json`). To enable IDE auto-completion and validation, point `$schema` at the published JSON Schema:
-
-```json
-{
-  "$schema": "https://raw.githubusercontent.com/lei-jia-xing/voidcode/master/schema/voidcode.config.schema.json",
-  "approval_mode": "yolo"
-}
-```
-
-For a provider path, use one explicit model such as `"model": "openai/gpt-4o-mini"` and provide `OPENAI_API_KEY` through the environment. User-level provider/TUI/Web settings resolve from `~/.config/voidcode/config.json`; environment variables are field-specific inputs rather than a blanket override: for top-level runtime fields, explicit/request and repo-local values take precedence over environment values, while provider configs merge repo-local > environment > user. See [`.env.example`](./.env.example).
-## Architecture overview
-
-VoidCode keeps runtime governance separate from core turn progression: `core.engine.TurnEngine` advances provider turns through one host boundary, while `runtime.run_loop.RuntimeHost` supplies governed execution and durable lifecycle.
-
-- The runtime owns session state, permissions, tool governance and execution, storage, streaming, and recovery.
-- Core owns producer contracts and host-agnostic turn/batch progression; it does not own sessions, SQLite, or policy.
-- `RuntimeHost` adapts core turns to runtime context, approvals, hooks, persistence, recovery, and provider retry/fallback.
-- Clients such as the CLI, web frontend, and future integrations talk to the runtime rather than invoking tools or the core engine directly.
-- The repository already contains `src/voidcode/agent/` as a declaration layer for agent presets, but true multi-agent execution semantics are still post-MVP.
-
-Key backend boundaries:
-
-- `src/voidcode/core/` — `TurnEngine`, producer contracts, and provider-backed turn progression
-- `src/voidcode/runtime/` — runtime services, host, governance, and execution boundary
-- `src/voidcode/tools/` — built-in tools and tool metadata
-- `src/voidcode/hook/` — hook configuration and executor
-- `src/voidcode/lsp/`, `skills/`, `provider/`, `acp/`, `mcp/` — capability-layer boundaries
-- `src/voidcode/tui/` — terminal client layer
-
-Design principles that currently shape the project:
-
-- keep runtime governance, core turn progression, and client responsibilities clearly separated
-- gate tool usage through registry, permission, and hook policies
-- make sessions and execution state resumable
-- allow concurrent reads while controlling writes
-- preserve observability around turns, tools, approvals, hooks, and failures
-- keep the MVP scope narrow and verifiable
-
-## Repository layout
-
-```text
-voidcode/
-├── src/voidcode/         # Python package (src-layout)
-├── tests/                # pytest unit and integration coverage
-├── frontend/             # Bun/Vite/React shell
-├── docs/                 # internal architecture, roadmap, and contract docs
-├── .github/workflows/    # CI and release automation
-└── mise.toml             # canonical task runner entrypoint
-```
-
-## Development workflow
-
-One-time setup:
+VoidCode targets Python 3.14 with `uv`, and Bun for the web frontend:
 
 ```bash
 mise install
@@ -192,54 +46,117 @@ uv sync --extra dev --extra syntax
 mise run frontend:install
 ```
 
-Common tasks from `mise.toml`:
+### Initial Configuration
+
+Initialize a starter `.voidcode.json` in your project workspace:
 
 ```bash
-# Python
-mise run lint
-mise run format
-mise run typecheck
-mise run test
-mise run test:coverage
-mise run build
-
-# Frontend
-mise run frontend:dev
-mise run frontend:lint
-mise run frontend:typecheck
-mise run frontend:test
-mise run frontend:e2e
-mise run frontend:build
-
-# Combined verification
-mise run check
-mise run ci
-
-# Release notes / changelog
-mise run release:preview
-mise run release:notes
-
-# Pre-commit hooks
-mise run pre-commit
-uv run pre-commit install
+# Generate configuration for your preferred model
+uv run voidcode config init --model openai/gpt-4o-mini --workspace .
 ```
 
-`mise` orchestrates tasks and loads the local virtual environment. `uv` remains the source of truth for Python dependency management and execution. Use `mise run test` for the whole Python suite (unit and integration in parallel), and `mise run test:coverage` for the same suite with coverage. The suite is intentionally core-only — see [`docs/testing.md`](./docs/testing.md) for the policy and the areas that are deliberately untested today.
-Bun scripts are owned by `frontend/package.json`; the repository root intentionally has no `package.json` so root-level automation goes through `mise.toml`.
+Set your provider API key in your environment:
 
-`git-cliff` generates release notes before a release. Keep `project.version` in [`pyproject.toml`](./pyproject.toml) at the current release version, review the release notes, then create a GitHub Release whose tag is the same version with a `v` prefix (for example, `v0.1.0`). The release workflow validates both built artifact metadata and the tag, publishes the distributions to PyPI through trusted publishing, and uses the same tag's commits for the GitHub Release notes.
+```bash
+export OPENAI_API_KEY="your-api-key"
+```
+
+Verify your environment readiness:
+
+```bash
+uv run voidcode doctor --workspace .
+```
+
+### Running Tasks
+
+Execute tasks through your preferred interface:
+
+```bash
+# Direct CLI execution
+uv run voidcode run "Summarize src/voidcode/runtime/service.py" --workspace .
+
+# Interactive Terminal UI (inline scrollback)
+uv run voidcode tui --workspace .
+
+# Local HTTP runtime & SSE server
+uv run voidcode serve --workspace . --port 8765
+
+# Web application launcher
+mise run frontend:build
+uv run voidcode web --workspace .
+```
+
+## CLI Reference
+
+VoidCode provides a rich suite of commands for execution, session management, and task delegation:
+
+| Command | Purpose |
+|---|---|
+| `voidcode run "PROMPT"` | Execute a task through the configured provider with real-time streaming. |
+| `voidcode tui` | Launch the interactive terminal UI with inline scrollback. |
+| `voidcode serve` | Start the local HTTP runtime transport and Server-Sent Events (SSE) server. |
+| `voidcode web` | Build and open the React 19 web launcher. |
+| `voidcode acp` | Run the stdio JSON-RPC facade for external editor integrations. |
+| `voidcode sessions list` | List persisted sessions in the current workspace. |
+| `voidcode sessions resume` | Replay or resume a persisted session response. |
+| `voidcode sessions checkout` | Move a session's active branch to an earlier event entry. |
+| `voidcode sessions fork` | Create an independent session fork from an existing session history. |
+| `voidcode tasks list` | List delegated background tasks. |
+| `voidcode tasks status` | Check lifecycle state of a delegated background task. |
+| `voidcode tasks output` | Inspect output and structured results from a delegated task. |
+| `voidcode config show` | View effective merged configuration. |
+| `voidcode config init` | Generate a starter `.voidcode.json` configuration file. |
+| `voidcode doctor` | Check toolchain, external commands, and provider readiness. |
+
+Run `voidcode --help` or `voidcode <command> --help` for complete options and usage examples.
+
+## Configuration
+
+Workspace configuration is defined in `.voidcode.json`:
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/lei-jia-xing/voidcode/master/schema/voidcode.config.schema.json",
+  "model": "openai/gpt-4o-mini",
+  "approval_mode": "yolo"
+}
+```
+
+VoidCode supports three approval modes:
+- `yolo` (default): Executes tool actions autonomously without interactive confirmation.
+- `ask`: Prompts for confirmation before state-modifying actions (file writes, edits, shell execution).
+- `write`: Auto-approves file write and edit operations; prompts for shell command execution (`shell_exec`).
+
+Execution timeouts (`tool_timeout_seconds`) are optional and unset by default.
+See the [Configuration Guide](./docs/configuration.md) for full options and provider configurations.
+
+## Development & Testing
+
+Common tasks configured via `mise`:
+
+```bash
+# Linting & Formatting
+mise run lint            # Check with Ruff
+mise run format          # Format with Ruff
+mise run typecheck       # Static typecheck with ty
+
+# Tests
+mise run test            # Run unit and integration tests
+mise run test:coverage   # Run tests with coverage summary
+
+# Full Verification
+mise run check           # Run all Python, schema, and frontend checks
+mise run pre-commit      # Run all pre-commit hooks
+```
 
 ## Documentation
 
-Implementation behavior is defined by the source and tests. Stable runtime contracts are collected in [`docs/contracts/README.md`](./docs/contracts/README.md); contributor policy is in [`docs/coding-standards.md`](./docs/coding-standards.md).
-
-These internal contract documents are currently maintained in Chinese.
-
-## Contributing and community
-
-- Contribution guide: [`CONTRIBUTING.md`](./CONTRIBUTING.md)
-- Code of conduct: [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md)
-- Security policy: [`SECURITY.md`](./SECURITY.md)
+- [Architecture Overview](./docs/architecture.md): Subsystems, lifecycle, and event sourcing.
+- [Configuration Guide](./docs/configuration.md): Configuration options, approval tiers, and custom providers.
+- [Coding Standards](./docs/coding-standards.md): Code conventions, design principles, and commit formats.
+- [Testing Policy](./docs/testing.md): Core coverage, offline test guards, and verification methods.
+- [Runtime Contracts](./docs/contracts/README.md): Authoritative contracts for execution, delegation, and client transport.
+- [Contributing](./CONTRIBUTING.md): Development environment setup and pull request workflow.
 
 ## License
 

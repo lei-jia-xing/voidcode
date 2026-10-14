@@ -38,7 +38,6 @@ from ...core.tool_context import (
 )
 from ...core.transcript import AssembledContext
 from ...core.turns import ReportedCall
-from ...mcp.redaction import redact_mcp_command
 from ...provider.auth import ProviderAuthResolver
 from ...provider.model_catalog import ToolFeedbackMode
 from ...provider.models import ResolvedProviderConfig, ResolvedProviderModel
@@ -1716,7 +1715,7 @@ class InspectionCoordinator:
                     "workspace_root": (None if runtime_state is None else runtime_state.workspace_root),
                     "stage": None if runtime_state is None else runtime_state.stage,
                     "error": None if runtime_state is None else runtime_state.error,
-                    "command": redact_mcp_command(command),
+                    "command": list(command),
                     "retry_available": (False if runtime_state is None else runtime_state.retry_available),
                 }
             )

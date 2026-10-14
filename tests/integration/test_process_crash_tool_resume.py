@@ -15,8 +15,7 @@ persisted truth of the crashed run and what the resume does with it:
   honoured (no recorded capability snapshot to replay) — then the resume must
   refuse without having rewritten the persisted truth.
 
-The invariant text lives in ``docs/contracts/execution-lifecycle.md`` and
-``docs/contracts/agent-tool-calling.md`` → 「取消与超时（execution lifecycle）」.
+The invariant text lives in ``docs/contracts/runtime-execution.md``.
 """
 
 from __future__ import annotations

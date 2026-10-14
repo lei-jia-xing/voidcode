@@ -20,7 +20,7 @@ import shlex
 from pathlib import Path
 from typing import TypeGuard
 
-from ..runtime.events import EventEnvelope, redact_reasoning_payload
+from ..runtime.events import EventEnvelope, project_reasoning_payload
 from .support import StreamResult
 
 _PROVIDER_RESTART_EVENTS = frozenset({"runtime.provider_transient_retry", "runtime.provider_fallback"})
@@ -50,7 +50,7 @@ class TracePrinter:
         self._reasoning_open = False
 
     def handle_event(self, event: EventEnvelope) -> None:
-        payload = redact_reasoning_payload(
+        payload = project_reasoning_payload(
             event.event_type,
             event.payload,
             show_thinking=self._show_thinking,

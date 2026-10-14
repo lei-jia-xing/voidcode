@@ -54,7 +54,6 @@ from ..provider.errors import ProviderExecutionError
 from ..provider.protocol import (
     ProviderAbortSignal,
 )
-from ..security.redaction import redact_text
 from ..tools._pydantic_args import format_validation_error
 from ..tools._repair import ToolDiagnosticError
 from ..tools.contracts import (
@@ -3831,8 +3830,6 @@ class RuntimeHost:
                 },
             )
             if segment.tool_call_id is not None
-            else replace(segment, content=redact_text(segment.content))
-            if segment.role == "assistant" and segment.content is not None
             else segment
             for segment in timeline
         )

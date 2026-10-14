@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from voidcode.common.json_values import json_wire_object
 from voidcode.core.tool_context import ToolContext
 from voidcode.core.turns import FinalTurn, ModelTurnFact, ToolTurn, TurnRequest
-from voidcode.formats.json_values import json_wire_object
 from voidcode.runtime.config.loading import RuntimeConfig, RuntimeMcpConfig, RuntimeMcpServerConfig
 from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.execution.tool_replay import ToolExecutionIntent

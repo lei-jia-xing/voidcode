@@ -6,7 +6,7 @@ from dataclasses import dataclass, field, fields, is_dataclass, replace
 from types import MappingProxyType
 from typing import ClassVar, Literal, Protocol, runtime_checkable
 
-from ..formats.json_values import own_json_object
+from ..common.json_values import own_json_object
 from ..provider.protocol import ProviderAbortSignal, ProviderStreamEvent, ProviderTokenUsage
 from ..tools.contracts import ToolBody, ToolCall, ToolDefinition, ToolResult
 from .transcript import AssembledContext, ContextWindow, ToolResultView

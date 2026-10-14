@@ -9,7 +9,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Literal
 
-from ..formats.frontmatter import load_frontmatter_mapping, split_frontmatter
+from ..common.frontmatter import load_frontmatter_mapping, split_frontmatter
 from ..hook.presets import validate_hook_preset_refs
 from .builtin import list_builtin_agent_manifests
 from .models import (

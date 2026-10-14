@@ -361,8 +361,8 @@ ShowThinkingQuery = Annotated[
     Query(
         summary="Include reasoning content in the response",
         description=(
-            "Reasoning/thinking payloads are redacted by default (`show_thinking=false`); "
-            "true returns them unredacted in the events and transcripts this route returns. "
+            "Reasoning/thinking payloads are omitted by default (`show_thinking=false`); "
+            "true includes their original values in the events and transcripts this route returns. "
             "Accepted spellings are `true`/`1`/`yes`/`on` (case-insensitive); anything else means false."
         ),
     ),

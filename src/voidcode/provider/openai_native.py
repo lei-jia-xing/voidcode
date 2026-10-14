@@ -13,9 +13,8 @@ from openai import APIError as OpenAIAPIError
 from openai import APITimeoutError as OpenAIAPITimeoutError
 from openai import OpenAI, omit
 
+from ..common.json_values import json_wire_object
 from ..core.transcript import tool_result_output
-from ..formats.json_values import json_wire_object
-from ..security.redaction import redact_mapping
 from ..tools.contracts import AttachmentOutput, ToolCall
 from ..tools.output import sanitize_tool_result_data
 from ._wire_common import (
@@ -469,7 +468,7 @@ class OpenAIChatCompletionsProvider:
 
     @staticmethod
     def _visible_arguments(_tool_name: str | None, arguments: dict[str, object]) -> dict[str, object]:
-        return redact_mapping(json_wire_object(arguments))
+        return json_wire_object(arguments)
 
     def _messages(self, request: ProviderTurnRequest) -> list[dict[str, object]]:
         original_to_provider, _ = self._tool_maps(request)

@@ -10,7 +10,7 @@ Each domain keeps owning its own field whitelist, required fields, value
 types, and authority checks. Domain modules must not re-implement the block
 loop; they call :func:`split_frontmatter` and :func:`load_frontmatter_mapping`.
 
-Location: shared syntax in ``formats/``, deliberately outside ``runtime/``
+Location: shared syntax in ``common/``, deliberately outside ``runtime/``
 (no governance), ``core/`` (no step semantics), and ``tools/`` (no tool behavior).
 """
 

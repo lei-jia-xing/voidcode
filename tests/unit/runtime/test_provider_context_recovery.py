@@ -1,6 +1,6 @@
 """Context-limit recovery: prune once, promote, or fail resumably.
 
-Contract (``docs/contracts/runtime-config.md`` → context_limit recovery): a
+Contract (runtime config → context_limit recovery): a
 provider ``context_limit`` answer is a runtime-owned lane. The runtime first
 rebuilds the provider view with a recovery budget (the whole view must fit the
 catalog window minus reserve) and retries the same call once per turn, announces

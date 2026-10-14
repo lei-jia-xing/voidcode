@@ -53,9 +53,8 @@ class SessionBundleError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class SessionBundleOptions:
-    """Exact snapshots cannot be redacted or have transcript rows removed."""
+    """Session bundles currently export exact snapshots only."""
 
-    redact: bool = False
     include_tool_output: bool = True
     include_raw_provider_messages: bool = True
     include_reasoning_text: bool = True
@@ -664,10 +663,8 @@ def build_session_bundle(
     clock: Callable[[], int] | None = None,
 ) -> SessionBundle:
     options = options or SessionBundleOptions()
-    if options.redact is not False or any(
-        value is not True for value in (options.include_tool_output, options.include_raw_provider_messages, options.include_reasoning_text)
-    ):
-        raise SessionBundleError("CURRENT bundle3 requires exact unredacted export options")
+    if any(value is not True for value in (options.include_tool_output, options.include_raw_provider_messages, options.include_reasoning_text)):
+        raise SessionBundleError("CURRENT bundle3 requires exact export options")
     validate_id(session_id)
     session_ids = {session_id}
     task_ids: set[str] = set()

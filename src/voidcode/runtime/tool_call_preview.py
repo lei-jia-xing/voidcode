@@ -21,13 +21,6 @@ PREVIEW_MAX_EDITS = 64
 
 WRITE_PREVIEW_TOOLS = frozenset({"write", "edit"})
 
-_SECRET_TEXT_PATTERN = re.compile(
-    r"(?i)(?P<key>api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|secret|token)"
-    r"(?P<sep>\s*[:=]\s*)(?P<value>[^\s,;]+)"
-)
-_BEARER_PATTERN = re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._~+/=-]+")
-_SECRET_PREFIX_PATTERN = re.compile(r"\b(?:sk|gh[pousr]|xox[baprs])-[A-Za-z0-9_-]{12,}\b")
-
 
 @dataclass(frozen=True, slots=True)
 class _PartialArguments:
@@ -43,19 +36,11 @@ def _utf8_prefix(value: str, *, max_bytes: int) -> tuple[str, bool]:
 
 
 def _bounded_path(value: str) -> str:
-    redacted = _redact_text(value)
-    return redacted[:PREVIEW_PATH_MAX_CHARS]
-
-
-def _redact_text(value: str) -> str:
-    value = _SECRET_TEXT_PATTERN.sub(r"\g<key>\g<sep><redacted>", value)
-    value = _BEARER_PATTERN.sub(r"\g<1><redacted>", value)
-    return _SECRET_PREFIX_PATTERN.sub("<redacted>", value)
+    return value[:PREVIEW_PATH_MAX_CHARS]
 
 
 def _bounded_diff(value: str) -> tuple[str, bool]:
-    redacted = _redact_text(value)
-    return _utf8_prefix(redacted, max_bytes=PREVIEW_DIFF_MAX_CHARS)
+    return _utf8_prefix(value, max_bytes=PREVIEW_DIFF_MAX_CHARS)
 
 
 def _degraded(

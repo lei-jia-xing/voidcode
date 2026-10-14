@@ -5,19 +5,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, TypedDict, cast
 
-from ..security.redaction import (
-    POLICY_DIAGNOSTIC_CHARS as _POLICY_DIAGNOSTIC_CHARS,
-)
-from ..security.redaction import (
-    POLICY_DIAGNOSTIC_LIMIT,
-    is_sensitive_key,
-)
-from ..security.redaction import (
-    POLICY_EXTRA_KEY_FRAGMENTS as _POLICY_EXTRA_KEY_FRAGMENTS,
-)
-from ..security.redaction import (
-    REDACTED_PLACEHOLDER as _REDACTED,
-)
+from ..common.output_limits import POLICY_DIAGNOSTIC_CHARS as _POLICY_DIAGNOSTIC_CHARS
+from ..common.output_limits import POLICY_DIAGNOSTIC_LIMIT
 from .background.routing import CALLABLE_SUBAGENT_PRESETS
 from .permissions.policy import runtime_read_only_from_metadata
 
@@ -666,11 +655,6 @@ def _base_precedence_trace() -> list[dict[str, object]]:
     ]
 
 
-def _looks_sensitive_key(key: str) -> bool:
-    lowered = key.lower()
-    return is_sensitive_key(key) or any(fragment in lowered for fragment in _POLICY_EXTRA_KEY_FRAGMENTS)
-
-
 def _diagnostics(value: object) -> dict[str, object]:
     if not isinstance(value, dict):
         return {}
@@ -680,16 +664,7 @@ def _diagnostics(value: object) -> dict[str, object]:
             diagnostics["truncated"] = True
             break
         key = str(raw_key)
-        if _looks_sensitive_key(key):
-            diagnostics[key] = _REDACTED
-        elif isinstance(raw_item, str):
-            diagnostics[key] = raw_item[:_POLICY_DIAGNOSTIC_CHARS]
-        elif isinstance(raw_item, bool | int | float) or raw_item is None:
-            diagnostics[key] = raw_item
-        else:
-            diagnostics[key] = "<bounded>"
-    diagnostics.pop("raw_prompt", None)
-    diagnostics.pop("raw_skill_body", None)
+        diagnostics[key] = raw_item[:_POLICY_DIAGNOSTIC_CHARS] if isinstance(raw_item, str) else _json_safe(raw_item)
     return diagnostics
 
 

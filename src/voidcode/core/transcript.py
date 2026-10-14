@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
-from ..formats.json_values import own_json_object
+from ..common.json_values import own_json_object
 from ..tools.contracts import AttachmentOutput, EmptyOutput, TextOutput, ToolDiagnostics, ToolFailure, ToolOutput
 
 if TYPE_CHECKING:

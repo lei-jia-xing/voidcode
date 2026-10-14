@@ -997,7 +997,7 @@ export interface components {
          *
          *     ``payload`` is dynamic: each event type owns its payload shape (see
          *     ``voidcode.runtime.events``), and the envelope is what clients route on.
-         *     Reasoning payloads arrive already redacted unless ``show_thinking=true``.
+         *     Reasoning payload text is omitted unless ``show_thinking=true``.
          */
         EventBody: {
             delegated_lifecycle?: components["schemas"]["DelegationEventBody"] | null;
@@ -1448,7 +1448,7 @@ export interface components {
          *
          *     Scalars here are pass-throughs of the persisted runtime policy snapshot,
          *     typed from that snapshot's single writer (``runtime.policy``). ``diagnostics``
-         *     and ``precedence_trace`` are the projection's own bounded, redacted shapes:
+         *     and ``precedence_trace`` are bounded projections:
          *     trace entries keep whichever of their six keys were scalars.
          */
         RuntimePolicyBody: {
@@ -1477,11 +1477,6 @@ export interface components {
             }[];
             /** Read Only */
             read_only?: boolean | null;
-            /**
-             * Redacted
-             * @constant
-             */
-            redacted: true;
             /** Schema Version */
             schema_version?: number | null;
             tool_policy: components["schemas"]["RuntimePolicyToolPolicyBody"];
@@ -1863,10 +1858,10 @@ export interface components {
          * SessionStateBody
          * @description ``_serialize_session_state``: session identity plus status, turn, metadata.
          *
-         *     ``metadata`` is dynamic: it is a bounded, redacted projection of the
-         *     runtime-owned persisted metadata (runtime config, capability snapshots,
-         *     todos, context projection, runtime policy, ...). Durable phase snapshots
-         *     and the composition turn cursor are private and never included.
+         *     ``metadata`` is a bounded projection of the runtime-owned persisted
+         *     metadata (runtime config, capability snapshots, todos, context projection,
+         *     runtime policy, ...). Durable phase snapshots and the composition turn
+         *     cursor are private and never included.
          */
         SessionStateBody: {
             /** Metadata */
@@ -2473,7 +2468,7 @@ export interface operations {
     _handle_run_stream_api_runtime_run_stream_post: {
         parameters: {
             query?: {
-                /** @description Reasoning/thinking payloads are redacted by default (`show_thinking=false`); true returns them unredacted in the events and transcripts this route returns. Accepted spellings are `true`/`1`/`yes`/`on` (case-insensitive); anything else means false. */
+                /** @description Reasoning/thinking payloads are omitted by default (`show_thinking=false`); true includes their original values in the events and transcripts this route returns. Accepted spellings are `true`/`1`/`yes`/`on` (case-insensitive); anything else means false. */
                 show_thinking?: boolean;
             };
             header?: never;
@@ -2547,7 +2542,7 @@ export interface operations {
     _handle_session_replay_api_sessions__session_id__get: {
         parameters: {
             query?: {
-                /** @description Reasoning/thinking payloads are redacted by default (`show_thinking=false`); true returns them unredacted in the events and transcripts this route returns. Accepted spellings are `true`/`1`/`yes`/`on` (case-insensitive); anything else means false. */
+                /** @description Reasoning/thinking payloads are omitted by default (`show_thinking=false`); true includes their original values in the events and transcripts this route returns. Accepted spellings are `true`/`1`/`yes`/`on` (case-insensitive); anything else means false. */
                 show_thinking?: boolean;
             };
             header?: never;
@@ -2590,7 +2585,7 @@ export interface operations {
     _handle_approval_resolution_api_sessions__session_id__approval_post: {
         parameters: {
             query?: {
-                /** @description Reasoning/thinking payloads are redacted by default (`show_thinking=false`); true returns them unredacted in the events and transcripts this route returns. Accepted spellings are `true`/`1`/`yes`/`on` (case-insensitive); anything else means false. */
+                /** @description Reasoning/thinking payloads are omitted by default (`show_thinking=false`); true includes their original values in the events and transcripts this route returns. Accepted spellings are `true`/`1`/`yes`/`on` (case-insensitive); anything else means false. */
                 show_thinking?: boolean;
             };
             header?: never;
@@ -2761,7 +2756,7 @@ export interface operations {
     _handle_session_debug_api_sessions__session_id__debug_get: {
         parameters: {
             query?: {
-                /** @description Reasoning/thinking payloads are redacted by default (`show_thinking=false`); true returns them unredacted in the events and transcripts this route returns. Accepted spellings are `true`/`1`/`yes`/`on` (case-insensitive); anything else means false. */
+                /** @description Reasoning/thinking payloads are omitted by default (`show_thinking=false`); true includes their original values in the events and transcripts this route returns. Accepted spellings are `true`/`1`/`yes`/`on` (case-insensitive); anything else means false. */
                 show_thinking?: boolean;
             };
             header?: never;
@@ -2804,7 +2799,7 @@ export interface operations {
     _handle_child_session_context_api_sessions__session_id__delegated_context_get: {
         parameters: {
             query?: {
-                /** @description Reasoning/thinking payloads are redacted by default (`show_thinking=false`); true returns them unredacted in the events and transcripts this route returns. Accepted spellings are `true`/`1`/`yes`/`on` (case-insensitive); anything else means false. */
+                /** @description Reasoning/thinking payloads are omitted by default (`show_thinking=false`); true includes their original values in the events and transcripts this route returns. Accepted spellings are `true`/`1`/`yes`/`on` (case-insensitive); anything else means false. */
                 show_thinking?: boolean;
             };
             header?: never;
@@ -2891,7 +2886,7 @@ export interface operations {
                 after_sequence?: number;
                 /** @description When true the stream stays open and delivers new events as they are appended, closing once the session reaches a terminal status. */
                 follow?: boolean;
-                /** @description Reasoning/thinking payloads are redacted by default (`show_thinking=false`); true returns them unredacted in the events and transcripts this route returns. Accepted spellings are `true`/`1`/`yes`/`on` (case-insensitive); anything else means false. */
+                /** @description Reasoning/thinking payloads are omitted by default (`show_thinking=false`); true includes their original values in the events and transcripts this route returns. Accepted spellings are `true`/`1`/`yes`/`on` (case-insensitive); anything else means false. */
                 show_thinking?: boolean;
             };
             header?: never;
@@ -2943,7 +2938,7 @@ export interface operations {
     _handle_question_answer_api_sessions__session_id__question_post: {
         parameters: {
             query?: {
-                /** @description Reasoning/thinking payloads are redacted by default (`show_thinking=false`); true returns them unredacted in the events and transcripts this route returns. Accepted spellings are `true`/`1`/`yes`/`on` (case-insensitive); anything else means false. */
+                /** @description Reasoning/thinking payloads are omitted by default (`show_thinking=false`); true includes their original values in the events and transcripts this route returns. Accepted spellings are `true`/`1`/`yes`/`on` (case-insensitive); anything else means false. */
                 show_thinking?: boolean;
             };
             header?: never;
@@ -3008,7 +3003,7 @@ export interface operations {
     _handle_session_result_api_sessions__session_id__result_get: {
         parameters: {
             query?: {
-                /** @description Reasoning/thinking payloads are redacted by default (`show_thinking=false`); true returns them unredacted in the events and transcripts this route returns. Accepted spellings are `true`/`1`/`yes`/`on` (case-insensitive); anything else means false. */
+                /** @description Reasoning/thinking payloads are omitted by default (`show_thinking=false`); true includes their original values in the events and transcripts this route returns. Accepted spellings are `true`/`1`/`yes`/`on` (case-insensitive); anything else means false. */
                 show_thinking?: boolean;
             };
             header?: never;
@@ -3051,7 +3046,7 @@ export interface operations {
     _handle_resume_api_sessions__session_id__resume_post: {
         parameters: {
             query?: {
-                /** @description Reasoning/thinking payloads are redacted by default (`show_thinking=false`); true returns them unredacted in the events and transcripts this route returns. Accepted spellings are `true`/`1`/`yes`/`on` (case-insensitive); anything else means false. */
+                /** @description Reasoning/thinking payloads are omitted by default (`show_thinking=false`); true includes their original values in the events and transcripts this route returns. Accepted spellings are `true`/`1`/`yes`/`on` (case-insensitive); anything else means false. */
                 show_thinking?: boolean;
             };
             header?: never;
@@ -3514,7 +3509,7 @@ export interface operations {
     _handle_background_task_output_api_tasks__task_id__output_get: {
         parameters: {
             query?: {
-                /** @description Reasoning/thinking payloads are redacted by default (`show_thinking=false`); true returns them unredacted in the events and transcripts this route returns. Accepted spellings are `true`/`1`/`yes`/`on` (case-insensitive); anything else means false. */
+                /** @description Reasoning/thinking payloads are omitted by default (`show_thinking=false`); true includes their original values in the events and transcripts this route returns. Accepted spellings are `true`/`1`/`yes`/`on` (case-insensitive); anything else means false. */
                 show_thinking?: boolean;
             };
             header?: never;

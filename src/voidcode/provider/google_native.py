@@ -11,8 +11,7 @@ from google.genai import types
 from google.genai.errors import APIError as GoogleAPIError
 from google.oauth2 import service_account
 
-from ..formats.json_values import json_wire_object
-from ..security.redaction import redact_mapping
+from ..common.json_values import json_wire_object
 from ..tools.contracts import ToolCall
 from ._wire_common import resolve_extra_request_headers
 from .config import GoogleProviderConfig
@@ -187,7 +186,7 @@ class GoogleGenAIProvider:
 
     @staticmethod
     def _visible_arguments(_tool_name: str | None, arguments: Mapping[str, object]) -> dict[str, object]:
-        return redact_mapping(json_wire_object(arguments))
+        return json_wire_object(arguments)
 
     def _contents(self, request: ProviderTurnRequest) -> tuple[str | None, list[dict[str, object]]]:
         system: list[str] = []

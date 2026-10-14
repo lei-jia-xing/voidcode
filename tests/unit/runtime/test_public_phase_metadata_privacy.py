@@ -42,7 +42,7 @@ def test_phase_metadata_stays_durable_but_never_reaches_public_consumers() -> No
             "run_id": "run-1",
         },
         "display_label": "visible",
-        "api_key": "private-key",
+        "api_key": "sk-original-value",
         "long_value": "x" * 2000,
     }
     original = deepcopy(metadata)
@@ -88,7 +88,7 @@ def test_phase_metadata_stays_durable_but_never_reaches_public_consumers() -> No
         assert isinstance(public_long_value, str)
         assert public_long_value.startswith("x" * 1000)
         assert len(public_long_value) < 2000
-        assert public_metadata["api_key"] == "<redacted>"
+        assert public_metadata["api_key"] == "sk-original-value"
         assert public_metadata["display_label"] == "visible"
         public_metadata["display_label"] = "changed by consumer"
     assert metadata == original

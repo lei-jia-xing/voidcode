@@ -192,6 +192,10 @@ def test_cli_run_and_resume_use_the_private_openai_provider(
         )
         assert resume.returncode == 0, resume.stderr
         assert source.read_text(encoding="utf-8") == "after from provider\n"
+        assert [headers["authorization"] for headers in server.request_headers] == [
+            "Bearer loopback-key",
+            "Bearer loopback-key",
+        ]
         assert len(server.requests) == 2
         resumed_messages = server.requests[1]["messages"]
         assert isinstance(resumed_messages, list)

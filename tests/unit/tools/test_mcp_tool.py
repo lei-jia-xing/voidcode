@@ -14,6 +14,7 @@ import pytest
 
 import voidcode.tools.mcp as mcp_module
 from tests.turn_producers import model_turn_fact
+from voidcode.common.output_limits import TOOL_OUTPUT_BYTES
 from voidcode.core.tool_context import ArtifactBinary, ArtifactPage, ToolContext
 from voidcode.core.transcript import ToolResultView, project_report
 from voidcode.core.turns import FinalTurn, ToolTurn, TurnRequest
@@ -23,7 +24,6 @@ from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.fact_codec import reported_call_from_event
 from voidcode.runtime.permissions.policy import PermissionPolicy
 from voidcode.runtime.service import VoidCodeRuntime
-from voidcode.security.redaction import TOOL_OUTPUT_BYTES
 from voidcode.tools.contracts import AttachmentOutput, TextOutput, ToolCall, ToolFailure, ToolSuccess
 from voidcode.tools.mcp import McpTool
 

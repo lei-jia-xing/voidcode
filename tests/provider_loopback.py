@@ -11,6 +11,7 @@ class OpenAILoopbackServer(ThreadingHTTPServer):
         super().__init__(("127.0.0.1", 0), _OpenAILoopbackHandler)
         self.replies = replies
         self.requests: list[dict[str, object]] = []
+        self.request_headers: list[dict[str, str]] = []
         self.response_bodies: list[bytes] = []
         self.response_content_types: list[str] = []
 
@@ -19,6 +20,7 @@ class _OpenAILoopbackHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         server = cast(OpenAILoopbackServer, self.server)
         payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        server.request_headers.append({name: value for name, value in self.headers.items()})
         server.requests.append(payload)
         if self.path != "/v1/chat/completions":
             self.send_error(404)
@@ -96,5 +98,6 @@ def configure_openai_provider(
         "approval_mode": "ask",
         "model": f"{provider}/{model}",
         "providers": {provider: {"base_url": base_url, "timeout_seconds": 5}},
+        "mcp": {"enabled": False},
     }
     (workspace / ".voidcode.json").write_text(json.dumps(config), encoding="utf-8")

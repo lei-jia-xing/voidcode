@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
+from ..common.json_values import json_wire_object, own_json_object
 from ..core.tool_context import ToolContext
-from ..formats.json_values import json_wire_object, own_json_object
 from ..formatter import (
     FormatterExecutionResult,
     FormatterExecutor,

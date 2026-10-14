@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from ....formats.json_values import json_wire_object, own_json_object
+from ....common.json_values import json_wire_object, own_json_object
 
 
 @dataclass(frozen=True, slots=True)

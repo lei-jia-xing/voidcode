@@ -1,6 +1,6 @@
 """Todo completion reminders on the runtime's per-call reminder channel.
 
-Contract (``docs/contracts/runtime-events.md`` → ``runtime.reminder_injected``):
+Contract (runtime events → ``runtime.reminder_injected``):
 a terminal assistant turn that still has ``pending``/``in_progress`` todos earns
 one tail-appended per-call reminder — bounded per cycle, suspended while the
 previous reminder still awaits progress, and skipped while the session is parked

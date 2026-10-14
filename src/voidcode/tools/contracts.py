@@ -5,22 +5,15 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, runtime_checkable
 
-from ..formats.json_values import json_wire_object, own_json_object, own_json_value
-from ..security.redaction import (
+from ..common.json_values import json_wire_object, own_json_object, own_json_value
+from ..common.output_limits import (
     DIAGNOSTIC_DEPTH as _MAX_DIAGNOSTIC_DEPTH,
 )
-from ..security.redaction import (
+from ..common.output_limits import (
     DIAGNOSTIC_ITEMS as _MAX_DIAGNOSTIC_ITEMS,
 )
-from ..security.redaction import (
+from ..common.output_limits import (
     DIAGNOSTIC_TEXT_CHARS as _MAX_DIAGNOSTIC_TEXT_CHARS,
-)
-from ..security.redaction import (
-    REDACTED_PLACEHOLDER as _REDACTED,
-)
-from ..security.redaction import (
-    is_sensitive_key,
-    redact_text,
 )
 
 if TYPE_CHECKING:
@@ -70,15 +63,15 @@ UNCONFIRMED_STOP_CLAUSE = (
 )
 
 
-def _redact_diagnostic_text(value: str) -> str:
-    return redact_text(value[:_MAX_DIAGNOSTIC_TEXT_CHARS])
+def _diagnostic_text(value: str) -> str:
+    return value[:_MAX_DIAGNOSTIC_TEXT_CHARS]
 
 
-def _sanitize_diagnostic_value(value: object, *, depth: int = 0, key: str | None = None) -> object:
+def _sanitize_diagnostic_value(value: object, *, depth: int = 0) -> object:
     if depth > _MAX_DIAGNOSTIC_DEPTH:
         raise ValueError("diagnostics details exceed maximum nesting depth")
     if isinstance(value, str):
-        return _REDACTED if key is not None and is_sensitive_key(key) else _redact_diagnostic_text(value)
+        return _diagnostic_text(value)
     if value is None or isinstance(value, (bool, int)):
         return value
     if isinstance(value, float):
@@ -90,10 +83,7 @@ def _sanitize_diagnostic_value(value: object, *, depth: int = 0, key: str | None
     if isinstance(value, Mapping):
         if len(value) > _MAX_DIAGNOSTIC_ITEMS:
             raise ValueError("diagnostics details contain too many entries")
-        return {
-            str(item_key): _sanitize_diagnostic_value(item_value, depth=depth + 1, key=str(item_key).lower())
-            for item_key, item_value in value.items()
-        }
+        return {str(item_key): _sanitize_diagnostic_value(item_value, depth=depth + 1) for item_key, item_value in value.items()}
     if isinstance(value, (list, tuple)):
         if len(value) > _MAX_DIAGNOSTIC_ITEMS:
             raise ValueError("diagnostics details contain too many items")
@@ -115,7 +105,7 @@ class ToolDiagnostics:
             if value is not None and not isinstance(value, str):
                 raise ValueError(f"diagnostics {name} must be a string or null")
             if isinstance(value, str):
-                object.__setattr__(self, name, _redact_diagnostic_text(value))
+                object.__setattr__(self, name, _diagnostic_text(value))
         if not isinstance(self.details, Mapping):
             raise ValueError("diagnostics details must be an object")
         sanitized = _sanitize_diagnostic_value(self.details)

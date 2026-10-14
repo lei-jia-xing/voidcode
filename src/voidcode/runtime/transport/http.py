@@ -75,7 +75,7 @@ from ..contracts import (
 from ..events import (
     DelegatedLifecycleEventPayload,
     EventEnvelope,
-    redact_reasoning_payload,
+    project_reasoning_payload,
 )
 from ..permissions.policy import PermissionResolution
 from ..serialization import (
@@ -425,7 +425,7 @@ _ERROR_ENVELOPE_DESCRIPTION = (
 
 # The frames of a server-sent-events route are not expressible as an OpenAPI
 # response body, so the route publishes the frame model next to the media type
-# and the framing itself is documented in docs/contracts/http-response-schema.md.
+# and the framing itself is documented in docs/contracts/client-transport.md.
 _SSE_SUCCESS_DESCRIPTION = (
     "A hand-framed server-sent-events stream: the body is one `data: <json>\\n\\n` frame per event, and every frame "
     "is the referenced model. OpenAPI cannot describe an event-stream body, so the frame contract is published here "
@@ -2158,7 +2158,7 @@ class RuntimeTransportApp(FastAPI):
             "sequence": event.sequence,
             "event_type": event.event_type,
             "source": event.source,
-            "payload": redact_reasoning_payload(
+            "payload": project_reasoning_payload(
                 event.event_type,
                 event.payload,
                 show_thinking=show_thinking,

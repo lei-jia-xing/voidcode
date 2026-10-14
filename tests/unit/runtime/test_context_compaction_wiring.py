@@ -1,6 +1,6 @@
 """Bounded provider-context pruning.
 
-Contract (``docs/contracts/runtime-config.md`` → ``context_window.compaction``):
+Contract (runtime config → ``context_window.compaction``):
 when the estimated payload of one provider call exceeds the budget threshold, the
 oldest prunable results have their content replaced by a bounded placeholder.
 Messages and tool pairings are never removed, system/instruction sections are never touched,

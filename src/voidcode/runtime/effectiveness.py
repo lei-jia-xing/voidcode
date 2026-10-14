@@ -1,4 +1,4 @@
-"""Redacted projections for measuring agent-facing tool effectiveness."""
+"""Projections for measuring agent-facing tool effectiveness."""
 
 from __future__ import annotations
 

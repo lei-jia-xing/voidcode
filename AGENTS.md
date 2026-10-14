@@ -1,108 +1,106 @@
-# PROJECT KNOWLEDGE BASE
+# VoidCode Developer & Agent Guide
 
-**Generated:** 2026-04-22
-**Commit:** 269eaf8
-**Branch:** master
+This document is the primary reference for autonomous agents and developers modifying the VoidCode codebase. It defines architectural boundaries, coding conventions, subsystem navigation, and operational workflows.
 
-## OVERVIEW
-Local-first coding agent runtime. Python backend (`src/voidcode`) plus Bun/React frontend shell (`frontend/`).
+## Architecture & Subsystem Boundaries
 
-## STRUCTURE
-```text
-voidcode/
-├── src/voidcode/         # Python package in src-layout
-│   ├── runtime/          # Session, storage, events, runtime boundary
-│   ├── core/             # Host-agnostic turn engine + provider/deterministic producers
-│   └── tools/            # Built-in tool contracts + implementations
-├── tests/                # pytest unit + integration coverage
-├── frontend/             # Bun/Vite/React shell; see frontend/AGENTS.md
-├── docs/                 # Architecture, roadmap, development, standards
-├── .github/workflows/    # CI + release automation
-└── mise.toml             # Repo task entrypoint
+Responsibilities are split as follows:
+
+```mermaid
+graph LR
+    Runtime["src/voidcode/runtime/<br/>(Governance, State, Persistence)"]
+    Core["src/voidcode/core/<br/>(TurnEngine, Transcripts)"]
+    Tools["src/voidcode/tools/<br/>(Tool Definitions & Execution)"]
+    Common["src/voidcode/common/<br/>(Shared Values & Parsing)"]
+    Provider["src/voidcode/provider/<br/>(Model Adapters & Pricing)"]
+
+    Runtime --> Core
+    Runtime --> Tools
+    Runtime --> Common
+    Core --> Provider
+    Tools --> Common
 ```
 
-## WHERE TO LOOK
-| Task | Location | Notes |
-|------|----------|-------|
-| CLI behavior | `src/voidcode/cli/` | `voidcode run`, `sessions list`, `sessions resume`, `sessions answer` |
-| Python entrypoint | `src/voidcode/__main__.py` | `python -m voidcode` delegates to CLI |
-| Runtime orchestration boundary | `src/voidcode/runtime/service.py` | runtime uses `RuntimeHost` to run the core turn engine |
-| Runtime implementation work | `src/voidcode/runtime/AGENTS.md` | read before touching runtime control-plane code |
-| Delegated/background task contract | `docs/contracts/background-task-delegation.md` | runtime-owned subagent routing, result retrieval, retry/cancel notes |
-| Session persistence | `src/voidcode/runtime/storage/` | SQLite-backed local session store |
-| Runtime contracts | `src/voidcode/runtime/contracts.py` | request/response boundary types |
-| Session bundles | `src/voidcode/runtime/bundle.py` | Exact schema-versioned session snapshots; bundle files contain sensitive session data and must stay private |
-| Core turn engine | `src/voidcode/core/engine.py` | `TurnEngine` advances producer batches through the host boundary |
-| Runtime host | `src/voidcode/runtime/run_loop.py::RuntimeHost` | runtime-governed context, tools, approvals, persistence, and recovery |
-| Tool behavior | `src/voidcode/tools/` | 19 built-in tools; `edit` is the single-replacement, ordered-batch, and patch surface; `read`/`write` and other registered tools are defined here |
-| Unit tests | `tests/unit/` | core engine, provider adapters, tools, and runtime contracts/lifecycle |
-| Integration tests | `tests/integration/` | runtime execution, persistence/recovery, and HTTP transport |
-| Dev workflow | `mise.toml` | canonical task runner |
-| Repo standards | `docs/coding-standards.md` | coding + commit rules |
-| Frontend work | `frontend/AGENTS.md` | read for any `frontend/` change |
+- **Runtime Control Plane (`src/voidcode/runtime/`)**:
+  Sole authority for execution governance, permissions, approval gates, SQLite persistence, lifecycle hooks, and recovery. Collaboration flows into `VoidCodeRuntime` (`service.py`).
+- **Core Turn Engine (`src/voidcode/core/`)**:
+  Host-agnostic turn progression engine (`TurnEngine` in `engine.py`). Core advances conversations and plans tool batches. Core never accesses SQLite, filesystem state directly, or product policy.
+- **Tools Layer (`src/voidcode/tools/`)**:
+  Implements discrete tool capabilities (`read`, `write`, `edit`, `shell_exec`, `glob`, `grep`, `task`). Tools declare their effect tiers and execute under runtime supervision.
+- **Common Utilities Layer (`src/voidcode/common/`)**:
+  Owns structured data snapshotting (`json_values.py`), frontmatter parsing (`frontmatter.py`), and output limits (`output_limits.py`).
+- **Provider Adapters (`src/voidcode/provider/`)**:
+  Native API client adapters (Anthropic, OpenAI, Google) translating between VoidCode's neutral turn models and upstream provider wire protocols.
+- **Frontend Client (`frontend/`)**:
+  React 19 single-page application. Communicates with the runtime via HTTP REST and Server-Sent Events. See [`frontend/AGENTS.md`](./frontend/AGENTS.md).
 
-## CODE MAP
-| Symbol | Type | Location | Role |
-|--------|------|----------|------|
-| `main` | function | `src/voidcode/cli/app.py` | CLI process entry |
-| `root_cli` | function | `src/voidcode/cli/app.py` | Click command group root |
-| `VoidCodeRuntime` | class | `src/voidcode/runtime/service.py` | runtime boundary for requests/sessions |
-| `ToolRegistry` | class | `src/voidcode/runtime/tools/registry.py` | current built-in tool registry |
+## Where to Look
 
-## CONVENTIONS
-- Python is pinned to 3.14 only.
-- Use `uv` for Python env/deps; `mise` only orchestrates tasks and `.venv` loading.
-- Repo-level verification is `mise run check`; it chains Python and frontend checks.
-- Pre-commit runs hygiene + Ruff + ty through `uv run`.
-- Commit messages follow Conventional Commits as documented in `docs/coding-standards.md`.
-- Tests import from `src/` layout directly; integration coverage lives in `tests/integration/`.
+| Task / Domain | Location | Key Entrypoint |
+|---|---|---|
+| Runtime service orchestration | `src/voidcode/runtime/` | `service.py` (`VoidCodeRuntime`) |
+| Turn execution & host seam | `src/voidcode/runtime/` | `run_loop.py` (`RuntimeHost`) |
+| Turn engine & batch execution | `src/voidcode/core/` | `engine.py` (`TurnEngine`) |
+| Session & event persistence | `src/voidcode/runtime/storage/` | `sqlite.py` (`SqliteSessionStore`) |
+| Permissions & approval flow | `src/voidcode/runtime/permissions/` | `policy.py`, `engine.py` |
+| Background tasks & workers | `src/voidcode/runtime/background/` | `supervisor.py` (`RuntimeBackgroundTaskSupervisor`) |
+| Built-in tool implementations | `src/voidcode/tools/` | `contracts.py`, `delegation/task.py` |
+| CLI commands & flags | `src/voidcode/cli/` | `app.py`, `commands/run.py` |
+| HTTP & SSE transport | `src/voidcode/runtime/transport/` | `http.py`, `http_models.py` |
+| Shared values, limits & parsing | `src/voidcode/common/` | `json_values.py`, `frontmatter.py`, `output_limits.py` |
 
-## CLEAN CODE / MAINTAINABILITY
+## Engineering Conventions & Taste
 
-- Optimize for understandability, readability, and changeability. Follow the repository's standard conventions and existing contracts; prefer KISS and the Boy Scout rule, and fix root causes rather than symptoms.
-- Keep one clear responsibility per module and function, with small, explicit functions, few parameters, and no flag arguments that hide distinct behaviors. Keep side effects separate from pure computation and make them explicit.
-- Use descriptive, searchable names and named constants for domain rules. Encapsulate boundary inputs and outputs with typed contracts, dataclasses, Protocols, Literal/TypedDict shapes, and value objects instead of broad `Any` or unstructured dictionaries.
-- Preserve ownership: `runtime/` owns governance, approvals, persistence, recovery, and lifecycle; `core/` owns host-agnostic turn progression; `tools/` owns tool behavior. Use dependency injection and the Law of Demeter so collaborators do not pierce those boundaries or reach through private state.
-- Isolate threading, caches, registries, SQLite/file writes, and external processes behind explicit owners and lifecycle boundaries. Keep concurrency and other side effects out of code that only models decisions or values.
-- Remove duplicate orchestration, parsing, and serialization paths; avoid over-configurable designs, dead code, and commented-out code. Keep one authoritative implementation and avoid compatibility aliases or contract drift.
-- Write tests that are readable, fast, independent, and repeatable. Test observable contracts, boundaries, errors, and state transitions rather than implementation details; preserve runtime governance and the existing typed contracts.
-- Keep refactors and changes focused and minimal. Verify the affected behavior with the narrowest meaningful check, and provide reproducible evidence for user-facing CLI/TUI/HTTP behavior when applicable.
+- **Validate at the Ingress Boundary**:
+  External inputs (CLI options, HTTP requests, configuration files, and external process outputs) are validated once upon entry. Internal code relies on strongly typed dataclasses and Pydantic models.
+- **Fail Visibly**:
+  Preserve `None` and distinct unknown states from known values. Missing required contract fields raise a clear error.
+- **Immutable Append-Only Events**:
+  SQLite `session_events` rows are immutable historical facts. Current session views, transcript projections, and replay checkpoints derive from this event stream.
+- **Durable Identity on Recovery**:
+  Checkpointed and resumed sessions restore the authentic completed prefix of tool results. Tool intents that were pending with `replay_policy="never"` are not replayed; recovery restores safe checkpoint state and obtains a fresh provider turn.
+- **Standard Library First**:
+  Prefer simple, readable Python 3.14 standard library constructs before introducing new abstractions or dependencies. Maintain single authoritative implementation paths.
 
-## ANTI-PATTERNS (THIS PROJECT)
-- Do not have execution engines talk directly to UI clients; flow goes CLI/client → runtime host → core turn engine → runtime-governed tools.
-- Do not claim full frontend/runtime parity; the web client now has a minimal live runtime path, but it is not yet a fully productized runtime-driven app.
-- Do not expand current MVP scope into multi-agent/cloud/IDE-plugin work unless the task explicitly targets roadmap changes.
-- Do not commit generated frontend artifacts.
-- Do not open public issues for security-sensitive reports.
+## Code Navigation (CodeGraph)
 
-## UNIQUE STYLES
-- Backend architecture is intentionally split into `runtime/`, `core/`, and `tools/` with contract files marking boundaries. The core turn engine is host-agnostic; runtime owns governance.
-- Session recovery is user-global and SQLite-backed under `$XDG_STATE_HOME/voidcode/sessions.sqlite3` (POSIX default `~/.local/state/voidcode/sessions.sqlite3`), with workspace-scoped `.voidcode/` still reserved for project config and agent assets. The runtime schema is versioned with SQLite `PRAGMA user_version` and stores scoped columns as `workspace_id`.
-- The backend now exposes a broader tool surface including read/write/edit/search/web and patch workflows under `src/voidcode/tools/`.
-- Runtime-owned delegated child execution exists for supported child presets through background task and child session surfaces; it is not an arbitrary multi-agent topology.
-- Portable session import/export is runtime-owned through `src/voidcode/runtime/bundle.py`; CLI import/export must not read or write SQLite bundle rows directly.
-- Agent manifest `skill_refs` select catalog-visible skills by default, while request `force_load_skills` and delegated `load_skills` inject full skill bodies only into the targeted runtime context.
-- MCP is runtime-scoped and config-gated; do not describe workspace-scoped MCP, marketplace, dynamic agents, or direct agent-to-agent bus behavior as implemented.
-- Frontend source is intentionally small and flatter than the aspirational structure described in `frontend/README.md`.
-- Runtime-specific invariants and hotspot entry points live in `src/voidcode/runtime/AGENTS.md`.
+CodeGraph indexes Python and TypeScript symbols into `.codegraph/codegraph.db`:
 
-## COMMANDS
 ```bash
-mise install
-uv sync --extra dev
-uv run voidcode --help
-uv run voidcode sessions export <session-id> --workspace . --output session.vcsession.zip  # exact snapshot; keep private
-uv run voidcode sessions import session.vcsession.zip --workspace . --dry-run
-mise run lint
-mise run typecheck
-mise run test
-mise run check
-mise run pre-commit
+# Initialize index (one-time)
+codegraph init .
+
+# Synchronize index after editing code
+codegraph sync .
+
+# Structural search across the codebase
+codegraph query --path . 'TurnEngine'
+
+# Inspect symbol definitions
+codegraph node --path . --file src/voidcode/core/engine.py TurnEngine
 ```
 
-## NOTES
-- `src/voidcode/` uses src-layout; do not look for a top-level `voidcode/` package directory.
-- CI has two jobs: Python and frontend. Release workflow only publishes Python packages.
-- The test suite is intentionally core-only; `docs/testing.md` lists what "core" means and which areas are deliberately untested, so do not read those gaps as accidents.
-- Read `src/voidcode/runtime/AGENTS.md` before changing runtime session/config/tool orchestration.
-- Read `frontend/AGENTS.md` before touching anything under `frontend/`.
+## Developer Commands
+
+```bash
+# Code Quality & Verification
+mise run check           # Full verification: lint, typecheck, schema, tests, frontend
+mise run lint            # Lint check with Ruff
+mise run format          # Format with Ruff
+mise run typecheck       # Static typecheck with ty
+mise run test            # Run unit and integration tests
+mise run test:coverage   # Run tests with coverage summary
+
+# Python CLI Exploration
+uv run voidcode --help
+uv run voidcode run "PROMPT" --workspace .
+uv run voidcode config show --workspace .
+```
+
+## Detailed Documentation References
+
+- [Architecture Overview](./docs/architecture.md)
+- [Configuration Guide](./docs/configuration.md)
+- [Coding Standards](./docs/coding-standards.md)
+- [Testing Policy](./docs/testing.md)
+- [Runtime Contracts](./docs/contracts/README.md)

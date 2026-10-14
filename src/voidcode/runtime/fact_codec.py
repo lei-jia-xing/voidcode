@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final, cast
 
+from ..common.json_values import json_wire_object
 from ..core.turns import (
     LoopStepFact,
     ModelTurnFact,
@@ -13,8 +14,6 @@ from ..core.turns import (
     ToolRequestedFact,
     TurnFact,
 )
-from ..formats.json_values import json_wire_object
-from ..security.redaction import redact_mapping
 from ..tools.contracts import ToolCall
 from .events import EventEnvelope, EventSource
 from .execution.report_codec import parse_report_payload
@@ -55,7 +54,7 @@ def reported_call_from_event(event: EventEnvelope) -> ReportedCall | None:
 
 
 def encode_fact(fact: TurnFact, *, version: int = FACT_CODEC_VERSION, session: SessionState | None = None) -> EncodedFact:
-    """Project a typed fact once; public flat presentation fields are redacted, while private rows retain the canonical report."""
+    """Project one typed fact while retaining the canonical reported-call payload."""
     require_fact_codec_version(version)
     source: EventSource = "core"
     persistable = not isinstance(fact, StreamFact)
@@ -137,11 +136,7 @@ def encode_fact(fact: TurnFact, *, version: int = FACT_CODEC_VERSION, session: S
         event_type, source = "runtime.tool_completed", "tool"
         report = fact.report
         payload.update(_tool_completed_payload(session=session, report=report))
-    raw_reported_call = payload.pop("reported_call", None)
-    redacted_payload = redact_mapping(payload)
-    if raw_reported_call is not None:
-        redacted_payload["reported_call"] = raw_reported_call
-    return EncodedFact(event_type, source, redacted_payload, persistable)
+    return EncodedFact(event_type, source, payload, persistable)
 
 
 def _text(payload: dict[str, object], key: str) -> str:

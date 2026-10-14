@@ -304,7 +304,7 @@ class RuntimeBackgroundTaskSupervisor:
         child/background-task results are durable, and every execution that
         could not finish in time has lost write eligibility (see the
         "Execution ownership" invariant in
-        ``docs/contracts/background-task-delegation.md``). ``interrupted``
+        ``docs/contracts/task-delegation.md``). ``interrupted``
         remains resumable: a later execution takes ownership with a new lease,
         while the seized worker's late completion is refused and recorded.
         """
@@ -1490,7 +1490,7 @@ class RuntimeBackgroundTaskSupervisor:
         this execution and can never be outrun by a worker that has not yet
         claimed one. The lease is bound to the worker thread around
         ``run_background_task_worker`` — see
-        ``docs/contracts/background-task-delegation.md`` ("Execution
+        ``docs/contracts/task-delegation.md`` ("Execution
         ownership").
         """
         worker_start_gate = threading.Event()
@@ -2623,7 +2623,7 @@ class RuntimeBackgroundTaskSupervisor:
         # supersede) must not commit a completion here: the refusal is recorded
         # as a late-write diagnostic and the resumable ``interrupted`` row is
         # left to a new execution. See the "Execution ownership" invariant in
-        # docs/contracts/background-task-delegation.md.
+        # docs/contracts/task-delegation.md.
         if not EXECUTION_OWNERSHIP.authorize_bound(
             task_id=background_task_id,
             operation="finalize_background_task_from_session_response",

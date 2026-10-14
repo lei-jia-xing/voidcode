@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..command.models import CommandDefinition
-from ..runtime.events import EventEnvelope, redact_reasoning_payload
+from ..runtime.events import EventEnvelope, project_reasoning_payload
 from ..runtime.session import SessionState, StoredSessionSummary, session_metadata_for_public
 
 EXIT_SUCCESS = 0
@@ -41,7 +41,7 @@ def format_event(
     *,
     show_thinking: bool = False,
 ) -> str:
-    safe_data = redact_reasoning_payload(event_type, data, show_thinking=show_thinking)
+    safe_data = project_reasoning_payload(event_type, data, show_thinking=show_thinking)
     suffix = " ".join(f"{key}={value}" for key, value in sorted(safe_data.items()))
     if suffix:
         return f"EVENT {event_type} source={source} {suffix}"
@@ -52,7 +52,7 @@ def serialize_event(event: EventEnvelope, *, show_thinking: bool = False) -> dic
     return {
         "event_type": event.event_type,
         "source": event.source,
-        "payload": redact_reasoning_payload(
+        "payload": project_reasoning_payload(
             event.event_type,
             event.payload,
             show_thinking=show_thinking,

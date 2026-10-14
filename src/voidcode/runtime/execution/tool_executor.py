@@ -382,7 +382,7 @@ class RuntimeToolExecutor:
         # once ownership is revoked — without this, a seized execution could keep
         # mutating truth through its tools. An unbound caller (foreground run,
         # control plane) leaves the worker unbound. See the "Execution ownership"
-        # invariant in docs/contracts/background-task-delegation.md.
+        # invariant in docs/contracts/task-delegation.md.
         caller_lease = EXECUTION_OWNERSHIP.bound_lease()
 
         def invoke_tool() -> None:

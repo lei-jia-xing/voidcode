@@ -296,20 +296,22 @@ def test_runtime_policy_child_snapshot_is_subset_of_parent_snapshot() -> None:
     assert any(entry.get("source") == "parent_runtime_policy_snapshot" for entry in trace)
 
 
-def test_runtime_policy_diagnostics_are_redacted_and_bounded() -> None:
+def test_runtime_policy_diagnostics_preserve_values_with_bounds() -> None:
+    original_values = (
+        "secret prompt body",
+        "secret skill body",
+        "secret-key",
+    )
     snapshot = _materialize_sample_snapshot(
         diagnostics_input={
-            "prompt": "secret prompt body",
-            "skill_body": "secret skill body",
-            "OPENAI_API_KEY": "secret-key",
+            "prompt": original_values[0],
+            "skill_body": original_values[1],
+            "OPENAI_API_KEY": original_values[2],
             "safe_reason": "tool denied",
         }
     )
 
     diagnostics = cast(Mapping[str, object], snapshot["diagnostics"])
-    serialized = repr(diagnostics)
-    assert "secret prompt body" not in serialized
-    assert "secret skill body" not in serialized
-    assert "secret-key" not in serialized
-    assert "raw_prompt" not in diagnostics
-    assert "raw_skill_body" not in diagnostics
+    assert diagnostics["prompt"] == original_values[0]
+    assert diagnostics["skill_body"] == original_values[1]
+    assert diagnostics["OPENAI_API_KEY"] == original_values[2]

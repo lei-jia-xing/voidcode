@@ -16,6 +16,7 @@ from typing import ClassVar, Literal, cast, final
 
 from pydantic import BaseModel, StrictInt, field_validator
 
+from ..common.json_values import json_wire_object
 from ..core.tool_context import (
     RULE_URI_PREFIX,
     ArtifactBinary,
@@ -28,7 +29,6 @@ from ..core.tool_context import (
     TranscriptInaccessible,
     TranscriptPage,
 )
-from ..formats.json_values import json_wire_object
 from ._pydantic_args import parse_tool_args, validate_non_empty
 from .contracts import (
     AttachmentOutput,

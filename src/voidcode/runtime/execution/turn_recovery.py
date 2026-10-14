@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 
+from ...common.json_values import json_wire_object
 from ...core.turns import CallSeed, ReportedCall
-from ...formats.json_values import json_wire_object
-from ...security.redaction import REDACTED_PLACEHOLDER, redact_mapping
 from ...tools.contracts import ToolCall
 from ..events import REASONING_PERSISTED_LIMIT_CHARS
 from ..permissions.policy import PendingApproval, PermissionResolution
@@ -72,11 +70,10 @@ def persisted_turn_batch(
         "reasoning": batch.reasoning,
         "completed_call_ids": list(completed_call_ids),
     }
-    safe = redact_mapping(raw)
-    if isinstance(safe["reasoning"], str):
-        safe["reasoning"] = safe["reasoning"][:REASONING_PERSISTED_LIMIT_CHARS]
-    safe["recoverable"] = safe == raw and REDACTED_PLACEHOLDER not in json.dumps(safe, ensure_ascii=True).lower()
-    return safe
+    if isinstance(raw["reasoning"], str):
+        raw["reasoning"] = raw["reasoning"][:REASONING_PERSISTED_LIMIT_CHARS]
+    raw["recoverable"] = True
+    return raw
 
 
 def validated_composition_turn(metadata: Mapping[str, object], *, session_id: str) -> dict[str, object]:
@@ -132,8 +129,8 @@ def restored_turn_batch(
     turn = validated_composition_turn(metadata, session_id=session_id)
     if run_id != turn["run_id"]:
         raise ValueError("persisted native batch does not belong to its original composition turn")
-    if raw.get("recoverable") is not True or redact_mapping(raw) != raw or REDACTED_PLACEHOLDER in json.dumps(raw, ensure_ascii=True).lower():
-        raise ValueError("native batch contains redacted credentials or reasoning and cannot safely resume")
+    if raw.get("recoverable") is not True:
+        raise ValueError("persisted native batch is not marked recoverable")
     tool_batch_id = raw.get("tool_batch_id")
     if not isinstance(tool_batch_id, str) or not tool_batch_id.strip():
         raise ValueError("persisted native batch requires its canonical model-turn identity")

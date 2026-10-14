@@ -1,6 +1,6 @@
 """Measured-anchor budget accounting.
 
-Contract (``docs/contracts/runtime-config.md`` → 预算/阈值): the compaction decision
+Contract (runtime config → 预算/阈值): the compaction decision
 is ``max`` of the last provider-reported context size and the local full-payload
 estimate (omp ``compactionContextTokens``); a present ``measured_anchor_tokens``
 says which part was measured, and ``estimated_delta_tokens`` is the estimate's

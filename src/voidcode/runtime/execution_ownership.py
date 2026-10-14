@@ -24,7 +24,7 @@ legal:
   never mutates session or task truth.
 
 The corresponding invariant text lives in
-``docs/contracts/background-task-delegation.md`` ("Execution ownership").
+``docs/contracts/runtime-execution.md`` ("Execution Ownership & Lifecycle").
 """
 
 from __future__ import annotations

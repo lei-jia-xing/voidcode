@@ -6,7 +6,7 @@ from .contracts import (
     RuntimeSessionDebugEvent,
     RuntimeSessionDebugSnapshot,
 )
-from .events import redact_reasoning_payload, runtime_policy_observability_payload
+from .events import project_reasoning_payload, runtime_policy_observability_payload
 from .session import SessionEntrySummary, SessionRef, SessionState, session_metadata_for_public
 
 
@@ -199,7 +199,7 @@ def serialize_session_debug_event(
         "sequence": event.sequence,
         "event_type": event.event_type,
         "source": event.source,
-        "payload": redact_reasoning_payload(
+        "payload": project_reasoning_payload(
             event.event_type,
             event.payload,
             show_thinking=show_thinking,

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from pathlib import Path
 
-from ..formats.frontmatter import load_frontmatter_mapping, split_frontmatter
+from ..common.frontmatter import load_frontmatter_mapping, split_frontmatter
 from .models import CommandDefinition, CommandSource
 from .registry import CommandRegistry
 

@@ -1,6 +1,6 @@
 """Additive display metadata for runtime tool events.
 
-This module is runtime-owned (see ``runtime/AGENTS.md``).  It derives curated
+This module is runtime-owned. It derives curated
 ``display`` and ``tool_status`` payloads from tool name, arguments, and result
 data.  Unknown/MCP tools receive a safe generic fallback that never exposes raw
 JSON blobs.

@@ -7,8 +7,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
+from ....common.json_values import json_wire_object
 from ....core.tool_context import ToolContext
-from ....formats.json_values import json_wire_object
 from ....tools._pydantic_args import NonEmptyPrompt, parse_tool_args
 from ....tools.contracts import TextOutput, ToolCall, ToolFailure, ToolResult, ToolSuccess
 from ....tools.delegation.task_batch import MAX_BATCH_SIZE, TaskBatchTool

@@ -170,7 +170,7 @@ def test_session_storage_persists_parent_lineage_across_read_surfaces(tmp_path: 
     assert result.session.session.parent_id == "leader-session"
 
 
-def test_session_storage_roundtrips_redacted_policy_observations(tmp_path: Path) -> None:
+def test_session_storage_roundtrips_policy_observations_without_masking_values(tmp_path: Path) -> None:
     store = SqliteSessionStore()
     metadata: dict[str, object] = {
         "read_only": True,
@@ -226,9 +226,9 @@ def test_session_storage_roundtrips_redacted_policy_observations(tmp_path: Path)
     policy_observations = cast(dict[str, object], loaded.session.metadata["policy_observations"])
     tool_policy_denial = cast(dict[str, object], policy_observations["tool_policy_denial"])
     assert tool_policy_denial["tool"] == "write"
-    assert "raw-secret-value" not in encoded
-    assert "sk-runtime-secret" not in encoded
-    assert 'NPM_CONFIG_YES": "true' not in encoded
+    assert "api_key=raw-secret-value" in encoded
+    assert "sk-runtime-secret" in encoded
+    assert 'NPM_CONFIG_YES": "true' in encoded
     assert checkpoint is not None
     checkpoint_metadata = cast(dict[str, object], checkpoint["session_metadata"])
     assert "runtime_policy" not in checkpoint_metadata

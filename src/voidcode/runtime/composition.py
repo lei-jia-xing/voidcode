@@ -32,8 +32,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_serializer, field_validator
 
+from ..common.json_values import json_wire_object, own_json_object
 from ..core.turns import ReportedCall
-from ..formats.json_values import json_wire_object, own_json_object
 from ..tools.contracts import ToolCall
 
 MANIFEST_NAME = "voidcode-components.json"

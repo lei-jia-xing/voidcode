@@ -5,23 +5,12 @@ from collections import defaultdict
 from collections.abc import Mapping
 from typing import Literal
 
+from ...common.output_limits import DEBUG_CONTENT_CHARS as _MAX_DEBUG_CONTENT_CHARS
+from ...common.output_limits import truncate
 from ...core.transcript import AssembledContext, ContextSegment, ToolResultView, output_text
 from ...provider.model_catalog import ToolFeedbackMode
-from ...security.redaction import (
-    DEBUG_CONTENT_CHARS as _MAX_DEBUG_CONTENT_CHARS,
-)
-from ...security.redaction import (
-    is_sensitive_key,
-    redact_text,
-    truncate,
-)
 from ...tools.contracts import ToolFailure, ToolResult
-from ...tools.output import (
-    redacted_argument_keys_for_tool,
-    sanitize_tool_arguments,
-    sanitize_tool_result_data,
-    strip_redaction_sentinels_from_mapping,
-)
+from ...tools.output import sanitize_tool_arguments, sanitize_tool_result_data
 from ..config.models import DEFAULT_PROVIDER_CONTEXT_OVERSIZED_FEEDBACK_CHARS
 from ..contracts import (
     RuntimeProviderContextDiagnostic,
@@ -255,34 +244,23 @@ def _source_from_metadata(segment: ContextSegment) -> str:
 def _clip_content(content: str | None) -> tuple[str | None, bool]:
     if content is None:
         return None, False
-    redacted = _redact_debug_text(content)
-    if len(redacted) <= _MAX_DEBUG_CONTENT_CHARS:
-        return redacted, False
-    return truncate(redacted, _MAX_DEBUG_CONTENT_CHARS), True
+    if len(content) <= _MAX_DEBUG_CONTENT_CHARS:
+        return content, False
+    return truncate(content, _MAX_DEBUG_CONTENT_CHARS), True
 
 
-def _redact_debug_text(content: str) -> str:
-    return redact_text(content)
+def _bounded_mapping(value: Mapping[str, object]) -> dict[str, object]:
+    return {str(key): _bounded_payload(item) for key, item in value.items()}
 
 
-def _safe_mapping(value: Mapping[str, object]) -> dict[str, object]:
-    """The debug-safe copy of one mapping: entries redacted, sensitive keys dropped.
-
-    ``_safe_payload`` returns ``object`` because it also transforms lists and
-    passes scalars through; the mapping arm is this one function, so a caller
-    holding a mapping never has to cast the walk's result back.
-    """
-    return {str(key): _safe_payload(item) for key, item in value.items() if not is_sensitive_key(str(key))}
-
-
-def _safe_payload(value: object) -> object:
+def _bounded_payload(value: object) -> object:
     if isinstance(value, str):
         clipped, truncated = _clip_content(value)
         return {"text": clipped, "truncated": True} if truncated else clipped
     if isinstance(value, dict):
-        return _safe_mapping(value)
+        return _bounded_mapping(value)
     if isinstance(value, list | tuple):
-        return [_safe_payload(item) for item in value]
+        return [_bounded_payload(item) for item in value]
     if isinstance(value, bool | int | float) or value is None:
         return value
     return str(value)
@@ -307,7 +285,7 @@ def _segment_snapshot(
         tool_call_id=segment.tool_call_id,
         tool_name=segment.tool_name,
         tool_arguments=_sanitize_debug_arguments(segment.tool_arguments or {}),
-        metadata=_safe_mapping(safe_metadata),
+        metadata=_bounded_mapping(safe_metadata),
     )
 
 
@@ -340,10 +318,7 @@ def _standard_tool_message_snapshots(
                             "function": {
                                 "name": segment.tool_name,
                                 "arguments": json.dumps(
-                                    _provider_visible_debug_arguments(
-                                        segment.tool_name,
-                                        segment.tool_arguments or {},
-                                    ),
+                                    sanitize_tool_arguments(segment.tool_arguments or {}),
                                     ensure_ascii=False,
                                     sort_keys=True,
                                 ),
@@ -430,23 +405,16 @@ def _tool_payload_json(segment: ContextSegment) -> str:
     raw_data = metadata.get("data")
     sanitized_data = _sanitize_debug_data(raw_data) if isinstance(raw_data, dict) else {}
     raw_arguments = sanitized_data.get("arguments")
-    sanitized_arguments = (
-        _provider_visible_debug_arguments(
-            segment.tool_name,
-            raw_arguments,
-        )
-        if isinstance(raw_arguments, dict)
-        else {}
-    )
+    sanitized_arguments = sanitize_tool_arguments(raw_arguments) if isinstance(raw_arguments, dict) else {}
     raw_diagnostics = metadata.get("diagnostics")
     payload = {
         "tool_name": segment.tool_name,
         "arguments": sanitized_arguments,
         "status": metadata.get("status"),
-        "content": _redact_debug_text(segment.content or ""),
-        "error": _safe_payload(metadata.get("error")),
+        "content": _bounded_payload(segment.content or ""),
+        "error": _bounded_payload(metadata.get("error")),
         "data": {key: value for key, value in sanitized_data.items() if key not in {"tool_call_id", "arguments"}},
-        "diagnostics": _safe_payload(raw_diagnostics) if isinstance(raw_diagnostics, dict) else None,
+        "diagnostics": _bounded_payload(raw_diagnostics) if isinstance(raw_diagnostics, dict) else None,
         "truncated": metadata.get("truncated"),
         "partial": metadata.get("partial"),
         "reference": metadata.get("reference"),
@@ -456,7 +424,7 @@ def _tool_payload_json(segment: ContextSegment) -> str:
 
 def _tool_result_payload_json(result: ToolResult | ToolResultView) -> str:
     raw_arguments = dict(result.arguments) if isinstance(result, ToolResultView) else {}
-    arguments = _provider_visible_debug_arguments(result.tool_name, raw_arguments)
+    arguments = sanitize_tool_arguments(raw_arguments)
     bounds = result.output.bounds
     if isinstance(result, ToolResultView):
         diagnostics = result.diagnostics
@@ -468,9 +436,9 @@ def _tool_result_payload_json(result: ToolResult | ToolResultView) -> str:
         "tool_name": result.tool_name,
         "arguments": arguments,
         "status": result.status,
-        "content": _redact_debug_text(output_text(result.output) or ""),
-        "error": _safe_payload(result.error if isinstance(result, (ToolFailure, ToolResultView)) else None),
-        "diagnostics": _safe_payload(diagnostics.as_payload()) if diagnostics is not None else None,
+        "content": _bounded_payload(output_text(result.output) or ""),
+        "error": _bounded_payload(result.error if isinstance(result, (ToolFailure, ToolResultView)) else None),
+        "diagnostics": _bounded_payload(diagnostics.as_payload()) if diagnostics is not None else None,
         "truncated": bounds.truncated or clipped,
         "partial": bounds.partial or clipped,
         "reference": bounds.reference.uri if bounds.reference is not None else None,
@@ -479,26 +447,11 @@ def _tool_result_payload_json(result: ToolResult | ToolResultView) -> str:
 
 
 def _sanitize_debug_arguments(arguments: dict[str, object]) -> dict[str, object]:
-    sanitized = sanitize_tool_arguments(arguments)
-    return _safe_mapping(sanitized)
-
-
-def _provider_visible_debug_arguments(
-    tool_name: str | None,
-    arguments: dict[str, object],
-) -> dict[str, object]:
-    sanitized = sanitize_tool_arguments(arguments)
-    return _safe_mapping(
-        strip_redaction_sentinels_from_mapping(
-            sanitized,
-            redacted_keys=redacted_argument_keys_for_tool(tool_name),
-        )
-    )
+    return sanitize_tool_arguments(arguments)
 
 
 def _sanitize_debug_data(data: dict[str, object]) -> dict[str, object]:
-    sanitized = sanitize_tool_result_data(data)
-    return _safe_mapping(sanitized)
+    return _bounded_mapping(sanitize_tool_result_data(data))
 
 
 def _diagnostics(

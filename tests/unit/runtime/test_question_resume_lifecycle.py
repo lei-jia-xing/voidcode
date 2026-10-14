@@ -148,7 +148,7 @@ def test_sync_approval_resume_tracks_active_lifecycle(
 def test_question_answer_is_durable_in_session_events_and_replay(tmp_path: Path) -> None:
     """``runtime.question_answered`` is durable truth, exactly like the approval path.
 
-    Contract (``docs/contracts/runtime-events.md`` → resume 路径的事件持久化):
+    Contract (``docs/contracts/runtime-execution.md``):
     the answer is appended as a real ``session_events`` row, so a replayer reads
     the chosen answers from the transcript -- ``runtime.question_requested`` for
     the question text, then ``runtime.question_answered`` for the selection, and

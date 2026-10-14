@@ -103,10 +103,10 @@ class SessionRefBody(ResponseModel):
 class SessionStateBody(ResponseModel):
     """``_serialize_session_state``: session identity plus status, turn, metadata.
 
-    ``metadata`` is dynamic: it is a bounded, redacted projection of the
-    runtime-owned persisted metadata (runtime config, capability snapshots,
-    todos, context projection, runtime policy, ...). Durable phase snapshots
-    and the composition turn cursor are private and never included.
+    ``metadata`` is a bounded projection of the runtime-owned persisted
+    metadata (runtime config, capability snapshots, todos, context projection,
+    runtime policy, ...). Durable phase snapshots and the composition turn
+    cursor are private and never included.
     """
 
     session: SessionRefBody
@@ -120,7 +120,7 @@ class EventBody(ResponseModel):
 
     ``payload`` is dynamic: each event type owns its payload shape (see
     ``voidcode.runtime.events``), and the envelope is what clients route on.
-    Reasoning payloads arrive already redacted unless ``show_thinking=true``.
+    Reasoning payload text is omitted unless ``show_thinking=true``.
     """
 
     session_id: str
@@ -452,7 +452,7 @@ class RuntimePolicyBody(ResponseModel):
 
     Scalars here are pass-throughs of the persisted runtime policy snapshot,
     typed from that snapshot's single writer (``runtime.policy``). ``diagnostics``
-    and ``precedence_trace`` are the projection's own bounded, redacted shapes:
+    and ``precedence_trace`` are bounded projections:
     trace entries keep whichever of their six keys were scalars.
     """
 
@@ -468,7 +468,6 @@ class RuntimePolicyBody(ResponseModel):
     hook_policy: RuntimePolicyHookPolicyBody
     precedence_trace: list[dict[str, str | bool | int | float | None]]
     diagnostics: dict[str, object]
-    redacted: Literal[True]
     bounded: Literal[True]
 
 

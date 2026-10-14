@@ -47,7 +47,7 @@ def test_tool_result_validates_status_consistently() -> None:
     assert failure.status == "error"
 
 
-def test_tool_result_diagnostics_is_redacted_and_json_safe() -> None:
+def test_tool_result_diagnostics_are_bounded_and_json_safe() -> None:
     diagnostics = ToolDiagnostics(
         kind="tool_timeout",
         summary="request timed out",
@@ -55,7 +55,7 @@ def test_tool_result_diagnostics_is_redacted_and_json_safe() -> None:
         guidance="Retry with a narrower request.",
     )
     payload = diagnostics.as_payload()
-    assert "secret-token" not in json.dumps(payload)
+    assert payload["details"]["message"] == "Authorization: Bearer secret-token"
     assert ToolDiagnostics.from_payload(payload) == diagnostics
     failure = ToolFailure(tool_name="read", error="timed out", diagnostics=diagnostics)
     assert failure.diagnostics == diagnostics
@@ -139,7 +139,7 @@ def test_runtime_stream_chunk_validates_required_fields() -> None:
         _ = runtime.RuntimeStreamChunk(kind="output", session=session)
 
 
-def test_runtime_policy_observability_payload_is_bounded_and_redacted() -> None:
+def test_runtime_policy_observability_payload_is_bounded_and_preserves_values() -> None:
     events_module = importlib.import_module("voidcode.runtime.events")
 
     payload = events_module.runtime_policy_observability_payload(
@@ -172,11 +172,11 @@ def test_runtime_policy_observability_payload_is_bounded_and_redacted() -> None:
                 "authoritative": False,
             },
             "precedence_trace": [{"source": "runtime_hard_denials", "applied": True}],
-            "diagnostics": {"api_key": "<redacted>", "large": "x" * 1000},
+            "diagnostics": {"api_key": "sk-original-value", "large": "x" * 1000},
         }
     )
 
-    assert payload["redacted"] is True
+    assert payload["diagnostics"]["api_key"] == "sk-original-value"
     assert payload["bounded"] is True
     assert payload["materialization"] == {
         "kind": "runtime_policy_materialized",

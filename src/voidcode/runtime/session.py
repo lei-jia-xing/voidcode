@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from ..formats.json_values import json_wire_object, own_json_object
+from ..common.json_values import json_wire_object, own_json_object
 from .composition import FrozenComposition, PhaseRecord
 from .events import EventEnvelope
 from .permissions.policy import runtime_read_only_from_metadata
@@ -51,114 +50,46 @@ def is_session_status_terminal(status: SessionStatus) -> bool:
 _PERSISTED_STRING_LIMIT = 1_000
 _PERSISTED_LIST_LIMIT = 50
 _PERSISTED_DICT_LIMIT = 100
-_REDACTED = "<redacted>"
-_SECRET_KEY_FRAGMENTS = (
-    "api_key",
-    "apikey",
-    "authorization",
-    "bearer",
-    "credential",
-    "password",
-    "secret",
-    "session_token",
-)
-_SECRET_VALUE_PATTERNS = (
-    re.compile(r"(?<![A-Za-z0-9_\-])sk-[A-Za-z0-9_\-]{6,}"),
-    re.compile(r"Bearer\s+[A-Za-z0-9._\-]{6,}", re.IGNORECASE),
-    re.compile(r"(?i)(api[_-]?key|token|secret|password)=([^\s&]+)"),
-)
-_REDACTED_ENV_VALUE_KEYS = frozenset(
-    {
-        "env",
-        "environment",
-        "injected_env",
-        "injected_env_values",
-        "env_values",
-    }
-)
-
-# Summary fields are long by construction and already bounded by context
-# compaction, so they are redacted but never truncated: a resume must see the
-# full projection rather than the metadata length cap's half-summary.
 
 
-def _looks_secret_key(key: str) -> bool:
-    lowered = key.lower()
-    return any(fragment in lowered for fragment in _SECRET_KEY_FRAGMENTS)
+def _bounded_text(value: str) -> str:
+    if len(value) <= _PERSISTED_STRING_LIMIT:
+        return value
+    return value[:_PERSISTED_STRING_LIMIT] + (f"\n... [truncated by runtime metadata: kept first {_PERSISTED_STRING_LIMIT} of {len(value)} chars]")
 
 
-def _redact_text(value: str) -> str:
-    """Apply the secret-value patterns without the persistence length cap.
-
-    Used for summary fields that are long by construction and already bounded by
-    context compaction, so truncating them at the metadata cap would leave the
-    model a half-summary after resume.
-    """
-    redacted = value
-    for pattern in _SECRET_VALUE_PATTERNS:
-        redacted = pattern.sub(_REDACTED, redacted)
-    return redacted
-
-
-def _scrub_text(value: str) -> str:
-    scrubbed = _redact_text(value)
-    if len(scrubbed) <= _PERSISTED_STRING_LIMIT:
-        return scrubbed
-    return scrubbed[:_PERSISTED_STRING_LIMIT] + (
-        f"\n... [truncated by runtime metadata: kept first {_PERSISTED_STRING_LIMIT} of {len(scrubbed)} chars]"
-    )
-
-
-def _bounded_redacted_mapping(value: Mapping[str, object]) -> dict[str, object]:
-    """The bounded, redacted copy of one top-level mapping: a mapping in, a mapping out.
-
-    ``_bounded_redacted`` returns ``object`` (it also bounds lists, passes scalars
-    through, and replaces a value under a secret key with ``_REDACTED``), so a
-    caller holding a mapping would otherwise have to cast the result back. The
-    walk stays in one place: this is its mapping arm, reached only when the
-    caller's own key is not a secret.
-    """
+def _bounded_mapping(value: Mapping[str, object]) -> dict[str, object]:
     result: dict[str, object] = {}
     for index, (raw_key, item) in enumerate(value.items()):
         if index >= _PERSISTED_DICT_LIMIT:
             result["__truncated__"] = True
             break
-        item_key = str(raw_key)
-        result[item_key] = _bounded_redacted(item, key=item_key)
+        result[str(raw_key)] = _bounded_value(item, key=str(raw_key))
     return result
 
 
-def _bounded_redacted(value: object, *, key: str | None = None) -> object:
-    if key is not None and (_looks_secret_key(key) or key.lower() in _REDACTED_ENV_VALUE_KEYS):
-        return _REDACTED
+def _bounded_value(value: object, *, key: str | None = None) -> object:
     if isinstance(value, dict):
-        return _bounded_redacted_mapping(value)
-    if isinstance(value, list):
-        result = [_bounded_redacted(item) for item in value[:_PERSISTED_LIST_LIMIT]]
-        if len(value) > _PERSISTED_LIST_LIMIT:
-            result.append({"__truncated__": True, "original_length": len(value)})
-        return result
-    if isinstance(value, tuple):
+        return _bounded_mapping(value)
+    if isinstance(value, list | tuple):
         items = list(value)
-        result = [_bounded_redacted(item) for item in items[:_PERSISTED_LIST_LIMIT]]
+        result = [_bounded_value(item) for item in items[:_PERSISTED_LIST_LIMIT]]
         if len(items) > _PERSISTED_LIST_LIMIT:
             result.append({"__truncated__": True, "original_length": len(items)})
         return result
     if isinstance(value, str):
-        if key == "summary_text":
-            return _redact_text(value)
-        return _scrub_text(value)
+        return value if key == "summary_text" else _bounded_text(value)
     return value
 
 
 def session_metadata_for_public(metadata: dict[str, object]) -> dict[str, object]:
-    """Return bounded, redacted metadata without durable phase snapshots/cursors."""
+    """Return bounded metadata without durable phase snapshots/cursors."""
     private_keys = {"phase_records", "composition_turn_occurrence", "composition_turn"}
     projected = {key: value for key, value in metadata.items() if key not in private_keys}
     runtime_state = projected.get("runtime_state")
     if isinstance(runtime_state, dict):
         projected["runtime_state"] = {key: value for key, value in runtime_state.items() if key not in private_keys}
-    return _bounded_redacted_mapping(projected)
+    return _bounded_mapping(projected)
 
 
 def _policy_observations(events: tuple[EventEnvelope, ...]) -> dict[str, object]:
@@ -168,7 +99,7 @@ def _policy_observations(events: tuple[EventEnvelope, ...]) -> dict[str, object]
         if event.payload.get("kind") == "runtime_tool_policy_denied" and isinstance(raw_tool_policy, dict):
             tool_policy_denial = {
                 "event_sequence": event.sequence,
-                **_bounded_redacted_mapping(raw_tool_policy),
+                **_bounded_mapping(raw_tool_policy),
             }
     return {"tool_policy_denial": tool_policy_denial} if tool_policy_denial is not None else {}
 
@@ -178,13 +109,12 @@ def session_metadata_for_persistence(
     *,
     events: tuple[EventEnvelope, ...] = (),
 ) -> dict[str, object]:
-    """Return bounded, redacted session metadata safe for durable storage.
+    """Return bounded session metadata for durable storage.
 
-    Boundary: this applies safety bounds (secret scrubbing, string-length caps,
-    dict/list depth limits) — NOT context compaction. Context window projection
-    is owned by ``context/window.py``. Private phase records and turn ownership
-    are validated JSON, retained exactly for cold recovery, and excluded from
-    public projection rather than scrubbed or truncated.
+    Boundary: this applies output bounds (string-length and dict/list limits) —
+    NOT context compaction. Context window projection is owned by
+    ``context/window.py``. Private phase records and turn ownership are validated
+    JSON, retained exactly for cold recovery, and excluded from public projection.
     """
 
     persisted = session_metadata_for_public(metadata)
@@ -218,7 +148,7 @@ def session_metadata_for_persistence(
     raw_composition = metadata.get("execution_composition")
     if raw_composition is not None:
         # This signed nonsecret owner is already projected by composition's
-        # source validators; generic redaction/size bounds would corrupt its hash.
+        # source validators; generic bounds would corrupt its hash.
         persisted["execution_composition"] = FrozenComposition.from_payload(raw_composition).to_payload()
     read_only = runtime_read_only_from_metadata(persisted)
     observations = _policy_observations(events)

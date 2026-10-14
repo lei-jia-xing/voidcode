@@ -9,7 +9,7 @@ from typing import Literal, Protocol
 
 import jsonschema
 
-from ..formats.json_values import json_wire_object
+from ..common.json_values import json_wire_object
 from ..tools.contracts import ToolCall, ToolDefinition, ToolDiagnostics
 
 ToolInputAction = Literal["unchanged", "rewrite", "block", "diagnostic"]

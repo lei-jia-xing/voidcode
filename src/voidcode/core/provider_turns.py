@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from typing import Final, Literal, TypedDict, cast
 
-from ..formats.json_values import json_wire_object
+from ..common.json_values import json_wire_object
 from ..provider.errors import parse_provider_stream_error
 from ..provider.model_catalog import static_catalog_metadata
 from ..provider.models import ResolvedProviderModel

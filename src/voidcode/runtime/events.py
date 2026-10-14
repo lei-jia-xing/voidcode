@@ -371,7 +371,6 @@ def runtime_policy_observability_payload(
         },
         "precedence_trace": _bounded_trace(snapshot.get("precedence_trace")),
         "diagnostics": _bounded_diagnostics(snapshot.get("diagnostics")),
-        "redacted": True,
         "bounded": True,
     }
 
@@ -442,12 +441,7 @@ def _bounded_diagnostics(value: object) -> dict[str, object]:
     for key, raw in bounded_items:
         if not isinstance(key, str):
             continue
-        if isinstance(raw, str):
-            diagnostics[key[:REASONING_PREVIEW_LIMIT_CHARS]] = raw[:REASONING_PREVIEW_LIMIT_CHARS]
-        elif isinstance(raw, bool | int | float) or raw is None:
-            diagnostics[key[:REASONING_PREVIEW_LIMIT_CHARS]] = raw
-        else:
-            diagnostics[key[:REASONING_PREVIEW_LIMIT_CHARS]] = "<bounded>"
+        diagnostics[key[:REASONING_PREVIEW_LIMIT_CHARS]] = raw[:REASONING_PREVIEW_LIMIT_CHARS] if isinstance(raw, str) else raw
     return diagnostics
 
 
@@ -486,25 +480,25 @@ def is_reasoning_payload(event_type: str, payload: Mapping[str, object]) -> bool
     return event_type == "core.provider_stream" and payload.get("channel") == "reasoning"
 
 
-def redact_reasoning_payload(
+def project_reasoning_payload(
     event_type: str,
     payload: Mapping[str, object],
     *,
     show_thinking: bool = False,
 ) -> dict[str, object]:
-    redacted = dict(payload)
-    redacted.pop("reported_call", None)
+    projected = dict(payload)
+    projected.pop("reported_call", None)
     if show_thinking or not is_reasoning_payload(event_type, payload):
-        return redacted
-    if "text" in redacted:
-        redacted.pop("text", None)
-        redacted["text_omitted"] = True
-    if "preview" in redacted:
-        redacted.pop("preview", None)
-        redacted["preview_omitted"] = True
+        return projected
+    if "text" in projected:
+        projected.pop("text", None)
+        projected["text_omitted"] = True
+    if "preview" in projected:
+        projected.pop("preview", None)
+        projected["preview_omitted"] = True
     if event_type == RUNTIME_REASONING_PART:
-        redacted["visibility"] = "hidden"
-    return redacted
+        projected["visibility"] = "hidden"
+    return projected
 
 
 KNOWN_EVENT_TYPES: Final[tuple[KnownEventType, ...]] = (

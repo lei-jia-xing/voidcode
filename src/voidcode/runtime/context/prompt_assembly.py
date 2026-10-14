@@ -6,13 +6,8 @@ from dataclasses import dataclass, field
 from typing import Final, Literal, TypeIs
 
 from voidcode.agent.prompt_sections import dynamic_boundary_marker
-from voidcode.security.redaction import (
-    PROMPT_FRAGMENT_PREVIEW_CHARS as _PROMPT_FRAGMENT_PREVIEW_CHARS,
-)
-from voidcode.security.redaction import (
-    redact_text,
-    truncate,
-)
+from voidcode.common.output_limits import PROMPT_FRAGMENT_PREVIEW_CHARS as _PROMPT_FRAGMENT_PREVIEW_CHARS
+from voidcode.common.output_limits import truncate
 
 from .transforms import RuntimeContextTransformResult
 
@@ -148,7 +143,6 @@ class PromptAssemblyPlan:
         return {
             "version": 1,
             "preview_chars": _PROMPT_FRAGMENT_PREVIEW_CHARS,
-            "redacted": True,
             "fragment_count": len(self.fragments),
             "fragments": [fragment.metadata_payload() for fragment in self.fragments],
         }
@@ -370,7 +364,7 @@ def prompt_fragments_for_sections(
             section.metadata,
             fallback=_default_layer_for_source(section.source),
         )
-        preview, truncated = _redacted_preview(section.content)
+        preview, truncated = _bounded_preview(section.content)
         fragments.append(
             PromptAssemblyFragment(
                 id=f"{order:03d}:{section.source}",
@@ -445,12 +439,11 @@ def _default_layer_for_source(source: str) -> str:
     return "project_context"
 
 
-def _redacted_preview(content: str) -> tuple[str, bool]:
-    redacted = redact_text(content)
-    redacted = " ".join(redacted.split())
-    if len(redacted) <= _PROMPT_FRAGMENT_PREVIEW_CHARS:
-        return redacted, False
-    return truncate(redacted, _PROMPT_FRAGMENT_PREVIEW_CHARS), True
+def _bounded_preview(content: str) -> tuple[str, bool]:
+    normalized = " ".join(content.split())
+    if len(normalized) <= _PROMPT_FRAGMENT_PREVIEW_CHARS:
+        return normalized, False
+    return truncate(normalized, _PROMPT_FRAGMENT_PREVIEW_CHARS), True
 
 
 def metadata_source(metadata: Mapping[str, object], *, fallback: str) -> str:

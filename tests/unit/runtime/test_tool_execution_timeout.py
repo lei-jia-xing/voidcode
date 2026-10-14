@@ -76,28 +76,6 @@ class _LargeOutputTool:
         return ToolSuccess(self.definition.name, output=TextOutput("".join(f"line-{index}\n" for index in range(2100))))
 
 
-class _SensitiveContextTool:
-    definition = ToolDefinition(name="sensitive_context_tool", description="Returns metadata.")
-
-    def __init__(self, *, data_uri: str, raw_data_content: str) -> None:
-        self._data_uri = data_uri
-        self._raw_data_content = raw_data_content
-
-    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
-        _ = call, context
-        return ToolSuccess(
-            self.definition.name,
-            output=TextOutput("metadata captured"),
-            body=OpaqueToolBody(
-                {
-                    "arguments": {"content": self._raw_data_content},
-                    "attachment": {"mime": "image/png", "data_uri": self._data_uri},
-                    "status": "tool-data-status-must-not-win",
-                }
-            ),
-        )
-
-
 class _HangingTool:
     definition = ToolDefinition(name="hanging_tool", description="Never returns.")
 
@@ -694,74 +672,6 @@ def test_runtime_artifact_resolver_skips_invalid_candidate_for_same_tool_call(
     assert metadata["status"] == "available"
     assert isinstance(read_result, ArtifactPage)
     assert read_result.text == "line-2099\n"
-
-
-def test_runtime_sanitizes_tool_arguments_and_data_before_events_and_feedback(
-    tmp_path: Path,
-) -> None:
-    raw_argument_content = "RAW FILE CONTENT SHOULD NOT BE MODEL VISIBLE"
-    raw_data_content = "RAW TOOL DATA CONTENT SHOULD NOT BE MODEL VISIBLE"
-    raw_old_string = "old secret"
-    raw_new_string = "new secret"
-    data_uri = "data:image/png;base64," + "A" * 64
-    tool = _SensitiveContextTool(data_uri=data_uri, raw_data_content=raw_data_content)
-    producer = _SingleToolCallWithArgumentsProducer(
-        tool.definition.name,
-        {
-            "path": "out.txt",
-            "content": raw_argument_content,
-            "edits": [{"oldString": raw_old_string, "newString": raw_new_string}],
-        },
-    )
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        tool_registry=ToolRegistry.from_tools([tool]),
-        turn_producer=producer,
-        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False)),
-    )
-
-    chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
-    completed_events = [
-        chunk.event for chunk in chunks if chunk.kind == "event" and chunk.event is not None and chunk.event.event_type == "runtime.tool_completed"
-    ]
-
-    assert len(completed_events) == 1
-    payload = completed_events[0].payload
-    assert payload["status"] == "ok"
-    arguments_obj = payload["arguments"]
-    assert isinstance(arguments_obj, dict)
-    arguments = cast(dict[str, object], arguments_obj)
-    assert arguments["path"] == "out.txt"
-    assert arguments["content"] == {
-        "omitted": True,
-        "byte_count": len(raw_argument_content.encode("utf-8")),
-        "line_count": 1,
-    }
-    edits = arguments["edits"]
-    assert isinstance(edits, list)
-    edit_items = cast(list[object], edits)
-    assert edit_items[0] == {
-        "oldString": {
-            "omitted": True,
-            "byte_count": len(raw_old_string.encode("utf-8")),
-            "line_count": 1,
-        },
-        "newString": {
-            "omitted": True,
-            "byte_count": len(raw_new_string.encode("utf-8")),
-            "line_count": 1,
-        },
-    }
-    attachment = payload["attachment"]
-    assert isinstance(attachment, dict)
-    assert attachment["data_uri"] == data_uri
-    assert isinstance(payload["reported_call"], dict)
-
-    assert len(producer.seen_tool_results) == 1
-    feedback_payload_text = str(producer.seen_tool_results[0].output)
-    assert raw_argument_content not in feedback_payload_text
-    assert raw_data_content not in feedback_payload_text
-    assert data_uri not in feedback_payload_text
 
 
 def test_session_status_is_failed_after_timeout(tmp_path: Path) -> None:

@@ -7,7 +7,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
-from ...formats.json_values import json_wire_object
+from ...common.json_values import json_wire_object
 from .rules import (
     RuleCatalog,
     build_rule_catalog,

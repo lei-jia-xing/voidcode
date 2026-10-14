@@ -28,7 +28,7 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.exceptions import MCPError
 from mcp.types import CallToolResult, Implementation, ListToolsResult, Tool
 
-from ..formats.json_values import json_wire_object, own_json_object
+from ..common.json_values import json_wire_object, own_json_object
 from ..mcp import (
     MCP_CLIENT_NAME,
     MCP_CLIENT_VERSION,
@@ -46,7 +46,6 @@ from ..mcp import (
     McpToolDescriptor,
     McpToolSafety,
     create_diagnostic,
-    redact_mcp_command,
 )
 from .config.loading import RuntimeMcpConfig, RuntimeMcpServerConfig
 from .events import (
@@ -996,9 +995,8 @@ class ManagedMcpManager:
         if method is not None:
             payload["method"] = method
         if command is not None:
-            redacted_command = redact_mcp_command(command)
-            payload["command"] = redacted_command
-            payload["cmd"] = redacted_command
+            payload["command"] = list(command)
+            payload["cmd"] = list(command)
         if diagnostic is not None:
             payload["diagnostic"] = {
                 "severity": diagnostic.severity,

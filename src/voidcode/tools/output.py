@@ -11,6 +11,15 @@ from dataclasses import replace
 from pathlib import Path
 from typing import BinaryIO, cast
 
+from ..common.output_limits import (
+    MODEL_FIELD_CHARS as MAX_MODEL_FIELD_CHARS,
+)
+from ..common.output_limits import (
+    TOOL_OUTPUT_BYTES as MAX_TOOL_OUTPUT_BYTES,
+)
+from ..common.output_limits import (
+    TOOL_OUTPUT_LINES as MAX_TOOL_OUTPUT_LINES,
+)
 from ..core.tool_context import (
     ArtifactBinary,
     ArtifactInvalid,
@@ -19,15 +28,6 @@ from ..core.tool_context import (
     ArtifactUnavailable,
     NextPage,
     PageEnd,
-)
-from ..security.redaction import (
-    MODEL_FIELD_CHARS as MAX_MODEL_FIELD_CHARS,
-)
-from ..security.redaction import (
-    TOOL_OUTPUT_BYTES as MAX_TOOL_OUTPUT_BYTES,
-)
-from ..security.redaction import (
-    TOOL_OUTPUT_LINES as MAX_TOOL_OUTPUT_LINES,
 )
 from .contracts import AttachmentOutput, OutputReference, TextOutput, ToolFailure, ToolOutput, ToolResult
 
@@ -43,45 +43,11 @@ def _is_text_artifact_mime(mime: str) -> bool:
     return mime.startswith("text/") or mime.startswith("image/svg+xml") or mime in _TEXT_ARTIFACT_MIMES
 
 
-_SENSITIVE_TEXT_ARGUMENT_KEYS = frozenset(
-    {
-        "content",
-        "newString",
-        "oldString",
-        "patch",
-        "edits",
-        "items",
-        "task",
-        "reason",
-        "blocker",
-        "todos",
-    }
-)
 _INLINE_BLOB_KEYS = frozenset({"data_uri", "dataUri", "base64", "blob"})
 _ARTIFACT_REFERENCE_PREFIX = "voidcode://artifact/"
 _ARTIFACT_PRODUCER = "voidcode.tool_output.v1"
 _ARTIFACT_ID_PATTERN = re.compile(r"^artifact_[0-9a-f]{24}$")
 _ARTIFACT_CACHE_DIR_NAME = "tool-output"
-_EMPTY_REDACTED_ARGUMENT_KEYS: frozenset[str] = frozenset()
-_PROVIDER_REDACTED_ARGUMENT_KEYS_BY_TOOL = {
-    "edit": frozenset({"oldString", "newString", "edits", "patch"}),
-    "todo": frozenset({"content", "items", "task", "reason", "blocker"}),
-    "write": frozenset({"content"}),
-}
-
-
-def _is_metadata_count(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
-def _is_sanitizer_redaction_placeholder(value: dict[object, object]) -> bool:
-    return (
-        value.get("omitted") is True
-        and _is_metadata_count(value.get("byte_count"))
-        and _is_metadata_count(value.get("line_count"))
-        and "preview" not in value
-        and "omitted_chars" not in value
-    )
 
 
 def _string_summary(value: str, *, include_preview: bool) -> dict[str, object]:
@@ -97,47 +63,31 @@ def _string_summary(value: str, *, include_preview: bool) -> dict[str, object]:
     return payload
 
 
-def _sanitize_mapping(value: Mapping[str, object], *, argument: bool) -> dict[str, object]:
-    """The model-visible copy of one mapping: a mapping in, a mapping out.
-
-    ``_sanitize_value`` returns ``object`` because it also transforms lists and
-    passes scalars through; the mapping arm is this one function, so a caller
-    holding a mapping never has to cast the walk's result back.
-    """
-    return {
-        str(item_key): _sanitize_value(
-            item_value,
-            key=str(item_key),
-            argument=argument,
-        )
-        for item_key, item_value in value.items()
-    }
+def _sanitize_mapping(value: Mapping[str, object]) -> dict[str, object]:
+    """Return a bounded model-visible copy of one mapping."""
+    return {str(item_key): _sanitize_value(item_value, key=str(item_key)) for item_key, item_value in value.items()}
 
 
-def _sanitize_value(value: object, *, key: str | None = None, argument: bool = False) -> object:
+def _sanitize_value(value: object, *, key: str | None = None) -> object:
     if isinstance(value, str):
         if key in _INLINE_BLOB_KEYS:
-            return _string_summary(value, include_preview=False)
-        if key in _SENSITIVE_TEXT_ARGUMENT_KEYS:
             return _string_summary(value, include_preview=False)
         if len(value) > MAX_MODEL_FIELD_CHARS:
             return _string_summary(value, include_preview=True)
         return value
     if isinstance(value, Mapping):
-        return _sanitize_mapping(value, argument=argument)
-    if isinstance(value, list):
-        return [_sanitize_value(item, key=key, argument=argument) for item in value]
-    if isinstance(value, tuple):
-        return [_sanitize_value(item, key=key, argument=argument) for item in value]
+        return _sanitize_mapping(value)
+    if isinstance(value, list | tuple):
+        return [_sanitize_value(item, key=key) for item in value]
     return value
 
 
 def sanitize_tool_arguments(arguments: Mapping[str, object]) -> dict[str, object]:
-    return _sanitize_mapping(arguments, argument=True)
+    return _sanitize_mapping(arguments)
 
 
 def sanitize_tool_data(data: Mapping[str, object]) -> dict[str, object]:
-    return _sanitize_mapping(data, argument=False)
+    return _sanitize_mapping(data)
 
 
 def sanitize_tool_result_data(data: Mapping[str, object]) -> dict[str, object]:
@@ -146,56 +96,6 @@ def sanitize_tool_result_data(data: Mapping[str, object]) -> dict[str, object]:
     if isinstance(raw_arguments, Mapping):
         sanitized["arguments"] = sanitize_tool_arguments(raw_arguments)
     return sanitized
-
-
-def redacted_argument_keys_for_tool(tool_name: str | None) -> frozenset[str]:
-    if tool_name is None:
-        return _EMPTY_REDACTED_ARGUMENT_KEYS
-    return _PROVIDER_REDACTED_ARGUMENT_KEYS_BY_TOOL.get(
-        tool_name,
-        _EMPTY_REDACTED_ARGUMENT_KEYS,
-    )
-
-
-def strip_redaction_sentinels_from_mapping(
-    value: Mapping[str, object],
-    *,
-    redacted_keys: frozenset[str] = _EMPTY_REDACTED_ARGUMENT_KEYS,
-) -> dict[str, object]:
-    """The sentinel-stripped copy of one top-level mapping: a mapping in, a mapping out.
-
-    ``strip_redaction_sentinels`` returns ``object`` because it also transforms
-    lists, passes scalars through, and collapses a nested mapping under a redacted
-    key to ``""``. A caller holding a mapping would otherwise have to narrow that
-    result back; the walk stays in one place, and this is its mapping arm stated.
-    """
-    return {
-        str(item_key): strip_redaction_sentinels(
-            item,
-            redacted_keys=redacted_keys,
-            key=str(item_key),
-        )
-        for item_key, item in value.items()
-    }
-
-
-def strip_redaction_sentinels(
-    value: object,
-    *,
-    redacted_keys: frozenset[str] = _EMPTY_REDACTED_ARGUMENT_KEYS,
-    key: str | None = None,
-) -> object:
-    """Return a schema-safe copy with sanitizer-created redaction placeholders removed."""
-
-    if isinstance(value, dict):
-        if key in redacted_keys and _is_sanitizer_redaction_placeholder(value):
-            return ""
-        return strip_redaction_sentinels_from_mapping(value, redacted_keys=redacted_keys)
-    if isinstance(value, list):
-        return [strip_redaction_sentinels(item, redacted_keys=redacted_keys, key=key) for item in value]
-    if isinstance(value, tuple):
-        return [strip_redaction_sentinels(item, redacted_keys=redacted_keys, key=key) for item in value]
-    return value
 
 
 def _utf8_prefix(text: str, *, max_bytes: int) -> str:
@@ -1385,14 +1285,11 @@ __all__ = [
     "create_tool_output_artifact",
     "iter_event_artifact_references",
     "read_tool_output_artifact",
-    "redacted_argument_keys_for_tool",
     "resolve_tool_output_artifact",
     "sanitize_tool_arguments",
     "sanitize_tool_data",
     "sanitize_tool_result_data",
     "search_tool_output_artifact",
     "session_artifacts_durable_root",
-    "strip_redaction_sentinels",
-    "strip_redaction_sentinels_from_mapping",
     "tool_output_artifact_temp_root",
 ]

@@ -429,7 +429,7 @@ def test_session_bundle_rejects_corrupted_artifact_checksum_without_side_effects
     assert not target_dir.exists() or list(target_dir.iterdir()) == []
 
 
-def test_session_bundle_rejects_redacted_omitted_artifacts(tmp_path: Path) -> None:
+def test_session_bundle_rejects_incomplete_artifacts(tmp_path: Path) -> None:
     source = tmp_path / "source"
     store, fork_id = _source(source)
     from voidcode.core.turns import ReportedCall
@@ -476,7 +476,6 @@ def test_session_bundle_rejects_redacted_omitted_artifacts(tmp_path: Path) -> No
 @pytest.mark.parametrize(
     "options",
     (
-        SessionBundleOptions(redact=True),
         SessionBundleOptions(include_tool_output=False),
         SessionBundleOptions(include_raw_provider_messages=False),
         SessionBundleOptions(include_reasoning_text=False),
@@ -485,5 +484,5 @@ def test_session_bundle_rejects_redacted_omitted_artifacts(tmp_path: Path) -> No
 def test_session_bundle_export_rejects_inexact_options(tmp_path: Path, options: SessionBundleOptions) -> None:
     workspace = tmp_path / "workspace"
     store, session_id = _source(workspace)
-    with pytest.raises(SessionBundleError, match="exact unredacted"):
+    with pytest.raises(SessionBundleError, match="exact export"):
         build_session_bundle(sessions=store, tasks=store, workspace=workspace, session_id=session_id, options=options)

@@ -1,6 +1,6 @@
 """Pure composer: an input editor state machine plus its row renderer.
 
-Ports the omp composer contracts in ``docs/plans/tui-productization.md``:
+Implements pure composer contracts:
 editing, history, Unicode wrapping, cursor placement, and all eight named
 frames. A closed frame table keeps layout geometry independent from editor
 state, statusline profile, theme, prompt gutter, and cursor. The app supplies

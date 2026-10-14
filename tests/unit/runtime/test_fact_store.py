@@ -10,6 +10,7 @@ from typing import cast
 import pytest
 
 from tests.runtime_composition import save_checkpoint
+from voidcode.common.json_values import json_wire_object
 from voidcode.core.engine import TurnEngine
 from voidcode.core.event_store import FactStore, MemoryEventStore
 from voidcode.core.memory_host import MemoryAbortSignal, MemoryContext, MemoryHost
@@ -29,7 +30,6 @@ from voidcode.core.turns import (
     TurnRequest,
     TurnSession,
 )
-from voidcode.formats.json_values import json_wire_object
 from voidcode.provider.protocol import ProviderStreamEvent
 from voidcode.runtime.bundle import (
     SESSION_BUNDLE_SCHEMA_VERSION,

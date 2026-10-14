@@ -1,109 +1,76 @@
 # Contributing to VoidCode
 
-Thanks for contributing to VoidCode. The project is moving through its first productionized runtime release, so clear communication, focused changes, and repeatable local verification matter more than speed.
+Welcome, and thank you for your interest in contributing to VoidCode! VoidCode is an open-source, local-first coding agent runtime, and we welcome contributions ranging from bug fixes and documentation improvements to new features and test coverage.
 
-## Development setup
+## Getting Started
 
-The recommended local environment uses `uv` for Python and Bun for the frontend. Supported Python version: **3.14**.
+### Prerequisites
 
-```bash
-mise install
-uv sync --extra dev --extra syntax
-mise run frontend:install
-uv run voidcode --help
-```
+- **Python**: Version 3.14
+- **uv**: Fast Python package installer and resolver
+- **Bun**: JavaScript runtime and package manager for frontend assets
+- **mise**: (Recommended) Polyglot toolchain and task runner
 
-Optional but recommended:
+### Environment Setup
 
-```bash
-uv run pre-commit install
-```
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/lei-jia-xing/voidcode.git
+   cd voidcode
+   ```
 
-## Code quality and verification
+2. Install toolchain versions and Python dependencies:
+   ```bash
+   mise install
+   uv sync --extra dev --extra syntax
+   ```
 
-See [`docs/coding-standards.md`](./docs/coding-standards.md) for repository coding standards.
+3. Install frontend dependencies:
+   ```bash
+   mise run frontend:install
+   ```
 
-Current toolchain:
+4. Install pre-commit hooks (optional but recommended):
+   ```bash
+   uv run pre-commit install
+   ```
 
-### Python
-- **Ruff** for linting and formatting
-- **ty** for static type checking
-- **pytest** for tests
+## Development Workflow
 
-### Frontend
-- **Bun** as the package manager and task runner
-- **ESLint** for linting
-- **TypeScript** for type checking
-- **Vitest** for tests
+### Useful Commands
 
-Run the standard checks with `mise`:
-
-```bash
-mise run lint
-mise run format
-mise run typecheck
-mise run test
-mise run test:coverage
-mise run build
-mise run frontend:lint
-mise run frontend:typecheck
-mise run frontend:test
-mise run frontend:e2e
-mise run check
-mise run ci
-mise run pre-commit
-```
-
-When needed, you can also invoke the Python tooling directly:
+Common development tasks are configured in `mise.toml`:
 
 ```bash
-uv run ruff check .
-uv run ruff format .
-uv run ty check src
-uv run pytest -n auto
-uv run pytest -n auto --cov=voidcode --cov-report=term-missing
-uv run pre-commit run --all-files
+# Code Quality
+mise run lint            # Check Python code with Ruff
+mise run format          # Format Python code with Ruff
+mise run typecheck       # Static typecheck with ty
+
+# Testing
+mise run test            # Run unit and integration tests
+mise run test:coverage   # Run tests with terminal coverage
+
+# Frontend
+mise run frontend:dev    # Start Vite dev server
+mise run frontend:lint   # Lint frontend code
+mise run frontend:test   # Run Vitest tests
+
+# Full Verification
+mise run check           # Run all lint, typecheck, schema, test, and frontend checks
+mise run pre-commit      # Run all pre-commit hooks
 ```
 
-## Testing expectations
+## Contribution Guidelines
 
-Please add or update tests when behavior changes.
+- **Architecture & Design**: Before making structural changes, read the [Architecture Overview](./docs/architecture.md) to understand ownership boundaries between runtime, core engine, tools, and common utilities.
+- **Coding Standards**: See [Coding Standards](./docs/coding-standards.md) for detailed style rules, typing expectations, and error handling principles.
+- **Testing**: Review the [Testing Policy](./docs/testing.md). Add or update tests for any observable behavior changes.
+- **Commit Messages**: Follow the [Conventional Commits](./docs/coding-standards.md#commit-conventions) specification (`feat(runtime): ...`, `fix(cli): ...`).
 
-- Read [`docs/testing.md`](./docs/testing.md) for what the suite covers on purpose and what it deliberately leaves untested.
-- Run the relevant local checks before opening a pull request.
-- Run `mise run test` while iterating, and `mise run test:coverage` before asking for review.
-- Keep linting and type checking clean.
-- If you change CLI, runtime, graph, tool, or transport behavior, add test coverage where an existing test surface already exists.
-- For frontend changes, run the relevant Bun-based checks as well.
+## Pull Request Process
 
-## Documentation language policy
-
-- Public-facing documents in the repository root should be written in English.
-- Internal design and planning documents under `docs/` may remain in Chinese.
-- If behavior or workflow changes, update the affected user-facing documentation.
-
-## Pull request process
-
-1. Start from an up-to-date branch.
-2. Keep the change focused and explain the motivation in the PR description.
-3. Run the relevant lint, typecheck, test, and pre-commit checks locally before requesting review.
-4. Update documentation when behavior, workflow, or contributor expectations change.
-5. Address review feedback with follow-up commits.
-
-## Commit messages
-
-Use Conventional Commits as described in [`docs/coding-standards.md`](./docs/coding-standards.md).
-
-Examples:
-
-- `feat(runtime): persist sessions in sqlite`
-- `fix(cli): handle unknown session ids`
-- `docs: refresh contribution guide`
-
-## Code of conduct
-
-By participating in this project, you agree to follow [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md).
-
-## Security
-
-Do not open public issues for security-sensitive reports. Follow the reporting instructions in [`SECURITY.md`](./SECURITY.md).
+1. Create a descriptive branch from `master` (`git checkout -b feat/my-feature`).
+2. Implement your changes with accompanying tests and documentation.
+3. Verify that `mise run check` and `mise run pre-commit` pass cleanly.
+4. Submit a Pull Request clearly explaining the motivation, changes made, and verification steps exercised.

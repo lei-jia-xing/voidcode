@@ -9,8 +9,8 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
+from ..common.json_values import json_wire_object, own_json_object
 from ..core.tool_context import LspDocumentState, ToolContext
-from ..formats.json_values import json_wire_object, own_json_object
 from ..formatter import FormatterExecutor, formatter_diagnostics, formatter_payload
 from ..hook.config import RuntimeHooksConfig
 from ._post_edit_diagnostics import post_edit_lsp_diagnostics

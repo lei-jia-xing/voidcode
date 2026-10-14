@@ -26,11 +26,11 @@ from ..command import (
     resolve_prompt_command,
 )
 from ..command.models import CommandDefinition
+from ..common.json_values import json_wire_object
 from ..core.questions import QuestionAnswer
 from ..core.tool_context import ArtifactRead, TranscriptRead
 from ..core.transcript import ContextSegment, ToolResultView, project_report
 from ..core.turns import ReportedCall, TurnProducer, TurnRequest
-from ..formats.json_values import json_wire_object
 from ..hook.before_agent_start import (
     BeforeAgentStartBinding,
     BeforeAgentStartDeclaration,
@@ -1049,8 +1049,7 @@ class VoidCodeRuntime(RuntimeSurface):
         #      longer write task state, child-session events or parent
         #      notifications) before terminalizing its task row
         #      (``interrupted`` for keep-alive tasks, ``failed`` otherwise).
-        #      See docs/contracts/background-task-delegation.md →
-        #      「执行所有权与 late write」.
+        #      See docs/contracts/task-delegation.md.
         #   2. Stop spawned background processes.
         #   3. Tear down ACP/MCP/LSP adapters LAST — MCP connections are
         #      runtime-scoped and shared across sessions (never released at
@@ -1076,7 +1075,7 @@ class VoidCodeRuntime(RuntimeSurface):
         inherit the caller's lease, so tool-side commits are covered too); a
         manager-owned thread that persists on its own is outside this guarantee
         — see the boundary invariant in
-        docs/contracts/background-task-delegation.md → 「执行所有权与 late write」.
+        docs/contracts/task-delegation.md.
         """
         self._background_task_supervisor.shutdown(timeout_seconds=timeout_seconds)
 
@@ -2207,7 +2206,7 @@ class VoidCodeRuntime(RuntimeSurface):
         # interruption before the first safe boundary used to leave a session
         # that cannot be resumed. Refresh it now that both records exist — this
         # is the last point before any tool call, so every execution window is
-        # covered. See docs/contracts/execution-lifecycle.md → (b).
+        # covered. See docs/contracts/runtime-execution.md.
         self._refresh_run_checkpoint(
             session=session,
             prompt=prepared.provider_prompt if prepared.provider_prompt is not None else prepared.request.prompt,

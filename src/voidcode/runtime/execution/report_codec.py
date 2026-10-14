@@ -3,9 +3,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import cast
 
+from ...common.json_values import json_wire_object, own_json_object
 from ...core.questions import PendingQuestionOption, PendingQuestionPrompt, QuestionCancellation, QuestionResponse
 from ...core.turns import ReportedCall
-from ...formats.json_values import json_wire_object, own_json_object
 from ...tools.contracts import (
     AttachmentOutput,
     ConfirmedStop,

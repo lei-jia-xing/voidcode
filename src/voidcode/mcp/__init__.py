@@ -28,7 +28,6 @@ from .observability import (
     create_diagnostic,
     diagnostic_message,
 )
-from .redaction import format_redacted_mcp_command, redact_mcp_command
 
 # Types - static data structures
 from .types import (
@@ -69,8 +68,6 @@ __all__ = [
     "McpDiagnosticsCollector",
     "create_diagnostic",
     "diagnostic_message",
-    "format_redacted_mcp_command",
-    "redact_mcp_command",
 ]
 
 # Module version

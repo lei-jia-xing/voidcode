@@ -78,14 +78,6 @@ run = "uv run python -X utf8 -m pytest -n auto --dist worksteal --cov=voidcode -
 [tasks.build]
 run = "uv build"
 
-[tasks."release:notes"]
-description = "Generate release notes to stdout"
-run = "git-cliff --config cliff.toml"
-
-[tasks."release:preview"]
-description = "Preview release notes"
-run = "git-cliff --config cliff.toml"
-
 [tasks."catalog:generate"]
 description = "Regenerate src/voidcode/provider/model_catalog_data.json from the upstream catalog mirror"
 run = "uv run python -X utf8 scripts/generate_model_catalog.py"

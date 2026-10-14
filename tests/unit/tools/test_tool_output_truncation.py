@@ -15,7 +15,6 @@ from voidcode.tools.output import (
     sanitize_tool_arguments,
     sanitize_tool_result_data,
     search_tool_output_artifact,
-    strip_redaction_sentinels,
     tool_output_artifact_temp_root,
 )
 
@@ -606,9 +605,6 @@ def test_cap_tool_result_output_caps_large_errors(tmp_path: Path) -> None:
     assert capped.output.bounds.truncated is True
     diagnostics = cast(list[dict[str, object]], _metadata(capped)["diagnostics"])
     assert diagnostics[-1]["reason"] == "tool_error_truncated"
-    retry_guidance = cast(str, diagnostics[-1]["retry_guidance"])
-    assert 'task(operation="output", full_session=true)' not in retry_guidance
-    assert "full error" in retry_guidance
     assert capped.output.bounds.reference is not None
     normalization = cast(dict[str, object], _metadata(capped)["normalization"])
     assert normalization["kind"] == "tool_error_truncated"
@@ -616,25 +612,6 @@ def test_cap_tool_result_output_caps_large_errors(tmp_path: Path) -> None:
     assert isinstance(raw_artifact, dict)
     artifact = cast(dict[str, object], raw_artifact)
     assert Path(cast(str, artifact["path"])).read_text(encoding="utf-8") == error_text
-
-
-def test_sanitize_tool_arguments_omits_sensitive_text_fields() -> None:
-    sanitized = sanitize_tool_arguments(
-        {
-            "path": "sample.txt",
-            "content": "secret contents",
-            "edits": [{"oldString": "old", "newString": "new"}],
-        }
-    )
-
-    assert sanitized["path"] == "sample.txt"
-    assert sanitized["content"] == {"omitted": True, "byte_count": 15, "line_count": 1}
-    edits = sanitized["edits"]
-    assert isinstance(edits, list)
-    assert edits[0] == {
-        "oldString": {"omitted": True, "byte_count": 3, "line_count": 1},
-        "newString": {"omitted": True, "byte_count": 3, "line_count": 1},
-    }
 
 
 def test_sanitize_tool_arguments_preserves_preview_for_oversized_benign_text() -> None:
@@ -652,22 +629,14 @@ def test_sanitize_tool_arguments_preserves_preview_for_oversized_benign_text() -
     assert query_summary["omitted_chars"] == len(large_query) - 4000
 
 
-def test_sanitize_tool_result_data_strips_inline_blobs_and_nested_arguments() -> None:
+def test_sanitize_tool_result_data_strips_inline_blobs() -> None:
     data_uri = "data:image/png;base64," + "A" * 100
-    raw_blocker = "secret blocked reason"
     sanitized = sanitize_tool_result_data(
         {
-            "arguments": {"content": "raw file body", "path": "out.txt"},
             "attachment": {"mime": "image/png", "data_uri": data_uri},
-            "todos": [{"content": "raw todo text", "status": "pending"}],
-            "phases": [{"name": "Tasks", "tasks": [{"content": "blocked", "status": "blocked", "blocker": raw_blocker}]}],
         }
     )
 
-    assert sanitized["arguments"] == {
-        "content": {"omitted": True, "byte_count": 13, "line_count": 1},
-        "path": "out.txt",
-    }
     attachment = sanitized["attachment"]
     assert isinstance(attachment, dict)
     attachment_payload = cast(dict[str, object], attachment)
@@ -677,72 +646,3 @@ def test_sanitize_tool_result_data_strips_inline_blobs_and_nested_arguments() ->
         "byte_count": len(data_uri.encode("utf-8")),
         "line_count": 1,
     }
-    todos = sanitized["todos"]
-    assert isinstance(todos, list)
-    assert todos[0] == {
-        "content": {"omitted": True, "byte_count": 13, "line_count": 1},
-        "status": "pending",
-    }
-    phases = cast(list[dict[str, object]], sanitized["phases"])
-    task = cast(dict[str, object], cast(list[object], phases[0]["tasks"])[0])
-    assert task["blocker"] == {"omitted": True, "byte_count": len(raw_blocker.encode("utf-8")), "line_count": 1}
-
-
-def test_strip_redaction_sentinels_replaces_redaction_metadata_with_empty_strings() -> None:
-    stripped = strip_redaction_sentinels(
-        {
-            "path": "out.txt",
-            "content": {"omitted": True, "byte_count": 11, "line_count": 1},
-            "edits": [
-                {
-                    "oldString": {"omitted": True, "byte_count": 3, "line_count": 1},
-                    "newString": {"omitted": True, "byte_count": 3, "line_count": 1},
-                }
-            ],
-        },
-        redacted_keys=frozenset({"content", "oldString", "newString"}),
-    )
-
-    assert stripped == {
-        "path": "out.txt",
-        "content": "",
-        "edits": [{"oldString": "", "newString": ""}],
-    }
-
-
-def test_strip_redaction_sentinels_handles_nested_todo_arguments() -> None:
-    stripped = strip_redaction_sentinels(
-        {
-            "todos": [
-                {
-                    "content": {"omitted": True, "byte_count": 9, "line_count": 1},
-                    "status": "pending",
-                }
-            ]
-        },
-        redacted_keys=frozenset({"content"}),
-    )
-
-    assert stripped == {"todos": [{"content": "", "status": "pending"}]}
-
-
-def test_strip_redaction_sentinels_preserves_truncation_previews() -> None:
-    summary = {
-        "omitted": True,
-        "byte_count": 5000,
-        "line_count": 1,
-        "preview": "safe oversized query prefix",
-        "omitted_chars": 300,
-    }
-
-    stripped = strip_redaction_sentinels({"query": summary})
-
-    assert stripped == {"query": summary}
-
-
-def test_strip_redaction_sentinels_preserves_matching_custom_metadata_objects() -> None:
-    metadata = {"omitted": True, "byte_count": 42, "line_count": 2}
-
-    stripped = strip_redaction_sentinels({"content": metadata})
-
-    assert stripped == {"content": metadata}

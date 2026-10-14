@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Literal
 
-from ...formats.json_values import json_wire_value, own_json_value
+from ...common.json_values import json_wire_value, own_json_value
 from ...mcp import McpToolDescriptor
 from ...tools.contracts import ToolDefinition, is_read_tier
 from ...tools.local_custom import LocalCustomToolManifest, local_custom_tool_definition, local_custom_tool_source_fingerprint

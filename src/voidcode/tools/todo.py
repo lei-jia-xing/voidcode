@@ -6,9 +6,9 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from ..common.json_values import json_wire_object
 from ..core.todos import TodoPhase, TodoSummary, TodoTask, todo_summary
 from ..core.tool_context import ToolContext
-from ..formats.json_values import json_wire_object
 from ._pydantic_args import parse_tool_args
 from .contracts import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolSuccess
 

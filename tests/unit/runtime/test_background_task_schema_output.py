@@ -13,10 +13,10 @@ import pytest
 
 from tests.runtime_composition import create_task, save_checkpoint
 from tests.runtime_storage import repositories_for_test_store
+from voidcode.common.json_values import json_wire_object
 from voidcode.core.tool_context import ToolContext
 from voidcode.core.transcript import TextOutput
 from voidcode.core.turns import ReportedCall
-from voidcode.formats.json_values import json_wire_object
 from voidcode.runtime import VoidCodeRuntime
 from voidcode.runtime.background.models import (
     BackgroundTaskRef,

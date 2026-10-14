@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-from ...formats.json_values import json_wire_object
+from ...common.json_values import json_wire_object
 from ..background.models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,

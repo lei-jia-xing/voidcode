@@ -13,7 +13,7 @@ from voidcode.runtime.events import (
     DelegatedLifecycleMessage,
     DelegatedRoutingPayload,
     EventEnvelope,
-    redact_reasoning_payload,
+    project_reasoning_payload,
     runtime_reasoning_part_payload,
 )
 from voidcode.runtime.tool_display import build_tool_display
@@ -22,7 +22,7 @@ from voidcode.runtime.tool_display import build_tool_display
 def test_reasoning_redaction_omits_text_and_preview_by_default() -> None:
     payload = runtime_reasoning_part_payload(text="private chain")
 
-    redacted = redact_reasoning_payload(RUNTIME_REASONING_PART, payload)
+    redacted = project_reasoning_payload(RUNTIME_REASONING_PART, payload)
 
     assert redacted["text_omitted"] is True
     assert redacted["preview_omitted"] is True
@@ -34,7 +34,7 @@ def test_reasoning_redaction_omits_text_and_preview_by_default() -> None:
 def test_reasoning_redaction_can_show_thinking_explicitly() -> None:
     payload = runtime_reasoning_part_payload(text="private chain")
 
-    shown = redact_reasoning_payload(
+    shown = project_reasoning_payload(
         RUNTIME_REASONING_PART,
         payload,
         show_thinking=True,

@@ -10,8 +10,8 @@ from pathlib import Path
 from unidiff import PatchSet
 from unidiff.errors import UnidiffParseError
 
+from ..common.json_values import json_wire_object, own_json_object
 from ..core.tool_context import ToolContext
-from ..formats.json_values import json_wire_object, own_json_object
 from ..formatter import FormatterExecutor, formatter_diagnostics, formatter_payload
 from ..hook.config import RuntimeHooksConfig
 from ._post_edit_diagnostics import post_edit_lsp_diagnostics

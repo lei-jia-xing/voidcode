@@ -13,8 +13,8 @@ from pathlib import Path
 from string import Template
 from typing import final
 
+from ..common.json_values import json_wire_object, own_json_object
 from ..core.tool_context import ToolContext
-from ..formats.json_values import json_wire_object, own_json_object
 from .contracts import (
     EmptyOutput,
     OutputBounds,

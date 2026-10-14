@@ -21,11 +21,10 @@ def _nested(mapping: object, *keys: str) -> object:
         # A long summary is resume truth: it is bounded by compaction and must not
         # be cut by the metadata length cap.
         pytest.param("S" * 1500, "S" * 1500, id="long-summary-not-truncated"),
-        # Redaction still applies inside the same field.
-        pytest.param("S" * 1200 + " sk-abcdef123456", "S" * 1200 + " <redacted>", id="secret-still-redacted"),
+        pytest.param("S" * 1200 + " sk-abcdef123456", "S" * 1200 + " sk-abcdef123456", id="credential-value-preserved"),
     ],
 )
-def test_summary_text_is_redacted_but_never_truncated(raw_summary: str, expected_summary: str) -> None:
+def test_summary_text_is_preserved_but_never_truncated(raw_summary: str, expected_summary: str) -> None:
     metadata: dict[str, object] = {
         "context_window": {"projection": {"summary_text": raw_summary}},
         "runtime_state": {"context_projection": {"summary_text": raw_summary}},

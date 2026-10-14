@@ -9,11 +9,11 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 
+from ...common.json_values import json_wire_object
+from ...common.output_limits import TOOL_OUTPUT_BYTES as MAX_TOOL_OUTPUT_BYTES
 from ...core.questions import QuestionCancellation
 from ...core.transcript import output_text
 from ...core.turns import ReportedCall
-from ...formats.json_values import json_wire_object
-from ...security.redaction import TOOL_OUTPUT_BYTES as MAX_TOOL_OUTPUT_BYTES
 from ...tools.contracts import (
     ProgressYield,
     QuestionAnswered,

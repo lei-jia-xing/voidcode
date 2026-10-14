@@ -570,7 +570,6 @@ def test_transport_replays_session_as_json_runtime_response(
     request_payload = cast(dict[str, object], request_event["payload"])
     policy_observability = cast(dict[str, object], request_payload["runtime_policy"])
     assert policy_observability["bounded"] is True
-    assert policy_observability["redacted"] is True
     assert "http replay" not in json.dumps(policy_observability)
     tool_request_event = _event_by_type(
         cast(list[dict[str, object]], payload["events"]),
@@ -763,7 +762,7 @@ def test_transport_streams_session_events_after_sequence(
     assert all(chunk["session"] is None for chunk in event_chunks)
 
 
-def test_transport_events_endpoint_strips_canonical_reported_call_and_redacts_secrets(
+def test_transport_events_endpoint_strips_canonical_reported_call_and_preserves_values(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -814,13 +813,12 @@ def test_transport_events_endpoint_strips_canonical_reported_call_and_redacts_se
     assert response.status == 200
     raw_body = response.body.decode("utf-8")
 
-    # Internal canonical reported_call must be stripped from public SSE stream
+    # Internal canonical reported_call remains excluded from the public stream.
     assert "reported_call" not in raw_body
-    # Secret tokens must not leak across the wire
-    assert "sk-super-secret-key-12345" not in raw_body
-    assert "token_xyz" not in raw_body
-    # Public presentation content is redacted
-    assert "[redacted]" in raw_body
+    # Public JSON preserves the original credential-like values.
+    assert "sk-super-secret-key-12345" in raw_body
+    assert "token_xyz" in raw_body
+    assert "OPENAI_API_KEY=sk-super-secret-key-12345" in raw_body
 
 
 def test_transport_session_result_redacts_reasoning_until_query_opt_in() -> None:

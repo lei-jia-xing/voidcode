@@ -1321,7 +1321,7 @@ class RuntimeResumeCoordinator:
         # materialized one) cannot be replayed. Refuse it here — by name, before
         # anything is read-and-rewritten — instead of failing deeper inside the
         # skill-snapshot projection, which is the same refusal without a reason
-        # the caller can act on. See docs/contracts/execution-lifecycle.md → (b).
+        # the caller can act on. See docs/contracts/runtime-execution.md.
         _require_recorded_capability_snapshot(session_metadata)
         checkpoint_last_sequence: int | None = None
         if restore_leaf:

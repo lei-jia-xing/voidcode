@@ -6,27 +6,9 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from typing import Any, overload
+from typing import Any
 
 from .protocol import ProviderErrorKind, ProviderExecutionError
-
-_SENSITIVE_DETAIL_KEY_MARKERS = (
-    "api_key",
-    "apikey",
-    "authorization",
-    "cookie",
-    "credential",
-    "key",
-    "password",
-    "secret",
-    "token",
-)
-_SECRET_VALUE_PATTERNS = (
-    re.compile(r"sk-[A-Za-z0-9_\-]{6,}"),
-    re.compile(r"Bearer\s+[A-Za-z0-9._\-]{6,}", re.IGNORECASE),
-    re.compile(r"(?i)(api[_-]?key|token|secret|password)=([^\s&]+)"),
-)
-
 
 # Class-path wrapper emitted by higher-level SDK shims, e.g. `openai.AuthenticationError: ...`.
 _CLASS_PATH_WRAPPER_PREFIX = re.compile(
@@ -78,56 +60,6 @@ def _strip_provider_error_wrapper(value: str) -> str:
     stripped = _CLASS_PATH_WRAPPER_PREFIX.sub("", value.strip())
     unwrapped = _sdk_error_wrapper_body(stripped)
     return stripped if unwrapped is None else unwrapped
-
-
-def _redact_secret_text(value: str) -> str:
-    redacted = _strip_provider_error_wrapper(value)
-    for pattern in _SECRET_VALUE_PATTERNS:
-        redacted = pattern.sub(
-            lambda match: f"{match.group(1)}=<redacted>" if match.lastindex and match.lastindex >= 2 else "<redacted>",
-            redacted,
-        )
-    return redacted
-
-
-def _redact_provider_error_detail(value: object) -> object:
-    if isinstance(value, dict):
-        redacted: dict[str, object] = {}
-        for raw_key, raw_item in value.items():
-            key = str(raw_key)
-            lowered = key.lower()
-            if any(marker in lowered for marker in _SENSITIVE_DETAIL_KEY_MARKERS):
-                redacted[key] = "<redacted>"
-            else:
-                redacted[key] = _redact_provider_error_detail(raw_item)
-        return redacted
-    if isinstance(value, list):
-        return [_redact_provider_error_detail(item) for item in value]
-    if isinstance(value, str):
-        return _redact_secret_text(value)
-    return value
-
-
-def redact_provider_error_message(value: str) -> str:
-    """Return provider-facing error text with credential-like values masked."""
-    return _redact_secret_text(value)
-
-
-@overload
-def redact_provider_error_details(value: Mapping[str, object]) -> dict[str, object]: ...
-
-
-@overload
-def redact_provider_error_details(value: object) -> object: ...
-
-
-def redact_provider_error_details(value: object) -> object:
-    """Recursively redact provider diagnostics before runtime persistence."""
-    return _redact_provider_error_detail(value)
-
-
-def _provider_error_details(payload: dict[str, Any]) -> dict[str, object]:
-    return redact_provider_error_details(payload)
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,7 +160,7 @@ def _parse_provider_error(payload: dict[str, Any], *, source: str, default_messa
         retryable = True
     elif _is_terminal_client_status(status_code):
         retryable = False
-    details = _provider_error_details(payload)
+    details = dict(payload)
     guidance = guidance_for_provider_error_kind(kind)
     retry_after = _extract_retry_after(payload)
     details.update(
@@ -241,7 +173,7 @@ def _parse_provider_error(payload: dict[str, Any], *, source: str, default_messa
     )
     return ParsedProviderError(
         kind=kind,
-        message=redact_provider_error_message(message),
+        message=_strip_provider_error_wrapper(message),
         details=details,
         retryable=retryable,
         fallback_allowed=fallback_allowed,

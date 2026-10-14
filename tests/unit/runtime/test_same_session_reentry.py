@@ -1,7 +1,7 @@
 """Same-session re-entry: what a second run / resume / steer may do while one run is in flight.
 
 The invariant under test is the one written down in
-``docs/contracts/execution-lifecycle.md`` → 「同一 session 的并发所有权」:
+``docs/contracts/runtime-execution.md``:
 
 * a live run owns the session's event stream and appends to it incrementally;
 * a fresh run on the same session is allowed to append (the terminal seal belongs

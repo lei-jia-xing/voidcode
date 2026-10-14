@@ -1,8 +1,8 @@
 """Late writes after a seizure: where execution ownership stops.
 
 The invariant under test is the one written down in
-``docs/contracts/execution-lifecycle.md`` → 「执行所有权与 late write」 and
-``docs/contracts/background-task-delegation.md`` → 「执行所有权与 late write」:
+``docs/contracts/runtime-execution.md`` and
+``docs/contracts/task-delegation.md``:
 
 * an execution the runtime seized (shutdown deadline expired while it was in
   flight) keeps losing its writes wherever they are made on its behalf — the run
@@ -221,7 +221,7 @@ def test_a_seized_execution_loses_the_commits_its_tool_makes(tmp_path: Path, cap
 def test_a_writer_thread_spawned_by_a_tool_is_outside_the_lease_boundary(tmp_path: Path) -> None:
     """The documented boundary: the lease is thread-scoped and does not follow spawned threads.
 
-    ``docs/contracts/background-task-delegation.md`` → 「执行所有权与 late write」
+    ``docs/contracts/task-delegation.md``
     states the checkable invariant: runtime-owned commits must happen on the
     execution's own thread, so a manager that spawns its own persisting thread
     steps outside the guarantee. This test pins that boundary — the tool's own
