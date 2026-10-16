@@ -7,23 +7,7 @@ from ..common.frontmatter import load_frontmatter_mapping, split_frontmatter
 from .models import CommandDefinition, CommandSource
 from .registry import CommandRegistry
 
-_BUILTIN_COMMANDS: tuple[CommandDefinition, ...] = (
-    CommandDefinition(
-        name="init",
-        description="Generate or refresh repository-specific AGENTS.md guidance.",
-        template=(
-            "Inspect this repository using its actual files, documentation, tests, and configuration. "
-            "Generate concise, stable AGENTS.md guidance for this workspace.\n\n"
-            "Preserve and merge useful existing guidance; remove only information shown to be stale or contradictory. "
-            "Do not include secrets, transient task plans, chat history, or unsupported claims. "
-            "Do not impose a fixed section list or generic coding persona.\n\n"
-            "Write AGENTS.md through the normal runtime tools and respect approval. "
-            "Read the final file back and verify that it reflects repository evidence.\n\n"
-            "Focus: $ARGUMENTS"
-        ),
-        source="builtin",
-    ),
-)
+_BUILTIN_COMMANDS: tuple[CommandDefinition, ...] = ()
 
 
 _SOURCE_PRECEDENCE: tuple[CommandSource, ...] = ("builtin", "extension", "user", "project", "skill", "mcp")

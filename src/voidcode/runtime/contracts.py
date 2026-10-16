@@ -1277,6 +1277,87 @@ class RuntimeStreamChunk:
         return event
 
 
+@dataclass(frozen=True, slots=True)
+class SessionStatusPanel:
+    """Read-only projection behind native ``/status`` (Codex status cell parity).
+
+    Every field names the VoidCode counterpart of a Codex status row; fields
+    the runtime cannot know stay ``None`` rather than inventing a value.
+    """
+
+    session_id: str
+    title: str | None = None
+    status: str = "idle"
+    turn: int = 0
+    model: str | None = None
+    provider: str | None = None
+    reasoning_effort: str | None = None
+    approval_mode: str | None = None
+    collaboration_mode: str = "default"
+    goal_objective: str | None = None
+    goal_status: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: float | None = None
+    workspace: str | None = None
+    base_url: str | None = None
+    forked_from_session_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SessionExport:
+    """Full Markdown transcript behind native ``/export``."""
+
+    session_id: str
+    filename: str
+    markdown: str
+
+
+@dataclass(frozen=True, slots=True)
+class CopyTarget:
+    """One copy choice behind native ``/copy`` (Codex markdown.rs parity)."""
+
+    label: str
+    preview: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class ContextUsageItem:
+    """One per-item row behind native ``/context all``."""
+
+    label: str
+    tokens: int
+
+
+@dataclass(frozen=True, slots=True)
+class ContextUsageSegment:
+    """One per-segment bucket behind native ``/context``."""
+
+    label: str
+    tokens: int
+    items: tuple[ContextUsageItem, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SessionContextUsage:
+    """Context-window usage behind native ``/context`` (Claude parity).
+
+    ``used_tokens`` is the real assembly projection (measured provider anchor
+    plus the local estimate's excess); segments bucket the same projection
+    the next provider call would send.
+    """
+
+    session_id: str
+    model: str | None = None
+    used_tokens: int = 0
+    total_tokens: int | None = None
+    percent: float | None = None
+    over_budget: bool = False
+    estimated: bool = True
+    segments: tuple[ContextUsageSegment, ...] = ()
+
+
 @runtime_checkable
 class RuntimeEntrypoint(Protocol):
     def run(self, request: RuntimeRequest) -> RuntimeResponse: ...

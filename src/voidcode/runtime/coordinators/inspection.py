@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from ...agent import AgentManifestRegistry
 from ...command.models import CommandDefinition
+from ...command.native import NATIVE_COMMANDS
 from ...core.tool_context import (
     ArtifactBinary,
     ArtifactInvalid,
@@ -35,10 +36,10 @@ from ...core.tool_context import (
     TranscriptPage,
     TranscriptRead,
 )
-from ...core.transcript import AssembledContext
+from ...core.transcript import AssembledContext, ContextSegment, output_text, project_report
 from ...core.turns import ReportedCall
 from ...provider.auth import ProviderAuthResolver
-from ...provider.model_catalog import ToolFeedbackMode
+from ...provider.model_catalog import ToolFeedbackMode, static_catalog_metadata
 from ...provider.models import ResolvedProviderConfig, ResolvedProviderModel
 from ...provider.naming import provider_label
 from ...provider.registry import ModelProviderRegistry
@@ -81,11 +82,14 @@ from ..config.materializer import (
 )
 from ..context.continuity import events_after_manual_compaction, replayed_conversation_segments_from_events
 from ..context.provider import inspect_provider_context
-from ..context.window import RuntimeAssembledContext
+from ..context.window import RuntimeAssembledContext, provider_usage_anchor_tokens
 from ..contracts import (
     AgentSummary,
     CapabilityStatusSnapshot,
     CommandSummary,
+    ContextUsageItem,
+    ContextUsageSegment,
+    CopyTarget,
     GitStatusSnapshot,
     ProviderInspectResult,
     ProviderModelMetadata,
@@ -107,7 +111,10 @@ from ..contracts import (
     RuntimeSessionDebugToolSummary,
     RuntimeSessionResult,
     RuntimeStatusSnapshot,
+    SessionContextUsage,
     SessionEventBatch,
+    SessionExport,
+    SessionStatusPanel,
     SkillSummary,
     UnknownSessionError,
     WorkspaceReviewSnapshot,
@@ -138,6 +145,7 @@ from ..providers.inspection import (
     ProviderSummaryProjector,
     ProviderValidationFacts,
     RuntimeProviderAuthInspector,
+    RuntimeProviderEndpointInspector,
     RuntimeProviderReadinessProjector,
     RuntimeProviderValidationProjector,
 )
@@ -210,6 +218,175 @@ def _command_summary(command: CommandDefinition) -> CommandSummary:
         subtask=command.subtask,
         path=(str(command.path) if command.path is not None else None),
     )
+
+
+def _positive_int_or_none(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _non_negative_float_or_none(value: object) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _cumulative_usage(metadata: Mapping[str, object]) -> tuple[int | None, int | None, float | None]:
+    """Cumulative provider usage from session metadata; unknown stays ``None``."""
+    raw_usage = metadata.get("provider_usage")
+    if not isinstance(raw_usage, dict):
+        return None, None, None
+    cumulative = raw_usage.get("cumulative")
+    if not isinstance(cumulative, dict):
+        return None, None, None
+    return (
+        _positive_int_or_none(cumulative.get("input_tokens")),
+        _positive_int_or_none(cumulative.get("output_tokens")),
+        _non_negative_float_or_none(cumulative.get("cost_usd")),
+    )
+
+
+def _segment_source(segment: ContextSegment) -> str:
+    metadata = segment.metadata or {}
+    source = metadata.get("source")
+    return source if isinstance(source, str) and source else "assembled_context"
+
+
+def _context_segment_label(segment: ContextSegment) -> tuple[str, str]:
+    """Bucket one assembly segment into ``(segment label, item label)``."""
+    source = _segment_source(segment)
+    if source == "replayed_conversation":
+        if segment.role == "tool":
+            ref = segment.tool_call_id or (segment.metadata or {}).get("sequence", "?")
+            return "Conversation history", f"history #{ref}"
+        return "Conversation history", "Conversation history"
+    if source in {"runtime_todo_state", "runtime_pending_state"}:
+        return "Goal steering", source
+    if source in {"runtime_collaboration_mode", "runtime_instruction_precedence"}:
+        return "Goal steering", source
+    if source in {"agent_prompt", "runtime_agent"} or source.startswith("agent"):
+        return "Agent prompt", source
+    if source in {"skill_prompt", "skill"} or source.startswith("skill"):
+        return "Skills", source
+    if source.startswith("runtime_hook") or source in {"hook_guidance", "hook_preset"}:
+        return "Hooks", source
+    if source in {"tool_catalog", "runtime_tool_catalog"} or source.startswith("tool"):
+        return "Tools", source
+    if source in {"continuity_summary", "artifact_reference", "runtime_continuity"}:
+        return "Continuity summary", source
+    if source.startswith("runtime_") or source.startswith("context_transform"):
+        return "System prompt", source
+    if segment.role == "tool":
+        return "Tools", segment.tool_name or "tool result"
+    return "System prompt", source
+
+
+_COPY_PREVIEW_CHARS = 72
+
+
+def _copy_preview(text: str) -> str:
+    first = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    return first[:_COPY_PREVIEW_CHARS]
+
+
+def extract_copy_targets(markdown_source: str) -> tuple[CopyTarget, ...]:
+    """Whole message + per-code-block + per-quote copy choices (Codex markdown.rs parity).
+
+    A line scanner rather than a markdown parser: fenced blocks (```/~~~) with
+    their info-string language, and contiguous ``>`` runs with markers stripped.
+    Indented code blocks are deliberately not targets (upstream parses only
+    fenced blocks too).
+    """
+    choices: list[CopyTarget] = []
+    if markdown_source.strip():
+        choices.append(CopyTarget(label="Whole response", preview=_copy_preview(markdown_source), text=markdown_source))
+    lines = markdown_source.splitlines(keepends=True)
+    index = 0
+    quote_run: list[str] = []
+
+    def flush_quote() -> None:
+        if not quote_run:
+            return
+        stripped = "".join(
+            stripped_line[1:].lstrip(" \t") if stripped_line.startswith(">") else raw for raw in quote_run for stripped_line in (raw.lstrip(" \t"),)
+        )
+        if stripped.strip():
+            choices.append(CopyTarget(label="Blockquote", preview=_copy_preview(stripped), text=stripped))
+        quote_run.clear()
+
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.lstrip(" \t")
+        fence = stripped[:3] if stripped.startswith("```") or stripped.startswith("~~~") else ""
+        if fence:
+            flush_quote()
+            marker = fence[0]
+            info = stripped[3:].strip().split()
+            language = info[0].split(",")[0] if info else ""
+            body: list[str] = []
+            index += 1
+            while index < len(lines) and not lines[index].lstrip(" \t").startswith(marker * 3):
+                body.append(lines[index])
+                index += 1
+            index += 1  # consume the closing fence (or run off the end)
+            content = "".join(body)
+            label = f"{language} code" if language else "Code block"
+            choices.append(CopyTarget(label=label, preview=_copy_preview(content), text=content))
+            continue
+        if stripped.startswith(">"):
+            quote_run.append(line)
+        else:
+            flush_quote()
+        index += 1
+    flush_quote()
+    return tuple(choices)
+
+
+def render_session_export_markdown(*, session_id: str, title: str | None, events: tuple[EventEnvelope, ...], output: str | None) -> str:
+    """Full Markdown transcript from session events (Codex transcript-export parity)."""
+    lines = [f"# Session {session_id}", ""]
+    if title:
+        lines.extend([f"Title: {title}", ""])
+    pending_tools: dict[str, tuple[str, dict[str, object]]] = {}
+    for event in events:
+        payload = event.payload
+        if event.event_type == "runtime.request_received":
+            prompt = payload.get("prompt")
+            if isinstance(prompt, str) and prompt.strip():
+                lines.extend(["## User", "", prompt.strip(), ""])
+        elif event.event_type == "runtime.user_shell_executed":
+            record = payload.get("record")
+            if isinstance(record, str) and record.strip():
+                lines.extend(["## User (!shell)", "", f"```\n{record.strip()}\n```", ""])
+        elif event.event_type == "core.model_turn":
+            raw_calls = payload.get("tool_batch_calls")
+            if isinstance(raw_calls, list):
+                for raw_call in raw_calls:
+                    if not isinstance(raw_call, Mapping):
+                        continue
+                    call_id = raw_call.get("tool_call_id")
+                    tool_name = raw_call.get("tool")
+                    if isinstance(call_id, str) and isinstance(tool_name, str):
+                        arguments = raw_call.get("arguments")
+                        pending_tools[call_id] = (tool_name, dict(arguments) if isinstance(arguments, Mapping) else {})
+            reasoning = payload.get("tool_batch_reasoning")
+            if isinstance(reasoning, str) and reasoning.strip():
+                lines.extend(["## Assistant (thinking)", "", reasoning.strip(), ""])
+        elif event.event_type == "runtime.tool_completed":
+            report = reported_call_from_event(event)
+            if report is None:
+                continue
+            view = project_report(report)
+            name, _ = pending_tools.pop(report.tool_call_id, (view.tool_name, {}))
+            lines.extend([f"## Tool: {name}", ""])
+            body = output_text(view.output) or ""
+            lines.extend([f"```\n{body.strip()}\n```" if body.strip() else "_no output_", ""])
+            if view.error:
+                lines.extend([f"Error: {view.error}", ""])
+        elif event.event_type == "core.response_ready":
+            preview = payload.get("output_preview")
+            if isinstance(preview, str) and preview.strip():
+                lines.extend(["## Assistant", "", preview.strip(), ""])
+    if output and not any(event.event_type == "core.response_ready" for event in events):
+        lines.extend(["## Assistant", "", output.strip(), ""])
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _decode_subprocess_text_output(value: object) -> str:
@@ -1635,16 +1812,201 @@ class InspectionCoordinator:
 
     def list_command_summaries(self, *, user_commands_dir: Path | None = None) -> tuple[CommandSummary, ...]:
         registry = self._surface.command_registry(user_commands_dir=user_commands_dir)
-        native = (
-            CommandSummary(name="btw", description="ask a quick side question without interrupting the main conversation", source="native"),
-            CommandSummary(name="compact", description="summarize and persist the current conversation context", source="native"),
-            CommandSummary(name="diff", description="show the aggregate Git diff, including untracked files", source="native"),
-            CommandSummary(name="plan", description="enter reversible read-only Plan mode", source="native"),
-            CommandSummary(name="review", description="review current workspace changes with the governed review agent", source="native"),
-        )
+        native = tuple(CommandSummary(name=cmd.name, description=cmd.description, source="native") for cmd in NATIVE_COMMANDS)
         native_names = {command.name for command in native}
         summaries = [_command_summary(command) for command in registry.list() if command.name not in native_names]
         return (*native, *summaries)
+
+    # -- native read-only info commands (/status /export /copy /context) --------
+
+    def session_status_panel(self, *, session_id: str) -> SessionStatusPanel:
+        """Project the ``/status`` panel: session, model, approval, usage, provider."""
+        validate_id(session_id)
+        result = self._load_session_result(session_id=session_id)
+        session = result.session
+        metadata = session.metadata
+        config = self._surface.run_config_from_metadata(metadata)
+        selection = config.resolved_provider.active_target.selection
+        model = selection.model or selection.raw_model or config.model
+        provider = selection.provider
+        base_url = self._provider_base_url(provider) if provider else None
+        raw_goal = metadata.get("thread_goal")
+        goal = raw_goal if isinstance(raw_goal, dict) else None
+        raw_mode = metadata.get("collaboration_mode")
+        input_tokens, output_tokens, cost_usd = _cumulative_usage(metadata)
+        return SessionStatusPanel(
+            session_id=session_id,
+            title=result.title,
+            status=session.status,
+            turn=session.turn,
+            model=model,
+            provider=provider,
+            reasoning_effort=config.reasoning_effort,
+            approval_mode=config.approval_mode,
+            collaboration_mode=raw_mode if isinstance(raw_mode, str) and raw_mode in {"default", "plan"} else "default",
+            goal_objective=str(goal.get("objective")) if goal is not None and isinstance(goal.get("objective"), str) else None,
+            goal_status=str(goal.get("status")) if goal is not None and isinstance(goal.get("status"), str) else None,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_usd=cost_usd,
+            workspace=str(self._workspace),
+            base_url=base_url,
+            forked_from_session_id=self._fork_source(session_id),
+        )
+
+    def _provider_base_url(self, provider_name: str) -> str | None:
+        try:
+            inspector = RuntimeProviderEndpointInspector(providers=self._config.providers)
+            return inspector.facts(provider_name).base_url
+        except ValueError:
+            return None
+
+    def _fork_source(self, session_id: str) -> str | None:
+        for entry in self.session_lineage(session_id=session_id):
+            if entry.session_id == session_id:
+                return entry.forked_from_session_id
+        return None
+
+    def export_session_markdown(self, *, session_id: str) -> SessionExport:
+        """Render the full ``/export`` Markdown transcript from the event log."""
+        validate_id(session_id)
+        result = self._load_session_result(session_id=session_id)
+        return SessionExport(
+            session_id=session_id,
+            filename=f"voidcode-session-{session_id}.md",
+            markdown=render_session_export_markdown(
+                session_id=session_id,
+                title=result.title,
+                events=result.transcript,
+                output=result.output,
+            ),
+        )
+
+    def copy_targets(self, *, session_id: str) -> tuple[CopyTarget, ...]:
+        """``/copy`` choices from the last assistant response (``()`` when none)."""
+        validate_id(session_id)
+        try:
+            result = self._load_session_result(session_id=session_id)
+        except ValueError:
+            return ()
+        for event in reversed(result.transcript):
+            if event.event_type != "core.response_ready":
+                continue
+            preview = event.payload.get("output_preview")
+            if isinstance(preview, str) and preview.strip():
+                return extract_copy_targets(preview)
+        if isinstance(result.output, str) and result.output.strip():
+            return extract_copy_targets(result.output)
+        return ()
+
+    def session_context_usage(self, *, session_id: str, expand_items: bool = False) -> SessionContextUsage:
+        """``/context`` usage from the real assembly projection (Claude parity)."""
+        validate_id(session_id)
+        result = self._load_session_result(session_id=session_id)
+        metadata = result.session.metadata
+        path_events = self._events.session_path(workspace=self._workspace, session_id=session_id)
+        path_events = events_after_manual_compaction(path_events)
+        prompt, tool_results = prompt_and_tool_results_from_debug_events(path_events)
+        replayed_segments = replayed_conversation_segments_from_events(path_events, reported_call_from_event=reported_call_from_event)
+        assembled = self._surface.assemble_provider_context(
+            replayed_conversation_segments=replayed_segments,
+            prompt=prompt or result.prompt,
+            tool_results=tuple(tool_results),
+            session_metadata=metadata,
+            skill_prompt_context=self._debug_skill_prompt_context(metadata),
+        )
+        model, provider = self._model_identity(metadata)
+        tokenizer = self._tokenizer_for(provider, model)
+        used = self._assembled_token_count(assembled, metadata, tokenizer=tokenizer)
+        window = self._context_window_for(provider, model)
+        config = self._surface.run_config_from_metadata(metadata)
+        readiness = self._provider_readiness_for_config(config)
+        total = readiness.context_window or window
+        percent = round(used / total * 100, 1) if total else None
+        segments = self._context_usage_segments(assembled, tokenizer=tokenizer, expand_items=expand_items)
+        # Segments are sized with the same ruler as the headline; when the
+        # measured anchor wins, distribute the anchor so the parts sum honestly.
+        segment_total = sum(segment.tokens for segment in segments)
+        if used > segment_total and segments:
+            head, *rest = segments
+            segments = (ContextUsageSegment(label=head.label, tokens=head.tokens + (used - segment_total), items=head.items), *rest)
+        return SessionContextUsage(
+            session_id=session_id,
+            model=f"{provider}/{model}" if provider and model else model,
+            used_tokens=used,
+            total_tokens=total,
+            percent=percent,
+            over_budget=bool(total) and used > total,
+            estimated=provider_usage_anchor_tokens(metadata) is None,
+            segments=segments,
+        )
+
+    def _model_identity(self, metadata: dict[str, object]) -> tuple[str | None, str | None]:
+        from ..session_metadata_helpers import session_model_identity
+
+        return session_model_identity(metadata)
+
+    def _tokenizer_for(self, provider: str | None, model: str | None) -> str | None:
+        if not model:
+            return None
+        catalog = static_catalog_metadata(provider or "", model)
+        return catalog.tokenizer if catalog is not None else None
+
+    def _context_window_for(self, provider: str | None, model: str | None) -> int | None:
+        if not provider or not model:
+            return None
+        try:
+            catalog = static_catalog_metadata(provider, model)
+            if catalog is not None and catalog.context_window:
+                return catalog.context_window
+            queried = self._provider_catalog_query.metadata_for_model(provider, model)
+            return queried.context_window if queried is not None else None
+        except ValueError:
+            return None
+
+    def _assembled_token_count(self, assembled: RuntimeAssembledContext, metadata: dict[str, object], *, tokenizer: str | None) -> int:
+        from ...provider.tokenizer import count_tokens
+
+        window = assembled.context_window
+        if window is not None and window.usage_tokens_after is not None:
+            return window.usage_tokens_after
+        # The assembly already carries the prompt as its own segment
+        # (``current_user_prompt``); join-then-count matches the window's own
+        # ``usage_tokens_after`` accounting so headline and buckets agree.
+        estimate = count_tokens("".join(segment.content or "" for segment in assembled.segments), tokenizer)
+        anchor = provider_usage_anchor_tokens(metadata)
+        # omp's ladder: the anchor is measured truth, the estimate only adds its excess.
+        return max(anchor or 0, estimate)
+
+    def _context_usage_segments(
+        self, assembled: RuntimeAssembledContext, *, tokenizer: str | None, expand_items: bool
+    ) -> tuple[ContextUsageSegment, ...]:
+        from ...provider.tokenizer import count_tokens
+
+        buckets: dict[str, list[ContextUsageItem]] = {}
+        # The assembly already carries the prompt as its own segment
+        # (``current_user_prompt``); bucket the segments verbatim so the parts
+        # sum to the headline without double-counting.
+        segments = assembled.segments
+        for segment in segments:
+            label, item_label = _context_segment_label(segment)
+            tokens = count_tokens(segment.content or "", tokenizer)
+            if segment.tool_arguments:
+                tokens += count_tokens(str(sorted(segment.tool_arguments.items())), tokenizer)
+            bucket = buckets.setdefault(label, [])
+            if expand_items:
+                bucket.append(ContextUsageItem(label=item_label, tokens=tokens))
+            elif bucket:
+                head = bucket[0]
+                bucket[0] = ContextUsageItem(label=label, tokens=head.tokens + tokens)
+            else:
+                bucket.append(ContextUsageItem(label=label, tokens=tokens))
+        order = ("System prompt", "Agent prompt", "Skills", "Hooks", "Tools", "Goal steering", "Continuity summary", "Conversation history")
+        ranked = sorted(buckets.items(), key=lambda item: (order.index(item[0]) if item[0] in order else len(order), item[0]))
+        return tuple(
+            ContextUsageSegment(label=label, tokens=sum(item.tokens for item in items), items=tuple(items) if expand_items else ())
+            for label, items in ranked
+        )
 
     def status_snapshot(self) -> RuntimeStatusSnapshot:
         """Project capability/background/git state without reconciling workers.

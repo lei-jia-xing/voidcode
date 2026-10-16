@@ -43,6 +43,8 @@ import {
   type ReviewTargetPayload,
 } from "./components/ReviewPickerModal";
 import { BtwDialog } from "./components/BtwDialog";
+import { ChoicePickerModal } from "./components/ChoicePickerModal";
+import { InfoDialog, type InfoDialogState } from "./components/InfoDialog";
 import { ReviewPanel } from "./components/ReviewPanel";
 import { ContextPanel } from "./components/ContextPanel";
 import { TodoPanel } from "./components/TodoPanel";
@@ -56,6 +58,7 @@ import {
   providerCostUsd,
 } from "./lib/runtime/providerUsage";
 import { RuntimeClient } from "./lib/runtime/client";
+import { INIT_PROMPT } from "./lib/runtime/initPrompt";
 import {
   FileCodeCorner,
   FolderTree,
@@ -294,6 +297,15 @@ function App() {
   } | null>(null);
   const [reviewPickerOpen, setReviewPickerOpen] = useState(false);
   const [btwBusy, setBtwBusy] = useState(false);
+  const [infoDialog, setInfoDialog] = useState<InfoDialogState | null>(null);
+  const [copyPicker, setCopyPicker] = useState<{
+    targets: Array<{ label: string; preview: string; text: string }>;
+  } | null>(null);
+  const [exportPicker, setExportPicker] = useState<{
+    markdown: string;
+    filename: string;
+    filenameStep: boolean;
+  } | null>(null);
   const [draftMessage, setDraftMessage] = useState<string | null>(null);
   void draftMessage;
   const [showContext, setShowContext] = useState(false);
@@ -397,7 +409,10 @@ function App() {
   const agentsQuery = useAgentsQuery(scope);
   const agentPresets = agentsQuery.data ?? [];
   const commandsQuery = useCommandsQuery(scope);
-  const commands = commandsQuery.data ?? [];
+  const commands = useMemo(
+    () => commandsQuery.data ?? [],
+    [commandsQuery.data],
+  );
 
   const statusQuery = useRuntimeStatusQuery(scope);
   const statusSnapshot = statusQuery.data ?? null;
@@ -1055,15 +1070,227 @@ function App() {
         }
         return true;
       }
+      const isNative = commands.some(
+        (c) => c.source === "native" && `/${c.name}` === command,
+      );
+      if (!isNative) return false;
       if (
-        command !== "/compact" &&
-        command !== "/diff" &&
-        command !== "/plan" &&
-        command !== "/review" &&
-        command !== "/goal" &&
-        command !== "/btw"
-      )
-        return false;
+        command === "/status" ||
+        command === "/copy" ||
+        command === "/context"
+      ) {
+        // No busy gate: read-only projections, safe mid-stream (Codex parity).
+        if (!currentSessionId) {
+          setNativeNotice(t("composer.nativeNoSession"));
+          return true;
+        }
+        const sessionId = currentSessionId;
+        const requestedScope = scope;
+        if (command === "/status" && argument) {
+          setNativeNotice(t("composer.nativeCommandArguments", { command }));
+          return true;
+        }
+        if (command === "/copy" && argument) {
+          setNativeNotice(t("composer.nativeCommandArguments", { command }));
+          return true;
+        }
+        if (command === "/context" && argument && argument !== "all") {
+          setNativeNotice(t("composer.nativeCommandArguments", { command }));
+          return true;
+        }
+        void (async () => {
+          try {
+            if (command === "/status") {
+              const panel = await RuntimeClient.getSessionInfoStatus(sessionId);
+              if (
+                scopeRef.current !== requestedScope ||
+                useAppStore.getState().currentSessionId !== sessionId
+              )
+                return;
+              setInfoDialog({
+                title: t("composer.nativeStatusTitle"),
+                rows: [
+                  {
+                    label: "Session",
+                    value: panel.title
+                      ? `${panel.session_id} (${panel.title})`
+                      : panel.session_id,
+                  },
+                  {
+                    label: "Status",
+                    value: `${panel.status} · turn ${panel.turn}`,
+                  },
+                  {
+                    label: "Model",
+                    value:
+                      panel.provider && panel.model
+                        ? `${panel.provider}/${panel.model}`
+                        : (panel.model ?? "unresolved"),
+                  },
+                  { label: "Reasoning", value: panel.reasoning_effort ?? "—" },
+                  { label: "Approval", value: panel.approval_mode ?? "—" },
+                  { label: "Mode", value: panel.collaboration_mode },
+                  {
+                    label: "Goal",
+                    value: panel.goal_objective
+                      ? `${panel.goal_status}: ${panel.goal_objective}`
+                      : "—",
+                  },
+                  {
+                    label: "Usage",
+                    value:
+                      panel.input_tokens != null || panel.output_tokens != null
+                        ? `in=${panel.input_tokens} out=${panel.output_tokens}${panel.cost_usd != null ? ` $${panel.cost_usd.toFixed(4)}` : ""}`
+                        : "—",
+                  },
+                  { label: "Workspace", value: panel.workspace ?? "—" },
+                  { label: "Endpoint", value: panel.base_url ?? "—" },
+                  ...(panel.forked_from_session_id
+                    ? [
+                        {
+                          label: "Forked from",
+                          value: panel.forked_from_session_id,
+                        },
+                      ]
+                    : []),
+                ],
+              });
+              return;
+            }
+            if (command === "/copy") {
+              const result = await RuntimeClient.getCopyTargets(sessionId);
+              if (
+                scopeRef.current !== requestedScope ||
+                useAppStore.getState().currentSessionId !== sessionId
+              )
+                return;
+              if (result.targets.length === 0) {
+                setNativeNotice(t("composer.nativeCopyEmpty"));
+                return;
+              }
+              if (result.targets.length === 1) {
+                const only = result.targets[0];
+                await navigator.clipboard.writeText(only.text);
+                setNativeNotice(
+                  t("composer.nativeCopied", { label: only.label }),
+                );
+                return;
+              }
+              setCopyPicker({ targets: result.targets });
+              return;
+            }
+            const usage = await RuntimeClient.getSessionContextUsage(
+              sessionId,
+              argument === "all",
+            );
+            if (
+              scopeRef.current !== requestedScope ||
+              useAppStore.getState().currentSessionId !== sessionId
+            )
+              return;
+            const total = usage.total_tokens ? ` / ${usage.total_tokens}` : "";
+            const percent =
+              usage.percent !== null ? ` (${usage.percent}%)` : "";
+            setInfoDialog({
+              title: t("composer.nativeContextTitle"),
+              rows: [
+                {
+                  label: "Context",
+                  value: `${usage.used_tokens}${total} tokens${percent}`,
+                },
+                ...(usage.model
+                  ? [{ label: "Model", value: usage.model }]
+                  : []),
+                ...usage.segments.flatMap((segment) => [
+                  { label: segment.label, value: String(segment.tokens) },
+                  ...segment.items.map((row) => ({
+                    label: row.label,
+                    value: String(row.tokens),
+                    indent: 1,
+                  })),
+                ]),
+              ],
+              hint: usage.over_budget
+                ? t("composer.nativeContextOver")
+                : usage.estimated
+                  ? t("composer.nativeContextEstimated")
+                  : null,
+            });
+          } catch (error) {
+            if (
+              scopeRef.current === requestedScope &&
+              useAppStore.getState().currentSessionId === sessionId
+            ) {
+              setNativeNotice(
+                t("composer.nativeCommandError", {
+                  message: errorMessage(error),
+                }),
+              );
+            }
+          }
+        })();
+        return true;
+      }
+      if (command === "/export") {
+        // Idle-only gate (Codex blocks /export during a task).
+        if (
+          isRunning ||
+          nativeCompactBusy ||
+          nativePlanBusy ||
+          nativeReviewBusy
+        ) {
+          setNativeNotice(t("composer.nativeBusy"));
+          return true;
+        }
+        if (!currentSessionId) {
+          setNativeNotice(t("composer.nativeNoSession"));
+          return true;
+        }
+        const sessionId = currentSessionId;
+        const requestedScope = scope;
+        void (async () => {
+          try {
+            if (argument) {
+              const written = await RuntimeClient.writeSessionExport(
+                sessionId,
+                argument,
+              );
+              if (
+                scopeRef.current !== requestedScope ||
+                useAppStore.getState().currentSessionId !== sessionId
+              )
+                return;
+              setNativeNotice(
+                t("composer.nativeExportSaved", { path: written.path }),
+              );
+              return;
+            }
+            const result = await RuntimeClient.getSessionExport(sessionId);
+            if (
+              scopeRef.current !== requestedScope ||
+              useAppStore.getState().currentSessionId !== sessionId
+            )
+              return;
+            setExportPicker({
+              markdown: result.markdown,
+              filename: result.filename,
+              filenameStep: false,
+            });
+          } catch (error) {
+            if (
+              scopeRef.current === requestedScope &&
+              useAppStore.getState().currentSessionId === sessionId
+            ) {
+              setNativeNotice(
+                t("composer.nativeCommandError", {
+                  message: errorMessage(error),
+                }),
+              );
+            }
+          }
+        })();
+        return true;
+      }
       if (command === "/btw") {
         // immediate:true: no busy gate, runs even while the main session streams.
         if (!currentSessionId) {
@@ -1122,6 +1349,141 @@ function App() {
           }
         } finally {
           setBtwBusy(false);
+        }
+        return true;
+      }
+      if (command === "/rename") {
+        if (!currentSessionId) {
+          setNativeNotice("The session must start before you can rename it.");
+          return true;
+        }
+        let newTitle = argument.trim();
+        if (!argument) {
+          const currentTitle =
+            useAppStore.getState().currentSessionState?.metadata?.title ?? "";
+          const prompted = window.prompt(
+            "Rename thread",
+            typeof currentTitle === "string" ? currentTitle : "",
+          );
+          if (prompted === null) return true;
+          newTitle = prompted.trim();
+        }
+        if (!newTitle) {
+          setNativeNotice("Thread name cannot be empty.");
+          return true;
+        }
+        try {
+          const updated = await RuntimeClient.renameSession(
+            currentSessionId,
+            newTitle,
+          );
+          await refreshAfterMutation(
+            { sessions: true, sessionId: currentSessionId },
+            scope,
+          );
+          setNativeNotice(
+            `✓ Session renamed to '${updated.title ?? newTitle}'`,
+          );
+        } catch (err) {
+          setNativeNotice(`✖ /rename failed: ${errorMessage(err)}`);
+        }
+        return true;
+      }
+      if (command === "/new") {
+        if (isRunning) {
+          setNativeNotice("'/new' is disabled while a task is in progress.");
+          return true;
+        }
+        try {
+          if (argument.trim()) {
+            const created = await RuntimeClient.createSession({
+              name: argument.trim(),
+              from_session_id: currentSessionId ?? undefined,
+            });
+            await selectSession(created.session.id, scope);
+            setNativeNotice(`✓ Started new session: ${argument.trim()}`);
+          } else {
+            await selectSession("", scope);
+            setNativeNotice("✓ Started new session");
+          }
+        } catch (err) {
+          setNativeNotice(`✖ /new failed: ${errorMessage(err)}`);
+        }
+        return true;
+      }
+      if (command === "/clear") {
+        if (isRunning) {
+          setNativeNotice("'/clear' is disabled while a task is in progress.");
+          return true;
+        }
+        try {
+          if (argument.trim()) {
+            const created = await RuntimeClient.createSession({
+              name: argument.trim(),
+              from_session_id: currentSessionId ?? undefined,
+            });
+            await selectSession(created.session.id, scope);
+            setNativeNotice(
+              `✓ Cleared transcript; started new session: ${argument.trim()}`,
+            );
+          } else {
+            await selectSession("", scope);
+            setNativeNotice("✓ Cleared transcript; started new session");
+          }
+        } catch (err) {
+          setNativeNotice(`✖ /clear failed: ${errorMessage(err)}`);
+        }
+        return true;
+      }
+      if (command === "/resume") {
+        if (isRunning) {
+          setNativeNotice("'/resume' is disabled while a task is in progress.");
+          return true;
+        }
+        const target = argument.trim();
+        if (!target) {
+          setNativeNotice("Select a session to resume from the sessions list.");
+          return true;
+        }
+        try {
+          const sessions = await RuntimeClient.listSessions();
+          const match = sessions.find(
+            (s) =>
+              s.session.id === target ||
+              s.session.id.endsWith(target) ||
+              (s.title && s.title.toLowerCase() === target.toLowerCase()),
+          );
+          if (!match) {
+            setNativeNotice(`No saved chat found matching '${target}'.`);
+            return true;
+          }
+          await selectSession(match.session.id, scope);
+        } catch (err) {
+          setNativeNotice(`✖ /resume failed: ${errorMessage(err)}`);
+        }
+        return true;
+      }
+      if (command === "/fork") {
+        if (isRunning) {
+          setNativeNotice("'/fork' is disabled while a task is in progress.");
+          return true;
+        }
+        if (!currentSessionId) {
+          setNativeNotice(t("composer.nativeNoSession"));
+          return true;
+        }
+        try {
+          const forked = await RuntimeClient.forkSession(
+            currentSessionId,
+            argument.trim() ? { name: argument.trim() } : undefined,
+          );
+          await selectSession(forked.session.id, scope);
+          setNativeNotice(
+            `✓ Forked session to ${forked.session.id.slice(0, 8)}` +
+              (argument.trim() ? ` (${argument.trim()})` : ""),
+          );
+        } catch (err) {
+          setNativeNotice(`✖ /fork failed: ${errorMessage(err)}`);
         }
         return true;
       }
@@ -1316,6 +1678,24 @@ function App() {
         })();
         return true;
       }
+      if (command === "/init") {
+        if (
+          isRunning ||
+          nativeCompactBusy ||
+          nativePlanBusy ||
+          nativeReviewBusy
+        ) {
+          setNativeNotice(t("composer.nativeBusy"));
+          return true;
+        }
+        if (argument) {
+          setNativeNotice(t("composer.nativeCommandArguments", { command }));
+          return true;
+        }
+        void runTask(INIT_PROMPT, scope);
+        return true;
+      }
+      if (command !== "/compact") return false;
       if (!currentSessionId) {
         setNativeNotice(t("composer.nativeNoSession"));
         return true;
@@ -1358,12 +1738,15 @@ function App() {
     [
       btwBusy,
       btwRecent,
+      commands,
       currentSessionId,
       handleRunReview,
+      isRunning,
       nativeCompactBusy,
       nativePlanBusy,
       nativeReviewBusy,
       refetchReviewDiffAll,
+      runTask,
       scope,
       selectSession,
       t,
@@ -2057,6 +2440,91 @@ function App() {
         }}
       />
       <BtwDialog dialog={btwDialog} onClose={() => setBtwDialog(null)} />
+      <InfoDialog dialog={infoDialog} onClose={() => setInfoDialog(null)} />
+      <ChoicePickerModal
+        title={t("composer.nativeCopyTitle")}
+        options={(copyPicker?.targets ?? []).map((target, index) => ({
+          id: String(index),
+          label: target.label,
+          hint: target.preview,
+        }))}
+        isOpen={copyPicker !== null}
+        onClose={() => setCopyPicker(null)}
+        onPick={(id) => {
+          const target = copyPicker?.targets[Number(id)];
+          setCopyPicker(null);
+          if (!target) return;
+          navigator.clipboard
+            .writeText(target.text)
+            .then(() =>
+              setNativeNotice(
+                t("composer.nativeCopied", { label: target.label }),
+              ),
+            )
+            .catch((error) =>
+              setNativeNotice(
+                t("composer.nativeCopyFailed", {
+                  message: errorMessage(error),
+                }),
+              ),
+            );
+        }}
+      />
+      <ChoicePickerModal
+        title={t("composer.nativeExportTitle")}
+        options={[
+          { id: "clipboard", label: t("composer.nativeExportClipboard") },
+          { id: "file", label: t("composer.nativeExportFile") },
+        ]}
+        isOpen={exportPicker !== null}
+        filenameStep={
+          exportPicker?.filenameStep
+            ? {
+                prompt: t("composer.nativeExportFilename"),
+                initial: exportPicker.filename,
+              }
+            : null
+        }
+        onClose={() => setExportPicker(null)}
+        onPick={(id) => {
+          if (id === "clipboard") {
+            const markdown = exportPicker?.markdown ?? "";
+            setExportPicker(null);
+            navigator.clipboard
+              .writeText(markdown)
+              .then(() => setNativeNotice(t("composer.nativeExportCopied")))
+              .catch((error) =>
+                setNativeNotice(
+                  t("composer.nativeCopyFailed", {
+                    message: errorMessage(error),
+                  }),
+                ),
+              );
+          } else {
+            setExportPicker((picker) =>
+              picker ? { ...picker, filenameStep: true } : picker,
+            );
+          }
+        }}
+        onFilename={(filename) => {
+          const sessionId = currentSessionId;
+          setExportPicker(null);
+          if (!sessionId) return;
+          RuntimeClient.writeSessionExport(sessionId, filename)
+            .then((written) =>
+              setNativeNotice(
+                t("composer.nativeExportSaved", { path: written.path }),
+              ),
+            )
+            .catch((error) =>
+              setNativeNotice(
+                t("composer.nativeCommandError", {
+                  message: errorMessage(error),
+                }),
+              ),
+            );
+        }}
+      />
       <OpenProjectModal
         isOpen={showProjects}
         onClose={handleCloseProjects}

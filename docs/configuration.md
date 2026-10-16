@@ -155,6 +155,53 @@ Prompt commands (`/command [arguments]`) expand into user prompt text before cor
 The interactive TUI and web composer reserve these runtime-owned actions; they are
 not markdown prompt macros and do not invoke a provider turn unless stated:
 
+#### Session commands
+
+- **`/new [title]`** — creates a fresh empty session and switches the active
+  view to it. Clears live transcript and composer state while preserving active
+  workspace and model configuration. Rejects mid-task while a run is in flight.
+- **`/clear`** — clears conversation history by transitioning to a new session
+  with an empty transcript, retaining active runtime configuration. Rejects
+  mid-task while a run is in flight.
+- **`/resume [id | title]`** — switches to a saved session and reloads its
+  persisted event history into the transcript. Bare `/resume` opens an
+  interactive session picker; providing a session ID or title prefix resumes
+  directly. Rejects mid-task while a run is in flight.
+- **`/fork [title]`** — branches the current session from its historical event
+  prefix up to the latest completed turn into a new independent session. Inherits
+  parent capability snapshots (model, provider, reasoning effort) and accepts an
+  optional title. Rejects mid-task while a run is in flight or during pending
+  plan/review operations.
+- **`/rename <title>`** — sets a user-facing title for the current session and
+  records a `session.renamed` event. Bare `/rename` opens an in-place rename
+  overlay; providing arguments renames immediately. Allowed concurrently even
+  while a task is in progress.
+
+#### Info commands
+
+- **`/status`** — displays a structured diagnostic panel of current session
+  state without invoking a provider turn. Reports session ID, execution status,
+  active model and provider, base URL, collaboration mode, active thread goal
+  (status and objective), and cumulative token/cost usage. Allowed mid-run.
+- **`/export [path]`** — renders the full session event history into structured
+  Markdown (`# Session`, `## User`, `## Assistant`, tool calls, and results).
+  Bare `/export` writes to `voidcode-session-<id>.md` in the workspace root;
+  passing a relative path writes to that location inside the workspace (path
+  traversal outside the workspace is rejected). Because export is an explicit
+  user-directed action, it writes directly without tool approval gates, but
+  requires an idle session (rejected mid-task).
+- **`/copy`** — extracts structured copy targets from the last assistant
+  response (such as full text, fenced code blocks by language, or blockquotes).
+  Bare `/copy` presents a choice selector or copies directly to the system
+  clipboard via OSC 52 or local clipboard providers. Allowed mid-run.
+- **`/context`** — inspects the token usage breakdown of the runtime's
+  assembled prompt projection without advancing a model turn. Reports total used
+  tokens, context window capacity, utilization percentage, and a segment-by-segment
+  breakdown (System prompt, Agent prompt, Tools, Goal steering, and Conversation
+  history). Allowed mid-run.
+
+#### Collaboration & execution actions
+
 - **`/compact`** — available for an idle active session. It asks the configured
   provider for a bounded continuation summary, persists the summary and compaction
   event, and reuses it after reopening the session. If a provider summary is
@@ -195,17 +242,23 @@ not markdown prompt macros and do not invoke a provider turn unless stated:
   directly against the current session context prefix without modifying session
   history, appending events, or altering transcripts. Runs exactly one provider turn
   with zero tools offered; works while the session is idle or running (no busy gate).
-Native names are reserved: a custom markdown command with one of these names is
-not used by native interactive dispatch. `GET /api/commands` reports implemented
-native actions with `source: native`; `voidcode commands list` lists only the
-prompt-command registry. Custom prompt commands continue to use their documented
-source precedence and `$ARGUMENTS` expansion.
-
+- **`/init`** — native contributor guide generation (Codex parity). Submits a fixed
+  prompt instructing the model to inspect repository evidence and produce or
+  maintain `AGENTS.md` without overwriting existing guidelines. Executes as a
+  normal governed agent turn under session tool approval policies; disabled while
+  a task is in progress (busy-gated).
+Native commands are defined in a single authoritative table (`src/voidcode/command/native.py:NATIVE_COMMANDS`).
+Inspection catalog generation (`GET /api/commands`), TUI validation/dispatch, and web client routing
+derive from this shared definition. Native names are reserved: a custom markdown command with one
+of these names is not used by native interactive dispatch. `GET /api/commands` reports implemented
+native actions with `source: native`; `voidcode commands list` lists only the prompt-command
+registry. Custom prompt commands continue to use their documented source precedence and `$ARGUMENTS`
+expansion.
 ### Command Sources & Precedence
 
 Commands load in priority order, with later sources overriding earlier definitions when names collide:
 
-1. **Builtin commands** (lowest precedence; e.g. `/init` from `loader.py`)
+1. **Builtin commands** (lowest precedence; builtin slot in `loader.py`)
 2. **Extension commands** (overrides builtin; loaded from installed component extensions and plugins)
 3. **User command directory** (overrides extension and builtin; `~/.config/voidcode/commands/` or `$XDG_CONFIG_HOME/voidcode/commands/`)
 4. **Project commands** (highest precedence; overrides user, extension, and builtin; `commands/**/*.md` and `.voidcode/commands/**/*.md`)

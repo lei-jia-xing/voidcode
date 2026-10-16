@@ -43,6 +43,10 @@ __all__ = [
     "ReviewCommitPickerOverlay",
     "ReviewCustomPromptOverlay",
     "SideQuestionOverlay",
+    "CopyPickerOverlay",
+    "ExportPickerOverlay",
+    "ExportPathOverlay",
+    "RenameSessionOverlay",
 ]
 
 
@@ -1670,3 +1674,159 @@ class SideQuestionOverlay(_Base):
         self._scroll = min(self._scroll, max(0, len(content) - scroll_slots))
         body = [*header, *content[self._scroll : self._scroll + scroll_slots], footer]
         return self._panel("Side question", body[:capacity], width)
+
+
+class RenameSessionOverlay(_Base):
+    """Session rename prompt (mirroring upstream Codex CustomPromptView)."""
+
+    __slots__ = ("_text",)
+
+    def __init__(self, *, initial_text: str = "", theme: Theme | None = None) -> None:
+        super().__init__(theme)
+        self._text = initial_text
+
+    def cursor_position(self, width: int) -> tuple[int, int] | None:
+        return (1, min(max(0, width - 1), 4 + visible_width(escape_terminal_controls(self._text))))
+
+    def handle_key(self, key: Key) -> OverlayOutcome:
+        if key.name == "escape":
+            return _CANCELLED
+        if key.name == "backspace":
+            self._text = self._text[:-1]
+            return _PENDING
+        if key.name == "enter":
+            return _done(self._text)
+        text = _typed_text(key)
+        if text:
+            self._text += text
+        return _PENDING
+
+    def render(self, width: int) -> list[str]:
+        avail = _body_width(width)
+        if avail <= 0:
+            return []
+        theme = self._theme
+        title = "Rename thread" if self._text else "Name thread"
+        body = [
+            theme.fg("accent", "> ") + theme.fg("text", escape_terminal_controls(self._text)),
+            "",
+            _hint("Type a name and press Enter · Esc cancel", theme),
+        ]
+        return self._panel(title, body, width)
+
+    def viewport(self, width: int, height: int) -> list[str]:  # noqa: ARG002
+        return self.render(width)
+
+    def wants_fullscreen(self, _width: int, _height: int) -> bool:
+        return False
+
+
+class _ChoicePickerOverlay(_Base):
+    """Up/down + enter choice list (review-picker grammar, arbitrary rows)."""
+
+    __slots__ = ("_highlight", "_options", "_title")
+
+    def __init__(self, *, title: str, options: tuple[tuple[str, str], ...], theme: Theme | None = None) -> None:
+        super().__init__(theme)
+        self._title = title
+        self._options = options
+        self._highlight = 0
+
+    def handle_key(self, key: Key) -> OverlayOutcome:
+        if key.name == "escape":
+            return _CANCELLED
+        if key.name in {"up", "k"}:
+            self._highlight = max(0, self._highlight - 1)
+            return _PENDING
+        if key.name in {"down", "j"}:
+            self._highlight = min(len(self._options) - 1, self._highlight + 1)
+            return _PENDING
+        if key.name == "enter":
+            return _done(self._options[self._highlight][0])
+        return _PENDING
+
+    def render(self, width: int) -> Sequence[str]:
+        avail = _body_width(width)
+        if avail <= 0:
+            return []
+        theme = self._theme
+        cursor = theme.symbol("nav.cursor")
+        body: list[str] = []
+        for index, (_, label) in enumerate(self._options):
+            pointer = cursor if index == self._highlight else " "
+            row = f"{pointer} {label}"
+            styled = self._bold("accent", row) if index == self._highlight else theme.fg("text", row)
+            body.extend(self._wrap(styled, avail))
+        body.append("")
+        body.append(_hint("↑/↓ move · Enter select · Esc cancel", theme))
+        return self._panel(self._title, body, width)
+
+    def viewport(self, width: int, height: int) -> list[str]:  # noqa: ARG002
+        return list(self.render(width))
+
+    def wants_fullscreen(self, _width: int, _height: int) -> bool:
+        return False
+
+
+class CopyPickerOverlay(_ChoicePickerOverlay):
+    """``/copy`` target picker: whole response + code blocks + quotes."""
+
+    def __init__(self, *, options: tuple[tuple[str, str], ...], theme: Theme | None = None) -> None:
+        super().__init__(title="Copy from response", options=options, theme=theme)
+
+
+class ExportPickerOverlay(_ChoicePickerOverlay):
+    """``/export`` destination picker: clipboard or file."""
+
+    OPTIONS: tuple[tuple[str, str], ...] = (
+        ("clipboard", "Copy to clipboard — full Markdown transcript"),
+        ("file", "Save to file — choose a Markdown filename"),
+    )
+
+    def __init__(self, *, theme: Theme | None = None) -> None:
+        super().__init__(title="Export conversation", options=self.OPTIONS, theme=theme)
+
+
+class ExportPathOverlay(_Base):
+    """``/export`` filename prompt (Codex transcript-export file prompt parity)."""
+
+    __slots__ = ("_text",)
+
+    def __init__(self, *, initial_text: str = "", theme: Theme | None = None) -> None:
+        super().__init__(theme)
+        self._text = initial_text
+
+    def cursor_position(self, width: int) -> tuple[int, int] | None:
+        return (1, min(max(0, width - 1), 4 + visible_width(escape_terminal_controls(self._text))))
+
+    def handle_key(self, key: Key) -> OverlayOutcome:
+        if key.name == "escape":
+            return _CANCELLED
+        if key.name == "backspace":
+            self._text = self._text[:-1]
+            return _PENDING
+        if key.name == "enter":
+            trimmed = self._text.strip()
+            return _done(trimmed) if trimmed else _CANCELLED
+        text = _typed_text(key)
+        if text:
+            self._text += text
+        return _PENDING
+
+    def render(self, width: int) -> Sequence[str]:
+        avail = _body_width(width)
+        if avail <= 0:
+            return []
+        theme = self._theme
+        body = [
+            theme.fg("accent", "> ") + theme.fg("text", escape_terminal_controls(self._text)),
+            "",
+            _hint("Type a filename and press Enter · Esc cancel", theme),
+        ]
+        return self._panel("Save conversation", body, width)
+
+    def viewport(self, width: int, height: int) -> list[str]:  # noqa: ARG002
+        return list(self.render(width))
+
+    def wants_fullscreen(self, _width: int, _height: int) -> bool:
+        return False

@@ -79,6 +79,16 @@ export type RuntimeCompactResult = Schemas["RuntimeCompactBody"];
 export type UserShellResult = Schemas["UserShellResultBody"];
 /** Result returned by native `POST /api/sessions/{id}/btw`. */
 export type SideQuestionResult = Schemas["SideQuestionResultBody"];
+/** Native `/status` panel from `GET /api/sessions/{id}/info/status`. */
+export type SessionInfoStatus = Schemas["SessionStatusPanelBody"];
+/** Native `/export` transcript from `GET /api/sessions/{id}/info/export`. */
+export type SessionExport = Schemas["SessionExportBody"];
+/** Native `/export <path>` write from `POST /api/sessions/{id}/info/export`. */
+export type SessionExportWrite = Schemas["SessionExportWriteBody"];
+/** Native `/copy` choices from `GET /api/sessions/{id}/info/copy-targets`. */
+export type SessionCopyTargets = Schemas["SessionCopyTargetsBody"];
+/** Native `/context` usage from `GET /api/sessions/{id}/info/context`. */
+export type SessionContextUsage = Schemas["SessionContextUsageBody"];
 export type RuntimeInterruptResult = Schemas["SessionCancelBody"];
 export type RuntimeResponse = Schemas["RuntimeResponseBody"];
 export interface CollaborationModeResult {

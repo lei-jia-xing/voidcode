@@ -126,6 +126,17 @@ The runtime manages durable thread goals persisting across session turns and rel
 4. **Cross-Turn Merging & Monotonic Timestamps**:
    `composition_session_metadata` and SQLite storage mixins merge thread goals across turns using monotonic timestamp tie-breaking (`updated_at`), guaranteeing goal state survives session resume and fresh runs without regressions.
 
+## Native Slash Command Governance & Parity
+
+Native actions, pickers, and modes are governed by a single authoritative specification (`src/voidcode/command/native.py:NATIVE_COMMANDS`):
+
+1. **Single Source of Truth**:
+   The HTTP command catalog (`GET /api/commands`), TUI command dispatcher (`app._submit`), and web client (`App.tsx:handleNativeCommand`) derive their native command definitions, argument rules, and busy gates from `NATIVE_COMMANDS`.
+2. **Reserved Names**:
+   Native command names are reserved. Custom markdown commands (`.voidcode/commands/*.md`) colliding with a native command name cannot override or intercept native dispatch.
+3. **Native Init Parity**:
+   The `/init` command is a native client-side prompt submission (Codex parity) that injects the fixed AGENTS.md generation prompt as a normal governed agent turn under standard session tool approval policies, gated when a task is in progress.
+
 ## Shell Escape (`!`) & Consent Bypass
 
 The runtime provides immediate shell escape execution bypassing provider turn cycles:
@@ -149,3 +160,44 @@ The runtime provides zero-write side question evaluation:
    Side question execution strictly never writes to `session_events`, does not mutate session metadata, and does not advance the session's turn counter or transcript.
 4. **Concurrent Execution**:
    Side questions possess no busy gate and can be executed while primary session runs are active.
+
+## Session Lifecycle Actions & Busy Gates (`/new`, `/clear`, `/resume`, `/fork`, `/rename`)
+
+The runtime provides explicit session management primitives governed by active concurrency barriers:
+
+1. **Busy Gate Matrix & Concurrency Boundaries**:
+   Operations that mutate active session identity, branch event history, or alter running state require an idle session. When `ACTIVE_SESSION_REGISTRY.active_run_count(workspace, session_id) > 0` or session status is `running` or `waiting`, the runtime rejects the action with `SessionBusyConflictError` (HTTP 409 `session_busy`):
+   - **Busy-Gated Actions**: `/fork`, `/resume`, `/new`, `/clear`, `/compact`, `/plan`, `/review`, `/export`.
+   - **Concurrent-Safe Actions**: `!<command>`, `/btw`, `/status`, `/copy`, `/context`, and `/rename` execute safely while a session is running.
+2. **Session Title Persistence vs. Metadata**:
+   Session titles (`rename_session`, `create_session(title=...)`) represent client-facing labels rather than agent execution metadata. They are persisted in dedicated columns on the SQLite `sessions` table. Setting or changing a title emits an append-only `session.renamed` event recording both the new `title` and `previous_title`. Renaming does not mutate conversation checkpoints and is permitted concurrently while a task progresses.
+3. **Fork Invariants & Capability Inheritance**:
+   `fork_session` allocates a new session row and copies the event prefix `1..N` (or up to explicit `at_sequence`) from the source session. The source session is strictly immutable. If the chosen sequence boundary splits a tool call from its matching completion, the operation fails visibly with `RuntimeSessionForkBoundaryError`. The forked session inherits the source session's `agent_capability_snapshot` (execution model, provider, reasoning effort) and records `forked_from_session_id` and `forked_at_sequence`.
+4. **Resume & Replay Semantics**:
+   Invoking `/resume` or `resume_stream` on an idle, completed session without approval parameters reconstructs the conversation view from the durable event log and replays stored chunks without initiating a new turn step. When resuming an interrupted or failed session, the runtime reconciles background task state and enters checkpoint recovery.
+
+## Native Session Export (`/export`) & Approval-Free Persistence
+
+The runtime compiles conversation history into portable Markdown without model tool intervention:
+
+1. **Event Log Projection**:
+   `export_session_markdown` iterates over the authentic completed event sequence (`core.request_received`, `core.model_turn`, tool executions, user shell commands, and completions) to generate structured Markdown (`# Session`, `## User`, `## Assistant`, code blocks, and tool results).
+2. **User-Initiated Consent Bypass**:
+   Similar to typed shell escapes (`!`), typing `/export` or invoking `write_session_export` constitutes an explicit, user-directed operational command rather than an autonomous tool invocation. Writing the exported file to disk bypasses model tool permission evaluation and interactive approval barriers.
+3. **Workspace Path Confinement**:
+   All export destinations must resolve strictly within the workspace directory (`candidate.is_relative_to(workspace.resolve())`). Path traversal sequences (`../`) or absolute targets outside the workspace are rejected with `ValueError("export path must stay inside the workspace")`.
+4. **Idle-Only Invariant**:
+   Session export requires a consistent, settled snapshot of conversation history and rejects active sessions (`SessionBusyConflictError`) if a run is in progress.
+
+## Context Window Projection (`/context`)
+
+The runtime exposes real-time context token utilization derived directly from turn engine prompt assembly:
+
+1. **Zero-Turn Model-Free Inspection**:
+   `/context` inspects token metrics by passing current session state through `PromptAssemblyPlan` and `assemble_provider_context` without advancing a provider turn, invoking completions, or modifying session history.
+2. **Architectural Segment Breakdown**:
+   Context consumption is partitioned across five architectural categories: `System prompt`, `Agent prompt`, `Tools`, `Goal steering`, and `Conversation history`.
+3. **Ruler Consistency & Bounded Discrepancy**:
+   Headline token usage is calculated by applying the provider model's authoritative tokenizer to the joined prompt payload. Individual segment token counts are bounded such that `abs(used_tokens - sum(segment.tokens)) <= len(segments)`.
+4. **Concurrent Availability**:
+   Context projection reads session state non-destructively, acquires no write locks, and is available idle or mid-run without blocking on busy gates.

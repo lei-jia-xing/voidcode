@@ -4925,14 +4925,22 @@ def test_runtime_command_registry_catalog_and_invocation_parity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from voidcode.command import loader as command_loader
     from voidcode.command.models import CommandDefinition
     from voidcode.command.registry import CommandRegistry
 
+    builtin_base = CommandDefinition(
+        name="base",
+        description="Builtin base",
+        template="Builtin base: $ARGUMENTS",
+        source="builtin",
+    )
+    monkeypatch.setattr(command_loader, "_BUILTIN_COMMANDS", (builtin_base,))
+
     proj_cmd_dir = tmp_path / ".voidcode" / "commands"
     proj_cmd_dir.mkdir(parents=True)
-    (proj_cmd_dir / "init.md").write_text("---\ndescription: Project init\n---\nProject init: $ARGUMENTS", encoding="utf-8")
+    (proj_cmd_dir / "base.md").write_text("---\ndescription: Project base\n---\nProject base: $ARGUMENTS", encoding="utf-8")
     (proj_cmd_dir / "shared.md").write_text("---\ndescription: Project shared\n---\nProject shared: $ARGUMENTS", encoding="utf-8")
-
     user_config_dir = tmp_path / "user_config"
     user_cmd_dir = user_config_dir / "voidcode" / "commands"
     user_cmd_dir.mkdir(parents=True)
@@ -4968,23 +4976,24 @@ def test_runtime_command_registry_catalog_and_invocation_parity(
         cat_map = {cmd.name: (cmd.description, cmd.source) for cmd in cat_summaries}
 
         assert {name: cat_map[name] for name in inv_map} == inv_map
-        assert {name: cat_map[name][1] for name in ("btw", "compact", "diff", "plan", "review")} == {
+        assert {name: cat_map[name][1] for name in ("btw", "compact", "diff", "init", "plan", "review")} == {
             "btw": "native",
             "compact": "native",
             "diff": "native",
+            "init": "native",
             "plan": "native",
             "review": "native",
         }
-        assert inv_map["init"] == ("Project init", "project")
+        assert inv_map["base"] == ("Project base", "project")
         assert inv_map["shared"] == ("Project shared", "project")
         assert inv_map["user-only"] == ("User only", "user")
         assert inv_map["ext-cmd"] == ("Extension command", "extension")
 
         # Test actual rendered execution output for each winning source
         prompts_seen.clear()
-        res_init = runtime.run(RuntimeRequest(prompt="/init repo-focus"))
-        assert res_init.output == "Project init: repo-focus"
-        assert prompts_seen == ["Project init: repo-focus"]
+        res_base = runtime.run(RuntimeRequest(prompt="/base repo-focus"))
+        assert res_base.output == "Project base: repo-focus"
+        assert prompts_seen == ["Project base: repo-focus"]
 
         prompts_seen.clear()
         res_shared = runtime.run(RuntimeRequest(prompt="/shared space-focus"))

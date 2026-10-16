@@ -251,6 +251,95 @@ class ClearGoalResponseBody(ResponseModel):
 
 
 @final
+class SessionStatusPanelBody(ResponseModel):
+    """Native ``/status`` panel: session, model, approval, usage, provider."""
+
+    session_id: str
+    title: str | None = None
+    status: str
+    turn: int
+    model: str | None = None
+    provider: str | None = None
+    reasoning_effort: str | None = None
+    approval_mode: str | None = None
+    collaboration_mode: str
+    goal_objective: str | None = None
+    goal_status: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: float | None = None
+    workspace: str | None = None
+    base_url: str | None = None
+    forked_from_session_id: str | None = None
+
+
+@final
+class SessionExportBody(ResponseModel):
+    """Native ``/export`` transcript: full Markdown plus the default filename."""
+
+    session_id: str
+    filename: str
+    markdown: str
+
+
+@final
+class SessionExportWriteBody(ResponseModel):
+    """Native ``/export <path>``: where the transcript was written."""
+
+    session_id: str
+    path: str
+    filename: str
+
+
+@final
+class CopyTargetBody(ResponseModel):
+    """One native ``/copy`` choice: label, preview, full text."""
+
+    label: str
+    preview: str
+    text: str
+
+
+@final
+class SessionCopyTargetsBody(ResponseModel):
+    """Native ``/copy`` choices from the last assistant response."""
+
+    session_id: str
+    targets: list[CopyTargetBody]
+
+
+@final
+class ContextUsageItemBody(ResponseModel):
+    """One per-item row of native ``/context all``."""
+
+    label: str
+    tokens: int
+
+
+@final
+class ContextUsageSegmentBody(ResponseModel):
+    """One per-segment bucket of native ``/context``."""
+
+    label: str
+    tokens: int
+    items: list[ContextUsageItemBody]
+
+
+@final
+class SessionContextUsageBody(ResponseModel):
+    """Native ``/context`` usage from the real assembly projection."""
+
+    session_id: str
+    model: str | None = None
+    used_tokens: int
+    total_tokens: int | None = None
+    percent: float | None = None
+    over_budget: bool
+    estimated: bool
+    segments: list[ContextUsageSegmentBody]
+
+
+@final
 class SessionEntryBody(ResponseModel):
     """``serialize_session_entry_summary``: one entry of ``GET /api/sessions/{id}/entries``.
 

@@ -1046,6 +1046,11 @@ class VoidCodeRuntime(RuntimeSurface):
             workspace=self._workspace,
         )
 
+    @property
+    def workspace(self) -> Path:
+        """The canonical workspace directory this runtime manages."""
+        return self._workspace
+
     def _bind_provider_catalog_collaborators(self) -> None:
         self._provider_catalog_cache = RuntimeProviderCatalogCache(
             registry=self._model_provider_registry,
@@ -3273,10 +3278,30 @@ class VoidCodeRuntime(RuntimeSurface):
         linear event log per session and has no leaf pointer, so "branch" is
         exactly this plus continuing the returned session.
         """
+        if ACTIVE_SESSION_REGISTRY.active_run_count(workspace=self._workspace, session_id=session_id):
+            raise SessionBusyConflictError("cannot fork a session while it is running")
+        parent_response = self._repositories.sessions.load_session(workspace=self._workspace, session_id=session_id)
+        parent_session = parent_response.session
+        if parent_session.status in {"running", "waiting"}:
+            raise SessionBusyConflictError(f"cannot fork a session with status {parent_session.status}")
         self._admit_existing_session_composition(session_id)
         return self._inspection_coordinator.fork_session(
             session_id=session_id,
             at_sequence=at_sequence,
+        )
+
+    def create_session(self, *, title: str | None = None) -> StoredSessionSummary:
+        """Create a new empty session with an optional user-settable title."""
+        from uuid import uuid4
+
+        from .contracts import validate_session_title
+
+        session_id = f"session-{uuid4().hex}"
+        validated_title = validate_session_title(title) if title is not None else None
+        return self._repositories.sessions.create_session(
+            workspace=self._workspace,
+            session_id=session_id,
+            title=validated_title,
         )
 
     def session_lineage(self, *, session_id: str | None = None) -> tuple[StoredSessionLineageEntry, ...]:
@@ -4088,6 +4113,40 @@ class VoidCodeRuntime(RuntimeSurface):
         if not answer.strip():
             raise ValueError("side question received an empty response")
         return {"session_id": session_id, "question": cleaned, "answer": answer}
+
+    # -- native read-only info commands (/status /export /copy /context) --------
+
+    def session_status_panel(self, *, session_id: str):
+        """Project the read-only ``/status`` panel; safe mid-stream (no gate)."""
+        return self._inspection_coordinator.session_status_panel(session_id=session_id)
+
+    def export_session_markdown(self, *, session_id: str):
+        """Render the full ``/export`` Markdown transcript; idle-only like Codex."""
+        validate_id(session_id)
+        if ACTIVE_SESSION_REGISTRY.active_run_count(workspace=self._workspace, session_id=session_id):
+            raise SessionBusyConflictError("cannot export a session while it is running")
+        response = self._repositories.sessions.load_session(workspace=self._workspace, session_id=session_id)
+        if response.session.status in {"running", "waiting"}:
+            raise SessionBusyConflictError(f"cannot export a session with status {response.session.status}")
+        return self._inspection_coordinator.export_session_markdown(session_id=session_id)
+
+    def write_session_export(self, *, session_id: str, path: str) -> dict[str, object]:
+        """Write the ``/export`` transcript through the workspace fs (explicit user action, no approval gate)."""
+        export = self.export_session_markdown(session_id=session_id)
+        candidate = (self._workspace / path).resolve() if not Path(path).is_absolute() else Path(path).resolve()
+        if not candidate.is_relative_to(self._workspace.resolve()):
+            raise ValueError("export path must stay inside the workspace")
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        candidate.write_text(export.markdown, encoding="utf-8")
+        return {"session_id": session_id, "path": candidate.relative_to(self._workspace.resolve()).as_posix(), "filename": candidate.name}
+
+    def copy_targets(self, *, session_id: str):
+        """``/copy`` choices from the last assistant response; safe mid-stream (no gate)."""
+        return self._inspection_coordinator.copy_targets(session_id=session_id)
+
+    def session_context_usage(self, *, session_id: str, expand_items: bool = False):
+        """``/context`` usage from the real assembly projection; safe mid-stream (no gate)."""
+        return self._inspection_coordinator.session_context_usage(session_id=session_id, expand_items=expand_items)
 
     def run_user_shell(self, *, session_id: str | None, command: str, timeout_seconds: int | None = None) -> dict[str, object]:
         """Execute a native ``!`` shell command and record it in session history.

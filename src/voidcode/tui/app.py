@@ -48,6 +48,7 @@ from typing import Final
 
 from pydantic import ValidationError
 
+from ..command.native import INIT_PROMPT, NATIVE_COMMANDS_BY_NAME
 from ..core.questions import QuestionCancellation, QuestionResponse
 from ..core.tool_context import (
     ArtifactBinary,
@@ -71,7 +72,16 @@ from ..runtime.config.models import (
     VALID_TUI_COMPOSER_STYLES,
     VALID_TUI_THEME_MODES,
 )
-from ..runtime.contracts import ReviewCommitLogEntry, ReviewTarget, RuntimeRequest, RuntimeStreamChunk
+from ..runtime.contracts import (
+    CopyTarget,
+    ReviewCommitLogEntry,
+    ReviewTarget,
+    RuntimeRequest,
+    RuntimeStreamChunk,
+    SessionContextUsage,
+    SessionExport,
+    SessionStatusPanel,
+)
 from ..runtime.events import EventEnvelope
 from ..runtime.permissions.policy import ApprovalMode
 from ..runtime.service import VoidCodeRuntime
@@ -89,6 +99,9 @@ from .keys import Key, KeyDecoder
 from .overlay import (
     AppearanceOverlay,
     ApprovalOverlay,
+    CopyPickerOverlay,
+    ExportPathOverlay,
+    ExportPickerOverlay,
     GoalConfirmOverlay,
     HelpOverlay,
     Overlay,
@@ -96,6 +109,7 @@ from .overlay import (
     OverlayOutcomeKind,
     PromptHistoryOverlay,
     QuestionOverlay,
+    RenameSessionOverlay,
     ReviewBranchPickerOverlay,
     ReviewCommitPickerOverlay,
     ReviewCustomPromptOverlay,
@@ -107,7 +121,7 @@ from .overlay import (
 )
 from .region import LiveRegion, TuiFrame
 from .statusline import StatusLine, StatusSegmentData, statusline_profile_segments, statusline_profiles
-from .term import Terminal, TerminalCapabilityError, escape_terminal_controls
+from .term import Terminal, TerminalCapabilityError, copy_to_clipboard, escape_terminal_controls
 from .theme import FG_TOKENS, Theme, background_mode, palette_names, resolve_theme, validate_theme_configuration
 from .transcript import (
     AssistantBlock,
@@ -330,6 +344,14 @@ class _NativeBtwResult:
     error: object | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _NativeInfoResult:
+    session_id: str
+    kind: str = ""
+    result: SessionStatusPanel | SessionExport | tuple[CopyTarget, ...] | SessionContextUsage | None = None
+    error: object | None = None
+
+
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
@@ -385,9 +407,13 @@ class TuiApp:
         self._review_thread: threading.Thread | None = None
         self._btw_pending = False
         self._btw_recent: dict[str, tuple[str, str]] = {}
+        self._info_pending: set[str] = set()
+        self._copy_targets: list[tuple[str, str, str]] = []
+        self._export_markdown: str = ""
         self._goal_status: str | None = None
         self._polling = False
         self._session_id: str | None = None
+        self._session_name: str | None = None
         self._tracked_tasks: set[str] = set()
         self._next_poll_at = 0.0
 
@@ -719,6 +745,7 @@ class TuiApp:
         # Thinking level: session metadata first, effective config as fallback.
         return replace(
             state.status,
+            session_name=self._session_name or short_session_id(self._session_id),
             model=self._model,
             thinking=self._session_effort or self._config.reasoning_effort or "off",
             mode=(f"{self._approval_mode} · plan" if self._plan_mode else self._approval_mode)
@@ -762,6 +789,8 @@ class TuiApp:
                 self._finish_native_shell(item)
             elif isinstance(item, _NativeBtwResult):
                 self._finish_native_btw(item)
+            elif isinstance(item, _NativeInfoResult):
+                self._finish_native_info(item)
 
     def _consume_chunk(self, chunk: RuntimeStreamChunk, *, replay: bool = False) -> None:
         assert self._view is not None
@@ -1094,6 +1123,31 @@ class TuiApp:
             self._close_overlay()
             if isinstance(instructions, str) and instructions:
                 self._start_native_review(ReviewTarget(type="custom", instructions=instructions))
+        elif isinstance(overlay, RenameSessionOverlay):
+            name = outcome.payload if outcome.kind is OverlayOutcomeKind.DONE else None
+            self._close_overlay()
+            if isinstance(name, str):
+                if not name.strip():
+                    self._notice("Thread name cannot be empty.")
+                else:
+                    self._apply_session_rename(name.strip())
+        elif isinstance(overlay, CopyPickerOverlay):
+            choice = outcome.payload if outcome.kind is OverlayOutcomeKind.DONE else None
+            self._close_overlay()
+            if isinstance(choice, str):
+                self._copy_choice(choice)
+        elif isinstance(overlay, ExportPickerOverlay):
+            destination = outcome.payload if outcome.kind is OverlayOutcomeKind.DONE else None
+            self._close_overlay()
+            if destination == "clipboard":
+                self._copy_export_to_clipboard()
+            elif destination == "file":
+                self._open_export_path_overlay()
+        elif isinstance(overlay, ExportPathOverlay):
+            filename = outcome.payload if outcome.kind is OverlayOutcomeKind.DONE else None
+            self._close_overlay()
+            if isinstance(filename, str) and filename:
+                self._write_export_file(filename)
         else:
             prompt = outcome.payload if outcome.kind is OverlayOutcomeKind.DONE else None
             self._close_overlay()
@@ -1114,33 +1168,33 @@ class TuiApp:
             # lands in context, no turn lifecycle is started).
             self._command_native_shell(shell_command)
             return
-        if command == "/compact":
-            if arguments.strip():
-                self._notice("/compact does not accept arguments")
-            else:
-                self._command_native_compact()
-            return
-        if command == "/diff":
-            if arguments.strip():
-                self._notice("/diff does not accept arguments")
-            else:
-                self._command_native_diff()
-            return
-        if command == "/plan":
-            if arguments not in {"", "off"}:
-                self._notice("/plan accepts only 'off'")
-            else:
-                self._command_native_plan(arguments == "off")
-            return
-        if command == "/review":
-            self._command_native_review(arguments)
-            return
-        if command == "/goal":
-            self._command_native_goal(arguments)
-            return
-        if command == "/btw":
-            self._command_native_btw(arguments)
-            return
+        if command.startswith("/"):
+            name = command[1:]
+            native_cmd = NATIVE_COMMANDS_BY_NAME.get(name)
+            if native_cmd is not None:
+                if native_cmd.arg_rule == "none":
+                    if arguments.strip():
+                        self._notice(f"/{name} does not accept arguments")
+                        return
+                elif native_cmd.arg_rule == "enum":
+                    if arguments.strip() not in native_cmd.allowed_args:
+                        allowed = ", ".join(repr(a) for a in native_cmd.allowed_args if a)
+                        self._notice(f"/{name} accepts only {allowed}")
+                        return
+                elif native_cmd.arg_rule == "required_text":
+                    if not arguments.strip():
+                        self._notice(f"/{name} requires arguments")
+                        return
+
+                if native_cmd.busy_gate and (self._streaming or self._plan_pending or self._review_pending or self._compact_pending):
+                    if name in {"compact", "export", "plan", "review"}:
+                        self._notice(f"✖ /{name} requires an idle active session")
+                    else:
+                        self._notice(f"'/{name}' is disabled while a task is in progress.")
+                    return
+
+                self._dispatch_native_command(name, arguments)
+                return
         if not prompt:
             return
         if self._plan_pending or self._review_pending or self._compact_pending:
@@ -1150,6 +1204,43 @@ class TuiApp:
             self._steer(prompt)
             return
         self._start_prompt(prompt)
+
+    def _dispatch_native_command(self, name: str, arguments: str) -> None:
+        if name == "compact":
+            self._command_native_compact()
+        elif name == "diff":
+            self._command_native_diff()
+        elif name == "plan":
+            self._command_native_plan(arguments.strip() == "off")
+        elif name == "review":
+            self._command_native_review(arguments)
+        elif name == "goal":
+            self._command_native_goal(arguments)
+        elif name == "btw":
+            self._command_native_btw(arguments)
+        elif name == "init":
+            self._command_native_init()
+        elif name == "new":
+            self._command_native_new(arguments)
+        elif name == "clear":
+            self._command_native_clear(arguments)
+        elif name == "resume":
+            self._command_native_resume(arguments)
+        elif name == "fork":
+            self._command_native_fork(arguments)
+        elif name == "rename":
+            self._command_native_rename(arguments)
+        elif name == "status":
+            self._command_native_status()
+        elif name == "export":
+            self._command_native_export(arguments)
+        elif name == "copy":
+            self._command_native_copy()
+        elif name == "context":
+            self._command_native_context(arguments.strip() == "all")
+
+    def _command_native_init(self) -> None:
+        self._start_prompt(INIT_PROMPT)
 
     def _command_native_compact(self) -> None:
         if self._streaming or self._session_id is None:
@@ -1530,6 +1621,352 @@ class TuiApp:
         self._enter_alt_screen()
         self._dirty = True
 
+    # -- native read-only info commands (/status /export /copy /context) --------
+
+    def _run_info_worker(self, kind: str, session_id: str, *args: object) -> None:
+        if self._session_id is None:
+            self._notice(f"✖ /{kind} requires an active session")
+            return
+        if kind in self._info_pending:
+            self._notice(f"/{kind} is already running")
+            return
+        self._info_pending.add(kind)
+        threading.Thread(target=self._info_worker, args=(kind, session_id, *args), name=f"voidcode-tui-{kind}", daemon=True).start()
+
+    def _info_worker(self, kind: str, session_id: str, *args: object) -> None:
+        try:
+            if kind == "status":
+                result = self._runtime.session_status_panel(session_id=session_id)
+            elif kind == "export":
+                result = self._runtime.export_session_markdown(session_id=session_id)
+            elif kind == "copy":
+                result = self._runtime.copy_targets(session_id=session_id)
+            else:
+                result = self._runtime.session_context_usage(session_id=session_id, expand_items=bool(args[0]) if args else False)
+        except Exception as error:
+            self._queue.put(_NativeInfoResult(session_id=session_id, kind=kind, error=error))
+        else:
+            self._queue.put(_NativeInfoResult(session_id=session_id, kind=kind, result=result))
+
+    def _finish_native_info(self, item: _NativeInfoResult) -> None:
+        self._info_pending.discard(item.kind)
+        if item.session_id != self._session_id:
+            return
+        if item.error is not None:
+            self._notice(f"✖ /{item.kind} failed: {format_runtime_error(item.error)}")
+            return
+        if item.kind == "status" and isinstance(item.result, SessionStatusPanel):
+            self._render_status_panel(item.result)
+        elif item.kind == "export" and isinstance(item.result, SessionExport):
+            self._open_export_picker(item.result)
+        elif item.kind == "copy" and isinstance(item.result, tuple):
+            self._open_copy_picker(item.result)
+        elif item.kind == "context" and isinstance(item.result, SessionContextUsage):
+            self._render_context_usage(item.result)
+        else:
+            self._notice(f"✖ /{item.kind} failed: unexpected response")
+
+    def _command_native_status(self) -> None:
+        # No idle gate: read-only projection, safe mid-stream (Codex parity).
+        if self._session_id is None:
+            self._notice("✖ /status requires an active session")
+            return
+        self._run_info_worker("status", self._session_id)
+
+    def _render_status_panel(self, panel: SessionStatusPanel | None) -> None:
+        assert self._view is not None
+        if panel is None:
+            self._notice("✖ /status failed: empty response")
+            return
+        item = panel
+        rows = [
+            ("Session", f"{item.session_id}" + (f" ({item.title})" if item.title else "")),
+            ("Status", f"{item.status} · turn {item.turn}"),
+            ("Model", f"{item.provider}/{item.model}" if item.provider and item.model else (item.model or "unresolved")),
+            ("Reasoning", item.reasoning_effort or "—"),
+            ("Approval", item.approval_mode or "—"),
+            ("Mode", item.collaboration_mode),
+            ("Goal", f"{item.goal_status}: {item.goal_objective}" if item.goal_objective else "—"),
+            (
+                "Usage",
+                f"in={item.input_tokens} out={item.output_tokens}" + (f" ${item.cost_usd:.4f}" if item.cost_usd is not None else "")
+                if item.input_tokens is not None or item.output_tokens is not None
+                else "—",
+            ),
+            ("Workspace", item.workspace or "—"),
+            ("Endpoint", item.base_url or "—"),
+        ]
+        if item.forked_from_session_id:
+            rows.append(("Forked from", item.forked_from_session_id))
+        width = max(len(label) for label, _ in rows)
+        lines = [f"{label:<{width}}  {value}" for label, value in rows]
+        self._view.transcript().add(NoticeBlock(text="Status\n" + "\n".join(lines)))
+        self._dirty = True
+
+    def _command_native_export(self, arguments: str) -> None:
+        # Idle-only gate (Codex blocks /export during a task).
+        if self._streaming or self._session_id is None:
+            self._notice("✖ /export requires an idle active session")
+            return
+        if self._plan_pending or self._review_pending or self._compact_pending:
+            self._notice("Wait for the current native command to finish")
+            return
+        path = arguments.strip()
+        if path:
+            try:
+                result = self._runtime.write_session_export(session_id=self._session_id, path=path)
+            except Exception as error:
+                self._notice(f"✖ /export failed: {format_runtime_error(error)}")
+            else:
+                self._notice(f"✓ Exported session to {result.get('path', path)}")
+            return
+        self._run_info_worker("export", self._session_id)
+
+    def _open_export_picker(self, export: SessionExport | None) -> None:
+        if export is None:
+            self._notice("✖ /export failed: empty response")
+            return
+        self._export_markdown = export.markdown
+        if self._overlay is not None:
+            self._notice("✖ Cannot open /export while a dialog is open")
+            return
+        self._overlay = ExportPickerOverlay(theme=self._theme)
+        self._overlay_request_id = ""
+        if self._composer is not None:
+            self._composer.set_enabled(False)
+        self._dirty = True
+
+    def _copy_export_to_clipboard(self) -> None:
+        try:
+            copy_to_clipboard(self._export_markdown)
+        except Exception as error:
+            self._notice(f"✖ Copy failed: {error}")
+        else:
+            self._notice("Copied conversation to clipboard")
+
+    def _open_export_path_overlay(self) -> None:
+        default = f"voidcode-session-{self._session_id}.md" if self._session_id else "voidcode-session.md"
+        self._overlay = ExportPathOverlay(initial_text=default, theme=self._theme)
+        self._overlay_request_id = ""
+        if self._composer is not None:
+            self._composer.set_enabled(False)
+        self._dirty = True
+
+    def _write_export_file(self, filename: str) -> None:
+        if self._session_id is None:
+            self._notice("✖ /export requires an active session")
+            return
+        try:
+            result = self._runtime.write_session_export(session_id=self._session_id, path=filename)
+        except Exception as error:
+            self._notice(f"✖ /export failed: {format_runtime_error(error)}")
+        else:
+            self._notice(f"✓ Exported session to {result.get('path', filename)}")
+
+    def _command_native_copy(self) -> None:
+        # No idle gate: copies the last settled response, safe mid-stream.
+        if self._session_id is None:
+            self._notice("✖ /copy requires an active session")
+            return
+        self._run_info_worker("copy", self._session_id)
+
+    def _open_copy_picker(self, targets: tuple[CopyTarget, ...] | None) -> None:
+        items = list(targets) if targets else []
+        if not items:
+            self._notice("No agent response to copy")
+            return
+        if len(items) == 1:
+            self._copy_text(items[0].text, items[0].label)
+            return
+        self._copy_targets = [(target.label, target.preview, target.text) for target in items]
+        if self._overlay is not None:
+            self._copy_text(items[0].text, items[0].label)
+            return
+        options = tuple((str(index), f"{label} — {preview}" if preview else label) for index, (label, preview, _) in enumerate(self._copy_targets))
+        self._overlay = CopyPickerOverlay(options=options, theme=self._theme)
+        self._overlay_request_id = ""
+        if self._composer is not None:
+            self._composer.set_enabled(False)
+        self._dirty = True
+
+    def _copy_choice(self, choice: str) -> None:
+        try:
+            label, _, text = self._copy_targets[int(choice)]
+        except ValueError, IndexError:
+            self._notice("✖ Copy failed: unknown choice")
+            return
+        self._copy_text(text, label)
+
+    def _copy_text(self, text: str, label: str) -> None:
+        try:
+            copy_to_clipboard(text)
+        except Exception as error:
+            self._notice(f"✖ Copy failed: {error}")
+        else:
+            self._notice(f"Copied {label} to clipboard")
+
+    def _command_native_context(self, expand: bool) -> None:
+        # No idle gate: read-only projection, safe mid-stream (Claude parity).
+        if self._session_id is None:
+            self._notice("✖ /context requires an active session")
+            return
+        self._run_info_worker("context", self._session_id, expand)
+
+    def _render_context_usage(self, usage: SessionContextUsage | None) -> None:
+        assert self._view is not None
+        if usage is None:
+            self._notice("✖ /context failed: empty response")
+            return
+        item = usage
+        total = f" / {item.total_tokens}" if item.total_tokens else ""
+        percent = f" ({item.percent}%)" if item.percent is not None else ""
+        bar = self._usage_bar(item.percent)
+        lines = [f"Context: {item.used_tokens}{total} tokens{percent} {bar}".rstrip()]
+        if item.model:
+            lines.append(f"Model: {item.model}")
+        for segment in item.segments:
+            lines.append(f"  {segment.label}: {segment.tokens}")
+            for row in segment.items:
+                lines.append(f"    {row.label}: {row.tokens}")
+        if item.over_budget:
+            lines.append("⚠ Over context budget — consider /compact")
+        elif item.estimated:
+            lines.append("(estimated — no provider usage anchor yet)")
+        self._view.transcript().add(NoticeBlock(text="\n".join(lines)))
+        self._dirty = True
+
+    @staticmethod
+    def _usage_bar(percent: float | None, width: int = 20) -> str:
+        if percent is None:
+            return ""
+        filled = max(0, min(width, round(percent / 100 * width)))
+        return "[" + "█" * filled + "░" * (width - filled) + "]"
+
+    def _command_native_new(self, arguments: str) -> None:
+        name = arguments.strip() if arguments else None
+        assert self._view is not None
+        self._session_id = None
+        self._session_name = name
+        self._approval_mode = self._config.approval_mode
+        self._model = self._config.model or ""
+        self._session_effort = ""
+        self._cost_usd = None
+        self._input_tokens = None
+        self._output_tokens = None
+        self._cache_read_tokens = None
+        self._cache_write_tokens = None
+        self._cache_hit_rate = None
+        self._context_tokens = None
+        self._tracked_tasks.clear()
+        self._next_poll_at = 0.0
+        label = f"New Session: {name}" if name else "New Session"
+        self._view.transcript().add(SessionMarkerBlock(label=label))
+        self._notice(f"✓ Started new session: {name}" if name else "✓ Started new session")
+        self._dirty = True
+
+    def _command_native_clear(self, arguments: str) -> None:
+        name = arguments.strip() if arguments else None
+        assert self._view is not None and self._region is not None
+        self._region.clear()
+        self._view.reset_for_new_session()
+        self._session_id = None
+        self._session_name = name
+        self._approval_mode = self._config.approval_mode
+        self._model = self._config.model or ""
+        self._session_effort = ""
+        self._cost_usd = None
+        self._input_tokens = None
+        self._output_tokens = None
+        self._cache_read_tokens = None
+        self._cache_write_tokens = None
+        self._cache_hit_rate = None
+        self._context_tokens = None
+        self._tracked_tasks.clear()
+        self._next_poll_at = 0.0
+        label = f"New Session: {name}" if name else "New Session"
+        self._view.transcript().add(SessionMarkerBlock(label=label))
+        self._notice(f"✓ Cleared transcript; started new session: {name}" if name else "✓ Cleared transcript; started new session")
+        self._dirty = True
+
+    def _command_native_resume(self, arguments: str) -> None:
+        id_or_name = arguments.strip()
+        if not id_or_name:
+            self._command_session_resume()
+            return
+        try:
+            sessions = self._runtime.list_sessions()
+        except Exception as error:
+            self._notice(f"✖ Failed to list sessions: {format_runtime_error(error)}")
+            return
+        target_session_id: str | None = None
+        target_title: str | None = None
+        for s in sessions:
+            if s.session.id == id_or_name or short_session_id(s.session.id) == id_or_name:
+                target_session_id = s.session.id
+                target_title = s.title
+                break
+        if target_session_id is None:
+            for s in sessions:
+                if s.title and s.title.casefold() == id_or_name.casefold():
+                    target_session_id = s.session.id
+                    target_title = s.title
+                    break
+        if target_session_id is None:
+            self._notice(f"No saved chat found matching '{id_or_name}'.")
+            return
+        self._open_resumed_session(target_session_id)
+        if target_title:
+            self._session_name = target_title
+
+    def _command_native_fork(self, arguments: str) -> None:
+        if self._session_id is None:
+            self._notice("✖ No active session to fork")
+            return
+        name = arguments.strip() if arguments else None
+        session_id = self._session_id
+        try:
+            forked = self._runtime.fork_session(session_id=session_id)
+        except Exception as error:
+            self._notice(f"✖ /fork failed: {format_runtime_error(error)}")
+            return
+        if name:
+            try:
+                forked = self._runtime.rename_session(session_id=forked.session.id, title=name)
+            except Exception as error:
+                self._notice(f"Failed to name the forked session: {error}")
+        self._open_resumed_session(forked.session.id)
+        self._session_name = forked.title
+        self._notice(f"✓ Forked session to {short_session_id(forked.session.id)}" + (f" ({name})" if name else ""))
+
+    def _command_native_rename(self, arguments: str) -> None:
+        if self._session_id is None:
+            self._notice("The session must start before you can rename it.")
+            return
+        trimmed = arguments.strip()
+        if not arguments:
+            self._overlay = RenameSessionOverlay(initial_text=self._session_name or "", theme=self._theme)
+            self._overlay_request_id = ""
+            if self._composer is not None:
+                self._composer.set_enabled(False)
+            self._enter_alt_screen()
+            self._dirty = True
+            return
+        if not trimmed:
+            self._notice("Thread name cannot be empty.")
+            return
+        self._apply_session_rename(trimmed)
+
+    def _apply_session_rename(self, name: str) -> None:
+        assert self._session_id is not None
+        try:
+            updated = self._runtime.rename_session(session_id=self._session_id, title=name)
+        except Exception as error:
+            self._notice(f"✖ /rename failed: {format_runtime_error(error)}")
+            return
+        self._session_name = updated.title
+        self._notice(f"✓ Session renamed to '{updated.title}'")
+        self._dirty = True
+
     def _start_prompt(self, prompt: str) -> None:
         assert self._view is not None
         self._view.transcript().add(UserBlock(text=prompt))
@@ -1615,7 +2052,7 @@ class TuiApp:
                 f"Statusline: {config.statusline.layout}",
                 f"Composer: {config.composer.style} · gutter={config.composer.gutter} · padding={config.composer.padding}",
                 f"Cursor: {config.composer.cursor_shape} (blink={config.composer.cursor_blink})",
-                "Native commands: /btw, /compact, /diff, /plan, /review, !<shell command>",
+                "Native commands: /btw, /compact, /context, /copy, /diff, /export, /plan, /review, /status, !<shell command>",
                 "Appearance: " + ("saved" if self._appearance_saved else "temporary session preview; not saved"),
             )
         )
@@ -1880,6 +2317,7 @@ class TuiApp:
         self._view.reset_for_new_session()
         self._view.transcript().add(SessionMarkerBlock(label="New Session"))
         self._session_id = None
+        self._session_name = None
         self._approval_mode = self._config.approval_mode
         self._model = self._config.model or ""
         self._session_effort = ""
@@ -2017,6 +2455,14 @@ class TuiApp:
         self._region.clear()
         self._view.reset_for_new_session()
         self._session_id = session_id
+        self._session_name = None
+        try:
+            for s in self._runtime.list_sessions():
+                if s.session.id == session_id:
+                    self._session_name = s.title
+                    break
+        except Exception:
+            pass
         try:
             config = self._runtime.run_config(session_id=session_id)
             self._approval_mode = config.approval_mode

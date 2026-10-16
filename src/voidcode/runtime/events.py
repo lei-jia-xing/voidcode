@@ -101,6 +101,7 @@ type RuntimeEventType = Literal[
     "runtime.thread_goal_updated",
     "runtime.thread_goal_cleared",
     "runtime.user_shell_executed",
+    "runtime.session_renamed",
 ]
 type DelegatedBackgroundTaskEventType = Literal[
     "runtime.background_task_progress",
@@ -216,6 +217,7 @@ RUNTIME_BEFORE_AGENT_START: Final[RuntimeEventType] = "runtime.before_agent_star
 RUNTIME_THREAD_GOAL_UPDATED: Final[RuntimeEventType] = "runtime.thread_goal_updated"
 RUNTIME_THREAD_GOAL_CLEARED: Final[RuntimeEventType] = "runtime.thread_goal_cleared"
 RUNTIME_USER_SHELL_EXECUTED: Final[RuntimeEventType] = "runtime.user_shell_executed"
+RUNTIME_SESSION_RENAMED: Final[RuntimeEventType] = "runtime.session_renamed"
 
 REASONING_PREVIEW_LIMIT_CHARS: Final[int] = 240
 # Upper bound for the aggregated reasoning text persisted per streamed turn.
@@ -305,6 +307,7 @@ RUNTIME_EVENT_TYPES: Final[tuple[RuntimeEventType, ...]] = (
     RUNTIME_THREAD_GOAL_UPDATED,
     RUNTIME_THREAD_GOAL_CLEARED,
     RUNTIME_USER_SHELL_EXECUTED,
+    RUNTIME_SESSION_RENAMED,
 )
 
 

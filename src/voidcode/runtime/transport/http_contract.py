@@ -369,6 +369,14 @@ ShowThinkingQuery = Annotated[
     ),
     BeforeValidator(_coerce_show_thinking),
 ]
+ExpandItemsQuery = Annotated[
+    bool,
+    Query(
+        summary="Expand per-item rows (`/context all`)",
+        description="False returns per-segment totals only; true expands every item the segments bucket.",
+    ),
+    BeforeValidator(_coerce_show_thinking),
+]
 
 
 @final
@@ -529,6 +537,17 @@ class _BtwRequestPayload(_HttpBoundaryModel):
     @field_validator("question", mode="before")
     @classmethod
     def _validate_question(cls, value: object) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("must be a non-empty string")
+        return value
+
+
+class _ExportWriteRequestPayload(_HttpBoundaryModel):
+    path: str = Field(default=None, validate_default=True)
+
+    @field_validator("path", mode="before")
+    @classmethod
+    def _validate_path(cls, value: object) -> str:
         if not isinstance(value, str) or not value.strip():
             raise ValueError("must be a non-empty string")
         return value
@@ -744,3 +763,71 @@ class _CheckoutSessionRequestPayload(_HttpBoundaryModel):
         if value < 1:
             raise ValueError("must be a positive integer")
         return value
+
+
+class _CreateSessionRequestPayload(_HttpBoundaryModel):
+    name: str | None = None
+    from_session_id: str | None = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _validate_name(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("must be a string when provided")
+        trimmed = " ".join(value.split())
+        if not trimmed:
+            raise ValueError("must be a non-empty string when provided")
+        return trimmed
+
+    @field_validator("from_session_id", mode="before")
+    @classmethod
+    def _validate_from_session(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("must be a non-empty string when provided")
+        return value.strip()
+
+
+class _ForkSessionRequestPayload(_HttpBoundaryModel):
+    name: str | None = None
+    at_sequence: int | None = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _validate_name(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("must be a string when provided")
+        trimmed = " ".join(value.split())
+        if not trimmed:
+            raise ValueError("must be a non-empty string when provided")
+        return trimmed
+
+    @field_validator("at_sequence", mode="before")
+    @classmethod
+    def _validate_sequence(cls, value: object) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError("must be a positive integer when provided")
+        return value
+
+
+class _RenameSessionRequestPayload(_HttpBoundaryModel):
+    title: str = Field(default="", validate_default=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_rename(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            raise ValueError("request body must be a JSON object")
+        title_val = value.get("title")
+        if title_val is None:
+            title_val = value.get("name")
+        if not isinstance(title_val, str) or not title_val.strip():
+            raise ValueError("Thread name cannot be empty.")
+        return {"title": " ".join(title_val.split())}

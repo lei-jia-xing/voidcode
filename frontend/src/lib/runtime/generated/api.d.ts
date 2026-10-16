@@ -235,7 +235,8 @@ export interface paths {
         /** List persisted main sessions */
         get: operations["_handle_list_sessions_api_sessions_get"];
         put?: never;
-        post?: never;
+        /** Create a new session */
+        post: operations["_handle_create_session_api_sessions_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -256,7 +257,8 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        patch?: never;
+        /** Update session properties (e.g. rename) */
+        patch: operations["_handle_rename_session_api_sessions__session_id__patch"];
         trace?: never;
     };
     "/api/sessions/{session_id}/approval": {
@@ -429,6 +431,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/fork": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Fork a session */
+        post: operations["_handle_fork_session_api_sessions__session_id__fork_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions/{session_id}/goal": {
         parameters: {
             query?: never;
@@ -448,6 +467,75 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/info/context": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a session's native /context usage */
+        get: operations["_handle_session_context_usage_api_sessions__session_id__info_context_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/info/copy-targets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read native /copy choices from the last assistant response */
+        get: operations["_handle_copy_targets_api_sessions__session_id__info_copy_targets_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/info/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a session's native /export Markdown transcript */
+        get: operations["_handle_export_session_markdown_api_sessions__session_id__info_export_get"];
+        put?: never;
+        /** Write a session's native /export transcript to the workspace */
+        post: operations["_handle_write_session_export_api_sessions__session_id__info_export_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/info/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a session's native /status panel */
+        get: operations["_handle_session_status_panel_api_sessions__session_id__info_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions/{session_id}/question": {
         parameters: {
             query?: never;
@@ -459,6 +547,23 @@ export interface paths {
         put?: never;
         /** Answer a pending question and continue the run */
         post: operations["_handle_question_answer_api_sessions__session_id__question_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/rename": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Rename a session */
+        post: operations["_handle_rename_session_api_sessions__session_id__rename_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1085,6 +1190,40 @@ export interface components {
             source: string;
             /** Subtask */
             subtask: boolean;
+        };
+        /**
+         * ContextUsageItemBody
+         * @description One per-item row of native ``/context all``.
+         */
+        ContextUsageItemBody: {
+            /** Label */
+            label: string;
+            /** Tokens */
+            tokens: number;
+        };
+        /**
+         * ContextUsageSegmentBody
+         * @description One per-segment bucket of native ``/context``.
+         */
+        ContextUsageSegmentBody: {
+            /** Items */
+            items: components["schemas"]["ContextUsageItemBody"][];
+            /** Label */
+            label: string;
+            /** Tokens */
+            tokens: number;
+        };
+        /**
+         * CopyTargetBody
+         * @description One native ``/copy`` choice: label, preview, full text.
+         */
+        CopyTargetBody: {
+            /** Label */
+            label: string;
+            /** Preview */
+            preview: string;
+            /** Text */
+            text: string;
         };
         /**
          * DelegatedExecutionBody
@@ -1858,6 +1997,38 @@ export interface components {
             session_id: string;
         };
         /**
+         * SessionContextUsageBody
+         * @description Native ``/context`` usage from the real assembly projection.
+         */
+        SessionContextUsageBody: {
+            /** Estimated */
+            estimated: boolean;
+            /** Model */
+            model?: string | null;
+            /** Over Budget */
+            over_budget: boolean;
+            /** Percent */
+            percent?: number | null;
+            /** Segments */
+            segments: components["schemas"]["ContextUsageSegmentBody"][];
+            /** Session Id */
+            session_id: string;
+            /** Total Tokens */
+            total_tokens?: number | null;
+            /** Used Tokens */
+            used_tokens: number;
+        };
+        /**
+         * SessionCopyTargetsBody
+         * @description Native ``/copy`` choices from the last assistant response.
+         */
+        SessionCopyTargetsBody: {
+            /** Session Id */
+            session_id: string;
+            /** Targets */
+            targets: components["schemas"]["CopyTargetBody"][];
+        };
+        /**
          * SessionDebugBody
          * @description ``serialize_session_debug_snapshot``: the operator's session debug view.
          *
@@ -2038,6 +2209,30 @@ export interface components {
             session?: components["schemas"]["SessionStateBody"] | null;
         };
         /**
+         * SessionExportBody
+         * @description Native ``/export`` transcript: full Markdown plus the default filename.
+         */
+        SessionExportBody: {
+            /** Filename */
+            filename: string;
+            /** Markdown */
+            markdown: string;
+            /** Session Id */
+            session_id: string;
+        };
+        /**
+         * SessionExportWriteBody
+         * @description Native ``/export <path>``: where the transcript was written.
+         */
+        SessionExportWriteBody: {
+            /** Filename */
+            filename: string;
+            /** Path */
+            path: string;
+            /** Session Id */
+            session_id: string;
+        };
+        /**
          * SessionRefBody
          * @description ``_serialize_session_ref``: a session identity, child lineage included.
          */
@@ -2091,6 +2286,46 @@ export interface components {
         };
         /** @enum {string} */
         SessionStatus: "idle" | "running" | "waiting" | "completed" | "failed" | "interrupted";
+        /**
+         * SessionStatusPanelBody
+         * @description Native ``/status`` panel: session, model, approval, usage, provider.
+         */
+        SessionStatusPanelBody: {
+            /** Approval Mode */
+            approval_mode?: string | null;
+            /** Base Url */
+            base_url?: string | null;
+            /** Collaboration Mode */
+            collaboration_mode: string;
+            /** Cost Usd */
+            cost_usd?: number | null;
+            /** Forked From Session Id */
+            forked_from_session_id?: string | null;
+            /** Goal Objective */
+            goal_objective?: string | null;
+            /** Goal Status */
+            goal_status?: string | null;
+            /** Input Tokens */
+            input_tokens?: number | null;
+            /** Model */
+            model?: string | null;
+            /** Output Tokens */
+            output_tokens?: number | null;
+            /** Provider */
+            provider?: string | null;
+            /** Reasoning Effort */
+            reasoning_effort?: string | null;
+            /** Session Id */
+            session_id: string;
+            /** Status */
+            status: string;
+            /** Title */
+            title?: string | null;
+            /** Turn */
+            turn: number;
+            /** Workspace */
+            workspace?: string | null;
+        };
         /**
          * SessionSteerBody
          * @description ``POST /api/sessions/{id}/steer``: the queued steering messages' count.
@@ -2368,6 +2603,25 @@ export interface components {
             /** Mode */
             mode?: string;
         };
+        /** _CreateSessionRequestPayload */
+        _CreateSessionRequestPayload: {
+            /** From Session Id */
+            from_session_id?: string | null;
+            /** Name */
+            name?: string | null;
+        };
+        /** _ExportWriteRequestPayload */
+        _ExportWriteRequestPayload: {
+            /** Path */
+            path?: string;
+        };
+        /** _ForkSessionRequestPayload */
+        _ForkSessionRequestPayload: {
+            /** At Sequence */
+            at_sequence?: number | null;
+            /** Name */
+            name?: string | null;
+        };
         /** _QuestionAnswerRequestPayload */
         _QuestionAnswerRequestPayload: {
             /**
@@ -2386,6 +2640,14 @@ export interface components {
             answers?: string[];
             /** Header */
             header?: string;
+        };
+        /** _RenameSessionRequestPayload */
+        _RenameSessionRequestPayload: {
+            /**
+             * Title
+             * @default
+             */
+            title: string;
         };
         /** _ReviewRunRequestPayload */
         _ReviewRunRequestPayload: {
@@ -2988,6 +3250,57 @@ export interface operations {
             };
         };
     };
+    _handle_create_session_api_sessions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["_CreateSessionRequestPayload"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["SessionSummaryBody"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     _handle_session_replay_api_sessions__session_id__get: {
         parameters: {
             query?: {
@@ -3009,6 +3322,59 @@ export interface operations {
                 };
                 content: {
                     "application/json; charset=utf-8": components["schemas"]["RuntimeResponseBody"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    _handle_rename_session_api_sessions__session_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["_RenameSessionRequestPayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["SessionSummaryBody"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
             /** @description Not Found */
@@ -3557,6 +3923,68 @@ export interface operations {
             };
         };
     };
+    _handle_fork_session_api_sessions__session_id__fork_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["_ForkSessionRequestPayload"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["SessionSummaryBody"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     _handle_get_goal_api_sessions__session_id__goal_get: {
         parameters: {
             query?: never;
@@ -3717,6 +4145,240 @@ export interface operations {
             };
         };
     };
+    _handle_session_context_usage_api_sessions__session_id__info_context_get: {
+        parameters: {
+            query?: {
+                /** @description False returns per-segment totals only; true expands every item the segments bucket. */
+                expand?: boolean;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["SessionContextUsageBody"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    _handle_copy_targets_api_sessions__session_id__info_copy_targets_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["SessionCopyTargetsBody"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    _handle_export_session_markdown_api_sessions__session_id__info_export_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["SessionExportBody"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    _handle_write_session_export_api_sessions__session_id__info_export_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["_ExportWriteRequestPayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["SessionExportWriteBody"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    _handle_session_status_panel_api_sessions__session_id__info_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["SessionStatusPanelBody"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     _handle_question_answer_api_sessions__session_id__question_post: {
         parameters: {
             query?: {
@@ -3764,6 +4426,59 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    _handle_rename_session_api_sessions__session_id__rename_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["_RenameSessionRequestPayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["SessionSummaryBody"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not Found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3850,6 +4565,15 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

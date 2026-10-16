@@ -60,6 +60,7 @@ tty: Any = importlib.import_module("tty") if os.name != "nt" else None
 __all__ = [
     "TerminalCapabilityError",
     "Terminal",
+    "copy_to_clipboard",
     "crop_row_right",
     "escape_terminal_controls",
     "format_number",
@@ -1322,3 +1323,29 @@ class Terminal:
         if size != self._size:
             self._size = size
             self._resize = True
+
+
+#: Max raw bytes base64-encoded into one OSC 52 sequence (Codex parity).
+OSC52_MAX_RAW_BYTES = 100_000
+
+
+def copy_to_clipboard(text: str, *, tmux: bool | None = None) -> None:
+    """Write ``text`` to the system clipboard via OSC 52 (Codex ``osc52_copy`` parity).
+
+    Emitted on stdout so it reaches the terminal emulator even over SSH; the
+    tmux DCS wrapper is applied inside tmux (auto-detected via ``$TMUX``).
+    Raises ``ValueError`` when the payload exceeds ``OSC52_MAX_RAW_BYTES`` and
+    ``OSError`` when stdout is unavailable.
+    """
+    import base64
+
+    raw = text.encode("utf-8")
+    if len(raw) > OSC52_MAX_RAW_BYTES:
+        raise ValueError(f"clipboard payload exceeds {OSC52_MAX_RAW_BYTES} bytes")
+    payload = base64.b64encode(raw).decode("ascii")
+    sequence = f"\x1b]52;c;{payload}\x07"
+    inside_tmux = os.environ.get("TMUX") is not None if tmux is None else tmux
+    if inside_tmux:
+        sequence = f"\x1bPtmux;\x1b{sequence}\x1b\\"
+    sys.stdout.write(sequence)
+    sys.stdout.flush()

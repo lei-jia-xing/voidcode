@@ -651,6 +651,22 @@ class _FixtureRuntime:
             ),
         )
 
+    @property
+    def workspace(self) -> Path:
+        return Path("/workspace")
+
+    def create_session(self, *, title: str | None = None) -> StoredSessionSummary:
+        _ = title
+        return StoredSessionSummary(session=SessionRef(id="sess-1"), status="completed", turn=0, prompt="", updated_at=1000, title=title)
+
+    def fork_session(self, *, session_id: str, at_sequence: int | None = None) -> StoredSessionSummary:
+        _ = session_id, at_sequence
+        return StoredSessionSummary(session=SessionRef(id="sess-fork"), status="completed", turn=1, prompt="fork", updated_at=1000, title="fork")
+
+    def rename_session(self, *, session_id: str, title: str) -> StoredSessionSummary:
+        _ = session_id
+        return StoredSessionSummary(session=SessionRef(id="sess-1"), status="completed", turn=3, prompt="hello", updated_at=1000, title=title)
+
     def session_forest(self) -> tuple[StoredSessionForestEntry, ...]:
         # The transport reads the list's ``depth`` from this projection, so both
         # wire shapes are pinned: ``rich`` supplies a depth (the shape a real
@@ -904,6 +920,63 @@ class _FixtureRuntime:
         _ = session_id
         return self.rich
 
+    def session_status_panel(self, *, session_id: str):  # type: ignore[no-untyped-def]
+        contracts = importlib.import_module("voidcode.runtime.contracts")
+        return contracts.SessionStatusPanel(
+            session_id=session_id,
+            title="demo" if self.rich else None,
+            status="completed",
+            turn=2,
+            model="gpt-4o" if self.rich else None,
+            provider="openai" if self.rich else None,
+            reasoning_effort="medium" if self.rich else None,
+            approval_mode="suggest" if self.rich else None,
+            collaboration_mode="default",
+            goal_objective="ship" if self.rich else None,
+            goal_status="active" if self.rich else None,
+            input_tokens=100 if self.rich else None,
+            output_tokens=50 if self.rich else None,
+            cost_usd=0.001 if self.rich else None,
+            workspace="/workspace" if self.rich else None,
+            base_url="https://api.openai.com/v1" if self.rich else None,
+            forked_from_session_id="sess-0" if self.rich else None,
+        )
+
+    def export_session_markdown(self, *, session_id: str):  # type: ignore[no-untyped-def]
+        contracts = importlib.import_module("voidcode.runtime.contracts")
+        return contracts.SessionExport(
+            session_id=session_id,
+            filename=f"voidcode-session-{session_id}.md",
+            markdown=f"# Session {session_id}\n",
+        )
+
+    def write_session_export(self, *, session_id: str, path: str) -> dict[str, object]:
+        from pathlib import Path as _Path
+
+        return {"session_id": session_id, "path": path, "filename": _Path(path).name}
+
+    def copy_targets(self, *, session_id: str):  # type: ignore[no-untyped-def]
+        _ = session_id
+        contracts = importlib.import_module("voidcode.runtime.contracts")
+        whole = contracts.CopyTarget(label="Whole response", preview="intro", text="intro")
+        if not self.rich:
+            return (whole,)
+        return (whole, contracts.CopyTarget(label="python code", preview="print(1)", text="print(1)\n"))
+
+    def session_context_usage(self, *, session_id: str, expand_items: bool = False):  # type: ignore[no-untyped-def]
+        contracts = importlib.import_module("voidcode.runtime.contracts")
+        items = (contracts.ContextUsageItem(label="system", tokens=100),) if self.rich and expand_items else ()
+        return contracts.SessionContextUsage(
+            session_id=session_id,
+            model="openai/gpt-4o" if self.rich else None,
+            used_tokens=1000,
+            total_tokens=8000 if self.rich else None,
+            percent=12.5 if self.rich else None,
+            over_budget=False,
+            estimated=not self.rich,
+            segments=(contracts.ContextUsageSegment(label="System prompt", tokens=1000, items=items),) if self.rich else (),
+        )
+
 
 # ------------------------------------------------------------------- app plumbing
 
@@ -1009,6 +1082,11 @@ _BODIES: dict[tuple[str, str], dict[str, object]] = {
     ("POST", "/api/sessions/{session_id}/shell"): {"command": "echo hi"},
     ("POST", "/api/sessions/{session_id}/btw"): {"question": "what is this?"},
     ("POST", "/api/sessions/{session_id}/goal"): {"objective": "Ship feature"},
+    ("POST", "/api/sessions"): {"name": "test-session"},
+    ("POST", "/api/sessions/{session_id}/fork"): {"name": "test-fork"},
+    ("POST", "/api/sessions/{session_id}/rename"): {"title": "renamed-session"},
+    ("PATCH", "/api/sessions/{session_id}"): {"title": "renamed-session"},
+    ("POST", "/api/sessions/{session_id}/info/export"): {"path": "exports/out.md"},
 }
 _SSE_TEMPLATES = frozenset({"/api/runtime/run/stream", "/api/sessions/{session_id}/events"})
 

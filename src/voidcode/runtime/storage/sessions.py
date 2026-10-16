@@ -2042,21 +2042,74 @@ class _SessionStorageMixin(_MixinBase):
         )
 
     def rename_session(self, *, workspace: Path, session_id: str, title: str) -> None:
-        """Set the user-settable title on an existing session row.
-
-        The title is a row column the run snapshot does not own (see
-        ``_write_session_snapshot``), so this is the only writer besides the
-        carry-forward read. ``updated_at`` advances like every sibling session
-        mutation, so a rename re-surfaces the session at the top of the listing.
-        """
+        """Set the user-settable title on an existing session row."""
         with self._write_connect(workspace) as connection:
-            updated = connection.execute(
-                "UPDATE sessions SET title = ?, updated_at = ? WHERE workspace_id = ? AND session_id = ?",
-                (title, self._next_timestamp(connection=connection), str(workspace), session_id),
-            ).rowcount
-            if updated != 1:
+            row = fetch_row(
+                connection,
+                "SELECT last_event_sequence, leaf_sequence FROM sessions WHERE workspace_id = ? AND session_id = ?",
+                (str(workspace), session_id),
+            )
+            if row is None:
                 raise UnknownSessionError(f"unknown session: {session_id}")
+            updated_at = self._next_timestamp(connection=connection)
+            seq = int(row["last_event_sequence"] or 0) + 1
+            leaf = int(row["leaf_sequence"] or 0)
+            connection.execute(
+                "UPDATE sessions SET title = ?, updated_at = ?, last_event_sequence = ? WHERE workspace_id = ? AND session_id = ?",
+                (title, updated_at, seq, str(workspace), session_id),
+            )
+            connection.execute(
+                "INSERT INTO session_events (workspace_id, session_id, sequence, parent_sequence, event_type, source, payload_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (str(workspace), session_id, seq, leaf, "runtime.session_renamed", "runtime", json.dumps({"title": title})),
+            )
             connection.commit()
+
+    def create_session(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        title: str | None = None,
+    ) -> StoredSessionSummary:
+        """Create a new empty session row, optionally titled."""
+        with self._write_connect(workspace) as connection:
+            created_at = self._read_created_at(
+                connection=connection,
+                workspace=workspace,
+                session_id=session_id,
+            )
+            updated_at = self._next_timestamp(connection=connection)
+            created_at_unix_ms = self._current_unix_ms()
+            metadata: dict[str, object] = {"title": title} if title is not None else {}
+            connection.execute(
+                """
+                INSERT INTO sessions (
+                    session_id, parent_session_id, workspace_id, status, turn, prompt, title, output,
+                    metadata_json, pending_approval_json, pending_question_json,
+                    resume_checkpoint_json, created_at, updated_at,
+                    last_event_sequence, leaf_sequence, created_at_unix_ms
+                ) VALUES (?, NULL, ?, 'completed', 0, '', ?, NULL, ?, NULL, NULL, NULL, ?, ?, 0, 0, ?)
+                """,
+                (
+                    session_id,
+                    str(workspace),
+                    title,
+                    json.dumps(metadata, sort_keys=True),
+                    created_at,
+                    updated_at,
+                    created_at_unix_ms,
+                ),
+            )
+            connection.commit()
+        return StoredSessionSummary(
+            session=SessionRef(id=session_id, parent_id=None),
+            status=cast(SessionStatus, "completed"),
+            turn=0,
+            prompt="",
+            updated_at=updated_at,
+            title=title,
+        )
 
     def update_session_metadata(self, *, workspace: Path, session_id: str, metadata: dict[str, object]) -> None:
         """Persist a bounded snapshot without replacing queue-owned input."""

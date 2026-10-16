@@ -29,7 +29,7 @@ from starlette.responses import Response
 from starlette.types import Receive, Scope, Send
 
 from ...core.questions import QuestionAnswer, QuestionCancellation, QuestionResponse
-from ..active_session import ActiveRunInterruptResult
+from ..active_session import ACTIVE_SESSION_REGISTRY, ActiveRunInterruptResult
 from ..background.models import (
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
@@ -44,6 +44,7 @@ from ..contracts import (
     BackgroundTaskResult,
     CapabilityStatusSnapshot,
     CommandSummary,
+    CopyTarget,
     GitStatusSnapshot,
     NoPendingQuestionError,
     ProviderInspectResult,
@@ -66,7 +67,10 @@ from ..contracts import (
     RuntimeStatusSnapshot,
     RuntimeStreamChunk,
     SessionBusyConflictError,
+    SessionContextUsage,
     SessionEventBatch,
+    SessionExport,
+    SessionStatusPanel,
     SkillSummary,
     UnknownSessionError,
     WorkspaceRegistrySnapshot,
@@ -94,6 +98,7 @@ from ..workspace import WorkspaceOpenError, WorkspaceRuntimeCoordinator
 from .http_contract import (
     AfterSequenceQuery,
     EventStreamResponse,
+    ExpandItemsQuery,
     FollowQuery,
     HttpError,
     JsonBodyContentTypeMiddleware,
@@ -104,7 +109,11 @@ from .http_contract import (
     _BtwRequestPayload,
     _CheckoutSessionRequestPayload,
     _CollaborationModeRequestPayload,
+    _CreateSessionRequestPayload,
+    _ExportWriteRequestPayload,
+    _ForkSessionRequestPayload,
     _QuestionAnswerRequestPayload,
+    _RenameSessionRequestPayload,
     _ReviewRunRequestPayload,
     _RunStreamRequestPayload,
     _SessionCancelRequestPayload,
@@ -147,10 +156,15 @@ from .http_models import (
     RuntimeStatusBody,
     SessionCancelBody,
     SessionCheckoutBody,
+    SessionContextUsageBody,
+    SessionCopyTargetsBody,
     SessionDebugBody,
     SessionEntriesBody,
     SessionEventFrameBody,
+    SessionExportBody,
+    SessionExportWriteBody,
     SessionResultBody,
+    SessionStatusPanelBody,
     SessionSteerBody,
     SessionSummaryBody,
     SideQuestionResultBody,
@@ -321,6 +335,11 @@ class RuntimeTransport(Protocol):
     def review_session(self, *, session_id: str, focus: str | None = None, target: ReviewTarget | None = None) -> RuntimeResponse: ...
     def run_user_shell(self, *, session_id: str | None, command: str, timeout_seconds: int | None = None) -> dict[str, object]: ...
     def ask_side_question(self, *, session_id: str, question: str) -> dict[str, object]: ...
+    def session_status_panel(self, *, session_id: str) -> SessionStatusPanel: ...
+    def export_session_markdown(self, *, session_id: str) -> SessionExport: ...
+    def write_session_export(self, *, session_id: str, path: str) -> dict[str, object]: ...
+    def copy_targets(self, *, session_id: str) -> tuple[CopyTarget, ...]: ...
+    def session_context_usage(self, *, session_id: str, expand_items: bool = False) -> SessionContextUsage: ...
     def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState: ...
 
     def authorize_background_task_owner(self, task_id: str, *, parent_session_id: str | None) -> None: ...
@@ -330,6 +349,11 @@ class RuntimeTransport(Protocol):
     def load_background_task_result(self, task_id: str) -> BackgroundTaskResult: ...
 
     def load_background_task_result_by_child_session(self, *, child_session_id: str) -> BackgroundTaskResult | None: ...
+    @property
+    def workspace(self) -> Path: ...
+    def create_session(self, *, title: str | None = None) -> StoredSessionSummary: ...
+    def fork_session(self, *, session_id: str, at_sequence: int | None = None) -> StoredSessionSummary: ...
+    def rename_session(self, *, session_id: str, title: str) -> StoredSessionSummary: ...
 
     def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]: ...
 
@@ -664,6 +688,16 @@ class RuntimeTransportApp(FastAPI):
             response_model=list[SessionSummaryBody],
         )
         route(
+            "/api/sessions",
+            self._handle_create_session,
+            methods=["POST"],
+            tag="sessions",
+            summary="Create a new session",
+            response_model=SessionSummaryBody,
+            status_code=201,
+            error_statuses=(400, 409),
+        )
+        route(
             "/api/tasks",
             self._handle_list_background_tasks,
             methods=["GET"],
@@ -959,7 +993,35 @@ class RuntimeTransportApp(FastAPI):
             tag="sessions",
             summary="Explicitly resume an interrupted session",
             response_model=RuntimeResponseBody,
-            error_statuses=(404,),
+            error_statuses=(404, 409),
+        )
+        route(
+            "/api/sessions/{session_id}/fork",
+            self._handle_fork_session,
+            methods=["POST"],
+            tag="sessions",
+            summary="Fork a session",
+            response_model=SessionSummaryBody,
+            status_code=201,
+            error_statuses=(400, 404, 409),
+        )
+        route(
+            "/api/sessions/{session_id}/rename",
+            self._handle_rename_session,
+            methods=["POST"],
+            tag="sessions",
+            summary="Rename a session",
+            response_model=SessionSummaryBody,
+            error_statuses=(400, 404),
+        )
+        route(
+            "/api/sessions/{session_id}",
+            self._handle_rename_session,
+            methods=["PATCH"],
+            tag="sessions",
+            summary="Update session properties (e.g. rename)",
+            response_model=SessionSummaryBody,
+            error_statuses=(400, 404),
         )
         route(
             "/api/sessions/{session_id}/compact",
@@ -1023,6 +1085,51 @@ class RuntimeTransportApp(FastAPI):
             summary="Answer a native /btw side question without touching history",
             response_model=SideQuestionResultBody,
             error_statuses=(400, 404),
+        )
+        route(
+            "/api/sessions/{session_id}/info/status",
+            self._handle_session_status_panel,
+            methods=["GET"],
+            tag="sessions",
+            summary="Read a session's native /status panel",
+            response_model=SessionStatusPanelBody,
+            error_statuses=(404,),
+        )
+        route(
+            "/api/sessions/{session_id}/info/export",
+            self._handle_export_session_markdown,
+            methods=["GET"],
+            tag="sessions",
+            summary="Read a session's native /export Markdown transcript",
+            response_model=SessionExportBody,
+            error_statuses=(404, 409),
+        )
+        route(
+            "/api/sessions/{session_id}/info/export",
+            self._handle_write_session_export,
+            methods=["POST"],
+            tag="sessions",
+            summary="Write a session's native /export transcript to the workspace",
+            response_model=SessionExportWriteBody,
+            error_statuses=(400, 404, 409),
+        )
+        route(
+            "/api/sessions/{session_id}/info/copy-targets",
+            self._handle_copy_targets,
+            methods=["GET"],
+            tag="sessions",
+            summary="Read native /copy choices from the last assistant response",
+            response_model=SessionCopyTargetsBody,
+            error_statuses=(404,),
+        )
+        route(
+            "/api/sessions/{session_id}/info/context",
+            self._handle_session_context_usage,
+            methods=["GET"],
+            tag="sessions",
+            summary="Read a session's native /context usage",
+            response_model=SessionContextUsageBody,
+            error_statuses=(404,),
         )
         route(
             "/api/sessions/{session_id}/shell",
@@ -1384,6 +1491,26 @@ class RuntimeTransportApp(FastAPI):
             ordered.extend(self._serialize_stored_session_summary(item, depth=None) for item in top_level if item.session.id not in placed)
         return json_response(ordered)
 
+    def _create_session(self, title: str | None = None) -> StoredSessionSummary:
+        with self._runtime_lease() as runtime:
+            return runtime.create_session(title=title)
+
+    async def _handle_create_session(self, payload: _CreateSessionRequestPayload | None = None) -> Response:
+        from_id = payload.from_session_id if payload else None
+        name = payload.name if payload else None
+        if from_id is not None:
+            from_id = self._validated_session_id(from_id)
+            with self._runtime_lease() as runtime:
+                if ACTIVE_SESSION_REGISTRY.active_run_count(workspace=runtime.workspace, session_id=from_id):
+                    raise HttpError(409, "session is busy", code="session_busy")
+        try:
+            summary = await asyncio.to_thread(self._create_session, name)
+        except SessionBusyConflictError as exc:
+            raise HttpError(409, str(exc), code=error_code(exc)) from None
+        except (ValueError, RuntimeRequestError) as exc:
+            raise HttpError(400, str(exc)) from None
+        return json_response(self._serialize_stored_session_summary(summary, depth=0), status=201)
+
     async def _handle_start_background_task(self, payload: _RunStreamRequestPayload) -> Response:
         try:
             runtime_request = _runtime_request_from(payload)
@@ -1677,11 +1804,56 @@ class RuntimeTransportApp(FastAPI):
 
     async def _handle_resume(self, session_id: str, show_thinking: ShowThinkingQuery = False) -> Response:
         session_id = self._validated_session_id(session_id)
+        with self._runtime_lease() as runtime:
+            if ACTIVE_SESSION_REGISTRY.active_run_count(workspace=runtime.workspace, session_id=session_id):
+                raise HttpError(409, "session is busy", code="session_busy")
         try:
             response = await asyncio.to_thread(self._resume_session, session_id)
         except ValueError as exc:
             raise HttpError(404, str(exc)) from None
         return json_response(self._serialize_runtime_response(response, show_thinking=show_thinking))
+
+    def _fork_session(self, session_id: str, at_sequence: int | None = None) -> StoredSessionSummary:
+        with self._runtime_lease() as runtime:
+            return runtime.fork_session(session_id=session_id, at_sequence=at_sequence)
+
+    async def _handle_fork_session(self, session_id: str, payload: _ForkSessionRequestPayload | None = None) -> Response:
+        session_id = self._validated_session_id(session_id)
+        name = payload.name if payload else None
+        at_sequence = payload.at_sequence if payload else None
+        with self._runtime_lease() as runtime:
+            if ACTIVE_SESSION_REGISTRY.active_run_count(workspace=runtime.workspace, session_id=session_id):
+                raise HttpError(409, "cannot fork a session while it is running", code="session_busy")
+        try:
+            forked = await asyncio.to_thread(self._fork_session, session_id, at_sequence)
+        except UnknownSessionError as exc:
+            raise HttpError(404, str(exc), code=error_code(exc)) from None
+        except SessionBusyConflictError as exc:
+            raise HttpError(409, str(exc), code=error_code(exc)) from None
+        except (ValueError, RuntimeRequestError) as exc:
+            raise HttpError(400, str(exc)) from None
+
+        if name is not None:
+            try:
+                with self._runtime_lease() as runtime:
+                    forked = await asyncio.to_thread(runtime.rename_session, session_id=forked.session.id, title=name)
+            except Exception as err:
+                logger.warning("Failed to name the forked session: %s", err)
+        return json_response(self._serialize_stored_session_summary(forked, depth=None), status=201)
+
+    def _rename_session(self, session_id: str, title: str) -> StoredSessionSummary:
+        with self._runtime_lease() as runtime:
+            return runtime.rename_session(session_id=session_id, title=title)
+
+    async def _handle_rename_session(self, session_id: str, payload: _RenameSessionRequestPayload) -> Response:
+        session_id = self._validated_session_id(session_id)
+        try:
+            updated = await asyncio.to_thread(self._rename_session, session_id, payload.title)
+        except UnknownSessionError as exc:
+            raise HttpError(404, str(exc), code=error_code(exc)) from None
+        except (ValueError, RuntimeRequestError) as exc:
+            raise HttpError(400, str(exc)) from None
+        return json_response(self._serialize_stored_session_summary(updated, depth=None))
 
     def _compact_session(self, session_id: str) -> dict[str, object]:
         with self._runtime_lease() as runtime:
@@ -1742,6 +1914,63 @@ class RuntimeTransportApp(FastAPI):
         except ValueError as exc:
             raise HttpError(400, str(exc)) from None
         return json_response(result)
+
+    async def _handle_session_status_panel(self, session_id: str) -> Response:
+        session_id = self._validated_session_id(session_id)
+        with self._runtime_lease() as runtime:
+            try:
+                panel = runtime.session_status_panel(session_id=session_id)
+            except UnknownSessionError as exc:
+                raise HttpError(404, str(exc), code=error_code(exc)) from None
+        return json_response(self._serialize_session_status_panel(panel))
+
+    async def _handle_export_session_markdown(self, session_id: str) -> Response:
+        session_id = self._validated_session_id(session_id)
+        try:
+            export = await asyncio.to_thread(self._export_session_markdown, session_id)
+        except UnknownSessionError as exc:
+            raise HttpError(404, str(exc), code=error_code(exc)) from None
+        except SessionBusyConflictError as exc:
+            raise HttpError(409, str(exc), code=error_code(exc)) from None
+        return json_response(self._serialize_session_export(export))
+
+    def _export_session_markdown(self, session_id: str) -> SessionExport:
+        with self._runtime_lease() as runtime:
+            return runtime.export_session_markdown(session_id=session_id)
+
+    async def _handle_write_session_export(self, session_id: str, payload: _ExportWriteRequestPayload) -> Response:
+        session_id = self._validated_session_id(session_id)
+        try:
+            result = await asyncio.to_thread(self._write_session_export, session_id, payload.path)
+        except UnknownSessionError as exc:
+            raise HttpError(404, str(exc), code=error_code(exc)) from None
+        except SessionBusyConflictError as exc:
+            raise HttpError(409, str(exc), code=error_code(exc)) from None
+        except ValueError as exc:
+            raise HttpError(400, str(exc)) from None
+        return json_response(result)
+
+    def _write_session_export(self, session_id: str, path: str) -> dict[str, object]:
+        with self._runtime_lease() as runtime:
+            return runtime.write_session_export(session_id=session_id, path=path)
+
+    async def _handle_copy_targets(self, session_id: str) -> Response:
+        session_id = self._validated_session_id(session_id)
+        with self._runtime_lease() as runtime:
+            try:
+                targets = runtime.copy_targets(session_id=session_id)
+            except UnknownSessionError as exc:
+                raise HttpError(404, str(exc), code=error_code(exc)) from None
+        return json_response({"session_id": session_id, "targets": [self._serialize_copy_target(target) for target in targets]})
+
+    async def _handle_session_context_usage(self, session_id: str, expand: ExpandItemsQuery = False) -> Response:
+        session_id = self._validated_session_id(session_id)
+        with self._runtime_lease() as runtime:
+            try:
+                usage = runtime.session_context_usage(session_id=session_id, expand_items=expand)
+            except UnknownSessionError as exc:
+                raise HttpError(404, str(exc), code=error_code(exc)) from None
+        return json_response(self._serialize_session_context_usage(usage))
 
     async def _handle_get_goal(self, session_id: str) -> Response:
         session_id = self._validated_session_id(session_id)
@@ -2328,6 +2557,56 @@ class RuntimeTransportApp(FastAPI):
             "model": summary.model,
             "subtask": summary.subtask,
             "path": summary.path,
+        }
+
+    @staticmethod
+    def _serialize_session_status_panel(panel: SessionStatusPanel) -> dict[str, object]:
+        return {
+            "session_id": panel.session_id,
+            "title": panel.title,
+            "status": panel.status,
+            "turn": panel.turn,
+            "model": panel.model,
+            "provider": panel.provider,
+            "reasoning_effort": panel.reasoning_effort,
+            "approval_mode": panel.approval_mode,
+            "collaboration_mode": panel.collaboration_mode,
+            "goal_objective": panel.goal_objective,
+            "goal_status": panel.goal_status,
+            "input_tokens": panel.input_tokens,
+            "output_tokens": panel.output_tokens,
+            "cost_usd": panel.cost_usd,
+            "workspace": panel.workspace,
+            "base_url": panel.base_url,
+            "forked_from_session_id": panel.forked_from_session_id,
+        }
+
+    @staticmethod
+    def _serialize_session_export(export: SessionExport) -> dict[str, object]:
+        return {"session_id": export.session_id, "filename": export.filename, "markdown": export.markdown}
+
+    @staticmethod
+    def _serialize_copy_target(target: CopyTarget) -> dict[str, object]:
+        return {"label": target.label, "preview": target.preview, "text": target.text}
+
+    @staticmethod
+    def _serialize_session_context_usage(usage: SessionContextUsage) -> dict[str, object]:
+        return {
+            "session_id": usage.session_id,
+            "model": usage.model,
+            "used_tokens": usage.used_tokens,
+            "total_tokens": usage.total_tokens,
+            "percent": usage.percent,
+            "over_budget": usage.over_budget,
+            "estimated": usage.estimated,
+            "segments": [
+                {
+                    "label": segment.label,
+                    "tokens": segment.tokens,
+                    "items": [{"label": row.label, "tokens": row.tokens} for row in segment.items],
+                }
+                for segment in usage.segments
+            ],
         }
 
     @staticmethod

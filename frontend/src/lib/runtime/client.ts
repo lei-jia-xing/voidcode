@@ -26,6 +26,11 @@ import {
   RuntimeStatusSnapshot,
   RuntimeStreamChunk,
   SessionSteerResult,
+  SessionInfoStatus,
+  SessionExport,
+  SessionExportWrite,
+  SessionCopyTargets,
+  SessionContextUsage,
   SideQuestionResult,
   UserShellResult,
   SkillSummary,
@@ -82,6 +87,12 @@ const ROUTES = {
   taskRetry: "/api/tasks/{task_id}/retry",
   taskSteer: "/api/tasks/{task_id}/steer",
   settings: "/api/settings",
+  sessionFork: "/api/sessions/{session_id}/fork",
+  sessionRename: "/api/sessions/{session_id}/rename",
+  sessionInfoStatus: "/api/sessions/{session_id}/info/status",
+  sessionInfoExport: "/api/sessions/{session_id}/info/export",
+  sessionInfoCopyTargets: "/api/sessions/{session_id}/info/copy-targets",
+  sessionInfoContext: "/api/sessions/{session_id}/info/context",
 } as const satisfies Record<string, keyof paths>;
 const NATIVE_ROUTES = {
   sessionCollaborationMode: "/api/sessions/{session_id}/collaboration-mode",
@@ -258,6 +269,59 @@ export class RuntimeClient {
   ): Promise<StoredSessionSummary[]> {
     const res = await fetchQuery(ROUTES.sessions, signal);
     await expectOk(res, "Failed to list sessions");
+    return res.json();
+  }
+  static async createSession(
+    payload?: { name?: string; from_session_id?: string },
+    signal?: AbortSignal,
+  ): Promise<StoredSessionSummary> {
+    const res = await fetch(ROUTES.sessions, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload ?? {}),
+      signal,
+    });
+    await expectOk(res, "Failed to create session");
+    return res.json();
+  }
+
+  static async forkSession(
+    sessionId: string,
+    payload?: { name?: string; at_sequence?: number },
+    signal?: AbortSignal,
+  ): Promise<StoredSessionSummary> {
+    const res = await fetch(
+      apiPath(ROUTES.sessionFork, {
+        session_id: encodeURIComponent(sessionId),
+      }),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload ?? {}),
+        signal,
+      },
+    );
+    await expectOk(res, "Failed to fork session");
+    return res.json();
+  }
+
+  static async renameSession(
+    sessionId: string,
+    title: string,
+    signal?: AbortSignal,
+  ): Promise<StoredSessionSummary> {
+    const res = await fetch(
+      apiPath(ROUTES.sessionRename, {
+        session_id: encodeURIComponent(sessionId),
+      }),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+        signal,
+      },
+    );
+    await expectOk(res, "Failed to rename session");
     return res.json();
   }
 
@@ -450,6 +514,79 @@ export class RuntimeClient {
       body: JSON.stringify({ question }),
     });
     await expectOk(res, "Failed to ask side question");
+    return res.json();
+  }
+
+  static async getSessionInfoStatus(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<SessionInfoStatus> {
+    const res = await fetchQuery(
+      apiPath(ROUTES.sessionInfoStatus, {
+        session_id: encodeURIComponent(sessionId),
+      }),
+      signal,
+    );
+    await expectOk(res, "Failed to load session status");
+    return res.json();
+  }
+
+  static async getSessionExport(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<SessionExport> {
+    const res = await fetchQuery(
+      apiPath(ROUTES.sessionInfoExport, {
+        session_id: encodeURIComponent(sessionId),
+      }),
+      signal,
+    );
+    await expectOk(res, "Failed to export session");
+    return res.json();
+  }
+
+  static async writeSessionExport(
+    sessionId: string,
+    path: string,
+  ): Promise<SessionExportWrite> {
+    const res = await fetch(
+      apiPath(ROUTES.sessionInfoExport, {
+        session_id: encodeURIComponent(sessionId),
+      }),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path }),
+      },
+    );
+    await expectOk(res, "Failed to write session export");
+    return res.json();
+  }
+
+  static async getCopyTargets(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<SessionCopyTargets> {
+    const res = await fetchQuery(
+      apiPath(ROUTES.sessionInfoCopyTargets, {
+        session_id: encodeURIComponent(sessionId),
+      }),
+      signal,
+    );
+    await expectOk(res, "Failed to load copy targets");
+    return res.json();
+  }
+
+  static async getSessionContextUsage(
+    sessionId: string,
+    expand = false,
+    signal?: AbortSignal,
+  ): Promise<SessionContextUsage> {
+    const base = apiPath(ROUTES.sessionInfoContext, {
+      session_id: encodeURIComponent(sessionId),
+    });
+    const res = await fetchQuery(expand ? `${base}?expand=true` : base, signal);
+    await expectOk(res, "Failed to load context usage");
     return res.json();
   }
 
