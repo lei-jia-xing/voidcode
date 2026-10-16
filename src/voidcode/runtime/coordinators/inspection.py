@@ -93,6 +93,7 @@ from ..contracts import (
     ProviderReadinessResult,
     ProviderSummary,
     ProviderValidationResult,
+    ReviewCommitLogEntry,
     ReviewFileDiff,
     RuntimeBackgroundTaskStatusSnapshot,
     RuntimeProviderContextPolicyDecision,
@@ -1635,6 +1636,7 @@ class InspectionCoordinator:
     def list_command_summaries(self, *, user_commands_dir: Path | None = None) -> tuple[CommandSummary, ...]:
         registry = self._surface.command_registry(user_commands_dir=user_commands_dir)
         native = (
+            CommandSummary(name="btw", description="ask a quick side question without interrupting the main conversation", source="native"),
             CommandSummary(name="compact", description="summarize and persist the current conversation context", source="native"),
             CommandSummary(name="diff", description="show the aggregate Git diff, including untracked files", source="native"),
             CommandSummary(name="plan", description="enter reversible read-only Plan mode", source="native"),
@@ -1792,6 +1794,21 @@ class InspectionCoordinator:
 
     def review_diff_all(self) -> ReviewFileDiff:
         return WorkspaceReviewService(workspace=self._workspace).diff_all(git=self._git_status_snapshot())
+
+    def review_diff_base_branch(self, branch: str) -> ReviewFileDiff:
+        return WorkspaceReviewService(workspace=self._workspace).diff_base_branch(branch, git=self._git_status_snapshot())
+
+    def review_diff_commit(self, sha: str) -> ReviewFileDiff:
+        return WorkspaceReviewService(workspace=self._workspace).diff_commit(sha, git=self._git_status_snapshot())
+
+    def review_branches(self) -> tuple[str, ...]:
+        return WorkspaceReviewService(workspace=self._workspace).list_branches(git=self._git_status_snapshot())
+
+    def review_current_branch(self) -> str | None:
+        return WorkspaceReviewService(workspace=self._workspace).current_branch(git=self._git_status_snapshot())
+
+    def review_recent_commits(self, limit: int = 100) -> tuple[ReviewCommitLogEntry, ...]:
+        return WorkspaceReviewService(workspace=self._workspace).recent_commits(git=self._git_status_snapshot(), limit=limit)
 
     def _git_status_snapshot(self) -> GitStatusSnapshot:
         result = subprocess.run(

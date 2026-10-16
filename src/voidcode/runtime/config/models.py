@@ -60,10 +60,12 @@ TOP_LEVEL_ENV_VARS: tuple[str, ...] = (
     "VOIDCODE_MODEL",
     "VOIDCODE_TOOL_TIMEOUT_SECONDS",
     "VOIDCODE_REASONING_EFFORT",
+    "VOIDCODE_REVIEW_MODEL",
 )
 
 APPROVAL_MODE_ENV_VAR = "VOIDCODE_APPROVAL_MODE"
 MODEL_ENV_VAR = "VOIDCODE_MODEL"
+REVIEW_MODEL_ENV_VAR = "VOIDCODE_REVIEW_MODEL"
 TOOL_TIMEOUT_ENV_VAR = "VOIDCODE_TOOL_TIMEOUT_SECONDS"
 REASONING_EFFORT_ENV_VAR = "VOIDCODE_REASONING_EFFORT"
 
@@ -582,6 +584,7 @@ class EnvironmentRuntimeSettings(BaseSettings):
         default=None,
         validation_alias=REASONING_EFFORT_ENV_VAR,
     )
+    review_model: str | None = Field(default=None, validation_alias=REVIEW_MODEL_ENV_VAR)
 
     @field_validator("approval_mode", mode="before")
     @classmethod
@@ -599,6 +602,15 @@ class EnvironmentRuntimeSettings(BaseSettings):
             return None
         if not isinstance(value, str) or not value:
             raise ValueError(f"environment variable {MODEL_ENV_VAR} must be a non-empty string")
+        return value
+
+    @field_validator("review_model", mode="before")
+    @classmethod
+    def _validate_review_model(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"environment variable {REVIEW_MODEL_ENV_VAR} must be a non-empty string")
         return value
 
     @field_validator("tool_timeout_seconds", mode="before")
@@ -1911,6 +1923,10 @@ class RuntimeConfigPayload(_PayloadModel):
         default=None,
         description="Provider/model identifier in `provider/model` form.",
     )
+    review_model: str | None = Field(
+        default=None,
+        description="Review model override used by the /review feature.",
+    )
     # Item shape is published as contract metadata only; provider/config.py owns
     # the chain's rejection and messages.
     fallback_models: tuple[Annotated[object, Field(json_schema_extra={"type": "string"})], ...] | None = Field(
@@ -2019,6 +2035,15 @@ class RuntimeConfigPayload(_PayloadModel):
             raise ValueError("runtime config field 'model' must be a string when provided")
         return value
 
+    @field_validator("review_model", mode="before")
+    @classmethod
+    def _validate_review_model(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("runtime config field 'review_model' must be a string when provided")
+        return value
+
     @field_validator("tool_timeout_seconds", mode="before")
     @classmethod
     def _validate_tool_timeout_seconds(cls, value: object, info: ValidationInfo) -> int | None:
@@ -2081,6 +2106,10 @@ class UserConfigPayload(_PayloadModel):
         default=None,
         description="Machine-wide default provider/model identifier; project config and environment override it.",
     )
+    review_model: str | None = Field(
+        default=None,
+        description="Review model override used by the /review feature.",
+    )
     tui: TuiPayload | None = None
     #: ``web`` is read opaquely by the web-settings surface today (``load_global_web_settings``),
     #: so it stays untyped here: any value is accepted exactly as HEAD accepted it.
@@ -2106,6 +2135,15 @@ class UserConfigPayload(_PayloadModel):
             return None
         if not isinstance(value, str):
             raise ValueError("runtime config field 'model' must be a string when provided")
+        return value
+
+    @field_validator("review_model", mode="before")
+    @classmethod
+    def _validate_review_model(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("runtime config field 'review_model' must be a string when provided")
         return value
 
     @field_validator("tui", "providers", mode="before")

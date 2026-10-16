@@ -2627,3 +2627,118 @@ def test_transport_checkout_rejects_invalid_targets(
     )
 
     assert response.status == 400
+
+
+def test_transport_shell_escape_executes_without_provider_turn(tmp_path: Path) -> None:
+    _, runtime_class = _load_runtime_types()
+    create_runtime_app = _load_transport_app_factory()
+    runtime = runtime_class(workspace=tmp_path)
+    runtime.run_user_shell(session_id="shell-route-session", command="echo seed")
+    runtime.__exit__(None, None, None)
+
+    app = create_runtime_app(workspace=tmp_path)
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/sessions/shell-route-session/shell",
+        body=json.dumps({"command": "echo route-hi"}).encode("utf-8"),
+    )
+
+    assert response.status == 200
+    payload = cast(dict[str, object], response.json())
+    assert payload["session_id"] == "shell-route-session"
+    assert payload["command"] == "echo route-hi"
+    assert payload["exit_code"] == 0
+    assert payload["status"] == "completed"
+    assert "route-hi" in cast(str, payload["output"])
+    assert payload["truncated"] is False
+    assert isinstance(payload["event_sequence"], int)
+
+    replay = _run_app(app, method="GET", path="/api/sessions/shell-route-session")
+    replay_payload = cast(dict[str, object], replay.json())
+    event_types = _event_types_from_payload_events(replay_payload)
+    assert "runtime.user_shell_executed" in event_types
+    assert "runtime.request_received" not in event_types
+
+
+def test_transport_shell_escape_rejects_blank_command(tmp_path: Path) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=tmp_path)
+    for body in (b"{}", json.dumps({"command": "   "}).encode("utf-8")):
+        response = _run_app(app, method="POST", path="/api/sessions/shell-blank-session/shell", body=body)
+        assert response.status == 400
+
+
+def test_transport_shell_escape_admits_unknown_session(tmp_path: Path) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=tmp_path)
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/sessions/does-not-exist/shell",
+        body=json.dumps({"command": "echo hi"}).encode("utf-8"),
+    )
+    assert response.status == 200
+    payload = cast(dict[str, object], response.json())
+    assert payload["session_id"] == "does-not-exist"
+    assert payload["exit_code"] == 0
+
+
+def test_transport_btw_answers_without_touching_history(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, runtime_class = _load_runtime_types()
+    create_runtime_app = _load_transport_app_factory()
+    server = OpenAILoopbackServer(
+        [
+            openai_response(message={"role": "assistant", "content": "seeded"}, finish="stop"),
+            openai_response(message={"role": "assistant", "content": "side answer"}, finish="stop"),
+        ]
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    try:
+        configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_address[1]}/v1")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "loopback-key")
+        thread.start()
+        runtime = runtime_class(workspace=tmp_path)
+        runtime_request, _ = _load_runtime_types()
+        seeded = runtime.run(runtime_request(prompt="seed prompt", session_id="btw-route-session"))
+        runtime.__exit__(None, None, None)
+        before_types = [event.event_type for event in seeded.events]
+
+        app = create_runtime_app(workspace=tmp_path)
+        response = _run_app(
+            app,
+            method="POST",
+            path="/api/sessions/btw-route-session/btw",
+            body=json.dumps({"question": "what did I ask?"}).encode("utf-8"),
+        )
+        assert response.status == 200
+        payload = cast(dict[str, object], response.json())
+        assert payload["session_id"] == "btw-route-session"
+        assert payload["question"] == "what did I ask?"
+        assert payload["answer"] == "side answer"
+        # Exactly 1 forked provider turn (seed + btw = 2 total), zero tools sent.
+        assert len(server.requests) == 2
+        assert server.requests[1].get("tools", []) in ([], None)
+        assert "what did I ask?" in json.dumps(server.requests[1])
+
+        replay = _run_app(app, method="GET", path="/api/sessions/btw-route-session")
+        replay_payload = cast(dict[str, object], replay.json())
+        assert _event_types_from_payload_events(replay_payload) == before_types
+    finally:
+        server.shutdown()
+        thread.join(5)
+
+
+def test_transport_btw_rejects_blank_question_and_unknown_session(tmp_path: Path) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=tmp_path)
+    for body in (b"{}", json.dumps({"question": "   "}).encode("utf-8")):
+        response = _run_app(app, method="POST", path="/api/sessions/btw-blank/btw", body=body)
+        assert response.status == 400
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/sessions/does-not-exist/btw",
+        body=json.dumps({"question": "q"}).encode("utf-8"),
+    )
+    assert response.status == 404

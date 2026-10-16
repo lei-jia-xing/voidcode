@@ -14,7 +14,7 @@ import logging
 from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import suppress
 from http import HTTPStatus
-from typing import Annotated, cast, final
+from typing import Annotated, Literal, cast, final
 
 from fastapi import Query
 from fastapi.exceptions import RequestValidationError
@@ -25,6 +25,7 @@ from starlette.responses import JSONResponse, PlainTextResponse, Response, Strea
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from ...provider.errors import validation_reason_from_error
+from ..contracts import ReviewTarget
 from ..permissions.policy import PermissionResolution, validate_collaboration_mode
 
 logger = logging.getLogger(__name__)
@@ -438,8 +439,40 @@ class _RunStreamRequestPayload(_HttpBoundaryModel):
         return value
 
 
+class _ReviewTargetPayload(_HttpBoundaryModel):
+    type: Literal["uncommitted", "uncommittedChanges", "base_branch", "baseBranch", "commit", "custom"] = "uncommitted"
+    branch: str | None = None
+    sha: str | None = None
+    title: str | None = None
+    instructions: str | None = None
+
+    def to_contract_target(self) -> ReviewTarget:
+        normalized_type: Literal["uncommitted", "base_branch", "commit", "custom"] = "uncommitted"
+        if self.type in ("uncommitted", "uncommittedChanges"):
+            normalized_type = "uncommitted"
+        elif self.type in ("base_branch", "baseBranch"):
+            normalized_type = "base_branch"
+        elif self.type == "commit":
+            normalized_type = "commit"
+        elif self.type == "custom":
+            normalized_type = "custom"
+        return ReviewTarget(
+            type=normalized_type,
+            branch=self.branch,
+            sha=self.sha,
+            title=self.title,
+            instructions=self.instructions,
+        )
+
+
 class _ReviewRunRequestPayload(_HttpBoundaryModel):
+    target: _ReviewTargetPayload | None = None
     focus: str | None = None
+    type: str | None = None
+    branch: str | None = None
+    sha: str | None = None
+    title: str | None = None
+    instructions: str | None = None
 
     @field_validator("focus", mode="before")
     @classmethod
@@ -450,6 +483,56 @@ class _ReviewRunRequestPayload(_HttpBoundaryModel):
             raise ValueError("must be a string when provided")
         return value.strip() or None
 
+    def resolved_target(self) -> ReviewTarget:
+        if self.target is not None:
+            target = self.target.to_contract_target()
+            if target.type == "custom" and not target.instructions and self.focus:
+                return ReviewTarget(type="custom", instructions=self.focus)
+            return target
+        if self.type is not None:
+            raw_type = self.type
+            target_type = "uncommitted"
+            if raw_type in ("base_branch", "baseBranch"):
+                target_type = "base_branch"
+            elif raw_type == "commit":
+                target_type = "commit"
+            elif raw_type == "custom":
+                target_type = "custom"
+            return ReviewTarget(
+                type=target_type,  # type: ignore[arg-type]
+                branch=self.branch,
+                sha=self.sha,
+                title=self.title,
+                instructions=self.instructions or self.focus,
+            )
+        if self.focus:
+            return ReviewTarget(type="custom", instructions=self.focus)
+        return ReviewTarget(type="uncommitted")
+
+
+class _UserShellRequestPayload(_HttpBoundaryModel):
+    command: str = Field(default=None, validate_default=True)
+
+    @field_validator("command", mode="before")
+    @classmethod
+    def _validate_command(cls, value: object) -> str:
+        # Non-blank only; the runtime trims. No timeout field: upstream
+        # exposes none (fixed 1h), and the wire must not invent syntax.
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("must be a non-empty string")
+        return value
+
+
+class _BtwRequestPayload(_HttpBoundaryModel):
+    question: str = Field(default=None, validate_default=True)
+
+    @field_validator("question", mode="before")
+    @classmethod
+    def _validate_question(cls, value: object) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("must be a non-empty string")
+        return value
+
 
 class _CollaborationModeRequestPayload(_HttpBoundaryModel):
     mode: str = Field(default=None, validate_default=True)
@@ -458,6 +541,13 @@ class _CollaborationModeRequestPayload(_HttpBoundaryModel):
     @classmethod
     def _validate_mode(cls, value: object) -> str:
         return validate_collaboration_mode(value)
+
+
+class _SetGoalRequestPayload(_HttpBoundaryModel):
+    objective: str | None = None
+    status: str | None = None
+    token_budget: int | None = None
+    mode: str | None = None
 
 
 class _ApprovalResolutionRequestPayload(_HttpBoundaryModel):

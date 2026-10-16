@@ -140,6 +140,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/review/branches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read local git branches for review */
+        get: operations["_handle_get_review_branches_api_review_branches_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/review/commits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read recent git commits for review */
+        get: operations["_handle_get_review_commits_api_review_commits_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/review/diff": {
         parameters: {
             query?: never;
@@ -236,6 +270,23 @@ export interface paths {
         put?: never;
         /** Resolve a pending approval and continue the run */
         post: operations["_handle_approval_resolution_api_sessions__session_id__approval_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/btw": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Answer a native /btw side question without touching history */
+        post: operations["_handle_ask_side_question_api_sessions__session_id__btw_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -378,6 +429,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/goal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get current thread goal for a session */
+        get: operations["_handle_get_goal_api_sessions__session_id__goal_get"];
+        put?: never;
+        /** Set or update thread goal for a session */
+        post: operations["_handle_set_goal_api_sessions__session_id__goal_post"];
+        /** Clear thread goal for a session */
+        delete: operations["_handle_clear_goal_api_sessions__session_id__goal_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions/{session_id}/question": {
         parameters: {
             query?: never;
@@ -440,6 +510,23 @@ export interface paths {
         put?: never;
         /** Run a governed read-only review of workspace changes */
         post: operations["_handle_review_session_api_sessions__session_id__review_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/shell": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Run a native ! shell command without starting a provider turn */
+        post: operations["_handle_run_user_shell_api_sessions__session_id__shell_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -957,6 +1044,11 @@ export interface components {
             error?: string | null;
             state: components["schemas"]["CapabilityState"];
         };
+        /** ClearGoalResponseBody */
+        ClearGoalResponseBody: {
+            /** Cleared */
+            cleared: boolean;
+        };
         /** CollaborationModeBody */
         CollaborationModeBody: {
             /** Collaboration Mode */
@@ -1111,6 +1203,10 @@ export interface components {
         };
         /** @enum {string} */
         GitStatusState: "git_ready" | "not_git_repo" | "git_error";
+        /** GoalResponseBody */
+        GoalResponseBody: {
+            goal?: components["schemas"]["ThreadGoalItem"] | null;
+        };
         /**
          * HookPresetBody
          * @description ``serialize_hook_preset_snapshot``: the hook presets the runtime resolved.
@@ -1431,6 +1527,13 @@ export interface components {
             /** Status */
             status: string;
         };
+        /** ReviewBranchesBody */
+        ReviewBranchesBody: {
+            /** Branches */
+            branches: string[];
+            /** Current */
+            current?: string | null;
+        };
         /**
          * ReviewChangedFileBody
          * @description ``_serialize_review_changed_file``: one changed path.
@@ -1442,6 +1545,20 @@ export interface components {
             old_path?: string | null;
             /** Path */
             path: string;
+        };
+        /** ReviewCommitEntryBody */
+        ReviewCommitEntryBody: {
+            /** Sha */
+            sha: string;
+            /** Subject */
+            subject: string;
+            /** Timestamp */
+            timestamp: number;
+        };
+        /** ReviewCommitsBody */
+        ReviewCommitsBody: {
+            /** Commits */
+            commits: components["schemas"]["ReviewCommitEntryBody"][];
         };
         /**
          * ReviewFileDiffBody
@@ -2017,6 +2134,18 @@ export interface components {
             updated_at: number;
         };
         /**
+         * SideQuestionResultBody
+         * @description Result of the native ``/btw`` side question (no history written).
+         */
+        SideQuestionResultBody: {
+            /** Answer */
+            answer: string;
+            /** Question */
+            question: string;
+            /** Session Id */
+            session_id: string;
+        };
+        /**
          * SkillSummaryBody
          * @description ``_serialize_skill_summary``: one catalog-visible skill.
          */
@@ -2101,6 +2230,61 @@ export interface components {
             /** Retry Count */
             retry_count: number;
         };
+        /** ThreadGoalItem */
+        ThreadGoalItem: {
+            /**
+             * Created At
+             * @default 0
+             */
+            created_at: number;
+            /** Objective */
+            objective: string;
+            /** Status */
+            status: string;
+            /** Thread Id */
+            thread_id: string;
+            /**
+             * Time Used Seconds
+             * @default 0
+             */
+            time_used_seconds: number;
+            /** Token Budget */
+            token_budget?: number | null;
+            /**
+             * Tokens Used
+             * @default 0
+             */
+            tokens_used: number;
+            /**
+             * Updated At
+             * @default 0
+             */
+            updated_at: number;
+        };
+        /**
+         * UserShellResultBody
+         * @description Result of the native ``!`` shell escape (no provider turn started).
+         */
+        UserShellResultBody: {
+            /** Command */
+            command: string;
+            /** Duration Seconds */
+            duration_seconds: number;
+            /** Event Sequence */
+            event_sequence: number;
+            /** Exit Code */
+            exit_code: number;
+            /** Output */
+            output: string;
+            /** Session Id */
+            session_id: string;
+            /** Status */
+            status: string;
+            /** Timed Out */
+            timed_out: boolean;
+            /** Truncated */
+            truncated: boolean;
+        };
         /**
          * WebSettingsBody
          * @description ``VoidCodeRuntime.web_settings``: the web client's effective provider/model.
@@ -2161,6 +2345,11 @@ export interface components {
             /** Request Id */
             request_id?: string;
         };
+        /** _BtwRequestPayload */
+        _BtwRequestPayload: {
+            /** Question */
+            question?: string;
+        };
         /**
          * _CheckoutSessionRequestPayload
          * @description ``POST /api/sessions/{id}/checkout`` body: the entry to continue from.
@@ -2200,8 +2389,36 @@ export interface components {
         };
         /** _ReviewRunRequestPayload */
         _ReviewRunRequestPayload: {
+            /** Branch */
+            branch?: string | null;
             /** Focus */
             focus?: string | null;
+            /** Instructions */
+            instructions?: string | null;
+            /** Sha */
+            sha?: string | null;
+            target?: components["schemas"]["_ReviewTargetPayload"] | null;
+            /** Title */
+            title?: string | null;
+            /** Type */
+            type?: string | null;
+        };
+        /** _ReviewTargetPayload */
+        _ReviewTargetPayload: {
+            /** Branch */
+            branch?: string | null;
+            /** Instructions */
+            instructions?: string | null;
+            /** Sha */
+            sha?: string | null;
+            /** Title */
+            title?: string | null;
+            /**
+             * Type
+             * @default uncommitted
+             * @enum {string}
+             */
+            type: "uncommitted" | "uncommittedChanges" | "base_branch" | "baseBranch" | "commit" | "custom";
         };
         /** _RunStreamRequestPayload */
         _RunStreamRequestPayload: {
@@ -2222,6 +2439,17 @@ export interface components {
             reason?: string | null;
             /** Run Id */
             run_id?: string | null;
+        };
+        /** _SetGoalRequestPayload */
+        _SetGoalRequestPayload: {
+            /** Mode */
+            mode?: string | null;
+            /** Objective */
+            objective?: string | null;
+            /** Status */
+            status?: string | null;
+            /** Token Budget */
+            token_budget?: number | null;
         };
         /** _SettingsRequestPayload */
         _SettingsRequestPayload: {
@@ -2250,6 +2478,11 @@ export interface components {
         _TaskSteerRequestPayload: {
             /** Prompt */
             prompt?: string;
+        };
+        /** _UserShellRequestPayload */
+        _UserShellRequestPayload: {
+            /** Command */
+            command?: string;
         };
         /**
          * _WorkspaceOpenRequestPayload
@@ -2525,6 +2758,66 @@ export interface operations {
             };
         };
     };
+    _handle_get_review_branches_api_review_branches_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ReviewBranchesBody"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    _handle_get_review_commits_api_review_commits_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ReviewCommitsBody"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     _handle_get_review_diff_all_api_review_diff_get: {
         parameters: {
             query?: never;
@@ -2785,6 +3078,59 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    _handle_ask_side_question_api_sessions__session_id__btw_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["_BtwRequestPayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["SideQuestionResultBody"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not Found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3211,6 +3557,166 @@ export interface operations {
             };
         };
     };
+    _handle_get_goal_api_sessions__session_id__goal_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["GoalResponseBody"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    _handle_set_goal_api_sessions__session_id__goal_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["_SetGoalRequestPayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["GoalResponseBody"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    _handle_clear_goal_api_sessions__session_id__goal_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ClearGoalResponseBody"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     _handle_question_answer_api_sessions__session_id__question_post: {
         parameters: {
             query?: {
@@ -3406,6 +3912,59 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    _handle_run_user_shell_api_sessions__session_id__shell_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["_UserShellRequestPayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["UserShellResultBody"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not Found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

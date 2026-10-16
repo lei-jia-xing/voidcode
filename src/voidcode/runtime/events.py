@@ -98,6 +98,9 @@ type RuntimeEventType = Literal[
     "runtime.reminder_injected",
     "runtime.provider_context_recovery",
     "runtime.before_agent_start",
+    "runtime.thread_goal_updated",
+    "runtime.thread_goal_cleared",
+    "runtime.user_shell_executed",
 ]
 type DelegatedBackgroundTaskEventType = Literal[
     "runtime.background_task_progress",
@@ -210,6 +213,9 @@ RUNTIME_PROVIDER_CONTEXT_POLICY: Final[RuntimeEventType] = "runtime.provider_con
 RUNTIME_REMINDER_INJECTED: Final[RuntimeEventType] = "runtime.reminder_injected"
 RUNTIME_PROVIDER_CONTEXT_RECOVERY: Final[RuntimeEventType] = "runtime.provider_context_recovery"
 RUNTIME_BEFORE_AGENT_START: Final[RuntimeEventType] = "runtime.before_agent_start"
+RUNTIME_THREAD_GOAL_UPDATED: Final[RuntimeEventType] = "runtime.thread_goal_updated"
+RUNTIME_THREAD_GOAL_CLEARED: Final[RuntimeEventType] = "runtime.thread_goal_cleared"
+RUNTIME_USER_SHELL_EXECUTED: Final[RuntimeEventType] = "runtime.user_shell_executed"
 
 REASONING_PREVIEW_LIMIT_CHARS: Final[int] = 240
 # Upper bound for the aggregated reasoning text persisted per streamed turn.
@@ -296,6 +302,9 @@ RUNTIME_EVENT_TYPES: Final[tuple[RuntimeEventType, ...]] = (
     RUNTIME_PROVIDER_CONTEXT_RECOVERY,
     RUNTIME_REMINDER_INJECTED,
     RUNTIME_BEFORE_AGENT_START,
+    RUNTIME_THREAD_GOAL_UPDATED,
+    RUNTIME_THREAD_GOAL_CLEARED,
+    RUNTIME_USER_SHELL_EXECUTED,
 )
 
 

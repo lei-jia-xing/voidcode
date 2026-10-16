@@ -25,6 +25,8 @@ class RuntimeToolScopeResolver:
             agent=agent,
             builtin_mcp_tool_names=builtin_mcp_tool_names,
         )
+        if metadata and metadata.get("review_child"):
+            agent_scoped = agent_scoped.excluding(("web_search", "web_fetch"))
         decisions = tuple(self.decision(tool_name=name, registry=agent_scoped, metadata=metadata) for name in agent_scoped.declarations)
         return agent_scoped.allowed_by_policy(decisions)
 
@@ -38,6 +40,14 @@ class RuntimeToolScopeResolver:
         read_only = runtime_effective_read_only_from_metadata(metadata)
 
         definition = registry.definition(tool_name)
+        if metadata and metadata.get("review_child") and tool_name in {"web_search", "web_fetch"}:
+            return ToolPolicyDecision(
+                tool_name=tool_name,
+                allowed=False,
+                read_only=read_only,
+                decision="deny",
+                reason="web search is disabled for review child sessions",
+            )
         if read_only and definition is not None and not is_read_tier(definition.effects):
             return ToolPolicyDecision(
                 tool_name=tool_name,
@@ -67,6 +77,8 @@ class RuntimeToolScopeResolver:
             agent=agent,
             builtin_mcp_tool_names=builtin_mcp_tool_names,
         )
+        if metadata and metadata.get("review_child"):
+            agent_scoped = agent_scoped.excluding(("web_search", "web_fetch"))
         if tool_name not in agent_scoped.declarations:
             return None
         decision = self.decision(

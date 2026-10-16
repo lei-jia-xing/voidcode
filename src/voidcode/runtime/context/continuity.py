@@ -99,6 +99,17 @@ def replayed_conversation_segments_from_events(
                     )
                 )
             continue
+        if event.event_type == "runtime.user_shell_executed":
+            record = event.payload.get("record")
+            if isinstance(record, str) and record.strip():
+                ordered_items.append(
+                    ContextSegment(
+                        role="user",
+                        content=record,
+                        metadata={"source": "replayed_conversation", "tier": "recent", "kind": "prior_user_shell_command"},
+                    )
+                )
+            continue
         if event.event_type == "core.response_ready":
             output = event.payload.get("output_preview")
             if isinstance(output, str) and output.strip():

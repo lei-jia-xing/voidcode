@@ -10,6 +10,7 @@ from ...tools.contracts import Tool, ToolDefinition
 from ...tools.delegation import TaskBatchTool, TaskTool
 from ...tools.edit import EditTool
 from ...tools.glob import GlobTool
+from ...tools.goal import CreateGoalTool, GetGoalTool, UpdateGoalTool
 from ...tools.grep import GrepTool
 from ...tools.invoke_tool import InvokeTool
 from ...tools.lsp import LspTool
@@ -49,6 +50,9 @@ _BUILTIN_TOOLS: tuple[tuple[ToolDefinition, Callable[[RuntimeHooksConfig | None]
     (BackgroundProcessTool.definition, lambda _: BackgroundProcessTool()),
     (AstGrepTool.definition, lambda hooks: AstGrepTool(hooks_config=hooks)),
     (TodoTool.definition, lambda _: TodoTool()),
+    (GetGoalTool.definition, lambda _: GetGoalTool()),
+    (CreateGoalTool.definition, lambda _: CreateGoalTool()),
+    (UpdateGoalTool.definition, lambda _: UpdateGoalTool()),
 )
 
 

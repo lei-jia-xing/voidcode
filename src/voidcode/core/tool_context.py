@@ -303,6 +303,8 @@ class ToolContext:
     read_hash: str | None = None
     model: str | None = None
     todo_phases: tuple[TodoPhase, ...] = ()
+    goal: Mapping[str, object] | None = None
+    goal_consecutive_blocked_turns: int = 0
     tool_timeout_seconds: int | None = None
     abort_signal: ProviderAbortSignal | None = None
     emit_tool_progress: Callable[[Mapping[str, object]], None] | None = None

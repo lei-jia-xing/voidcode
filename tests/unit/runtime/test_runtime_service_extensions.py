@@ -4968,7 +4968,8 @@ def test_runtime_command_registry_catalog_and_invocation_parity(
         cat_map = {cmd.name: (cmd.description, cmd.source) for cmd in cat_summaries}
 
         assert {name: cat_map[name] for name in inv_map} == inv_map
-        assert {name: cat_map[name][1] for name in ("compact", "diff", "plan", "review")} == {
+        assert {name: cat_map[name][1] for name in ("btw", "compact", "diff", "plan", "review")} == {
+            "btw": "native",
             "compact": "native",
             "diff": "native",
             "plan": "native",

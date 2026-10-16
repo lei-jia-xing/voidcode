@@ -10,6 +10,7 @@ from typing import Literal
 from .contracts import (
     GitStatusSnapshot,
     ReviewChangedFile,
+    ReviewCommitLogEntry,
     ReviewFileDiff,
     ReviewTreeNode,
     WorkspaceReviewSnapshot,
@@ -105,6 +106,161 @@ class WorkspaceReviewService:
             state="changed" if diff_output else "clean",
             diff=diff_output or None,
         )
+
+    def diff_base_branch(self, branch: str, *, git: GitStatusSnapshot) -> ReviewFileDiff:
+        root = Path(git.root).resolve() if git.root is not None else self._workspace
+        if git.state != "git_ready":
+            return ReviewFileDiff(root=str(root), path=branch, state="not_git_repo", diff=None)
+        if not branch or not isinstance(branch, str) or not branch.strip():
+            raise ValueError("branch must be a non-empty string")
+        clean_branch = branch.strip()
+        rev = self._run_git(root, "rev-parse", "--verify", clean_branch)
+        if rev.returncode != 0:
+            raise ValueError(f"git rev-parse failed: unknown base branch '{clean_branch}'")
+        preferred_ref = clean_branch
+        upstream_check = self._run_git(root, "rev-parse", "--abbrev-ref", f"{clean_branch}@{{upstream}}")
+        if upstream_check.returncode == 0 and upstream_check.stdout.strip():
+            upstream = upstream_check.stdout.strip()
+            ahead = self._run_git(root, "rev-list", "--count", f"{clean_branch}..{upstream}")
+            if ahead.returncode == 0 and ahead.stdout.strip().isdigit() and int(ahead.stdout.strip()) > 0:
+                preferred_ref = upstream
+        mb = self._run_git(root, "merge-base", "HEAD", preferred_ref)
+        if mb.returncode != 0 or not mb.stdout.strip():
+            mb = self._run_git(root, "merge-base", "HEAD", clean_branch)
+        if mb.returncode != 0 or not mb.stdout.strip():
+            detail = mb.stderr.strip() or f"no common ancestor with branch '{clean_branch}'"
+            raise ValueError(f"git merge-base failed: {detail}")
+        merge_base_sha = mb.stdout.strip()
+        command = self._run_git(
+            root,
+            "diff",
+            "--no-ext-diff",
+            "--no-color",
+            "--binary",
+            merge_base_sha,
+        )
+        if command.returncode != 0:
+            detail = command.stderr.strip() or "unknown git error"
+            raise ValueError(f"git diff failed: {detail}")
+        parts = [command.stdout]
+        for path in self._untracked_paths(root):
+            untracked = self._untracked_diff(path, root=root)
+            if untracked:
+                parts.append(untracked)
+        diff_output = self._join_diffs(parts)
+        return ReviewFileDiff(
+            root=str(root),
+            path=clean_branch,
+            state="changed" if diff_output else "clean",
+            diff=diff_output or None,
+        )
+
+    def merge_base_sha(self, branch: str, *, git: GitStatusSnapshot) -> str | None:
+        root = Path(git.root).resolve() if git.root is not None else self._workspace
+        if git.state != "git_ready":
+            return None
+        rev = self._run_git(root, "rev-parse", "--verify", branch)
+        if rev.returncode != 0:
+            return None
+        preferred_ref = branch
+        upstream_check = self._run_git(root, "rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}")
+        if upstream_check.returncode == 0 and upstream_check.stdout.strip():
+            upstream = upstream_check.stdout.strip()
+            ahead = self._run_git(root, "rev-list", "--count", f"{branch}..{upstream}")
+            if ahead.returncode == 0 and ahead.stdout.strip().isdigit() and int(ahead.stdout.strip()) > 0:
+                preferred_ref = upstream
+        mb = self._run_git(root, "merge-base", "HEAD", preferred_ref)
+        if mb.returncode == 0 and mb.stdout.strip():
+            return mb.stdout.strip()
+        mb = self._run_git(root, "merge-base", "HEAD", branch)
+        return mb.stdout.strip() if mb.returncode == 0 and mb.stdout.strip() else None
+
+    def diff_commit(self, sha: str, *, git: GitStatusSnapshot) -> ReviewFileDiff:
+        root = Path(git.root).resolve() if git.root is not None else self._workspace
+        if git.state != "git_ready":
+            return ReviewFileDiff(root=str(root), path=sha, state="not_git_repo", diff=None)
+        if not sha or not isinstance(sha, str) or not sha.strip():
+            raise ValueError("commit sha must be a non-empty string")
+        clean_sha = sha.strip()
+        command = self._run_git(
+            root,
+            "show",
+            "--no-ext-diff",
+            "--no-color",
+            "--binary",
+            clean_sha,
+        )
+        if command.returncode != 0:
+            detail = command.stderr.strip() or f"unknown commit '{clean_sha}'"
+            raise ValueError(f"git show failed: {detail}")
+        diff_output = command.stdout
+        has_diff = any(line.startswith(("diff --git ", "--- ", "+++ ")) for line in diff_output.splitlines())
+        return ReviewFileDiff(
+            root=str(root),
+            path=clean_sha,
+            state="changed" if has_diff else "clean",
+            diff=diff_output if has_diff else None,
+        )
+
+    def list_branches(self, *, git: GitStatusSnapshot) -> tuple[str, ...]:
+        root = Path(git.root).resolve() if git.root is not None else self._workspace
+        if git.state != "git_ready":
+            return ()
+        out = self._run_git(root, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+        if out.returncode != 0:
+            return ()
+        branches = [line.strip() for line in out.stdout.splitlines() if line.strip()]
+        branches.sort()
+        default_branch = None
+        sym = self._run_git(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+        if sym.returncode == 0 and sym.stdout.strip():
+            candidate = sym.stdout.strip().removeprefix("origin/")
+            if candidate in branches:
+                default_branch = candidate
+        if default_branch is None:
+            for candidate in ("main", "master"):
+                if candidate in branches:
+                    default_branch = candidate
+                    break
+        if default_branch and default_branch in branches:
+            branches.remove(default_branch)
+            branches.insert(0, default_branch)
+        return tuple(branches)
+
+    def current_branch(self, *, git: GitStatusSnapshot) -> str | None:
+        root = Path(git.root).resolve() if git.root is not None else self._workspace
+        if git.state != "git_ready":
+            return None
+        out = self._run_git(root, "branch", "--show-current")
+        if out.returncode != 0:
+            return None
+        cleaned = out.stdout.strip()
+        return cleaned or None
+
+    def recent_commits(self, *, git: GitStatusSnapshot, limit: int = 100) -> tuple[ReviewCommitLogEntry, ...]:
+        root = Path(git.root).resolve() if git.root is not None else self._workspace
+        if git.state != "git_ready":
+            return ()
+        args = ["log"]
+        if limit > 0:
+            args.extend(["-n", str(limit)])
+        args.append("--pretty=format:%H\x1f%ct\x1f%s")
+        out = self._run_git(root, *args)
+        if out.returncode != 0:
+            return ()
+        entries: list[ReviewCommitLogEntry] = []
+        for line in out.stdout.splitlines():
+            parts = line.split("\x1f")
+            if len(parts) >= 3:
+                sha = parts[0].strip()
+                try:
+                    ts = int(parts[1].strip())
+                except ValueError:
+                    ts = 0
+                subject = parts[2].strip()
+                if sha:
+                    entries.append(ReviewCommitLogEntry(sha=sha, timestamp=ts, subject=subject))
+        return tuple(entries)
 
     def _diff_for_paths(self, root: Path, paths: tuple[str, ...]) -> str:
         parts: list[str] = []

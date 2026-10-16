@@ -38,6 +38,11 @@ import { ChatThread } from "./components/ChatThread";
 import { Composer, type SessionContextUsage } from "./components/Composer";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { OpenProjectModal } from "./components/OpenProjectModal";
+import {
+  ReviewPickerModal,
+  type ReviewTargetPayload,
+} from "./components/ReviewPickerModal";
+import { BtwDialog } from "./components/BtwDialog";
 import { ReviewPanel } from "./components/ReviewPanel";
 import { ContextPanel } from "./components/ContextPanel";
 import { TodoPanel } from "./components/TodoPanel";
@@ -277,6 +282,20 @@ function App() {
   const [nativeReviewScope, setNativeReviewScope] = useState<string | null>(
     null,
   );
+  const [btwDialog, setBtwDialog] = useState<{
+    question: string;
+    answer: string | null;
+    loading: boolean;
+  } | null>(null);
+  const [btwRecent, setBtwRecent] = useState<{
+    sessionId: string;
+    question: string;
+    answer: string;
+  } | null>(null);
+  const [reviewPickerOpen, setReviewPickerOpen] = useState(false);
+  const [btwBusy, setBtwBusy] = useState(false);
+  const [draftMessage, setDraftMessage] = useState<string | null>(null);
+  void draftMessage;
   const [showContext, setShowContext] = useState(false);
   const [sessionEventError, setSessionEventError] = useState<string | null>(
     null,
@@ -295,6 +314,47 @@ function App() {
   useEffect(() => {
     scopeRef.current = scope;
   }, [scope]);
+  const handleRunReview = useCallback(
+    async (target: ReviewTargetPayload) => {
+      if (!currentSessionId) {
+        setNativeNotice(t("composer.nativeNoSession"));
+        return;
+      }
+      if (nativeReviewBusy) return;
+      const sessionId = currentSessionId;
+      const requestedScope = scope;
+      setNativeReviewBusy(true);
+      setNativeReviewOutput(null);
+      setNativeNotice(t("composer.nativeReviewBusy"));
+      try {
+        const result = await RuntimeClient.reviewSession(sessionId, target);
+        if (
+          scopeRef.current !== requestedScope ||
+          useAppStore.getState().currentSessionId !== sessionId
+        )
+          return;
+        setNativeReviewOwnerSessionId(sessionId);
+        setNativeReviewSessionId(result.session.session.id);
+        setNativeReviewScope(requestedScope);
+        setNativeReviewOutput(result.output ?? t("composer.nativeReviewEmpty"));
+        setNativeNotice(t("composer.nativeReviewReady"));
+      } catch (error) {
+        if (
+          scopeRef.current === requestedScope &&
+          useAppStore.getState().currentSessionId === sessionId
+        ) {
+          setNativeNotice(
+            t("composer.nativeCommandError", {
+              message: errorMessage(error),
+            }),
+          );
+        }
+      } finally {
+        setNativeReviewBusy(false);
+      }
+    },
+    [currentSessionId, nativeReviewBusy, scope, t],
+  );
   const visibleNativeReviewOutput =
     nativeReviewScope === scope &&
     nativeReviewOwnerSessionId === currentSessionId
@@ -945,13 +1005,126 @@ function App() {
       const separator = raw.search(/\s/);
       const command = separator === -1 ? raw : raw.slice(0, separator);
       const argument = separator === -1 ? "" : raw.slice(separator).trim();
+      if (raw.startsWith("!")) {
+        // Native `!` escape: runs before slash routing, even mid-turn (the
+        // backend persists history without starting a provider turn).
+        const shellCommand = raw.slice(1).trim();
+        if (!shellCommand) {
+          setNativeNotice(t("composer.nativeShellHelp"));
+          return true;
+        }
+        if (!currentSessionId) {
+          setNativeNotice(t("composer.nativeNoSession"));
+          return true;
+        }
+        const sessionId = currentSessionId;
+        const requestedScope = scope;
+        try {
+          const result = await RuntimeClient.runUserShell(
+            sessionId,
+            shellCommand,
+          );
+          if (
+            scopeRef.current !== requestedScope ||
+            useAppStore.getState().currentSessionId !== sessionId
+          )
+            return true;
+          await refreshAfterMutation(
+            { sessions: true, debug: true, sessionId },
+            requestedScope,
+          );
+          setNativeNotice(
+            result.exit_code === 0
+              ? t("composer.nativeShellOk", { command: result.command })
+              : t("composer.nativeShellFailed", {
+                  command: result.command,
+                  code: result.exit_code,
+                }),
+          );
+        } catch (error) {
+          if (
+            scopeRef.current === requestedScope &&
+            useAppStore.getState().currentSessionId === sessionId
+          ) {
+            setNativeNotice(
+              t("composer.nativeCommandError", {
+                message: errorMessage(error),
+              }),
+            );
+          }
+        }
+        return true;
+      }
       if (
         command !== "/compact" &&
         command !== "/diff" &&
         command !== "/plan" &&
-        command !== "/review"
+        command !== "/review" &&
+        command !== "/goal" &&
+        command !== "/btw"
       )
         return false;
+      if (command === "/btw") {
+        // immediate:true: no busy gate, runs even while the main session streams.
+        if (!currentSessionId) {
+          setNativeNotice(t("composer.nativeBtwUsage"));
+          return true;
+        }
+        const sessionId = currentSessionId;
+        const requestedScope = scope;
+        if (!argument) {
+          if (btwRecent && btwRecent.sessionId === sessionId) {
+            setBtwDialog({
+              question: btwRecent.question,
+              answer: btwRecent.answer,
+              loading: false,
+            });
+          } else {
+            setNativeNotice(t("composer.nativeBtwUsage"));
+          }
+          return true;
+        }
+        if (btwBusy) return true;
+        const question = argument;
+        setBtwBusy(true);
+        setBtwDialog({ question, answer: null, loading: true });
+        try {
+          const result = await RuntimeClient.askSideQuestion(
+            sessionId,
+            question,
+          );
+          if (
+            scopeRef.current !== requestedScope ||
+            useAppStore.getState().currentSessionId !== sessionId
+          )
+            return true;
+          setBtwRecent({
+            sessionId,
+            question: result.question,
+            answer: result.answer,
+          });
+          setBtwDialog({
+            question: result.question,
+            answer: result.answer,
+            loading: false,
+          });
+        } catch (error) {
+          if (
+            scopeRef.current === requestedScope &&
+            useAppStore.getState().currentSessionId === sessionId
+          ) {
+            setBtwDialog(null);
+            setNativeNotice(
+              t("composer.nativeCommandError", {
+                message: errorMessage(error),
+              }),
+            );
+          }
+        } finally {
+          setBtwBusy(false);
+        }
+        return true;
+      }
       if (nativeCompactBusy || nativePlanBusy || nativeReviewBusy) {
         setNativeNotice(t("composer.nativeBusy"));
         return true;
@@ -976,43 +1149,14 @@ function App() {
           setNativeNotice(t("composer.nativeNoSession"));
           return true;
         }
-        if (nativeReviewBusy) return true;
-        const sessionId = currentSessionId;
-        const requestedScope = scope;
-        setNativeReviewBusy(true);
-        setNativeReviewOutput(null);
-        setNativeNotice(t("composer.nativeReviewBusy"));
-        try {
-          const result = await RuntimeClient.reviewSession(
-            sessionId,
-            argument || undefined,
-          );
-          if (
-            scopeRef.current !== requestedScope ||
-            useAppStore.getState().currentSessionId !== sessionId
-          )
-            return true;
-          setNativeReviewOwnerSessionId(sessionId);
-          setNativeReviewSessionId(result.session.session.id);
-          setNativeReviewScope(requestedScope);
-          setNativeReviewOutput(
-            result.output ?? t("composer.nativeReviewEmpty"),
-          );
-          setNativeNotice(t("composer.nativeReviewReady"));
-        } catch (error) {
-          if (
-            scopeRef.current === requestedScope &&
-            useAppStore.getState().currentSessionId === sessionId
-          ) {
-            setNativeNotice(
-              t("composer.nativeCommandError", {
-                message: errorMessage(error),
-              }),
-            );
-          }
-        } finally {
-          setNativeReviewBusy(false);
+        if (argument && argument.trim()) {
+          void handleRunReview({
+            type: "custom",
+            instructions: argument.trim(),
+          });
+          return true;
         }
+        setReviewPickerOpen(true);
         return true;
       }
       if (command === "/plan") {
@@ -1056,6 +1200,122 @@ function App() {
         }
         return true;
       }
+      if (command === "/goal") {
+        if (!currentSessionId) {
+          setNativeNotice(
+            "The session must start before you can change a goal.",
+          );
+          return true;
+        }
+        const sessionId = currentSessionId;
+        const arg = argument.trim();
+        const parts = arg.split(/\s+/);
+        const sub = parts[0]?.toLowerCase() || "";
+        (async () => {
+          try {
+            if (!arg) {
+              const res = await fetch(
+                `/api/sessions/${encodeURIComponent(sessionId)}/goal`,
+              );
+              if (!res.ok) throw new Error("failed to get goal");
+              const data = await res.json();
+              if (!data.goal) {
+                setNativeNotice(
+                  "Usage: /goal [<objective>|clear|edit|pause|resume]\nNo goal is currently set.",
+                );
+              } else {
+                setNativeNotice(
+                  `Goal ${data.goal.status}: ${data.goal.objective}`,
+                );
+              }
+              return;
+            }
+            if (sub === "clear") {
+              const res = await fetch(
+                `/api/sessions/${encodeURIComponent(sessionId)}/goal`,
+                { method: "DELETE" },
+              );
+              if (!res.ok) throw new Error("failed to clear goal");
+              const data = await res.json();
+              setNativeNotice(
+                data.cleared ? "Goal cleared" : "No goal to clear",
+              );
+              return;
+            }
+            if (sub === "pause") {
+              const res = await fetch(
+                `/api/sessions/${encodeURIComponent(sessionId)}/goal`,
+                {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ status: "paused" }),
+                },
+              );
+              if (!res.ok) throw new Error("failed to pause goal");
+              setNativeNotice("Goal paused");
+              return;
+            }
+            if (sub === "resume") {
+              const res = await fetch(
+                `/api/sessions/${encodeURIComponent(sessionId)}/goal`,
+                {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ status: "active" }),
+                },
+              );
+              if (!res.ok) throw new Error("failed to resume goal");
+              setNativeNotice("Goal active");
+              return;
+            }
+            if (sub === "edit") {
+              const res = await fetch(
+                `/api/sessions/${encodeURIComponent(sessionId)}/goal`,
+              );
+              if (!res.ok) throw new Error("failed to get goal");
+              const data = await res.json();
+              if (data.goal?.objective) {
+                setDraftMessage(`/goal ${data.goal.objective}`);
+              } else {
+                setNativeNotice("No goal is currently set.");
+              }
+              return;
+            }
+            if (!arg) {
+              setNativeNotice("Goal objective must not be empty.");
+              return;
+            }
+            const getRes = await fetch(
+              `/api/sessions/${encodeURIComponent(sessionId)}/goal`,
+            );
+            const existing = getRes.ok ? (await getRes.json()).goal : null;
+            if (existing && existing.status !== "complete") {
+              if (!window.confirm("Replace goal?")) {
+                return;
+              }
+            }
+            const setRes = await fetch(
+              `/api/sessions/${encodeURIComponent(sessionId)}/goal`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ objective: arg, mode: "replace" }),
+              },
+            );
+            if (!setRes.ok) {
+              const err = await setRes.text();
+              throw new Error(err);
+            }
+            const resData = await setRes.json();
+            setNativeNotice(
+              `Goal ${resData.goal?.status || "active"}: ${resData.goal?.objective || arg}`,
+            );
+          } catch (err) {
+            setNativeNotice(`✖ /goal failed: ${String(err)}`);
+          }
+        })();
+        return true;
+      }
       if (!currentSessionId) {
         setNativeNotice(t("composer.nativeNoSession"));
         return true;
@@ -1096,7 +1356,10 @@ function App() {
       return true;
     },
     [
+      btwBusy,
+      btwRecent,
       currentSessionId,
+      handleRunReview,
       nativeCompactBusy,
       nativePlanBusy,
       nativeReviewBusy,
@@ -1358,6 +1621,17 @@ function App() {
                       {planMode ? (
                         <span className="shrink-0 rounded-md border border-[color:var(--vc-border-strong)] bg-[var(--vc-surface-1)] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-[var(--vc-text-muted)]">
                           Plan
+                        </span>
+                      ) : null}
+                      {currentSessionState?.metadata?.thread_goal ? (
+                        <span className="shrink-0 rounded-md border border-[color:var(--vc-border-strong)] bg-[var(--vc-surface-1)] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-[var(--vc-text-muted)]">
+                          Goal:{" "}
+                          {String(
+                            (
+                              currentSessionState.metadata
+                                .thread_goal as Record<string, unknown>
+                            ).status || "active",
+                          )}
                         </span>
                       ) : null}
                       {currentBranch ? (
@@ -1775,6 +2049,14 @@ function App() {
         onSave={saveSettings}
       />
 
+      <ReviewPickerModal
+        isOpen={reviewPickerOpen}
+        onClose={() => setReviewPickerOpen(false)}
+        onSelectTarget={(target) => {
+          void handleRunReview(target);
+        }}
+      />
+      <BtwDialog dialog={btwDialog} onClose={() => setBtwDialog(null)} />
       <OpenProjectModal
         isOpen={showProjects}
         onClose={handleCloseProjects}

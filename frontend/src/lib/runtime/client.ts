@@ -26,6 +26,8 @@ import {
   RuntimeStatusSnapshot,
   RuntimeStreamChunk,
   SessionSteerResult,
+  SideQuestionResult,
+  UserShellResult,
   SkillSummary,
   StoredSessionSummary,
   WorkspaceRegistrySnapshot,
@@ -73,6 +75,7 @@ const ROUTES = {
   reviewDiff: "/api/review/diff/{path}",
   reviewDiffAll: "/api/review/diff",
   sessionCompact: "/api/sessions/{session_id}/compact",
+  sessionShell: "/api/sessions/{session_id}/shell",
   tasks: "/api/tasks",
   taskOutput: "/api/tasks/{task_id}/output",
   taskCancel: "/api/tasks/{task_id}/cancel",
@@ -83,6 +86,7 @@ const ROUTES = {
 const NATIVE_ROUTES = {
   sessionCollaborationMode: "/api/sessions/{session_id}/collaboration-mode",
   sessionReview: "/api/sessions/{session_id}/review",
+  sessionBtw: "/api/sessions/{session_id}/btw",
 } as const;
 
 export class RuntimeClientError extends Error {
@@ -368,6 +372,23 @@ export class RuntimeClient {
     await expectOk(res, "Failed to compact session");
     return res.json();
   }
+  static async runUserShell(
+    sessionId: string,
+    command: string,
+  ): Promise<UserShellResult> {
+    const res = await fetch(
+      apiPath(ROUTES.sessionShell, {
+        session_id: encodeURIComponent(sessionId),
+      }),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ command }),
+      },
+    );
+    await expectOk(res, "Failed to run shell command");
+    return res.json();
+  }
   static async setCollaborationMode(
     sessionId: string,
     mode: "plan" | "default",
@@ -386,18 +407,66 @@ export class RuntimeClient {
   }
   static async reviewSession(
     sessionId: string,
-    focus?: string,
+    target?:
+      | {
+          type?: "uncommitted" | "base_branch" | "commit" | "custom";
+          branch?: string;
+          sha?: string;
+          title?: string;
+          instructions?: string;
+        }
+      | string,
   ): Promise<RuntimeResponse> {
     const route = NATIVE_ROUTES.sessionReview.replace(
+      "{session_id}",
+      encodeURIComponent(sessionId),
+    );
+    let body: Record<string, unknown> = {};
+    if (typeof target === "string") {
+      body = { focus: target };
+    } else if (target) {
+      body = { target };
+    }
+    const res = await fetch(route, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    await expectOk(res, "Failed to review workspace");
+    return res.json();
+  }
+
+  static async askSideQuestion(
+    sessionId: string,
+    question: string,
+  ): Promise<SideQuestionResult> {
+    const route = NATIVE_ROUTES.sessionBtw.replace(
       "{session_id}",
       encodeURIComponent(sessionId),
     );
     const res = await fetch(route, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(focus ? { focus } : {}),
+      body: JSON.stringify({ question }),
     });
-    await expectOk(res, "Failed to review workspace");
+    await expectOk(res, "Failed to ask side question");
+    return res.json();
+  }
+
+  static async reviewBranches(): Promise<{
+    branches: string[];
+    current: string | null;
+  }> {
+    const res = await fetch("/api/review/branches");
+    await expectOk(res, "Failed to load review branches");
+    return res.json();
+  }
+
+  static async reviewCommits(limit = 100): Promise<{
+    commits: Array<{ sha: string; timestamp: number; subject: string }>;
+  }> {
+    const res = await fetch(`/api/review/commits?limit=${limit}`);
+    await expectOk(res, "Failed to load review commits");
     return res.json();
   }
 

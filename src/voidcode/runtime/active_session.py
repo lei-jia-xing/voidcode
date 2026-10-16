@@ -68,7 +68,17 @@ class ActiveSessionRegistry:
     def __init__(self) -> None:
         self._runs: dict[_ActiveSessionKey, dict[str, _ActiveRunHandle]] = {}
         self._approval_locks: dict[_ActiveSessionKey, threading.Lock] = {}
+        self._goal_locks: dict[_ActiveSessionKey, threading.Lock] = {}
         self._lock = threading.Lock()
+
+    @contextmanager
+    def goal_lock(self, *, workspace: Path, session_id: str) -> Iterator[None]:
+        """Serialize goal mutations for one workspace/session."""
+        key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
+        with self._lock:
+            lock = self._goal_locks.setdefault(key, threading.Lock())
+        with lock:
+            yield
 
     @contextmanager
     def approval_resolution_lock(self, *, workspace: Path, session_id: str) -> Iterator[None]:

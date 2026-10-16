@@ -172,7 +172,9 @@ export const Composer = memo(function Composer({
   const slashCommandComplete = Boolean(
     exactSlashCommand && trimmedInput.match(/^\/\S+\s+/),
   );
-  const slashMenuOpen = Boolean(slashMatch) && !slashCommandComplete;
+  const isBashMode = trimmedInput.startsWith("!");
+  const slashMenuOpen =
+    Boolean(slashMatch) && !slashCommandComplete && !isBashMode;
   const slashSuggestions = !slashMenuOpen
     ? []
     : rankSlashCommands(slashCommands, slashQuery).slice(0, 8);
@@ -409,6 +411,14 @@ export const Composer = memo(function Composer({
             </div>
           )}
           <div className="flex items-end gap-2 px-3 py-2 bg-transparent">
+            {isBashMode && (
+              <span
+                aria-hidden
+                className="mb-0.5 shrink-0 py-1.5 font-mono text-sm text-[var(--vc-text-subtle)]"
+              >
+                !
+              </span>
+            )}
             <textarea
               ref={textareaRef}
               value={input}

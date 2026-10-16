@@ -71,11 +71,12 @@ from ..runtime.config.models import (
     VALID_TUI_COMPOSER_STYLES,
     VALID_TUI_THEME_MODES,
 )
-from ..runtime.contracts import RuntimeRequest, RuntimeStreamChunk
+from ..runtime.contracts import ReviewCommitLogEntry, ReviewTarget, RuntimeRequest, RuntimeStreamChunk
 from ..runtime.events import EventEnvelope
 from ..runtime.permissions.policy import ApprovalMode
 from ..runtime.service import VoidCodeRuntime
 from ..runtime.session_metadata_helpers import session_model_identity
+from ..runtime.user_shell import USER_SHELL_HELP_HINT, USER_SHELL_HELP_TITLE, parse_shell_escape
 from .composer import Composer, ComposerAction
 from .events import (
     ApprovalRequest,
@@ -88,13 +89,19 @@ from .keys import Key, KeyDecoder
 from .overlay import (
     AppearanceOverlay,
     ApprovalOverlay,
+    GoalConfirmOverlay,
     HelpOverlay,
     Overlay,
     OverlayOutcome,
     OverlayOutcomeKind,
     PromptHistoryOverlay,
     QuestionOverlay,
+    ReviewBranchPickerOverlay,
+    ReviewCommitPickerOverlay,
+    ReviewCustomPromptOverlay,
+    ReviewPresetPickerOverlay,
     SessionPickerOverlay,
+    SideQuestionOverlay,
     ToolArtifactOverlay,
     TreeSelectorOverlay,
 )
@@ -308,6 +315,21 @@ class _NativeReviewResult:
     error: object | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _NativeShellResult:
+    session_id: str
+    result: dict[str, object] | None = None
+    error: object | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _NativeBtwResult:
+    session_id: str
+    question: str = ""
+    answer: str | None = None
+    error: object | None = None
+
+
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
@@ -361,6 +383,9 @@ class TuiApp:
         self._compact_thread: threading.Thread | None = None
         self._plan_thread: threading.Thread | None = None
         self._review_thread: threading.Thread | None = None
+        self._btw_pending = False
+        self._btw_recent: dict[str, tuple[str, str]] = {}
+        self._goal_status: str | None = None
         self._polling = False
         self._session_id: str | None = None
         self._tracked_tasks: set[str] = set()
@@ -696,7 +721,8 @@ class TuiApp:
             state.status,
             model=self._model,
             thinking=self._session_effort or self._config.reasoning_effort or "off",
-            mode=f"{self._approval_mode} · plan" if self._plan_mode else self._approval_mode,
+            mode=(f"{self._approval_mode} · plan" if self._plan_mode else self._approval_mode)
+            + (f" · goal:{self._goal_status}" if self._goal_status else ""),
             path=str(self._workspace),
             lsp=self._lsp_label,
             cost_usd=self._cost_usd,
@@ -732,6 +758,10 @@ class TuiApp:
                 self._finish_native_plan(item)
             elif isinstance(item, _NativeReviewResult):
                 self._finish_native_review(item)
+            elif isinstance(item, _NativeShellResult):
+                self._finish_native_shell(item)
+            elif isinstance(item, _NativeBtwResult):
+                self._finish_native_btw(item)
 
     def _consume_chunk(self, chunk: RuntimeStreamChunk, *, replay: bool = False) -> None:
         assert self._view is not None
@@ -1018,6 +1048,52 @@ class TuiApp:
             self._close_overlay()
             if isinstance(sequence, int):
                 self._checkout_session(sequence)
+        elif isinstance(overlay, GoalConfirmOverlay):
+            obj = overlay._objective
+            self._close_overlay()
+            if outcome.kind is OverlayOutcomeKind.DONE and outcome.payload == "replace":
+                self._execute_set_goal(obj, mode="replace")
+        elif isinstance(overlay, ReviewPresetPickerOverlay):
+            preset = outcome.payload if outcome.kind is OverlayOutcomeKind.DONE else None
+            self._close_overlay()
+            if preset == "base_branch":
+                branches = self._runtime.review_branches()
+                current = self._runtime.review_current_branch()
+                self._overlay = ReviewBranchPickerOverlay(branches=branches, current_branch=current, theme=self._theme)
+                self._overlay_request_id = ""
+                if self._composer is not None:
+                    self._composer.set_enabled(False)
+                self._dirty = True
+            elif preset == "uncommitted":
+                self._start_native_review(ReviewTarget(type="uncommitted"))
+            elif preset == "commit":
+                commits = self._runtime.review_recent_commits(limit=100)
+                self._overlay = ReviewCommitPickerOverlay(commits=commits, theme=self._theme)
+                self._overlay_request_id = ""
+                if self._composer is not None:
+                    self._composer.set_enabled(False)
+                self._dirty = True
+            elif preset == "custom":
+                self._overlay = ReviewCustomPromptOverlay(theme=self._theme)
+                self._overlay_request_id = ""
+                if self._composer is not None:
+                    self._composer.set_enabled(False)
+                self._dirty = True
+        elif isinstance(overlay, ReviewBranchPickerOverlay):
+            branch = outcome.payload if outcome.kind is OverlayOutcomeKind.DONE else None
+            self._close_overlay()
+            if isinstance(branch, str) and branch:
+                self._start_native_review(ReviewTarget(type="base_branch", branch=branch))
+        elif isinstance(overlay, ReviewCommitPickerOverlay):
+            commit = outcome.payload if outcome.kind is OverlayOutcomeKind.DONE else None
+            self._close_overlay()
+            if isinstance(commit, ReviewCommitLogEntry):
+                self._start_native_review(ReviewTarget(type="commit", sha=commit.sha, title=commit.subject))
+        elif isinstance(overlay, ReviewCustomPromptOverlay):
+            instructions = outcome.payload if outcome.kind is OverlayOutcomeKind.DONE else None
+            self._close_overlay()
+            if isinstance(instructions, str) and instructions:
+                self._start_native_review(ReviewTarget(type="custom", instructions=instructions))
         else:
             prompt = outcome.payload if outcome.kind is OverlayOutcomeKind.DONE else None
             self._close_overlay()
@@ -1031,6 +1107,13 @@ class TuiApp:
         parts = prompt.split(maxsplit=1)
         command = parts[0] if parts else ""
         arguments = parts[1] if len(parts) > 1 else ""
+        shell_command = parse_shell_escape(prompt)
+        if shell_command is not None:
+            # Native `!` escape runs before slash routing (even while
+            # streaming: upstream ActiveTurnAuxiliary semantics — output only
+            # lands in context, no turn lifecycle is started).
+            self._command_native_shell(shell_command)
+            return
         if command == "/compact":
             if arguments.strip():
                 self._notice("/compact does not accept arguments")
@@ -1051,6 +1134,12 @@ class TuiApp:
             return
         if command == "/review":
             self._command_native_review(arguments)
+            return
+        if command == "/goal":
+            self._command_native_goal(arguments)
+            return
+        if command == "/btw":
+            self._command_native_btw(arguments)
             return
         if not prompt:
             return
@@ -1157,6 +1246,126 @@ class TuiApp:
         self._plan_mode = mode == "plan"
         self._notice("✓ Plan mode enabled (read-only)" if mode == "plan" else "✓ Plan mode disabled")
 
+    def _command_native_goal(self, arguments: str) -> None:
+        from ..runtime.goal import (
+            GOAL_USAGE,
+            ThreadGoal,
+            continuation_prompt,
+            goal_status_label,
+            goal_usage_summary,
+            objective_text_for_edit,
+            should_confirm_before_replacing_goal,
+        )
+
+        args = arguments.strip()
+        parts = args.split(maxsplit=1)
+        subcommand = parts[0].lower() if parts else ""
+
+        if not args:
+            if self._session_id is None:
+                self._notice(f"{GOAL_USAGE}\nThe session must start before you can change a goal.")
+                return
+            goal_data = self._runtime.get_goal(session_id=self._session_id)
+            if goal_data is None:
+                self._notice(f"{GOAL_USAGE}\nNo goal is currently set.")
+                return
+            goal = ThreadGoal.from_payload(goal_data)
+            self._goal_status = goal.status
+            self._notice(f"Goal {goal_status_label(goal.status)}\n{goal_usage_summary(goal)}")
+            return
+
+        if subcommand == "clear":
+            if self._session_id is None:
+                self._notice(f"{GOAL_USAGE}\nThe session must start before you can change a goal.")
+                return
+            cleared = self._runtime.clear_goal(session_id=self._session_id)
+            if cleared:
+                self._goal_status = None
+                self._notice("Goal cleared")
+            else:
+                self._notice("No goal to clear\nThis thread does not currently have a goal.")
+            return
+
+        if subcommand == "pause":
+            if self._session_id is None:
+                self._notice(f"{GOAL_USAGE}\nThe session must start before you can change a goal.")
+                return
+            goal_data = self._runtime.set_goal(session_id=self._session_id, status="paused")
+            goal = ThreadGoal.from_payload(goal_data)
+            self._goal_status = goal.status
+            self._notice(f"Goal {goal_status_label(goal.status)}\n{goal_usage_summary(goal)}")
+            return
+
+        if subcommand == "resume":
+            if self._session_id is None:
+                self._notice(f"{GOAL_USAGE}\nThe session must start before you can change a goal.")
+                return
+            goal_data = self._runtime.set_goal(session_id=self._session_id, status="active")
+            goal = ThreadGoal.from_payload(goal_data)
+            self._goal_status = goal.status
+            self._notice(f"Goal {goal_status_label(goal.status)}\n{goal_usage_summary(goal)}")
+            if not self._streaming:
+                self._start_prompt(continuation_prompt(goal))
+            return
+
+        if subcommand == "edit":
+            if self._session_id is None:
+                self._notice(f"No goal is currently set.\n{GOAL_USAGE}\nCreate a goal before editing it.")
+                return
+            goal_data = self._runtime.get_goal(session_id=self._session_id)
+            if goal_data is None:
+                self._notice(f"No goal is currently set.\n{GOAL_USAGE}\nCreate a goal before editing it.")
+                return
+            raw_obj = objective_text_for_edit(self._workspace, str(goal_data.get("objective", "")))
+            if self._composer is not None:
+                self._composer.set_text(f"/goal {raw_obj}")
+            return
+
+        objective = args
+        if not objective:
+            self._notice("Goal objective must not be empty.")
+            return
+        if self._session_id is None:
+            self._notice(f"{GOAL_USAGE}\nThe session must start before you can set a goal.")
+            return
+
+        existing = self._runtime.get_goal(session_id=self._session_id)
+        if existing is not None and should_confirm_before_replacing_goal(ThreadGoal.from_payload(existing)):
+            self._overlay = GoalConfirmOverlay(objective=objective, theme=self._theme)
+            self._overlay_request_id = ""
+            if self._composer is not None:
+                self._composer.set_enabled(False)
+            self._dirty = True
+            return
+
+        self._execute_set_goal(objective, mode="replace")
+
+    def _execute_set_goal(self, objective: str, *, mode: str = "replace") -> None:
+        from ..runtime.goal import (
+            ThreadGoal,
+            continuation_prompt,
+            goal_status_label,
+            goal_usage_summary,
+        )
+
+        if self._session_id is None:
+            return
+        try:
+            goal_data = self._runtime.set_goal(
+                session_id=self._session_id,
+                objective=objective,
+                status="active",
+                mode=mode,
+            )
+        except Exception as error:
+            self._notice(f"✖ /goal failed: {error}")
+            return
+        goal = ThreadGoal.from_payload(goal_data)
+        self._goal_status = goal.status
+        self._notice(f"Goal {goal_status_label(goal.status)}\n{goal_usage_summary(goal)}")
+        if not self._streaming:
+            self._start_prompt(continuation_prompt(goal))
+
     def _command_native_review(self, focus: str) -> None:
         if self._streaming or self._session_id is None:
             self._notice("✖ /review requires an idle active session")
@@ -1164,19 +1373,30 @@ class TuiApp:
         if self._plan_pending or self._review_pending or self._compact_pending:
             self._notice("Wait for the current native command to finish")
             return
+        if focus and focus.strip():
+            self._start_native_review(ReviewTarget(type="custom", instructions=focus.strip()))
+            return
+        self._overlay = ReviewPresetPickerOverlay(theme=self._theme)
+        self._overlay_request_id = ""
+        if self._composer is not None:
+            self._composer.set_enabled(False)
+        self._dirty = True
+
+    def _start_native_review(self, target: ReviewTarget) -> None:
         session_id = self._session_id
+        assert session_id is not None
         self._review_pending = True
         self._review_thread = threading.Thread(
             target=self._review_worker,
-            args=(session_id, focus or None),
+            args=(session_id, target),
             name="voidcode-tui-review",
             daemon=True,
         )
         self._review_thread.start()
 
-    def _review_worker(self, session_id: str, focus: str | None) -> None:
+    def _review_worker(self, session_id: str, target: ReviewTarget) -> None:
         try:
-            response = self._runtime.review_session(session_id=session_id, focus=focus)
+            response = self._runtime.review_session(session_id=session_id, target=target)
         except Exception as error:
             self._queue.put(_NativeReviewResult(session_id=session_id, error=error))
         else:
@@ -1195,6 +1415,119 @@ class TuiApp:
             return
         assert self._view is not None
         self._view.transcript().add(AssistantBlock(text=item.output, settled=True))
+        self._dirty = True
+
+    def _command_native_shell(self, shell_command: str) -> None:
+        # No idle gate and no pending gate: a `!` escape always executes,
+        # even mid-turn and in plan mode (explicit user consent, not a
+        # model tool call). The runtime persists history without starting
+        # a provider turn.
+        if not shell_command.strip():
+            self._notice(f"{USER_SHELL_HELP_TITLE}\n{USER_SHELL_HELP_HINT}")
+            return
+        if self._overlay is not None:
+            self._notice("✖ Cannot run a shell command while a dialog is open")
+            return
+        session_id = self._session_id
+        threading.Thread(
+            target=self._shell_worker,
+            args=(session_id, shell_command),
+            name="voidcode-tui-shell",
+            daemon=True,
+        ).start()
+
+    def _shell_worker(self, session_id: str | None, shell_command: str) -> None:
+        try:
+            result = self._runtime.run_user_shell(session_id=session_id, command=shell_command)
+        except Exception as error:
+            self._queue.put(_NativeShellResult(session_id=session_id or "", error=error))
+        else:
+            self._queue.put(_NativeShellResult(session_id=str(result.get("session_id", session_id or "")), result=result))
+
+    def _finish_native_shell(self, item: _NativeShellResult) -> None:
+        if item.error is not None:
+            self._notice(f"✖ ! shell command failed: {format_runtime_error(item.error)}")
+            return
+        result = item.result or {}
+        if self._session_id is None and isinstance(result.get("session_id"), str) and result["session_id"]:
+            self._session_id = str(result["session_id"])
+        if item.session_id and self._session_id and item.session_id != self._session_id:
+            return
+        command = str(result.get("command", ""))
+        output = str(result.get("output", ""))
+        exit_code = result.get("exit_code", 0)
+        status = str(result.get("status", "completed"))
+        assert self._view is not None
+        self._view.transcript().add(UserBlock(text=f"!{command}"))
+        body = f"Exit code: {exit_code}\n{output}" if output else f"Exit code: {exit_code}"
+        self._view.transcript().add(
+            ToolBlock(
+                tool="shell",
+                title=f"!{command}",
+                summary=f"exit {exit_code}",
+                body=tuple(body.splitlines()),
+                state="success" if status == "completed" else "error",
+                settled=True,
+            )
+        )
+        self._dirty = True
+
+    def _command_native_btw(self, arguments: str) -> None:
+        # immediate:true — no idle gate, no native pending gate: runs on a
+        # worker thread even while the main session streams, and the answer
+        # renders in an overlay without touching the transcript.
+        if self._session_id is None:
+            self._notice("Usage: /btw <your question>\nThe session must start before you can ask a side question.")
+            return
+        session_id = self._session_id
+        question = arguments.strip()
+        if not question:
+            recent = self._btw_recent.get(session_id)
+            if recent is None:
+                self._notice("Usage: /btw <your question>")
+                return
+            self._open_btw_overlay(*recent)
+            return
+        if self._btw_pending:
+            self._notice("/btw is already running")
+            return
+        self._btw_pending = True
+        threading.Thread(
+            target=self._btw_worker,
+            args=(session_id, question),
+            name="voidcode-tui-btw",
+            daemon=True,
+        ).start()
+
+    def _btw_worker(self, session_id: str, question: str) -> None:
+        try:
+            result = self._runtime.ask_side_question(session_id=session_id, question=question)
+        except Exception as error:
+            self._queue.put(_NativeBtwResult(session_id=session_id, question=question, error=error))
+        else:
+            self._queue.put(
+                _NativeBtwResult(session_id=session_id, question=str(result.get("question", question)), answer=str(result.get("answer", "")))
+            )
+
+    def _finish_native_btw(self, item: _NativeBtwResult) -> None:
+        self._btw_pending = False
+        if item.session_id != self._session_id:
+            return
+        if item.error is not None or not item.answer:
+            self._notice(f"✖ /btw failed: {format_runtime_error(item.error) if item.error is not None else 'empty response'}")
+            return
+        self._btw_recent[item.session_id] = (item.question, item.answer)
+        self._open_btw_overlay(item.question, item.answer)
+
+    def _open_btw_overlay(self, question: str, answer: str) -> None:
+        if self._overlay is not None:
+            self._notice("✖ Cannot open /btw while a dialog is open")
+            return
+        self._overlay = SideQuestionOverlay(question=question, answer=answer, theme=self._theme)
+        self._overlay_request_id = ""
+        if self._composer is not None:
+            self._composer.set_enabled(False)
+        self._enter_alt_screen()
         self._dirty = True
 
     def _start_prompt(self, prompt: str) -> None:
@@ -1282,7 +1615,7 @@ class TuiApp:
                 f"Statusline: {config.statusline.layout}",
                 f"Composer: {config.composer.style} · gutter={config.composer.gutter} · padding={config.composer.padding}",
                 f"Cursor: {config.composer.cursor_shape} (blink={config.composer.cursor_blink})",
-                "Native commands: /compact, /diff, /plan, /review",
+                "Native commands: /btw, /compact, /diff, /plan, /review, !<shell command>",
                 "Appearance: " + ("saved" if self._appearance_saved else "temporary session preview; not saved"),
             )
         )

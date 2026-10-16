@@ -121,6 +121,7 @@ from .events import (
     RUNTIME_REASONING_PART,
     RUNTIME_REMINDER_INJECTED,
     RUNTIME_SKILL_LOADED,
+    RUNTIME_THREAD_GOAL_UPDATED,
     RUNTIME_TODO_UPDATED,
     RUNTIME_TOOL_BATCH_REPEATED,
     RUNTIME_TOOL_INPUT_PROCESSED,
@@ -366,6 +367,31 @@ def _finalized_step_session(
             session,
             turn_plan.provider_usage,
         )
+        if session.metadata.get("collaboration_mode") != "plan" and not session.metadata.get("review_child"):
+            raw_goal = session.metadata.get("thread_goal")
+            if isinstance(raw_goal, dict) and raw_goal.get("status") == "active" and turn_plan.provider_usage is not None:
+                from time import time
+
+                from .goal import ThreadGoal, budget_limit_prompt
+
+                delta_tokens = (turn_plan.provider_usage.input_tokens or 0) + (turn_plan.provider_usage.output_tokens or 0)
+                now_ms = int(time() * 1000)
+                prev_updated = int(raw_goal.get("updated_at") or now_ms)
+                delta_sec = max(0, (now_ms - prev_updated) // 1000)
+                updated_goal = dict(raw_goal)
+                updated_goal["tokens_used"] = int(raw_goal.get("tokens_used", 0) or 0) + delta_tokens
+                updated_goal["time_used_seconds"] = int(raw_goal.get("time_used_seconds", 0) or 0) + delta_sec
+                updated_goal["updated_at"] = max(now_ms, prev_updated + 1)
+                budget = raw_goal.get("token_budget")
+                updated_meta = {**session.metadata, "thread_goal": updated_goal}
+                if budget is not None and int(budget) > 0 and updated_goal["tokens_used"] >= int(budget):
+                    updated_goal["status"] = "budget-limited"
+                    steering_content = budget_limit_prompt(ThreadGoal.from_payload(updated_goal))
+                    raw_pending = session.metadata.get("pending_messages")
+                    pending = list(raw_pending) if isinstance(raw_pending, list) else []
+                    pending.append({"kind": "steering", "content": steering_content, "sequence": session.turn})
+                    updated_meta["pending_messages"] = pending
+                session = replace(session, metadata=updated_meta)
     if provider_retry_attempt_from_metadata(session.metadata) != 0:
         session = SessionState(
             session=session.session,
@@ -1040,6 +1066,12 @@ class RuntimeRunLoopCoordinator:
                     else None
                 ),
                 todo_phases=todo_phases,
+                goal=(
+                    cast(Mapping[str, object], session.metadata.get("thread_goal"))
+                    if isinstance(session.metadata.get("thread_goal"), Mapping)
+                    else None
+                ),
+                goal_consecutive_blocked_turns=int(cast(int, session.metadata.get("goal_consecutive_blocked_turns") or 0)),
                 tool_timeout_seconds=tool_timeout,
                 model=model,
                 abort_signal=abort_signal,
@@ -1238,11 +1270,55 @@ class RuntimeRunLoopCoordinator:
                         except Exception:
                             failed_emitted = False
                             raise
+                        raw_goal = host.session.metadata.get("thread_goal")
+                        if isinstance(raw_goal, dict) and raw_goal.get("status") == "active":
+                            from time import time
+
+                            updated_goal = dict(raw_goal)
+                            updated_goal["status"] = "blocked"
+                            updated_goal["updated_at"] = int(time() * 1000)
+                            raw_b = host.session.metadata.get("goal_consecutive_blocked_turns")
+                            consecutive = (int(raw_b) if isinstance(raw_b, (int, float)) else 0) + 1
+                            updated_metadata = dict(host.session.metadata)
+                            updated_metadata["thread_goal"] = updated_goal
+                            updated_metadata["goal_consecutive_blocked_turns"] = consecutive
+                            host.session = replace(host.session, metadata=updated_metadata)
+                            try:
+                                self._sessions.append_thread_goal_change(
+                                    workspace=self._workspace,
+                                    session_id=host.session.session.id,
+                                    goal=updated_goal,
+                                    event_type=RUNTIME_THREAD_GOAL_UPDATED,
+                                )
+                            except Exception:
+                                pass
                         chunk = replace(chunk, session=self._fresh_composition_session(chunk.session))
                 yield chunk
             if result.status == "aborted" and not interrupted_emitted:
                 yield from self._emit_interrupted_failure(session=host.session, sequence=host.sequence, active_turn_request=host.active_turn_request)
         except Exception as error:
+            raw_goal = host.session.metadata.get("thread_goal")
+            if isinstance(raw_goal, dict) and raw_goal.get("status") == "active":
+                from time import time
+
+                updated_goal = dict(raw_goal)
+                updated_goal["status"] = "blocked"
+                updated_goal["updated_at"] = int(time() * 1000)
+                raw_b = host.session.metadata.get("goal_consecutive_blocked_turns")
+                consecutive = (int(raw_b) if isinstance(raw_b, (int, float)) else 0) + 1
+                updated_metadata = dict(host.session.metadata)
+                updated_metadata["thread_goal"] = updated_goal
+                updated_metadata["goal_consecutive_blocked_turns"] = consecutive
+                host.session = replace(host.session, metadata=updated_metadata)
+                try:
+                    self._sessions.append_thread_goal_change(
+                        workspace=self._workspace,
+                        session_id=host.session.session.id,
+                        goal=updated_goal,
+                        event_type=RUNTIME_THREAD_GOAL_UPDATED,
+                    )
+                except Exception:
+                    pass
             if not failed_emitted and not interrupted_emitted and not _is_abort_requested(host.active_turn_request):
                 try:
                     host._terminal_composition_phases(error)
@@ -3035,6 +3111,31 @@ class RuntimeRunLoopCoordinator:
             )
             sequence = envelope.sequence
             yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
+        from ..tools.goal import GoalResultBody
+
+        if (
+            plan_tool_call.tool_name in {"create_goal", "update_goal"}
+            and isinstance(tool_result, ToolSuccess)
+            and isinstance(tool_result.body, GoalResultBody)
+            and tool_result.body.mutated
+            and tool_result.body.goal is not None
+        ):
+            updated_metadata = dict(session.metadata)
+            updated_metadata["thread_goal"] = dict(tool_result.body.goal)
+            session = replace(session, metadata=updated_metadata)
+            envelope = self._persist_event(
+                session_id=session.session.id,
+                event_type=RUNTIME_THREAD_GOAL_UPDATED,
+                source="runtime",
+                payload={"goal": tool_result.body.goal},
+            )
+            sequence = envelope.sequence
+            yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
+
+        if isinstance(tool_result, ToolSuccess) and session.metadata.get("goal_consecutive_blocked_turns"):
+            updated_metadata = dict(session.metadata)
+            updated_metadata["goal_consecutive_blocked_turns"] = 0
+            session = replace(session, metadata=updated_metadata)
         return sequence, session
 
     def _dispatch_error_feedback_chunks(

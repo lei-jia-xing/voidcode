@@ -102,11 +102,50 @@ The runtime provides native reversible planning collaboration state:
 
 ## Native Governed Review (`/review`)
 
-The runtime provides governed, read-only review over uncommitted aggregate workspace changes:
+The runtime provides governed, read-only review over selectable workspace change targets:
 
 1. **Governed Child Review Session**:
-   Executing `/review` or `review_session(session_id=..., focus=...)` dispatches a governed read-only child session under the specified parent session (`parent_session_id`). The child session is allocated with the child-only `review` agent preset and requires a terminal invocation of the `yield` tool to return structured findings.
-2. **Aggregate Diff Capture & Bounding**:
-   Review operates over the uncommitted aggregate workspace diff (including staged, unstaged, and untracked changes). If the workspace is not a Git repository or has no changes (`diff.state == "clean"`), the call rejects immediately with an informative error without dispatching a model turn. Diffs exceeding 262,144 bytes (>256 KiB) are rejected with an explicit actionable error rather than being silently truncated, ensuring review findings never claim full coverage over an incomplete diff.
-3. **Parent State Preservation & Concurrency**:
+   Executing `/review` or `review_session(session_id=..., focus=..., target=...)` dispatches a governed read-only child session under the specified parent session (`parent_session_id`). The child session is allocated with the child-only `review` agent preset and requires a terminal invocation of the `yield` tool to return structured findings.
+2. **Target Selection & Diff Bounding**:
+   Review operates over one of four target shapes: `uncommitted` (staged, unstaged, and untracked changes), `base_branch` (comparison against named local git branch), `commit` (specific commit SHA), or `custom` (freeform reviewer instructions). Diffs exceeding 262,144 bytes (>256 KiB, `MAX_REVIEW_DIFF_BYTES`) are rejected with an explicit actionable error rather than being silently truncated, ensuring review findings never claim full coverage over an incomplete diff. Clean workspaces or non-Git paths reject visibly.
+3. **Model Resolution & Effort Fallback**:
+   The review subagent resolves its model by checking `config.review_model`, falling back to the parent session model. When a dedicated review model is configured with differing reasoning effort support, `_fallback_reasoning_effort` maps or clears unsupported effort levels to prevent provider rejections.
+4. **Parent State Preservation & Concurrency**:
    The parent session must exist and be idle (`ACTIVE_SESSION_REGISTRY.active_run_count == 0` and `status not in ("running", "waiting")`). The child review execution does not overwrite the parent session's output, status, or primary turn history.
+
+## Native Thread Goals (`/goal`)
+
+The runtime manages durable thread goals persisting across session turns and reloads:
+
+1. **Durable Persistence & Events**:
+   Thread goals persist in session metadata (`thread_goal` dictionary) and emit append-only events: `runtime.thread_goal_updated` on creation or status change, and `runtime.thread_goal_cleared` on deletion.
+2. **Objective Spilling**:
+   Large goal objectives exceeding 4,000 characters are automatically spilled to `.voidcode/attachments/<uuid>/goal-objective.md` via `spill_goal_objective_if_needed`, storing the file reference in metadata while keeping prompts bounded.
+3. **Token Accounting & Budget Invariants**:
+   When a goal defines a positive `token_budget`, completed turns increment `tokens_used`. Turns executed under plan collaboration mode (`collaboration_mode == "plan"`) or review children (`review_child == True`) are excluded from accounting. When cumulative usage meets or exceeds the budget, status transitions to `budget-limited` and a steering notice is appended.
+4. **Cross-Turn Merging & Monotonic Timestamps**:
+   `composition_session_metadata` and SQLite storage mixins merge thread goals across turns using monotonic timestamp tie-breaking (`updated_at`), guaranteeing goal state survives session resume and fresh runs without regressions.
+
+## Shell Escape (`!`) & Consent Bypass
+
+The runtime provides immediate shell escape execution bypassing provider turn cycles:
+
+1. **Explicit Consent & Gate Bypass**:
+   Because a typed `!<command>` is explicit direct user action, execution intentionally bypasses tool approval checks, permission engine mode gates, and sandboxing—including under read-only or plan collaboration modes.
+2. **History Persistence Without Provider Turns**:
+   Shell executions land synchronously in the session event log as `runtime.user_shell_executed` events containing command, output, duration, and exit status. No provider turn or model request is triggered. The output is available to subsequent provider turns via context assembly.
+3. **Availability Under Concurrency**:
+   Shell commands execute both when the session is idle and mid-turn while a primary run progresses, avoiding busy-gate deadlocks.
+
+## Native Side Questions (`/btw`)
+
+The runtime provides zero-write side question evaluation:
+
+1. **Fork Semantics & Replayed Context**:
+   Invoking `/btw` evaluates the user's question directly against the session's assembled context prefix (including replayed prior turns) using the session's own configured turn producer.
+2. **Zero Tools & Single Turn**:
+   The side question request offers zero available tools (`available_tools=()`) and advances exactly one provider turn. If the model attempts a tool call, a direct fallback answer explains that side questions accept direct answers only.
+3. **Immutable History Invariant**:
+   Side question execution strictly never writes to `session_events`, does not mutate session metadata, and does not advance the session's turn counter or transcript.
+4. **Concurrent Execution**:
+   Side questions possess no busy gate and can be executed while primary session runs are active.

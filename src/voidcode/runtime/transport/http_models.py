@@ -196,12 +196,58 @@ class RuntimeCompactBody(ResponseModel):
 
 
 @final
+class UserShellResultBody(ResponseModel):
+    """Result of the native ``!`` shell escape (no provider turn started)."""
+
+    session_id: str
+    command: str
+    exit_code: int
+    status: str
+    duration_seconds: float
+    output: str
+    truncated: bool
+    timed_out: bool
+    event_sequence: int
+
+
+@final
+class SideQuestionResultBody(ResponseModel):
+    """Result of the native ``/btw`` side question (no history written)."""
+
+    session_id: str
+    question: str
+    answer: str
+
+
+@final
 class CollaborationModeBody(ResponseModel):
     session_id: str
     collaboration_mode: str
     previous_mode: str
     event_sequence: int | None = None
     unchanged: bool | None = None
+
+
+@final
+class ThreadGoalItem(ResponseModel):
+    thread_id: str
+    objective: str
+    status: str
+    token_budget: int | None = None
+    tokens_used: int = 0
+    time_used_seconds: int = 0
+    created_at: int = 0
+    updated_at: int = 0
+
+
+@final
+class GoalResponseBody(ResponseModel):
+    goal: ThreadGoalItem | None = None
+
+
+@final
+class ClearGoalResponseBody(ResponseModel):
+    cleared: bool
 
 
 @final
@@ -1058,6 +1104,24 @@ class ReviewFileDiffBody(ResponseModel):
     path: str
     state: ReviewFileDiffState
     diff: str | None = None
+
+
+@final
+class ReviewBranchesBody(ResponseModel):
+    branches: list[str]
+    current: str | None = None
+
+
+@final
+class ReviewCommitEntryBody(ResponseModel):
+    sha: str
+    timestamp: int
+    subject: str
+
+
+@final
+class ReviewCommitsBody(ResponseModel):
+    commits: list[ReviewCommitEntryBody]
 
 
 # -------------------------------------------------------------------- streaming frames

@@ -123,6 +123,14 @@ class SessionRepository(Protocol):
         expected_sequence: int,
         expected_status: str,
     ) -> EventEnvelope: ...
+    def append_thread_goal_change(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        goal: dict[str, object] | None,
+        event_type: str = "runtime.thread_goal_updated",
+    ) -> EventEnvelope: ...
 
     def save_composition_phase_record(self, *, workspace: Path, session_id: str, record: PhaseRecord) -> None: ...
 

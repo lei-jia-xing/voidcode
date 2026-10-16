@@ -40,6 +40,7 @@ from .context.window import (
     RuntimeContextWindow,
 )
 from .contracts import (
+    ReviewTarget,
     RuntimeProviderContextPolicyDecision,
     RuntimeRequest,
     RuntimeResponse,
@@ -270,6 +271,19 @@ class RuntimeSurface(Protocol):
         *,
         kind: Literal["steering", "follow_up"],
     ) -> tuple[str, ...]: ...
+    def get_goal(self, *, session_id: str) -> dict[str, object] | None: ...
+
+    def set_goal(
+        self,
+        *,
+        session_id: str,
+        objective: str | None = None,
+        status: str | None = None,
+        token_budget: int | None = None,
+        mode: str | None = None,
+    ) -> dict[str, object]: ...
+
+    def clear_goal(self, *, session_id: str) -> bool: ...
 
     def persist_response(
         self,
@@ -311,5 +325,7 @@ class RuntimeSurface(Protocol):
 
     def composition_session_metadata(self, session_id: str, metadata: dict[str, object]) -> dict[str, object]: ...
     def set_collaboration_mode(self, *, session_id: str, mode: str) -> dict[str, object]: ...
-    def review_session(self, *, session_id: str, focus: str | None = None) -> RuntimeResponse: ...
+    def review_session(
+        self, *, session_id: str, focus: str | None = None, target: ReviewTarget | dict[str, object] | None = None
+    ) -> RuntimeResponse: ...
     def tool_input_handler_registry_for_session(self, session: SessionState) -> ToolInputHandlerRegistry: ...

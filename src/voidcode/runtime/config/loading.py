@@ -116,6 +116,9 @@ from .models import (
     REASONING_EFFORT_ENV_VAR as REASONING_EFFORT_ENV_VAR,
 )
 from .models import (
+    REVIEW_MODEL_ENV_VAR as REVIEW_MODEL_ENV_VAR,
+)
+from .models import (
     TOOL_TIMEOUT_ENV_VAR as TOOL_TIMEOUT_ENV_VAR,
 )
 
@@ -382,6 +385,7 @@ class RuntimeConfig:
     permission: ExternalDirectoryPermissionConfig = field(default_factory=ExternalDirectoryPermissionConfig)
     policy: RuntimePolicyConfig | None = None
     model: str | None = None
+    review_model: str | None = None
     tool_timeout_seconds: int | None = None
     reasoning_effort: str | None = None
     hooks: RuntimeHooksConfig | None = None
@@ -409,6 +413,7 @@ class RuntimeConfigOverrides:
     policy: RuntimePolicyConfig | None = None
     model: str | None = None
     tool_timeout_seconds: int | None = None
+    review_model: str | None = None
     tool_timeout_seconds_configured: bool = False
     reasoning_effort: str | None = None
     hooks: RuntimeHooksConfig | None = None
@@ -509,6 +514,12 @@ def load_runtime_config(
             repo_local=repo_local.model,
             environment=env_overrides.model,
             user=global_config.model,
+        ),
+        review_model=_resolve_review_model(
+            explicit=None,
+            repo_local=repo_local.review_model,
+            environment=env_overrides.review_model,
+            user=global_config.review_model,
         ),
         tool_timeout_seconds=_resolve_tool_timeout_seconds(
             explicit=tool_timeout_seconds,
@@ -1954,6 +1965,7 @@ def _load_environment_runtime_config(env: Mapping[str, str] | None) -> RuntimeCo
     return RuntimeConfigOverrides(
         approval_mode=settings.approval_mode,
         model=settings.model,
+        review_model=settings.review_model,
         tool_timeout_seconds=settings.tool_timeout_seconds,
         reasoning_effort=settings.reasoning_effort,
     )
@@ -2022,6 +2034,26 @@ def _resolve_model(
     if environment is not None:
         if not environment:
             raise ValueError(f"environment variable {MODEL_ENV_VAR} must be a non-empty string")
+        return environment
+    if user is not None:
+        return user
+    return None
+
+
+def _resolve_review_model(
+    *,
+    explicit: str | None,
+    repo_local: str | None,
+    environment: str | None,
+    user: str | None,
+) -> str | None:
+    if explicit is not None:
+        return explicit
+    if repo_local is not None:
+        return repo_local
+    if environment is not None:
+        if not environment:
+            raise ValueError(f"environment variable {REVIEW_MODEL_ENV_VAR} must be a non-empty string")
         return environment
     if user is not None:
         return user

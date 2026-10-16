@@ -168,12 +168,33 @@ not markdown prompt macros and do not invoke a provider turn unless stated:
   mode. Plan mode narrows the shared runtime permission gate to read-only while
   preserving the session's immutable base policy; leaving it cannot relax an
   externally read-only session. No shell-command parsing is used.
-- **`/review [focus]`** — runs the governed read-only review agent over the
-  current aggregate uncommitted diff. The review is persisted as a child result;
-  an optional focus string is passed as reviewer guidance. Reviews reject diffs
-  larger than 262,144 bytes rather than silently truncating them. No
-  base-branch or commit target syntax is provided by this surface.
-
+- **`/review [focus | target]`** — runs the governed read-only review agent
+  (`preset: review`) over one of four selectable review targets: uncommitted
+  changes (`uncommitted`, default), base branch comparison (`base_branch`),
+  specific commit (`commit`), or custom instructions (`custom`). Model selection
+  prefers `review_model` (with automated reasoning effort fallback) and falls
+  back to the parent session model. The review child requires a terminal `yield`
+  invocation to return findings, preserving parent session history and state.
+  Diffs exceeding 262,144 bytes (256 KiB) reject visibly rather than silently truncating.
+- **`/goal [objective | clear | edit | pause | resume]`** — creates, inspects, or mutates
+  the persistent thread goal for the active session (bare `/goal` prints status and usage).
+  Long objectives (>4000 characters) are automatically spilled to
+  `.voidcode/attachments/<uuid>/goal-objective.md`.
+  When an active goal has a positive token budget, completed turns charge their
+  token usage against the goal (plan mode turns excluded); reaching the budget
+  transitions the status to `budget-limited`. `/goal clear` clears the goal,
+  `/goal pause` suspends pursuit, `/goal resume` reactivates it with continuation
+  guidance, and `/goal edit` loads the objective into the composer.
+- **`!<command>`** — native shell escape. Runs the shell command directly in the
+  workspace without starting a provider turn. Because typed `!` commands constitute
+  explicit user action, they bypass approval checks and sandbox restrictions
+  (including under read-only/plan mode). The command, duration, and output are
+  persisted as a `runtime.user_shell_executed` event in session history, available
+  idle or mid-turn for subsequent provider turn context.
+- **`/btw <question>`** — native side question. Answers quick user inquiries
+  directly against the current session context prefix without modifying session
+  history, appending events, or altering transcripts. Runs exactly one provider turn
+  with zero tools offered; works while the session is idle or running (no busy gate).
 Native names are reserved: a custom markdown command with one of these names is
 not used by native interactive dispatch. `GET /api/commands` reports implemented
 native actions with `source: native`; `voidcode commands list` lists only the

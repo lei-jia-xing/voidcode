@@ -78,6 +78,13 @@
         "null"
       ]
     },
+    "review_model": {
+      "description": "Review model override used by the /review feature.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "fallback_models": {
       "description": "Ordered fallback models tried after the primary model.",
       "items": {

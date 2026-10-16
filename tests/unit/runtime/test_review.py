@@ -12,7 +12,7 @@ import pytest
 from tests.provider_loopback import OpenAILoopbackServer, configure_openai_provider, openai_response
 from voidcode.core.turns import FinalTurn, ModelTurnFact, ToolTurn, TurnPlan, TurnRequest
 from voidcode.runtime.active_session import ACTIVE_SESSION_REGISTRY
-from voidcode.runtime.contracts import GitStatusSnapshot, RuntimeRequest
+from voidcode.runtime.contracts import GitStatusSnapshot, ReviewTarget, RuntimeRequest
 from voidcode.runtime.review import WorkspaceReviewService
 from voidcode.runtime.service import VoidCodeRuntime
 from voidcode.runtime.storage import SqliteSessionStore
@@ -320,3 +320,159 @@ def test_review_session_loopback_yield(tmp_path: Path) -> None:
             assert parent_result.output == "parent finished"
     finally:
         server.shutdown()
+
+
+def test_diff_base_branch_and_commit(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    (root / "main.txt").write_text("main content\n", encoding="utf-8")
+    _git(root, "add", "main.txt")
+    _git(root, "commit", "-m", "main commit")
+
+    _git(root, "checkout", "-b", "feature")
+    (root / "feature.txt").write_text("feature content\n", encoding="utf-8")
+    _git(root, "add", "feature.txt")
+    _git(root, "commit", "-m", "feature commit")
+    feature_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+
+    service = WorkspaceReviewService(workspace=root)
+    git_ready = _git_status(root)
+
+    # Base branch diff
+    base_diff = service.diff_base_branch("master", git=git_ready)
+    assert base_diff.state == "changed"
+    assert base_diff.diff is not None
+    assert "feature.txt" in base_diff.diff
+    assert "+feature content" in base_diff.diff
+
+    # Clean base branch diff (compare master vs master)
+    _git(root, "checkout", "master")
+    clean_base_diff = service.diff_base_branch("master", git=git_ready)
+    assert clean_base_diff.state == "clean"
+    assert clean_base_diff.diff is None
+
+    # Error when base branch does not exist
+    with pytest.raises(ValueError, match="unknown base branch"):
+        service.diff_base_branch("nonexistent-branch", git=git_ready)
+
+    # Not a git repo
+    not_repo = service.diff_base_branch("master", git=GitStatusSnapshot(state="not_git_repo"))
+    assert not_repo.state == "not_git_repo"
+    assert not_repo.diff is None
+
+    # Commit diff
+    commit_diff = service.diff_commit(feature_sha, git=git_ready)
+    assert commit_diff.state == "changed"
+    assert commit_diff.diff is not None
+    assert "feature commit" in commit_diff.diff
+    assert "feature.txt" in commit_diff.diff
+
+    # Empty commit diff
+    _git(root, "commit", "--allow-empty", "-m", "empty commit")
+    empty_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+    empty_diff = service.diff_commit(empty_sha, git=git_ready)
+    assert empty_diff.state == "clean"
+    assert empty_diff.diff is None
+
+    # Invalid commit sha
+    with pytest.raises(ValueError, match="git show failed"):
+        service.diff_commit("0000000000000000000000000000000000000000", git=git_ready)
+
+    # Branch list and recent commits helpers
+    branches = service.list_branches(git=git_ready)
+    assert "master" in branches
+    assert "feature" in branches
+    current = service.current_branch(git=git_ready)
+    assert current == "master"
+    commits = service.recent_commits(git=git_ready, limit=10)
+    assert len(commits) >= 3
+    assert any(c.subject == "main commit" for c in commits)
+
+
+def test_review_session_targets_base_branch_and_commit(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    (root / "initial.txt").write_text("initial\n")
+    _git(root, "add", "initial.txt")
+    _git(root, "commit", "-m", "initial commit")
+
+    _git(root, "checkout", "-b", "dev")
+    (root / "dev.txt").write_text("dev work\n")
+    _git(root, "add", "dev.txt")
+    _git(root, "commit", "-m", "dev commit")
+    dev_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+
+    producer = _ReviewStepProducer()
+    with VoidCodeRuntime(workspace=root, turn_producer=producer) as runtime:
+        runtime.run(RuntimeRequest(session_id="parent-session", prompt="parent work"))
+
+        # Base branch review
+        resp_base = runtime.review_session(
+            session_id="parent-session",
+            target=ReviewTarget(type="base_branch", branch="master"),
+        )
+        assert resp_base.session.status == "completed"
+        assert resp_base.session.session.parent_id == "parent-session"
+        assert resp_base.session.metadata.get("review_child") is True
+        prompt = producer.captured_prompts[-1]
+        assert "Review the code changes against the base branch 'master'" in prompt
+        assert "dev.txt" in prompt
+        assert "dev work" in prompt
+
+        # Commit review
+        resp_commit = runtime.review_session(
+            session_id="parent-session",
+            target=ReviewTarget(type="commit", sha=dev_sha, title="dev commit"),
+        )
+        assert resp_commit.session.status == "completed"
+        assert resp_commit.session.session.parent_id == "parent-session"
+        assert resp_commit.session.metadata.get("review_child") is True
+        commit_prompt = producer.captured_prompts[-1]
+        assert f"Review the code changes introduced by commit {dev_sha}" in commit_prompt
+        assert "dev commit" in commit_prompt
+        assert "dev work" in commit_prompt
+
+        # Clean base branch rejection
+        with pytest.raises(ValueError, match="no changes against base branch"):
+            runtime.review_session(
+                session_id="parent-session",
+                target=ReviewTarget(type="base_branch", branch="dev"),
+            )
+
+
+def test_review_model_override_and_feature_disable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = _repo(tmp_path)
+    (root / "changed.txt").write_text("change\n")
+    _git(root, "add", "changed.txt")
+    _git(root, "commit", "-m", "add change")
+
+    monkeypatch.setenv("VOIDCODE_REVIEW_MODEL", "openai/gpt-4o")
+
+    producer = _ReviewStepProducer()
+    with VoidCodeRuntime(workspace=root, turn_producer=producer) as runtime:
+        runtime.run(RuntimeRequest(session_id="parent-session", prompt="parent work", metadata={"reasoning_effort": "high"}))
+
+        (root / "changed.txt").write_text("change modified\n")
+        review_resp = runtime.review_session(session_id="parent-session")
+        assert review_resp.session.metadata.get("review_child") is True
+        agent_meta = review_resp.session.metadata.get("agent")
+        assert isinstance(agent_meta, dict)
+        assert agent_meta.get("model") == "openai/gpt-4o"
+
+    from voidcode.runtime.tools.builtins import builtin_tool_definitions
+    from voidcode.runtime.tools.registry import ToolRegistry
+    from voidcode.runtime.tools.scope import RuntimeToolScopeResolver
+
+    scope_resolver = RuntimeToolScopeResolver()
+    raw_registry = ToolRegistry.from_definitions(builtin_tool_definitions())
+    assert "web_fetch" in raw_registry.declarations
+
+    child_registry = scope_resolver.scope(
+        raw_registry,
+        agent=None,
+        metadata={"review_child": True},
+    )
+    assert "web_search" not in child_registry.declarations
+    assert "web_fetch" not in child_registry.declarations
+
+    decision = scope_resolver.decision(tool_name="web_search", registry=raw_registry, metadata={"review_child": True})
+    assert decision.allowed is False
+    assert "disabled for review child" in (decision.reason or "")

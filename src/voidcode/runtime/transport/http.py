@@ -53,7 +53,9 @@ from ..contracts import (
     ProviderSummary,
     ProviderValidationResult,
     ReviewChangedFile,
+    ReviewCommitLogEntry,
     ReviewFileDiff,
+    ReviewTarget,
     ReviewTreeNode,
     RuntimeRequest,
     RuntimeRequestError,
@@ -99,15 +101,18 @@ from .http_contract import (
     ShowThinkingQuery,
     StreamCompletion,
     _ApprovalResolutionRequestPayload,
+    _BtwRequestPayload,
     _CheckoutSessionRequestPayload,
     _CollaborationModeRequestPayload,
     _QuestionAnswerRequestPayload,
     _ReviewRunRequestPayload,
     _RunStreamRequestPayload,
     _SessionCancelRequestPayload,
+    _SetGoalRequestPayload,
     _SettingsRequestPayload,
     _SteerSessionRequestPayload,
     _TaskSteerRequestPayload,
+    _UserShellRequestPayload,
     _WorkspaceOpenRequestPayload,
     error_code,
     http_exception_response,
@@ -124,13 +129,17 @@ from .http_models import (
     BackgroundTaskStateBody,
     BackgroundTaskSteerBody,
     BackgroundTaskSummaryBody,
+    ClearGoalResponseBody,
     CollaborationModeBody,
     CommandSummaryBody,
     ErrorEnvelope,
+    GoalResponseBody,
     ProviderInspectBody,
     ProviderModelsBody,
     ProviderSummaryBody,
     ProviderValidationBody,
+    ReviewBranchesBody,
+    ReviewCommitsBody,
     ReviewFileDiffBody,
     RunStreamFrameBody,
     RuntimeCompactBody,
@@ -144,7 +153,9 @@ from .http_models import (
     SessionResultBody,
     SessionSteerBody,
     SessionSummaryBody,
+    SideQuestionResultBody,
     SkillSummaryBody,
+    UserShellResultBody,
     WebSettingsBody,
     WorkspaceRegistryBody,
     WorkspaceReviewBody,
@@ -296,7 +307,20 @@ class RuntimeTransport(Protocol):
     def run_stream(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]: ...
     def compact_session(self, *, session_id: str) -> dict[str, object]: ...
     def set_collaboration_mode(self, *, session_id: str, mode: str) -> dict[str, object]: ...
-    def review_session(self, *, session_id: str, focus: str | None = None) -> RuntimeResponse: ...
+    def get_goal(self, *, session_id: str) -> dict[str, object] | None: ...
+    def set_goal(
+        self,
+        *,
+        session_id: str,
+        objective: str | None = None,
+        status: str | None = None,
+        token_budget: int | None = None,
+        mode: str | None = None,
+    ) -> dict[str, object]: ...
+    def clear_goal(self, *, session_id: str) -> bool: ...
+    def review_session(self, *, session_id: str, focus: str | None = None, target: ReviewTarget | None = None) -> RuntimeResponse: ...
+    def run_user_shell(self, *, session_id: str | None, command: str, timeout_seconds: int | None = None) -> dict[str, object]: ...
+    def ask_side_question(self, *, session_id: str, question: str) -> dict[str, object]: ...
     def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState: ...
 
     def authorize_background_task_owner(self, task_id: str, *, parent_session_id: str | None) -> None: ...
@@ -363,6 +387,9 @@ class RuntimeTransport(Protocol):
     def review_diff_all(self) -> ReviewFileDiff: ...
 
     def review_diff(self, path: str) -> ReviewFileDiff: ...
+    def review_branches(self) -> tuple[str, ...]: ...
+    def review_current_branch(self) -> str | None: ...
+    def review_recent_commits(self, limit: int = 100) -> tuple[ReviewCommitLogEntry, ...]: ...
 
     def session_result(self, *, session_id: str) -> RuntimeSessionResult: ...
 
@@ -765,6 +792,22 @@ class RuntimeTransportApp(FastAPI):
             error_statuses=(400, 404),
         )
         route(
+            "/api/review/branches",
+            self._handle_get_review_branches,
+            methods=["GET"],
+            tag="review",
+            summary="Read local git branches for review",
+            response_model=ReviewBranchesBody,
+        )
+        route(
+            "/api/review/commits",
+            self._handle_get_review_commits,
+            methods=["GET"],
+            tag="review",
+            summary="Read recent git commits for review",
+            response_model=ReviewCommitsBody,
+        )
+        route(
             "/api/tasks/{task_id}",
             self._handle_background_task_status,
             methods=["GET"],
@@ -937,6 +980,33 @@ class RuntimeTransportApp(FastAPI):
             error_statuses=(400, 404, 409),
         )
         route(
+            "/api/sessions/{session_id}/goal",
+            self._handle_get_goal,
+            methods=["GET"],
+            tag="sessions",
+            summary="Get current thread goal for a session",
+            response_model=GoalResponseBody,
+            error_statuses=(400, 404),
+        )
+        route(
+            "/api/sessions/{session_id}/goal",
+            self._handle_set_goal,
+            methods=["POST"],
+            tag="sessions",
+            summary="Set or update thread goal for a session",
+            response_model=GoalResponseBody,
+            error_statuses=(400, 404, 409),
+        )
+        route(
+            "/api/sessions/{session_id}/goal",
+            self._handle_clear_goal,
+            methods=["DELETE"],
+            tag="sessions",
+            summary="Clear thread goal for a session",
+            response_model=ClearGoalResponseBody,
+            error_statuses=(400, 404),
+        )
+        route(
             "/api/sessions/{session_id}/review",
             self._handle_review_session,
             methods=["POST"],
@@ -944,6 +1014,24 @@ class RuntimeTransportApp(FastAPI):
             summary="Run a governed read-only review of workspace changes",
             response_model=RuntimeResponseBody,
             error_statuses=(400, 404, 409),
+        )
+        route(
+            "/api/sessions/{session_id}/btw",
+            self._handle_ask_side_question,
+            methods=["POST"],
+            tag="sessions",
+            summary="Answer a native /btw side question without touching history",
+            response_model=SideQuestionResultBody,
+            error_statuses=(400, 404),
+        )
+        route(
+            "/api/sessions/{session_id}/shell",
+            self._handle_run_user_shell,
+            methods=["POST"],
+            tag="sessions",
+            summary="Run a native ! shell command without starting a provider turn",
+            response_model=UserShellResultBody,
+            error_statuses=(400, 404),
         )
         route(
             "/api/sessions/{session_id}/steer",
@@ -1627,14 +1715,77 @@ class RuntimeTransportApp(FastAPI):
             raise HttpError(400, str(exc)) from None
         return json_response(result)
 
-    def _review_session(self, session_id: str, focus: str | None) -> RuntimeResponse:
+    def _run_user_shell(self, session_id: str, command: str) -> dict[str, object]:
         with self._runtime_lease() as runtime:
-            return runtime.review_session(session_id=session_id, focus=focus)
+            return runtime.run_user_shell(session_id=session_id, command=command)
+
+    async def _handle_run_user_shell(self, session_id: str, payload: _UserShellRequestPayload) -> Response:
+        session_id = self._validated_session_id(session_id)
+        try:
+            result = await asyncio.to_thread(self._run_user_shell, session_id, payload.command)
+        except UnknownSessionError as exc:
+            raise HttpError(404, str(exc), code=error_code(exc)) from None
+        except ValueError as exc:
+            raise HttpError(400, str(exc)) from None
+        return json_response(result)
+
+    def _ask_side_question(self, session_id: str, question: str) -> dict[str, object]:
+        with self._runtime_lease() as runtime:
+            return runtime.ask_side_question(session_id=session_id, question=question)
+
+    async def _handle_ask_side_question(self, session_id: str, payload: _BtwRequestPayload) -> Response:
+        session_id = self._validated_session_id(session_id)
+        try:
+            result = await asyncio.to_thread(self._ask_side_question, session_id, payload.question)
+        except UnknownSessionError as exc:
+            raise HttpError(404, str(exc), code=error_code(exc)) from None
+        except ValueError as exc:
+            raise HttpError(400, str(exc)) from None
+        return json_response(result)
+
+    async def _handle_get_goal(self, session_id: str) -> Response:
+        session_id = self._validated_session_id(session_id)
+        with self._runtime_lease() as runtime:
+            try:
+                goal = runtime.get_goal(session_id=session_id)
+            except UnknownSessionError as exc:
+                raise HttpError(404, str(exc)) from None
+        return json_response({"goal": goal})
+
+    async def _handle_set_goal(self, session_id: str, payload: _SetGoalRequestPayload) -> Response:
+        session_id = self._validated_session_id(session_id)
+        with self._runtime_lease() as runtime:
+            try:
+                goal = runtime.set_goal(
+                    session_id=session_id,
+                    objective=payload.objective,
+                    status=payload.status,
+                    token_budget=payload.token_budget,
+                    mode=payload.mode,
+                )
+            except UnknownSessionError as exc:
+                raise HttpError(404, str(exc)) from None
+            except ValueError as exc:
+                raise HttpError(400, str(exc)) from None
+        return json_response({"goal": goal})
+
+    async def _handle_clear_goal(self, session_id: str) -> Response:
+        session_id = self._validated_session_id(session_id)
+        with self._runtime_lease() as runtime:
+            try:
+                cleared = runtime.clear_goal(session_id=session_id)
+            except UnknownSessionError as exc:
+                raise HttpError(404, str(exc)) from None
+        return json_response({"cleared": cleared})
+
+    def _review_session(self, session_id: str, focus: str | None, target: ReviewTarget | None = None) -> RuntimeResponse:
+        with self._runtime_lease() as runtime:
+            return runtime.review_session(session_id=session_id, focus=focus, target=target)
 
     async def _handle_review_session(self, session_id: str, payload: _ReviewRunRequestPayload) -> Response:
         session_id = self._validated_session_id(session_id)
         try:
-            result = await asyncio.to_thread(self._review_session, session_id, payload.focus)
+            result = await asyncio.to_thread(self._review_session, session_id, payload.focus, payload.resolved_target())
         except UnknownSessionError as exc:
             raise HttpError(404, str(exc), code=error_code(exc)) from None
         except SessionBusyConflictError as exc:
@@ -1642,6 +1793,17 @@ class RuntimeTransportApp(FastAPI):
         except ValueError as exc:
             raise HttpError(400, str(exc)) from None
         return json_response(self._serialize_runtime_response(result))
+
+    async def _handle_get_review_branches(self) -> Response:
+        with self._runtime_lease() as runtime:
+            branches = list(runtime.review_branches())
+            current = runtime.review_current_branch()
+        return json_response({"branches": branches, "current": current})
+
+    async def _handle_get_review_commits(self, limit: int = 100) -> Response:
+        with self._runtime_lease() as runtime:
+            commits = [{"sha": c.sha, "timestamp": c.timestamp, "subject": c.subject} for c in runtime.review_recent_commits(limit=limit)]
+        return json_response({"commits": commits})
 
     async def _handle_session_replay(self, session_id: str, show_thinking: ShowThinkingQuery = False) -> Response:
         session_id = self._validated_session_id(session_id)

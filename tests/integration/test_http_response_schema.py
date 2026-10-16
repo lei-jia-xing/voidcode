@@ -60,7 +60,9 @@ from voidcode.runtime.contracts import (
     ProviderSummary,
     ProviderValidationResult,
     ReviewChangedFile,
+    ReviewCommitLogEntry,
     ReviewFileDiff,
+    ReviewTarget,
     ReviewTreeNode,
     RuntimeBackgroundTaskStatusSnapshot,
     RuntimeHookPresetSnapshot,
@@ -812,6 +814,18 @@ class _FixtureRuntime:
             diff="@@ -1 +1 @@" if self.rich else None,
         )
 
+    def review_branches(self) -> tuple[str, ...]:
+        return ("main", "feature") if self.rich else ()
+
+    def review_current_branch(self) -> str | None:
+        return "feature" if self.rich else None
+
+    def review_recent_commits(self, limit: int = 100) -> tuple[ReviewCommitLogEntry, ...]:
+        _ = limit
+        if not self.rich:
+            return ()
+        return (ReviewCommitLogEntry(sha="abcdef1234567890", timestamp=1700000000, subject="Initial commit"),)
+
     def compact_session(self, *, session_id: str) -> dict[str, object]:
         return {"session_id": session_id, "compacted": self.rich, "reason": None if self.rich else "no_tool_results"}
 
@@ -824,9 +838,71 @@ class _FixtureRuntime:
             "unchanged": None if self.rich else True,
         }
 
-    def review_session(self, *, session_id: str, focus: str | None = None) -> RuntimeResponse:
-        _ = session_id, focus
+    def review_session(
+        self,
+        *,
+        session_id: str,
+        focus: str | None = None,
+        target: ReviewTarget | None = None,
+    ) -> RuntimeResponse:
+        _ = session_id, focus, target
         return RuntimeResponse(session=_session_state(self.rich), events=_events(self.rich), output="review findings" if self.rich else None)
+
+    def run_user_shell(self, *, session_id: str | None, command: str, timeout_seconds: int | None = None) -> dict[str, object]:
+        _ = timeout_seconds
+        return {
+            "session_id": session_id or "sess-1",
+            "command": command,
+            "exit_code": 0,
+            "status": "completed",
+            "duration_seconds": 0.01,
+            "output": "ok\n",
+            "truncated": False,
+            "timed_out": False,
+            "event_sequence": 3,
+        }
+
+    def ask_side_question(self, *, session_id: str, question: str) -> dict[str, object]:
+        return {"session_id": session_id, "question": question, "answer": "side answer"}
+
+    def get_goal(self, *, session_id: str) -> dict[str, object] | None:
+        if not self.rich:
+            return None
+        return {
+            "thread_id": session_id,
+            "objective": "Ship feature",
+            "status": "active",
+            "token_budget": 5000,
+            "tokens_used": 120,
+            "time_used_seconds": 30,
+            "created_at": 1,
+            "updated_at": 1,
+        }
+
+    def set_goal(
+        self,
+        *,
+        session_id: str,
+        objective: str | None = None,
+        status: str | None = None,
+        token_budget: int | None = None,
+        mode: str | None = None,
+    ) -> dict[str, object]:
+        _ = mode
+        return {
+            "thread_id": session_id,
+            "objective": objective or "Ship feature",
+            "status": status or "active",
+            "token_budget": token_budget if self.rich else None,
+            "tokens_used": 120 if self.rich else 0,
+            "time_used_seconds": 30 if self.rich else 0,
+            "created_at": 1 if self.rich else 0,
+            "updated_at": 1 if self.rich else 0,
+        }
+
+    def clear_goal(self, *, session_id: str) -> bool:
+        _ = session_id
+        return self.rich
 
 
 # ------------------------------------------------------------------- app plumbing
@@ -930,6 +1006,9 @@ _BODIES: dict[tuple[str, str], dict[str, object]] = {
     ("POST", "/api/sessions/{session_id}/compact"): {},
     ("POST", "/api/sessions/{session_id}/collaboration-mode"): {"mode": "plan"},
     ("POST", "/api/sessions/{session_id}/review"): {"focus": "security"},
+    ("POST", "/api/sessions/{session_id}/shell"): {"command": "echo hi"},
+    ("POST", "/api/sessions/{session_id}/btw"): {"question": "what is this?"},
+    ("POST", "/api/sessions/{session_id}/goal"): {"objective": "Ship feature"},
 }
 _SSE_TEMPLATES = frozenset({"/api/runtime/run/stream", "/api/sessions/{session_id}/events"})
 

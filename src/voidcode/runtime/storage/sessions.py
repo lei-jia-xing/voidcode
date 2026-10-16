@@ -440,6 +440,18 @@ class _SessionStorageMixin(_MixinBase):
             merged["phase_records"] = stored_metadata["phase_records"]
         else:
             merged.pop("phase_records", None)
+        stored_goal = stored_metadata.get("thread_goal")
+        incoming_goal = metadata.get("thread_goal")
+        if isinstance(stored_goal, dict) and isinstance(incoming_goal, dict):
+            stored_ts = cast(int, stored_goal.get("updated_at", 0))
+            incoming_ts = cast(int, incoming_goal.get("updated_at", 0))
+            merged["thread_goal"] = stored_goal if stored_ts > incoming_ts else incoming_goal
+        elif isinstance(stored_goal, dict):
+            merged["thread_goal"] = stored_goal
+        elif isinstance(incoming_goal, dict):
+            merged["thread_goal"] = incoming_goal
+        else:
+            merged.pop("thread_goal", None)
         stored_state = dict(parse_runtime_state_metadata(stored_metadata["runtime_state"])) if "runtime_state" in stored_metadata else {}
         if "composition_turn" in stored_state:
             validated_composition_turn(stored_metadata, session_id=session_id)
@@ -1072,6 +1084,77 @@ class _SessionStorageMixin(_MixinBase):
                 session_id=session_id,
                 sequence=sequence,
                 event_type="runtime.collaboration_mode_changed",
+                source="runtime",
+                payload=payload,
+            )
+            _ = connection.execute(
+                """
+                INSERT INTO session_events (workspace_id, session_id, sequence, parent_sequence, event_type, source, payload_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (str(workspace), session_id, sequence, current["leaf_sequence"], event.event_type, event.source, json.dumps(payload, sort_keys=True)),
+            )
+            connection.commit()
+            return event
+
+    def append_thread_goal_change(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        goal: dict[str, object] | None,
+        event_type: str = "runtime.thread_goal_updated",
+    ) -> EventEnvelope:
+        """Append a goal update/clear fact and updated session metadata atomically."""
+        with self._write_connect(workspace) as connection:
+            row = fetch_row(
+                connection,
+                "SELECT status, leaf_sequence, last_event_sequence, metadata_json, resume_checkpoint_json "
+                "FROM sessions WHERE workspace_id = ? AND session_id = ?",
+                (str(workspace), session_id),
+            )
+            if row is None:
+                raise UnknownSessionError(f"unknown session: {session_id}")
+            current = decode_row(row, NativeCompactionRow)
+            raw_meta = row["metadata_json"]
+            parsed_meta = json.loads(raw_meta) if raw_meta else {}
+            metadata: dict[str, object] = dict(parsed_meta) if isinstance(parsed_meta, dict) else {}
+            if goal is not None:
+                metadata["thread_goal"] = dict(goal)
+            else:
+                metadata.pop("thread_goal", None)
+            persisted_metadata = session_metadata_for_persistence(metadata)
+            checkpoint_json = current["resume_checkpoint_json"]
+            serialized_checkpoint_json = None
+            if checkpoint_json is not None:
+                checkpoint = json.loads(checkpoint_json)
+                if isinstance(checkpoint, dict):
+                    checkpoint_metadata = dict(persisted_metadata)
+                    checkpoint_metadata.pop("execution_composition", None)
+                    checkpoint["session_metadata"] = checkpoint_metadata
+                    serialized_checkpoint_json = json.dumps(checkpoint, sort_keys=True)
+            sequence = current["last_event_sequence"] + 1
+            updated_at = self._next_timestamp(connection=connection)
+            _ = connection.execute(
+                """
+                UPDATE sessions SET metadata_json = ?, resume_checkpoint_json = ?, updated_at = ?, last_event_sequence = ?, leaf_sequence = ?
+                WHERE workspace_id = ? AND session_id = ?
+                """,
+                (
+                    json.dumps(persisted_metadata, sort_keys=True),
+                    serialized_checkpoint_json,
+                    updated_at,
+                    sequence,
+                    sequence,
+                    str(workspace),
+                    session_id,
+                ),
+            )
+            payload: dict[str, object] = {"goal": goal} if goal is not None else {}
+            event = EventEnvelope(
+                session_id=session_id,
+                sequence=sequence,
+                event_type=event_type,
                 source="runtime",
                 payload=payload,
             )

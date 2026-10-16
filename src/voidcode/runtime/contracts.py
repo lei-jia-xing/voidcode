@@ -144,6 +144,7 @@ class RuntimeRequestMetadata(TypedDict, total=False):
     skills: list[str]
     force_load_skills: list[str]
     keep_alive: bool
+    review_child: bool
 
 
 class InternalRuntimeRequestMetadata(RuntimeRequestMetadata, total=False):
@@ -534,6 +535,11 @@ def validate_runtime_request_metadata(
         if not isinstance(show_thinking, bool):
             raise RuntimeRequestError("request metadata 'show_thinking' must be a boolean")
         normalized["show_thinking"] = show_thinking
+    if "review_child" in metadata:
+        review_child = metadata["review_child"]
+        if not isinstance(review_child, bool):
+            raise RuntimeRequestError("request metadata 'review_child' must be a boolean")
+        normalized["review_child"] = review_child
 
     if "skills" in metadata:
         raw_skills = metadata["skills"]
@@ -892,6 +898,25 @@ class ReviewFileDiff:
     path: str
     state: ReviewFileDiffState
     diff: str | None = None
+
+
+ReviewTargetType = Literal["uncommitted", "base_branch", "commit", "custom"]
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewTarget:
+    type: ReviewTargetType = "uncommitted"
+    branch: str | None = None
+    sha: str | None = None
+    title: str | None = None
+    instructions: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewCommitLogEntry:
+    sha: str
+    timestamp: int
+    subject: str
 
 
 @dataclass(frozen=True, slots=True)

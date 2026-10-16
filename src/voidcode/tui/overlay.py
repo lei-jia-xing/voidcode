@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
 
+from ..runtime.contracts import ReviewCommitLogEntry
 from .keys import Key
 from .term import clamp_row, escape_terminal_controls, visible_width, wrap_row
 from .theme import Theme, resolve_theme
@@ -37,6 +38,11 @@ __all__ = [
     "QuestionOverlay",
     "AppearanceOverlay",
     "ToolArtifactOverlay",
+    "ReviewPresetPickerOverlay",
+    "ReviewBranchPickerOverlay",
+    "ReviewCommitPickerOverlay",
+    "ReviewCustomPromptOverlay",
+    "SideQuestionOverlay",
 ]
 
 
@@ -372,6 +378,42 @@ class ApprovalOverlay(_Base):
         if visible_width(title) > width - 3:
             title = "Approval ↑↓"
         return self._panel(title, body, width)
+
+
+class GoalConfirmOverlay(_Base):
+    __slots__ = ("_objective",)
+
+    def __init__(self, *, objective: str, theme: Theme | None = None) -> None:
+        super().__init__(theme)
+        self._objective = objective
+
+    def render(self, width: int) -> list[str]:
+        avail = _body_width(width)
+        if avail <= 0:
+            return []
+        theme = self._theme
+        body = self._wrap(self._bold("text", "Replace goal?"), avail)
+        truncated_obj = self._objective[:200] + ("..." if len(self._objective) > 200 else "")
+        body.extend(self._wrap(f"New objective: {truncated_obj}", avail))
+        body.append("")
+        body.append("Replace current goal: Set the new objective and start it now")
+        body.append("Cancel: Keep the current goal")
+        body.append("")
+        allow = theme.symbol("status.success")
+        deny = theme.symbol("status.error")
+        body.append(_hint(f"{allow} y Replace   {deny} n Cancel   {theme.symbol('icon.esc')} esc Cancel", theme))
+        return self._panel("Replace goal?", body, width)
+
+    def handle_key(self, key: Key) -> OverlayOutcome:
+        if key.name == "y":
+            return _done("replace")
+        if key.name in ("n", "escape"):
+            return _done("cancel")
+        return _PENDING
+
+    def wants_fullscreen(self, width: int, height: int) -> bool:
+        _ = (width, height)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -1269,3 +1311,362 @@ class ToolArtifactOverlay(_Base):
             content.extend(self._wrap(line, _body_width(width)))
         body = [*content[: max(0, capacity - len(footer))], *footer]
         return self._panel(self._title, body[:capacity], width)
+
+
+class ReviewPresetPickerOverlay(_Base):
+    """Review preset selection (mirroring upstream Codex 4-item picker).
+
+    1. Review against a base branch (PR Style) -> base_branch
+    2. Review uncommitted changes -> uncommitted
+    3. Review a commit -> commit
+    4. Custom review instructions -> custom
+    """
+
+    __slots__ = ("_highlight", "_options")
+
+    OPTIONS: tuple[tuple[str, str, str], ...] = (
+        ("base_branch", "Review against a base branch", "(PR Style)"),
+        ("uncommitted", "Review uncommitted changes", ""),
+        ("commit", "Review a commit", ""),
+        ("custom", "Custom review instructions", ""),
+    )
+
+    def __init__(self, *, theme: Theme | None = None) -> None:
+        super().__init__(theme)
+        self._highlight = 0
+        self._options = self.OPTIONS
+
+    def handle_key(self, key: Key) -> OverlayOutcome:
+        if key.name == "escape":
+            return _CANCELLED
+        if key.name in {"up", "k"}:
+            self._highlight = max(0, self._highlight - 1)
+            return _PENDING
+        if key.name in {"down", "j"}:
+            self._highlight = min(len(self._options) - 1, self._highlight + 1)
+            return _PENDING
+        if key.name == "enter":
+            return _done(self._options[self._highlight][0])
+        return _PENDING
+
+    def render(self, width: int) -> list[str]:
+        avail = _body_width(width)
+        if avail <= 0:
+            return []
+        theme = self._theme
+        cursor = theme.symbol("nav.cursor")
+        body: list[str] = []
+        for index, (_, name, desc) in enumerate(self._options):
+            pointer = cursor if index == self._highlight else " "
+            label = f"{pointer} {name}"
+            if desc:
+                label += f" {desc}"
+            styled = self._bold("accent", label) if index == self._highlight else theme.fg("text", label)
+            body.extend(self._wrap(styled, avail))
+        body.append("")
+        body.append(_hint("↑/↓ move · Enter select · Esc cancel", theme))
+        return self._panel("Select a review preset", body, width)
+
+    def viewport(self, width: int, height: int) -> list[str]:  # noqa: ARG002
+        return self.render(width)
+
+    def wants_fullscreen(self, _width: int, _height: int) -> bool:
+        return False
+
+
+class ReviewBranchPickerOverlay(_Base):
+    """Select a base branch for review."""
+
+    __slots__ = ("_branches", "_current_branch", "_filter", "_highlight")
+
+    def __init__(
+        self,
+        *,
+        branches: Sequence[str],
+        current_branch: str | None = None,
+        theme: Theme | None = None,
+    ) -> None:
+        super().__init__(theme)
+        self._branches = tuple(branches)
+        self._current_branch = current_branch or "(detached HEAD)"
+        self._filter = ""
+        self._highlight = 0
+
+    def cursor_position(self, width: int) -> tuple[int, int] | None:
+        return (1, min(max(0, width - 1), 4 + visible_width(escape_terminal_controls(self._filter))))
+
+    def _matches(self) -> list[str]:
+        tokens = self._filter.lower().split()
+        if not tokens:
+            return list(self._branches)
+        return [b for b in self._branches if all(token in b.lower() for token in tokens)]
+
+    def handle_key(self, key: Key) -> OverlayOutcome:
+        matches = self._matches()
+        if key.name == "escape":
+            return _CANCELLED
+        if key.name in {"up", "k"}:
+            self._highlight = max(0, self._highlight - 1)
+            return _PENDING
+        if key.name in {"down", "j"}:
+            self._highlight = min(max(0, len(matches) - 1), self._highlight + 1)
+            return _PENDING
+        if key.name == "backspace":
+            self._filter = self._filter[:-1]
+            self._highlight = 0
+            return _PENDING
+        if key.name == "enter":
+            if matches:
+                selected = matches[min(self._highlight, len(matches) - 1)]
+                return _done(selected)
+            return _CANCELLED
+        text = _typed_text(key)
+        if text:
+            self._filter += text
+            self._highlight = 0
+        return _PENDING
+
+    def render(self, width: int) -> list[str]:
+        avail = _body_width(width)
+        if avail <= 0:
+            return []
+        theme = self._theme
+        matches = self._matches()
+        self._highlight = min(self._highlight, max(0, len(matches) - 1))
+        cursor = theme.symbol("nav.cursor")
+        body: list[str] = [theme.fg("accent", "> ") + theme.fg("text", escape_terminal_controls(self._filter))]
+        body.append("")
+        if not self._branches:
+            body.append(theme.fg("warning", "No branches found."))
+        elif not matches:
+            body.append(theme.fg("dim", "No matching branches."))
+        else:
+            for index, branch in enumerate(matches):
+                pointer = cursor if index == self._highlight else " "
+                label = f"{pointer} {self._current_branch} -> {branch}"
+                styled = self._bold("accent", label) if index == self._highlight else theme.fg("text", label)
+                body.extend(self._wrap(styled, avail))
+        body.append("")
+        body.append(_hint("↑/↓ move · Enter select · type to filter · Esc cancel", theme))
+        return self._panel("Select a base branch", body, width)
+
+    def wants_fullscreen(self, _width: int, _height: int) -> bool:
+        return True
+
+    def viewport(self, width: int, height: int) -> list[str]:
+        if _body_width(width) > 16 and len(self.render(width)) <= height:
+            return super().viewport(width, height)
+        capacity = max(0, height - 2)
+        if capacity == 0:
+            return []
+        matches = self._matches()
+        self._highlight = min(self._highlight, max(0, len(matches) - 1))
+        body = [self._theme.fg("accent", "> " + escape_terminal_controls(self._filter))]
+        if matches:
+            branch = matches[self._highlight]
+            pointer = self._theme.symbol("nav.cursor")
+            body.append(self._bold("accent", f"{pointer} {self._current_branch} -> {branch}"))
+        elif self._branches:
+            body.append(self._theme.fg("dim", "No matching branches."))
+        else:
+            body.append(self._theme.fg("warning", "No branches found."))
+        body.extend((_hint("↑↓ Enter select", self._theme), _hint("Esc cancel·type", self._theme)))
+        return self._panel("Select a base branch", body[:capacity], width)
+
+
+class ReviewCommitPickerOverlay(_Base):
+    """Select a commit to review."""
+
+    __slots__ = ("_commits", "_filter", "_highlight")
+
+    def __init__(
+        self,
+        *,
+        commits: Sequence[ReviewCommitLogEntry],
+        theme: Theme | None = None,
+    ) -> None:
+        super().__init__(theme)
+        self._commits = tuple(commits)
+        self._filter = ""
+        self._highlight = 0
+
+    def cursor_position(self, width: int) -> tuple[int, int] | None:
+        return (1, min(max(0, width - 1), 4 + visible_width(escape_terminal_controls(self._filter))))
+
+    def _matches(self) -> list[ReviewCommitLogEntry]:
+        tokens = self._filter.lower().split()
+        if not tokens:
+            return list(self._commits)
+        matched: list[ReviewCommitLogEntry] = []
+        for commit in self._commits:
+            haystack = f"{commit.subject} {commit.sha}".lower()
+            if all(token in haystack for token in tokens):
+                matched.append(commit)
+        return matched
+
+    def handle_key(self, key: Key) -> OverlayOutcome:
+        matches = self._matches()
+        if key.name == "escape":
+            return _CANCELLED
+        if key.name in {"up", "k"}:
+            self._highlight = max(0, self._highlight - 1)
+            return _PENDING
+        if key.name in {"down", "j"}:
+            self._highlight = min(max(0, len(matches) - 1), self._highlight + 1)
+            return _PENDING
+        if key.name == "backspace":
+            self._filter = self._filter[:-1]
+            self._highlight = 0
+            return _PENDING
+        if key.name == "enter":
+            if matches:
+                selected = matches[min(self._highlight, len(matches) - 1)]
+                return _done(selected)
+            return _CANCELLED
+        text = _typed_text(key)
+        if text:
+            self._filter += text
+            self._highlight = 0
+        return _PENDING
+
+    def render(self, width: int) -> list[str]:
+        avail = _body_width(width)
+        if avail <= 0:
+            return []
+        theme = self._theme
+        matches = self._matches()
+        self._highlight = min(self._highlight, max(0, len(matches) - 1))
+        cursor = theme.symbol("nav.cursor")
+        body: list[str] = [theme.fg("accent", "> ") + theme.fg("text", escape_terminal_controls(self._filter))]
+        body.append("")
+        if not self._commits:
+            body.append(theme.fg("warning", "No commits found."))
+        elif not matches:
+            body.append(theme.fg("dim", "No matching commits."))
+        else:
+            for index, commit in enumerate(matches):
+                pointer = cursor if index == self._highlight else " "
+                short_sha = commit.sha[:7]
+                label = f"{pointer} {commit.subject} ({short_sha})"
+                styled = self._bold("accent", label) if index == self._highlight else theme.fg("text", label)
+                body.extend(self._wrap(styled, avail))
+        body.append("")
+        body.append(_hint("↑/↓ move · Enter select · type to filter · Esc cancel", theme))
+        return self._panel("Select a commit to review", body, width)
+
+    def wants_fullscreen(self, _width: int, _height: int) -> bool:
+        return True
+
+    def viewport(self, width: int, height: int) -> list[str]:
+        if _body_width(width) > 16 and len(self.render(width)) <= height:
+            return super().viewport(width, height)
+        capacity = max(0, height - 2)
+        if capacity == 0:
+            return []
+        matches = self._matches()
+        self._highlight = min(self._highlight, max(0, len(matches) - 1))
+        body = [self._theme.fg("accent", "> " + escape_terminal_controls(self._filter))]
+        if matches:
+            commit = matches[self._highlight]
+            pointer = self._theme.symbol("nav.cursor")
+            body.append(self._bold("accent", f"{pointer} {commit.subject} ({commit.sha[:7]})"))
+        elif self._commits:
+            body.append(self._theme.fg("dim", "No matching commits."))
+        else:
+            body.append(self._theme.fg("warning", "No commits found."))
+        body.extend((_hint("↑↓ Enter select", self._theme), _hint("Esc cancel·type", self._theme)))
+        return self._panel("Select a commit to review", body[:capacity], width)
+
+
+class ReviewCustomPromptOverlay(_Base):
+    """Custom review instructions prompt."""
+
+    __slots__ = ("_text",)
+
+    def __init__(self, *, theme: Theme | None = None) -> None:
+        super().__init__(theme)
+        self._text = ""
+
+    def cursor_position(self, width: int) -> tuple[int, int] | None:
+        return (1, min(max(0, width - 1), 4 + visible_width(escape_terminal_controls(self._text))))
+
+    def handle_key(self, key: Key) -> OverlayOutcome:
+        if key.name == "escape":
+            return _CANCELLED
+        if key.name == "backspace":
+            self._text = self._text[:-1]
+            return _PENDING
+        if key.name == "enter":
+            trimmed = self._text.strip()
+            if trimmed:
+                return _done(trimmed)
+            return _CANCELLED
+        text = _typed_text(key)
+        if text:
+            self._text += text
+        return _PENDING
+
+    def render(self, width: int) -> list[str]:
+        avail = _body_width(width)
+        if avail <= 0:
+            return []
+        theme = self._theme
+        body = [
+            theme.fg("accent", "> ") + theme.fg("text", escape_terminal_controls(self._text)),
+            "",
+            _hint("Type instructions and press Enter · Esc cancel", theme),
+        ]
+        return self._panel("Custom review instructions", body, width)
+
+    def viewport(self, width: int, height: int) -> list[str]:  # noqa: ARG002
+        return self.render(width)
+
+    def wants_fullscreen(self, _width: int, _height: int) -> bool:
+        return False
+
+
+class SideQuestionOverlay(_Base):
+    """Read-only ``/btw`` answer view: scroll with ↑/↓, dismiss with Space/Enter/Esc."""
+
+    __slots__ = ("_answer", "_question", "_scroll")
+
+    def __init__(self, *, question: str, answer: str, theme: Theme | None = None) -> None:
+        super().__init__(theme)
+        self._question = question
+        self._answer = answer
+        self._scroll = 0
+
+    def handle_key(self, key: Key) -> OverlayOutcome:
+        if key.name in {"escape", "enter", "space"}:
+            return _CANCELLED
+        if key.name in {"up", "down", "pageUp", "pageDown"}:
+            delta = -1 if key.name in {"up", "pageUp"} else 1
+            self._scroll = max(0, self._scroll + delta * (10 if key.name.startswith("page") else 1))
+        return _PENDING
+
+    def render(self, width: int) -> Sequence[str]:
+        avail = _body_width(width)
+        body: list[str] = [self._bold("warning", "/btw ") + self._fg("dim", self._question)]
+        body.append("")
+        for line in self._answer.splitlines() or [""]:
+            body.extend(self._wrap(self._fg("text", line), avail))
+        body.extend(("", _hint("↑/↓ scroll · Space, Enter, or Esc dismiss", self._theme)))
+        return self._panel("Side question", body, width)
+
+    def wants_fullscreen(self, width: int, height: int) -> bool:
+        return len(self.render(width)) > height
+
+    def viewport(self, width: int, height: int) -> list[str]:
+        capacity = max(0, height - 2)
+        if capacity == 0:
+            return []
+        avail = _body_width(width)
+        header = [self._bold("warning", "/btw ") + self._fg("dim", self._question), ""]
+        content: list[str] = []
+        for line in self._answer.splitlines() or [""]:
+            content.extend(self._wrap(self._fg("text", line), avail))
+        footer = _hint("↑/↓ scroll · Space/Enter/Esc dismiss", self._theme)
+        scroll_slots = max(0, capacity - len(header) - 1)
+        self._scroll = min(self._scroll, max(0, len(content) - scroll_slots))
+        body = [*header, *content[self._scroll : self._scroll + scroll_slots], footer]
+        return self._panel("Side question", body[:capacity], width)

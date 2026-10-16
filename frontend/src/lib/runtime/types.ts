@@ -75,6 +75,10 @@ export type ReviewTreeNode = Schemas["ReviewTreeNodeBody"];
 export type ReviewFileDiff = Schemas["ReviewFileDiffBody"];
 /** Result returned by native `POST /api/sessions/{id}/compact`. */
 export type RuntimeCompactResult = Schemas["RuntimeCompactBody"];
+/** Result returned by native `POST /api/sessions/{id}/shell` (`!` escape). */
+export type UserShellResult = Schemas["UserShellResultBody"];
+/** Result returned by native `POST /api/sessions/{id}/btw`. */
+export type SideQuestionResult = Schemas["SideQuestionResultBody"];
 export type RuntimeInterruptResult = Schemas["SessionCancelBody"];
 export type RuntimeResponse = Schemas["RuntimeResponseBody"];
 export interface CollaborationModeResult {

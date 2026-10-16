@@ -272,6 +272,11 @@ class Composer:
         self._scroll = 0
         self._cursor_position: tuple[int, int] | None = None
 
+    @property
+    def is_bash_mode(self) -> bool:
+        """Whether the draft is a native `!` shell escape (upstream bash mode)."""
+        return self._text.startswith("!")
+
     # -- accessors ---------------------------------------------------------
 
     @property
@@ -419,6 +424,12 @@ class Composer:
             return ComposerOutcome()
         name = key.name
 
+        if name == "escape" and self._text == "!":
+            # Upstream bash mode: Esc exits the empty `!` mode instead of
+            # cancelling a turn.
+            self.clear()
+            return ComposerOutcome()
+
         if name == "escape":
             return ComposerOutcome(ComposerAction.CANCEL_TURN)
         if name == "ctrl+c":
@@ -527,7 +538,11 @@ class Composer:
     # -- rendering ---------------------------------------------------------
 
     def _prompt_gutter(self) -> str:
-        return f"{self._theme.symbol('nav.cursor')} " if self._gutter == "prompt" else ""
+        if self._gutter != "prompt":
+            return ""
+        if self.is_bash_mode:
+            return f"{self._theme.fg('accent', '!')} "
+        return f"{self._theme.symbol('nav.cursor')} "
 
     def _empty_content(self, layout_width: int) -> str:
         return clamp_row(self._theme.fg("dim", self._placeholder), layout_width) if self._placeholder else ""

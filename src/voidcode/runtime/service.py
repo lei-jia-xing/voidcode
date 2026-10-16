@@ -31,7 +31,7 @@ from ..common.json_values import json_wire_object
 from ..core.questions import QuestionAnswer
 from ..core.tool_context import ArtifactRead, TranscriptRead
 from ..core.transcript import ContextSegment, ToolResultView, project_report
-from ..core.turns import ReportedCall, TurnProducer, TurnRequest
+from ..core.turns import FinalTurn, ReportedCall, ToolTurn, TurnProducer, TurnRequest
 from ..hook.before_agent_start import (
     BeforeAgentStartBinding,
     BeforeAgentStartDeclaration,
@@ -204,7 +204,9 @@ from .contracts import (
     ProviderReadinessResult,
     ProviderSummary,
     ProviderValidationResult,
+    ReviewCommitLogEntry,
     ReviewFileDiff,
+    ReviewTarget,
     RuntimeProviderContextPolicyDecision,
     RuntimeProviderContextSnapshot,
     RuntimeRequest,
@@ -304,6 +306,7 @@ from .providers.metadata import (
 )
 from .question import PendingQuestion
 from .resume import RuntimeResumeCoordinator
+from .review import WorkspaceReviewService
 from .run_loop import RuntimeRunLoopCoordinator
 from .runtime_debug import (
     current_debug_status,
@@ -1485,6 +1488,14 @@ class VoidCodeRuntime(RuntimeSurface):
             merged["context_window"] = stored_meta["context_window"]
         if "collaboration_mode" in stored_meta:
             merged["collaboration_mode"] = stored_meta["collaboration_mode"]
+        stored_goal = stored_meta.get("thread_goal")
+        incoming_goal = merged.get("thread_goal")
+        if isinstance(stored_goal, dict) and isinstance(incoming_goal, dict):
+            stored_ts = cast(int, stored_goal.get("updated_at", 0))
+            incoming_ts = cast(int, incoming_goal.get("updated_at", 0))
+            merged["thread_goal"] = stored_goal if stored_ts > incoming_ts else incoming_goal
+        elif isinstance(stored_goal, dict):
+            merged["thread_goal"] = stored_goal
         return {**merged, "phase_records": self.phase_records(session_id, metadata=stored_meta)}
 
     def _background_task_composition_ref(self, *, task_id: str, session_id: str) -> CompositionRef:
@@ -3794,8 +3805,52 @@ class VoidCodeRuntime(RuntimeSurface):
     def review_diff_all(self) -> ReviewFileDiff:
         return self._inspection_coordinator.review_diff_all()
 
-    def review_session(self, *, session_id: str, focus: str | None = None) -> RuntimeResponse:
-        """Run the read-only review agent over the current aggregate workspace diff."""
+    def review_diff_base_branch(self, branch: str) -> ReviewFileDiff:
+        return self._inspection_coordinator.review_diff_base_branch(branch)
+
+    def review_diff_commit(self, sha: str) -> ReviewFileDiff:
+        return self._inspection_coordinator.review_diff_commit(sha)
+
+    def review_branches(self) -> tuple[str, ...]:
+        return self._inspection_coordinator.review_branches()
+
+    def review_current_branch(self) -> str | None:
+        return self._inspection_coordinator.review_current_branch()
+
+    def review_recent_commits(self, limit: int = 100) -> tuple[ReviewCommitLogEntry, ...]:
+        return self._inspection_coordinator.review_recent_commits(limit=limit)
+
+    def _fallback_reasoning_effort(self, review_model: str, parent_effort: str) -> str:
+        provider_name, _, model_name = review_model.partition("/")
+        if not model_name:
+            model_name = provider_name
+            provider_name = ""
+        model_metadata = None
+        if provider_name:
+            model_metadata = self._inspection_coordinator._metadata_for_provider_model(provider_name, model_name)
+        if model_metadata is None:
+            for p in self._model_provider_registry.descriptors:
+                meta = self._inspection_coordinator._metadata_for_provider_model(p, model_name)
+                if meta is not None:
+                    model_metadata = meta
+                    break
+        if model_metadata is not None:
+            supported = model_metadata.supported_effort_levels
+            if supported and parent_effort not in supported:
+                middle_idx = max(0, len(supported) - 1) // 2
+                return supported[middle_idx]
+            if model_metadata.supports_reasoning_effort is False:
+                return ""
+        return parent_effort
+
+    def review_session(
+        self,
+        *,
+        session_id: str,
+        focus: str | None = None,
+        target: ReviewTarget | dict[str, object] | None = None,
+    ) -> RuntimeResponse:
+        """Run the read-only review agent over the specified review target."""
         validate_id(session_id)
         if ACTIVE_SESSION_REGISTRY.active_run_count(workspace=self._workspace, session_id=session_id):
             raise SessionBusyConflictError("cannot review a session while it is running")
@@ -3803,38 +3858,344 @@ class VoidCodeRuntime(RuntimeSurface):
         parent_session = parent_response.session
         if parent_session.status in {"running", "waiting"}:
             raise SessionBusyConflictError(f"cannot review a session with status {parent_session.status}")
-        diff = self.review_diff_all()
-        if diff.state == "not_git_repo":
-            raise ValueError("review requires a Git repository")
-        if diff.state == "clean" or not diff.diff:
-            raise ValueError("review found no workspace changes")
-        diff_bytes = len(diff.diff.encode("utf-8"))
-        if diff_bytes > MAX_REVIEW_DIFF_BYTES:
-            raise ValueError(
-                f"workspace diff is too large ({diff_bytes} bytes) for inline review; reduce working tree changes or review changes incrementally"
+
+        resolved_target: ReviewTarget
+        if target is None:
+            if focus and focus.strip():
+                resolved_target = ReviewTarget(type="custom", instructions=focus.strip())
+            else:
+                resolved_target = ReviewTarget(type="uncommitted")
+        elif isinstance(target, ReviewTarget):
+            resolved_target = target
+        elif isinstance(target, dict):
+            raw_type = target.get("type", "uncommitted")
+            if raw_type in ("uncommittedChanges", "uncommitted"):
+                resolved_target = ReviewTarget(type="uncommitted")
+            elif raw_type in ("baseBranch", "base_branch"):
+                resolved_target = ReviewTarget(type="base_branch", branch=str(target.get("branch") or ""))
+            elif raw_type == "commit":
+                resolved_target = ReviewTarget(type="commit", sha=str(target.get("sha") or ""), title=str(target.get("title") or "") or None)
+            elif raw_type == "custom":
+                resolved_target = ReviewTarget(type="custom", instructions=str(target.get("instructions") or ""))
+            else:
+                raise ValueError(f"unknown review target type '{raw_type}'")
+        else:
+            raise ValueError("review target must be a ReviewTarget or object")
+
+        if resolved_target.type == "custom" and not resolved_target.instructions and focus and focus.strip():
+            resolved_target = ReviewTarget(type="custom", instructions=focus.strip())
+
+        diff: ReviewFileDiff
+        prompt_parts: list[str]
+        if resolved_target.type == "uncommitted":
+            diff = self.review_diff_all()
+            if diff.state == "not_git_repo":
+                raise ValueError("review requires a Git repository")
+            if diff.state == "clean" or not diff.diff:
+                raise ValueError("review found no workspace changes")
+            diff_bytes = len(diff.diff.encode("utf-8"))
+            if diff_bytes > MAX_REVIEW_DIFF_BYTES:
+                raise ValueError(
+                    f"workspace diff is too large ({diff_bytes} bytes) for inline review; reduce working tree changes or review changes incrementally"
+                )
+            prompt_parts = [
+                "Review the current workspace changes (staged, unstaged, and untracked files) and provide prioritized findings.",
+                f"Aggregate Git diff:\n{diff.diff}",
+                "Use the yield tool to return the final review findings.",
+            ]
+        elif resolved_target.type == "base_branch":
+            if not resolved_target.branch:
+                raise ValueError("base branch target requires a branch name")
+            diff = self.review_diff_base_branch(resolved_target.branch)
+            if diff.state == "not_git_repo":
+                raise ValueError("review requires a Git repository")
+            if diff.state == "clean" or not diff.diff:
+                raise ValueError(f"review found no changes against base branch '{resolved_target.branch}'")
+            diff_bytes = len(diff.diff.encode("utf-8"))
+            if diff_bytes > MAX_REVIEW_DIFF_BYTES:
+                raise ValueError(f"base branch diff is too large ({diff_bytes} bytes) for inline review; review changes incrementally")
+            merge_base = WorkspaceReviewService(workspace=self._workspace).merge_base_sha(
+                resolved_target.branch, git=self._inspection_coordinator._git_status_snapshot()
             )
-        prompt_parts = ["Review the current workspace changes and report concrete correctness, regression, and safety findings."]
-        if focus and focus.strip():
-            prompt_parts.append(f"Reviewer focus: {focus.strip()}")
-        prompt_parts.append(f"Aggregate Git diff:\n{diff.diff}")
-        prompt_parts.append("Use the yield tool to return the final review findings.")
+            merge_base_text = f" The merge base commit for this comparison is {merge_base}." if merge_base else ""
+            prompt_parts = [
+                f"Review the code changes against the base branch '{resolved_target.branch}'.{merge_base_text}",
+                f"Git diff against base branch '{resolved_target.branch}':\n{diff.diff}",
+                "Provide prioritized, actionable findings. Use the yield tool to return the final review findings.",
+            ]
+        elif resolved_target.type == "commit":
+            if not resolved_target.sha:
+                raise ValueError("commit target requires a commit sha")
+            diff = self.review_diff_commit(resolved_target.sha)
+            if diff.state == "not_git_repo":
+                raise ValueError("review requires a Git repository")
+            if diff.state == "clean" or not diff.diff:
+                raise ValueError(f"review found no changes in commit {resolved_target.sha}")
+            diff_bytes = len(diff.diff.encode("utf-8"))
+            if diff_bytes > MAX_REVIEW_DIFF_BYTES:
+                raise ValueError(f"commit diff is too large ({diff_bytes} bytes) for inline review; review changes incrementally")
+            title_text = f' ("{resolved_target.title}")' if resolved_target.title else ""
+            prompt_parts = [
+                f"Review the code changes introduced by commit {resolved_target.sha}{title_text}.",
+                f"Git diff for commit {resolved_target.sha}:\n{diff.diff}",
+                "Provide prioritized, actionable findings. Use the yield tool to return the final review findings.",
+            ]
+        elif resolved_target.type == "custom":
+            instructions = (resolved_target.instructions or focus or "").strip()
+            if not instructions:
+                raise ValueError("custom review instructions must not be empty")
+            diff = self.review_diff_all()
+            if diff.state == "not_git_repo":
+                raise ValueError("review requires a Git repository")
+            if diff.state == "clean" or not diff.diff:
+                raise ValueError("review found no workspace changes")
+            diff_bytes = len(diff.diff.encode("utf-8"))
+            if diff_bytes > MAX_REVIEW_DIFF_BYTES:
+                raise ValueError(
+                    f"workspace diff is too large ({diff_bytes} bytes) for inline review; reduce working tree changes or review changes incrementally"
+                )
+            prompt_parts = [
+                "Review the current workspace changes and report concrete correctness, regression, and safety findings.",
+                f"Reviewer focus: {instructions}",
+                f"Aggregate Git diff:\n{diff.diff}",
+                "Use the yield tool to return the final review findings.",
+            ]
+        else:
+            raise ValueError(f"unsupported review target: {resolved_target.type}")
+
         review_prompt = "\n\n".join(prompt_parts)
+
+        parent_model: str | None = None
+        parent_effort: str | None = None
+        raw_cap = parent_session.metadata.get("agent_capability_snapshot")
+        if isinstance(raw_cap, dict):
+            exec_meta = raw_cap.get("execution")
+            if isinstance(exec_meta, dict):
+                pm = exec_meta.get("model")
+                if isinstance(pm, str):
+                    parent_model = pm
+                pe = exec_meta.get("reasoning_effort")
+                if isinstance(pe, str):
+                    parent_effort = pe
+        raw_agent = parent_session.metadata.get("agent")
+        if not parent_model and isinstance(raw_agent, dict):
+            pm = raw_agent.get("model")
+            if isinstance(pm, str):
+                parent_model = pm
+        if not parent_model:
+            parent_model = self._config.model
+        raw_effort = parent_session.metadata.get("reasoning_effort")
+        if not parent_effort and isinstance(raw_effort, str):
+            parent_effort = raw_effort
+        if not parent_effort:
+            parent_effort = self._config.reasoning_effort
+
+        review_model = self._config.review_model or parent_model
+        resolved_effort = parent_effort
+        if review_model and parent_effort and review_model != parent_model:
+            resolved_effort = self._fallback_reasoning_effort(review_model, parent_effort)
+
+        agent_dict: dict[str, object] = {"preset": "review"}
+        if review_model:
+            agent_dict["model"] = review_model
+
+        review_meta: dict[str, object] = {
+            "agent": agent_dict,
+            "provider_stream": True,
+            "read_only": True,
+            "review_child": True,
+            "delegation": {
+                "mode": "sync",
+                "subagent_type": "review",
+                "description": "Review the current workspace diff.",
+            },
+        }
+        if resolved_effort:
+            review_meta["reasoning_effort"] = resolved_effort
+
         return self.run(
             RuntimeRequest(
                 prompt=review_prompt,
                 parent_session_id=session_id,
                 allocate_session_id=True,
-                metadata={
-                    "agent": {"preset": "review"},
-                    "provider_stream": True,
-                    "read_only": True,
-                    "delegation": {
-                        "mode": "sync",
-                        "subagent_type": "review",
-                        "description": "Review the current workspace diff.",
-                    },
-                },
+                metadata=review_meta,
             )
+        )
+
+    def ask_side_question(self, *, session_id: str, question: str) -> dict[str, object]:
+        """Answer a native ``/btw`` side question without touching the session transcript.
+
+        Fork semantics (Claude ``sideQuestion.ts`` parity): the fork reuses the
+        session's own assembled provider-context prefix (same model, same
+        ``assemble_provider_context`` projection incl. replayed conversation)
+        through the session's own turn producer, offers zero tools, and runs
+        exactly one producer turn. No event is persisted, no metadata is
+        written, and there is intentionally no busy gate: this works mid-turn.
+        """
+        validate_id(session_id)
+        cleaned = question.strip()
+        if not cleaned:
+            raise ValueError("side question must not be empty")
+        stored = self._repositories.sessions.load_session(workspace=self._workspace, session_id=session_id)
+        session = stored.session
+        # Same activation compact_session performs: a fresh runtime (e.g. the
+        # HTTP server process) has no bound provider until the session's
+        # frozen composition is activated.
+        config = self._activate_existing_session_composition(session_id)
+        replayed = self.replayed_conversation_segments_for_existing_session(stored=stored, parent_session_id=session.session.parent_id)
+        tool_results = self._rehydrated_tool_results_for_existing_session(stored=stored, parent_session_id=session.session.parent_id)
+        wrapped = (
+            "This is a side question from the user. Answer it directly in a single response.\n"
+            "You have NO tools available and there will be no follow-up turns; answer only from the conversation context.\n"
+            "If you do not know the answer, say so — do not offer to look it up.\n\n"
+            f"{cleaned}"
+        )
+        assembled = self.assemble_provider_context(
+            prompt=wrapped,
+            tool_results=tool_results,
+            session_metadata=dict(session.metadata),
+            replayed_conversation_segments=replayed,
+        )
+        turn_request = turn_request_for_session(
+            TurnRequest(
+                session=turn_session_snapshot(session),
+                prompt=wrapped,
+                available_tools=(),
+                context_window=assembled.context_window,
+                assembled_context=assembled,
+                metadata={
+                    "provider_attempt": 0,
+                    "provider_stream": False,
+                    **({"reasoning_effort": config.reasoning_effort} if config.reasoning_effort is not None else {}),
+                },
+                run_step=1,
+            ),
+            session,
+        )
+        producer = self.turn_producer_for_session_metadata(dict(session.metadata))
+        plan = producer.produce(
+            turn_request,
+            tool_results=tuple(project_report(report) for report in tool_results if isinstance(report, ReportedCall)),
+            session=turn_request.session,
+        )
+        if isinstance(plan, ToolTurn):
+            attempted = plan.calls[0].tool_name if plan.calls else "a tool"
+            answer = f"(The model tried to call {attempted} instead of answering directly. Try rephrasing or ask in the main conversation.)"
+        elif isinstance(plan, FinalTurn):
+            answer = plan.output
+        else:
+            raise ValueError(f"side question producer returned an unsupported turn plan: {type(plan).__name__}")
+        if not answer.strip():
+            raise ValueError("side question received an empty response")
+        return {"session_id": session_id, "question": cleaned, "answer": answer}
+
+    def run_user_shell(self, *, session_id: str | None, command: str, timeout_seconds: int | None = None) -> dict[str, object]:
+        """Execute a native ``!`` shell command and record it in session history.
+
+        Intentional consent bypass (see ``runtime/user_shell.py``): the typed
+        ``!`` command IS explicit user consent, so there is no approval check,
+        no permission gate, and no sandbox — not even under read-only/plan
+        mode. Works idle AND mid-turn (no turn lifecycle is started, so there
+        is no duplicate turn event); the output only lands in context for a
+        later provider turn.
+        """
+        from .user_shell import (
+            USER_SHELL_TIMEOUT_SECONDS,
+            execute_user_shell_command,
+            format_user_shell_record,
+        )
+
+        cleaned = command.strip()
+        if not cleaned:
+            raise ValueError("shell escape command must not be empty")
+        if session_id is not None:
+            validate_id(session_id)
+        resolved_session_id = session_id or f"shell-{os.urandom(8).hex()}"
+        started_sequence: int | None = None
+        if self._repositories.sessions.has_session(workspace=self._workspace, session_id=resolved_session_id):
+            stored = self._repositories.sessions.load_session(workspace=self._workspace, session_id=resolved_session_id)
+            started_sequence = stored.events[-1].sequence if stored.events else 0
+        else:
+            self._admit_sessionless_user_shell(resolved_session_id)
+        timeout = timeout_seconds if timeout_seconds is not None and timeout_seconds > 0 else USER_SHELL_TIMEOUT_SECONDS
+        result = execute_user_shell_command(cleaned, cwd=self._workspace, timeout_seconds=timeout)
+        record = format_user_shell_record(cleaned, result)
+        # `completed`/`failed` rows seal against late events, exactly like a
+        # follow-up re-entry: unseal through the interrupted checkpoint first
+        # (same call `_assemble_stream_session_metadata` makes), preserving
+        # the stored metadata and checkpoint identity.
+        stored_now = self._repositories.sessions.load_session(workspace=self._workspace, session_id=resolved_session_id)
+        if stored_now.session.status in {"completed", "failed"}:
+            unseal_metadata = {k: v for k, v in stored_now.session.metadata.items() if k != "execution_composition"}
+            self._finalize_coordinator.save_interrupted_checkpoint(
+                session_id=resolved_session_id,
+                prompt=f"!{cleaned}",
+                session_metadata=unseal_metadata,
+                tool_results=(),
+                last_event_sequence=stored_now.events[-1].sequence if stored_now.events else 0,
+                output=None,
+                create_if_missing=False,
+                turn=stored_now.session.turn,
+                parent_session_id=stored_now.session.session.parent_id,
+            )
+        self._finalize_coordinator.persist_emitted_event(
+            session_id=resolved_session_id,
+            event_type="runtime.user_shell_executed",
+            source="runtime",
+            payload={
+                "command": cleaned,
+                "exit_code": result.exit_code,
+                "status": result.status,
+                "duration_seconds": result.duration_seconds,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "output": result.output,
+                "truncated": result.truncated,
+                "timed_out": result.timed_out,
+                "record": record,
+            },
+        )
+        reloaded = self._repositories.sessions.load_session(workspace=self._workspace, session_id=resolved_session_id)
+        stored_event = reloaded.events[-1]
+        return {
+            "session_id": resolved_session_id,
+            "command": cleaned,
+            "exit_code": result.exit_code,
+            "status": result.status,
+            "duration_seconds": result.duration_seconds,
+            "output": result.output,
+            "truncated": result.truncated,
+            "timed_out": result.timed_out,
+            "event_sequence": stored_event.sequence,
+            "started_sequence": started_sequence,
+        }
+
+    def _admit_sessionless_user_shell(self, session_id: str) -> None:
+        """Create a minimal session row so a ``!`` escape can record history."""
+        config = self.run_config_for_request(RuntimeRequest(prompt="", session_id=session_id, metadata={"provider_stream": True}))
+        frozen_composition = self._prepare_execution_composition(config)
+        composition_ref = frozen_composition.reference(
+            workspace=str(self._workspace),
+            owner=SessionCompositionOwner(kind="session", session_id=session_id),
+        )
+        metadata: dict[str, object] = {
+            "workspace": str(self._workspace),
+            "runtime_config": self._runtime_config_metadata(config),
+            "runtime_state": runtime_state_metadata_payload(run_id=None, acp_state=self._acp_adapter.current_state()),
+        }
+        self._repositories.recovery.save_interrupted_checkpoint(
+            workspace=self._workspace,
+            session_id=session_id,
+            prompt="",
+            session_metadata=metadata,
+            tool_results=(),
+            last_event_sequence=0,
+            composition_ref=composition_ref,
+            composition=frozen_composition,
+            output=None,
+            create_if_missing=True,
+            turn=0,
+            parent_session_id=None,
         )
 
     def compact_session(self, *, session_id: str) -> dict[str, object]:
@@ -3970,6 +4331,109 @@ class VoidCodeRuntime(RuntimeSurface):
             "previous_mode": previous_mode,
             "event_sequence": event.sequence,
         }
+
+    def get_goal(self, *, session_id: str) -> dict[str, object] | None:
+        """Return the current thread goal for this session if one exists."""
+        validate_id(session_id)
+        response = self._repositories.sessions.load_session(workspace=self._workspace, session_id=session_id)
+        raw_goal = response.session.metadata.get("thread_goal")
+        return dict(raw_goal) if isinstance(raw_goal, dict) else None
+
+    def set_goal(
+        self,
+        *,
+        session_id: str,
+        objective: str | None = None,
+        status: str | None = None,
+        token_budget: int | None = None,
+        mode: str | None = None,
+    ) -> dict[str, object]:
+        """Set, update, or replace the thread goal for a session."""
+        import time
+
+        validate_id(session_id)
+        from .goal import (
+            VALID_GOAL_STATUSES,
+            ThreadGoal,
+            spill_goal_objective_if_needed,
+        )
+
+        with ACTIVE_SESSION_REGISTRY.goal_lock(workspace=self._workspace, session_id=session_id):
+            response = self._repositories.sessions.load_session(workspace=self._workspace, session_id=session_id)
+            existing_goal = response.session.metadata.get("thread_goal")
+            now = int(time.time() * 1000)
+
+            if mode == "replace" or existing_goal is None:
+                if objective is None or not objective.strip():
+                    raise ValueError("Goal objective must not be empty.")
+                clean_objective = objective.strip()
+                spilled_obj, _ = spill_goal_objective_if_needed(self._workspace, clean_objective)
+                goal_status = status if status in VALID_GOAL_STATUSES else "active"
+                if token_budget is not None and token_budget <= 0:
+                    raise ValueError("goal budgets must be positive when provided")
+                new_goal = ThreadGoal(
+                    thread_id=session_id,
+                    objective=spilled_obj,
+                    status=goal_status,  # type: ignore[arg-type]
+                    token_budget=token_budget,
+                    tokens_used=0,
+                    time_used_seconds=0,
+                    created_at=now,
+                    updated_at=now,
+                )
+            else:
+                assert isinstance(existing_goal, dict)
+                current_goal = ThreadGoal.from_payload(existing_goal)
+                if objective is not None:
+                    clean_objective = objective.strip()
+                    if not clean_objective:
+                        raise ValueError("Goal objective must not be empty.")
+                    spilled_obj, _ = spill_goal_objective_if_needed(self._workspace, clean_objective)
+                else:
+                    spilled_obj = current_goal.objective
+
+                goal_status = status if status in VALID_GOAL_STATUSES else current_goal.status
+                if token_budget is not None:
+                    if token_budget <= 0:
+                        raise ValueError("goal budgets must be positive when provided")
+                    budget = token_budget
+                else:
+                    budget = current_goal.token_budget
+
+                new_goal = ThreadGoal(
+                    thread_id=session_id,
+                    objective=spilled_obj,
+                    status=goal_status,  # type: ignore[arg-type]
+                    token_budget=budget,
+                    tokens_used=current_goal.tokens_used,
+                    time_used_seconds=current_goal.time_used_seconds,
+                    created_at=current_goal.created_at,
+                    updated_at=now,
+                )
+
+            goal_payload = new_goal.to_payload()
+            self._repositories.sessions.append_thread_goal_change(
+                workspace=self._workspace,
+                session_id=session_id,
+                goal=goal_payload,
+                event_type="runtime.thread_goal_updated",
+            )
+            return goal_payload
+
+    def clear_goal(self, *, session_id: str) -> bool:
+        """Clear the thread goal for a session."""
+        validate_id(session_id)
+        with ACTIVE_SESSION_REGISTRY.goal_lock(workspace=self._workspace, session_id=session_id):
+            response = self._repositories.sessions.load_session(workspace=self._workspace, session_id=session_id)
+            if "thread_goal" not in response.session.metadata:
+                return False
+            self._repositories.sessions.append_thread_goal_change(
+                workspace=self._workspace,
+                session_id=session_id,
+                goal=None,
+                event_type="runtime.thread_goal_cleared",
+            )
+            return True
 
     @staticmethod
     def _decode_subprocess_text_output(value: object) -> str:
