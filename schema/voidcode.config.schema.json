@@ -1005,7 +1005,6 @@
             "agent",
             "context",
             "typed-input",
-            "command",
             "before-agent-start"
           ],
           "type": "string"

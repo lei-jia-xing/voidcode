@@ -13,6 +13,7 @@ from voidcode.core.turns import FinalTurn, ModelTurnFact, TurnRequest
 from voidcode.runtime.contracts import ReviewFileDiff
 from voidcode.runtime.service import VoidCodeRuntime
 from voidcode.tui.app import TuiApp
+from voidcode.tui.keys import Key
 from voidcode.tui.term import Terminal
 from voidcode.tui.transcript import NoticeBlock
 
@@ -117,7 +118,7 @@ def test_table_to_catalog_parity(tmp_path: Path) -> None:
 
 
 def test_table_to_tui_dispatch_parity(tmp_path: Path) -> None:
-    """Every entry dispatches via NATIVE_COMMANDS; unknown commands are not intercepted."""
+    """Every entry dispatches via NATIVE_COMMANDS; unknown commands are intercepted (Codex parity)."""
     runtime = _MockTuiRuntime()
     app, terminal, output = _make_tui_app(tmp_path, runtime)
     submitted_prompts: list[str] = []
@@ -125,9 +126,21 @@ def test_table_to_tui_dispatch_parity(tmp_path: Path) -> None:
     app._session_id = "session-test"
 
     try:
-        # Unknown command falls through to ordinary prompt submission
+        # Unknown command is intercepted: notice, draft restored, nothing submitted
         app._submit("/unknown_custom_macro with args")
-        assert submitted_prompts == ["/unknown_custom_macro with args"]
+        assert submitted_prompts == []
+        assert _last_notice(app) == "Unrecognized command '/unknown_custom_macro'. Type \"/\" for a list of supported commands."
+        assert app._composer is not None
+        assert app._composer.value == "/unknown_custom_macro with args"
+
+        # Name containing `/` is literal text (upstream exception) — submitted
+        app._submit("/foo/bar")
+        assert submitted_prompts == ["/foo/bar"]
+        submitted_prompts.clear()
+
+        # Bare `/` (empty name) is literal text — submitted
+        app._submit("/")
+        assert submitted_prompts == ["/"]
         submitted_prompts.clear()
 
         # Each command in NATIVE_COMMANDS is recognized
@@ -192,14 +205,8 @@ def test_native_init_submits_verbatim_prompt_and_busy_gates(tmp_path: Path) -> N
         output.close()
 
 
-def test_collision_markdown_command_ignored_by_native_dispatch(tmp_path: Path) -> None:
-    """A markdown command colliding with a native name is ignored by native dispatch."""
-    commands_dir = tmp_path / ".voidcode" / "commands"
-    commands_dir.mkdir(parents=True, exist_ok=True)
-    # Define custom markdown files for reserved native names
-    (commands_dir / "compact.md").write_text("---\ndescription: Custom compact\n---\nCustom compact: $ARGUMENTS", encoding="utf-8")
-    (commands_dir / "init.md").write_text("---\ndescription: Custom init\n---\nCustom init: $ARGUMENTS", encoding="utf-8")
-
+def test_native_dispatch_and_catalog_parity(tmp_path: Path) -> None:
+    """Native commands route to native handlers and appear in catalog as native."""
     runtime = _MockTuiRuntime()
     app, terminal, output = _make_tui_app(tmp_path, runtime)
     submitted: list[str] = []
@@ -231,3 +238,36 @@ def test_collision_markdown_command_ignored_by_native_dispatch(tmp_path: Path) -
         assert summary_map["compact"].description == NATIVE_COMMANDS_BY_NAME["compact"].description
         assert summary_map["init"].source == "native"
         assert summary_map["init"].description == NATIVE_COMMANDS_BY_NAME["init"].description
+
+
+def test_unknown_slash_command_preserves_draft_and_blocks_submit(tmp_path: Path) -> None:
+    """Unknown `/foo` (Codex chat_composer.rs:3072-3094): notice + draft kept + no submit; natives/`!` unaffected."""
+    runtime = _MockTuiRuntime()
+    app, terminal, output = _make_tui_app(tmp_path, runtime)
+    submitted: list[str] = []
+    app._start_prompt = submitted.append
+    app._session_id = "session-test"
+    assert app._composer is not None
+
+    try:
+        # End-to-end through the key handler: composer clears on Enter, _submit restores the draft.
+        app._composer.set_text("/foo some args")
+        app._handle_key(Key("enter"))
+        assert submitted == []
+        assert _last_notice(app) == "Unrecognized command '/foo'. Type \"/\" for a list of supported commands."
+        assert app._composer.value == "/foo some args"
+
+        # Native /diff still dispatches (state=clean mock -> notice, no submit).
+        app._submit("/diff")
+        assert submitted == []
+        assert runtime.diff_calls == 1
+        assert _last_notice(app) == "/diff: no changes"
+
+        # `!` escape still runs before slash routing.
+        app._submit("!echo hi")
+        assert submitted == []
+        assert runtime.shell_calls == [("session-test", "echo hi")]
+    finally:
+        app._shutdown(terminal)
+        terminal.close()
+        output.close()

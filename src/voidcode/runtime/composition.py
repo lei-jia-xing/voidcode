@@ -37,7 +37,7 @@ from ..core.turns import ReportedCall
 from ..tools.contracts import ToolCall
 
 MANIFEST_NAME = "voidcode-components.json"
-type ComponentSlot = Literal["provider", "tool", "agent", "context", "typed-input", "command", "before-agent-start"]
+type ComponentSlot = Literal["provider", "tool", "agent", "context", "typed-input", "before-agent-start"]
 type LifecycleScope = Literal["session", "run", "turn", "tool"]
 
 VALID_PHASE_TRIGGERS: Mapping[LifecycleScope, frozenset[str]] = {

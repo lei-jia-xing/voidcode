@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ...agent import AgentManifestRegistry
-from ...command.models import CommandDefinition
 from ...command.native import NATIVE_COMMANDS
 from ...core.tool_context import (
     ArtifactBinary,
@@ -204,20 +203,6 @@ def _provider_target_label(target: ResolvedProviderModel) -> str:
     if model is None:
         return provider
     return f"{provider}/{model}"
-
-
-def _command_summary(command: CommandDefinition) -> CommandSummary:
-    return CommandSummary(
-        name=command.name,
-        description=command.description,
-        source=command.source,
-        enabled=command.enabled,
-        hidden=command.hidden,
-        agent=command.agent,
-        model=command.model,
-        subtask=command.subtask,
-        path=(str(command.path) if command.path is not None else None),
-    )
 
 
 def _positive_int_or_none(value: object) -> int | None:
@@ -1810,12 +1795,8 @@ class InspectionCoordinator:
             )
         return tuple(summaries)
 
-    def list_command_summaries(self, *, user_commands_dir: Path | None = None) -> tuple[CommandSummary, ...]:
-        registry = self._surface.command_registry(user_commands_dir=user_commands_dir)
-        native = tuple(CommandSummary(name=cmd.name, description=cmd.description, source="native") for cmd in NATIVE_COMMANDS)
-        native_names = {command.name for command in native}
-        summaries = [_command_summary(command) for command in registry.list() if command.name not in native_names]
-        return (*native, *summaries)
+    def list_command_summaries(self) -> tuple[CommandSummary, ...]:
+        return tuple(CommandSummary(name=cmd.name, description=cmd.description, source="native") for cmd in NATIVE_COMMANDS)
 
     # -- native read-only info commands (/status /export /copy /context) --------
 

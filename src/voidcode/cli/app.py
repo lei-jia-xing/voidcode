@@ -11,7 +11,7 @@ import click
 
 from .. import __version__
 from .commands.config import config
-from .commands.discovery import agents, commands, mcp
+from .commands.discovery import agents, mcp
 from .commands.doctor import doctor
 from .commands.provider import provider
 from .commands.run import run as run_command
@@ -29,8 +29,6 @@ Examples:
   voidcode run 'read README.md' --workspace .
   voidcode run 'read README.md' --json --workspace .
   voidcode sessions list --json --workspace .
-  voidcode commands list --workspace .
-  voidcode commands show /review --json --workspace .
 """.strip()
 
 
@@ -87,7 +85,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 # Root command registration: one line per documented CLI command.
 root_cli.add_command(acp_command)
 root_cli.add_command(agents)
-root_cli.add_command(commands)
 root_cli.add_command(config)
 root_cli.add_command(doctor)
 root_cli.add_command(mcp)

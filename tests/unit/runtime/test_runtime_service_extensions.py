@@ -4921,94 +4921,83 @@ def test_runtime_custom_primary_agent_composition_and_durable_resume(tmp_path: P
         assert default_res.output == "answered: default fresh"
 
 
-def test_runtime_command_registry_catalog_and_invocation_parity(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from voidcode.command import loader as command_loader
-    from voidcode.command.models import CommandDefinition
-    from voidcode.command.registry import CommandRegistry
+def test_runtime_rejects_unknown_slash_command_in_run_path(tmp_path: Path) -> None:
+    """(a) server rejects unknown `/foo` in run path with visible RuntimeRequestError."""
 
-    builtin_base = CommandDefinition(
-        name="base",
-        description="Builtin base",
-        template="Builtin base: $ARGUMENTS",
-        source="builtin",
-    )
-    monkeypatch.setattr(command_loader, "_BUILTIN_COMMANDS", (builtin_base,))
+    class DummyProducer:
+        def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: TurnSession) -> FinalTurn:
+            return FinalTurn(output="ok", facts=())
 
-    proj_cmd_dir = tmp_path / ".voidcode" / "commands"
-    proj_cmd_dir.mkdir(parents=True)
-    (proj_cmd_dir / "base.md").write_text("---\ndescription: Project base\n---\nProject base: $ARGUMENTS", encoding="utf-8")
-    (proj_cmd_dir / "shared.md").write_text("---\ndescription: Project shared\n---\nProject shared: $ARGUMENTS", encoding="utf-8")
-    user_config_dir = tmp_path / "user_config"
-    user_cmd_dir = user_config_dir / "voidcode" / "commands"
-    user_cmd_dir.mkdir(parents=True)
-    (user_cmd_dir / "shared.md").write_text("---\ndescription: User shared\n---\nUser shared: $ARGUMENTS", encoding="utf-8")
-    (user_cmd_dir / "user-only.md").write_text("---\ndescription: User only\n---\nUser only: $ARGUMENTS", encoding="utf-8")
+    with VoidCodeRuntime(workspace=tmp_path, turn_producer=DummyProducer()) as runtime:
+        with pytest.raises(RuntimeRequestError, match="unrecognized command '/foo'"):
+            runtime.run(RuntimeRequest(prompt="/foo some arg"))
 
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(user_config_dir))
 
-    extension_cmd = CommandDefinition(
-        name="ext-cmd",
-        description="Extension command",
-        template="Extension: $ARGUMENTS",
-        source="extension",
-    )
-    injected_registry = CommandRegistry([extension_cmd])
+def test_runtime_rejects_native_command_in_run_path(tmp_path: Path) -> None:
+    """(b) server rejects native `/compact` in run path with preserved semantic."""
 
-    prompts_seen: list[str] = []
+    class DummyProducer:
+        def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: TurnSession) -> FinalTurn:
+            return FinalTurn(output="ok", facts=())
+
+    with VoidCodeRuntime(workspace=tmp_path, turn_producer=DummyProducer()) as runtime:
+        with pytest.raises(RuntimeRequestError, match="native command /compact requires interactive dispatch"):
+            runtime.run(RuntimeRequest(prompt="/compact"))
+
+
+def test_api_commands_returns_natives_only(tmp_path: Path) -> None:
+    """(c) /api/commands returns natives only."""
+    from voidcode.command.native import NATIVE_COMMANDS
+
+    class DummyProducer:
+        def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: TurnSession) -> FinalTurn:
+            return FinalTurn(output="ok", facts=())
+
+    with VoidCodeRuntime(workspace=tmp_path, turn_producer=DummyProducer()) as runtime:
+        summaries = runtime.list_command_summaries()
+        assert len(summaries) == len(NATIVE_COMMANDS)
+        assert all(summary.source == "native" for summary in summaries)
+        assert {s.name for s in summaries} == {cmd.name for cmd in NATIVE_COMMANDS}
+
+
+def test_cli_commands_group_gone() -> None:
+    """(d) CLI commands group gone (command not found)."""
+    from click.testing import CliRunner
+
+    from voidcode.cli.app import root_cli
+
+    runner = CliRunner()
+    result = runner.invoke(root_cli, ["commands", "list"])
+    assert result.exit_code != 0
+    assert "No such command 'commands'" in result.output
+
+
+def test_runtime_command_catalog_parity_natives_only(tmp_path: Path) -> None:
+    """(e) catalog parity test updated (natives only)."""
+    from voidcode.command.native import NATIVE_COMMANDS
 
     class EchoProducer:
         def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: TurnSession) -> FinalTurn:
-            prompts_seen.append(request.prompt)
             return FinalTurn(output=request.prompt, facts=())
 
-    with VoidCodeRuntime(
-        workspace=tmp_path,
-        command_registry=injected_registry,
-        turn_producer=EchoProducer(),
-    ) as runtime:
-        inv_reg = runtime.command_registry()
+    with VoidCodeRuntime(workspace=tmp_path, turn_producer=EchoProducer()) as runtime:
         cat_summaries = runtime.list_command_summaries()
+        assert all(cmd.source == "native" for cmd in cat_summaries)
+        cat_names = {cmd.name for cmd in cat_summaries}
+        expected_names = {cmd.name for cmd in NATIVE_COMMANDS}
+        assert cat_names == expected_names
 
-        inv_map = {cmd.name: (cmd.description, cmd.source) for cmd in inv_reg.list()}
-        cat_map = {cmd.name: (cmd.description, cmd.source) for cmd in cat_summaries}
+        # Plain prompt passes through untouched
+        res = runtime.run(RuntimeRequest(prompt="hello world"))
+        assert res.output == "hello world"
 
-        assert {name: cat_map[name] for name in inv_map} == inv_map
-        assert {name: cat_map[name][1] for name in ("btw", "compact", "diff", "init", "plan", "review")} == {
-            "btw": "native",
-            "compact": "native",
-            "diff": "native",
-            "init": "native",
-            "plan": "native",
-            "review": "native",
-        }
-        assert inv_map["base"] == ("Project base", "project")
-        assert inv_map["shared"] == ("Project shared", "project")
-        assert inv_map["user-only"] == ("User only", "user")
-        assert inv_map["ext-cmd"] == ("Extension command", "extension")
+        # Path-containing slash passes through untouched as literal prompt
+        res_path = runtime.run(RuntimeRequest(prompt="/usr/bin/python script.py"))
+        assert res_path.output == "/usr/bin/python script.py"
 
-        # Test actual rendered execution output for each winning source
-        prompts_seen.clear()
-        res_base = runtime.run(RuntimeRequest(prompt="/base repo-focus"))
-        assert res_base.output == "Project base: repo-focus"
-        assert prompts_seen == ["Project base: repo-focus"]
-
-        prompts_seen.clear()
-        res_shared = runtime.run(RuntimeRequest(prompt="/shared space-focus"))
-        assert res_shared.output == "Project shared: space-focus"
-        assert prompts_seen == ["Project shared: space-focus"]
-
-        prompts_seen.clear()
-        res_user = runtime.run(RuntimeRequest(prompt="/user-only my-focus"))
-        assert res_user.output == "User only: my-focus"
-        assert prompts_seen == ["User only: my-focus"]
-
-        prompts_seen.clear()
-        res_ext = runtime.run(RuntimeRequest(prompt="/ext-cmd plugin-focus"))
-        assert res_ext.output == "Extension: plugin-focus"
-        assert prompts_seen == ["Extension: plugin-focus"]
+        # Bare slash passes through untouched as literal prompt
+        res_slash = runtime.run(RuntimeRequest(prompt="/"))
+        assert res_slash.output == "/"
 
 
 def test_runtime_agent_component_config_strict_validation() -> None:

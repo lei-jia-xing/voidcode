@@ -163,7 +163,10 @@ export const Composer = memo(function Composer({
   const slashQuery = slashMatch?.[1] ?? "";
   const slashCommands = useMemo(
     () =>
-      (commands ?? []).filter((command) => !command.hidden && command.enabled),
+      (commands ?? []).filter(
+        (command) =>
+          command.source === "native" && !command.hidden && command.enabled,
+      ),
     [commands],
   );
   const exactSlashCommand = slashCommands.find(
@@ -240,6 +243,22 @@ export const Composer = memo(function Composer({
   const handleSubmit = async () => {
     const trimmed = input.trim();
     if (!trimmed || disabled) return;
+    if (trimmed.startsWith("/")) {
+      // Upstream chat_composer.rs:3072-3094 — unknown slash names never reach
+      // the model; the draft stays so the user can correct it.
+      const separator = trimmed.search(/\s/);
+      const name = (
+        separator === -1 ? trimmed : trimmed.slice(0, separator)
+      ).slice(1);
+      const isKnown =
+        !name ||
+        name.includes("/") ||
+        (commands ?? []).some((c) => c.source === "native" && c.name === name);
+      if (!isKnown) {
+        setSteerError(t("composer.nativeUnknownCommand", { name: `/${name}` }));
+        return;
+      }
+    }
     if (onNativeCommand && (await onNativeCommand(trimmed))) {
       setInput("");
       setSlashIndex(0);

@@ -17,9 +17,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
-    from ..command.registry import CommandRegistry
     from ..hook.typed import ToolInputHandlerRegistry
     from .composition import ActiveComposition, FrozenComposition, LifecycleScope, PhaseContext, PhaseOutcome
 from ..core.tool_context import ArtifactRead
@@ -77,7 +74,6 @@ class RuntimeSurface(Protocol):
     def prepare_execution_composition(self, config: RunConfig) -> FrozenComposition: ...
     def reasoning_effort_capability(self, config: RunConfig) -> ReasoningEffortCapability: ...
 
-    def command_registry(self, *, user_commands_dir: Path | None = None) -> CommandRegistry: ...
     # --- permission / tool governance (runtime owns uniformly) ---
     def resolve_permission(
         self,

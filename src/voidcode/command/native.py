@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Final, Literal
+from typing import Final
 
-NativeArgRule = Literal["none", "optional_text", "required_text", "enum"]
-NativeCommandKind = Literal["action", "picker", "mode"]
+from .models import NativeCommand
 
 INIT_PROMPT: Final[str] = (
     "Generate a file named AGENTS.md that serves as a contributor guide for this repository.\n"
@@ -35,16 +33,6 @@ INIT_PROMPT: Final[str] = (
     "- Outline pull request requirements (descriptions, linked issues, screenshots, etc.).\n\n"
     "(Optional) Add other sections if relevant, such as Security & Configuration Tips, Architecture Overview, or Agent-Specific Instructions."
 )
-
-
-@dataclass(frozen=True, slots=True)
-class NativeCommand:
-    name: str
-    description: str
-    arg_rule: NativeArgRule
-    busy_gate: bool
-    kind: NativeCommandKind
-    allowed_args: tuple[str, ...] = ()
 
 
 # Authoritative single table of all native actions, pickers, and modes.

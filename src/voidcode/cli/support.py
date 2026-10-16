@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from pathlib import Path
 
-from ..command.models import CommandDefinition
 from ..runtime.events import EventEnvelope, project_reasoning_payload
 from ..runtime.session import SessionState, StoredSessionSummary, session_metadata_for_public
 
@@ -90,26 +88,3 @@ def serialize_stored_session_summary(session: StoredSessionSummary) -> dict[str,
         payload["forked_from_session_id"] = session.forked_from_session_id
         payload["forked_at_sequence"] = session.forked_at_sequence
     return payload
-
-
-def serialize_command_definition(command: CommandDefinition) -> dict[str, object]:
-    return {
-        "name": command.name,
-        "description": command.description,
-        "source": command.source,
-        "enabled": command.enabled,
-        "hidden": command.hidden,
-        "agent": command.agent,
-        "model": command.model,
-        "subtask": command.subtask,
-        "path": _serialize_path(command.path),
-        "template": command.template,
-    }
-
-
-def serialize_command_summary(command: CommandDefinition) -> dict[str, object]:
-    return {key: value for key, value in serialize_command_definition(command).items() if key != "template"}
-
-
-def _serialize_path(path: Path | None) -> str | None:
-    return None if path is None else str(path)

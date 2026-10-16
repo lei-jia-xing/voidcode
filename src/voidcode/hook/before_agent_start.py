@@ -5,8 +5,6 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Protocol
 
-from ..common.json_values import own_json_object
-
 _MAX_HANDLER_NAMES = 32
 _MAX_TRACE_TEXT_CHARS = 240
 
@@ -15,15 +13,6 @@ _MAX_TRACE_TEXT_CHARS = 240
 class BeforeAgentStartRequest:
     original_prompt: str
     effective_prompt: str
-    command: Mapping[str, object] | None = None
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.original_prompt, str) or not isinstance(self.effective_prompt, str):
-            raise ValueError("before-agent-start prompts must be strings")
-        if self.command is not None:
-            if not isinstance(self.command, Mapping):
-                raise ValueError("before-agent-start command context must be an object")
-            object.__setattr__(self, "command", MappingProxyType(own_json_object(self.command)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,7 +182,6 @@ class BeforeAgentStartRegistry:
                 current = BeforeAgentStartRequest(
                     original_prompt=request.original_prompt,
                     effective_prompt=decision.prompt,
-                    command=request.command,
                 )
             except Exception:
                 return BeforeAgentStartOutcome(

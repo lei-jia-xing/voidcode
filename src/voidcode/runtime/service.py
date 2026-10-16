@@ -20,13 +20,7 @@ from ..agent import (
     load_agent_manifest_registry,
 )
 from ..agent.prompts import render_agent_prompt
-from ..command import (
-    CommandRegistry,
-    is_prompt_command,
-    load_command_registry,
-    resolve_prompt_command,
-)
-from ..command.models import CommandDefinition
+from ..command import is_native_command
 from ..common.json_values import json_wire_object
 from ..core.questions import QuestionAnswer
 from ..core.tool_context import ArtifactRead, TranscriptRead
@@ -236,7 +230,6 @@ from .event_envelopes import (
     envelopes_for_mcp_events,
 )
 from .events import (
-    COMMAND_RESOLVED,
     RUNTIME_BEFORE_AGENT_START,
     RUNTIME_HOOK_PRESETS_LOADED,
     RUNTIME_REASONING_DIAGNOSTIC,
@@ -667,6 +660,18 @@ def _builtin_runtime_package(root: Path, provider_names: Iterable[str]) -> Built
 MAX_REVIEW_DIFF_BYTES: Final[int] = 256 * 1024
 
 
+def _validate_prompt_slash_command(prompt: str) -> None:
+    stripped = prompt.strip()
+    if not stripped.startswith("/") or stripped == "/":
+        return
+    token = stripped[1:].split(maxsplit=1)[0]
+    if "/" in token:
+        return
+    if is_native_command(token):
+        raise RuntimeRequestError(f"native command /{token} requires interactive dispatch")
+    raise RuntimeRequestError(f"unrecognized command '/{token}'")
+
+
 @final
 class VoidCodeRuntime(RuntimeSurface):
     """Headless runtime entrypoint for a local request."""
@@ -701,7 +706,6 @@ class VoidCodeRuntime(RuntimeSurface):
     _background_task_supervisor: RuntimeBackgroundTaskSupervisor
     _background_process_manager: BackgroundProcessManager
     _context_transform_registry: RuntimeContextTransformRegistry
-    _installed_command_definitions: tuple[CommandDefinition, ...]
     _before_agent_start_registry: BeforeAgentStartRegistry
     _activated_before_agent_start_registries: dict[CompositionRef, BeforeAgentStartRegistry]
     _installed_agent_distributions: dict[str, str]
@@ -724,7 +728,6 @@ class VoidCodeRuntime(RuntimeSurface):
         context_window_policy: ContextWindowPolicy | None = None,
         context_transform_registry: RuntimeContextTransformRegistry | None = None,
         tool_input_handler_registry: ToolInputHandlerRegistry | None = None,
-        command_registry: CommandRegistry | None = None,
         before_agent_start_registry: BeforeAgentStartRegistry | None = None,
         composition_owner: CompositionOwner | None = None,
     ) -> None:
@@ -753,13 +756,7 @@ class VoidCodeRuntime(RuntimeSurface):
         self._installed_tool_definitions: list[ToolDefinition] = []
         installed_context_transforms: list[RuntimeContextTransformDeclaration] = []
         installed_typed_inputs: list[ToolInputHandlerDeclaration] = []
-        installed_commands: list[CommandDefinition] = []
         installed_before_agent_start: list[BeforeAgentStartDeclaration] = []
-        injected_commands = (
-            tuple(replace(command, source="extension") for command in command_registry.list(include_hidden=True, include_disabled=True))
-            if command_registry is not None
-            else ()
-        )
         if self._config.components:
             preflight = self._composition_owner.prepare(self._config.components, intent={"component_preflight": True})
             for component in preflight.binding.components:
@@ -788,10 +785,6 @@ class VoidCodeRuntime(RuntimeSurface):
                     if not isinstance(validated, ToolInputHandlerDeclaration) or validated.name != component.name:
                         raise ValueError("installed typed-input component validator returned a mismatched declaration")
                     installed_typed_inputs.append(validated)
-                elif component.slot == "command":
-                    if not isinstance(validated, CommandDefinition) or validated.name != component.name:
-                        raise ValueError("installed command component validator returned a mismatched definition")
-                    installed_commands.append(replace(validated, source="extension"))
                 elif component.slot == "before-agent-start":
                     if not isinstance(validated, BeforeAgentStartDeclaration) or validated.name != component.name:
                         raise ValueError("installed before-agent-start component validator returned a mismatched declaration")
@@ -799,7 +792,6 @@ class VoidCodeRuntime(RuntimeSurface):
         self._agent_registry = self._runtime_agent_registry(installed_manifests=installed_agent_manifests)
         self._installed_context_transforms = tuple(installed_context_transforms)
         self._installed_typed_inputs = tuple(installed_typed_inputs)
-        self._installed_command_definitions = (*injected_commands, *installed_commands)
         self._before_agent_start_registry = before_agent_start_registry or BeforeAgentStartRegistry()
         for declaration in installed_before_agent_start:
             self._before_agent_start_registry.register(declaration)
@@ -2527,7 +2519,6 @@ class VoidCodeRuntime(RuntimeSurface):
     ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, int]]:
         request = prep.request
         config = prep.config
-        request_metadata = prep.request_metadata
         runtime_policy_snapshot = session.metadata.get("runtime_policy")
         request_received_payload: dict[str, object] = {
             "prompt": request.prompt,
@@ -2563,23 +2554,6 @@ class VoidCodeRuntime(RuntimeSurface):
                 event=envelope,
             )
 
-        command_metadata = request_metadata.get("command")
-        if isinstance(command_metadata, dict):
-            envelope = self._persist_emitted_event(
-                session_id=session.session.id,
-                event_type=COMMAND_RESOLVED,
-                source="runtime",
-                payload={
-                    **command_metadata,
-                    "rendered_prompt": request.prompt,
-                },
-            )
-            sequence = envelope.sequence
-            yield RuntimeStreamChunk(
-                kind="event",
-                session=session,
-                event=envelope,
-            )
         return session, sequence
 
     def _prepare_before_agent_start(
@@ -2591,16 +2565,10 @@ class VoidCodeRuntime(RuntimeSurface):
         registry = self._activated_before_agent_start_registries[prep.composition_ref]
         if not registry.declarations:
             return prep, session, sequence
-        raw_command = prep.request_metadata.get("command")
-        command = raw_command if isinstance(raw_command, dict) else {}
-        original_prompt = command.get("original_prompt")
-        if not isinstance(original_prompt, str):
-            original_prompt = prep.request.prompt
         outcome = registry.apply(
             BeforeAgentStartRequest(
-                original_prompt=original_prompt,
+                original_prompt=prep.request.prompt,
                 effective_prompt=prep.request.prompt,
-                command=command,
             )
         )
         trace = outcome.trace_payload()
@@ -3795,14 +3763,8 @@ class VoidCodeRuntime(RuntimeSurface):
     def list_skill_summaries(self) -> tuple[SkillSummary, ...]:
         return self._inspection_coordinator.list_skill_summaries()
 
-    def list_command_summaries(self, *, user_commands_dir: Path | None = None) -> tuple[CommandSummary, ...]:
-        return self._inspection_coordinator.list_command_summaries(user_commands_dir=user_commands_dir)
-
-    @staticmethod
-    def _command_summary(command: CommandDefinition) -> CommandSummary:
-        from .coordinators.inspection import _command_summary as _shared_summary
-
-        return _shared_summary(command)
+    def list_command_summaries(self) -> tuple[CommandSummary, ...]:
+        return self._inspection_coordinator.list_command_summaries()
 
     def current_status(self) -> RuntimeStatusSnapshot:
         self._background_task_supervisor.reconcile_background_tasks_if_needed()
@@ -5289,14 +5251,10 @@ class VoidCodeRuntime(RuntimeSurface):
                     f"session {session_id} already belongs to {existing_parent_label} and cannot be rebound to parent session {parent_session_id}"
                 )
 
-        prompt, metadata = self._resolve_prompt_command_for_request(
-            prompt=request.prompt,
-            metadata=metadata,
-            allow_internal_fields=allow_internal_metadata,
-        )
+        _validate_prompt_slash_command(request.prompt)
 
         return RuntimeRequest(
-            prompt=prompt,
+            prompt=request.prompt,
             session_id=session_id,
             parent_session_id=resolved_parent_session_id,
             metadata=metadata,
@@ -5324,57 +5282,6 @@ class VoidCodeRuntime(RuntimeSurface):
         if parent_read_only or child_read_only or "read_only" in child_metadata:
             inherited["read_only"] = parent_read_only or child_read_only
         return inherited
-
-    def command_registry(self, *, user_commands_dir: Path | None = None) -> CommandRegistry:
-        if user_commands_dir is None:
-            config_home = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config").expanduser()
-            user_commands_dir = config_home / "voidcode" / "commands"
-        return load_command_registry(
-            workspace=self._workspace,
-            user_commands_dir=user_commands_dir,
-            extension_commands=self._installed_command_definitions,
-        )
-
-    def _resolve_prompt_command_for_request(
-        self,
-        *,
-        prompt: str,
-        metadata: RuntimeRequestMetadataPayload,
-        allow_internal_fields: bool,
-    ) -> tuple[str, RuntimeRequestMetadataPayload]:
-        stripped = prompt.strip()
-        if stripped == "/plan" or stripped.startswith("/plan "):
-            raise RuntimeRequestError("native command /plan requires an active session; use set_collaboration_mode")
-        if "command" in metadata or not is_prompt_command(prompt):
-            return prompt, metadata
-        try:
-            resolution = resolve_prompt_command(
-                prompt,
-                self.command_registry(),
-            )
-        except ValueError as exc:
-            raise RuntimeRequestError(str(exc)) from exc
-        if resolution is None:
-            return prompt, metadata
-
-        normalized: dict[str, object] = dict(metadata)
-        prompt = resolution.invocation.rendered_prompt
-        command_metadata: dict[str, object] = {
-            "name": resolution.invocation.name,
-            "source": resolution.invocation.source,
-            "arguments": list(resolution.invocation.arguments),
-            "raw_arguments": resolution.invocation.raw_arguments,
-            "original_prompt": resolution.invocation.original_prompt,
-        }
-        command_agent = resolution.definition.agent
-        if command_agent is not None and "agent" not in normalized:
-            normalized["agent"] = {"preset": command_agent}
-        normalized["command"] = command_metadata
-        validated = validate_runtime_request_metadata(
-            normalized,
-            allow_internal_fields=allow_internal_fields,
-        )
-        return prompt, validated
 
     def _metadata_with_delegation_governance(
         self,

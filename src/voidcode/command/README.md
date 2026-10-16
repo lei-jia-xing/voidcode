@@ -1,17 +1,13 @@
-# Command System
+# Native Commands
 
-`voidcode.command` handles prompt command discovery, resolution, and template rendering.
+`voidcode.command` defines the authoritative table of native slash commands (`/`), argument rules, and busy gates (Codex parity).
 
 ## Boundaries
-- Prompt commands (`/command`) expand into user prompt text before core turn execution.
+- Slash commands (`/`) form a closed set of built-in actions, pickers, and modes defined in `native.py` (`NATIVE_COMMANDS`).
+- Upstream Codex has no custom slash commands. Custom markdown macro commands and `$ARGUMENTS` prompt expansion are removed.
+- Custom capability extensibility is provided via Skills (`$skill_name`). See `src/voidcode/skills/` and `SkillRegistry`.
 - Tool execution is separate: models request tools through runtime governance and permissions.
-- TODO: 支持 !<shell 指令> 用户入口；执行仍经 runtime 权限、审批、持久化与取消边界。
-- TODO: 重新评估 `$ARGUMENTS` / `$1`–`$9` 的字面量与递归展开边界，并比较 hook 组装与纯模板。
+- Local shell execution is invoked via `!<command>` (escape).
 
-## Sources
-Commands load in priority order (later overrides earlier):
-1. Builtin commands (`loader.py`)
-2. Extension commands
-3. User command directory (`~/.config/voidcode/commands/`)
-4. Project commands (`commands/**/*.md` and `.voidcode/commands/**/*.md`)
-Command files use optional YAML frontmatter (`description`, `agent`, `enabled`) followed by the template body with `$ARGUMENTS` and `$1`–`$9` positional parameters.
+## Native Table
+All client surfaces (HTTP `GET /api/commands`, TUI `_submit`, and web client `App.tsx`) derive directly from `native.py:NATIVE_COMMANDS`.

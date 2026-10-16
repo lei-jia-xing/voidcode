@@ -1171,6 +1171,13 @@ class TuiApp:
         if command.startswith("/"):
             name = command[1:]
             native_cmd = NATIVE_COMMANDS_BY_NAME.get(name)
+            if native_cmd is None and name and "/" not in name:
+                # Upstream chat_composer.rs:3072-3094 — unknown slash names never
+                # reach the model; the composer keeps the draft for correction.
+                self._notice(f"Unrecognized command '/{name}'. Type \"/\" for a list of supported commands.")
+                if self._composer is not None:
+                    self._composer.set_text(text)
+                return
             if native_cmd is not None:
                 if native_cmd.arg_rule == "none":
                     if arguments.strip():

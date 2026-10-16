@@ -249,46 +249,11 @@ not markdown prompt macros and do not invoke a provider turn unless stated:
   a task is in progress (busy-gated).
 Native commands are defined in a single authoritative table (`src/voidcode/command/native.py:NATIVE_COMMANDS`).
 Inspection catalog generation (`GET /api/commands`), TUI validation/dispatch, and web client routing
-derive from this shared definition. Native names are reserved: a custom markdown command with one
-of these names is not used by native interactive dispatch. `GET /api/commands` reports implemented
-native actions with `source: native`; `voidcode commands list` lists only the prompt-command
-registry. Custom prompt commands continue to use their documented source precedence and `$ARGUMENTS`
-expansion.
-### Command Sources & Precedence
+derive from this shared definition. Slash commands (`/`) are a closed set of built-in native commands (Codex parity);
+custom markdown macro templates and prompt command expansions are removed.
 
-Commands load in priority order, with later sources overriding earlier definitions when names collide:
-
-1. **Builtin commands** (lowest precedence; builtin slot in `loader.py`)
-2. **Extension commands** (overrides builtin; loaded from installed component extensions and plugins)
-3. **User command directory** (overrides extension and builtin; `~/.config/voidcode/commands/` or `$XDG_CONFIG_HOME/voidcode/commands/`)
-4. **Project commands** (highest precedence; overrides user, extension, and builtin; `commands/**/*.md` and `.voidcode/commands/**/*.md`)
-
-Prompt catalog listings (`voidcode commands list`) and prompt invocation share the identical authoritative prompt-command registry and resolve collisions identically. The HTTP `/api/commands` catalog additionally reports implemented native interactive actions with `source: native`; those reserved names are not markdown macro overrides.
-### Defining Commands
-
-Create a markdown file in `.voidcode/commands/<name>.md` or `~/.config/voidcode/commands/<name>.md`:
-
-```markdown
----
-description: Run repository checks and explain any failures
----
-Run full verification for this repository. If any test or check fails, analyze the root cause and summarize next steps.
-Focus area: $ARGUMENTS
-```
-
-### Inspecting Available Commands
-
-List all registered commands and their winning sources:
-
-```bash
-uv run voidcode commands list --workspace .
-```
-
-Inspect a command template:
-
-```bash
-uv run voidcode commands show <name> --workspace .
-```
+Custom capability extensibility is provided via Skills (`$skill_name`). See the Skill system
+and `src/voidcode/skills/registry.py` (`SkillRegistry`) for custom skill declarations and loading.
 
 ## Hierarchical Project Instructions & Local Overrides
 

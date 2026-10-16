@@ -110,18 +110,6 @@ class ProviderArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class CommandsArgs:
-    """Arguments for the ``commands`` command group."""
-
-    workspace: Path = field(default_factory=Path.cwd)
-    user_commands_dir: Path | None = None
-    include_hidden: bool = False
-    include_disabled: bool = False
-    json: bool = False
-    name: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class DoctorArgs:
     """Arguments for the ``doctor`` command."""
 
@@ -171,7 +159,6 @@ __all__ = [
     "StorageArgs",
     "ConfigArgs",
     "ProviderArgs",
-    "CommandsArgs",
     "DoctorArgs",
     "TuiArgs",
     "AcpArgs",

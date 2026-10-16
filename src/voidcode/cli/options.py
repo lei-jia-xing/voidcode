@@ -33,12 +33,3 @@ def show_thinking_option(
     help_text: str,
 ) -> Callable[[Callable[..., object]], Callable[..., object]]:
     return click.option("--show-thinking", is_flag=True, help=help_text)
-
-
-def command_discovery_options(function: Callable[..., object]) -> Callable[..., object]:
-    function = workspace_option("Workspace root used to discover project-local commands.")(function)
-    return click.option(
-        "--user-commands-dir",
-        type=click.Path(path_type=Path),
-        help="Optional user command directory to merge before project commands.",
-    )(function)

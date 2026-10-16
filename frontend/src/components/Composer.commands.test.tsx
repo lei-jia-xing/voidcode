@@ -47,10 +47,10 @@ describe("composer slash command menu", () => {
     // Type slash to trigger menu
     fireEvent.change(textarea, { target: { value: "/" } });
 
-    // Verify commands from catalog are rendered
+    // Verify only native commands from catalog are rendered
     expect(screen.getByText("/init")).toBeDefined();
     expect(screen.getByText("/compact")).toBeDefined();
-    expect(screen.getByText("/custom")).toBeDefined();
+    expect(screen.queryByText("/custom")).toBeNull();
     expect(screen.getByText(/create an AGENTS\.md/)).toBeDefined();
   });
 });

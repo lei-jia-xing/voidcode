@@ -132,8 +132,8 @@ Native actions, pickers, and modes are governed by a single authoritative specif
 
 1. **Single Source of Truth**:
    The HTTP command catalog (`GET /api/commands`), TUI command dispatcher (`app._submit`), and web client (`App.tsx:handleNativeCommand`) derive their native command definitions, argument rules, and busy gates from `NATIVE_COMMANDS`.
-2. **Reserved Names**:
-   Native command names are reserved. Custom markdown commands (`.voidcode/commands/*.md`) colliding with a native command name cannot override or intercept native dispatch.
+2. **Closed Builtin Enum (No Custom Macros)**:
+   Slash commands (`/`) form a closed set of built-in native commands (Codex parity). Custom markdown macro commands and prompt command templating are removed; custom capability extensibility is provided via Skills (`$skill_name`) and `SkillRegistry`.
 3. **Native Init Parity**:
    The `/init` command is a native client-side prompt submission (Codex parity) that injects the fixed AGENTS.md generation prompt as a normal governed agent turn under standard session tool approval policies, gated when a task is in progress.
 

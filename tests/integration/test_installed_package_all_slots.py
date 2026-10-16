@@ -29,7 +29,6 @@ from collections.abc import Iterator
 from voidcode.agent import AgentManifest, AgentPromptMaterialization
 from voidcode.core.tool_context import ToolContext
 from voidcode.core.transcript import output_text
-from voidcode.command.models import CommandDefinition
 from voidcode.hook.before_agent_start import (
     BeforeAgentStartBinding,
     BeforeAgentStartDeclaration,
@@ -265,19 +264,6 @@ class PkgInputHandler:
 def create_typed_input(value: object, context: object) -> object:
     decl = cast(ToolInputHandlerDeclaration, value)
     return ToolInputHandlerBinding(declaration=decl, handler=PkgInputHandler())
-def validate_command(config: object) -> ValidatedConfig:
-    return ValidatedConfig(
-        value=CommandDefinition(
-            name="pkg_cmd",
-            description="Command from installed package",
-            template="package command: $ARGUMENTS",
-        ),
-        snapshot={"name": "pkg_cmd"},
-    )
-
-def create_command(value: object, context: object) -> object:
-    raise AssertionError("command slot must not execute its factory")
-
 def validate_before_agent_start(config: object) -> ValidatedConfig:
     declaration = BeforeAgentStartDeclaration(name="pkg_prepare", version="1", priority=5)
     return ValidatedConfig(value=declaration, snapshot={"name": declaration.name})
@@ -329,12 +315,6 @@ def create_before_agent_start(value: object, context: object) -> object:
                 "validate_config": "all_slots_pkg.components:validate_typed_input",
             },
             {
-                "slot": "command",
-                "name": "pkg_cmd",
-                "factory": "all_slots_pkg.components:create_command",
-                "validate_config": "all_slots_pkg.components:validate_command",
-            },
-            {
                 "slot": "before-agent-start",
                 "name": "pkg_prepare",
                 "factory": "all_slots_pkg.components:create_before_agent_start",
@@ -369,7 +349,7 @@ def create_before_agent_start(value: object, context: object) -> object:
 
 
 @pytest.mark.parametrize("stream", [False, True])
-def test_installed_package_all_seven_slots_end_to_end(tmp_path: Path, stream: bool) -> None:
+def test_installed_package_all_six_slots_end_to_end(tmp_path: Path, stream: bool) -> None:
     site_dir = _build_and_install_wheel(tmp_path)
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -387,7 +367,6 @@ def test_installed_package_all_seven_slots_end_to_end(tmp_path: Path, stream: bo
                     ComponentSelection(distribution="all-slots-pkg", slot="agent", name="pkg_agent", configuration={}, provenance=("test",)),
                     ComponentSelection(distribution="all-slots-pkg", slot="context", name="pkg_context", configuration={}, provenance=("test",)),
                     ComponentSelection(distribution="all-slots-pkg", slot="typed-input", name="pkg_input", configuration={}, provenance=("test",)),
-                    ComponentSelection(distribution="all-slots-pkg", slot="command", name="pkg_cmd", configuration={}, provenance=("test",)),
                     ComponentSelection(
                         distribution="all-slots-pkg",
                         slot="before-agent-start",
@@ -399,7 +378,7 @@ def test_installed_package_all_seven_slots_end_to_end(tmp_path: Path, stream: bo
             ),
         ) as runtime:
             request = RuntimeRequest(
-                prompt="/pkg_cmd Run full all-slot verification",
+                prompt="Run full all-slot verification",
                 session_id=f"all-slots-session-{stream}",
                 metadata={"provider_stream": stream},
             )
@@ -410,16 +389,12 @@ def test_installed_package_all_seven_slots_end_to_end(tmp_path: Path, stream: bo
 
             assert response.session.status == "completed"
             trace = next(event for event in events if event.event_type == "runtime.before_agent_start")
-            command = next(event for event in events if event.event_type == "command.resolved")
             assert trace.payload["status"] == "ready"
             assert trace.payload["changed"] is True
             assert trace.payload["handlers"][0]["name"] == "pkg_prepare"
             assert "prompt" not in trace.payload
-            assert command.payload["source"] == "extension"
-            assert command.payload["original_prompt"] == "/pkg_cmd Run full all-slot verification"
-            assert command.payload["rendered_prompt"] == "package command: Run full all-slot verification"
             preparation = response.session.metadata["before_agent_start"]
-            assert preparation["effective_prompt"] == "package prepared: package command: Run full all-slot verification"
+            assert preparation["effective_prompt"] == "package prepared: Run full all-slot verification"
 
             expected_final = "FINAL_RESULT: context_and_agent_verified | TOOL_EXECUTED: input_payload -> rewritten_by_typed_input"
             assert response.output == expected_final

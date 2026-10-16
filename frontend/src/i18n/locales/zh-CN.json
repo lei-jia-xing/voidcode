@@ -214,6 +214,7 @@
   "composer.nativeReviewOpenSession": "打开审查会话",
   "composer.nativeDiffClean": "工作区没有变更。",
   "composer.nativeDiffNoRepo": "工作区不是 Git 仓库。",
+  "composer.nativeUnknownCommand": "无法识别的命令“{{name}}”。输入“/”查看支持的命令列表。",
   "composer.nativeShellHelp": "以 ! 开头在本地运行命令。例如：!ls",
   "composer.nativeShellOk": "已运行 {{command}}（退出码 0）。",
   "composer.nativeShellFailed": "已运行 {{command}}（退出码 {{code}}）。",

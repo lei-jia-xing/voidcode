@@ -123,18 +123,9 @@ class SessionBusyConflictError(ValueError):
     code = "session_busy_conflict"
 
 
-class RuntimeCommandMetadata(TypedDict, total=False):
-    name: str
-    source: str
-    arguments: list[str]
-    raw_arguments: str
-    original_prompt: str
-
-
 class RuntimeRequestMetadata(TypedDict, total=False):
     abort_requested: bool
     agent: dict[str, object]
-    command: RuntimeCommandMetadata
     context_transform_refs: list[str]
     delegation: RuntimeSubagentRoutingMetadata
     read_only: bool
@@ -301,58 +292,6 @@ def _parse_string_list(raw: list[object], *, field: str) -> list[str]:
     return parsed
 
 
-def validate_runtime_command_metadata(metadata: object) -> RuntimeCommandMetadata:
-    if not isinstance(metadata, dict):
-        raise RuntimeRequestError("request metadata 'command' must be an object when provided")
-    payload: Mapping[str, object] = metadata
-    allowed_keys = frozenset(RuntimeCommandMetadata.__annotations__)
-    non_string_keys = sorted(repr(key) for key in payload if not isinstance(key, str))
-    if non_string_keys:
-        joined = ", ".join(non_string_keys)
-        raise RuntimeRequestError(f"request metadata 'command' keys must be strings; received invalid key(s): {joined}")
-    unknown_keys = sorted(key for key in payload if key not in allowed_keys)
-    if unknown_keys:
-        joined = ", ".join(unknown_keys)
-        raise RuntimeRequestError(f"unsupported request metadata 'command' field(s): {joined}")
-    required_keys = {"name", "source", "arguments", "raw_arguments", "original_prompt"}
-    missing_keys = sorted(required_keys - payload.keys())
-    if missing_keys:
-        joined = ", ".join(missing_keys)
-        raise RuntimeRequestError(f"request metadata 'command' is missing required field(s): {joined}")
-
-    name = _validate_optional_runtime_metadata_string(
-        payload.get("name"),
-        field_name="command.name",
-    )
-    source = _validate_optional_runtime_metadata_string(
-        payload.get("source"),
-        field_name="command.source",
-    )
-    raw_arguments = payload["raw_arguments"]
-    if not isinstance(raw_arguments, str):
-        raise RuntimeRequestError("request metadata 'command.raw_arguments' must be a string")
-    original_prompt = _validate_optional_runtime_metadata_string(
-        payload.get("original_prompt"),
-        field_name="command.original_prompt",
-    )
-    raw_arguments_list = payload["arguments"]
-    if not isinstance(raw_arguments_list, list):
-        raise RuntimeRequestError("request metadata 'command.arguments' must be a list")
-    arguments: list[str] = []
-    for index, argument in enumerate(cast(list[object], raw_arguments_list)):
-        if not isinstance(argument, str):
-            raise RuntimeRequestError(f"request metadata 'command.arguments[{index}]' must be a string")
-        arguments.append(argument)
-    normalized: RuntimeCommandMetadata = {
-        "name": name,
-        "source": source,
-        "arguments": arguments,
-        "raw_arguments": raw_arguments,
-        "original_prompt": original_prompt,
-    }
-    return normalized
-
-
 def validate_runtime_subagent_routing_metadata(
     metadata: object,
 ) -> RuntimeSubagentRoutingMetadata:
@@ -508,9 +447,6 @@ def validate_runtime_request_metadata(
         if not isinstance(agent, dict):
             raise RuntimeRequestError("request metadata 'agent' must be an object when provided")
         normalized["agent"] = dict(cast(dict[str, object], agent))
-
-    if "command" in metadata:
-        normalized["command"] = validate_runtime_command_metadata(metadata["command"])
 
     if "delegation" in metadata:
         normalized["delegation"] = validate_runtime_subagent_routing_metadata(metadata["delegation"])

@@ -177,7 +177,6 @@ RUNTIME_APPROVAL_REQUESTED: Final[CoreEventType] = "runtime.approval_requested"
 RUNTIME_APPROVAL_RESOLVED: Final[CoreEventType] = "runtime.approval_resolved"
 RUNTIME_QUESTION_REQUESTED: Final[CoreEventType] = "runtime.question_requested"
 RUNTIME_QUESTION_ANSWERED: Final[CoreEventType] = "runtime.question_answered"
-COMMAND_RESOLVED: Final[CoreEventType] = "command.resolved"
 RUNTIME_FAILED: Final[CoreEventType] = "runtime.failed"
 
 RUNTIME_CONTEXT_COMPACTED: Final[RuntimeEventType] = "runtime.context_compacted"
@@ -266,7 +265,6 @@ EMITTED_EVENT_TYPES: Final[tuple[CoreEventType, ...]] = (
     RUNTIME_APPROVAL_RESOLVED,
     RUNTIME_QUESTION_REQUESTED,
     RUNTIME_QUESTION_ANSWERED,
-    COMMAND_RESOLVED,
     RUNTIME_FAILED,
 )
 RUNTIME_EVENT_TYPES: Final[tuple[RuntimeEventType, ...]] = (

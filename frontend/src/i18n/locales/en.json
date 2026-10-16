@@ -211,6 +211,7 @@
   "composer.nativeReviewOpenSession": "Open review session",
   "composer.nativeDiffClean": "No workspace changes.",
   "composer.nativeDiffNoRepo": "Workspace is not a Git repository.",
+  "composer.nativeUnknownCommand": "Unrecognized command '{{name}}'. Type \"/\" for a list of supported commands.",
   "composer.nativeShellHelp": "Prefix a command with ! to run it locally. Example: !ls",
   "composer.nativeShellOk": "Ran {{command}} (exit 0).",
   "composer.nativeShellFailed": "Ran {{command}} (exit {{code}}).",

@@ -1,55 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Literal
 
-CommandSource = Literal["builtin", "extension", "user", "project", "skill", "mcp"]
+NativeArgRule = Literal["none", "optional_text", "required_text", "enum"]
+NativeCommandKind = Literal["action", "picker", "mode"]
 
 
 @dataclass(frozen=True, slots=True)
-class CommandDefinition:
-    """A prompt/slash command definition that renders into a runtime prompt."""
-
+class NativeCommand:
     name: str
     description: str
-    template: str
-    source: CommandSource = "builtin"
-    agent: str | None = None
-    model: str | None = None
-    subtask: bool = False
-    enabled: bool = True
-    hidden: bool = False
-    path: Path | None = None
-
-    def __post_init__(self) -> None:
-        normalized_name = normalize_command_name(self.name)
-        if not normalized_name:
-            raise ValueError("command name must be a non-empty string")
-        object.__setattr__(self, "name", normalized_name)
-        if not self.description:
-            raise ValueError("command description must be a non-empty string")
-        if not self.template.strip():
-            raise ValueError("command template must be a non-empty string")
-
-
-@dataclass(frozen=True, slots=True)
-class CommandInvocation:
-    """Structured representation of a resolved prompt command."""
-
-    name: str
-    source: CommandSource
-    arguments: tuple[str, ...]
-    raw_arguments: str
-    original_prompt: str
-    rendered_prompt: str
-
-
-@dataclass(frozen=True, slots=True)
-class CommandResolution:
-    definition: CommandDefinition
-    invocation: CommandInvocation
-
-
-def normalize_command_name(name: str) -> str:
-    return name.strip().removeprefix("/").replace("\\", "/")
+    arg_rule: NativeArgRule
+    busy_gate: bool
+    kind: NativeCommandKind
+    allowed_args: tuple[str, ...] = ()
