@@ -4,7 +4,7 @@ from fnmatch import fnmatchcase
 
 from ...tools.contracts import is_read_tier
 from ..config.loading import RuntimeAgentConfig
-from ..permissions.policy import READ_ONLY_DENIAL_REASON, runtime_read_only_from_metadata
+from ..permissions.policy import READ_ONLY_DENIAL_REASON, runtime_effective_read_only_from_metadata
 from .builtins import scoped_tool_registry_for_agent
 from .registry import ToolPolicyDecision, ToolRegistry
 
@@ -35,7 +35,7 @@ class RuntimeToolScopeResolver:
         registry: ToolRegistry,
         metadata: dict[str, object] | None,
     ) -> ToolPolicyDecision:
-        read_only = runtime_read_only_from_metadata(metadata)
+        read_only = runtime_effective_read_only_from_metadata(metadata)
 
         definition = registry.definition(tool_name)
         if read_only and definition is not None and not is_read_tier(definition.effects):

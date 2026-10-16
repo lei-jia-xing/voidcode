@@ -6,7 +6,7 @@ from ...core.transcript import ContextSegment, output_text, project_report
 from ...core.turns import ReportedCall
 from ..composition import CompositionRef, FrozenComposition
 from ..events import EventEnvelope, model_turn_batch_id
-from ..session_metadata_helpers import parse_runtime_state_metadata
+from ..session_metadata_helpers import parse_runtime_state_metadata, session_metadata_with_runtime_state_updates
 
 # Recoverable runtime context keys are a subset of the persisted runtime_state
 # key-set (RUNTIME_STATE_METADATA_KEYS, contracts.py): context projection
@@ -22,7 +22,7 @@ from ..session_metadata_helpers import parse_runtime_state_metadata
 # otherwise mismatch the stored row and reject a legitimate resume. The stored
 # row is authoritative for these counters (the checkpoint only carries whatever
 # the session held when it was written).
-_RECOVERABLE_RUNTIME_CONTEXT_KEYS = frozenset({"context_projection", "context_projection_summary", "reminders"})
+_RECOVERABLE_RUNTIME_CONTEXT_KEYS = frozenset({"context_projection", "context_projection_summary", "context_compacted", "reminders"})
 # The native call prefix is checkpoint-authoritative; resume validates it against events.
 _CHECKPOINT_PROGRESS_RUNTIME_STATE_KEYS = frozenset({"turn_batch", "pending_tool_intent"})
 _RECOVERABLE_TOP_LEVEL_CONTEXT_KEYS = frozenset({"context_window"})
@@ -39,10 +39,36 @@ _INTERACTION_QUEUE_METADATA_KEYS = frozenset({"pending_messages"})
 _PRIVATE_PHASE_RUNTIME_KEYS = frozenset({"composition_turn_occurrence", "composition_turn"})
 
 
+def metadata_with_manual_compaction_path(metadata: dict[str, object], events: tuple[EventEnvelope, ...]) -> dict[str, object]:
+    """Restore native summary metadata only from the selected event path."""
+    metadata = {key: value for key, value in metadata.items() if key != "context_window"}
+    runtime_state = session_metadata_with_runtime_state_updates(
+        metadata, removed=frozenset({"context_projection", "context_projection_summary", "context_compacted"})
+    )
+    for event in reversed(events):
+        projection = event.payload.get("projection")
+        if event.event_type == "runtime.context_compacted" and isinstance(projection, dict) and projection.get("source") == "native_manual":
+            runtime_state["context_window"] = dict(event.payload)
+            return session_metadata_with_runtime_state_updates(runtime_state, updates={"context_projection": projection})
+    state = runtime_state.get("runtime_state")
+    if isinstance(state, dict) and not state:
+        runtime_state.pop("runtime_state", None)
+    return runtime_state
+
+
+def events_after_manual_compaction(events: tuple[EventEnvelope, ...]) -> tuple[EventEnvelope, ...]:
+    """Cut only the native manual summary's prefix on this selected event path."""
+    for index in range(len(events) - 1, -1, -1):
+        event = events[index]
+        projection = event.payload.get("projection")
+        if event.event_type == "runtime.context_compacted" and isinstance(projection, Mapping) and projection.get("source") == "native_manual":
+            return events[index + 1 :]
+    return events
+
+
 def replayed_conversation_segments_from_events(
     events: tuple[EventEnvelope, ...],
     *,
-    output: object | None,
     reported_call_from_event: Callable[[EventEnvelope], ReportedCall | None],
     current_request_event_id: tuple[str, int] | None = None,
 ) -> tuple[ContextSegment, ...]:
@@ -70,6 +96,17 @@ def replayed_conversation_segments_from_events(
                             "kind": "current_user_prompt" if is_current_request else "prior_user_prompt",
                             "sequence": event.sequence,
                         },
+                    )
+                )
+            continue
+        if event.event_type == "core.response_ready":
+            output = event.payload.get("output_preview")
+            if isinstance(output, str) and output.strip():
+                ordered_items.append(
+                    ContextSegment(
+                        role="assistant",
+                        content=output,
+                        metadata={"source": "replayed_conversation", "tier": "recent", "kind": "prior_assistant_output"},
                     )
                 )
             continue
@@ -197,18 +234,6 @@ def replayed_conversation_segments_from_events(
                     tool_batch_id=item,
                 )
             )
-    if isinstance(output, str) and output.strip():
-        segments.append(
-            ContextSegment(
-                role="assistant",
-                content=output,
-                metadata={
-                    "source": "replayed_conversation",
-                    "tier": "recent",
-                    "kind": "prior_assistant_output",
-                },
-            )
-        )
     return tuple(segments)
 
 

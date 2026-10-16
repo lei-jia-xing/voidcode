@@ -12,11 +12,13 @@ from typing import TYPE_CHECKING, Any, cast
 
 from ..agent_capability import validate_agent_capability_snapshot
 from ..composition import CompositionRef, FrozenComposition, PhaseRecord, SessionCompositionOwner, TaskCompositionOwner
+from ..context.continuity import metadata_with_manual_compaction_path
 from ..contracts import (
     RuntimeRequest,
     RuntimeResponse,
     RuntimeSessionCheckoutBoundaryError,
     RuntimeSessionResult,
+    SessionBusyConflictError,
     SessionTreePathError,
     UnknownSessionError,
 )
@@ -45,6 +47,7 @@ from ..session_metadata_helpers import parse_plan_state_metadata, parse_runtime_
 from ..todos import runtime_todo_phases_from_payload, todo_state_payload
 from .fork import _dangling_interaction
 from .rows import (
+    NativeCompactionRow,
     SessionCreatedAtRow,
     SessionCreatedAtUnixMsRow,
     SessionEventPageRow,
@@ -937,6 +940,151 @@ class _SessionStorageMixin(_MixinBase):
             connection.commit()
             return tuple(assigned)
 
+    def append_native_context_compaction(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        metadata: dict[str, object],
+        payload: dict[str, object],
+        expected_sequence: int,
+        expected_status: str,
+    ) -> EventEnvelope:
+        """Append a native compaction fact and projection atomically."""
+        persisted_metadata = session_metadata_for_persistence(metadata)
+        with self._write_connect(workspace) as connection:
+            row = fetch_row(
+                connection,
+                "SELECT status, leaf_sequence, last_event_sequence, resume_checkpoint_json FROM sessions WHERE workspace_id = ? AND session_id = ?",
+                (str(workspace), session_id),
+            )
+            if row is None:
+                raise UnknownSessionError(f"unknown session: {session_id}")
+            current = decode_row(row, NativeCompactionRow)
+            if current["status"] in {"running", "waiting"}:
+                raise SessionBusyConflictError(f"cannot compact a session with status {current['status']}")
+            if current["status"] != expected_status or current["last_event_sequence"] != expected_sequence:
+                raise SessionBusyConflictError("session changed while compacting; retry /compact")
+            checkpoint_json = current["resume_checkpoint_json"]
+            serialized_checkpoint_json = None
+            if checkpoint_json is not None:
+                checkpoint = json.loads(checkpoint_json)
+                if not isinstance(checkpoint, dict):
+                    raise RuntimeError("persisted resume checkpoint is malformed")
+                checkpoint_metadata = dict(persisted_metadata)
+                checkpoint_metadata.pop("execution_composition", None)
+                checkpoint["session_metadata"] = checkpoint_metadata
+                serialized_checkpoint_json = json.dumps(checkpoint, sort_keys=True)
+            sequence = expected_sequence + 1
+            updated_at = self._next_timestamp(connection=connection)
+            updated = connection.execute(
+                """
+                UPDATE sessions SET metadata_json = ?, resume_checkpoint_json = ?, updated_at = ?, last_event_sequence = ?, leaf_sequence = ?
+                WHERE workspace_id = ? AND session_id = ? AND status = ? AND last_event_sequence = ?
+                """,
+                (
+                    json.dumps(persisted_metadata, sort_keys=True),
+                    serialized_checkpoint_json,
+                    updated_at,
+                    sequence,
+                    sequence,
+                    str(workspace),
+                    session_id,
+                    expected_status,
+                    expected_sequence,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise SessionBusyConflictError("session changed while compacting; retry /compact")
+            event = EventEnvelope(session_id=session_id, sequence=sequence, event_type="runtime.context_compacted", source="runtime", payload=payload)
+            _ = connection.execute(
+                """
+                INSERT INTO session_events (workspace_id, session_id, sequence, parent_sequence, event_type, source, payload_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (str(workspace), session_id, sequence, current["leaf_sequence"], event.event_type, event.source, json.dumps(payload, sort_keys=True)),
+            )
+            connection.commit()
+            return event
+
+    def append_collaboration_mode_change(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        metadata: dict[str, object],
+        mode: str,
+        previous_mode: str,
+        expected_sequence: int,
+        expected_status: str,
+    ) -> EventEnvelope:
+        """Append a collaboration mode change fact and updated session metadata atomically."""
+        persisted_metadata = session_metadata_for_persistence(metadata)
+        with self._write_connect(workspace) as connection:
+            row = fetch_row(
+                connection,
+                "SELECT status, leaf_sequence, last_event_sequence, resume_checkpoint_json FROM sessions WHERE workspace_id = ? AND session_id = ?",
+                (str(workspace), session_id),
+            )
+            if row is None:
+                raise UnknownSessionError(f"unknown session: {session_id}")
+            current = decode_row(row, NativeCompactionRow)
+            if current["status"] in {"running", "waiting"}:
+                raise SessionBusyConflictError(f"cannot change collaboration mode for a session with status {current['status']}")
+            if current["status"] != expected_status or current["last_event_sequence"] != expected_sequence:
+                raise SessionBusyConflictError("session changed while updating collaboration mode; retry")
+            checkpoint_json = current["resume_checkpoint_json"]
+            serialized_checkpoint_json = None
+            if checkpoint_json is not None:
+                checkpoint = json.loads(checkpoint_json)
+                if not isinstance(checkpoint, dict):
+                    raise RuntimeError("persisted resume checkpoint is malformed")
+                checkpoint_metadata = dict(persisted_metadata)
+                checkpoint_metadata.pop("execution_composition", None)
+                checkpoint["session_metadata"] = checkpoint_metadata
+                serialized_checkpoint_json = json.dumps(checkpoint, sort_keys=True)
+            sequence = expected_sequence + 1
+            updated_at = self._next_timestamp(connection=connection)
+            updated = connection.execute(
+                """
+                UPDATE sessions SET metadata_json = ?, resume_checkpoint_json = ?, updated_at = ?, last_event_sequence = ?, leaf_sequence = ?
+                WHERE workspace_id = ? AND session_id = ? AND status = ? AND last_event_sequence = ?
+                """,
+                (
+                    json.dumps(persisted_metadata, sort_keys=True),
+                    serialized_checkpoint_json,
+                    updated_at,
+                    sequence,
+                    sequence,
+                    str(workspace),
+                    session_id,
+                    expected_status,
+                    expected_sequence,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise SessionBusyConflictError("session changed while updating collaboration mode; retry")
+            payload: dict[str, object] = {
+                "mode": mode,
+                "previous_mode": previous_mode,
+            }
+            event = EventEnvelope(
+                session_id=session_id,
+                sequence=sequence,
+                event_type="runtime.collaboration_mode_changed",
+                source="runtime",
+                payload=payload,
+            )
+            _ = connection.execute(
+                """
+                INSERT INTO session_events (workspace_id, session_id, sequence, parent_sequence, event_type, source, payload_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (str(workspace), session_id, sequence, current["leaf_sequence"], event.event_type, event.source, json.dumps(payload, sort_keys=True)),
+            )
+            connection.commit()
+            return event
+
     def save_interrupted_checkpoint(
         self,
         *,
@@ -1490,6 +1638,7 @@ class _SessionStorageMixin(_MixinBase):
             runtime_state = parse_runtime_state_metadata(metadata["runtime_state"]) if "runtime_state" in metadata else {}
             if "composition_turn_occurrence" in runtime_state:
                 next_metadata["runtime_state"] = {"composition_turn_occurrence": runtime_state["composition_turn_occurrence"]}
+            next_metadata = metadata_with_manual_compaction_path(next_metadata, path)
             metadata_json = json.dumps(next_metadata, sort_keys=True)
             checkpoint = self._interrupted_resume_checkpoint(
                 prompt=_checked_out_prompt(path),

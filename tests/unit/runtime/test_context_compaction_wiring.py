@@ -14,8 +14,10 @@ import json
 from collections.abc import Mapping
 from pathlib import Path
 
+import pytest
+
 from voidcode.core.transcript import output_text
-from voidcode.core.turns import FinalTurn, ModelTurnFact, ToolTurn, TurnRequest
+from voidcode.core.turns import FinalTurn, ModelTurnFact, ResponseReadyFact, ToolTurn, TurnRequest
 from voidcode.hook.config import RuntimeHooksConfig
 from voidcode.provider.config import ProviderConfigs, ProviderEndpointConfig
 from voidcode.provider.protocol import ProviderTurnRequest, ProviderTurnResult
@@ -27,7 +29,7 @@ from voidcode.runtime.context.window import (
     assemble_provider_context,
     prepare_provider_context,
 )
-from voidcode.runtime.contracts import RuntimeRequest
+from voidcode.runtime.contracts import RuntimeRequest, SessionBusyConflictError
 from voidcode.runtime.permissions.policy import PermissionPolicy
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.tools.contracts import OpaqueToolBody, OutputBounds, OutputReference, TextOutput, ToolCall, ToolResult, ToolSuccess
@@ -552,3 +554,217 @@ def test_cancelling_before_compact_hook_skips_the_model_call(tmp_path: Path) -> 
 
     assert provider.turn.requests == [], "a cancelling hook must skip the model call"
     assert [event for event in response.events if event.event_type == _CONTEXT_COMPACTED] == []
+
+
+def test_native_compaction_restart_consistency_and_context_injection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from tests.runtime_storage import repositories_for_test_store
+    from voidcode.runtime.storage.sqlite import SqliteSessionStore
+
+    store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
+    repos = repositories_for_test_store(store)
+    config = RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False))
+
+    requests_seen: list[TurnRequest] = []
+
+    class ContextInspectingProducer:
+        def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: object = None) -> FinalTurn:
+            requests_seen.append(request)
+            fact = ModelTurnFact(request.run_step, "deterministic", request.prompt)
+            return FinalTurn(output=f"echo: {request.prompt}", facts=(fact,))
+
+    monkeypatch.setattr(VoidCodeRuntime, "summarize_continuity", lambda self, **kwargs: "Summary text of conversation")
+
+    # Step 1: Initial run
+    with VoidCodeRuntime(workspace=tmp_path, repositories=repos, turn_producer=ContextInspectingProducer(), config=config) as rt1:
+        res1 = rt1.run(RuntimeRequest(prompt="initial prompt", session_id="test-context"))
+        assert res1.session.status == "completed"
+
+        # Step 2: Compact session
+        compact_res = rt1.compact_session(session_id="test-context")
+        assert compact_res["compacted"] is True
+
+    requests_seen.clear()
+
+    # Step 3: Reopen fresh runtime in same workspace and run follow-up turn
+    with VoidCodeRuntime(workspace=tmp_path, repositories=repos, turn_producer=ContextInspectingProducer(), config=config) as rt2:
+        res2 = rt2.run(RuntimeRequest(prompt="follow-up prompt", session_id="test-context"))
+        assert res2.output == "echo: follow-up prompt"
+        assert res2.session.status == "completed"
+
+        assert len(requests_seen) == 1
+        req2 = requests_seen[0]
+        assert any("Summary text of conversation" in (seg.content or "") for seg in req2.assembled_context.segments)
+
+        user_prompts = [seg.content for seg in req2.assembled_context.segments if seg.role == "user"]
+        assert user_prompts == ["follow-up prompt"], "Old raw prompt must be truncated from context after compaction"
+
+        # Step 4: Compact again (repeated compact preserves prior decisions)
+        requests_seen.clear()
+        compact_res2 = rt2.compact_session(session_id="test-context")
+        assert compact_res2["compacted"] is True
+
+    # Step 5: Reopen yet again in fresh runtime and run turn 3
+    with VoidCodeRuntime(workspace=tmp_path, repositories=repos, turn_producer=ContextInspectingProducer(), config=config) as rt3:
+        res3 = rt3.run(RuntimeRequest(prompt="third prompt", session_id="test-context"))
+        assert res3.output == "echo: third prompt"
+        assert len(requests_seen) == 1
+        req3 = requests_seen[0]
+        assert any("Summary text of conversation" in (seg.content or "") for seg in req3.assembled_context.segments)
+        user_prompts3 = [seg.content for seg in req3.assembled_context.segments if seg.role == "user"]
+        assert user_prompts3 == ["third prompt"]
+
+
+def test_native_compaction_cas_conflict_no_partial_write(tmp_path: Path) -> None:
+    from tests.runtime_storage import repositories_for_test_store
+    from voidcode.runtime.storage.sqlite import SqliteSessionStore
+
+    store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
+    repos = repositories_for_test_store(store)
+    config = RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False))
+
+    class SimpleProducer:
+        def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: object = None) -> FinalTurn:
+            fact = ModelTurnFact(request.run_step, "deterministic", request.prompt)
+            return FinalTurn(output="ok", facts=(fact,))
+
+    with VoidCodeRuntime(workspace=tmp_path, repositories=repos, turn_producer=SimpleProducer(), config=config) as rt:
+        _ = rt.run(RuntimeRequest(prompt="initial", session_id="cas-session"))
+
+    events_before_count = len(store.load_session(workspace=tmp_path, session_id="cas-session").events)
+
+    # Attempt compaction with stale expected_sequence (CAS failure)
+    with pytest.raises(SessionBusyConflictError):
+        store.append_native_context_compaction(
+            workspace=tmp_path,
+            session_id="cas-session",
+            metadata={"new_meta": True},
+            payload={"new_payload": True},
+            expected_sequence=999,
+            expected_status="completed",
+        )
+
+    # Verify no partial write occurred
+    row_after = store.load_session(workspace=tmp_path, session_id="cas-session")
+    events_after_count = len(row_after.events)
+
+    assert events_before_count == events_after_count, "Events must not be inserted on CAS failure"
+    assert "new_meta" not in row_after.session.metadata, "Metadata must not be updated on CAS failure"
+
+
+def test_manual_compaction_checkout_and_fork_replay_selected_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[TurnRequest] = []
+    summary_inputs: list[str] = []
+
+    class Producer:
+        def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: object = None) -> FinalTurn:
+            captured.append(request)
+            output = f"answer: {request.prompt}"
+            return FinalTurn(output=output, facts=(ModelTurnFact(request.run_step, "deterministic", request.prompt), ResponseReadyFact(output)))
+
+    def summarize(self: VoidCodeRuntime, **kwargs: object) -> str:
+        summary_inputs.append(str(kwargs["source_text"]))
+        return "manual decision retained"
+
+    monkeypatch.setattr(VoidCodeRuntime, "summarize_continuity", summarize)
+    config = RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False))
+    with VoidCodeRuntime(workspace=tmp_path, turn_producer=Producer(), config=config) as runtime:
+        first = runtime.run(RuntimeRequest(session_id="selected-path", prompt="first decision"))
+        first_leaf = first.events[-1].sequence
+        runtime.run(RuntimeRequest(session_id="selected-path", prompt="abandoned decision"))
+        assert runtime.compact_session(session_id="selected-path")["compacted"] is True
+        fork = runtime.fork_session(session_id="selected-path")
+        runtime.run(RuntimeRequest(session_id=fork.session.id, prompt="fork followup"))
+        fork_context = "\n".join(segment.content or "" for segment in captured[-1].assembled_context.segments)
+        assert "manual decision retained" in fork_context
+        assert "abandoned decision" not in fork_context
+        fork_replay = runtime.replayed_conversation_segments_for_existing_session(session_id=fork.session.id, parent_session_id=None)
+        assert "fork followup" in [segment.content for segment in fork_replay]
+        assert "answer: fork followup" in [segment.content for segment in fork_replay]
+
+        runtime.checkout_session(session_id="selected-path", sequence=first_leaf)
+        replay = runtime.replayed_conversation_segments_for_existing_session(session_id="selected-path", parent_session_id=None)
+        assert [segment.content for segment in replay] == ["first decision", "answer: first decision"]
+        runtime.run(RuntimeRequest(session_id="selected-path", prompt="new branch"))
+        context_text = "\n".join(segment.content or "" for segment in captured[-1].assembled_context.segments)
+        assert "abandoned decision" not in context_text
+        assert "manual decision retained" not in context_text
+        assert "answer: first decision" in context_text
+        runtime.compact_session(session_id="selected-path")
+        runtime.compact_session(session_id="selected-path")
+        assert "Previous runtime summary:\nmanual decision retained" in summary_inputs[-1]
+
+
+def test_only_native_manual_compaction_cuts_the_selected_event_path() -> None:
+    from voidcode.runtime.context.continuity import events_after_manual_compaction
+    from voidcode.runtime.events import EventEnvelope
+
+    prompt = EventEnvelope(session_id="source", sequence=98, event_type="runtime.request_received", source="runtime", payload={"prompt": "old"})
+    automatic = EventEnvelope(
+        session_id="source", sequence=99, event_type="runtime.context_compacted", source="runtime", payload={"projection": {"source": "automatic"}}
+    )
+    assert events_after_manual_compaction((prompt, automatic)) == (prompt, automatic)
+    manual = EventEnvelope(
+        session_id="source",
+        sequence=100,
+        event_type="runtime.context_compacted",
+        source="runtime",
+        payload={"projection": {"source": "native_manual"}},
+    )
+    followup = EventEnvelope(session_id="fork", sequence=1, event_type="runtime.request_received", source="runtime", payload={"prompt": "new"})
+    assert events_after_manual_compaction((prompt, manual, followup)) == (followup,)
+
+
+def test_long_assistant_answer_survives_followup_and_checkout(tmp_path: Path) -> None:
+    import threading
+
+    from tests.provider_loopback import OpenAILoopbackServer, configure_openai_provider, openai_response
+
+    answer = "".join(f"step {index:05d}: preserve this implementation decision\n" for index in range(1200))
+    server = OpenAILoopbackServer(
+        [
+            openai_response(message={"role": "assistant", "content": text}, finish="stop")
+            for text in (answer, "off branch answer", "new branch answer")
+        ]
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        configure_openai_provider(tmp_path, f"http://127.0.0.1:{server.server_address[1]}/v1")
+        with VoidCodeRuntime(workspace=tmp_path) as runtime:
+            first = runtime.run(RuntimeRequest(session_id="long-answer", prompt="make a long plan"))
+            assert first.output == answer
+            first_leaf = first.events[-1].sequence
+            runtime.run(RuntimeRequest(session_id="long-answer", prompt="follow up"))
+            assert any(message.get("content") == answer for message in server.requests[1]["messages"])
+            runtime.checkout_session(session_id="long-answer", sequence=first_leaf)
+            runtime.run(RuntimeRequest(session_id="long-answer", prompt="continue selected plan"))
+            messages = server.requests[2]["messages"]
+            assert any(message.get("content") == answer for message in messages)
+            assert not any(message.get("content") == "off branch answer" for message in messages)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_path_without_manual_summary_removes_stale_projection() -> None:
+    from voidcode.runtime.context.continuity import metadata_with_manual_compaction_path
+
+    metadata = {
+        "collaboration_mode": "plan",
+        "runtime_policy": {"read_only": True},
+        "context_window": {"projection": {"summary_text": "abandoned summary"}},
+        "runtime_state": {
+            "context_projection": {"summary_text": "abandoned summary"},
+            "context_projection_summary": {"anchor": "abandoned"},
+            "context_compacted": {"summary_anchor": "abandoned"},
+            "composition_turn_occurrence": 7,
+        },
+    }
+    restored = metadata_with_manual_compaction_path(metadata, ())
+    assert restored == {
+        "collaboration_mode": "plan",
+        "runtime_policy": {"read_only": True},
+        "runtime_state": {"composition_turn_occurrence": 7},
+    }
+    assert "context_projection" in metadata["runtime_state"]

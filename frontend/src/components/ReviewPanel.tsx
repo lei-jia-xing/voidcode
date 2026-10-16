@@ -34,6 +34,9 @@ interface ReviewPanelProps {
   error: string | null;
   selectedPath: string | null;
   diff: ReviewFileDiff | null;
+  workspaceDiff?: ReviewFileDiff | null;
+  workspaceDiffStatus?: "idle" | "loading" | "success" | "error";
+  workspaceDiffError?: string | null;
   diffStatus: "idle" | "loading" | "success" | "error";
   diffError: string | null;
   onClose: () => void;
@@ -181,6 +184,9 @@ export function ReviewPanel({
   error,
   selectedPath,
   diff,
+  workspaceDiff = null,
+  workspaceDiffStatus = "idle",
+  workspaceDiffError = null,
   diffStatus,
   diffError,
   onClose,
@@ -433,13 +439,50 @@ export function ReviewPanel({
           </div>
 
           <div className="min-w-0 flex-1 overflow-y-auto px-4 py-3">
-            {!selectedPath && (
+            {workspaceDiffStatus === "loading" && (
+              <div
+                role="status"
+                className="flex items-center gap-2 text-xs text-[var(--vc-text-subtle)]"
+              >
+                <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                {t("review.diffLoading")}
+              </div>
+            )}
+            {workspaceDiffStatus === "error" && (
+              <div className="text-xs text-[var(--vc-danger-text)]">
+                {t("review.diffError", {
+                  message: workspaceDiffError ?? "unknown",
+                })}
+              </div>
+            )}
+            {workspaceDiffStatus === "success" &&
+              workspaceDiff?.state === "not_git_repo" && (
+                <div className="text-xs text-[var(--vc-text-subtle)]">
+                  {t("composer.nativeDiffNoRepo")}
+                </div>
+              )}
+            {workspaceDiffStatus === "success" &&
+              workspaceDiff?.state === "clean" && (
+                <div className="text-xs text-[var(--vc-text-subtle)]">
+                  {t("composer.nativeDiffClean")}
+                </div>
+              )}
+            {workspaceDiff?.diff && (
+              <div className="mb-4 overflow-hidden rounded-xl border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)]">
+                <div className="border-b border-[color:var(--vc-border-subtle)] px-3 py-2 text-[11px] uppercase tracking-wide text-[var(--vc-text-subtle)]">
+                  {t("composer.nativeDiff")}
+                </div>
+                <pre className="max-h-[32rem] overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-[11px] leading-relaxed text-[var(--vc-text-muted)]">
+                  {workspaceDiff.diff}
+                </pre>
+              </div>
+            )}
+            {!workspaceDiff && !selectedPath && (
               <div className="text-xs text-[var(--vc-text-subtle)]">
                 {t("review.selectFile")}
               </div>
             )}
-
-            {selectedPath && (
+            {!workspaceDiff && selectedPath && (
               <>
                 <div className="mb-3 border-b border-[color:var(--vc-border-subtle)] pb-3">
                   <div className="text-sm font-medium text-[var(--vc-text-primary)]">

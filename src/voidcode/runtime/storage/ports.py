@@ -102,6 +102,27 @@ class SessionRepository(Protocol):
     ) -> None: ...
 
     def update_session_metadata(self, *, workspace: Path, session_id: str, metadata: dict[str, object]) -> None: ...
+    def append_native_context_compaction(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        metadata: dict[str, object],
+        payload: dict[str, object],
+        expected_sequence: int,
+        expected_status: str,
+    ) -> EventEnvelope: ...
+    def append_collaboration_mode_change(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        metadata: dict[str, object],
+        mode: str,
+        previous_mode: str,
+        expected_sequence: int,
+        expected_status: str,
+    ) -> EventEnvelope: ...
 
     def save_composition_phase_record(self, *, workspace: Path, session_id: str, record: PhaseRecord) -> None: ...
 

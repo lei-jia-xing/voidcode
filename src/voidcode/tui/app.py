@@ -104,6 +104,7 @@ from .term import Terminal, TerminalCapabilityError, escape_terminal_controls
 from .theme import FG_TOKENS, Theme, background_mode, palette_names, resolve_theme, validate_theme_configuration
 from .transcript import (
     AssistantBlock,
+    DiffBlock,
     KeyHints,
     NoticeBlock,
     SessionMarkerBlock,
@@ -286,6 +287,27 @@ class _PolledChunks:
     chunks: tuple[RuntimeStreamChunk, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _NativeCompactResult:
+    session_id: str
+    result: dict[str, object] | None = None
+    error: object | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _NativePlanResult:
+    session_id: str
+    result: dict[str, object] | None = None
+    error: object | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _NativeReviewResult:
+    session_id: str
+    output: str | None = None
+    error: object | None = None
+
+
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
@@ -333,6 +355,12 @@ class TuiApp:
         self._queue: queue.Queue[object] = queue.Queue()
         self._stream_thread: threading.Thread | None = None
         self._streaming = False
+        self._compact_pending = False
+        self._plan_pending = False
+        self._review_pending = False
+        self._compact_thread: threading.Thread | None = None
+        self._plan_thread: threading.Thread | None = None
+        self._review_thread: threading.Thread | None = None
         self._polling = False
         self._session_id: str | None = None
         self._tracked_tasks: set[str] = set()
@@ -346,6 +374,7 @@ class TuiApp:
         self._artifact_next_offset: int | None = None
 
         self._model = self._config.model or ""
+        self._plan_mode = False
         self._approval_mode = self._config.approval_mode or ""
         self._lsp_label = ""
         self._cost_usd: float | None = None
@@ -667,7 +696,7 @@ class TuiApp:
             state.status,
             model=self._model,
             thinking=self._session_effort or self._config.reasoning_effort or "off",
-            mode=self._approval_mode,
+            mode=f"{self._approval_mode} · plan" if self._plan_mode else self._approval_mode,
             path=str(self._workspace),
             lsp=self._lsp_label,
             cost_usd=self._cost_usd,
@@ -697,10 +726,18 @@ class TuiApp:
                 self._finish_stream(item.last_status)
             elif isinstance(item, _StreamFailed):
                 self._fail_stream(item.error, item.last_status)
+            elif isinstance(item, _NativeCompactResult):
+                self._finish_native_compact(item)
+            elif isinstance(item, _NativePlanResult):
+                self._finish_native_plan(item)
+            elif isinstance(item, _NativeReviewResult):
+                self._finish_native_review(item)
 
     def _consume_chunk(self, chunk: RuntimeStreamChunk, *, replay: bool = False) -> None:
         assert self._view is not None
         session_id = chunk.session.session.id
+        if session_id != self._session_id:
+            self._plan_mode = False
         self._session_id = session_id
         if self._cancel_requested:
             # ``escape`` arrived before the runtime allocated the session id.
@@ -771,6 +808,9 @@ class TuiApp:
         """Status-line data the runtime already delivers per chunk."""
         if not metadata:
             return
+        collaboration_mode = metadata.get("collaboration_mode")
+        if collaboration_mode in {"plan", "default"}:
+            self._plan_mode = collaboration_mode == "plan"
         model, _provider = session_model_identity(metadata)
         if model:
             self._model = model
@@ -803,11 +843,7 @@ class TuiApp:
             )
             for key, attribute in token_fields:
                 value = latest.get(key) if isinstance(latest, Mapping) else None
-                setattr(
-                    self,
-                    attribute,
-                    value if isinstance(value, int) and not isinstance(value, bool) else None,
-                )
+                setattr(self, attribute, value if isinstance(value, int) and not isinstance(value, bool) else None)
             hit_rate = latest.get("cache_hit_rate") if isinstance(latest, Mapping) else None
             self._cache_hit_rate = float(hit_rate) if isinstance(hit_rate, (int, float)) and not isinstance(hit_rate, bool) else None
 
@@ -991,13 +1027,175 @@ class TuiApp:
     # -- flows -------------------------------------------------------------
 
     def _submit(self, text: str) -> None:
-        prompt = text
-        if not prompt.strip():
+        prompt = text.strip()
+        parts = prompt.split(maxsplit=1)
+        command = parts[0] if parts else ""
+        arguments = parts[1] if len(parts) > 1 else ""
+        if command == "/compact":
+            if arguments.strip():
+                self._notice("/compact does not accept arguments")
+            else:
+                self._command_native_compact()
+            return
+        if command == "/diff":
+            if arguments.strip():
+                self._notice("/diff does not accept arguments")
+            else:
+                self._command_native_diff()
+            return
+        if command == "/plan":
+            if arguments not in {"", "off"}:
+                self._notice("/plan accepts only 'off'")
+            else:
+                self._command_native_plan(arguments == "off")
+            return
+        if command == "/review":
+            self._command_native_review(arguments)
+            return
+        if not prompt:
+            return
+        if self._plan_pending or self._review_pending or self._compact_pending:
+            self._notice("Wait for the current native command to finish")
             return
         if self._streaming or self._overlay is not None:
             self._steer(prompt)
             return
         self._start_prompt(prompt)
+
+    def _command_native_compact(self) -> None:
+        if self._streaming or self._session_id is None:
+            self._notice("✖ /compact requires an idle active session")
+            return
+        if self._compact_pending:
+            self._notice("/compact is already running")
+            return
+        session_id = self._session_id
+        self._compact_pending = True
+        self._notice("/compact: compacting context...")
+        self._compact_thread = threading.Thread(
+            target=self._compact_worker,
+            args=(session_id,),
+            name="voidcode-tui-compact",
+            daemon=True,
+        )
+        self._compact_thread.start()
+
+    def _compact_worker(self, session_id: str) -> None:
+        try:
+            result = self._runtime.compact_session(session_id=session_id)
+        except Exception as error:
+            self._queue.put(_NativeCompactResult(session_id=session_id, error=error))
+        else:
+            self._queue.put(_NativeCompactResult(session_id=session_id, result=result))
+
+    def _finish_native_compact(self, item: _NativeCompactResult) -> None:
+        self._compact_pending = False
+        self._compact_thread = None
+        if item.session_id != self._session_id:
+            return
+        if item.error is not None:
+            self._notice(f"✖ /compact failed: {format_runtime_error(item.error)}")
+            return
+        result = item.result or {}
+        if result.get("compacted") is True:
+            self._refresh_context_window()
+            self._notice("✓ Context compacted and saved")
+        else:
+            self._notice(f"/compact: {result.get('reason', 'no changes')}")
+
+    def _command_native_diff(self) -> None:
+        try:
+            diff = self._runtime.review_diff_all()
+        except Exception as error:
+            self._notice(f"✖ /diff failed: {format_runtime_error(error)}")
+            return
+        if diff.state == "not_git_repo":
+            self._notice("/diff: not a Git repository")
+        elif diff.state == "clean":
+            self._notice("/diff: no changes")
+        elif diff.diff:
+            assert self._view is not None
+            self._view.transcript().add(DiffBlock(diff=diff.diff, path=diff.path, expanded=True))
+        else:
+            self._notice("/diff: no changes")
+        self._dirty = True
+
+    def _command_native_plan(self, off: bool) -> None:
+        if self._streaming or self._session_id is None:
+            self._notice("✖ /plan requires an idle active session")
+            return
+        if self._plan_pending or self._review_pending or self._compact_pending:
+            self._notice("Wait for the current native command to finish")
+            return
+        session_id = self._session_id
+        self._plan_pending = True
+        self._plan_thread = threading.Thread(
+            target=self._plan_worker,
+            args=(session_id, "default" if off else "plan"),
+            name="voidcode-tui-plan",
+            daemon=True,
+        )
+        self._plan_thread.start()
+
+    def _plan_worker(self, session_id: str, mode: str) -> None:
+        try:
+            result = self._runtime.set_collaboration_mode(session_id=session_id, mode=mode)
+        except Exception as error:
+            self._queue.put(_NativePlanResult(session_id=session_id, error=error))
+        else:
+            self._queue.put(_NativePlanResult(session_id=session_id, result=result))
+
+    def _finish_native_plan(self, item: _NativePlanResult) -> None:
+        self._plan_pending = False
+        self._plan_thread = None
+        if item.session_id != self._session_id:
+            return
+        if item.error is not None:
+            self._notice(f"✖ /plan failed: {format_runtime_error(item.error)}")
+            return
+        mode = (item.result or {}).get("collaboration_mode")
+        self._plan_mode = mode == "plan"
+        self._notice("✓ Plan mode enabled (read-only)" if mode == "plan" else "✓ Plan mode disabled")
+
+    def _command_native_review(self, focus: str) -> None:
+        if self._streaming or self._session_id is None:
+            self._notice("✖ /review requires an idle active session")
+            return
+        if self._plan_pending or self._review_pending or self._compact_pending:
+            self._notice("Wait for the current native command to finish")
+            return
+        session_id = self._session_id
+        self._review_pending = True
+        self._review_thread = threading.Thread(
+            target=self._review_worker,
+            args=(session_id, focus or None),
+            name="voidcode-tui-review",
+            daemon=True,
+        )
+        self._review_thread.start()
+
+    def _review_worker(self, session_id: str, focus: str | None) -> None:
+        try:
+            response = self._runtime.review_session(session_id=session_id, focus=focus)
+        except Exception as error:
+            self._queue.put(_NativeReviewResult(session_id=session_id, error=error))
+        else:
+            self._queue.put(_NativeReviewResult(session_id=session_id, output=response.output))
+
+    def _finish_native_review(self, item: _NativeReviewResult) -> None:
+        self._review_pending = False
+        self._review_thread = None
+        if item.session_id != self._session_id:
+            return
+        if item.error is not None:
+            self._notice(f"✖ /review failed: {format_runtime_error(item.error)}")
+            return
+        if not item.output:
+            self._notice("/review completed without a summary")
+            return
+        assert self._view is not None
+        self._view.transcript().add(AssistantBlock(text=item.output, settled=True))
+        self._dirty = True
 
     def _start_prompt(self, prompt: str) -> None:
         assert self._view is not None
@@ -1084,6 +1282,7 @@ class TuiApp:
                 f"Statusline: {config.statusline.layout}",
                 f"Composer: {config.composer.style} · gutter={config.composer.gutter} · padding={config.composer.padding}",
                 f"Cursor: {config.composer.cursor_shape} (blink={config.composer.cursor_blink})",
+                "Native commands: /compact, /diff, /plan, /review",
                 "Appearance: " + ("saved" if self._appearance_saved else "temporary session preview; not saved"),
             )
         )
@@ -1613,6 +1812,12 @@ class TuiApp:
         thread = self._stream_thread
         if thread is not None and thread.is_alive():
             thread.join(_SHUTDOWN_JOIN_SECONDS)
+        compact_thread = self._compact_thread
+        if compact_thread is not None and compact_thread.is_alive():
+            compact_thread.join(_SHUTDOWN_JOIN_SECONDS)
+        for native_thread in (self._plan_thread, self._review_thread):
+            if native_thread is not None and native_thread.is_alive():
+                native_thread.join(_SHUTDOWN_JOIN_SECONDS)
         try:
             self._runtime.__exit__(None, None, None)
         except Exception as error:

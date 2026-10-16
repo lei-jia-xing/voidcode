@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
@@ -21,6 +20,15 @@ type ApprovalMode = Literal["ask", "write", "yolo"]
 APPROVAL_MODES: tuple[ApprovalMode, ...] = ("ask", "write", "yolo")
 DEFAULT_APPROVAL_MODE: ApprovalMode = "yolo"
 READ_ONLY_DENIAL_REASON = "read-only access is active; mutating tools are denied"
+type CollaborationMode = Literal["default", "plan"]
+VALID_COLLABORATION_MODES: frozenset[str] = frozenset({"default", "plan"})
+
+
+def validate_collaboration_mode(value: object) -> CollaborationMode:
+    """Validate an incoming or persisted collaboration mode token."""
+    if not isinstance(value, str) or value not in VALID_COLLABORATION_MODES:
+        raise ValueError(f"invalid collaboration mode '{value}', expected 'default' or 'plan'")
+    return "plan" if value == "plan" else "default"
 
 
 def runtime_read_only_from_metadata(metadata: Mapping[str, object] | None) -> bool:
@@ -29,7 +37,29 @@ def runtime_read_only_from_metadata(metadata: Mapping[str, object] | None) -> bo
     read_only = metadata.get("read_only", False)
     if not isinstance(read_only, bool):
         raise ValueError("runtime read_only must be a boolean")
-    return read_only
+    if read_only:
+        return True
+    raw_policy = metadata.get("runtime_policy")
+    if isinstance(raw_policy, Mapping) and raw_policy.get("read_only") is True:
+        return True
+    return False
+
+
+def runtime_effective_read_only_from_metadata(metadata: Mapping[str, object] | None) -> bool:
+    """Return True if base read_only is active OR collaboration mode is 'plan'.
+
+    Exiting plan mode removes only the mode-level plan restriction; an externally
+    frozen base read_only remains enforced. Any invalid non-default mode raises
+    immediately to fail visibly on malformed contracts or state corruption.
+    """
+    if metadata is None:
+        return False
+    if runtime_read_only_from_metadata(metadata):
+        return True
+    mode = metadata.get("collaboration_mode")
+    if mode is None or mode == "default":
+        return False
+    return validate_collaboration_mode(mode) == "plan"
 
 
 def approval_decision(*, mode: ApprovalMode, operation_class: OperationClass | None) -> PermissionDecision:
@@ -250,12 +280,9 @@ def evaluate_pattern_permission_rules(
     for index, rule in enumerate(rules):
         if not _tool_matches_rule(tool_name=tool_name, pattern=rule.tool):
             continue
-        if rule.command is not None and not _command_matches_rule(command=command, pattern=rule.command):
+        if rule.path is not None and not _path_candidates_match_rule(path_candidates=path_candidates, pattern=rule.path):
             continue
-        if rule.path is not None and not _path_candidates_match_rule(
-            path_candidates=path_candidates,
-            pattern=rule.path,
-        ):
+        if rule.command is not None and (command is None or not fnmatchcase(command, rule.command)):
             continue
         return rule.decision, _format_pattern_permission_rule(index=index, rule=rule)
     return None
@@ -263,30 +290,6 @@ def evaluate_pattern_permission_rules(
 
 def _tool_matches_rule(*, tool_name: str, pattern: str) -> bool:
     return fnmatchcase(tool_name, pattern)
-
-
-def _command_matches_rule(*, command: str | None, pattern: str) -> bool:
-    if command is None:
-        return False
-    if fnmatchcase(command, pattern):
-        return True
-    for candidate in _command_match_candidates(command):
-        if fnmatchcase(candidate, pattern):
-            return True
-    return False
-
-
-def _command_match_candidates(command: str) -> tuple[str, ...]:
-    candidates: list[str] = []
-    for segment in re.split(r"[;&|]+", command):
-        stripped = segment.strip()
-        if not stripped:
-            continue
-        candidates.append(stripped)
-        first_token = stripped.split(None, 1)[0].strip()
-        if first_token:
-            candidates.append(first_token)
-    return tuple(dict.fromkeys(candidates))
 
 
 def _path_candidates_match_rule(*, path_candidates: tuple[str, ...], pattern: str) -> bool:
@@ -297,10 +300,10 @@ def _path_candidates_match_rule(*, path_candidates: tuple[str, ...], pattern: st
 
 def _format_pattern_permission_rule(*, index: int, rule: PatternPermissionRule) -> str:
     parts = [f"permission.rules[{index}]", f"tool={rule.tool!r}"]
-    if rule.path is not None:
-        parts.append(f"path={rule.path!r}")
     if rule.command is not None:
         parts.append(f"command={rule.command!r}")
+    if rule.path is not None:
+        parts.append(f"path={rule.path!r}")
     parts.append(f"decision={rule.decision!r}")
     return " ".join(parts)
 

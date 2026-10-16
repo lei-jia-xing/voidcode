@@ -117,6 +117,12 @@ class NoPendingApprovalError(ValueError):
     code = "no_pending_approval"
 
 
+class SessionBusyConflictError(ValueError):
+    """Raised when a native session command or mode change cannot proceed because the session is active or in a conflicting state."""
+
+    code = "session_busy_conflict"
+
+
 class RuntimeCommandMetadata(TypedDict, total=False):
     name: str
     source: str

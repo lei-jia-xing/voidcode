@@ -296,6 +296,28 @@ def test_runtime_policy_child_snapshot_is_subset_of_parent_snapshot() -> None:
     assert any(entry.get("source") == "parent_runtime_policy_snapshot" for entry in trace)
 
 
+def test_runtime_policy_child_snapshot_inherits_read_only_restriction() -> None:
+    parent_read_only = _materialize_sample_snapshot(request_metadata={"read_only": True})
+    child_from_read_only = _materialize_sample_snapshot(
+        request_metadata={"read_only": False},
+        parent_snapshot=parent_read_only,
+    )
+    assert child_from_read_only["read_only"] is True
+
+    parent_writable = _materialize_sample_snapshot(request_metadata={"read_only": False})
+    child_narrowed = _materialize_sample_snapshot(
+        request_metadata={"read_only": True},
+        parent_snapshot=parent_writable,
+    )
+    assert child_narrowed["read_only"] is True
+
+    child_writable = _materialize_sample_snapshot(
+        request_metadata={"read_only": False},
+        parent_snapshot=parent_writable,
+    )
+    assert child_writable["read_only"] is False
+
+
 def test_runtime_policy_diagnostics_preserve_values_with_bounds() -> None:
     original_values = (
         "secret prompt body",

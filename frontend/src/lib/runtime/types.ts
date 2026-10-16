@@ -73,8 +73,17 @@ export type RuntimeBackgroundTaskStatusSnapshot =
 export type RuntimeStatusSnapshot = Schemas["RuntimeStatusBody"];
 export type ReviewTreeNode = Schemas["ReviewTreeNodeBody"];
 export type ReviewFileDiff = Schemas["ReviewFileDiffBody"];
-export type RuntimeResponse = Schemas["RuntimeResponseBody"];
+/** Result returned by native `POST /api/sessions/{id}/compact`. */
+export type RuntimeCompactResult = Schemas["RuntimeCompactBody"];
 export type RuntimeInterruptResult = Schemas["SessionCancelBody"];
+export type RuntimeResponse = Schemas["RuntimeResponseBody"];
+export interface CollaborationModeResult {
+  session_id: string;
+  collaboration_mode: "plan" | "default";
+  previous_mode: "plan" | "default";
+  event_sequence?: number | null;
+  unchanged?: boolean;
+}
 /** `POST /api/sessions/{id}/steer`: how many messages the queue accepted. */
 export type SessionSteerResult = Schemas["SessionSteerBody"];
 export type BackgroundTaskRequestSnapshot =

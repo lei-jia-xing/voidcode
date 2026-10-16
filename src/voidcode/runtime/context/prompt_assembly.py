@@ -161,6 +161,7 @@ def build_prompt_assembly_plan(
     artifact_reference_sections: Iterable[PromptAssemblySection] = (),
     tool_catalog_context: str = "",
     hook_guidance: Iterable[str] | None = None,
+    collaboration_mode_context: str = "",
 ) -> PromptAssemblyPlan:
     sections: list[PromptAssemblySection] = []
     seen_system_contents: set[str] = set()
@@ -222,6 +223,13 @@ def build_prompt_assembly_plan(
         tier="instruction",
         layer="base_safety",
     )
+    if collaboration_mode_context:
+        append_system(
+            collaboration_mode_context,
+            source="runtime_collaboration_mode",
+            tier="instruction",
+            layer="collaboration_mode",
+        )
     append_system(
         agent_prompt_context,
         source="agent_prompt",

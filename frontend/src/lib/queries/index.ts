@@ -37,6 +37,7 @@ export { useAgentsQuery, useCommandsQuery } from "./catalog";
 export { useRetryMcpConnections, useRuntimeStatusQuery } from "./status";
 export {
   resolveSelectedReviewPath,
+  useReviewDiffAllQuery,
   useReviewDiffQuery,
   useReviewQuery,
 } from "./review";

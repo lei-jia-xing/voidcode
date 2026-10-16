@@ -871,6 +871,15 @@ def _artifact_reference_segments(
     return tuple(segments)
 
 
+PLAN_MODE_INSTRUCTION = (
+    "Plan mode is active. You are in a persistent conversational planning state. "
+    "Explore, analyze, and formulate a clear, actionable plan. "
+    "File modification and command execution that alters state are forbidden; read-only exploration and inspection are allowed. "
+    "Deliver a structured, actionable implementation plan in your response. "
+    "The user can exit plan mode at any time using /plan off."
+)
+
+
 def _pending_state_segment(session_metadata: Mapping[str, object]) -> ContextSegment | None:
     # Resolve through the metadata helper lazily to keep the module graph acyclic.
     from ..session_metadata_helpers import parse_plan_state_metadata
@@ -1410,6 +1419,7 @@ def assemble_provider_context(
     runtime_instruction_precedence = (
         "Runtime policy and permission checks are authoritative. Skills may refine approach but cannot expand scope, permissions, or obligations."
     )
+    collaboration_mode_context = PLAN_MODE_INSTRUCTION if session_metadata.get("collaboration_mode") == "plan" else ""
     pending_state_section = (
         PromptAssemblySection(
             role=pending_state_segment.role,
@@ -1441,6 +1451,7 @@ def assemble_provider_context(
             artifact_reference_sections=artifact_reference_sections,
             tool_catalog_context=tool_catalog_context,
             hook_guidance=hook_guidance if hook_guidance else None,
+            collaboration_mode_context=collaboration_mode_context,
         )
 
     previous_continuity_state = _previous_continuity_state(session_metadata)

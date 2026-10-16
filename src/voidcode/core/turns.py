@@ -124,6 +124,8 @@ class ModelTurnFact:
 
 @dataclass(frozen=True, slots=True)
 class ResponseReadyFact:
+    """Canonical complete assistant response text; ``output_preview`` is not truncated."""
+
     output_preview: str
     finish_reason: str | None = None
     finish_reason_reported: bool | None = None

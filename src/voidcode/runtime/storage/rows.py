@@ -68,6 +68,13 @@ class SessionStatusRow(TypedDict):
     status: str
 
 
+class NativeCompactionRow(TypedDict):
+    status: str
+    leaf_sequence: int | None
+    last_event_sequence: int
+    resume_checkpoint_json: str | None
+
+
 class SessionStatusMetadataRow(TypedDict):
     status: str
     metadata_json: str

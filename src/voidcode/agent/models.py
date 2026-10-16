@@ -181,3 +181,94 @@ class AgentManifest:
                 raise ValueError(f"agent manifest {field_name} must be a tuple of non-empty strings")
         if type(self.top_level_selectable) is not bool:
             raise ValueError("agent top_level_selectable must be a boolean")
+
+    def to_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "id": self.id,
+            "name": self.name,
+            "mode": self.mode,
+            "description": self.description,
+            "source_scope": self.source_scope,
+            "top_level_selectable": self.top_level_selectable,
+        }
+        if self.source_path is not None:
+            payload["source_path"] = self.source_path
+        if self.source_id is not None:
+            payload["source_id"] = self.source_id
+        if self.prompt_profile is not None:
+            payload["prompt_profile"] = self.prompt_profile
+        if self.model_preference is not None:
+            payload["model_preference"] = self.model_preference
+        if self.fallback_models:
+            payload["fallback_models"] = list(self.fallback_models)
+        if self.tool_allowlist:
+            payload["tool_allowlist"] = list(self.tool_allowlist)
+        if self.skill_refs:
+            payload["skill_refs"] = list(self.skill_refs)
+        if self.preset_hook_refs:
+            payload["preset_hook_refs"] = list(self.preset_hook_refs)
+        if self.mcp_binding is not None:
+            payload["mcp_binding"] = self.mcp_binding.to_payload()
+        if self.prompt_materialization is not None:
+            payload["prompt_materialization"] = self.prompt_materialization.to_payload()
+        return payload
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, object]) -> AgentManifest:
+        if not isinstance(payload, Mapping):
+            raise ValueError("AgentManifest payload must be a mapping")
+        for key in ("id", "name", "mode", "description"):
+            if key not in payload or not isinstance(payload[key], str):
+                raise ValueError(f"AgentManifest payload '{key}' must be a string")
+        raw_selectable = payload.get("top_level_selectable", False)
+        if type(raw_selectable) is not bool:
+            raise ValueError("AgentManifest payload 'top_level_selectable' must be a boolean")
+        mcp_payload = payload.get("mcp_binding")
+        mcp_binding = None
+        if mcp_payload is not None:
+            if not isinstance(mcp_payload, Mapping):
+                raise ValueError("AgentManifest payload 'mcp_binding' must be an object")
+            raw_servers = mcp_payload.get("servers", ())
+            if not isinstance(raw_servers, (list, tuple)):
+                raise ValueError("AgentManifest payload 'mcp_binding.servers' must be a sequence")
+            mcp_binding = AgentMcpBindingIntent(
+                profile=cast(str | None, mcp_payload.get("profile")),
+                servers=tuple(cast(list[str], raw_servers)),
+            )
+        mat_payload = payload.get("prompt_materialization")
+        prompt_materialization = None
+        if mat_payload is not None:
+            if not isinstance(mat_payload, Mapping):
+                raise ValueError("AgentManifest payload 'prompt_materialization' must be an object")
+            prompt_materialization = AgentPromptMaterialization.from_payload(mat_payload)
+
+        def _parse_tuple(field_name: str) -> tuple[str, ...]:
+            raw = payload.get(field_name, ())
+            if not isinstance(raw, (list, tuple)):
+                raise ValueError(f"AgentManifest payload '{field_name}' must be a sequence of strings")
+            return tuple(cast(list[str], raw))
+
+        def _parse_opt_str(field_name: str) -> str | None:
+            val = payload.get(field_name)
+            if val is not None and not isinstance(val, str):
+                raise ValueError(f"AgentManifest payload '{field_name}' must be a string")
+            return val
+
+        return cls(
+            id=cast(str, payload["id"]),
+            name=cast(str, payload["name"]),
+            mode=cast(AgentMode, payload["mode"]),
+            description=cast(str, payload["description"]),
+            source_scope=cast(AgentSourceScope, payload.get("source_scope", "builtin")),
+            source_path=_parse_opt_str("source_path"),
+            source_id=_parse_opt_str("source_id"),
+            prompt_profile=_parse_opt_str("prompt_profile"),
+            model_preference=_parse_opt_str("model_preference"),
+            fallback_models=_parse_tuple("fallback_models"),
+            tool_allowlist=_parse_tuple("tool_allowlist"),
+            skill_refs=_parse_tuple("skill_refs"),
+            preset_hook_refs=_parse_tuple("preset_hook_refs"),
+            mcp_binding=mcp_binding,
+            top_level_selectable=raw_selectable,
+            prompt_materialization=prompt_materialization,
+        )

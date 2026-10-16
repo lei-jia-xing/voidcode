@@ -4813,3 +4813,260 @@ def test_runtime_rename_session_accepts_exactly_at_the_bound(tmp_path: Path, mon
             server.shutdown()
             thread.join(timeout=5)
         server.server_close()
+
+
+def test_runtime_custom_primary_agent_composition_and_durable_resume(tmp_path: Path) -> None:
+    agents_dir = tmp_path / ".voidcode" / "agents"
+    agents_dir.mkdir(parents=True)
+    custom_agent = agents_dir / "custom-lead.md"
+    custom_agent.write_text(
+        "---\n"
+        "name: Custom Lead\n"
+        "description: Workspace lead agent\n"
+        "mode: primary\n"
+        "tool_allowlist:\n"
+        "  - read\n"
+        "  - glob\n"
+        "---\n"
+        "You are the workspace lead.\n",
+        encoding="utf-8",
+    )
+
+    requests_seen: list[tuple[TurnRequest, TurnSession]] = []
+
+    class RecordingProducer:
+        def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: TurnSession) -> FinalTurn:
+            requests_seen.append((request, session))
+            return FinalTurn(output=f"answered: {request.prompt}", facts=())
+
+    config = replace(load_runtime_config(tmp_path, env={}), mcp=RuntimeMcpConfig(enabled=False))
+    with VoidCodeRuntime(
+        workspace=tmp_path,
+        turn_producer=RecordingProducer(),
+        config=config,
+    ) as runtime:
+        res1 = runtime.run(
+            RuntimeRequest(
+                prompt="lead hello",
+                session_id="lead-session",
+                metadata={"agent": {"preset": "custom-lead"}},
+            )
+        )
+        assert res1.output == "answered: lead hello"
+        assert any("You are the workspace lead." in (seg.content or "") for seg in requests_seen[0][0].assembled_context.segments)
+
+        # Save an interrupted checkpoint to test active provider resumption
+        runtime.save_interrupted_checkpoint(
+            session_id="lead-session",
+            prompt="lead interrupted",
+            session_metadata=res1.session.metadata,
+            tool_results=(),
+            last_event_sequence=len(res1.events),
+            output=None,
+        )
+
+    # Delete the agent markdown file on disk to verify durable offline recovery without contamination.
+    custom_agent.unlink()
+    assert not custom_agent.exists()
+    requests_seen.clear()
+
+    with VoidCodeRuntime(
+        workspace=tmp_path,
+        turn_producer=RecordingProducer(),
+        config=config,
+    ) as reopened:
+        # Live registry must remain clean of the unlinked file.
+        assert "custom-lead" not in reopened._agent_registry.custom
+
+        # 1. Resume the interrupted checkpoint: must execute an actual resumed provider turn!
+        res_interrupted = reopened.resume("lead-session")
+        assert res_interrupted.output == "answered: lead interrupted"
+        assert len(requests_seen) == 1
+        req_res, sess_res = requests_seen[0]
+        assert any("You are the workspace lead." in (seg.content or "") for seg in req_res.assembled_context.segments)
+        assert sorted(sess_res.metadata["agent_capability_snapshot"]["tools"]["effective_names"]) == ["glob", "read"]
+        requests_seen.clear()
+
+        # 2. Active turn 2 in the same session inherits the admitted agent from the existing session.
+        res2 = reopened.run(
+            RuntimeRequest(
+                prompt="lead turn 2",
+                session_id="lead-session",
+            )
+        )
+        assert res2.output == "answered: lead turn 2"
+        assert len(requests_seen) == 1
+        req2, sess2 = requests_seen[0]
+        assert any("You are the workspace lead." in (seg.content or "") for seg in req2.assembled_context.segments)
+        # Tool allowlist restrictions must be preserved from the admitted custom agent.
+        snap = sess2.metadata["agent_capability_snapshot"]
+        assert snap["agent"]["preset"] == "custom-lead"
+        assert sorted(snap["tools"]["effective_names"]) == ["glob", "read"]
+
+        # Live registry must remain uncontaminated after executing the historical session turn.
+        assert "custom-lead" not in reopened._agent_registry.custom
+
+        # A new session requesting the deleted agent must be rejected.
+        with pytest.raises(RuntimeRequestError, match="agent"):
+            reopened.run(
+                RuntimeRequest(
+                    prompt="lead fresh",
+                    session_id="lead-fresh",
+                    metadata={"agent": {"preset": "custom-lead"}},
+                )
+            )
+
+        # A new session with default agent must succeed cleanly.
+        default_res = reopened.run(RuntimeRequest(prompt="default fresh", session_id="default-fresh"))
+        assert default_res.output == "answered: default fresh"
+
+
+def test_runtime_command_registry_catalog_and_invocation_parity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from voidcode.command.models import CommandDefinition
+    from voidcode.command.registry import CommandRegistry
+
+    proj_cmd_dir = tmp_path / ".voidcode" / "commands"
+    proj_cmd_dir.mkdir(parents=True)
+    (proj_cmd_dir / "init.md").write_text("---\ndescription: Project init\n---\nProject init: $ARGUMENTS", encoding="utf-8")
+    (proj_cmd_dir / "shared.md").write_text("---\ndescription: Project shared\n---\nProject shared: $ARGUMENTS", encoding="utf-8")
+
+    user_config_dir = tmp_path / "user_config"
+    user_cmd_dir = user_config_dir / "voidcode" / "commands"
+    user_cmd_dir.mkdir(parents=True)
+    (user_cmd_dir / "shared.md").write_text("---\ndescription: User shared\n---\nUser shared: $ARGUMENTS", encoding="utf-8")
+    (user_cmd_dir / "user-only.md").write_text("---\ndescription: User only\n---\nUser only: $ARGUMENTS", encoding="utf-8")
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(user_config_dir))
+
+    extension_cmd = CommandDefinition(
+        name="ext-cmd",
+        description="Extension command",
+        template="Extension: $ARGUMENTS",
+        source="extension",
+    )
+    injected_registry = CommandRegistry([extension_cmd])
+
+    prompts_seen: list[str] = []
+
+    class EchoProducer:
+        def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: TurnSession) -> FinalTurn:
+            prompts_seen.append(request.prompt)
+            return FinalTurn(output=request.prompt, facts=())
+
+    with VoidCodeRuntime(
+        workspace=tmp_path,
+        command_registry=injected_registry,
+        turn_producer=EchoProducer(),
+    ) as runtime:
+        inv_reg = runtime.command_registry()
+        cat_summaries = runtime.list_command_summaries()
+
+        inv_map = {cmd.name: (cmd.description, cmd.source) for cmd in inv_reg.list()}
+        cat_map = {cmd.name: (cmd.description, cmd.source) for cmd in cat_summaries}
+
+        assert {name: cat_map[name] for name in inv_map} == inv_map
+        assert {name: cat_map[name][1] for name in ("compact", "diff", "plan", "review")} == {
+            "compact": "native",
+            "diff": "native",
+            "plan": "native",
+            "review": "native",
+        }
+        assert inv_map["init"] == ("Project init", "project")
+        assert inv_map["shared"] == ("Project shared", "project")
+        assert inv_map["user-only"] == ("User only", "user")
+        assert inv_map["ext-cmd"] == ("Extension command", "extension")
+
+        # Test actual rendered execution output for each winning source
+        prompts_seen.clear()
+        res_init = runtime.run(RuntimeRequest(prompt="/init repo-focus"))
+        assert res_init.output == "Project init: repo-focus"
+        assert prompts_seen == ["Project init: repo-focus"]
+
+        prompts_seen.clear()
+        res_shared = runtime.run(RuntimeRequest(prompt="/shared space-focus"))
+        assert res_shared.output == "Project shared: space-focus"
+        assert prompts_seen == ["Project shared: space-focus"]
+
+        prompts_seen.clear()
+        res_user = runtime.run(RuntimeRequest(prompt="/user-only my-focus"))
+        assert res_user.output == "User only: my-focus"
+        assert prompts_seen == ["User only: my-focus"]
+
+        prompts_seen.clear()
+        res_ext = runtime.run(RuntimeRequest(prompt="/ext-cmd plugin-focus"))
+        assert res_ext.output == "Extension: plugin-focus"
+        assert prompts_seen == ["Extension: plugin-focus"]
+
+
+def test_runtime_agent_component_config_strict_validation() -> None:
+    from voidcode.runtime.service import _builtin_agent_component_config
+
+    # Package source_scope cannot masquerade as declarative
+    with pytest.raises(ValueError, match="package-origin agent cannot masquerade as runtime-owned declarative config"):
+        _builtin_agent_component_config(
+            {
+                "id": "pkg-masquerade",
+                "name": "Package Masquerade",
+                "mode": "primary",
+                "description": "desc",
+                "source_scope": "package",
+            }
+        )
+
+    # String boolean rejected
+    with pytest.raises(ValueError, match="top_level_selectable' must be a boolean"):
+        _builtin_agent_component_config(
+            {
+                "id": "custom-agent",
+                "name": "Custom Agent",
+                "mode": "primary",
+                "description": "desc",
+                "source_scope": "project",
+                "top_level_selectable": "false",
+            }
+        )
+
+    # Non-mapping mcp_binding rejected
+    with pytest.raises(ValueError, match="mcp_binding' must be an object"):
+        _builtin_agent_component_config(
+            {
+                "id": "custom-agent",
+                "name": "Custom Agent",
+                "mode": "primary",
+                "description": "desc",
+                "source_scope": "project",
+                "mcp_binding": "invalid",
+            }
+        )
+
+    # Non-sequence tool_allowlist rejected
+    with pytest.raises(ValueError, match="tool_allowlist' must be a sequence of strings"):
+        _builtin_agent_component_config(
+            {
+                "id": "custom-agent",
+                "name": "Custom Agent",
+                "mode": "primary",
+                "description": "desc",
+                "source_scope": "project",
+                "tool_allowlist": "read",
+            }
+        )
+
+    # Valid declarative manifest admitted
+    validated = _builtin_agent_component_config(
+        {
+            "id": "custom-agent",
+            "name": "Custom Agent",
+            "mode": "primary",
+            "description": "desc",
+            "source_scope": "project",
+            "top_level_selectable": True,
+            "tool_allowlist": ["read", "write"],
+        }
+    )
+    assert validated.value.id == "custom-agent"
+    assert validated.value.source_scope == "project"
+    assert validated.snapshot["tool_allowlist"] == ("read", "write")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,9 +20,10 @@ from ...tools.grep import GrepResultBody
 from ...tools.write import WriteResultBody
 
 RULE_FILE_NAME = "AGENTS.md"
+LOCAL_RULE_FILE_NAME = "AGENTS.override.md"
 MAX_RULE_FILES = 8
 MAX_RULE_FILE_CHARS = 12_000
-
+MAX_TOTAL_RULE_BYTES = 36_000
 
 RULEBOOK_DIRECTORY = ".voidcode/rules"
 MAX_RULEBOOK_FILES = 64
@@ -56,15 +58,61 @@ class RuntimeFileRuleContext:
         return payload
 
 
+def _rule_file_in_directory(directory: Path) -> Path | None:
+    local_override = directory / LOCAL_RULE_FILE_NAME
+    if local_override.is_file():
+        return local_override
+    standard = directory / RULE_FILE_NAME
+    if standard.is_file():
+        return standard
+    return None
+
+
+def _find_project_root(workspace_root: Path) -> Path:
+    current = workspace_root
+    while True:
+        git_marker = current / ".git"
+        if git_marker.exists():
+            return current
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return workspace_root
+
+
+def _project_hierarchy_rule_paths(*, workspace_root: Path) -> tuple[Path, ...]:
+    project_root = _find_project_root(workspace_root)
+    directories: list[Path] = []
+    current = workspace_root
+    while True:
+        directories.append(current)
+        if current == project_root:
+            break
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    directories.reverse()
+
+    rule_paths: list[Path] = []
+    for directory in directories:
+        rule_path = _rule_file_in_directory(directory)
+        if rule_path is not None:
+            rule_paths.append(rule_path)
+    return tuple(rule_paths)
+
+
 def runtime_file_rule_contexts(
     *,
     workspace: Path | None,
     tool_results: tuple[_ToolResultLike, ...],
     max_rule_files: int = MAX_RULE_FILES,
     max_rule_file_chars: int = MAX_RULE_FILE_CHARS,
+    max_total_rule_bytes: int = MAX_TOTAL_RULE_BYTES,
     include_workspace_root: bool = True,
 ) -> tuple[RuntimeFileRuleContext, ...]:
-    if workspace is None or max_rule_files < 1:
+    if workspace is None or max_rule_files < 1 or max_total_rule_bytes < 0:
         return ()
     workspace_root = workspace.resolve(strict=False)
     rule_paths = _applicable_rule_paths(
@@ -73,23 +121,53 @@ def runtime_file_rule_contexts(
         max_rule_files=max_rule_files,
         include_workspace_root=include_workspace_root,
     )
+    if max_total_rule_bytes == 0 and rule_paths:
+        first_path = rule_paths[0]
+        try:
+            rel_path = first_path.relative_to(workspace_root).as_posix()
+        except ValueError:
+            rel_path = Path(os.path.relpath(first_path, workspace_root)).as_posix()
+        return (RuntimeFileRuleContext(path=rel_path, content="", truncated=True),)
     contexts: list[RuntimeFileRuleContext] = []
-    for rule_path in rule_paths:
+    remaining_bytes = max_total_rule_bytes
+    for index, rule_path in enumerate(rule_paths):
+        if remaining_bytes == 0:
+            if contexts:
+                contexts[-1] = RuntimeFileRuleContext(
+                    path=contexts[-1].path,
+                    content=contexts[-1].content,
+                    truncated=True,
+                )
+            break
         try:
             content = rule_path.read_text(encoding="utf-8")
         except OSError, UnicodeDecodeError:
             continue
-        truncated = len(content) > max_rule_file_chars
-        if truncated:
-            content = content[:max_rule_file_chars].rstrip()
-            content = f"{content}\n[Rule file truncated by runtime context policy]"
-        contexts.append(
-            RuntimeFileRuleContext(
-                path=rule_path.relative_to(workspace_root).as_posix(),
-                content=content.strip(),
-                truncated=truncated,
-            )
-        )
+        file_truncated = len(content) > max_rule_file_chars
+        content = content[:max_rule_file_chars]
+        encoded = content.encode("utf-8")
+        marker = b"\n[Rule file truncated by runtime context policy]"
+        budget_truncated = len(encoded) > remaining_bytes
+        truncated = file_truncated or budget_truncated
+        if len(encoded) > remaining_bytes:
+            marker_bytes = marker if remaining_bytes >= len(marker) else b""
+            prefix = encoded[: remaining_bytes - len(marker_bytes)]
+            content = prefix.decode("utf-8", errors="ignore") + marker_bytes.decode("utf-8")
+            truncated = True
+        elif file_truncated:
+            marker_bytes = marker if remaining_bytes - len(encoded) >= len(marker) else b""
+            content += marker_bytes.decode("utf-8")
+        try:
+            rel_path = rule_path.relative_to(workspace_root).as_posix()
+        except ValueError:
+            rel_path = Path(os.path.relpath(rule_path, workspace_root)).as_posix()
+        final_content = content.strip()
+        used_bytes = len(final_content.encode("utf-8"))
+        remaining_bytes -= used_bytes
+        contexts.append(RuntimeFileRuleContext(path=rel_path, content=final_content, truncated=truncated))
+        if budget_truncated or (remaining_bytes == 0 and index + 1 < len(rule_paths)):
+            contexts[-1] = RuntimeFileRuleContext(path=rel_path, content=final_content, truncated=True)
+            break
     return tuple(contexts)
 
 
@@ -135,26 +213,32 @@ def _applicable_rule_paths(
     max_rule_files: int,
     include_workspace_root: bool,
 ) -> tuple[Path, ...]:
-    ordered: list[Path] = []
+    baseline_rules: list[Path] = []
     seen: set[Path] = set()
 
-    root_rule_path = workspace_root / RULE_FILE_NAME
-    if include_workspace_root and root_rule_path.is_file():
-        seen.add(root_rule_path)
-        ordered.append(root_rule_path)
+    if include_workspace_root:
+        for rule_path in _project_hierarchy_rule_paths(workspace_root=workspace_root):
+            if rule_path not in seen:
+                seen.add(rule_path)
+                baseline_rules.append(rule_path)
 
+    dynamic_rules: list[Path] = []
     for raw_path in touched_paths:
         touched_path = _workspace_path(workspace_root=workspace_root, raw_path=raw_path)
         if touched_path is None:
             continue
         for rule_path in _candidate_rule_paths(workspace_root=workspace_root, path=touched_path):
-            if rule_path in seen or not rule_path.is_file():
+            if rule_path in seen:
                 continue
             seen.add(rule_path)
-            ordered.append(rule_path)
-    if len(ordered) <= max_rule_files:
-        return tuple(ordered)
-    return tuple(ordered[-max_rule_files:])
+            dynamic_rules.append(rule_path)
+
+    if len(baseline_rules) >= max_rule_files:
+        return tuple(baseline_rules[:max_rule_files])
+
+    allowed_dynamic_count = max_rule_files - len(baseline_rules)
+    retained_dynamic = dynamic_rules[-allowed_dynamic_count:] if len(dynamic_rules) > allowed_dynamic_count else dynamic_rules
+    return tuple(baseline_rules + retained_dynamic)
 
 
 def _workspace_path(*, workspace_root: Path, raw_path: str) -> Path | None:
@@ -182,7 +266,12 @@ def _candidate_rule_paths(*, workspace_root: Path, path: Path) -> tuple[Path, ..
         if current == workspace_root:
             break
         current = current.parent
-    return tuple(directory / RULE_FILE_NAME for directory in reversed(directories))
+    candidates: list[Path] = []
+    for directory in reversed(directories):
+        rule_path = _rule_file_in_directory(directory)
+        if rule_path is not None:
+            candidates.append(rule_path)
+    return tuple(candidates)
 
 
 @dataclass(frozen=True, slots=True)
@@ -475,6 +564,8 @@ def read_rule_uri(path: str, *, workspace: Path, offset: int = 1, limit: int = M
 
 
 __all__ = [
+    "LOCAL_RULE_FILE_NAME",
+    "MAX_TOTAL_RULE_BYTES",
     "RuleCatalog",
     "RuleCatalogEntry",
     "RuleMetadata",

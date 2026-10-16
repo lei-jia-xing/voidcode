@@ -645,7 +645,13 @@ def _permission_config_from_payload(payload: PermissionPayload | None) -> Extern
         read=ExternalDirectoryPolicy(rules=read_rules),
         write=ExternalDirectoryPolicy(rules=write_rules),
         rules=tuple(
-            PatternPermissionRule(tool=rule.tool, path=rule.path, command=rule.command, decision=rule.decision) for rule in payload.rules or ()
+            PatternPermissionRule(
+                tool=rule.tool,
+                path=rule.path,
+                command=rule.command,
+                decision=rule.decision,
+            )
+            for rule in payload.rules or ()
         ),
     )
 

@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import cast
 
 import pytest
 
+from tests.turn_producers import model_turn_fact
+from voidcode.core.turns import FinalTurn, ToolTurn, TurnRequest
+from voidcode.hook.config import RuntimeHooksConfig
+from voidcode.hook.typed import ToolInputHandlerRegistry
 from voidcode.runtime.composition import CompositionRef, TaskCompositionOwner
+from voidcode.runtime.config.loading import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import (
+    RuntimeRequest,
     RuntimeRequestError,
     validate_runtime_request_metadata,
 )
@@ -25,9 +32,11 @@ from voidcode.runtime.permissions.policy import (
     resolve_permission,
     runtime_read_only_from_metadata,
 )
+from voidcode.runtime.service import VoidCodeRuntime
+from voidcode.runtime.tools.registry import ToolRegistry
 from voidcode.tools.apply_workspace_edit import ApplyWorkspaceEditTool
 from voidcode.tools.ast_grep import AstGrepTool
-from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolEffect
+from voidcode.tools.contracts import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess
 from voidcode.tools.shell_exec import ShellExecTool
 
 
@@ -193,6 +202,187 @@ def test_request_metadata_accepts_explicit_read_only_flag(read_only: bool) -> No
 
     assert normalized.get("read_only") is read_only
     assert runtime_read_only_from_metadata(normalized) is read_only
+
+
+def test_runtime_read_only_from_metadata_snapshot_authority() -> None:
+    # Snapshot True is authoritative; explicit false cannot relax it
+    assert runtime_read_only_from_metadata({"runtime_policy": {"read_only": True}}) is True
+    assert runtime_read_only_from_metadata({"read_only": False, "runtime_policy": {"read_only": True}}) is True
+
+    # Request True can narrow a writable policy snapshot
+    assert runtime_read_only_from_metadata({"read_only": True, "runtime_policy": {"read_only": False}}) is True
+
+    # Writable stays writable
+    assert runtime_read_only_from_metadata({"read_only": False, "runtime_policy": {"read_only": False}}) is False
+    assert runtime_read_only_from_metadata({"runtime_policy": {"read_only": False}}) is False
+
+
+class _DynamicWriteProbe:
+    definition = ToolDefinition(
+        name="write_probe",
+        description="write a test file",
+        input_schema={"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+        effects=frozenset({ToolEffect.WRITE}),
+    )
+
+    def __init__(self, workspace: Path) -> None:
+        self.workspace = workspace
+        self.calls: list[ToolCall] = []
+
+    def invoke(self, call: ToolCall, *, context: object) -> ToolResult:
+        _ = context
+        self.calls.append(call)
+        out = self.workspace / str(call.arguments["path"])
+        out.write_text("written", encoding="utf-8")
+        return ToolSuccess(tool_name=call.tool_name, output=TextOutput("written"))
+
+
+class _PromptScriptedProducer:
+    def __init__(self, *, write_on_prompts: tuple[str, ...] | None = None) -> None:
+        self.executed_prompts: set[str] = set()
+        self.write_on_prompts = write_on_prompts
+
+    def produce(
+        self,
+        request: TurnRequest,
+        tool_results: tuple[ToolResult, ...],
+        *,
+        session: object,
+    ) -> ToolTurn | FinalTurn:
+        _ = session, tool_results
+        prompt = request.prompt
+        fact = model_turn_fact(request)
+        if self.write_on_prompts is not None:
+            should_write = prompt in self.write_on_prompts
+        else:
+            should_write = not prompt.startswith("safe")
+        if should_write and prompt not in self.executed_prompts:
+            self.executed_prompts.add(prompt)
+            path = f"{prompt.replace(' ', '_')}.txt"
+            return ToolTurn(calls=(ToolCall(tool_name="write_probe", arguments={"path": path}),), facts=(fact,))
+        return FinalTurn(output=f"{prompt} done", facts=(fact,))
+
+
+@pytest.mark.parametrize("turn_2_metadata", [{}, {"read_only": False}])
+def test_read_only_session_persists_across_turns_and_cannot_be_relaxed(tmp_path: Path, turn_2_metadata: dict[str, object]) -> None:
+    probe = _DynamicWriteProbe(tmp_path)
+    producer = _PromptScriptedProducer(write_on_prompts=("turn 2",))
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        tool_registry=ToolRegistry.from_tools([probe]),
+        turn_producer=producer,
+        config=RuntimeConfig(approval_mode="yolo", mcp=RuntimeMcpConfig(enabled=False)),
+        permission_policy=PermissionPolicy(mode="yolo"),
+        tool_input_handler_registry=ToolInputHandlerRegistry(()),
+    )
+    # Turn 1: session initialized with read_only=True
+    res1 = runtime.run(RuntimeRequest(prompt="turn 1", metadata={"read_only": True}))
+    assert res1.session.metadata.get("read_only") is True
+    assert (tmp_path / "turn_1.txt").exists() is False
+    assert len(probe.calls) == 0
+
+    session_id = res1.session.session.id
+
+    # Turn 2: follow-up request on same session without read_only or with read_only: False
+    with pytest.raises(ValueError, match="read-only access is active"):
+        runtime.run(RuntimeRequest(prompt="turn 2", session_id=session_id, metadata=turn_2_metadata))
+
+    assert (tmp_path / "turn_2.txt").exists() is False
+    assert len(probe.calls) == 0
+
+
+def test_child_session_inherits_read_only_and_cannot_be_relaxed(tmp_path: Path) -> None:
+    probe = _DynamicWriteProbe(tmp_path)
+    producer = _PromptScriptedProducer(write_on_prompts=("child turn",))
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        tool_registry=ToolRegistry.from_tools([probe]),
+        turn_producer=producer,
+        config=RuntimeConfig(approval_mode="yolo", mcp=RuntimeMcpConfig(enabled=False)),
+        permission_policy=PermissionPolicy(mode="yolo"),
+        tool_input_handler_registry=ToolInputHandlerRegistry(()),
+    )
+    res_parent = runtime.run(RuntimeRequest(prompt="parent turn", metadata={"read_only": True}))
+    parent_id = res_parent.session.session.id
+
+    with pytest.raises(ValueError, match="read-only access is active"):
+        runtime.run(RuntimeRequest(prompt="child turn", parent_session_id=parent_id, metadata={"read_only": False}))
+
+    assert (tmp_path / "child_turn.txt").exists() is False
+    assert len(probe.calls) == 0
+
+
+def test_writable_session_allows_mutations_and_permits_turn_narrowing(tmp_path: Path) -> None:
+    probe = _DynamicWriteProbe(tmp_path)
+    producer = _PromptScriptedProducer()
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        tool_registry=ToolRegistry.from_tools([probe]),
+        turn_producer=producer,
+        config=RuntimeConfig(approval_mode="yolo", mcp=RuntimeMcpConfig(enabled=False)),
+        permission_policy=PermissionPolicy(mode="yolo"),
+        tool_input_handler_registry=ToolInputHandlerRegistry(()),
+    )
+    # Turn 1: Writable session
+    res1 = runtime.run(RuntimeRequest(prompt="turn 1"))
+    session_id = res1.session.session.id
+    assert (tmp_path / "turn_1.txt").exists() is True
+
+    # Turn 2: Narrowed to read_only: True for this turn
+    with pytest.raises(ValueError, match="read-only access is active"):
+        runtime.run(RuntimeRequest(prompt="turn 2", session_id=session_id, metadata={"read_only": True}))
+    assert (tmp_path / "turn_2.txt").exists() is False
+
+    # Turn 3: Writable again
+    res3 = runtime.run(RuntimeRequest(prompt="turn 3", session_id=session_id))
+    assert res3.session.status == "completed"
+    assert (tmp_path / "turn_3.txt").exists() is True
+    assert len(probe.calls) == 2
+
+
+def test_read_only_session_denies_lifecycle_hook_mutations(tmp_path: Path) -> None:
+    probe = _DynamicWriteProbe(tmp_path)
+    producer = _PromptScriptedProducer(write_on_prompts=())
+    hook_marker = tmp_path / "hook_mutated.txt"
+    hook_script = f"import pathlib; pathlib.Path({str(hook_marker)!r}).write_text('mutated')"
+
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        tool_registry=ToolRegistry.from_tools([probe]),
+        turn_producer=producer,
+        config=RuntimeConfig(
+            approval_mode="yolo",
+            mcp=RuntimeMcpConfig(enabled=False),
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_session_end=((sys.executable, "-c", hook_script),),
+            ),
+        ),
+        permission_policy=PermissionPolicy(mode="yolo"),
+        tool_input_handler_registry=ToolInputHandlerRegistry(()),
+    )
+    # Turn 1: safe completed request under read_only: True
+    res1 = runtime.run(RuntimeRequest(prompt="safe turn 1", session_id="ro-hook-session", metadata={"read_only": True}))
+    assert res1.session.status == "completed"
+    assert hook_marker.exists() is False
+    skip1 = next(e for e in res1.events if e.event_type == "runtime.lifecycle_hook")
+    assert skip1.payload["hook_status"] == "skipped"
+    assert skip1.payload["hook_policy"]["read_only"] is True
+    assert skip1.payload["hook_policy"]["outcome"] == "skipped"
+
+    # Turn 2: safe completed request on same session with explicit false; hook must stay skipped
+    res2 = runtime.run(RuntimeRequest(prompt="safe turn 2", session_id="ro-hook-session", metadata={"read_only": False}))
+    assert res2.session.status == "completed"
+    assert hook_marker.exists() is False
+    skip2 = next(e for e in res2.events if e.event_type == "runtime.lifecycle_hook")
+    assert skip2.payload["hook_status"] == "skipped"
+    assert skip2.payload["hook_policy"]["read_only"] is True
+    assert skip2.payload["hook_policy"]["outcome"] == "skipped"
+
+    # Writable control: proving configured hook actually writes on a writable session
+    res_control = runtime.run(RuntimeRequest(prompt="safe writable turn", session_id="writable-hook-session"))
+    assert res_control.session.status == "completed"
+    assert hook_marker.exists() is True
 
 
 def test_default_policy_auto_approves_every_tier() -> None:

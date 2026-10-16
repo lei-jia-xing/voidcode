@@ -29,6 +29,13 @@ export function useReviewDiffQuery(scope: WorkspaceScope, path: string | null) {
     enabled: scope !== null && path !== null && path.length > 0,
   });
 }
+export function useReviewDiffAllQuery(scope: WorkspaceScope, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.reviewDiffAll(scope),
+    queryFn: ({ signal }) => RuntimeClient.getReviewDiffAll(signal),
+    enabled: enabled && scope !== null,
+  });
+}
 
 /**
  * The path whose diff is shown: the reader's pick while the reload still

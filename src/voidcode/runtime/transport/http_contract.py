@@ -25,7 +25,7 @@ from starlette.responses import JSONResponse, PlainTextResponse, Response, Strea
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from ...provider.errors import validation_reason_from_error
-from ..permissions.policy import PermissionResolution
+from ..permissions.policy import PermissionResolution, validate_collaboration_mode
 
 logger = logging.getLogger(__name__)
 
@@ -436,6 +436,28 @@ class _RunStreamRequestPayload(_HttpBoundaryModel):
         if not isinstance(value, dict):
             raise ValueError("must be an object when provided")
         return value
+
+
+class _ReviewRunRequestPayload(_HttpBoundaryModel):
+    focus: str | None = None
+
+    @field_validator("focus", mode="before")
+    @classmethod
+    def _validate_focus_optional(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("must be a string when provided")
+        return value.strip() or None
+
+
+class _CollaborationModeRequestPayload(_HttpBoundaryModel):
+    mode: str = Field(default=None, validate_default=True)
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def _validate_mode(cls, value: object) -> str:
+        return validate_collaboration_mode(value)
 
 
 class _ApprovalResolutionRequestPayload(_HttpBoundaryModel):

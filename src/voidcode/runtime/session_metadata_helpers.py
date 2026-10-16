@@ -26,7 +26,7 @@ from .contracts import (
     is_routing_mode,
     is_schema_mode,
 )
-from .permissions.policy import DelegationGovernance
+from .permissions.policy import DelegationGovernance, validate_collaboration_mode
 from .permissions.responses import (
     pending_approval_from_response,
     pending_question_from_response,
@@ -493,6 +493,16 @@ def session_model_identity(
     return model, provider
 
 
+def collaboration_mode_from_metadata(metadata: Mapping[str, object] | None) -> str:
+    """Return 'default' or 'plan' collaboration mode from session metadata."""
+    if metadata is None:
+        return "default"
+    raw_mode = metadata.get("collaboration_mode")
+    if raw_mode is None:
+        return "default"
+    return validate_collaboration_mode(raw_mode)
+
+
 def plan_state_from_metadata(
     metadata: dict[str, object],
     *,
@@ -792,6 +802,7 @@ __all__ = [
     "SKILL_SNAPSHOT_METADATA_KEYS",
     "SkillSnapshotMetadata",
     "clear_tool_execution_intent",
+    "collaboration_mode_from_metadata",
     "continuity_state_from_session_metadata",
     "delegation_depth_from_metadata",
     "parse_delegation_metadata",

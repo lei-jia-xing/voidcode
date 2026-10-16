@@ -804,6 +804,30 @@ class _FixtureRuntime:
             diff="@@ -1 +1 @@" if self.rich else None,
         )
 
+    def review_diff_all(self) -> ReviewFileDiff:
+        return ReviewFileDiff(
+            root="/workspace",
+            path=".",
+            state="changed",
+            diff="@@ -1 +1 @@" if self.rich else None,
+        )
+
+    def compact_session(self, *, session_id: str) -> dict[str, object]:
+        return {"session_id": session_id, "compacted": self.rich, "reason": None if self.rich else "no_tool_results"}
+
+    def set_collaboration_mode(self, *, session_id: str, mode: str) -> dict[str, object]:
+        return {
+            "session_id": session_id,
+            "collaboration_mode": mode,
+            "previous_mode": "default",
+            "event_sequence": 2 if self.rich else None,
+            "unchanged": None if self.rich else True,
+        }
+
+    def review_session(self, *, session_id: str, focus: str | None = None) -> RuntimeResponse:
+        _ = session_id, focus
+        return RuntimeResponse(session=_session_state(self.rich), events=_events(self.rich), output="review findings" if self.rich else None)
+
 
 # ------------------------------------------------------------------- app plumbing
 
@@ -903,8 +927,10 @@ _BODIES: dict[tuple[str, str], dict[str, object]] = {
     ("POST", "/api/sessions/{session_id}/resume"): {},
     ("POST", "/api/status/mcp/retry"): {},
     ("POST", "/api/providers/{provider_name}/validate"): {},
+    ("POST", "/api/sessions/{session_id}/compact"): {},
+    ("POST", "/api/sessions/{session_id}/collaboration-mode"): {"mode": "plan"},
+    ("POST", "/api/sessions/{session_id}/review"): {"focus": "security"},
 }
-
 _SSE_TEMPLATES = frozenset({"/api/runtime/run/stream", "/api/sessions/{session_id}/events"})
 
 

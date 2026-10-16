@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import shlex
+import os
 import subprocess
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
@@ -86,30 +86,7 @@ class WorkspaceReviewService:
                 state="not_git_repo",
                 diff=None,
             )
-        command = self._run_git(
-            root,
-            "diff",
-            "--no-ext-diff",
-            "--binary",
-            "--",
-            normalized_path,
-        )
-        diff_output = command.stdout
-        if not diff_output:
-            cached = self._run_git(
-                root,
-                "diff",
-                "--no-ext-diff",
-                "--binary",
-                "--cached",
-                "--",
-                normalized_path,
-            )
-            diff_output = cached.stdout
-        if not diff_output:
-            untracked_path = root / normalized_path
-            if untracked_path.exists() and self._is_untracked(root, normalized_path):
-                diff_output = self._untracked_diff(normalized_path, root=root)
+        diff_output = self._diff_for_paths(root, (normalized_path,))
         return ReviewFileDiff(
             root=str(root),
             path=normalized_path,
@@ -117,42 +94,87 @@ class WorkspaceReviewService:
             diff=diff_output or None,
         )
 
-    def _changed_files(self, root: Path) -> tuple[ReviewChangedFile, ...]:
-        tracked = self._run_git(root, "status", "--short", "--untracked-files=all")
-        if tracked.returncode != 0:
-            return ()
-        changed_files: list[ReviewChangedFile] = []
-        for line in tracked.stdout.splitlines():
-            if not line.strip():
-                continue
-            entry = self._parse_status_line(line)
-            if entry is not None:
-                changed_files.append(entry)
-        changed_files.sort(key=lambda item: item.path)
-        return tuple(changed_files)
+    def diff_all(self, *, git: GitStatusSnapshot) -> ReviewFileDiff:
+        root = Path(git.root).resolve() if git.root is not None else self._workspace
+        if git.state != "git_ready":
+            return ReviewFileDiff(root=str(root), path=".", state="not_git_repo", diff=None)
+        diff_output = self._diff_for_paths(root, ())
+        return ReviewFileDiff(
+            root=str(root),
+            path=".",
+            state="changed" if diff_output else "clean",
+            diff=diff_output or None,
+        )
 
-    def _parse_status_line(self, line: str) -> ReviewChangedFile | None:
-        status = line[:2]
-        payload = line[3:] if len(line) > 3 else ""
-        if not payload:
-            return None
-        if "->" in payload:
-            old_path, new_path = [self._decode_status_path(part) for part in payload.split("->", 1)]
+    def _diff_for_paths(self, root: Path, paths: tuple[str, ...]) -> str:
+        parts: list[str] = []
+        for args in (("diff",), ("diff", "--cached")):
+            command = self._run_git(
+                root,
+                *args,
+                "--no-ext-diff",
+                "--no-color",
+                "--binary",
+                "--",
+                *paths,
+            )
+            if command.returncode != 0:
+                detail = command.stderr.strip() or "unknown git error"
+                raise ValueError(f"git diff failed: {detail}")
+            parts.append(command.stdout)
+        if not paths:
+            paths = self._untracked_paths(root)
         else:
-            old_path = None
-            new_path = self._decode_status_path(payload)
-        change_code = status.replace(" ", "") or "??"
-        change_type = self._map_change_type(change_code)
-        return ReviewChangedFile(path=new_path, change_type=change_type, old_path=old_path)
+            paths = tuple(path for path in paths if self._is_untracked(root, path))
+        for path in paths:
+            untracked = self._untracked_diff(path, root=root)
+            if untracked:
+                parts.append(untracked)
+        return self._join_diffs(parts)
 
     @staticmethod
-    def _decode_status_path(path: str) -> str:
-        stripped = path.strip()
-        if len(stripped) >= 2 and stripped[0] == '"' and stripped[-1] == '"':
-            parsed = shlex.split(stripped, posix=True)
-            if parsed:
-                return parsed[0]
-        return stripped
+    def _join_diffs(parts: list[str]) -> str:
+        nonempty = [part.rstrip("\n") for part in parts if part]
+        return "\n".join(nonempty) + ("\n" if nonempty else "")
+
+    def _untracked_paths(self, root: Path) -> tuple[str, ...]:
+        result = self._run_git(root, "ls-files", "--others", "--exclude-standard", "-z")
+        if result.returncode != 0:
+            detail = result.stderr.strip() or "unknown git error"
+            raise ValueError(f"git ls-files failed: {detail}")
+        return tuple(path for path in result.stdout.split("\0") if path)
+
+    def _changed_files(self, root: Path) -> tuple[ReviewChangedFile, ...]:
+        tracked = self._run_git(root, "status", "--short", "--untracked-files=all", "-z")
+        if tracked.returncode != 0:
+            detail = tracked.stderr.strip() or "unknown git error"
+            raise ValueError(f"git status failed: {detail}")
+        changed_files: list[ReviewChangedFile] = []
+        records = [record for record in tracked.stdout.split("\0") if record]
+        index = 0
+        while index < len(records):
+            record = records[index]
+            status = record[:2]
+            payload = record[3:] if len(record) > 2 and record[2] == " " else record[2:]
+            if not payload:
+                index += 1
+                continue
+            if status[0] in "RC" or status[1] in "RC":
+                old_path = records[index + 1] if index + 1 < len(records) else None
+                index += 1
+            else:
+                old_path = None
+            change_code = status.replace(" ", "") or "??"
+            changed_files.append(
+                ReviewChangedFile(
+                    path=payload,
+                    change_type=self._map_change_type(change_code),
+                    old_path=old_path,
+                )
+            )
+            index += 1
+        changed_files.sort(key=lambda item: item.path)
+        return tuple(changed_files)
 
     @staticmethod
     def _map_change_type(code: str) -> ReviewChangeType:
@@ -281,58 +303,44 @@ class WorkspaceReviewService:
         return True
 
     def _normalize_relative_path(self, path: str) -> str:
-        normalized = path.strip().replace("\\", "/")
-        if not normalized or normalized.startswith("/"):
+        candidate = Path(path)
+        if not path or candidate.is_absolute():
             raise ValueError("path must be a non-empty relative path")
-        parts = Path(normalized).parts
-        if any(part == ".." for part in parts):
+        if any(part == ".." for part in candidate.parts):
             raise ValueError("path must stay within the workspace")
-        return Path(*parts).as_posix()
+        return candidate.as_posix()
 
     def _is_untracked(self, root: Path, path: str) -> bool:
-        result = self._run_git(root, "ls-files", "--others", "--exclude-standard", "--", path)
-        return result.returncode == 0 and any(line.strip() == path for line in result.stdout.splitlines())
+        result = self._run_git(root, "ls-files", "--others", "--exclude-standard", "-z", "--", path)
+        if result.returncode != 0:
+            detail = result.stderr.strip() or "unknown git error"
+            raise ValueError(f"git ls-files failed: {detail}")
+        return path in result.stdout.split("\0")
 
     def _untracked_diff(self, path: str, *, root: Path) -> str:
-        diff_path = Path(path).as_posix()
-        file_path = root / diff_path
-        if not file_path.exists():
-            return "\n".join(
-                (
-                    f"diff --git a/{diff_path} b/{diff_path}",
-                    "new file mode 100644",
-                    "--- /dev/null",
-                    f"+++ b/{diff_path}",
-                )
-            )
-        try:
-            content = file_path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            return "\n".join(
-                (
-                    f"diff --git a/{diff_path} b/{diff_path}",
-                    "new file mode 100644",
-                    f"Binary files /dev/null and b/{diff_path} differ",
-                )
-            )
-        added_lines = [f"+{line}" for line in content.splitlines()]
-        line_count = len(added_lines)
-        hunk_header = f"@@ -0,0 +1,{line_count} @@" if line_count else "@@ -0,0 +0,0 @@"
-        return "\n".join(
-            (
-                f"diff --git a/{diff_path} b/{diff_path}",
-                "new file mode 100644",
-                "--- /dev/null",
-                f"+++ b/{diff_path}",
-                hunk_header,
-                *added_lines,
-            )
+        file_path = root / path
+        if not file_path.exists() and not file_path.is_symlink():
+            raise ValueError(f"untracked path disappeared: {path}")
+        command = self._run_git(
+            root,
+            "diff",
+            "--no-index",
+            "--no-ext-diff",
+            "--no-color",
+            "--binary",
+            "--",
+            os.devnull,
+            path,
         )
+        if command.returncode not in (0, 1):
+            detail = command.stderr.strip() or "unknown git error"
+            raise ValueError(f"git diff failed: {detail}")
+        return command.stdout
 
     @staticmethod
     def _run_git(root: Path, *args: str) -> GitCommandResult:
         result = subprocess.run(
-            ["git", "-C", str(root), *args],
+            ["git", "-c", "core.quotePath=false", "-C", str(root), *args],
             capture_output=True,
             text=True,
             check=False,

@@ -13,6 +13,8 @@ import {
   ProviderValidationResult,
   QuestionAnswer,
   ReviewFileDiff,
+  RuntimeCompactResult,
+  CollaborationModeResult,
   RuntimeInterruptResult,
   RuntimeRequest,
   RuntimeResponse,
@@ -69,6 +71,8 @@ const ROUTES = {
   statusMcpRetry: "/api/status/mcp/retry",
   review: "/api/review",
   reviewDiff: "/api/review/diff/{path}",
+  reviewDiffAll: "/api/review/diff",
+  sessionCompact: "/api/sessions/{session_id}/compact",
   tasks: "/api/tasks",
   taskOutput: "/api/tasks/{task_id}/output",
   taskCancel: "/api/tasks/{task_id}/cancel",
@@ -76,6 +80,10 @@ const ROUTES = {
   taskSteer: "/api/tasks/{task_id}/steer",
   settings: "/api/settings",
 } as const satisfies Record<string, keyof paths>;
+const NATIVE_ROUTES = {
+  sessionCollaborationMode: "/api/sessions/{session_id}/collaboration-mode",
+  sessionReview: "/api/sessions/{session_id}/review",
+} as const;
 
 export class RuntimeClientError extends Error {
   constructor(
@@ -340,6 +348,56 @@ export class RuntimeClient {
       signal,
     );
     await expectOk(res, "Failed to load review diff");
+    return res.json();
+  }
+  static async getReviewDiffAll(signal?: AbortSignal): Promise<ReviewFileDiff> {
+    const res = await fetchQuery(ROUTES.reviewDiffAll, signal);
+    await expectOk(res, "Failed to load workspace diff");
+    return res.json();
+  }
+
+  static async compactSession(
+    sessionId: string,
+  ): Promise<RuntimeCompactResult> {
+    const res = await fetch(
+      apiPath(ROUTES.sessionCompact, {
+        session_id: encodeURIComponent(sessionId),
+      }),
+      { method: "POST" },
+    );
+    await expectOk(res, "Failed to compact session");
+    return res.json();
+  }
+  static async setCollaborationMode(
+    sessionId: string,
+    mode: "plan" | "default",
+  ): Promise<CollaborationModeResult> {
+    const route = NATIVE_ROUTES.sessionCollaborationMode.replace(
+      "{session_id}",
+      encodeURIComponent(sessionId),
+    );
+    const res = await fetch(route, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
+    });
+    await expectOk(res, "Failed to change collaboration mode");
+    return res.json();
+  }
+  static async reviewSession(
+    sessionId: string,
+    focus?: string,
+  ): Promise<RuntimeResponse> {
+    const route = NATIVE_ROUTES.sessionReview.replace(
+      "{session_id}",
+      encodeURIComponent(sessionId),
+    );
+    const res = await fetch(route, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(focus ? { focus } : {}),
+    });
+    await expectOk(res, "Failed to review workspace");
     return res.json();
   }
 

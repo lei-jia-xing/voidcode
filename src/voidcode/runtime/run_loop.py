@@ -179,7 +179,7 @@ from .hook_runtime import (
     run_lifecycle_hooks_for_session,
     run_tool_hooks_for_session,
 )
-from .permissions.policy import PendingApproval, PermissionPolicy, runtime_read_only_from_metadata
+from .permissions.policy import PendingApproval, PermissionPolicy, runtime_effective_read_only_from_metadata
 from .question import PendingQuestion
 from .reminders import (
     TODO_MID_RUN_KIND,
@@ -2490,7 +2490,7 @@ class RuntimeRunLoopCoordinator:
                 sequence=sequence,
                 session_status=session.status,
                 is_resume=is_resume,
-                read_only=runtime_read_only_from_metadata(session.metadata),
+                read_only=runtime_effective_read_only_from_metadata(session.metadata),
             )
         )
         if outcome.action != "rewrite":

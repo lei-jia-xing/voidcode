@@ -179,8 +179,29 @@ class SessionResultBody(ResponseModel):
     output: str | None = None
     error: str | None = None
     last_event_sequence: int
-    transcript: list[EventBody]
     title: str | None = None
+    transcript: list[EventBody]
+
+
+@final
+class RuntimeCompactBody(ResponseModel):
+    """Result of the native ``/compact`` session action."""
+
+    session_id: str
+    compacted: bool
+    reason: str | None = None
+    event_sequence: int | None = None
+    original_tool_result_count: int | None = None
+    retained_tool_result_count: int | None = None
+
+
+@final
+class CollaborationModeBody(ResponseModel):
+    session_id: str
+    collaboration_mode: str
+    previous_mode: str
+    event_sequence: int | None = None
+    unchanged: bool | None = None
 
 
 @final

@@ -67,3 +67,46 @@ When resuming an interrupted session:
    - Tool intents with `status="pending"` and `replay_policy="never"` (such as state-modifying actions that were in-flight when interrupted) are surfaced as `interrupted` and are never auto-replayed. Recovery restores safe checkpoint state up to the completed prefix and requests a fresh turn from the provider model.
 3. **Value Fidelity**:
    Unobserved or absent metrics remain `None`; they are never coerced to synthetic defaults (`0` or `""`).
+
+Provider replay derives assistant responses from `core.response_ready` facts on the selected root-to-leaf path, not the row's latest output. Native manual compaction cuts that path at its own event position; automatic compaction does not discard conversation prefixes. Fork and checkout rebuild native summary metadata from the selected path so abandoned-branch summaries cannot enter provider context.
+
+## Policy Snapshot & Read-Only Governance
+
+Runtime policy resolution enforces immutable security boundaries across turns and session delegations:
+
+1. **Policy Snapshot Authority**:
+   The session's frozen policy snapshot (`runtime_policy`) is the authoritative source of truth. Once a session is initialized with `read_only: true`, that stance remains frozen across all subsequent turns. Subsequent follow-up requests cannot weaken or relax the frozen policy, even if request metadata omits `read_only` or explicitly sets `read_only: false`.
+2. **Turn-Level Narrowing**:
+   A writable session (`read_only: false`) may narrow permissions for an individual turn by providing `metadata={"read_only": True}` on that turn's request. This restricts tool visibility, tool execution, and lifecycle hooks for that turn without corrupting the session's writable snapshot for subsequent turns.
+3. **Child Delegation Inheritance**:
+   Child sessions inherit the read-only restriction of their parent session's policy snapshot. A child session spawned from a read-only parent cannot expand capabilities or execute mutating actions (`read_only` resolves to `true` in both child snapshot and metadata).
+4. **Visibility & Execution Gate Parity (Base vs. Effective Gate)**:
+   Base snapshot construction preserves immutable session policy authority via `runtime_read_only_from_metadata`. Runtime tool visibility (`RuntimeToolScopeResolver`), execution authorization (`service.tool_policy_denial`, `resolve_permission`), hook execution policy (`HookExecutionPolicy`), and child delegation inheritance share the authoritative effective gate (`runtime_effective_read_only_from_metadata`), which combines base read-only with dynamic collaboration mode overlays. Mutating tools are filtered out of model-visible schemas, and any direct or unadvertised invocation attempts are denied (`read-only access is active; mutating tools are denied`).
+5. **Lifecycle & Tool Hook Protection**:
+   Read-only enforcement applies to hook execution (`HookExecutionPolicy`). Any mutating or command hook is skipped under a read-only stance to ensure hooks cannot mutate external or workspace state outside the governed tool boundary.
+
+## Native Collaboration Mode (`/plan`)
+
+The runtime provides native reversible planning collaboration state:
+
+1. **Mode Vocabulary & Reversibility**:
+   Modes are `"default"` and `"plan"`. Entering plan mode (`/plan` or `set_collaboration_mode(session_id=..., mode="plan")`) overlays a strict read-only restriction for exploration and planning. Exiting (`/plan off` or `mode="default"`) lifts the mode overlay and restores write capabilities for writable sessions.
+2. **Effective vs. Base Read-Only Split**:
+   The session's base policy snapshot (`runtime_policy.read_only`) remains immutable and is never mutated to implement plan mode. The effective read-only gate evaluates `base_read_only OR collaboration_mode == "plan"`. Sessions initially created as read-only remain read-only when exiting plan mode.
+3. **Durable Persistence & CAS Integrity**:
+   Mode transitions append an immutable control event (`runtime.collaboration_mode_changed`) and update session metadata and resume checkpoints atomically in SQLite using compare-and-swap (CAS). Mode transitions are idle-only and reject active running or waiting sessions without partial state writes.
+4. **Context Injection**:
+   When collaboration mode is `"plan"`, provider context assembly injects authoritative concise plan mode instructions into the prompt assembly plan without altering historical prompt transcripts.
+5. **Child Inheritance**:
+   Subagent and child sessions inherit the effective read-only restriction of a parent session in plan mode, preventing any mutation bypass through delegation.
+
+## Native Governed Review (`/review`)
+
+The runtime provides governed, read-only review over uncommitted aggregate workspace changes:
+
+1. **Governed Child Review Session**:
+   Executing `/review` or `review_session(session_id=..., focus=...)` dispatches a governed read-only child session under the specified parent session (`parent_session_id`). The child session is allocated with the child-only `review` agent preset and requires a terminal invocation of the `yield` tool to return structured findings.
+2. **Aggregate Diff Capture & Bounding**:
+   Review operates over the uncommitted aggregate workspace diff (including staged, unstaged, and untracked changes). If the workspace is not a Git repository or has no changes (`diff.state == "clean"`), the call rejects immediately with an informative error without dispatching a model turn. Diffs exceeding 262,144 bytes (>256 KiB) are rejected with an explicit actionable error rather than being silently truncated, ensuring review findings never claim full coverage over an incomplete diff.
+3. **Parent State Preservation & Concurrency**:
+   The parent session must exist and be idle (`ACTIVE_SESSION_REGISTRY.active_run_count == 0` and `status not in ("running", "waiting")`). The child review execution does not overwrite the parent session's output, status, or primary turn history.

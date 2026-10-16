@@ -513,6 +513,7 @@ def _child_snapshot_from_parent(
             "reason": "child_policy_subset_of_parent_capabilities",
         }
     )
+    parent_read_only = runtime_read_only_from_metadata(parent_snapshot)
     return RuntimePolicySnapshot(
         agent_preset=snapshot.agent_preset,
         agent_manifest_id=snapshot.agent_manifest_id,
@@ -534,7 +535,7 @@ def _child_snapshot_from_parent(
         precedence_trace=trace,
         diagnostics=snapshot.diagnostics,
         created_at=snapshot.created_at,
-        read_only=snapshot.read_only,
+        read_only=snapshot.read_only or parent_read_only,
     )
 
 

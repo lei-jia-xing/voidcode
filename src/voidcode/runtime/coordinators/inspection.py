@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ...agent import AgentManifestRegistry
-from ...command import load_command_registry
 from ...command.models import CommandDefinition
 from ...core.tool_context import (
     ArtifactBinary,
@@ -80,7 +79,7 @@ from ..config.materializer import (
     RunConfig,
     parse_persisted_runtime_config,
 )
-from ..context.continuity import replayed_conversation_segments_from_events
+from ..context.continuity import events_after_manual_compaction, replayed_conversation_segments_from_events
 from ..context.provider import inspect_provider_context
 from ..context.window import RuntimeAssembledContext
 from ..contracts import (
@@ -1168,6 +1167,7 @@ class InspectionCoordinator:
             workspace=self._workspace,
             session_id=result.session.session.id,
         )
+        path_events = events_after_manual_compaction(path_events)
         prompt, tool_results = prompt_and_tool_results_from_debug_events(path_events)
         if not prompt:
             prompt = result.prompt
@@ -1185,7 +1185,6 @@ class InspectionCoordinator:
 
         replayed_segments = replayed_conversation_segments_from_events(
             path_events,
-            output=result.output,
             reported_call_from_event=report_from_event,
             current_request_event_id=current_request_event_id,
         )
@@ -1633,13 +1632,17 @@ class InspectionCoordinator:
             )
         return tuple(summaries)
 
-    def list_command_summaries(self) -> tuple[CommandSummary, ...]:
-        registry = load_command_registry(workspace=self._workspace)
-        commands = registry.list()
-        summaries: list[CommandSummary] = []
-        for command in commands:
-            summaries.append(_command_summary(command))
-        return tuple(summaries)
+    def list_command_summaries(self, *, user_commands_dir: Path | None = None) -> tuple[CommandSummary, ...]:
+        registry = self._surface.command_registry(user_commands_dir=user_commands_dir)
+        native = (
+            CommandSummary(name="compact", description="summarize and persist the current conversation context", source="native"),
+            CommandSummary(name="diff", description="show the aggregate Git diff, including untracked files", source="native"),
+            CommandSummary(name="plan", description="enter reversible read-only Plan mode", source="native"),
+            CommandSummary(name="review", description="review current workspace changes with the governed review agent", source="native"),
+        )
+        native_names = {command.name for command in native}
+        summaries = [_command_summary(command) for command in registry.list() if command.name not in native_names]
+        return (*native, *summaries)
 
     def status_snapshot(self) -> RuntimeStatusSnapshot:
         """Project capability/background/git state without reconciling workers.
@@ -1786,6 +1789,9 @@ class InspectionCoordinator:
             path=path,
             git=self._git_status_snapshot(),
         )
+
+    def review_diff_all(self) -> ReviewFileDiff:
+        return WorkspaceReviewService(workspace=self._workspace).diff_all(git=self._git_status_snapshot())
 
     def _git_status_snapshot(self) -> GitStatusSnapshot:
         result = subprocess.run(

@@ -11,7 +11,7 @@
 ## Sources
 Commands load in priority order (later overrides earlier):
 1. Builtin commands (`loader.py`)
-2. User command directory (`~/.config/voidcode/commands/`)
-3. Project commands (`commands/**/*.md` and `.voidcode/commands/**/*.md`)
-
+2. Extension commands
+3. User command directory (`~/.config/voidcode/commands/`)
+4. Project commands (`commands/**/*.md` and `.voidcode/commands/**/*.md`)
 Command files use optional YAML frontmatter (`description`, `agent`, `enabled`) followed by the template body with `$ARGUMENTS` and `$1`–`$9` positional parameters.

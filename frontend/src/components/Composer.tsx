@@ -31,6 +31,7 @@ interface ComposerProps {
   onAgentPresetChange?: (preset: string) => void;
   onProviderModelChange?: (model: string) => void;
   onReasoningEffortChange?: (effort: string) => void;
+  onNativeCommand?: (command: string) => Promise<boolean>;
   placeholder?: string;
   onSubmit: (message: string, options?: { skills?: string[] }) => void;
   onSteer?: (content: string) => Promise<{ queued: number }>;
@@ -63,6 +64,7 @@ export const Composer = memo(function Composer({
   onSubmit,
   onSteer,
   onCancel,
+  onNativeCommand,
 }: ComposerProps) {
   const { t } = useTranslation();
   const [input, setInput] = useState("");
@@ -233,9 +235,16 @@ export const Composer = memo(function Composer({
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }, []);
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     const trimmed = input.trim();
     if (!trimmed || disabled) return;
+    if (onNativeCommand && (await onNativeCommand(trimmed))) {
+      setInput("");
+      setSlashIndex(0);
+      const el = textareaRef.current;
+      if (el) el.style.height = "auto";
+      return;
+    }
     if (isRunning) {
       void handleRunningSubmit(trimmed);
       return;

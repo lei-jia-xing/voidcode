@@ -6,6 +6,7 @@ import {
   asyncStatusFromQuery,
   backgroundTaskIdFromControlResponse,
   queryErrorMessage,
+  refreshAfterMutation,
   refreshDelegatedTaskSurfaces,
   resolveProviderModelReference,
   resolveSelectedReviewPath,
@@ -15,9 +16,10 @@ import {
   useCommandsQuery,
   useProviderCatalogQuery,
   useProviderValidation,
-  useRetryMcpConnections,
+  useReviewDiffAllQuery,
   useReviewDiffQuery,
   useReviewQuery,
+  useRetryMcpConnections,
   useRuntimeStatusQuery,
   useSessionDebugQuery,
   useSessionEntriesQuery,
@@ -258,6 +260,23 @@ function App() {
   const [showProjects, setShowProjects] = useState(false);
   const [showFileTree, setShowFileTree] = useState(false);
   const [showCodeReview, setShowCodeReview] = useState(false);
+  const [nativeDiffRequested, setNativeDiffRequested] = useState(false);
+  const [nativeNotice, setNativeNotice] = useState<string | null>(null);
+  const [nativeCompactBusy, setNativeCompactBusy] = useState(false);
+  const [nativePlanBusy, setNativePlanBusy] = useState(false);
+  const [nativeReviewBusy, setNativeReviewBusy] = useState(false);
+  const [nativeReviewOutput, setNativeReviewOutput] = useState<string | null>(
+    null,
+  );
+  const [nativeReviewSessionId, setNativeReviewSessionId] = useState<
+    string | null
+  >(null);
+  const [nativeReviewOwnerSessionId, setNativeReviewOwnerSessionId] = useState<
+    string | null
+  >(null);
+  const [nativeReviewScope, setNativeReviewScope] = useState<string | null>(
+    null,
+  );
   const [showContext, setShowContext] = useState(false);
   const [sessionEventError, setSessionEventError] = useState<string | null>(
     null,
@@ -272,7 +291,16 @@ function App() {
   const workspacesStatus = asyncStatusFromQuery(workspacesQuery);
   const workspacesError = queryErrorMessage(workspacesQuery);
   const scope = workspaces?.current?.path ?? null;
-
+  const scopeRef = useRef(scope);
+  useEffect(() => {
+    scopeRef.current = scope;
+  }, [scope]);
+  const visibleNativeReviewOutput =
+    nativeReviewScope === scope &&
+    nativeReviewOwnerSessionId === currentSessionId
+      ? nativeReviewOutput
+      : null;
+  const planMode = currentSessionState?.metadata?.collaboration_mode === "plan";
   const prepareWorkspaceSwitch = useCallback(() => {
     useAppStore.getState().prepareWorkspaceSwitch();
   }, []);
@@ -338,9 +366,14 @@ function App() {
     [reviewSnapshot, reviewSelectedPath],
   );
   const reviewDiffQuery = useReviewDiffQuery(scope, effectiveReviewPath);
+  const reviewDiffAllQuery = useReviewDiffAllQuery(scope, nativeDiffRequested);
+  const refetchReviewDiffAll = reviewDiffAllQuery.refetch;
   const reviewDiff = reviewDiffQuery.data ?? null;
   const reviewDiffStatus = asyncStatusFromQuery(reviewDiffQuery);
   const reviewDiffError = queryErrorMessage(reviewDiffQuery);
+  const nativeDiff = reviewDiffAllQuery.data ?? null;
+  const nativeDiffStatus = asyncStatusFromQuery(reviewDiffAllQuery);
+  const nativeDiffError = queryErrorMessage(reviewDiffAllQuery);
 
   const sessionsQuery = useSessionsQuery(scope);
   const sessions = useMemo(
@@ -906,17 +939,188 @@ function App() {
 
   // Stable identities: the memoized Composer and the side panels compare props
   // shallowly, so a callback rebuilt on every render would defeat them.
+  const handleNativeCommand = useCallback(
+    async (message: string): Promise<boolean> => {
+      const raw = message.trim();
+      const separator = raw.search(/\s/);
+      const command = separator === -1 ? raw : raw.slice(0, separator);
+      const argument = separator === -1 ? "" : raw.slice(separator).trim();
+      if (
+        command !== "/compact" &&
+        command !== "/diff" &&
+        command !== "/plan" &&
+        command !== "/review"
+      )
+        return false;
+      if (nativeCompactBusy || nativePlanBusy || nativeReviewBusy) {
+        setNativeNotice(t("composer.nativeBusy"));
+        return true;
+      }
+      if (command === "/plan" && argument && argument !== "off") {
+        setNativeNotice(t("composer.nativeCommandArguments", { command }));
+        return true;
+      }
+      if ((command === "/compact" || command === "/diff") && argument) {
+        setNativeNotice(t("composer.nativeCommandArguments", { command }));
+        return true;
+      }
+      if (command === "/diff") {
+        setNativeNotice(null);
+        setNativeDiffRequested(true);
+        setShowCodeReview(true);
+        await refetchReviewDiffAll();
+        return true;
+      }
+      if (command === "/review") {
+        if (!currentSessionId) {
+          setNativeNotice(t("composer.nativeNoSession"));
+          return true;
+        }
+        if (nativeReviewBusy) return true;
+        const sessionId = currentSessionId;
+        const requestedScope = scope;
+        setNativeReviewBusy(true);
+        setNativeReviewOutput(null);
+        setNativeNotice(t("composer.nativeReviewBusy"));
+        try {
+          const result = await RuntimeClient.reviewSession(
+            sessionId,
+            argument || undefined,
+          );
+          if (
+            scopeRef.current !== requestedScope ||
+            useAppStore.getState().currentSessionId !== sessionId
+          )
+            return true;
+          setNativeReviewOwnerSessionId(sessionId);
+          setNativeReviewSessionId(result.session.session.id);
+          setNativeReviewScope(requestedScope);
+          setNativeReviewOutput(
+            result.output ?? t("composer.nativeReviewEmpty"),
+          );
+          setNativeNotice(t("composer.nativeReviewReady"));
+        } catch (error) {
+          if (
+            scopeRef.current === requestedScope &&
+            useAppStore.getState().currentSessionId === sessionId
+          ) {
+            setNativeNotice(
+              t("composer.nativeCommandError", {
+                message: errorMessage(error),
+              }),
+            );
+          }
+        } finally {
+          setNativeReviewBusy(false);
+        }
+        return true;
+      }
+      if (command === "/plan") {
+        if (!currentSessionId) {
+          setNativeNotice(t("composer.nativeNoSession"));
+          return true;
+        }
+        if (nativePlanBusy) return true;
+        const sessionId = currentSessionId;
+        const requestedScope = scope;
+        setNativePlanBusy(true);
+        try {
+          const result = await RuntimeClient.setCollaborationMode(
+            sessionId,
+            argument === "off" ? "default" : "plan",
+          );
+          if (
+            scopeRef.current !== requestedScope ||
+            useAppStore.getState().currentSessionId !== sessionId
+          )
+            return true;
+          await selectSession(sessionId, requestedScope);
+          setNativeNotice(
+            result.collaboration_mode === "plan"
+              ? t("composer.nativePlanOn")
+              : t("composer.nativePlanOff"),
+          );
+        } catch (error) {
+          if (
+            scopeRef.current === requestedScope &&
+            useAppStore.getState().currentSessionId === sessionId
+          ) {
+            setNativeNotice(
+              t("composer.nativeCommandError", {
+                message: errorMessage(error),
+              }),
+            );
+          }
+        } finally {
+          setNativePlanBusy(false);
+        }
+        return true;
+      }
+      if (!currentSessionId) {
+        setNativeNotice(t("composer.nativeNoSession"));
+        return true;
+      }
+      if (nativeCompactBusy) return true;
+      const sessionId = currentSessionId;
+      const requestedScope = scope;
+      setNativeCompactBusy(true);
+      setNativeNotice(t("composer.nativeCompactBusy"));
+      try {
+        const result = await RuntimeClient.compactSession(sessionId);
+        if (
+          scopeRef.current !== requestedScope ||
+          useAppStore.getState().currentSessionId !== sessionId
+        )
+          return true;
+        await refreshAfterMutation(
+          { sessions: true, debug: true, sessionId },
+          requestedScope,
+        );
+        setNativeNotice(
+          result.compacted
+            ? t("composer.nativeCompact")
+            : (result.reason ?? t("composer.nativeCompact")),
+        );
+      } catch (error) {
+        if (
+          scopeRef.current === requestedScope &&
+          useAppStore.getState().currentSessionId === sessionId
+        ) {
+          setNativeNotice(
+            t("composer.nativeCommandError", { message: errorMessage(error) }),
+          );
+        }
+      } finally {
+        setNativeCompactBusy(false);
+      }
+      return true;
+    },
+    [
+      currentSessionId,
+      nativeCompactBusy,
+      nativePlanBusy,
+      nativeReviewBusy,
+      refetchReviewDiffAll,
+      scope,
+      selectSession,
+      t,
+    ],
+  );
+
   const handleSendMessage = useCallback(
     async (message: string, options?: { skills?: string[] }) => {
+      if (nativeCompactBusy || nativePlanBusy || nativeReviewBusy) {
+        setNativeNotice(t("composer.nativeBusy"));
+        return;
+      }
       await runTask(message, scope, {
         metadata: options?.skills?.length
           ? { skills: options.skills }
           : undefined,
       });
     },
-    [runTask, scope],
+    [nativeCompactBusy, nativePlanBusy, nativeReviewBusy, runTask, scope, t],
   );
-
   const handleSteer = useCallback(
     async (content: string) => {
       if (!currentSessionId) {
@@ -1066,7 +1270,10 @@ function App() {
   const handleOpenSettings = useCallback(() => setShowSettings(true), []);
   const handleCloseSettings = useCallback(() => setShowSettings(false), []);
   const handleCloseFileTree = useCallback(() => setShowFileTree(false), []);
-  const handleCloseCodeReview = useCallback(() => setShowCodeReview(false), []);
+  const handleCloseCodeReview = useCallback(() => {
+    setShowCodeReview(false);
+    setNativeDiffRequested(false);
+  }, []);
   const handleCloseContext = useCallback(() => setShowContext(false), []);
   const { refetch: refetchSessionDebug } = sessionDebugQuery;
   const handleRefreshContext = useCallback(() => {
@@ -1148,6 +1355,11 @@ function App() {
                       <span className="text-sm font-medium text-[var(--vc-text-primary)] truncate">
                         {currentSessionTitle}
                       </span>
+                      {planMode ? (
+                        <span className="shrink-0 rounded-md border border-[color:var(--vc-border-strong)] bg-[var(--vc-surface-1)] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-[var(--vc-text-muted)]">
+                          Plan
+                        </span>
+                      ) : null}
                       {currentBranch ? (
                         <span className="shrink-0 rounded-md border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--vc-text-subtle)]">
                           {currentBranch}
@@ -1275,6 +1487,36 @@ function App() {
                   onClick={() => setSessionEventError(null)}
                 >
                   {t("common.dismiss")}
+                </ControlButton>
+              </div>
+            )}
+            {nativeNotice && (
+              <div
+                role="status"
+                className="shrink-0 border-b border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] px-4 py-2 text-xs text-[var(--vc-text-muted)]"
+              >
+                {nativeCompactBusy
+                  ? t("composer.nativeCompactBusy")
+                  : nativeNotice}
+              </div>
+            )}
+            {visibleNativeReviewOutput && (
+              <div className="mx-auto w-full max-w-[var(--vc-chat-content-width)] px-4 py-2">
+                <div className="rounded-[var(--vc-radius-control)] border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] p-3 text-sm whitespace-pre-wrap text-[var(--vc-text-primary)]">
+                  {nativeReviewOutput}
+                </div>
+              </div>
+            )}
+            {visibleNativeReviewOutput && nativeReviewSessionId && (
+              <div className="mx-auto flex w-full max-w-[var(--vc-chat-content-width)] justify-end px-4 pb-2">
+                <ControlButton
+                  compact
+                  variant="ghost"
+                  onClick={() =>
+                    void selectSession(nativeReviewSessionId, scope)
+                  }
+                >
+                  {t("composer.nativeReviewOpenSession")}
                 </ControlButton>
               </div>
             )}
@@ -1407,6 +1649,7 @@ function App() {
               isRunning={isRunning}
               agentPreset={agentPreset}
               onSubmit={handleSendMessage}
+              onNativeCommand={handleNativeCommand}
               onSteer={handleSteer}
               onCancel={cancelCurrentRun}
               onAgentPresetChange={setAgentPreset}
@@ -1492,6 +1735,9 @@ function App() {
         error={reviewError}
         selectedPath={effectiveReviewPath}
         diff={reviewDiff}
+        workspaceDiff={nativeDiffRequested ? nativeDiff : null}
+        workspaceDiffStatus={nativeDiffRequested ? nativeDiffStatus : "idle"}
+        workspaceDiffError={nativeDiffRequested ? nativeDiffError : null}
         diffStatus={reviewDiffStatus}
         diffError={reviewDiffError}
         onClose={handleCloseCodeReview}

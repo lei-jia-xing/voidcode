@@ -63,6 +63,7 @@ from ..contracts import (
     RuntimeSessionResult,
     RuntimeStatusSnapshot,
     RuntimeStreamChunk,
+    SessionBusyConflictError,
     SessionEventBatch,
     SkillSummary,
     UnknownSessionError,
@@ -99,7 +100,9 @@ from .http_contract import (
     StreamCompletion,
     _ApprovalResolutionRequestPayload,
     _CheckoutSessionRequestPayload,
+    _CollaborationModeRequestPayload,
     _QuestionAnswerRequestPayload,
+    _ReviewRunRequestPayload,
     _RunStreamRequestPayload,
     _SessionCancelRequestPayload,
     _SettingsRequestPayload,
@@ -121,6 +124,7 @@ from .http_models import (
     BackgroundTaskStateBody,
     BackgroundTaskSteerBody,
     BackgroundTaskSummaryBody,
+    CollaborationModeBody,
     CommandSummaryBody,
     ErrorEnvelope,
     ProviderInspectBody,
@@ -129,6 +133,7 @@ from .http_models import (
     ProviderValidationBody,
     ReviewFileDiffBody,
     RunStreamFrameBody,
+    RuntimeCompactBody,
     RuntimeResponseBody,
     RuntimeStatusBody,
     SessionCancelBody,
@@ -289,7 +294,9 @@ def _session_states_serialize_identically(previous: SessionState, current: Sessi
 
 class RuntimeTransport(Protocol):
     def run_stream(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]: ...
-
+    def compact_session(self, *, session_id: str) -> dict[str, object]: ...
+    def set_collaboration_mode(self, *, session_id: str, mode: str) -> dict[str, object]: ...
+    def review_session(self, *, session_id: str, focus: str | None = None) -> RuntimeResponse: ...
     def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState: ...
 
     def authorize_background_task_owner(self, task_id: str, *, parent_session_id: str | None) -> None: ...
@@ -353,6 +360,7 @@ class RuntimeTransport(Protocol):
     def retry_mcp_connections(self) -> RuntimeStatusSnapshot: ...
 
     def review_snapshot(self) -> WorkspaceReviewSnapshot: ...
+    def review_diff_all(self) -> ReviewFileDiff: ...
 
     def review_diff(self, path: str) -> ReviewFileDiff: ...
 
@@ -739,6 +747,15 @@ class RuntimeTransportApp(FastAPI):
             response_model=WorkspaceReviewBody,
         )
         route(
+            "/api/review/diff",
+            self._handle_get_review_diff_all,
+            methods=["GET"],
+            tag="review",
+            summary="Read the aggregate workspace diff",
+            response_model=ReviewFileDiffBody,
+            error_statuses=(400, 404),
+        )
+        route(
             "/api/review/diff/{path:path}",
             self._handle_get_review_diff,
             methods=["GET"],
@@ -900,6 +917,33 @@ class RuntimeTransportApp(FastAPI):
             summary="Explicitly resume an interrupted session",
             response_model=RuntimeResponseBody,
             error_statuses=(404,),
+        )
+        route(
+            "/api/sessions/{session_id}/compact",
+            self._handle_compact_session,
+            methods=["POST"],
+            tag="sessions",
+            summary="Compact a session's conversation context",
+            response_model=RuntimeCompactBody,
+            error_statuses=(400, 404, 409),
+        )
+        route(
+            "/api/sessions/{session_id}/collaboration-mode",
+            self._handle_set_collaboration_mode,
+            methods=["POST"],
+            tag="sessions",
+            summary="Set reversible session collaboration mode",
+            response_model=CollaborationModeBody,
+            error_statuses=(400, 404, 409),
+        )
+        route(
+            "/api/sessions/{session_id}/review",
+            self._handle_review_session,
+            methods=["POST"],
+            tag="sessions",
+            summary="Run a governed read-only review of workspace changes",
+            response_model=RuntimeResponseBody,
+            error_statuses=(400, 404, 409),
         )
         route(
             "/api/sessions/{session_id}/steer",
@@ -1492,6 +1536,14 @@ class RuntimeTransportApp(FastAPI):
                 raise HttpError(400, str(exc)) from None
         return json_response(payload)
 
+    async def _handle_get_review_diff_all(self) -> Response:
+        with self._runtime_lease() as runtime:
+            try:
+                payload = self._serialize_review_file_diff(runtime.review_diff_all())
+            except ValueError as exc:
+                raise HttpError(400, str(exc)) from None
+        return json_response(payload)
+
     async def _handle_update_settings(self, payload: _SettingsRequestPayload) -> Response:
         with self._runtime_lease() as runtime:
             try:
@@ -1542,6 +1594,54 @@ class RuntimeTransportApp(FastAPI):
         except ValueError as exc:
             raise HttpError(404, str(exc)) from None
         return json_response(self._serialize_runtime_response(response, show_thinking=show_thinking))
+
+    def _compact_session(self, session_id: str) -> dict[str, object]:
+        with self._runtime_lease() as runtime:
+            return runtime.compact_session(session_id=session_id)
+
+    async def _handle_compact_session(self, session_id: str) -> Response:
+        session_id = self._validated_session_id(session_id)
+        try:
+            payload = await asyncio.to_thread(self._compact_session, session_id)
+        except UnknownSessionError as exc:
+            raise HttpError(404, str(exc), code=error_code(exc)) from None
+        except SessionBusyConflictError as exc:
+            raise HttpError(409, str(exc), code=error_code(exc)) from None
+        except ValueError as exc:
+            raise HttpError(400, str(exc)) from None
+        return json_response(payload)
+
+    def _set_collaboration_mode(self, session_id: str, mode: str) -> dict[str, object]:
+        with self._runtime_lease() as runtime:
+            return runtime.set_collaboration_mode(session_id=session_id, mode=mode)
+
+    async def _handle_set_collaboration_mode(self, session_id: str, payload: _CollaborationModeRequestPayload) -> Response:
+        session_id = self._validated_session_id(session_id)
+        try:
+            result = await asyncio.to_thread(self._set_collaboration_mode, session_id, payload.mode)
+        except UnknownSessionError as exc:
+            raise HttpError(404, str(exc), code=error_code(exc)) from None
+        except SessionBusyConflictError as exc:
+            raise HttpError(409, str(exc), code=error_code(exc)) from None
+        except ValueError as exc:
+            raise HttpError(400, str(exc)) from None
+        return json_response(result)
+
+    def _review_session(self, session_id: str, focus: str | None) -> RuntimeResponse:
+        with self._runtime_lease() as runtime:
+            return runtime.review_session(session_id=session_id, focus=focus)
+
+    async def _handle_review_session(self, session_id: str, payload: _ReviewRunRequestPayload) -> Response:
+        session_id = self._validated_session_id(session_id)
+        try:
+            result = await asyncio.to_thread(self._review_session, session_id, payload.focus)
+        except UnknownSessionError as exc:
+            raise HttpError(404, str(exc), code=error_code(exc)) from None
+        except SessionBusyConflictError as exc:
+            raise HttpError(409, str(exc), code=error_code(exc)) from None
+        except ValueError as exc:
+            raise HttpError(400, str(exc)) from None
+        return json_response(self._serialize_runtime_response(result))
 
     async def _handle_session_replay(self, session_id: str, show_thinking: ShowThinkingQuery = False) -> Response:
         session_id = self._validated_session_id(session_id)

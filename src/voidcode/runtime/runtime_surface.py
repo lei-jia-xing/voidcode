@@ -17,6 +17,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
+    from ..command.registry import CommandRegistry
     from ..hook.typed import ToolInputHandlerRegistry
     from .composition import ActiveComposition, FrozenComposition, LifecycleScope, PhaseContext, PhaseOutcome
 from ..core.tool_context import ArtifactRead
@@ -73,6 +76,7 @@ class RuntimeSurface(Protocol):
     def prepare_execution_composition(self, config: RunConfig) -> FrozenComposition: ...
     def reasoning_effort_capability(self, config: RunConfig) -> ReasoningEffortCapability: ...
 
+    def command_registry(self, *, user_commands_dir: Path | None = None) -> CommandRegistry: ...
     # --- permission / tool governance (runtime owns uniformly) ---
     def resolve_permission(
         self,
@@ -156,6 +160,7 @@ class RuntimeSurface(Protocol):
         *,
         tool_results: tuple[ReportedCall | ToolResultView, ...],
         session_metadata: dict[str, object],
+        source_text: str | None = None,
     ) -> str | None: ...
     def reassemble_provider_context_for_overflow(
         self,
@@ -302,7 +307,9 @@ class RuntimeSurface(Protocol):
         restore_only: bool = False,
     ) -> tuple[PhaseOutcome, ...]: ...
 
-    def phase_records(self, session_id: str) -> dict[str, dict[str, object]]: ...
+    def phase_records(self, session_id: str, metadata: Mapping[str, object] | None = None) -> dict[str, dict[str, object]]: ...
 
     def composition_session_metadata(self, session_id: str, metadata: dict[str, object]) -> dict[str, object]: ...
+    def set_collaboration_mode(self, *, session_id: str, mode: str) -> dict[str, object]: ...
+    def review_session(self, *, session_id: str, focus: str | None = None) -> RuntimeResponse: ...
     def tool_input_handler_registry_for_session(self, session: SessionState) -> ToolInputHandlerRegistry: ...

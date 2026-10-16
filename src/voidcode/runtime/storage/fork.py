@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from ..composition import SessionCompositionOwner
+from ..context.continuity import metadata_with_manual_compaction_path
 from ..contracts import (
     RuntimeSessionForkBoundaryError,
     SessionLineageCycleError,
@@ -291,6 +292,7 @@ class _ForkStorageMixin(_MixinBase):
                 forked_ref_payload=forked_ref.model_dump(mode="json"),
                 execution_composition_payload=frozen.to_payload(),
             )
+            forked_metadata = metadata_with_manual_compaction_path(forked_metadata, path)
             try:
                 _ = connection.execute(
                     """

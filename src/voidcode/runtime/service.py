@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -8,7 +9,7 @@ from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast, final
+from typing import TYPE_CHECKING, Any, Final, Literal, cast, final
 
 from ..agent import (
     AgentManifest,
@@ -161,6 +162,7 @@ from .config.materializer import (
     serialize_runtime_config_core,
 )
 from .context.continuity import (
+    events_after_manual_compaction,
     replayed_conversation_segments_from_events,
     verified_checkpoint_session_metadata,
 )
@@ -177,6 +179,7 @@ from .context.transforms import (
 from .context.window import (
     BeforeCompactInput,
     CompactionBudget,
+    ContextProjection,
     ContextWindowPolicy,
     ContinuitySummaryKind,
     RuntimeAssembledContext,
@@ -215,6 +218,7 @@ from .contracts import (
     RuntimeSessionResult,
     RuntimeStatusSnapshot,
     RuntimeStreamChunk,
+    SessionBusyConflictError,
     SessionEventBatch,
     SkillSummary,
     WorkspaceReviewSnapshot,
@@ -279,7 +283,9 @@ from .permissions.policy import (
     PermissionPolicy,
     PermissionResolution,
     resolve_permission,
+    runtime_effective_read_only_from_metadata,
     runtime_read_only_from_metadata,
+    validate_collaboration_mode,
 )
 from .permissions.responses import (
     waiting_request_id_from_response,
@@ -328,6 +334,7 @@ from .session_metadata_helpers import (
     runtime_state_metadata_payload,
     runtime_state_pending_tool_intent,
     session_metadata_with_runtime_state_updates,
+    session_with_context_compacted_state,
     session_with_context_window_payload_metadata,
     session_with_current_acp_metadata,
     session_with_plan_state,
@@ -548,13 +555,18 @@ def _builtin_tool_component_factory(value: object, context: object) -> object:
 def _builtin_agent_component_config(value: object) -> ValidatedConfig:
     if not isinstance(value, Mapping) or not isinstance(value.get("name"), str):
         raise ValueError("builtin agent component config requires a name")
+    if value.get("source_scope") in ("project", "user"):
+        manifest = AgentManifest.from_payload(value)
+        return ValidatedConfig(value=manifest, snapshot=manifest.to_payload())
+    if value.get("source_scope") == "package":
+        raise ValueError("package-origin agent cannot masquerade as runtime-owned declarative config")
     requested = value.get("id", value["name"])
     manifest = get_builtin_agent_manifest(requested) if isinstance(requested, str) else None
     if manifest is None:
         manifest = next((item for item in list_builtin_agent_manifests() if item.name == value["name"]), None)
     if manifest is None:
         raise ValueError(f"unknown builtin agent component: {value['name']}")
-    return ValidatedConfig(value=manifest, snapshot={"id": manifest.id, "name": manifest.name, "mode": manifest.mode})
+    return ValidatedConfig(value=manifest, snapshot=manifest.to_payload())
 
 
 def _builtin_agent_component_factory(value: object, _context: object) -> object:
@@ -612,6 +624,14 @@ def _builtin_runtime_package(root: Path, provider_names: Iterable[str]) -> Built
         )
         for manifest in list_builtin_agent_manifests()
     )
+    components.append(
+        ComponentDeclaration(
+            slot="agent",
+            name="declarative",
+            factory="voidcode.runtime.service:_builtin_agent_component_factory",
+            validate_config="voidcode.runtime.service:_builtin_agent_component_config",
+        )
+    )
     components.extend(
         ComponentDeclaration(
             slot="context",
@@ -626,6 +646,7 @@ def _builtin_runtime_package(root: Path, provider_names: Iterable[str]) -> Built
             schema_version=1,
             files=(
                 "voidcode/agent/builtin.py",
+                "voidcode/agent/models.py",
                 "voidcode/command/models.py",
                 "voidcode/hook/before_agent_start.py",
                 "voidcode/hook/typed.py",
@@ -638,6 +659,9 @@ def _builtin_runtime_package(root: Path, provider_names: Iterable[str]) -> Built
         ),
         root=root,
     )
+
+
+MAX_REVIEW_DIFF_BYTES: Final[int] = 256 * 1024
 
 
 @final
@@ -677,6 +701,7 @@ class VoidCodeRuntime(RuntimeSurface):
     _installed_command_definitions: tuple[CommandDefinition, ...]
     _before_agent_start_registry: BeforeAgentStartRegistry
     _activated_before_agent_start_registries: dict[CompositionRef, BeforeAgentStartRegistry]
+    _installed_agent_distributions: dict[str, str]
     _default_context_window_policy = ContextWindowPolicy()
 
     def __init__(
@@ -720,6 +745,7 @@ class VoidCodeRuntime(RuntimeSurface):
                 self._composition_owner._builtins["voidcode"] = builtin_pkg
         else:
             self._composition_owner = CompositionOwner(builtins=(builtin_pkg,))
+        self._installed_agent_distributions = {}
         installed_agent_manifests: list[AgentManifest] = []
         self._installed_tool_definitions: list[ToolDefinition] = []
         installed_context_transforms: list[RuntimeContextTransformDeclaration] = []
@@ -749,6 +775,8 @@ class VoidCodeRuntime(RuntimeSurface):
                     if not isinstance(validated, AgentManifest) or (validated.id != component.name and validated.name != component.name):
                         raise ValueError("installed agent component validator returned a mismatched manifest")
                     installed_agent_manifests.append(validated)
+                    self._installed_agent_distributions[component.name] = component.distribution
+                    self._installed_agent_distributions[validated.id] = component.distribution
                 elif component.slot == "context":
                     if not isinstance(validated, RuntimeContextTransformDeclaration) or validated.provider_id != component.name:
                         raise ValueError("installed context component validator returned a mismatched declaration")
@@ -1187,7 +1215,29 @@ class VoidCodeRuntime(RuntimeSurface):
         if config.agent is not None and config.agent.preset is not None:
             agent_name = str(config.agent.preset)
             if agent_name not in {item.name for item in selections if item.slot == "agent"}:
-                add_builtin("agent", agent_name, {"name": agent_name})
+                manifest = self._agent_registry.get(agent_name)
+                if manifest is None:
+                    raise ValueError(f"unknown agent preset: '{agent_name}'")
+                if manifest.source_scope == "package":
+                    distribution = self._installed_agent_distributions.get(agent_name)
+                    if distribution is None:
+                        raise ValueError(f"installed agent '{agent_name}' has no admitted package component in this runtime")
+                    identity = (distribution, "agent", agent_name)
+                    if identity not in selected:
+                        selections.append(
+                            ComponentSelection(
+                                distribution=distribution,
+                                slot="agent",
+                                name=agent_name,
+                                configuration={},
+                                provenance=("run_config",),
+                            )
+                        )
+                        selected.add(identity)
+                elif manifest.source_scope in ("project", "user"):
+                    add_builtin("agent", "declarative", manifest.to_payload())
+                else:
+                    add_builtin("agent", agent_name, manifest.to_payload())
 
         selected_provider_names: set[str] = set()
         for target in config.resolved_provider.target_chain.all_targets:
@@ -1380,19 +1430,23 @@ class VoidCodeRuntime(RuntimeSurface):
             restore_only=restore_only,
         )
 
-    def phase_records(self, session_id: str) -> dict[str, dict[str, object]]:
+    def phase_records(self, session_id: str, metadata: Mapping[str, object] | None = None) -> dict[str, dict[str, object]]:
         if not session_id:
             raise ValueError("phase records require a non-empty session identity")
-        stored = self._repositories.sessions.load_session(workspace=self._workspace, session_id=session_id)
-        if "phase_records" not in stored.session.metadata:
-            return {}
-        records = stored.session.metadata["phase_records"]
-        if not isinstance(records, dict):
+        records_source = metadata.get("phase_records") if metadata is not None else None
+        if records_source is None:
+            if metadata is not None:
+                return {}
+            stored = self._repositories.sessions.load_session(workspace=self._workspace, session_id=session_id)
+            if "phase_records" not in stored.session.metadata:
+                return {}
+            records_source = stored.session.metadata["phase_records"]
+        if not isinstance(records_source, dict):
             raise ValueError("persisted phase_records mapping is malformed")
         frozen = self.active_composition(session_id=session_id).frozen
         phases = {phase.key: phase.declaration for phase in frozen.plan.phases}
         validated: dict[str, dict[str, object]] = {}
-        for key, raw in records.items():
+        for key, raw in records_source.items():
             if not isinstance(key, str) or not isinstance(raw, dict):
                 raise ValueError("persisted phase_records entry is malformed")
             record = PhaseRecord.model_validate(raw)
@@ -1410,15 +1464,28 @@ class VoidCodeRuntime(RuntimeSurface):
         return validated
 
     def composition_session_metadata(self, session_id: str, metadata: dict[str, object]) -> dict[str, object]:
-        """Merge durable phase state into an older run/checkpoint snapshot."""
+        """Merge durable phase state and context projection into an older run/checkpoint snapshot."""
         stored = self._repositories.sessions.load_session(workspace=self._workspace, session_id=session_id)
-        state: dict[str, object] = (
-            dict(parse_runtime_state_metadata(stored.session.metadata["runtime_state"])) if "runtime_state" in stored.session.metadata else {}
+        stored_meta = stored.session.metadata
+        state: dict[str, object] = dict(parse_runtime_state_metadata(stored_meta["runtime_state"])) if "runtime_state" in stored_meta else {}
+        continuity_and_phase_keys = frozenset(
+            {
+                "composition_turn_occurrence",
+                "composition_turn",
+                "context_projection",
+                "context_projection_summary",
+                "context_compacted",
+                "reminders",
+            }
         )
+        persisted_updates = {key: state[key] for key in continuity_and_phase_keys if key in state}
         phase_keys = frozenset({"composition_turn_occurrence", "composition_turn"})
-        phase_state = {key: state[key] for key in phase_keys if key in state}
-        merged = session_metadata_with_runtime_state_updates(metadata, updates=phase_state, removed=phase_keys - state.keys())
-        return {**merged, "phase_records": self.phase_records(session_id)}
+        merged = session_metadata_with_runtime_state_updates(metadata, updates=persisted_updates, removed=phase_keys - state.keys())
+        if "context_window" in stored_meta:
+            merged["context_window"] = stored_meta["context_window"]
+        if "collaboration_mode" in stored_meta:
+            merged["collaboration_mode"] = stored_meta["collaboration_mode"]
+        return {**merged, "phase_records": self.phase_records(session_id, metadata=stored_meta)}
 
     def _background_task_composition_ref(self, *, task_id: str, session_id: str) -> CompositionRef:
         task = self._repositories.tasks.load_background_task(workspace=self._workspace, task_id=task_id)
@@ -2259,6 +2326,10 @@ class VoidCodeRuntime(RuntimeSurface):
                 owner=SessionCompositionOwner(kind="session", session_id=resolved_session_id),
             )
         request_metadata = self._fresh_request_metadata(request.metadata)
+        if existing_session is not None and "agent" not in request_metadata:
+            session_config = self.run_config_from_metadata(existing_session.session.metadata)
+            if session_config.agent is not None:
+                config = replace(config, agent=session_config.agent)
         if existing_session is not None:
             queued_steering = self._repositories.sessions.drain_session_messages(
                 workspace=self._workspace,
@@ -2353,6 +2424,21 @@ class VoidCodeRuntime(RuntimeSurface):
                 if not isinstance(raw_persisted_runtime_policy, dict):
                     raise ValueError("persisted runtime_policy must be an object")
                 persisted_runtime_policy = raw_persisted_runtime_policy
+        policy_snapshot = materialize_runtime_policy_snapshot(
+            persisted_session_policy=persisted_runtime_policy,
+            agent_preset=config.agent.preset if config.agent is not None else "default",
+            agent_manifest_id=config.agent.preset if config.agent is not None else "default",
+            callable_subagent_presets=self._agent_registry.executable_subagent_ids(),
+            runtime_config={
+                **self._runtime_config_metadata(
+                    config,
+                ),
+            },
+            request_metadata=request_metadata,
+            parent_snapshot=parent_runtime_policy,
+        )
+        if policy_snapshot.read_only:
+            session_request_metadata["read_only"] = True
         session = SessionState(
             session=SessionRef(id=resolved_session_id, parent_id=request.parent_session_id),
             status="running",
@@ -2363,19 +2449,7 @@ class VoidCodeRuntime(RuntimeSurface):
                 "runtime_config": self._runtime_config_metadata(
                     config,
                 ),
-                "runtime_policy": materialize_runtime_policy_snapshot(
-                    persisted_session_policy=persisted_runtime_policy,
-                    agent_preset=config.agent.preset if config.agent is not None else "default",
-                    agent_manifest_id=config.agent.preset if config.agent is not None else "default",
-                    callable_subagent_presets=self._agent_registry.executable_subagent_ids(),
-                    runtime_config={
-                        **self._runtime_config_metadata(
-                            config,
-                        ),
-                    },
-                    request_metadata=request_metadata,
-                    parent_snapshot=parent_runtime_policy,
-                ).as_payload(),
+                "runtime_policy": policy_snapshot.as_payload(),
                 **({"resolved_hook_presets": resolved_hook_presets.to_payload()} if resolved_hook_presets.presets else {}),
                 "resolved_hook_plan": resolved_hook_plan.to_payload(),
                 "runtime_state": runtime_state_metadata_payload(
@@ -2986,7 +3060,7 @@ class VoidCodeRuntime(RuntimeSurface):
             owner_session_id=session.session.id,
             owner_parent_session_id=session.session.parent_id,
             delegated_task_id=(raw_background_task_id if isinstance(raw_background_task_id, str) else None),
-            read_only=runtime_read_only_from_metadata(session.metadata),
+            read_only=runtime_effective_read_only_from_metadata(session.metadata),
         )
 
         if path_scope == "workspace" and operation_class == "read":
@@ -3478,7 +3552,8 @@ class VoidCodeRuntime(RuntimeSurface):
         composition_ref = CompositionRef.model_validate(task.request.metadata.get("composition_ref"))
         if composition_ref.workspace != str(self._workspace):
             raise ValueError("background task composition reference names a different workspace")
-        self._composition_owner.refresh(self._repositories.recovery.load_execution_composition(ref=composition_ref))
+        frozen = self._repositories.recovery.load_execution_composition(ref=composition_ref)
+        self._composition_owner.refresh(frozen)
         return self._background_task_supervisor.retry_background_task(task_id)
 
     def steer_background_task(self, task_id: str, content: str) -> BackgroundTaskState:
@@ -3684,8 +3759,8 @@ class VoidCodeRuntime(RuntimeSurface):
     def list_skill_summaries(self) -> tuple[SkillSummary, ...]:
         return self._inspection_coordinator.list_skill_summaries()
 
-    def list_command_summaries(self) -> tuple[CommandSummary, ...]:
-        return self._inspection_coordinator.list_command_summaries()
+    def list_command_summaries(self, *, user_commands_dir: Path | None = None) -> tuple[CommandSummary, ...]:
+        return self._inspection_coordinator.list_command_summaries(user_commands_dir=user_commands_dir)
 
     @staticmethod
     def _command_summary(command: CommandDefinition) -> CommandSummary:
@@ -3715,6 +3790,186 @@ class VoidCodeRuntime(RuntimeSurface):
 
     def review_diff(self, path: str) -> ReviewFileDiff:
         return self._inspection_coordinator.review_diff(path)
+
+    def review_diff_all(self) -> ReviewFileDiff:
+        return self._inspection_coordinator.review_diff_all()
+
+    def review_session(self, *, session_id: str, focus: str | None = None) -> RuntimeResponse:
+        """Run the read-only review agent over the current aggregate workspace diff."""
+        validate_id(session_id)
+        if ACTIVE_SESSION_REGISTRY.active_run_count(workspace=self._workspace, session_id=session_id):
+            raise SessionBusyConflictError("cannot review a session while it is running")
+        parent_response = self._repositories.sessions.load_session(workspace=self._workspace, session_id=session_id)
+        parent_session = parent_response.session
+        if parent_session.status in {"running", "waiting"}:
+            raise SessionBusyConflictError(f"cannot review a session with status {parent_session.status}")
+        diff = self.review_diff_all()
+        if diff.state == "not_git_repo":
+            raise ValueError("review requires a Git repository")
+        if diff.state == "clean" or not diff.diff:
+            raise ValueError("review found no workspace changes")
+        diff_bytes = len(diff.diff.encode("utf-8"))
+        if diff_bytes > MAX_REVIEW_DIFF_BYTES:
+            raise ValueError(
+                f"workspace diff is too large ({diff_bytes} bytes) for inline review; reduce working tree changes or review changes incrementally"
+            )
+        prompt_parts = ["Review the current workspace changes and report concrete correctness, regression, and safety findings."]
+        if focus and focus.strip():
+            prompt_parts.append(f"Reviewer focus: {focus.strip()}")
+        prompt_parts.append(f"Aggregate Git diff:\n{diff.diff}")
+        prompt_parts.append("Use the yield tool to return the final review findings.")
+        review_prompt = "\n\n".join(prompt_parts)
+        return self.run(
+            RuntimeRequest(
+                prompt=review_prompt,
+                parent_session_id=session_id,
+                allocate_session_id=True,
+                metadata={
+                    "agent": {"preset": "review"},
+                    "provider_stream": True,
+                    "read_only": True,
+                    "delegation": {
+                        "mode": "sync",
+                        "subagent_type": "review",
+                        "description": "Review the current workspace diff.",
+                    },
+                },
+            )
+        )
+
+    def compact_session(self, *, session_id: str) -> dict[str, object]:
+        """Compact one settled session through the existing context projection."""
+        validate_id(session_id)
+        if ACTIVE_SESSION_REGISTRY.active_run_count(workspace=self._workspace, session_id=session_id):
+            raise SessionBusyConflictError("cannot compact a session while it is running")
+        response = self._repositories.sessions.load_session(workspace=self._workspace, session_id=session_id)
+        session = response.session
+        if session.status in {"running", "waiting"}:
+            raise SessionBusyConflictError(f"cannot compact a session with status {session.status}")
+        self._activate_existing_session_composition(session_id)
+        response = self._repositories.sessions.load_session(workspace=self._workspace, session_id=session_id)
+        session = response.session
+        replayed = self.replayed_conversation_segments_for_existing_session(stored=response, parent_session_id=None)
+        tool_results = self._rehydrated_tool_results_for_existing_session(stored=response, parent_session_id=None)
+        sequence = response.events[-1].sequence if response.events else 0
+        previous_projection = continuity_state_from_session_metadata(session.metadata)
+        source_parts = []
+        if previous_projection is not None and previous_projection.summary_text:
+            source_parts.append(f"Previous runtime summary:\n{previous_projection.summary_text}")
+        source_parts.extend(f"{segment.role}: {segment.content or ''}" for segment in replayed if (segment.content or "").strip())
+        source_text = "\n\n".join(source_parts)
+        if source_text:
+            source_text = (
+                "Summarize this completed coding-agent conversation for future continuation. "
+                "Preserve the objective, user constraints, decisions, files, verification, and open blockers. "
+                "Do not answer the last request; output only the factual summary.\n\n" + source_text
+            )
+        summary = (
+            self.summarize_continuity(
+                tool_results=tool_results,
+                session_metadata=dict(session.metadata),
+                source_text=source_text,
+            )
+            if source_text
+            else None
+        )
+        if summary:
+            anchor = hashlib.sha256(f"{sequence}:{summary}".encode()).hexdigest()[:16]
+            projection = ContextProjection(
+                projection_id=f"native-{session_id}-{sequence}",
+                source_event_sequence=sequence,
+                summary_text=summary,
+                recent_tail=tuple((segment.content or "")[:500] for segment in replayed[-4:]),
+                source="native_manual",
+            )
+            window = RuntimeContextWindow(
+                prompt="",
+                compacted=True,
+                compaction_reason="manual",
+                original_tool_result_count=len(tool_results),
+                retained_tool_result_count=0,
+                continuity_state=projection,
+                summary_anchor=anchor,
+                summary_kind="model",
+            )
+        else:
+            if not tool_results:
+                return {"session_id": session_id, "compacted": False, "reason": "summary_unavailable"}
+            config = self.run_config_from_metadata(dict(session.metadata))
+            budget = compaction_budget_from_config(
+                config.context_window,
+                context_window=self._stream_prep_coordinator.context_budget_for_config(config),
+                anchor_tokens=provider_usage_anchor_tokens(session.metadata),
+            )
+            window = self.assemble_provider_context(
+                prompt="",
+                tool_results=tool_results,
+                session_metadata=dict(session.metadata),
+                replayed_conversation_segments=replayed,
+                compaction_budget=replace(budget, fit_payload=True),
+            ).context_window
+            if window is None or not window.compacted:
+                return {"session_id": session_id, "compacted": False, "reason": "no_prunable_content"}
+        updated = session_with_context_window_payload_metadata(session, window.metadata_payload())
+        updated = session_with_context_compacted_state(
+            updated,
+            summary_anchor=window.summary_anchor,
+            original_tool_result_count=window.original_tool_result_count,
+            retained_tool_result_count=window.retained_tool_result_count,
+        )
+        event = self._repositories.sessions.append_native_context_compaction(
+            workspace=self._workspace,
+            session_id=session_id,
+            metadata=dict(updated.metadata),
+            payload=window.metadata_payload(),
+            expected_sequence=sequence,
+            expected_status=session.status,
+        )
+        return {
+            "session_id": session_id,
+            "compacted": True,
+            "event_sequence": event.sequence,
+            "original_tool_result_count": window.original_tool_result_count,
+            "retained_tool_result_count": window.retained_tool_result_count,
+        }
+
+    def set_collaboration_mode(self, *, session_id: str, mode: str) -> dict[str, object]:
+        """Set the native collaboration mode ('default' or 'plan') for an idle session."""
+        validate_id(session_id)
+        valid_mode = validate_collaboration_mode(mode)
+        if ACTIVE_SESSION_REGISTRY.active_run_count(workspace=self._workspace, session_id=session_id):
+            raise SessionBusyConflictError("cannot change collaboration mode while a session is running")
+        response = self._repositories.sessions.load_session(workspace=self._workspace, session_id=session_id)
+        session = response.session
+        if session.status in {"running", "waiting"}:
+            raise SessionBusyConflictError(f"cannot change collaboration mode for a session with status {session.status}")
+        raw_previous_mode = session.metadata.get("collaboration_mode", "default")
+        previous_mode = validate_collaboration_mode(raw_previous_mode)
+        if previous_mode == valid_mode:
+            return {
+                "session_id": session_id,
+                "collaboration_mode": valid_mode,
+                "previous_mode": previous_mode,
+                "unchanged": True,
+            }
+        sequence = response.events[-1].sequence if response.events else 0
+        updated_metadata = dict(session.metadata)
+        updated_metadata["collaboration_mode"] = valid_mode
+        event = self._repositories.sessions.append_collaboration_mode_change(
+            workspace=self._workspace,
+            session_id=session_id,
+            metadata=updated_metadata,
+            mode=valid_mode,
+            previous_mode=previous_mode,
+            expected_sequence=sequence,
+            expected_status=session.status,
+        )
+        return {
+            "session_id": session_id,
+            "collaboration_mode": valid_mode,
+            "previous_mode": previous_mode,
+            "event_sequence": event.sequence,
+        }
 
     @staticmethod
     def _decode_subprocess_text_output(value: object) -> str:
@@ -4454,9 +4709,28 @@ class VoidCodeRuntime(RuntimeSurface):
         if session_id is not None and parent_session_id == session_id:
             raise RuntimeRequestError("parent_session_id must not match session_id")
 
+        existing_session = self._load_existing_session_if_present(session_id=session_id) if session_id is not None else None
+        governance_parent_session_id = parent_session_id
+        if governance_parent_session_id is None and existing_session is not None:
+            governance_parent_session_id = existing_session.session.session.parent_id
         raw_metadata = {key: value for key, value in request.metadata.items()}
-        if parent_session_id is not None:
-            parent_metadata = self._parent_policy_metadata(parent_session_id)
+        if existing_session is not None and existing_session.session.session.parent_id is not None and request.parent_session_id is None:
+            persisted = existing_session.session.metadata
+            if "delegation" not in raw_metadata and isinstance(persisted.get("delegation"), dict):
+                raw_delegation = cast(Mapping[str, object], persisted["delegation"])
+                raw_metadata["delegation"] = dict(raw_delegation)
+            runtime_config = persisted.get("runtime_config")
+            if "agent" not in raw_metadata and isinstance(runtime_config, dict) and isinstance(runtime_config.get("agent"), dict):
+                persisted_agent = parse_runtime_agent_payload(
+                    runtime_config["agent"],
+                    source="persisted child runtime_config.agent",
+                    hooks=self._config.hooks,
+                    agent_registry=self._session_agent_registry(persisted),
+                    allow_runtime_internal=True,
+                )
+                raw_metadata["agent"] = serialize_runtime_agent_config(persisted_agent)
+        if governance_parent_session_id is not None:
+            parent_metadata = self._parent_policy_metadata(governance_parent_session_id)
             if parent_metadata is not None:
                 raw_metadata = self._metadata_with_inherited_child_policy(
                     child_metadata=raw_metadata,
@@ -4466,10 +4740,6 @@ class VoidCodeRuntime(RuntimeSurface):
             raw_metadata,
             allow_internal_fields=allow_internal_metadata,
         )
-        existing_session = self._load_existing_session_if_present(session_id=session_id) if session_id is not None else None
-        governance_parent_session_id = parent_session_id
-        if governance_parent_session_id is None and existing_session is not None:
-            governance_parent_session_id = existing_session.session.session.parent_id
         metadata = self._metadata_with_resolved_subagent_route(
             metadata,
             allow_internal_fields=allow_internal_metadata,
@@ -4526,11 +4796,10 @@ class VoidCodeRuntime(RuntimeSurface):
         # A read-only parent stance is the shared gate both layers consume,
         # and the more restrictive parent stance propagates to the child
         # through the single read_only key.
-        parent_read_only = runtime_read_only_from_metadata(parent_metadata)
+        parent_read_only = runtime_effective_read_only_from_metadata(parent_metadata)
         child_read_only = runtime_read_only_from_metadata(child_metadata)
         if parent_read_only or child_read_only or "read_only" in child_metadata:
             inherited["read_only"] = parent_read_only or child_read_only
-
         return inherited
 
     def command_registry(self, *, user_commands_dir: Path | None = None) -> CommandRegistry:
@@ -4550,6 +4819,9 @@ class VoidCodeRuntime(RuntimeSurface):
         metadata: RuntimeRequestMetadataPayload,
         allow_internal_fields: bool,
     ) -> tuple[str, RuntimeRequestMetadataPayload]:
+        stripped = prompt.strip()
+        if stripped == "/plan" or stripped.startswith("/plan "):
+            raise RuntimeRequestError("native command /plan requires an active session; use set_collaboration_mode")
         if "command" in metadata or not is_prompt_command(prompt):
             return prompt, metadata
         try:
@@ -4681,6 +4953,7 @@ class VoidCodeRuntime(RuntimeSurface):
             workspace=self._workspace,
             session_id=stored.session.session.id,
         )
+        path_events = events_after_manual_compaction(path_events)
         _prompt, tool_results = prompt_and_tool_results_from_debug_events(path_events)
         return tuple(tool_results)
 
@@ -4693,7 +4966,7 @@ class VoidCodeRuntime(RuntimeSurface):
         include_current_request: bool = False,
     ) -> tuple[ContextSegment, ...]:
         if stored is None and session_id is not None:
-            return ()
+            stored = self._load_existing_session_if_present(session_id=session_id)
         if stored is None:
             return ()
         stored_parent_session_id = stored.session.session.parent_id
@@ -4711,6 +4984,7 @@ class VoidCodeRuntime(RuntimeSurface):
             workspace=self._workspace,
             session_id=stored.session.session.id,
         )
+        replay_events = events_after_manual_compaction(replay_events)
         current_request_event_id = next(
             (
                 (event.session_id, event.sequence)
@@ -4725,7 +4999,6 @@ class VoidCodeRuntime(RuntimeSurface):
 
         return replayed_conversation_segments_from_events(
             replay_events,
-            output=stored.output,
             reported_call_from_event=report_from_event,
             current_request_event_id=current_request_event_id,
         )
@@ -4849,6 +5122,7 @@ class VoidCodeRuntime(RuntimeSurface):
         *,
         tool_results: tuple[ReportedCall | ToolResultView, ...],
         session_metadata: dict[str, object],
+        source_text: str | None = None,
     ) -> str | None:
         """One-shot, runtime-owned summary of the conversation pruning is discarding.
 
@@ -4859,7 +5133,7 @@ class VoidCodeRuntime(RuntimeSurface):
         or a timeout returns ``None`` -- this never raises into the run, and the
         caller falls back to the deterministic projection.
         """
-        prompt = _continuity_summary_input(tool_results)
+        prompt = source_text if source_text is not None else _continuity_summary_input(tool_results)
         if not prompt:
             return None
         try:
@@ -5395,15 +5669,40 @@ class VoidCodeRuntime(RuntimeSurface):
             components=config.components,
         )
 
+    def _session_agent_registry(self, metadata: Mapping[str, object] | None) -> AgentManifestRegistry:
+        if metadata is None or "composition_ref" not in metadata:
+            return self._agent_registry
+        ref = composition_ref_from_session_metadata(metadata)
+        frozen = self._repositories.recovery.load_execution_composition(ref=ref)
+
+        recovered_custom: dict[str, AgentManifest] = dict(self._agent_registry.custom)
+        for comp in frozen.binding.components:
+            if comp.distribution == "voidcode" and comp.slot == "agent" and comp.name == "declarative":
+                if not isinstance(comp.configuration, Mapping):
+                    raise ValueError(f"declarative agent component '{comp.key}' configuration must be a mapping")
+                manifest = AgentManifest.from_payload(comp.configuration)
+                if manifest.source_scope not in ("project", "user"):
+                    raise ValueError(f"declarative agent component '{comp.key}' requires project or user source_scope; got {manifest.source_scope!r}")
+                if manifest.id in self._agent_registry.builtin:
+                    raise ValueError(
+                        f"declarative agent component '{comp.key}' uses builtin agent id '{manifest.id}'; builtin agent manifests cannot be replaced"
+                    )
+                recovered_custom[manifest.id] = manifest
+        return AgentManifestRegistry(builtin=self._agent_registry.builtin, custom=recovered_custom)
+
     def _validate_runtime_agent_for_execution(
         self,
         agent: RuntimeAgentConfig,
         *,
         source: str,
+        agent_registry: AgentManifestRegistry | None = None,
         allow_subagent_presets: bool = False,
     ) -> None:
-        executable_primary = self._agent_registry.executable_primary_ids()
-        executable_subagents = self._agent_registry.executable_subagent_ids()
+        if agent.preset is None:
+            return
+        registry = agent_registry or self._agent_registry
+        executable_primary = registry.executable_primary_ids()
+        executable_subagents = registry.executable_subagent_ids()
         if agent.preset in executable_primary:
             return
         if allow_subagent_presets and agent.preset in executable_subagents:
@@ -5624,18 +5923,20 @@ class VoidCodeRuntime(RuntimeSurface):
         provider_fallback = materialized.provider_fallback
         tools = materialized.tools
         context_window = materialized.context_window
+        session_agent_registry = self._session_agent_registry(metadata)
         if materialized.has_agent:
             agent = parse_runtime_agent_payload(
                 materialized.raw_agent,
                 source="persisted runtime_config.agent",
                 hooks=self._config.hooks,
-                agent_registry=self._agent_registry,
+                agent_registry=session_agent_registry,
                 allow_runtime_internal=True,
             )
             if agent is not None:
                 self._validate_runtime_agent_for_execution(
                     agent,
                     source="persisted runtime_config.agent",
+                    agent_registry=session_agent_registry,
                     allow_subagent_presets=allow_persisted_subagent_presets,
                 )
         else:
