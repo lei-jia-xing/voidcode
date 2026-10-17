@@ -336,3 +336,29 @@ def test_shell_exec_preserves_command_and_inherited_env(tmp_path: Path, monkeypa
     assert (tmp_path / "capture.args").read_bytes() == b"arg with spaces"
     assert (tmp_path / "capture.env").read_bytes() == b"caller-value\0caller-no"
     assert (tmp_path / "capture.stdin").read_bytes() == b"first\nsecond\n"
+
+
+@pytest.mark.parametrize(
+    ("command", "suggested_tool"),
+    [
+        ("cat README.md", "read"),
+        ("echo hi && grep foo bar.txt", "grep"),
+        ("rg pattern .", "grep"),
+        ("sed -i 's/a/b/' file.txt", "edit"),
+        ("find . -name '*.py'", "glob"),
+    ],
+)
+def test_shell_exec_blocks_misused_shell_patterns(tmp_path: Path, command: str, suggested_tool: str) -> None:
+    with pytest.raises(ValueError, match=suggested_tool):
+        ShellExecTool().invoke(
+            ToolCall(tool_name="shell_exec", arguments={"command": command}),
+            context=ToolContext(workspace=tmp_path),
+        )
+
+
+def test_shell_exec_allows_unmatched_commands(tmp_path: Path) -> None:
+    echo_result = ShellExecTool().invoke(
+        ToolCall(tool_name="shell_exec", arguments={"command": "echo intercepted"}),
+        context=ToolContext(workspace=tmp_path),
+    )
+    assert echo_result.body.exit_code == 0

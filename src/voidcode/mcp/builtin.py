@@ -14,8 +14,6 @@ class BuiltinMcpDescriptor:
     lifecycle: str
     url: str | None = None
     command: tuple[str, ...] = ()
-    skill_scoped: bool = False
-    skill_name: str | None = None
     tags: tuple[str, ...] = ()
 
 
@@ -45,16 +43,6 @@ _BUILTIN_MCP_DESCRIPTORS: dict[str, BuiltinMcpDescriptor] = {
             "Code search MCP via grep.app remote endpoint. Loaded by default with the builtin remote MCP set; mcp.enabled=false disables it."
         ),
         tags=("code-search", "research"),
-    ),
-    "playwright": BuiltinMcpDescriptor(
-        name="playwright",
-        transport="stdio",
-        command=("npx", "@playwright/mcp@latest"),
-        lifecycle="skill_scoped_descriptor_only_config_gated",
-        description=("Playwright browser automation MCP descriptor scoped to the builtin playwright skill."),
-        skill_scoped=True,
-        skill_name="playwright",
-        tags=("browser", "verification", "frontend"),
     ),
 }
 

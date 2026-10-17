@@ -287,8 +287,6 @@ def runtime_capability_enabled(enabled: bool | None) -> bool:
 def _default_runtime_mcp_servers() -> dict[str, RuntimeMcpServerConfig]:
     servers: dict[str, RuntimeMcpServerConfig] = {}
     for descriptor in list_builtin_mcp_descriptors():
-        if descriptor.skill_scoped:
-            continue
         servers[descriptor.name] = RuntimeMcpServerConfig(
             transport=descriptor.transport,
             command=descriptor.command,

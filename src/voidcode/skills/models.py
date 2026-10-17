@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypeIs
 
-SkillOrigin = Literal["workspace", "builtin"]
+SkillOrigin = Literal["workspace"]
 
 
 def _validated_non_empty_string(value: object, *, field_name: str) -> str:
@@ -29,14 +29,14 @@ def _validated_path(value: object, *, field_name: str) -> Path:
 
 
 def is_skill_origin(value: object) -> TypeIs[SkillOrigin]:
-    """Whether an untrusted ``origin`` token names one of the skill origins."""
-    return value == "workspace" or value == "builtin"
+    """Whether an untrusted ``origin`` token names the workspace skill origin."""
+    return value == "workspace"
 
 
 def _validated_skill_origin(value: object) -> SkillOrigin:
     if is_skill_origin(value):
         return value
-    raise ValueError("origin must be one of: workspace, builtin")
+    raise ValueError("origin must be one of: workspace")
 
 
 @dataclass(frozen=True, slots=True)

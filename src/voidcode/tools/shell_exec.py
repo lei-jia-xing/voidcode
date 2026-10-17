@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -31,6 +32,24 @@ from .process_output import ProcessOutputCapture, artifact_uri
 
 DEFAULT_TIMEOUT_SECONDS = 120
 MAX_TIMEOUT_SECONDS = 600
+
+_BASH_INTERCEPTOR_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"^\s*cat\s+(?![-<])"), "Use the `read` tool instead of `cat <file>`."),
+    (re.compile(r"^\s*(grep|rg)\s+"), "Use the `grep` tool instead of grep/rg."),
+    (re.compile(r"^\s*sed\s+(-i|--in-place)"), "Use the `edit` tool instead of sed -i."),
+    (re.compile(r"^\s*find\s+"), "Use the `glob` tool instead of find."),
+)
+_SHELL_SEGMENT_SPLIT = re.compile(r"&&|\|\||;|\|")
+
+
+def _check_bash_interception(command: str) -> str | None:
+    # ponytail: naive split on shell operators ignores quoting, so a quoted
+    # "a && cat f" can false-positive; use a real shell tokenizer if that matters.
+    for segment in _SHELL_SEGMENT_SPLIT.split(command):
+        for pattern, message in _BASH_INTERCEPTOR_RULES:
+            if pattern.match(segment):
+                return f"Blocked: {message}\n\nOriginal command: {command}"
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -356,8 +375,10 @@ class ShellExecTool:
             },
             tool_name=self.definition.name,
         )
-
         command_text = args.command
+        intercepted = _check_bash_interception(command_text)
+        if intercepted is not None:
+            raise ValueError(intercepted)
 
         timeout_value = call.arguments.get("timeout", DEFAULT_TIMEOUT_SECONDS)
         workspace_root = Path(workspace).resolve()

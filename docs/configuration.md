@@ -102,6 +102,47 @@ To connect to private or proxy OpenAI-compatible endpoints:
 }
 ```
 
+## Web Search Configuration
+
+The built-in `web_search` tool resolves search queries across 14 supported providers:
+
+- `exa` (`EXA_API_KEY`)
+- `tavily` (`TAVILY_API_KEY`)
+- `brave` (`BRAVE_API_KEY`)
+- `deepseek` (`DEEPSEEK_API_KEY`)
+- `tinyfish` (`TINYFISH_API_KEY`)
+- `jina` (`JINA_API_KEY`)
+- `kagi` (`KAGI_API_KEY`)
+- `firecrawl` (`FIRECRAWL_API_KEY`, optional)
+- `kimi` (`KIMI_SEARCH_API_KEY` or `MOONSHOT_SEARCH_API_KEY`)
+- `parallel` (`PARALLEL_API_KEY`)
+- `synthetic` (`SYNTHETIC_API_KEY`)
+- `searxng` (`SEARXNG_ENDPOINT` or `SEARXNG_URL`)
+- `startpage` (keyless)
+- `duckduckgo` (keyless)
+
+### Provider Precedence & Filtering
+
+Candidates are evaluated in fallback order until a provider succeeds:
+1. `exa`
+2. `tavily`
+3. `brave`
+4. `deepseek`
+5. `tinyfish`
+6. `jina`
+7. `kagi`
+8. `firecrawl`
+9. `kimi`
+10. `parallel`
+11. `synthetic`
+12. `searxng`
+13. `startpage`
+14. `duckduckgo`
+
+Two environment variables configure candidate ordering and exclusions:
+- `VOIDCODE_WEB_SEARCH_ORDER`: Comma-separated list of provider IDs (e.g. `brave,exa`) to prioritize first. Unlisted providers follow in default order.
+- `VOIDCODE_WEB_SEARCH_EXCLUDE`: Comma-separated list of provider IDs (e.g. `startpage,duckduckgo`) to omit from the candidate pool.
+
 ## Custom Primary Agents
 
 VoidCode supports custom agent definitions written in Markdown with YAML frontmatter. Custom agents can operate as top-level primary agents or delegated subagents.
@@ -233,8 +274,8 @@ not markdown prompt macros and do not invoke a provider turn unless stated:
 - **`/hooks`** — inspects runtime lifecycle hooks by event surface (`session_start`,
   `pre_tool`, `post_tool`, `session_end`). Displays configured command lines, tool match
   patterns, and enabled status. Unconfigured reads as disabled with empty surfaces. Allowed mid-run (no busy gate).
-- **`/skills`** — lists available skills discovered by `SkillRegistry` from workspace,
-  user, and plugin directories (`$skill_name`), showing descriptions and argument hints.
+- **`/skills`** — lists available skills discovered by `SkillRegistry` from workspace
+  directories (`.voidcode/skills` or configured paths), showing descriptions and argument hints.
   Projects registered capabilities non-destructively; allowed mid-run (no busy gate).
 - **`/agents`** — views active agent sessions, child tasks, and primary agent presets
   (`default`, `review`). Reports current session identity, running child delegations, and
@@ -302,8 +343,10 @@ Inspection catalog generation (`GET /api/commands`), TUI validation/dispatch, an
 derive from this shared definition. Slash commands (`/`) are a closed set of built-in native commands (Codex parity);
 custom markdown macro templates and prompt command expansions are removed.
 
-Custom capability extensibility is provided via Skills (`$skill_name`). See the Skill system
-and `src/voidcode/skills/registry.py` (`SkillRegistry`) for custom skill declarations and loading.
+Custom capability extensibility is provided via Skills (`$skill_name`). Skill discovery is
+workspace-only, scanning `.voidcode/skills/` (and paths configured under `skills.paths`) for
+`SKILL.md` manifests. Built-in skills have been removed; all active skills are defined by the
+workspace. See `src/voidcode/skills/registry.py` (`SkillRegistry`).
 
 
 ## Scheduled Tasks & Cron

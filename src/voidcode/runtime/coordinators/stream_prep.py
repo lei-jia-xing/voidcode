@@ -23,7 +23,7 @@ from ...core.turns import ReportedCall
 from ...mcp import McpCachedToolSurface, McpToolDescriptor
 from ...provider.model_catalog import static_catalog_metadata
 from ...provider.protocol import ProviderAbortSignal
-from ...skills import SkillRegistry, skill_registry_with_builtins
+from ...skills import SkillRegistry
 from ...tools.contracts import Tool
 from ..config.loading import RuntimeSkillsConfig
 from ..config.materializer import (
@@ -171,16 +171,14 @@ class StreamPrepCoordinator:
     @staticmethod
     def build_skill_registry_for_workspace(workspace: Path, skills_config: RuntimeSkillsConfig | None) -> SkillRegistry:
         if skills_config is None or skills_config.enabled is not True:
-            registry = skill_registry_with_builtins(())
+            registry = SkillRegistry.from_skills(())
         elif skills_config.paths:
-            discovered = SkillRegistry.discover(
+            registry = SkillRegistry.discover(
                 workspace=workspace,
                 search_paths=skills_config.paths,
             )
-            registry = skill_registry_with_builtins(discovered.all())
         else:
-            discovered = SkillRegistry.discover(workspace=workspace)
-            registry = skill_registry_with_builtins(discovered.all())
+            registry = SkillRegistry.discover(workspace=workspace)
         if skills_config is not None and skills_config.config:
             registry.apply_config_rules(skills_config.config)
         return registry

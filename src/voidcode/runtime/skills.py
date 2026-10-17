@@ -288,10 +288,7 @@ def _skill_entry_uri(path: Path) -> str:
 
 
 def loaded_skill_names(skill_registry: SkillRegistry) -> list[str]:
-    # Builtin skills are catalog resources: they stay resolvable through the
-    # skill tool and selected workflow refs, but they are not workspace skills
-    # that were actively loaded for an ordinary run.
-    return sorted(skill_name for skill_name, skill in skill_registry.skills.items() if skill.origin != "builtin" and skill.enabled)
+    return sorted(skill_name for skill_name, skill in skill_registry.skills.items() if skill.enabled)
 
 
 def catalog_skill_context(
