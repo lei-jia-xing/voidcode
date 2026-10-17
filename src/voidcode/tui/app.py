@@ -1283,6 +1283,8 @@ class TuiApp:
             self._command_native_btw(arguments)
         elif name == "init":
             self._command_native_init()
+        elif name == "loop":
+            self._command_native_loop(arguments)
         elif name == "new":
             self._command_native_new(arguments)
         elif name == "clear":
@@ -1678,6 +1680,28 @@ class TuiApp:
             self._queue.put(
                 _NativeBtwResult(session_id=session_id, question=str(result.get("question", question)), answer=str(result.get("answer", "")))
             )
+
+    def _command_native_loop(self, arguments: str) -> None:
+        from ..command.loop import USAGE_MESSAGE, loop_confirmation_message, parse_loop_command
+
+        raw = arguments.strip()
+        if not raw:
+            self._notice(USAGE_MESSAGE)
+            return
+        interval, prompt = parse_loop_command(raw)
+        if interval is None or prompt is None:
+            self._notice(USAGE_MESSAGE)
+            return
+        try:
+            summary = self._runtime.create_schedule(
+                schedule=f"every {interval}",
+                prompt=prompt,
+                parent_session_id=self._session_id,
+            )
+            self._runtime.fire_schedule(schedule_id=summary.id)
+            self._notice(loop_confirmation_message(summary))
+        except Exception as error:
+            self._notice(f"✖ /loop failed: {error}")
 
     def _finish_native_btw(self, item: _NativeBtwResult) -> None:
         self._btw_pending = False

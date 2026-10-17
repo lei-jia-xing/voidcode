@@ -245,6 +245,8 @@
   "composer.nativeUsageTitle": "Token usage",
   "composer.nativeUsageUsage": "Usage: /usage [daily|weekly|cumulative]",
   "composer.nativeUsageEstimated": "Estimated — no provider usage anchor yet",
+  "composer.nativeLoopTitle": "Loop",
+  "composer.nativeLoopUsage": "Usage: /loop [interval] <prompt>\n\nRun a prompt or slash command on a recurring interval.\n\nIntervals: Ns, Nm, Nh, Nd (e.g. 5m, 30m, 2h, 1d). Minimum granularity is 1 minute.\nIf no interval is specified, defaults to 10m.\n\nExamples:\n  /loop 5m /babysit-prs\n  /loop 30m check the deploy\n  /loop 1h /standup 1\n  /loop check the deploy          (defaults to 10m)\n  /loop check the deploy every 20m",
   "composer.nativeCopyTitle": "Copy from response",
   "composer.nativeCopyEmpty": "No agent response to copy",
   "composer.nativeCopied": "Copied {{label}} to clipboard",

@@ -267,6 +267,25 @@ class StoredBackgroundTaskSummary:
     schema_mode: Literal["permissive", "strict"] = "permissive"
 
 
+@dataclass(frozen=True, slots=True)
+class ScheduleSummary:
+    id: str
+    workspace: str
+    schedule_text: str
+    kind: str
+    prompt: str
+    parent_session_id: str | None
+    enabled: bool
+    next_fire_at: int
+    running_task_id: str | None
+    created_at: int
+    expires_at: int | None
+    human_schedule: str
+    interval_seconds: int | None = None
+    at_epoch: int | None = None
+    cron_fields: str | None = None
+
+
 def validate_background_task_id(task_id: str) -> str:
     from ..contracts import validate_id
 

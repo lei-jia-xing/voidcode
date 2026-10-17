@@ -152,6 +152,15 @@ class McpArgs:
     json: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class CronArgs:
+    """Arguments for the ``cron`` command group."""
+
+    workspace: Path = field(default_factory=Path.cwd)
+    schedule_id: str | None = None
+    json: bool = False
+
+
 __all__ = [
     "RunArgs",
     "SessionsArgs",
@@ -164,4 +173,5 @@ __all__ = [
     "AcpArgs",
     "AgentsArgs",
     "McpArgs",
+    "CronArgs",
 ]

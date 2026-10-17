@@ -7,6 +7,7 @@ from ...hook.config import RuntimeHooksConfig
 from ...tools.apply_workspace_edit import ApplyWorkspaceEditTool
 from ...tools.ast_grep import AstGrepTool
 from ...tools.contracts import Tool, ToolDefinition
+from ...tools.cron import CronCreateTool, CronDeleteTool, CronListTool
 from ...tools.delegation import TaskBatchTool, TaskTool
 from ...tools.edit import EditTool
 from ...tools.glob import GlobTool
@@ -53,6 +54,9 @@ _BUILTIN_TOOLS: tuple[tuple[ToolDefinition, Callable[[RuntimeHooksConfig | None]
     (GetGoalTool.definition, lambda _: GetGoalTool()),
     (CreateGoalTool.definition, lambda _: CreateGoalTool()),
     (UpdateGoalTool.definition, lambda _: UpdateGoalTool()),
+    (CronCreateTool.definition, lambda _: CronCreateTool()),
+    (CronDeleteTool.definition, lambda _: CronDeleteTool()),
+    (CronListTool.definition, lambda _: CronListTool()),
 )
 
 

@@ -11,6 +11,7 @@ import click
 
 from .. import __version__
 from .commands.config import config
+from .commands.cron import cron
 from .commands.discovery import agents, mcp
 from .commands.doctor import doctor
 from .commands.provider import provider
@@ -86,6 +87,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 root_cli.add_command(acp_command)
 root_cli.add_command(agents)
 root_cli.add_command(config)
+root_cli.add_command(cron)
 root_cli.add_command(doctor)
 root_cli.add_command(mcp)
 root_cli.add_command(provider)

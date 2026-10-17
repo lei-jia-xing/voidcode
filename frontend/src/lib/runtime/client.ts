@@ -37,6 +37,7 @@ import {
   SessionAgentsOverview,
   SessionTokenUsage,
   SideQuestionResult,
+  SessionLoopResult,
   UserShellResult,
   SkillSummary,
   StoredSessionSummary,
@@ -109,6 +110,7 @@ const NATIVE_ROUTES = {
   sessionCollaborationMode: "/api/sessions/{session_id}/collaboration-mode",
   sessionReview: "/api/sessions/{session_id}/review",
   sessionBtw: "/api/sessions/{session_id}/btw",
+  sessionLoop: "/api/sessions/{session_id}/loop",
   sessionModel: "/api/sessions/{session_id}/model",
   sessionPermissions: "/api/sessions/{session_id}/permissions",
   sessionPendingApprovals: "/api/sessions/{session_id}/pending-approvals",
@@ -545,6 +547,22 @@ export class RuntimeClient {
       body: JSON.stringify({ question }),
     });
     await expectOk(res, "Failed to ask side question");
+    return res.json();
+  }
+  static async loopSession(
+    sessionId: string,
+    input: string,
+  ): Promise<SessionLoopResult> {
+    const route = NATIVE_ROUTES.sessionLoop.replace(
+      "{session_id}",
+      encodeURIComponent(sessionId),
+    );
+    const res = await fetch(route, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ input }),
+    });
+    await expectOk(res, "Failed to schedule loop");
     return res.json();
   }
 

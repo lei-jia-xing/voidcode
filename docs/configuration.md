@@ -290,6 +290,13 @@ not markdown prompt macros and do not invoke a provider turn unless stated:
   maintain `AGENTS.md` without overwriting existing guidelines. Executes as a
   normal governed agent turn under session tool approval policies; disabled while
   a task is in progress (busy-gated).
+- **`/loop [interval] <prompt>`** — schedules a prompt or slash command to run on a
+  recurring interval as a background task. Intervals accept `Ns`, `Nm`, `Nh`, `Nd`
+  (e.g. `5m`, `30m`, `2h`, `1d`); defaults to `10m` if omitted. Trailing `every <N> <unit>`
+  syntax (e.g. `/loop check the deploy every 20m`) is also supported. Creation immediately
+  fires the initial background task iteration and persists the schedule in the workspace
+  SQLite database. Recurring loops automatically expire after 7 days (Claude parity).
+  `/loop` specifies `busy_gate=False` and executes immediately without waiting for active runs.
 Native commands are defined in a single authoritative table (`src/voidcode/command/native.py:NATIVE_COMMANDS`).
 Inspection catalog generation (`GET /api/commands`), TUI validation/dispatch, and web client routing
 derive from this shared definition. Slash commands (`/`) are a closed set of built-in native commands (Codex parity);
@@ -298,6 +305,63 @@ custom markdown macro templates and prompt command expansions are removed.
 Custom capability extensibility is provided via Skills (`$skill_name`). See the Skill system
 and `src/voidcode/skills/registry.py` (`SkillRegistry`) for custom skill declarations and loading.
 
+
+## Scheduled Tasks & Cron
+
+VoidCode provides scheduled task execution with Claude parity, supporting periodic automation, background execution, and tool-driven task governance.
+
+### Schedule Grammar
+
+Schedule expressions accept four canonical forms (`schedule_expr.py`):
+
+1. **`every <N><s|m|h|d>`** (Interval):
+   Executes periodically at the specified frequency (e.g. `every 10s`, `every 5m`, `every 2h`, `every 1d`). The minimum interval is 1 second.
+2. **`at <ISO-8601>`** (One-Shot Timestamp):
+   Fires once at the designated calendar timestamp (e.g. `at 2026-10-18T09:00:00Z`).
+3. **`cron <min> <hour> <day> <month> <dow>`** (Cron Expression):
+   Standard 5-field cron cadence (e.g. `cron */5 * * * *` for every 5 minutes, `cron 0 9 * * 1-5` for weekdays at 09:00). Supports lists (`1,15`), ranges (`1-5`), and steps (`*/10`).
+4. **`once`** (Immediate One-Shot):
+   Fires once on the next scheduler tick.
+
+### `/loop` Native Command
+
+The `/loop` native slash command creates a recurring background task and triggers an immediate execution:
+
+```
+/loop [interval] <prompt>
+```
+
+- **Default Interval**: Omitting the interval defaults to `10m` (e.g. `/loop check the deploy`).
+- **Interval Formats**: Supports leading interval tokens (`/loop 5m check status`) or natural trailing clauses (`/loop check status every 5m`).
+- **Immediate Fire**: The first iteration dispatches immediately as an asynchronous background task upon creation.
+- **Confirmation**: Echoes the assigned schedule ID, cadence, and 7-day auto-expiration notice.
+
+### 7-Day Auto-Expiration
+
+Recurring schedules (`every` and `cron`) are provisioned with an automatic 7-day expiration from the creation timestamp (`DEFAULT_RECURRING_EXPIRY_SECONDS = 604,800`). When a schedule passes its expiration timestamp, the scheduler executes one final due run and deletes the schedule from the database upon task completion. To cancel a schedule before expiration, use `voidcode cron remove <id>` or the `cron_delete` agent tool.
+
+One-shot schedules (`at` and `once`) do not auto-expire; they delete immediately upon successful execution, or remain in the store with `enabled = 0` if execution fails (OpenClaw parity).
+
+### CLI Management (`voidcode cron`)
+
+Scheduled tasks are managed from the command line using the `voidcode cron` group:
+
+```bash
+# List all schedules in the workspace
+voidcode cron list [--workspace <path>] [--json]
+
+# Inspect detailed schedule attributes and prompt
+voidcode cron show <schedule_id> [--workspace <path>] [--json]
+
+# Enable or disable a schedule
+voidcode cron enable <schedule_id> [--workspace <path>] [--json]
+voidcode cron disable <schedule_id> [--workspace <path>] [--json]
+
+# Remove (cancel) a schedule
+voidcode cron remove <schedule_id> [--workspace <path>] [--json]
+```
+
+Workspaces enforce a ceiling of 50 active scheduled tasks (`MAX_SCHEDULES_PER_WORKSPACE = 50`). Attempts to create additional schedules via the `cron_create` tool reject visibly until an existing schedule is removed.
 ## Hierarchical Project Instructions & Local Overrides
 
 VoidCode supports hierarchical instructions aligned with Codex (`AGENTS.md` and `AGENTS.override.md`):

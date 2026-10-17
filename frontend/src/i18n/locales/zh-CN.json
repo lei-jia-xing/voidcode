@@ -248,6 +248,8 @@
   "composer.nativeUsageTitle": "Token 用量",
   "composer.nativeUsageUsage": "用法：/usage [daily|weekly|cumulative]",
   "composer.nativeUsageEstimated": "估算值——暂无提供方用量锚点",
+  "composer.nativeLoopTitle": "循环任务",
+  "composer.nativeLoopUsage": "用法：/loop [interval] <prompt>\n\n按周期重复运行提示词或斜杠命令。\n\n周期：Ns、Nm、Nh、Nd（例如 5m、30m、2h、1d）。最小粒度为 1 分钟。\n如果未指定周期，默认为 10m。\n\n示例：\n  /loop 5m /babysit-prs\n  /loop 30m check the deploy\n  /loop 1h /standup 1\n  /loop check the deploy          (默认为 10m)\n  /loop check the deploy every 20m",
   "composer.nativeCopyTitle": "从回复中复制",
   "composer.nativeCopyEmpty": "没有可复制的助手回复",
   "composer.nativeCopied": "已复制{{label}}到剪贴板",

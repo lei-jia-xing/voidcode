@@ -638,6 +638,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/loop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Schedule and fire a native /loop recurring prompt */
+        post: operations["_handle_loop_session_api_sessions__session_id__loop_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions/{session_id}/model": {
         parameters: {
             query?: never;
@@ -2541,6 +2558,31 @@ export interface components {
             surfaces: components["schemas"]["HookSurfaceProjectionBody"][];
         };
         /**
+         * SessionLoopResultBody
+         * @description Result of scheduling a native /loop recurring task.
+         */
+        SessionLoopResultBody: {
+            /** Human Schedule */
+            human_schedule?: string | null;
+            /**
+             * Is Usage
+             * @default false
+             */
+            is_usage: boolean;
+            /** Message */
+            message: string;
+            /** Prompt */
+            prompt?: string | null;
+            /** Schedule */
+            schedule?: string | null;
+            /** Schedule Id */
+            schedule_id?: string | null;
+            /** Session Id */
+            session_id: string;
+            /** Task Id */
+            task_id?: string | null;
+        };
+        /**
          * SessionMcpInventoryBody
          * @description Native ``/mcp`` inventory: configured servers and passive tool surface.
          */
@@ -3060,6 +3102,15 @@ export interface components {
             at_sequence?: number | null;
             /** Name */
             name?: string | null;
+        };
+        /** _LoopRequestPayload */
+        _LoopRequestPayload: {
+            /** Input */
+            input?: string | null;
+            /** Interval */
+            interval?: string | null;
+            /** Prompt */
+            prompt?: string | null;
         };
         /** _QuestionAnswerRequestPayload */
         _QuestionAnswerRequestPayload: {
@@ -5073,6 +5124,59 @@ export interface operations {
                 };
                 content: {
                     "application/json; charset=utf-8": components["schemas"]["SessionTokenUsageBody"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    _handle_loop_session_api_sessions__session_id__loop_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["_LoopRequestPayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["SessionLoopResultBody"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
             /** @description Not Found */

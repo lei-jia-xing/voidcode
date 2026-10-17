@@ -557,6 +557,12 @@ class _BtwRequestPayload(_HttpBoundaryModel):
         return value
 
 
+class _LoopRequestPayload(_HttpBoundaryModel):
+    input: str | None = None
+    prompt: str | None = None
+    interval: str | None = None
+
+
 class _ExportWriteRequestPayload(_HttpBoundaryModel):
     path: str = Field(default=None, validate_default=True)
 

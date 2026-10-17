@@ -14,4 +14,5 @@ def repositories_for_test_store(store: Any) -> RuntimeRepositories:
         tasks=store,
         maintenance=store,
         process_persistence=store,
+        scheduled_tasks=store,
     )

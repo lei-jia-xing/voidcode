@@ -282,3 +282,29 @@ The runtime provides five native read-only inspection projections exposing live 
    - **`/skills` (`session_skills_listing`)**: Projects registered skills discovered by `SkillRegistry` (`list_skill_summaries`) across workspace, user, and plugin paths, sorted alphabetically with descriptions and argument hints.
    - **`/agents` (`session_agents_overview`)**: Projects active session records from SQLite storage, running subagent delegations from `RuntimeBackgroundTaskSupervisor`, and primary agent preset configurations (`list_agent_summaries`).
    - **`/usage` (`session_token_usage`)**: Projects cumulative token consumption (input, output, cache read/write), USD cost, and turn counts from `session.metadata["provider_usage"]`. Estimation is measured-provider-usage-first with exact per-model tokenizer fallback (superior to byte/4 heuristics; byte/4 only for unknown models).
+
+## Scheduled Task & Cron Execution Contract
+
+The runtime manages periodic and deferred task execution through a dedicated scheduler thread and transactional SQLite persistence:
+
+1. **Schedule Store & Schema Persistence**:
+   Scheduled tasks persist in the workspace SQLite database (`scheduled_tasks` table via `SqliteSessionStore` / `ScheduledTaskRepository`). Every row stores schedule identity (`id`), workspace path, canonical schedule expression (`schedule_text`), kind (`every`, `at`, `cron`, `once`), dispatched prompt, next trigger epoch (`next_fire_at`), optional parent session ID, enablement flag (`enabled`), running task pointer (`running_task_id`), creation epoch (`created_at`), and expiration epoch (`expires_at`).
+2. **Atomic CAS Claim Semantics**:
+   When evaluating due schedules, `claim_due_schedules(now)` executes an atomic compare-and-swap update in an immediate transaction:
+   `UPDATE scheduled_tasks SET running_task_id = ? WHERE workspace = ? AND enabled = 1 AND running_task_id IS NULL AND next_fire_at <= ?`.
+   A temporary unique claim token (`claiming-<uuid>`) is set, guaranteeing that across concurrent scheduler threads or processes, exactly one claimant wins each due firing slot without races.
+3. **Deterministic Tick Lifecycle**:
+   `SchedulerThread` executes periodic deterministic ticks (default cadence `SCHEDULER_TICK_SECONDS = 5.0`):
+   - **Cleanup**: Evaluates expired recurring tasks whose final execution has finished (`expires_at <= now` and `running_task_id IS NULL`) and deletes them via `delete_expired_scheduled_tasks`.
+   - **Overlap Detection**: Inspects due schedules where `running_task_id IS NOT NULL` and logs debug skip notifications.
+   - **Atomic Claim**: Claims due schedules matching `enabled = 1`, `next_fire_at <= now`, and `running_task_id IS NULL`.
+   - **Task Dispatch**: For each claimed schedule, dispatches a background task through `supervisor.start_background_task` and replaces the temporary claim token with the authoritative background `task.id`. If dispatch fails, the claim token is released back to `NULL`.
+4. **Fire-to-Background-Task Mechanics**:
+   Scheduler firings synthesize an asynchronous `RuntimeRequest` carrying the scheduled `prompt`, linked `parent_session_id`, and metadata flags (`schedule_id` and `scheduled_task_id`). Execution proceeds through `RuntimeBackgroundTaskSupervisor` as an independent background task; terminal results and state transitions flow through standard background worker channels.
+5. **Overlap Skip & Missed-Fire Catch-Up**:
+   If a previously fired task remains running when its next scheduled interval arrives (`running_task_id IS NOT NULL`), the schedule cannot be claimed and the interval fire is skipped (skip-if-running). When the running task finishes (`on_task_terminal`), `next_fire_at` is recomputed from the current timestamp (`now`) forward (`next_fire_after(expr, now)`), ensuring past missed slots are never backlogged or replayed.
+6. **Expiry & Deletion Rules**:
+   - **Recurring Schedules (`every`, `cron`)**: Default to a 7-day expiration (`DEFAULT_RECURRING_EXPIRY_SECONDS = 604,800`) unless an explicit `expires_at` is configured. Upon task completion after expiration has passed, the schedule is automatically deleted from the database.
+   - **One-Shot Schedules (`at`, `once`)**: Do not auto-expire (`expires_at = None`). When the spawned background task completes with status `completed`, the schedule is deleted from the store. If the task fails (`error`, `cancelled`, or `interrupted`), the schedule remains persisted with `enabled = 0` (disabled) and `running_task_id = NULL` for post-mortem inspection (OpenClaw parity).
+7. **Immediate-Fire Capability**:
+   `runtime.fire_schedule(schedule_id=...)` bypasses the tick wait loop, directly dispatching the schedule's prompt as an active background task and binding `running_task_id` immediately. The `/loop` native command and HTTP `/api/sessions/{session_id}/loop` endpoint invoke immediate-fire so that newly scheduled recurring jobs execute turn 1 without delay.

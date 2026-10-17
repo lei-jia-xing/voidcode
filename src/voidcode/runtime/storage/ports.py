@@ -25,6 +25,7 @@ from ..session import (
     StoredSessionLineageEntry,
     StoredSessionSummary,
 )
+from .rows import ScheduledTaskRow
 from .sessions import SessionEventPage, SessionEventsAfter
 
 
@@ -356,6 +357,56 @@ class BackgroundTaskRepository(Protocol):
     ) -> tuple[BackgroundTaskState, ...]: ...
 
 
+@runtime_checkable
+class ScheduledTaskRepository(Protocol):
+    def create_scheduled_task(
+        self,
+        *,
+        workspace: Path,
+        schedule_id: str,
+        schedule_text: str,
+        kind: str,
+        prompt: str,
+        next_fire_at: int,
+        interval_seconds: int | None = None,
+        at_epoch: int | None = None,
+        cron_fields: str | None = None,
+        parent_session_id: str | None = None,
+        enabled: bool = True,
+        created_at: int | None = None,
+        expires_at: int | None = None,
+    ) -> ScheduledTaskRow: ...
+
+    def get_scheduled_task(self, *, schedule_id: str, workspace: Path | None = None) -> ScheduledTaskRow | None: ...
+
+    def get_scheduled_task_by_running_task_id(self, *, running_task_id: str) -> ScheduledTaskRow | None: ...
+
+    def list_scheduled_tasks(
+        self,
+        *,
+        workspace: Path | None = None,
+        parent_session_id: str | None = None,
+    ) -> tuple[ScheduledTaskRow, ...]: ...
+
+    def delete_scheduled_task(self, *, schedule_id: str, workspace: Path | None = None) -> bool: ...
+
+    def claim_due_schedules(
+        self,
+        now: int,
+        workspace: Path | None = None,
+        *,
+        claim_token: str | None = None,
+    ) -> tuple[ScheduledTaskRow, ...]: ...
+
+    def record_schedule_running_task_id(self, *, schedule_id: str, running_task_id: str) -> bool: ...
+
+    def release_scheduled_task(self, *, schedule_id: str, next_fire_at: int) -> bool: ...
+
+    def release_scheduled_task_failure(self, *, schedule_id: str) -> bool: ...
+
+    def delete_expired_scheduled_tasks(self, *, now: int, workspace: Path | None = None) -> int: ...
+
+
 class RuntimeStorageMaintenance(Protocol):
     def storage_diagnostics(self, *, workspace: Path) -> dict[str, object]: ...
 
@@ -382,3 +433,4 @@ class RuntimeRepositories:
     tasks: BackgroundTaskRepository
     maintenance: RuntimeStorageMaintenance
     process_persistence: BackgroundProcessPersistence
+    scheduled_tasks: ScheduledTaskRepository | None = None

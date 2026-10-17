@@ -1099,6 +1099,35 @@ class _FixtureRuntime:
             estimated=not self.rich,
         )
 
+    def create_schedule(
+        self,
+        *,
+        schedule: str,
+        prompt: str,
+        parent_session_id: str | None = None,
+        one_shot: bool = False,
+    ):  # type: ignore[no-untyped-def]
+        models = importlib.import_module("voidcode.runtime.background.models")
+        return models.ScheduleSummary(
+            id="sched-1",
+            workspace="test-workspace",
+            schedule_text=schedule,
+            kind="every",
+            prompt=prompt,
+            parent_session_id=parent_session_id,
+            enabled=True,
+            next_fire_at=1700000000,
+            running_task_id=None,
+            created_at=1700000000,
+            expires_at=None,
+            human_schedule="every 5m",
+            interval_seconds=300,
+        )
+
+    def fire_schedule(self, *, schedule_id: str):  # type: ignore[no-untyped-def]
+        _ = schedule_id
+        return _background_task_state(self.rich) if self.rich else None
+
 
 # ------------------------------------------------------------------- app plumbing
 
@@ -1213,6 +1242,7 @@ _BODIES: dict[tuple[str, str], dict[str, object]] = {
     ("POST", "/api/sessions/{session_id}/permissions"): {"mode": "auto"},
     ("POST", "/api/sessions/{session_id}/approve"): {"request_id": "req-1"},
     ("POST", "/api/skills/toggle"): {"name": "review", "enabled": True},
+    ("POST", "/api/sessions/{session_id}/loop"): {"input": "5m check deploy status"},
 }
 _SSE_TEMPLATES = frozenset({"/api/runtime/run/stream", "/api/sessions/{session_id}/events"})
 

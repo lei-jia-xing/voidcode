@@ -144,6 +144,8 @@ class InternalRuntimeRequestMetadata(RuntimeRequestMetadata, total=False):
     background_task_id: str
     composition_ref: dict[str, object]
     keep_alive_turn: bool
+    schedule_id: str
+    scheduled_task_id: str
 
 
 type RuntimeRequestMetadataPayload = RuntimeRequestMetadata | InternalRuntimeRequestMetadata

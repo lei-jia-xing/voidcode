@@ -99,6 +99,8 @@ export type SessionSkillsListing = Schemas["SessionSkillsListingBody"];
 export type SessionAgentsOverview = Schemas["SessionAgentsOverviewBody"];
 /** Native `/usage` activity from `GET /api/sessions/{id}/info/usage`. */
 export type SessionTokenUsage = Schemas["SessionTokenUsageBody"];
+/** Native `/loop` result from `POST /api/sessions/{id}/loop`. */
+export type SessionLoopResult = Schemas["SessionLoopResultBody"];
 export type RuntimeInterruptResult = Schemas["SessionCancelBody"];
 export type RuntimeResponse = Schemas["RuntimeResponseBody"];
 export interface CollaborationModeResult {

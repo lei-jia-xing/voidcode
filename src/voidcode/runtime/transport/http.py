@@ -33,6 +33,7 @@ from ..active_session import ACTIVE_SESSION_REGISTRY, ActiveRunInterruptResult
 from ..background.models import (
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
+    ScheduleSummary,
     StoredBackgroundTaskSummary,
 )
 from ..background.routing import (
@@ -120,6 +121,7 @@ from .http_contract import (
     _CreateSessionRequestPayload,
     _ExportWriteRequestPayload,
     _ForkSessionRequestPayload,
+    _LoopRequestPayload,
     _QuestionAnswerRequestPayload,
     _RenameSessionRequestPayload,
     _ReviewRunRequestPayload,
@@ -177,6 +179,7 @@ from .http_models import (
     SessionExportBody,
     SessionExportWriteBody,
     SessionHooksListingBody,
+    SessionLoopResultBody,
     SessionMcpInventoryBody,
     SessionModelBody,
     SessionPermissionsBody,
@@ -374,6 +377,17 @@ class RuntimeTransport(Protocol):
     def list_pending_approvals(self, *, session_id: str) -> tuple[dict[str, object], ...]: ...
     def approve_pending_action(self, *, session_id: str, request_id: str | None = None) -> dict[str, object]: ...
     def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState: ...
+    def create_schedule(
+        self,
+        *,
+        schedule: str,
+        prompt: str,
+        parent_session_id: str | None = None,
+        enabled: bool = True,
+        expires_at: int | None = None,
+        schedule_id: str | None = None,
+    ) -> ScheduleSummary: ...
+    def fire_schedule(self, *, schedule_id: str) -> BackgroundTaskState | None: ...
 
     def authorize_background_task_owner(self, task_id: str, *, parent_session_id: str | None) -> None: ...
 
@@ -1126,6 +1140,15 @@ class RuntimeTransportApp(FastAPI):
             tag="sessions",
             summary="Answer a native /btw side question without touching history",
             response_model=SideQuestionResultBody,
+            error_statuses=(400, 404),
+        )
+        route(
+            "/api/sessions/{session_id}/loop",
+            self._handle_loop_session,
+            methods=["POST"],
+            tag="sessions",
+            summary="Schedule and fire a native /loop recurring prompt",
+            response_model=SessionLoopResultBody,
             error_statuses=(400, 404),
         )
         route(
@@ -2063,6 +2086,61 @@ class RuntimeTransportApp(FastAPI):
         except ValueError as exc:
             raise HttpError(400, str(exc)) from None
         return json_response(result)
+
+    async def _handle_loop_session(self, session_id: str, payload: _LoopRequestPayload) -> Response:
+        session_id = self._validated_session_id(session_id)
+        from ...command.loop import USAGE_MESSAGE, loop_confirmation_message, parse_loop_command
+
+        raw_input = payload.input or ""
+        raw_prompt = payload.prompt
+        interval = payload.interval
+
+        if raw_prompt is not None and raw_prompt.strip():
+            parsed_interval = (interval or "10m").strip()
+            parsed_prompt = raw_prompt.strip()
+        elif raw_input.strip():
+            p_interval, p_prompt = parse_loop_command(raw_input)
+            if p_interval is None or p_prompt is None:
+                body = SessionLoopResultBody(
+                    session_id=session_id,
+                    message=USAGE_MESSAGE,
+                    is_usage=True,
+                )
+                return json_response(body.model_dump(mode="json"))
+            parsed_interval, parsed_prompt = p_interval, p_prompt
+        else:
+            body = SessionLoopResultBody(
+                session_id=session_id,
+                message=USAGE_MESSAGE,
+                is_usage=True,
+            )
+            return json_response(body.model_dump(mode="json"))
+
+        with self._runtime_lease() as runtime:
+            try:
+                summary = runtime.create_schedule(
+                    schedule=f"every {parsed_interval}",
+                    prompt=parsed_prompt,
+                    parent_session_id=session_id,
+                )
+            except ValueError as exc:
+                raise HttpError(400, str(exc)) from None
+
+            state = runtime.fire_schedule(schedule_id=summary.id)
+            task_id = state.task.id if state is not None else None
+            message = loop_confirmation_message(summary)
+
+        body = SessionLoopResultBody(
+            session_id=session_id,
+            schedule_id=summary.id,
+            schedule=summary.schedule_text,
+            human_schedule=summary.human_schedule,
+            prompt=summary.prompt,
+            task_id=task_id,
+            message=message,
+            is_usage=False,
+        )
+        return json_response(body.model_dump(mode="json"))
 
     async def _handle_session_status_panel(self, session_id: str) -> Response:
         session_id = self._validated_session_id(session_id)

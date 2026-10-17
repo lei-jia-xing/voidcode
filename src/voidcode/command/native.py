@@ -138,6 +138,13 @@ NATIVE_COMMANDS: Final[tuple[NativeCommand, ...]] = (
         kind="action",
     ),
     NativeCommand(
+        name="loop",
+        description="run a prompt or slash command on a recurring interval",
+        arg_rule="optional_text",
+        busy_gate=False,
+        kind="action",
+    ),
+    NativeCommand(
         name="mcp",
         description="list configured MCP tools; use /mcp verbose for details",
         arg_rule="enum",

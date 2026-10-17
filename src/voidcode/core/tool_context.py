@@ -320,6 +320,7 @@ class ToolContext:
     task_runtime: ToolCommandHandler | None = None
     task_batch_runtime: ToolCommandHandler | None = None
     process_runtime: ToolCommandHandler | None = None
+    cron_runtime: ToolCommandHandler | None = None
     lsp_diagnostics_on_write: bool = False
 
     def require_workspace(self) -> Path:

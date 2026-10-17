@@ -5,7 +5,7 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -258,6 +258,7 @@ class RuntimeBackgroundTaskSupervisor:
         # ``_waiting_reason`` so reads surface *why* a task is queued instead
         # of a generic "queued".
         self._queued_waiting_reasons: dict[str, str] = {}
+        self._task_terminal_callbacks: list[Callable[[BackgroundTaskState], None]] = []
 
     @property
     def threads(self) -> dict[str, threading.Thread]:
@@ -282,6 +283,10 @@ class RuntimeBackgroundTaskSupervisor:
     @reconciled.setter
     def reconciled(self, value: bool) -> None:
         self._reconciled = value
+
+    def register_task_terminal_callback(self, callback: Callable[[BackgroundTaskState], None]) -> None:
+        """Register a callback invoked when any background task enters a terminal state."""
+        self._task_terminal_callbacks.append(callback)
 
     def shutdown(self, *, timeout_seconds: float = 2.0) -> None:
         """Drain background-task workers durably before teardown.
@@ -2814,6 +2819,11 @@ class RuntimeBackgroundTaskSupervisor:
             session_id=task.session_id or task.parent_session_id or task.request.session_id or "runtime",
         )
         self.emit_background_task_parent_terminal_event(task=task)
+        for callback in self._task_terminal_callbacks:
+            try:
+                callback(task)
+            except Exception:
+                logger.exception("task terminal callback failed for task %s", task.task.id)
         with self._task_state_changed:
             self._task_state_changed.notify_all()
         if task.status == "completed" and task.parent_session_id is not None:

@@ -347,3 +347,20 @@ class IndexInfoRow(TypedDict):
     seqno: int
     cid: int
     name: str
+
+
+class ScheduledTaskRow(TypedDict):
+    id: str
+    workspace: str
+    schedule_text: str
+    kind: str
+    interval_seconds: int | None
+    at_epoch: int | None
+    cron_fields: str | None
+    prompt: str
+    parent_session_id: str | None
+    enabled: int
+    next_fire_at: int
+    running_task_id: str | None
+    created_at: int
+    expires_at: int | None

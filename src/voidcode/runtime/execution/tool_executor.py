@@ -242,6 +242,7 @@ class RuntimeToolExecutor:
     task_command: ToolCommandHandler | None = None
     task_batch_command: ToolCommandHandler | None = None
     process_command: ToolCommandHandler | None = None
+    cron_command: ToolCommandHandler | None = None
 
     def invoke(
         self,
@@ -294,6 +295,7 @@ class RuntimeToolExecutor:
             task_runtime=None,
             task_batch_runtime=None,
             process_runtime=None,
+            cron_runtime=None,
         )
         if tool_name == "read":
             caller_session_id = context.require_session_id()
@@ -316,6 +318,8 @@ class RuntimeToolExecutor:
             context = replace(context, task_batch_runtime=bind_tool_command(self.task_batch_command, call=invocation.tool_call, context=context))
         elif tool_name == "background_process" and self.process_command is not None:
             context = replace(context, process_runtime=bind_tool_command(self.process_command, call=invocation.tool_call, context=context))
+        elif tool_name in {"cron_create", "cron_delete", "cron_list"} and self.cron_command is not None:
+            context = replace(context, cron_runtime=bind_tool_command(self.cron_command, call=invocation.tool_call, context=context))
         elif tool_name == "apply_workspace_edit" and self.lsp_document_state is not None:
             context = replace(context, lsp_document_state=self.lsp_document_state)
         if tool_timeout is not None and isinstance(tool, RuntimeTimeoutAwareTool):

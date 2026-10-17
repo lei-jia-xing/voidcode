@@ -220,6 +220,20 @@ class SideQuestionResultBody(ResponseModel):
 
 
 @final
+class SessionLoopResultBody(ResponseModel):
+    """Result of scheduling a native /loop recurring task."""
+
+    session_id: str
+    message: str
+    schedule_id: str | None = None
+    schedule: str | None = None
+    human_schedule: str | None = None
+    prompt: str | None = None
+    task_id: str | None = None
+    is_usage: bool = False
+
+
+@final
 class CollaborationModeBody(ResponseModel):
     session_id: str
     collaboration_mode: str

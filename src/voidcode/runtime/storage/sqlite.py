@@ -33,6 +33,7 @@ from .rows import (
     fetch_row,
     fetch_rows,
 )
+from .scheduled_tasks import _ScheduledTaskStorageMixin
 from .sessions import _SessionStorageMixin
 
 # The storage schema is a cutover, not a migration: older database generations
@@ -67,6 +68,7 @@ _BOOTSTRAPPED_DATABASES: dict[str, _DatabaseBootstrap] = {}
 class SqliteSessionStore(
     _BackgroundProcessStorageMixin,
     _BackgroundTaskStorageMixin,
+    _ScheduledTaskStorageMixin,
     _SessionStorageMixin,
     _ResumeStorageMixin,
     _ForkStorageMixin,
@@ -180,6 +182,22 @@ class SqliteSessionStore(
             ("scope", "TEXT", 0, None, 1),
             ("value", "INTEGER", 1, None, 0),
         ),
+        "scheduled_tasks": (
+            ("id", "TEXT", 1, None, 2),
+            ("workspace", "TEXT", 1, None, 1),
+            ("schedule_text", "TEXT", 1, None, 0),
+            ("kind", "TEXT", 1, None, 0),
+            ("interval_seconds", "INTEGER", 0, None, 0),
+            ("at_epoch", "INTEGER", 0, None, 0),
+            ("cron_fields", "TEXT", 0, None, 0),
+            ("prompt", "TEXT", 1, None, 0),
+            ("parent_session_id", "TEXT", 0, None, 0),
+            ("enabled", "INTEGER", 1, "1", 0),
+            ("next_fire_at", "INTEGER", 1, None, 0),
+            ("running_task_id", "TEXT", 0, None, 0),
+            ("created_at", "INTEGER", 1, None, 0),
+            ("expires_at", "INTEGER", 0, None, 0),
+        ),
     }
     _CANONICAL_UNIQUE_INDEXES: dict[str, frozenset[tuple[str, ...]]] = {
         "sessions": frozenset(),
@@ -187,6 +205,7 @@ class SqliteSessionStore(
         "background_tasks": frozenset(),
         "session_event_deliveries": frozenset(),
         "storage_sequences": frozenset(),
+        "scheduled_tasks": frozenset(),
     }
 
     def __init__(self, *, database_path: Path | None = None) -> None:
@@ -477,6 +496,27 @@ class SqliteSessionStore(
             )
             """
         )
+        _ = connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS scheduled_tasks (
+                id TEXT NOT NULL,
+                workspace TEXT NOT NULL,
+                schedule_text TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                interval_seconds INTEGER,
+                at_epoch INTEGER,
+                cron_fields TEXT,
+                prompt TEXT NOT NULL,
+                parent_session_id TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                next_fire_at INTEGER NOT NULL,
+                running_task_id TEXT,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER,
+                PRIMARY KEY (workspace, id)
+            )
+            """
+        )
         self._assert_canonical_schema(connection=connection, database_path=database_path)
         self._ensure_workspace_indexes(connection=connection)
         self._ensure_storage_sequences(connection=connection)
@@ -487,6 +527,7 @@ class SqliteSessionStore(
     def _ensure_workspace_indexes(*, connection: sqlite3.Connection) -> None:
         _ = connection.execute("CREATE INDEX IF NOT EXISTS sessions_workspace_idx ON sessions(workspace_id, status, updated_at DESC)")
         _ = connection.execute("CREATE INDEX IF NOT EXISTS background_tasks_workspace_idx ON background_tasks(workspace_id, status, updated_at DESC)")
+        _ = connection.execute("CREATE INDEX IF NOT EXISTS scheduled_tasks_workspace_idx ON scheduled_tasks(workspace, enabled, next_fire_at)")
 
     @staticmethod
     def _ensure_storage_sequences(*, connection: sqlite3.Connection) -> None:

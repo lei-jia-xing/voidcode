@@ -13,7 +13,7 @@ from .policy import OperationClass, PathScope
 #: shell, a spawned agent/process, a local custom command, an MCP call — is
 #: ``execute`` (or, for MCP, ``write``), and an undeclared tool falls to the
 #: safe ``execute`` default.
-_WRITE_TIER_BUILTINS = frozenset({"write", "edit", "apply_workspace_edit"})
+_WRITE_TIER_BUILTINS = frozenset({"write", "edit", "apply_workspace_edit", "cron_create", "cron_delete"})
 
 
 class RuntimePermissionContextResolver:

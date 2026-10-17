@@ -5,11 +5,13 @@ import json
 import logging
 import os
 import threading
+import time
 from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, cast, final
+from uuid import uuid4
 
 from ..agent import (
     AgentManifest,
@@ -77,6 +79,7 @@ from ..tools.contracts import (
     ToolCall,
     ToolDefinition,
 )
+from ..tools.cron import CronCommand
 from ..tools.local_custom import LocalCustomTool, LocalCustomToolManifest, local_custom_tool_definition
 from ..tools.mcp import McpTool, mcp_tool_definition
 from . import skills
@@ -104,6 +107,7 @@ from .agent_capability import (
 )
 from .background.models import (
     BackgroundTaskState,
+    ScheduleSummary,
     StoredBackgroundTaskSummary,
     is_background_task_terminal,
 )
@@ -112,6 +116,8 @@ from .background.routing import (
     delegated_model_for_route_from_configs,
     provider_fallback_for_agent_selection,
 )
+from .background.schedule_expr import human_schedule, next_fire_after, parse_schedule
+from .background.scheduler import DEFAULT_RECURRING_EXPIRY_SECONDS, SchedulerThread
 from .background.substrate import (
     TaskSubstrate,
 )
@@ -355,7 +361,7 @@ from .skills import (
     skill_prompt_context_for_assembly,
 )
 from .status_projection import project_acp_status
-from .storage import RuntimeRepositories, SessionSealedError, SqliteSessionStore
+from .storage import RuntimeRepositories, ScheduledTaskRepository, SessionSealedError, SqliteSessionStore
 from .tools.builtins import BUILTIN_TOOL_NAMES, builtin_tool_definitions, materialize_builtin_tool
 from .tools.materialization import materialize, materialize_unscoped, workspace_local_tool_manifests_provider
 from .tools.materializer import RuntimeToolMaterialization, RuntimeToolMaterializer, tool_provenance
@@ -707,6 +713,7 @@ class VoidCodeRuntime(RuntimeSurface):
     _finalize_coordinator: FinalizeCoordinator
     _background_task_supervisor: RuntimeBackgroundTaskSupervisor
     _background_process_manager: BackgroundProcessManager
+    _scheduler: SchedulerThread
     _context_transform_registry: RuntimeContextTransformRegistry
     _before_agent_start_registry: BeforeAgentStartRegistry
     _activated_before_agent_start_registries: dict[CompositionRef, BeforeAgentStartRegistry]
@@ -961,6 +968,7 @@ class VoidCodeRuntime(RuntimeSurface):
                 task_command=TaskCommand(runtime=self, substrate=self._background_task_supervisor).invoke,
                 task_batch_command=TaskBatchCommand(runtime=self, substrate=self._background_task_supervisor).invoke,
                 process_command=BackgroundProcessCommand(runtime=self).invoke,
+                cron_command=CronCommand(runtime=self).invoke,
             ),
         )
         self._resume_coordinator = RuntimeResumeCoordinator(
@@ -1040,6 +1048,14 @@ class VoidCodeRuntime(RuntimeSurface):
             persistence=self._repositories.process_persistence,
             workspace=self._workspace,
         )
+        self._scheduler = SchedulerThread(
+            store=self._scheduler_store,
+            supervisor=self._background_task_supervisor,
+            workspace=self._workspace,
+            start_task_fn=self.start_background_task,
+        )
+        self._background_task_supervisor.register_task_terminal_callback(self._scheduler.on_task_terminal)
+        self._scheduler.start()
 
     @property
     def workspace(self) -> Path:
@@ -1108,6 +1124,7 @@ class VoidCodeRuntime(RuntimeSurface):
         — see the boundary invariant in
         docs/contracts/task-delegation.md.
         """
+        self._scheduler.stop(timeout_seconds=timeout_seconds)
         self._background_task_supervisor.shutdown(timeout_seconds=timeout_seconds)
 
     def tool_catalog_lookup(self, tool_name: str) -> ToolDefinition | None:
@@ -3342,7 +3359,7 @@ class VoidCodeRuntime(RuntimeSurface):
         return self._background_task_supervisor
 
     def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState:
-        validated_request = self._validated_request(request)
+        validated_request = self._validated_request(request, allow_internal_metadata=True)
         composition = self._prepare_execution_composition(self.run_config_for_request(validated_request))
         return self._background_task_supervisor.start_background_task(
             validated_request,
@@ -3571,6 +3588,186 @@ class VoidCodeRuntime(RuntimeSurface):
         resumable breakpoint) and the content must be non-empty.
         """
         return self._background_task_supervisor.steer_background_task(task_id, content)
+
+    @property
+    def scheduler(self) -> SchedulerThread:
+        """The daemon scheduler thread for this runtime."""
+        return self._scheduler
+
+    @property
+    def _scheduler_store(self) -> ScheduledTaskRepository:
+        if self._repositories.scheduled_tasks is not None:
+            return self._repositories.scheduled_tasks
+        if isinstance(self._repositories.tasks, ScheduledTaskRepository):
+            return self._repositories.tasks
+        return SqliteSessionStore()
+
+    def create_schedule(
+        self,
+        *,
+        schedule: str,
+        prompt: str,
+        parent_session_id: str | None = None,
+        enabled: bool = True,
+        expires_at: int | None = None,
+        schedule_id: str | None = None,
+    ) -> ScheduleSummary:
+        """Create a new scheduled task in this runtime workspace.
+
+        Args:
+            schedule: Schedule expression ('every <N><s|m|h|d>', 'at <ISO-8601>',
+                      'cron <min> <hour> <day> <month> <dow>', or 'once').
+            prompt: Prompt to dispatch as background task on each fire.
+            parent_session_id: Optional parent session link.
+            enabled: Initial enabled state (default True).
+            expires_at: Optional explicit expiration epoch. Recurring schedules
+                        default to created + 7d (Claude parity); one-shot schedules
+                        default to None.
+            schedule_id: Optional custom schedule ID (default f"sched-{uuid4().hex}").
+        """
+        expr = parse_schedule(schedule)
+        sched_id = schedule_id or f"sched-{uuid4().hex}"
+        now = int(time.time())
+        next_fire = next_fire_after(expr, now)
+
+        resolved_expires_at = expires_at
+        if resolved_expires_at is None and expr.kind in ("every", "cron"):
+            resolved_expires_at = now + DEFAULT_RECURRING_EXPIRY_SECONDS
+
+        row = self._scheduler_store.create_scheduled_task(
+            workspace=self._workspace,
+            schedule_id=sched_id,
+            schedule_text=schedule,
+            kind=expr.kind,
+            prompt=prompt,
+            next_fire_at=next_fire,
+            interval_seconds=expr.interval_seconds,
+            at_epoch=expr.at_epoch,
+            cron_fields=expr.cron_fields,
+            parent_session_id=parent_session_id,
+            enabled=enabled,
+            created_at=now,
+            expires_at=resolved_expires_at,
+        )
+        return ScheduleSummary(
+            id=row["id"],
+            workspace=row["workspace"],
+            schedule_text=row["schedule_text"],
+            kind=row["kind"],
+            prompt=row["prompt"],
+            parent_session_id=row["parent_session_id"],
+            enabled=bool(row["enabled"]),
+            next_fire_at=row["next_fire_at"],
+            running_task_id=row["running_task_id"],
+            created_at=row["created_at"],
+            expires_at=row["expires_at"],
+            human_schedule=human_schedule(expr),
+            interval_seconds=row["interval_seconds"],
+            at_epoch=row["at_epoch"],
+            cron_fields=row["cron_fields"],
+        )
+
+    def delete_schedule(self, *, schedule_id: str) -> bool:
+        """Delete a scheduled task by ID. Returns True if deleted, False if not found."""
+        return self._scheduler_store.delete_scheduled_task(schedule_id=schedule_id, workspace=self._workspace)
+
+    def list_schedules(self, *, parent_session_id: str | None = None) -> tuple[ScheduleSummary, ...]:
+        """List scheduled tasks in this workspace, optionally filtered by parent session."""
+        rows = self._scheduler_store.list_scheduled_tasks(workspace=self._workspace, parent_session_id=parent_session_id)
+        summaries: list[ScheduleSummary] = []
+        for row in rows:
+            expr = parse_schedule(row["schedule_text"])
+            summaries.append(
+                ScheduleSummary(
+                    id=row["id"],
+                    workspace=row["workspace"],
+                    schedule_text=row["schedule_text"],
+                    kind=row["kind"],
+                    prompt=row["prompt"],
+                    parent_session_id=row["parent_session_id"],
+                    enabled=bool(row["enabled"]),
+                    next_fire_at=row["next_fire_at"],
+                    running_task_id=row["running_task_id"],
+                    created_at=row["created_at"],
+                    expires_at=row["expires_at"],
+                    human_schedule=human_schedule(expr),
+                    interval_seconds=row["interval_seconds"],
+                    at_epoch=row["at_epoch"],
+                    cron_fields=row["cron_fields"],
+                )
+            )
+        return tuple(summaries)
+
+    def get_schedule(self, *, schedule_id: str) -> ScheduleSummary | None:
+        """Get a scheduled task by ID, or None if not found."""
+        row = self._scheduler_store.get_scheduled_task(schedule_id=schedule_id, workspace=self._workspace)
+        if row is None:
+            return None
+        expr = parse_schedule(row["schedule_text"])
+        return ScheduleSummary(
+            id=row["id"],
+            workspace=row["workspace"],
+            schedule_text=row["schedule_text"],
+            kind=row["kind"],
+            prompt=row["prompt"],
+            parent_session_id=row["parent_session_id"],
+            enabled=bool(row["enabled"]),
+            next_fire_at=row["next_fire_at"],
+            running_task_id=row["running_task_id"],
+            created_at=row["created_at"],
+            expires_at=row["expires_at"],
+            human_schedule=human_schedule(expr),
+            interval_seconds=row["interval_seconds"],
+            at_epoch=row["at_epoch"],
+            cron_fields=row["cron_fields"],
+        )
+
+    def fire_schedule(self, *, schedule_id: str) -> BackgroundTaskState | None:
+        """Immediately fire a scheduled task as a background task (reusing tick fire path)."""
+        sched = self.get_schedule(schedule_id=schedule_id)
+        if sched is None:
+            return None
+        request = RuntimeRequest(
+            prompt=sched.prompt,
+            parent_session_id=sched.parent_session_id,
+            metadata={
+                "schedule_id": sched.id,
+                "scheduled_task_id": sched.id,
+            },
+        )
+        state = self.start_background_task(request)
+        task_id = state.task.id
+        self._scheduler_store.record_schedule_running_task_id(schedule_id=sched.id, running_task_id=task_id)
+        return state
+
+    def set_schedule_enabled(self, *, schedule_id: str, enabled: bool) -> bool:
+        """Enable or disable a scheduled task by ID."""
+        sched = self.get_schedule(schedule_id=schedule_id)
+        if sched is None:
+            return False
+        now = int(time.time())
+        next_fire = sched.next_fire_at
+        if enabled and next_fire < now:
+            expr = parse_schedule(sched.schedule_text)
+            next_fire = next_fire_after(expr, now)
+        write_connect = getattr(self._scheduler_store, "_write_connect", None)
+        if callable(write_connect):
+            with write_connect(self._workspace) as connection:
+                cursor = connection.execute(
+                    "UPDATE scheduled_tasks SET enabled = ?, next_fire_at = ? WHERE id = ? AND workspace = ?",
+                    (1 if enabled else 0, next_fire, schedule_id, str(self._workspace)),
+                )
+                connection.commit()
+                return cursor.rowcount > 0
+        return False
+
+    def enable_schedule(self, *, schedule_id: str) -> bool:
+        """Enable a scheduled task by ID."""
+        return self.set_schedule_enabled(schedule_id=schedule_id, enabled=True)
+
+    def disable_schedule(self, *, schedule_id: str) -> bool:
+        """Disable a scheduled task by ID."""
+        return self.set_schedule_enabled(schedule_id=schedule_id, enabled=False)
 
     def session_result(self, *, session_id: str) -> RuntimeSessionResult:
         return self._inspection_coordinator.session_result(session_id=session_id)

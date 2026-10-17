@@ -1627,6 +1627,29 @@ function App() {
         }
         return true;
       }
+      if (command === "/loop") {
+        if (!currentSessionId) {
+          setNativeNotice(t("composer.nativeNoSession"));
+          return true;
+        }
+        const sessionId = currentSessionId;
+        const arg = argument.trim();
+        if (!arg) {
+          setNativeNotice(t("composer.nativeLoopUsage"));
+          return true;
+        }
+        void (async () => {
+          try {
+            const data = await RuntimeClient.loopSession(sessionId, arg);
+            setNativeNotice(data.message);
+          } catch (error) {
+            const message =
+              error instanceof Error ? error.message : "Network error";
+            setNativeNotice(t("composer.nativeCommandError", { message }));
+          }
+        })();
+        return true;
+      }
       if (command === "/rename") {
         if (!currentSessionId) {
           setNativeNotice("The session must start before you can rename it.");
