@@ -3,9 +3,20 @@ import { useTranslation } from "react-i18next";
 import { X } from "lucide-react";
 import { ControlButton } from "./ui";
 
+export interface InfoDialogRow {
+  label: string;
+  value: string;
+  indent?: number;
+  action?: {
+    label: string;
+    disabled?: boolean;
+    onClick: () => void;
+  };
+}
+
 export interface InfoDialogState {
   title: string;
-  rows: Array<{ label: string; value: string; indent?: number }>;
+  rows: InfoDialogRow[];
   hint?: string | null;
 }
 
@@ -66,15 +77,27 @@ export function InfoDialog({ dialog, onClose }: InfoDialogProps) {
             {dialog.rows.map((row, index) => (
               <div
                 key={`${row.label}-${index}`}
-                className="flex gap-3 py-1"
+                className="flex items-center justify-between gap-3 py-1"
                 style={{ paddingLeft: (row.indent ?? 0) * 16 }}
               >
-                <dt className="shrink-0 w-28 text-[var(--vc-text-muted)]">
-                  {row.label}
-                </dt>
-                <dd className="text-[var(--vc-text-primary)] break-words">
-                  {row.value}
-                </dd>
+                <div className="flex gap-3 min-w-0 flex-1">
+                  <dt className="shrink-0 w-28 text-[var(--vc-text-muted)] truncate">
+                    {row.label}
+                  </dt>
+                  <dd className="text-[var(--vc-text-primary)] break-words min-w-0">
+                    {row.value}
+                  </dd>
+                </div>
+                {row.action && (
+                  <ControlButton
+                    compact
+                    variant="secondary"
+                    disabled={row.action.disabled}
+                    onClick={row.action.onClick}
+                  >
+                    {row.action.label}
+                  </ControlButton>
+                )}
               </div>
             ))}
           </dl>

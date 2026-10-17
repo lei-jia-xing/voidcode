@@ -4,7 +4,24 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from voidcode.runtime.contracts import ContextUsageSegment, CopyTarget, SessionContextUsage, SessionExport, SessionStatusPanel
+from voidcode.runtime.contracts import (
+    AgentSessionRow,
+    AgentSummary,
+    AgentTaskRow,
+    ContextUsageSegment,
+    CopyTarget,
+    HookSurfaceProjection,
+    McpServerProjection,
+    SessionAgentsOverview,
+    SessionContextUsage,
+    SessionExport,
+    SessionHooksListing,
+    SessionMcpInventory,
+    SessionSkillsListing,
+    SessionStatusPanel,
+    SessionTokenUsage,
+    SkillProjection,
+)
 from voidcode.tui.app import TuiApp
 from voidcode.tui.keys import Key
 from voidcode.tui.overlay import (
@@ -12,6 +29,8 @@ from voidcode.tui.overlay import (
     ExportPathOverlay,
     ExportPickerOverlay,
     OverlayOutcomeKind,
+    SkillsManageOverlay,
+    SkillsMenuOverlay,
 )
 from voidcode.tui.term import Terminal
 from voidcode.tui.transcript import NoticeBlock
@@ -24,6 +43,11 @@ class _InfoRuntime:
         self.write_calls: list[tuple[str, str]] = []
         self.copy_calls: list[str] = []
         self.context_calls: list[tuple[str, bool]] = []
+        self.mcp_calls: list[tuple[str, bool]] = []
+        self.hooks_calls: list[str] = []
+        self.skills_calls: list[str] = []
+        self.agents_calls: list[str] = []
+        self.usage_calls: list[tuple[str, str]] = []
 
     def current_lsp_state(self) -> SimpleNamespace:
         return SimpleNamespace(mode="disabled", servers={})
@@ -79,6 +103,65 @@ class _InfoRuntime:
             over_budget=False,
             estimated=False,
             segments=(ContextUsageSegment(label="System prompt", tokens=1000, items=()),),
+        )
+
+    def session_mcp_inventory(self, *, session_id: str, verbose: bool = False) -> SessionMcpInventory:
+        self.mcp_calls.append((session_id, verbose))
+        return SessionMcpInventory(
+            session_id=session_id,
+            verbose=verbose,
+            servers=(
+                McpServerProjection(
+                    name="context7",
+                    status="running",
+                    transport="stdio",
+                    auth="stdio",
+                    tool_count=2,
+                    tools=("query-docs", "resolve-id"),
+                    command=("ctx7",) if verbose else None,
+                ),
+            ),
+        )
+
+    def session_hooks_listing(self, *, session_id: str) -> SessionHooksListing:
+        self.hooks_calls.append(session_id)
+        return SessionHooksListing(
+            session_id=session_id,
+            enabled=True,
+            surfaces=(HookSurfaceProjection(surface="session_start", commands=("echo hi",)),),
+        )
+
+    def session_skills_listing(self, *, session_id: str) -> SessionSkillsListing:
+        self.skills_calls.append(session_id)
+        return SessionSkillsListing(
+            session_id=session_id,
+            skills=(SkillProjection(name="review", description="Review code", origin="workspace"),),
+        )
+
+    def set_skill_enabled(self, name: str, enabled: bool, *, scope: str = "workspace") -> bool:
+        return enabled
+
+    def session_agents_overview(self, *, session_id: str) -> SessionAgentsOverview:
+        self.agents_calls.append(session_id)
+        return SessionAgentsOverview(
+            session_id=session_id,
+            current_session_id=session_id,
+            sessions=(AgentSessionRow(session_id=session_id, title="demo", status="completed", turn=2, kind="top_level"),),
+            tasks=(AgentTaskRow(task_id="task-1", status="completed", child_session_id="child-1"),),
+            presets=(AgentSummary(id="default", label="Default"),),
+        )
+
+    def session_token_usage(self, *, session_id: str, scope: str = "session") -> SessionTokenUsage:
+        self.usage_calls.append((session_id, scope))
+        return SessionTokenUsage(
+            session_id=session_id,
+            scope=scope,
+            model="openai/gpt-4o",
+            input_tokens=100,
+            output_tokens=50,
+            cost_usd=0.001,
+            turn_count=2,
+            estimated=False,
         )
 
     def __exit__(self, *_args: object) -> None:
@@ -264,6 +347,107 @@ def test_context_renders_usage_and_all_flag(tmp_path: Path) -> None:
         output.close()
 
 
+def test_mcp_renders_compact_verbose_and_usage_error(tmp_path: Path) -> None:
+    runtime = _InfoRuntime()
+    app, terminal, output = _app(tmp_path, runtime)
+    steered: list[str] = []
+    app._steer = steered.append
+    try:
+        app._session_id = "session-1"
+        app._streaming = True  # no gate: works mid-stream
+        app._submit("/mcp")
+        _drain_until(app, lambda: runtime.mcp_calls != [])
+        app._drain_queue()
+        assert runtime.mcp_calls == [("session-1", False)]
+        notices = [block for block in app._view.transcript().blocks if isinstance(block, NoticeBlock)]
+        assert notices and "context7: running (2 tools)" in notices[-1].text
+        assert "Auth:" not in notices[-1].text
+        assert steered == []
+
+        app._submit("/mcp VERBOSE")
+        _drain_until(app, lambda: len(runtime.mcp_calls) == 2)
+        app._drain_queue()
+        assert runtime.mcp_calls[-1] == ("session-1", True)
+        notices = [block for block in app._view.transcript().blocks if isinstance(block, NoticeBlock)]
+        assert notices and "Auth: stdio" in notices[-1].text
+        assert "query-docs, resolve-id" in notices[-1].text
+
+        app._submit("/mcp bogus")
+        notices = [block for block in app._view.transcript().blocks if isinstance(block, NoticeBlock)]
+        assert notices and "only 'verbose'" in notices[-1].text
+    finally:
+        app._shutdown(terminal)
+        terminal.close()
+        output.close()
+
+
+def test_hooks_skills_agents_render_mid_stream(tmp_path: Path) -> None:
+    runtime = _InfoRuntime()
+    app, terminal, output = _app(tmp_path, runtime)
+    steered: list[str] = []
+    app._steer = steered.append
+    try:
+        app._session_id = "session-1"
+        app._streaming = True  # no gate: works mid-stream
+        app._submit("/hooks")
+        _drain_until(app, lambda: runtime.hooks_calls != [])
+        app._drain_queue()
+        notices = [block for block in app._view.transcript().blocks if isinstance(block, NoticeBlock)]
+        assert notices and "session_start" in notices[-1].text
+        assert "echo hi" in notices[-1].text
+
+        app._submit("/skills")
+        assert isinstance(app._overlay, SkillsMenuOverlay)
+        app._handle_key(Key("enter"))
+        _drain_until(app, lambda: runtime.skills_calls != [])
+        app._drain_queue()
+        notices = [block for block in app._view.transcript().blocks if isinstance(block, NoticeBlock)]
+        assert notices and "review (workspace)" in notices[-1].text
+
+        app._submit("/agents")
+        _drain_until(app, lambda: runtime.agents_calls != [])
+        app._drain_queue()
+        notices = [block for block in app._view.transcript().blocks if isinstance(block, NoticeBlock)]
+        assert notices and "task-1: completed → child-1" in notices[-1].text
+        assert "default: Default" in notices[-1].text
+        assert "(current)" in notices[-1].text
+        assert steered == []
+
+        app._submit("/hooks unexpected")
+        notices = [block for block in app._view.transcript().blocks if isinstance(block, NoticeBlock)]
+        assert notices and "does not accept arguments" in notices[-1].text
+    finally:
+        app._shutdown(terminal)
+        terminal.close()
+        output.close()
+
+
+def test_usage_scopes_and_usage_error(tmp_path: Path) -> None:
+    runtime = _InfoRuntime()
+    app, terminal, output = _app(tmp_path, runtime)
+    steered: list[str] = []
+    app._steer = steered.append
+    try:
+        app._session_id = "session-1"
+        app._streaming = True  # no gate: works mid-stream
+        app._submit("/usage weekly")
+        _drain_until(app, lambda: runtime.usage_calls != [])
+        app._drain_queue()
+        assert runtime.usage_calls == [("session-1", "weekly")]
+        notices = [block for block in app._view.transcript().blocks if isinstance(block, NoticeBlock)]
+        assert notices and "Usage (weekly)" in notices[-1].text
+        assert "Input: 100" in notices[-1].text
+        assert steered == []
+
+        app._submit("/usage bogus")
+        notices = [block for block in app._view.transcript().blocks if isinstance(block, NoticeBlock)]
+        assert notices and "only 'daily', 'weekly', 'cumulative'" in notices[-1].text
+    finally:
+        app._shutdown(terminal)
+        terminal.close()
+        output.close()
+
+
 def test_picker_escape_cancels(tmp_path: Path) -> None:
     assert CopyPickerOverlay(options=(("0", "Whole response"),)).handle_key(Key("escape")).kind is OverlayOutcomeKind.CANCELLED
     assert ExportPickerOverlay().handle_key(Key("escape")).kind is OverlayOutcomeKind.CANCELLED
@@ -284,3 +468,35 @@ def test_osc52_sequence_shape() -> None:
     finally:
         term_module.sys.stdout = old_stdout
     assert buffer.getvalue() == f"\x1b]52;c;{base64.b64encode(b'hi').decode()}\x07"
+
+
+def test_skills_manage_toggle_flow(tmp_path: Path) -> None:
+    runtime = _InfoRuntime()
+    toggled: list[tuple[str, bool]] = []
+    runtime.set_skill_enabled = lambda name, enabled, scope="workspace": toggled.append((name, enabled)) or enabled  # type: ignore[assignment]
+    app, terminal, output = _app(tmp_path, runtime)
+    try:
+        app._session_id = "session-1"
+        app._streaming = True
+        app._submit("/skills")
+        assert isinstance(app._overlay, SkillsMenuOverlay)
+        # move to 'manage' and enter
+        app._handle_key(Key("down"))
+        app._handle_key(Key("enter"))
+        assert isinstance(app._overlay, SkillsManageOverlay)
+        rendered = "\n".join(app._overlay.render(80))
+        assert "Enable/Disable Skills" in rendered
+        assert "[x] review (workspace)" in rendered
+        # space toggles
+        app._handle_key(Key("space"))
+        assert toggled == [("review", False)]
+        rendered = "\n".join(app._overlay.render(80))
+        assert "[ ] review (workspace)" in rendered
+        app._handle_key(Key("escape"))
+        assert app._overlay is None
+        notices = [block for block in app._view.transcript().blocks if isinstance(block, NoticeBlock)]
+        assert notices and "0 skills enabled, 1 skills disabled" in notices[-1].text
+    finally:
+        app._shutdown(terminal)
+        terminal.close()
+        output.close()

@@ -160,3 +160,47 @@ def test_http_resume_busy_gate(tmp_path: Path) -> None:
             session_id="resume-busy-session",
             run_id=run_id,
         )
+
+
+def test_http_agents_overview_and_switch_via_resume(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _seed(workspace, "session-1", title="Primary Session")
+    _seed(workspace, "session-2", title="Secondary Session")
+
+    app = create_runtime_app(workspace=workspace)
+
+    # 1. Inspect overview from session-1
+    res = _run_app(app, method="GET", path="/api/sessions/session-1/info/agents")
+    assert res.status == 200
+    payload = cast(dict[str, object], res.json())
+    assert payload["session_id"] == "session-1"
+    assert payload["current_session_id"] == "session-1"
+    session_rows = cast(list[dict[str, object]], payload["sessions"])
+    session_ids = [r["session_id"] for r in session_rows]
+    assert "session-1" in session_ids
+    assert "session-2" in session_ids
+
+    # 2. Switch to session-2 via existing resume endpoint
+    res_switch = _run_app(app, method="POST", path="/api/sessions/session-2/resume")
+    assert res_switch.status == 200
+    switch_payload = cast(dict[str, object], res_switch.json())
+    assert switch_payload.get("output") == "done"
+
+    # 3. Switching is busy-gated: when target is busy, returns 409
+    run_id = "test-switch-busy"
+    ACTIVE_SESSION_REGISTRY.register(
+        workspace=workspace,
+        session_id="session-2",
+        run_id=run_id,
+        metadata={"running": True},
+    )
+    try:
+        res_busy = _run_app(app, method="POST", path="/api/sessions/session-2/resume")
+        assert res_busy.status == 409
+    finally:
+        ACTIVE_SESSION_REGISTRY.unregister(
+            workspace=workspace,
+            session_id="session-2",
+            run_id=run_id,
+        )

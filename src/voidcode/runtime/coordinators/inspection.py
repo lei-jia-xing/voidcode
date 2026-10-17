@@ -83,13 +83,17 @@ from ..context.continuity import events_after_manual_compaction, replayed_conver
 from ..context.provider import inspect_provider_context
 from ..context.window import RuntimeAssembledContext, provider_usage_anchor_tokens
 from ..contracts import (
+    AgentSessionRow,
     AgentSummary,
+    AgentTaskRow,
     CapabilityStatusSnapshot,
     CommandSummary,
     ContextUsageItem,
     ContextUsageSegment,
     CopyTarget,
     GitStatusSnapshot,
+    HookSurfaceProjection,
+    McpServerProjection,
     ProviderInspectResult,
     ProviderModelMetadata,
     ProviderModelsResult,
@@ -110,10 +114,16 @@ from ..contracts import (
     RuntimeSessionDebugToolSummary,
     RuntimeSessionResult,
     RuntimeStatusSnapshot,
+    SessionAgentsOverview,
     SessionContextUsage,
     SessionEventBatch,
     SessionExport,
+    SessionHooksListing,
+    SessionMcpInventory,
+    SessionSkillsListing,
     SessionStatusPanel,
+    SessionTokenUsage,
+    SkillProjection,
     SkillSummary,
     UnknownSessionError,
     WorkspaceReviewSnapshot,
@@ -584,6 +594,9 @@ class InspectionCoordinator:
         self._provider_auth_resolver = provider_auth_resolver
         self._resolved_provider_config = resolved_provider_config
         self._provider_model = provider_model
+
+    def update_skill_registry(self, skill_registry: SkillRegistry) -> None:
+        self._skill_registry = skill_registry
 
     def current_lsp_state(self) -> LspManagerState:
         return self._lsp_manager.current_state()
@@ -1791,6 +1804,7 @@ class InspectionCoordinator:
                     description=skill.description,
                     origin=skill.origin,
                     source_path=str(skill.entry_path),
+                    enabled=skill.enabled,
                 )
             )
         return tuple(summaries)
@@ -1987,6 +2001,131 @@ class InspectionCoordinator:
         return tuple(
             ContextUsageSegment(label=label, tokens=sum(item.tokens for item in items), items=tuple(items) if expand_items else ())
             for label, items in ranked
+        )
+
+    def session_mcp_inventory(self, *, session_id: str, verbose: bool = False) -> SessionMcpInventory:
+        """``/mcp`` inventory from configured servers + passive tool surface (no connects)."""
+        validate_id(session_id)
+        self._load_session_result(session_id=session_id)
+        mcp_state = self.current_mcp_state()
+        configured = mcp_state.configuration.servers
+        surface = self._mcp_manager.cached_surface(workspace=self._workspace)
+        rows: list[McpServerProjection] = []
+        for name in sorted(configured):
+            server_config = configured[name]
+            runtime_state = mcp_state.servers.get(name)
+            status = (
+                runtime_state.status
+                if runtime_state is not None
+                else "disabled"
+                if mcp_state.mode != "managed" or not mcp_state.configuration.configured_enabled
+                else "stopped"
+            )
+            tools = surface.servers.get(name)
+            names = tuple(sorted(descriptor.tool_name for descriptor in tools)) if tools is not None else None
+            rows.append(
+                McpServerProjection(
+                    name=name,
+                    status=status,
+                    transport=server_config.transport,
+                    auth=server_config.transport,
+                    tool_count=None if names is None else len(names),
+                    tools=names,
+                    command=tuple(server_config.command) if verbose else None,
+                    url=server_config.url if verbose else None,
+                    stage=(None if runtime_state is None else runtime_state.stage) if verbose else None,
+                    error=(None if runtime_state is None else runtime_state.error) if verbose else None,
+                )
+            )
+        return SessionMcpInventory(session_id=session_id, verbose=verbose, servers=tuple(rows))
+
+    def session_hooks_listing(self, *, session_id: str) -> SessionHooksListing:
+        """``/hooks`` listing from the effective hooks config (event → commands)."""
+        validate_id(session_id)
+        self._load_session_result(session_id=session_id)
+        hooks = self._config.hooks
+        if hooks is None:
+            return SessionHooksListing(session_id=session_id, enabled=False, surfaces=())
+        from ...hook.surfaces import HOOK_SURFACE_DESCRIPTORS
+
+        rows: list[HookSurfaceProjection] = []
+        for descriptor in HOOK_SURFACE_DESCRIPTORS:
+            commands = hooks.commands_for_surface(descriptor.surface)
+            match: tuple[str, ...] | None = None
+            if descriptor.surface == "pre_tool":
+                match = hooks.pre_tool_match or None
+            elif descriptor.surface == "post_tool":
+                match = hooks.post_tool_match or None
+            rows.append(
+                HookSurfaceProjection(
+                    surface=descriptor.surface,
+                    commands=tuple(" ".join(argv) for argv in commands),
+                    match=tuple(match) if match else None,
+                )
+            )
+        return SessionHooksListing(session_id=session_id, enabled=hooks.enabled is not False, surfaces=tuple(rows))
+
+    def session_skills_listing(self, *, session_id: str) -> SessionSkillsListing:
+        """``/skills`` list from the skill registry (load-only, no toggle state)."""
+        validate_id(session_id)
+        self._load_session_result(session_id=session_id)
+        return SessionSkillsListing(
+            session_id=session_id,
+            skills=tuple(
+                SkillProjection(
+                    name=skill.name,
+                    description=skill.description,
+                    origin=skill.origin,
+                    source_path=str(skill.entry_path),
+                    enabled=skill.enabled,
+                )
+                for skill in sorted(self._skill_registry.all(), key=lambda item: item.name)
+            ),
+        )
+
+    def session_agents_overview(self, *, session_id: str) -> SessionAgentsOverview:
+        """``/agents`` overview: live sessions + background children + primary presets."""
+        validate_id(session_id)
+        self._load_session_result(session_id=session_id)
+        sessions = tuple(
+            AgentSessionRow(
+                session_id=summary.session.id,
+                title=summary.title,
+                status=summary.status,
+                turn=summary.turn,
+                kind=summary.session.kind,
+            )
+            for summary in self._sessions.list_sessions(workspace=self._workspace)
+        )
+        tasks = tuple(
+            AgentTaskRow(task_id=summary.task.id, status=summary.status, child_session_id=summary.session_id)
+            for summary in self._tasks.list_background_tasks(workspace=self._workspace)
+        )
+        return SessionAgentsOverview(
+            session_id=session_id, current_session_id=session_id, sessions=sessions, tasks=tasks, presets=self.list_agent_summaries()
+        )
+
+    def session_token_usage(self, *, session_id: str, scope: str = "session") -> SessionTokenUsage:
+        """``/usage`` activity from session cumulative metadata (session scope only)."""
+        validate_id(session_id)
+        result = self._load_session_result(session_id=session_id)
+        metadata = result.session.metadata
+        raw_usage = metadata.get("provider_usage")
+        cumulative = raw_usage.get("cumulative") if isinstance(raw_usage, dict) else None
+        cumulative = cumulative if isinstance(cumulative, dict) else {}
+        model, provider = self._model_identity(metadata)
+        turn_count = raw_usage.get("turn_count") if isinstance(raw_usage, dict) else None
+        return SessionTokenUsage(
+            session_id=session_id,
+            scope=scope,
+            model=f"{provider}/{model}" if provider and model else model,
+            input_tokens=_positive_int_or_none(cumulative.get("input_tokens")),
+            output_tokens=_positive_int_or_none(cumulative.get("output_tokens")),
+            cache_read_tokens=_positive_int_or_none(cumulative.get("cache_read_tokens")),
+            cache_write_tokens=_positive_int_or_none(cumulative.get("cache_write_tokens")),
+            cost_usd=_non_negative_float_or_none(cumulative.get("cost_usd")),
+            turn_count=turn_count if isinstance(turn_count, int) and not isinstance(turn_count, bool) else None,
+            estimated=provider_usage_anchor_tokens(metadata) is None,
         )
 
     def status_snapshot(self) -> RuntimeStatusSnapshot:

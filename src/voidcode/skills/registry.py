@@ -36,8 +36,36 @@ class SkillRegistry:
     def all(self) -> tuple[SkillMetadata, ...]:
         return tuple(self.skills.values())
 
-    def resolve(self, skill_name: str) -> SkillMetadata:
+    def enabled_skills(self) -> tuple[SkillMetadata, ...]:
+        return tuple(skill for skill in self.skills.values() if skill.enabled)
+
+    def is_enabled(self, skill_name: str) -> bool:
+        skill = self.skills.get(skill_name)
+        return skill is not None and skill.enabled
+
+    def apply_config_rules(self, rules: Iterable[object]) -> None:
+        from dataclasses import replace
+
+        for rule in rules:
+            name = getattr(rule, "name", None)
+            path = getattr(rule, "path", None)
+            enabled = bool(getattr(rule, "enabled", True))
+            if name and name in self.skills:
+                self.skills[name] = replace(self.skills[name], enabled=enabled)
+            if path:
+                try:
+                    target_path = Path(path).resolve()
+                except Exception:
+                    target_path = Path(path)
+                for skill_name, skill in list(self.skills.items()):
+                    if skill.entry_path.resolve() == target_path or skill.directory.resolve() == target_path:
+                        self.skills[skill_name] = replace(skill, enabled=enabled)
+
+    def resolve(self, skill_name: str, *, allow_disabled: bool = False) -> SkillMetadata:
         try:
-            return self.skills[skill_name]
+            skill = self.skills[skill_name]
         except KeyError as exc:
             raise ValueError(f"unknown skill: {skill_name}") from exc
+        if not allow_disabled and not skill.enabled:
+            raise ValueError(f"skill '{skill_name}' is disabled")
+        return skill

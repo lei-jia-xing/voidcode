@@ -64,13 +64,14 @@ from ..provider.models import (
 )
 from ..provider.naming import split_provider_model_reference
 from ..provider.protocol import ModelTurnProvider, ProviderAbortSignal, ProviderTurnRequest, ProviderTurnResult
+from ..provider.reasoning_effort import normalize_reasoning_effort
 from ..provider.registry import ModelProviderRegistry, materialize_builtin_provider
 from ..provider.resolution import resolve_provider_config
 from ..provider.snapshot import (
     parse_resolved_provider_snapshot,
     resolved_provider_snapshot,
 )
-from ..skills import SkillRegistry
+from ..skills import SkillMetadata, SkillRegistry
 from ..tools.contracts import (
     Tool,
     ToolCall,
@@ -330,6 +331,7 @@ from .session_metadata_helpers import (
     runtime_state_metadata_payload,
     runtime_state_pending_tool_intent,
     session_metadata_with_runtime_state_updates,
+    session_model_identity,
     session_with_context_compacted_state,
     session_with_context_window_payload_metadata,
     session_with_current_acp_metadata,
@@ -843,6 +845,7 @@ class VoidCodeRuntime(RuntimeSurface):
             self._config.mcp,
             tool_catalog_cache=McpToolCatalogCache(path=mcp_tool_catalog_cache_path()),
         )
+        self._skill_lock = threading.Lock()
         self._skill_registry_is_injected = skill_registry is not None
         self._skill_registry = skill_registry or StreamPrepCoordinator.build_skill_registry_for_workspace(self._workspace, self._config.skills)
         base_registry = tool_registry or self._build_base_tool_registry()
@@ -951,7 +954,7 @@ class VoidCodeRuntime(RuntimeSurface):
                 read_artifact=self.read_tool_output_artifact,
                 read_transcript=self.read_tool_transcript,
                 read_rule=read_rule_uri,
-                resolve_skill=self._skill_registry.resolve,
+                resolve_skill=self._resolve_skill,
                 lsp_request=self.request_lsp,
                 lsp_document_state=self._lsp_manager.document_state,
                 mcp_request=self.request_mcp_tool,
@@ -3033,7 +3036,7 @@ class VoidCodeRuntime(RuntimeSurface):
         permission = resolve_permission(
             tool,
             tool_call,
-            policy=permission_policy,
+            policy=self._permission_policy if self._permission_policy is not None else permission_policy,
             path_scope=path_scope,
             operation_class=operation_class,
             canonical_path=canonical_path,
@@ -3763,6 +3766,40 @@ class VoidCodeRuntime(RuntimeSurface):
     def list_skill_summaries(self) -> tuple[SkillSummary, ...]:
         return self._inspection_coordinator.list_skill_summaries()
 
+    def _resolve_skill(self, name: str) -> SkillMetadata:
+        with self._skill_lock:
+            return self._skill_registry.resolve(name)
+
+    def set_skill_enabled(
+        self,
+        *,
+        name: str,
+        enabled: bool,
+        scope: Literal["workspace", "user"] = "workspace",
+    ) -> bool:
+        if not name or not isinstance(name, str):
+            raise ValueError("skill name must be a non-empty string")
+        from .config.loading import load_runtime_config, save_skill_enablement_config
+
+        save_skill_enablement_config(name.strip(), enabled, workspace=self._workspace, scope=scope)
+        refreshed_config = load_runtime_config(self._workspace)
+        if not self._skill_registry_is_injected:
+            new_registry = self._stream_prep_coordinator.build_skill_registry(refreshed_config.skills)
+            with self._skill_lock:
+                self._config = refreshed_config
+                self._skill_registry = new_registry
+                self._inspection_coordinator.update_skill_registry(new_registry)
+        else:
+            with self._skill_lock:
+                self._config = refreshed_config
+                if self._config.skills and self._config.skills.config:
+                    self._skill_registry.apply_config_rules(self._config.skills.config)
+                elif name in self._skill_registry.skills:
+                    from dataclasses import replace
+
+                    self._skill_registry.skills[name] = replace(self._skill_registry.skills[name], enabled=enabled)
+        return enabled
+
     def list_command_summaries(self) -> tuple[CommandSummary, ...]:
         return self._inspection_coordinator.list_command_summaries()
 
@@ -4110,6 +4147,26 @@ class VoidCodeRuntime(RuntimeSurface):
         """``/context`` usage from the real assembly projection; safe mid-stream (no gate)."""
         return self._inspection_coordinator.session_context_usage(session_id=session_id, expand_items=expand_items)
 
+    def session_mcp_inventory(self, *, session_id: str, verbose: bool = False):
+        """``/mcp`` inventory; read-only projection, safe mid-stream (no gate)."""
+        return self._inspection_coordinator.session_mcp_inventory(session_id=session_id, verbose=verbose)
+
+    def session_hooks_listing(self, *, session_id: str):
+        """``/hooks`` listing; read-only projection, safe mid-stream (no gate)."""
+        return self._inspection_coordinator.session_hooks_listing(session_id=session_id)
+
+    def session_skills_listing(self, *, session_id: str):
+        """``/skills`` listing; read-only projection, safe mid-stream (no gate)."""
+        return self._inspection_coordinator.session_skills_listing(session_id=session_id)
+
+    def session_agents_overview(self, *, session_id: str):
+        """``/agents`` overview; read-only projection, safe mid-stream (no gate)."""
+        return self._inspection_coordinator.session_agents_overview(session_id=session_id)
+
+    def session_token_usage(self, *, session_id: str, scope: str = "session"):
+        """``/usage`` activity; read-only projection, safe mid-stream (no gate)."""
+        return self._inspection_coordinator.session_token_usage(session_id=session_id, scope=scope)
+
     def run_user_shell(self, *, session_id: str | None, command: str, timeout_seconds: int | None = None) -> dict[str, object]:
         """Execute a native ``!`` shell command and record it in session history.
 
@@ -4351,6 +4408,251 @@ class VoidCodeRuntime(RuntimeSurface):
             "collaboration_mode": valid_mode,
             "previous_mode": previous_mode,
             "event_sequence": event.sequence,
+        }
+
+    def session_model(self, *, session_id: str) -> dict[str, object]:
+        """Return the current model and reasoning effort for a session."""
+        validate_id(session_id)
+        response = self._repositories.sessions.load_session(workspace=self._workspace, session_id=session_id)
+        model, provider = session_model_identity(response.session.metadata)
+        runtime_config = response.session.metadata.get("runtime_config")
+        effort = None
+        if isinstance(runtime_config, Mapping):
+            raw_effort = runtime_config.get("reasoning_effort")
+            if isinstance(raw_effort, str):
+                effort = raw_effort
+        if effort is None:
+            effort = self._config.reasoning_effort
+        return {
+            "session_id": session_id,
+            "model": model or self._config.model or "default",
+            "provider": provider,
+            "reasoning_effort": effort,
+        }
+
+    def set_session_model(
+        self,
+        *,
+        session_id: str,
+        model: str,
+        reasoning_effort: str | None = None,
+    ) -> dict[str, object]:
+        """Switch session model (+ reasoning effort) immediately. Safe mid-stream."""
+        validate_id(session_id)
+        if not model or not model.strip():
+            raise ValueError("model must be a non-empty string")
+        model = model.strip()
+        if reasoning_effort is not None:
+            reasoning_effort = normalize_reasoning_effort(reasoning_effort)
+
+        response = self._repositories.sessions.load_session(workspace=self._workspace, session_id=session_id)
+        metadata = dict(response.session.metadata)
+        raw_rc = metadata.get("runtime_config")
+        runtime_config: dict[str, object] = dict(raw_rc) if isinstance(raw_rc, Mapping) else {}
+        runtime_config["model"] = model
+        if reasoning_effort is not None:
+            runtime_config["reasoning_effort"] = reasoning_effort
+        elif "reasoning_effort" in runtime_config:
+            reasoning_effort = cast(str, runtime_config["reasoning_effort"])
+        metadata["runtime_config"] = runtime_config
+        self._repositories.sessions.update_session_metadata(
+            workspace=self._workspace,
+            session_id=session_id,
+            metadata=metadata,
+        )
+        return {
+            "session_id": session_id,
+            "model": model,
+            "reasoning_effort": reasoning_effort,
+        }
+
+    def list_available_models(self) -> tuple[dict[str, object], ...]:
+        """List available models across configured providers from catalog query."""
+        results: list[dict[str, object]] = []
+        try:
+            summaries = self.list_provider_summaries()
+            for summary in summaries:
+                provider_name = summary.name
+                models_res = self.provider_models_result(provider_name)
+                for model_name in models_res.models:
+                    meta = models_res.model_metadata.get(model_name)
+                    desc = f"{provider_name} model"
+                    efforts = list(meta.supported_effort_levels) if meta and meta.supported_effort_levels else []
+                    default_effort = meta.default_reasoning_effort if meta else None
+                    supports_reasoning = meta.supports_reasoning if meta else None
+                    supports_reasoning_effort = meta.supports_reasoning_effort if meta else None
+                    results.append(
+                        {
+                            "model": f"{provider_name}/{model_name}",
+                            "raw_model": model_name,
+                            "provider": provider_name,
+                            "description": desc,
+                            "supports_reasoning": supports_reasoning,
+                            "supports_reasoning_effort": supports_reasoning_effort,
+                            "default_reasoning_effort": default_effort,
+                            "supported_effort_levels": efforts,
+                        }
+                    )
+        except Exception:
+            pass
+        return tuple(results)
+
+    def session_permissions(self, *, session_id: str) -> dict[str, object]:
+        """Return the current permission mode and approval policy for a session."""
+        validate_id(session_id)
+        response = self._repositories.sessions.load_session(workspace=self._workspace, session_id=session_id)
+        runtime_config = response.session.metadata.get("runtime_config")
+        mode = None
+        if isinstance(runtime_config, Mapping):
+            raw_mode = runtime_config.get("approval_mode")
+            if isinstance(raw_mode, str):
+                mode = raw_mode
+        if mode is None:
+            mode = self._permission_policy.mode
+        read_only = runtime_effective_read_only_from_metadata(response.session.metadata)
+        preset = "read-only" if mode == "ask" else ("auto" if mode == "write" else "full-access")
+        return {
+            "session_id": session_id,
+            "approval_mode": mode,
+            "preset": preset,
+            "read_only": read_only,
+        }
+
+    def set_session_permissions(self, *, session_id: str, mode: str) -> dict[str, object]:
+        """Set approval mode/permissions preset immediately. Safe mid-stream."""
+        validate_id(session_id)
+        normalized = mode.strip().lower()
+        preset_map = {
+            "read-only": "ask",
+            "readonly": "ask",
+            "ask": "ask",
+            "auto": "write",
+            "default": "write",
+            "write": "write",
+            "full-access": "yolo",
+            "full_access": "yolo",
+            "full": "yolo",
+            "yolo": "yolo",
+        }
+        if normalized not in preset_map:
+            raise ValueError(f"invalid permissions mode or preset: {mode!r}; expected one of: read-only, auto, full-access, ask, write, yolo")
+        target_mode = preset_map[normalized]
+        preset_id = "read-only" if target_mode == "ask" else ("auto" if target_mode == "write" else "full-access")
+
+        self._permission_policy = replace(self._permission_policy, mode=target_mode)
+        if hasattr(self, "_run_loop_coordinator") and self._run_loop_coordinator is not None:
+            self._run_loop_coordinator._permission_policy = self._permission_policy
+
+        response = self._repositories.sessions.load_session(workspace=self._workspace, session_id=session_id)
+        metadata = dict(response.session.metadata)
+        raw_rc = metadata.get("runtime_config")
+        runtime_config: dict[str, object] = dict(raw_rc) if isinstance(raw_rc, Mapping) else {}
+        runtime_config["approval_mode"] = target_mode
+        metadata["runtime_config"] = runtime_config
+        self._repositories.sessions.update_session_metadata(
+            workspace=self._workspace,
+            session_id=session_id,
+            metadata=metadata,
+        )
+        return {
+            "session_id": session_id,
+            "approval_mode": target_mode,
+            "preset": preset_id,
+        }
+
+    def list_pending_approvals(self, *, session_id: str) -> tuple[dict[str, object], ...]:
+        """List pending approval requests waiting for user decision."""
+        validate_id(session_id)
+        approvals: list[dict[str, object]] = []
+        pending = self._repositories.recovery.load_pending_approval(
+            workspace=self._workspace,
+            session_id=session_id,
+        )
+        if pending is not None:
+            approvals.append(
+                {
+                    "request_id": pending.request_id,
+                    "tool_name": pending.tool_name,
+                    "arguments": pending.arguments,
+                    "target_summary": pending.target_summary,
+                    "reason": pending.reason,
+                    "policy_mode": pending.policy_mode,
+                    "session_id": session_id,
+                }
+            )
+        try:
+            tasks = self.list_background_tasks_by_parent_session(parent_session_id=session_id)
+            for task in tasks:
+                child_session_id = task.session_id
+                if child_session_id:
+                    child_pending = self._repositories.recovery.load_pending_approval(
+                        workspace=self._workspace,
+                        session_id=child_session_id,
+                    )
+                    if child_pending is not None:
+                        approvals.append(
+                            {
+                                "request_id": child_pending.request_id,
+                                "tool_name": child_pending.tool_name,
+                                "arguments": child_pending.arguments,
+                                "target_summary": child_pending.target_summary,
+                                "reason": child_pending.reason,
+                                "policy_mode": child_pending.policy_mode,
+                                "session_id": child_session_id,
+                            }
+                        )
+        except Exception:
+            pass
+        return tuple(approvals)
+
+    def approve_pending_action(self, *, session_id: str, request_id: str | None = None) -> dict[str, object]:
+        """Approve one pending or auto-denied action retry.
+
+        Empty queue -> returns approved=False.
+        Non-approvable entries ignored with warning.
+        """
+        validate_id(session_id)
+        approvals = self.list_pending_approvals(session_id=session_id)
+        if not approvals:
+            return {
+                "approved": False,
+                "reason": "no_pending_approvals",
+                "message": "No pending approvals in this session.",
+            }
+
+        target = None
+        if request_id is not None and request_id.strip():
+            req_id = request_id.strip()
+            for app in approvals:
+                if app["request_id"] == req_id:
+                    target = app
+                    break
+            if target is None:
+                return {
+                    "approved": False,
+                    "reason": "not_found",
+                    "message": f"Approval request '{req_id}' not found or non-approvable.",
+                }
+        else:
+            target = approvals[0]
+
+        target_request_id = cast(str, target["request_id"])
+        target_session_id = cast(str, target["session_id"])
+        tool_name = cast(str, target.get("tool_name", "action"))
+        target_summary = cast(str, target.get("target_summary", ""))
+
+        try:
+            self._claim_pending_approval(session_id=target_session_id, approval_request_id=target_request_id)
+        except Exception:
+            pass
+
+        return {
+            "approved": True,
+            "session_id": target_session_id,
+            "request_id": target_request_id,
+            "tool_name": tool_name,
+            "target_summary": target_summary,
+            "message": f"Approved {tool_name}",
         }
 
     def get_goal(self, *, session_id: str) -> dict[str, object] | None:
@@ -5661,7 +5963,7 @@ class VoidCodeRuntime(RuntimeSurface):
             return ()
         deduped_force_load_skill_names: list[str] = []
         for skill_name in force_load_skill_names:
-            if skill_name not in deduped_force_load_skill_names:
+            if skill_name not in deduped_force_load_skill_names and skill_registry.is_enabled(skill_name):
                 deduped_force_load_skill_names.append(skill_name)
         return build_runtime_contexts(
             skill_registry,
@@ -5713,6 +6015,8 @@ class VoidCodeRuntime(RuntimeSurface):
             selected_skill_names,
             force_load_skill_names,
         )
+        if effective_selected_skill_names is not None:
+            effective_selected_skill_names = tuple(name for name in effective_selected_skill_names if skill_registry.is_enabled(name))
         return build_skill_execution_snapshot(
             contexts,
             source=source,

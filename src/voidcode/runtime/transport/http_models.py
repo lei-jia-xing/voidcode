@@ -39,7 +39,7 @@ from __future__ import annotations
 
 from typing import Literal, Self, final
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..background.models import BackgroundTaskStatus
 from ..background.routing import SubagentExecutionMode
@@ -337,6 +337,150 @@ class SessionContextUsageBody(ResponseModel):
     over_budget: bool
     estimated: bool
     segments: list[ContextUsageSegmentBody]
+
+
+@final
+class McpServerProjectionBody(ResponseModel):
+    """One configured MCP server of native ``/mcp``."""
+
+    name: str
+    status: str
+    transport: str | None = None
+    auth: str | None = None
+    tool_count: int | None = None
+    tools: list[str] | None = None
+    command: list[str] | None = None
+    url: str | None = None
+    stage: str | None = None
+    error: str | None = None
+
+
+@final
+class SessionMcpInventoryBody(ResponseModel):
+    """Native ``/mcp`` inventory: configured servers and passive tool surface."""
+
+    session_id: str
+    verbose: bool
+    servers: list[McpServerProjectionBody]
+
+
+@final
+class HookSurfaceProjectionBody(ResponseModel):
+    """One lifecycle-hook surface of native ``/hooks``."""
+
+    surface: str
+    commands: list[str]
+    match: list[str] | None = None
+
+
+@final
+class SessionHooksListingBody(ResponseModel):
+    """Native ``/hooks`` listing: event → commands from the effective config."""
+
+    session_id: str
+    enabled: bool
+    surfaces: list[HookSurfaceProjectionBody]
+
+
+@final
+class SkillProjectionBody(ResponseModel):
+    """One skill of native ``/skills``."""
+
+    name: str
+    description: str
+    origin: str
+    source_path: str | None = None
+    enabled: bool = True
+
+
+@final
+class SessionSkillsListingBody(ResponseModel):
+    """Native ``/skills`` listing from the skill registry."""
+
+    session_id: str
+    skills: list[SkillProjectionBody]
+
+
+@final
+class AgentSessionRowBody(ResponseModel):
+    """One live agent session of native ``/agents``."""
+
+    session_id: str
+    title: str | None = None
+    status: str
+    turn: int
+    kind: str
+
+
+@final
+class AgentTaskRowBody(ResponseModel):
+    """One background child of native ``/agents``."""
+
+    task_id: str
+    status: str
+    child_session_id: str | None = None
+
+
+@final
+class SessionTokenUsageBody(ResponseModel):
+    """Native ``/usage`` activity from session cumulative metadata."""
+
+    session_id: str
+    scope: str
+    model: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    cost_usd: float | None = None
+    turn_count: int | None = None
+    estimated: bool
+
+
+@final
+class SessionModelBody(ResponseModel):
+    """Session active model and reasoning effort."""
+
+    session_id: str
+    model: str
+    reasoning_effort: str | None = None
+    provider: str | None = None
+
+
+@final
+class SessionPermissionsBody(ResponseModel):
+    """Session permissions and approval mode."""
+
+    session_id: str
+    approval_mode: str
+    preset: str
+    read_only: bool | None = None
+
+
+@final
+class PendingApprovalItemBody(ResponseModel):
+    """One pending approval item waiting in the session queue."""
+
+    request_id: str
+    tool_name: str
+    arguments: dict[str, object]
+    target_summary: str
+    reason: str
+    policy_mode: str
+    session_id: str
+
+
+@final
+class ApproveActionResultBody(ResponseModel):
+    """Result of approving a pending or denied action."""
+
+    approved: bool
+    session_id: str | None = None
+    request_id: str | None = None
+    tool_name: str | None = None
+    target_summary: str | None = None
+    reason: str | None = None
+    message: str | None = None
 
 
 @final
@@ -1085,6 +1229,26 @@ class SkillSummaryBody(ResponseModel):
     description: str
     origin: str
     source_path: str | None = None
+    enabled: bool = True
+
+
+@final
+class SkillToggleRequestBody(BaseModel):
+    """Payload to enable or disable a skill."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    enabled: bool
+    scope: Literal["workspace", "user"] = "workspace"
+
+
+@final
+class SkillToggleResponseBody(ResponseModel):
+    """Result of toggling skill enablement."""
+
+    name: str
+    enabled: bool
 
 
 @final
@@ -1100,6 +1264,17 @@ class CommandSummaryBody(ResponseModel):
     model: str | None = None
     subtask: bool
     path: str | None = None
+
+
+@final
+class SessionAgentsOverviewBody(ResponseModel):
+    """Native ``/agents`` overview: sessions + background children + presets."""
+
+    session_id: str
+    current_session_id: str | None = None
+    sessions: list[AgentSessionRowBody]
+    tasks: list[AgentTaskRowBody]
+    presets: list[AgentSummaryBody]
 
 
 # --------------------------------------------------------------------------- status

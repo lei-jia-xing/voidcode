@@ -89,6 +89,16 @@ export type SessionExportWrite = Schemas["SessionExportWriteBody"];
 export type SessionCopyTargets = Schemas["SessionCopyTargetsBody"];
 /** Native `/context` usage from `GET /api/sessions/{id}/info/context`. */
 export type SessionContextUsage = Schemas["SessionContextUsageBody"];
+/** Native `/mcp` inventory from `GET /api/sessions/{id}/info/mcp`. */
+export type SessionMcpInventory = Schemas["SessionMcpInventoryBody"];
+/** Native `/hooks` listing from `GET /api/sessions/{id}/info/hooks`. */
+export type SessionHooksListing = Schemas["SessionHooksListingBody"];
+/** Native `/skills` listing from `GET /api/sessions/{id}/info/skills`. */
+export type SessionSkillsListing = Schemas["SessionSkillsListingBody"];
+/** Native `/agents` overview from `GET /api/sessions/{id}/info/agents`. */
+export type SessionAgentsOverview = Schemas["SessionAgentsOverviewBody"];
+/** Native `/usage` activity from `GET /api/sessions/{id}/info/usage`. */
+export type SessionTokenUsage = Schemas["SessionTokenUsageBody"];
 export type RuntimeInterruptResult = Schemas["SessionCancelBody"];
 export type RuntimeResponse = Schemas["RuntimeResponseBody"];
 export interface CollaborationModeResult {

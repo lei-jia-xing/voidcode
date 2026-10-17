@@ -1815,6 +1815,27 @@
       },
       "type": "object"
     },
+    "skillConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "skillsConfig": {
       "additionalProperties": false,
       "properties": {
@@ -1827,6 +1848,15 @@
         "paths": {
           "items": {
             "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "config": {
+          "items": {
+            "$ref": "#/$defs/skillConfig"
           },
           "type": [
             "array",

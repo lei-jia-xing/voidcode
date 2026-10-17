@@ -425,9 +425,10 @@ class _SessionStorageMixin(_MixinBase):
             except Exception:
                 checkpoint_state = {}
 
-        stored_ref = _SessionStorageMixin._session_composition_ref(stored_metadata)
-        if _SessionStorageMixin._session_composition_ref(metadata) != stored_ref:
-            raise ValueError("session composition reference is immutable")
+        if "composition_ref" in stored_metadata or "composition_ref" in metadata:
+            stored_ref = _SessionStorageMixin._session_composition_ref(stored_metadata)
+            if _SessionStorageMixin._session_composition_ref(metadata) != stored_ref:
+                raise ValueError("session composition reference is immutable")
         merged = dict(metadata)
         for key in ("pending_messages", "runtime_interaction_delivery_cursor"):
             if key in stored_metadata:

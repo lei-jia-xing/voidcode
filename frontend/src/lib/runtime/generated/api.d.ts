@@ -278,6 +278,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Approve a pending action or auto-review denial */
+        post: operations["_handle_approve_action_api_sessions__session_id__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions/{session_id}/btw": {
         parameters: {
             query?: never;
@@ -467,6 +484,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/info/agents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a session's native /agents overview */
+        get: operations["_handle_session_agents_overview_api_sessions__session_id__info_agents_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions/{session_id}/info/context": {
         parameters: {
             query?: never;
@@ -519,6 +553,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/info/hooks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a session's native /hooks listing */
+        get: operations["_handle_session_hooks_listing_api_sessions__session_id__info_hooks_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/info/mcp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a session's native /mcp inventory */
+        get: operations["_handle_session_mcp_inventory_api_sessions__session_id__info_mcp_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/info/skills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a session's native /skills listing */
+        get: operations["_handle_session_skills_listing_api_sessions__session_id__info_skills_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions/{session_id}/info/status": {
         parameters: {
             query?: never;
@@ -530,6 +615,76 @@ export interface paths {
         get: operations["_handle_session_status_panel_api_sessions__session_id__info_status_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/info/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a session's native /usage activity */
+        get: operations["_handle_session_token_usage_api_sessions__session_id__info_usage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/model": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get session model and reasoning effort */
+        get: operations["_handle_get_session_model_api_sessions__session_id__model_get"];
+        put?: never;
+        /** Switch session model and reasoning effort */
+        post: operations["_handle_set_session_model_api_sessions__session_id__model_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/pending-approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List pending approval requests for a session */
+        get: operations["_handle_list_pending_approvals_api_sessions__session_id__pending_approvals_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/permissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get session permissions mode */
+        get: operations["_handle_get_session_permissions_api_sessions__session_id__permissions_get"];
+        put?: never;
+        /** Set session permissions mode */
+        post: operations["_handle_set_session_permissions_api_sessions__session_id__permissions_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -701,6 +856,23 @@ export interface paths {
         get: operations["_handle_list_skills_api_skills_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/skills/toggle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Enable or disable a skill */
+        post: operations["_handle_toggle_skill_api_skills_toggle_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -883,6 +1055,22 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * AgentSessionRowBody
+         * @description One live agent session of native ``/agents``.
+         */
+        AgentSessionRowBody: {
+            /** Kind */
+            kind: string;
+            /** Session Id */
+            session_id: string;
+            /** Status */
+            status: string;
+            /** Title */
+            title?: string | null;
+            /** Turn */
+            turn: number;
+        };
+        /**
          * AgentSummaryBody
          * @description ``_serialize_agent_summary``: one selectable agent.
          *
@@ -916,6 +1104,38 @@ export interface components {
             source_path?: string | null;
             /** Source Scope */
             source_scope?: string | null;
+        };
+        /**
+         * AgentTaskRowBody
+         * @description One background child of native ``/agents``.
+         */
+        AgentTaskRowBody: {
+            /** Child Session Id */
+            child_session_id?: string | null;
+            /** Status */
+            status: string;
+            /** Task Id */
+            task_id: string;
+        };
+        /**
+         * ApproveActionResultBody
+         * @description Result of approving a pending or denied action.
+         */
+        ApproveActionResultBody: {
+            /** Approved */
+            approved: boolean;
+            /** Message */
+            message?: string | null;
+            /** Reason */
+            reason?: string | null;
+            /** Request Id */
+            request_id?: string | null;
+            /** Session Id */
+            session_id?: string | null;
+            /** Target Summary */
+            target_summary?: string | null;
+            /** Tool Name */
+            tool_name?: string | null;
         };
         /**
          * BackgroundTaskOutputBody
@@ -1359,6 +1579,66 @@ export interface components {
             refs: string[];
             /** Source */
             source: string;
+        };
+        /**
+         * HookSurfaceProjectionBody
+         * @description One lifecycle-hook surface of native ``/hooks``.
+         */
+        HookSurfaceProjectionBody: {
+            /** Commands */
+            commands: string[];
+            /** Match */
+            match?: string[] | null;
+            /** Surface */
+            surface: string;
+        };
+        /**
+         * McpServerProjectionBody
+         * @description One configured MCP server of native ``/mcp``.
+         */
+        McpServerProjectionBody: {
+            /** Auth */
+            auth?: string | null;
+            /** Command */
+            command?: string[] | null;
+            /** Error */
+            error?: string | null;
+            /** Name */
+            name: string;
+            /** Stage */
+            stage?: string | null;
+            /** Status */
+            status: string;
+            /** Tool Count */
+            tool_count?: number | null;
+            /** Tools */
+            tools?: string[] | null;
+            /** Transport */
+            transport?: string | null;
+            /** Url */
+            url?: string | null;
+        };
+        /**
+         * PendingApprovalItemBody
+         * @description One pending approval item waiting in the session queue.
+         */
+        PendingApprovalItemBody: {
+            /** Arguments */
+            arguments: {
+                [key: string]: unknown;
+            };
+            /** Policy Mode */
+            policy_mode: string;
+            /** Reason */
+            reason: string;
+            /** Request Id */
+            request_id: string;
+            /** Session Id */
+            session_id: string;
+            /** Target Summary */
+            target_summary: string;
+            /** Tool Name */
+            tool_name: string;
         };
         /** @enum {string} */
         PermissionResolution: "allow" | "deny";
@@ -1960,6 +2240,22 @@ export interface components {
             valid: boolean;
         };
         /**
+         * SessionAgentsOverviewBody
+         * @description Native ``/agents`` overview: sessions + background children + presets.
+         */
+        SessionAgentsOverviewBody: {
+            /** Current Session Id */
+            current_session_id?: string | null;
+            /** Presets */
+            presets: components["schemas"]["AgentSummaryBody"][];
+            /** Session Id */
+            session_id: string;
+            /** Sessions */
+            sessions: components["schemas"]["AgentSessionRowBody"][];
+            /** Tasks */
+            tasks: components["schemas"]["AgentTaskRowBody"][];
+        };
+        /**
          * SessionCancelBody
          * @description ``ActiveRunInterruptResult.as_payload``: the outcome of a run cancellation.
          *
@@ -2233,6 +2529,58 @@ export interface components {
             session_id: string;
         };
         /**
+         * SessionHooksListingBody
+         * @description Native ``/hooks`` listing: event → commands from the effective config.
+         */
+        SessionHooksListingBody: {
+            /** Enabled */
+            enabled: boolean;
+            /** Session Id */
+            session_id: string;
+            /** Surfaces */
+            surfaces: components["schemas"]["HookSurfaceProjectionBody"][];
+        };
+        /**
+         * SessionMcpInventoryBody
+         * @description Native ``/mcp`` inventory: configured servers and passive tool surface.
+         */
+        SessionMcpInventoryBody: {
+            /** Servers */
+            servers: components["schemas"]["McpServerProjectionBody"][];
+            /** Session Id */
+            session_id: string;
+            /** Verbose */
+            verbose: boolean;
+        };
+        /**
+         * SessionModelBody
+         * @description Session active model and reasoning effort.
+         */
+        SessionModelBody: {
+            /** Model */
+            model: string;
+            /** Provider */
+            provider?: string | null;
+            /** Reasoning Effort */
+            reasoning_effort?: string | null;
+            /** Session Id */
+            session_id: string;
+        };
+        /**
+         * SessionPermissionsBody
+         * @description Session permissions and approval mode.
+         */
+        SessionPermissionsBody: {
+            /** Approval Mode */
+            approval_mode: string;
+            /** Preset */
+            preset: string;
+            /** Read Only */
+            read_only?: boolean | null;
+            /** Session Id */
+            session_id: string;
+        };
+        /**
          * SessionRefBody
          * @description ``_serialize_session_ref``: a session identity, child lineage included.
          */
@@ -2264,6 +2612,16 @@ export interface components {
             title?: string | null;
             /** Transcript */
             transcript: components["schemas"]["EventBody"][];
+        };
+        /**
+         * SessionSkillsListingBody
+         * @description Native ``/skills`` listing from the skill registry.
+         */
+        SessionSkillsListingBody: {
+            /** Session Id */
+            session_id: string;
+            /** Skills */
+            skills: components["schemas"]["SkillProjectionBody"][];
         };
         /**
          * SessionStateBody
@@ -2369,6 +2727,32 @@ export interface components {
             updated_at: number;
         };
         /**
+         * SessionTokenUsageBody
+         * @description Native ``/usage`` activity from session cumulative metadata.
+         */
+        SessionTokenUsageBody: {
+            /** Cache Read Tokens */
+            cache_read_tokens?: number | null;
+            /** Cache Write Tokens */
+            cache_write_tokens?: number | null;
+            /** Cost Usd */
+            cost_usd?: number | null;
+            /** Estimated */
+            estimated: boolean;
+            /** Input Tokens */
+            input_tokens?: number | null;
+            /** Model */
+            model?: string | null;
+            /** Output Tokens */
+            output_tokens?: number | null;
+            /** Scope */
+            scope: string;
+            /** Session Id */
+            session_id: string;
+            /** Turn Count */
+            turn_count?: number | null;
+        };
+        /**
          * SideQuestionResultBody
          * @description Result of the native ``/btw`` side question (no history written).
          */
@@ -2381,18 +2765,68 @@ export interface components {
             session_id: string;
         };
         /**
-         * SkillSummaryBody
-         * @description ``_serialize_skill_summary``: one catalog-visible skill.
+         * SkillProjectionBody
+         * @description One skill of native ``/skills``.
          */
-        SkillSummaryBody: {
+        SkillProjectionBody: {
             /** Description */
             description: string;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
             /** Name */
             name: string;
             /** Origin */
             origin: string;
             /** Source Path */
             source_path?: string | null;
+        };
+        /**
+         * SkillSummaryBody
+         * @description ``_serialize_skill_summary``: one catalog-visible skill.
+         */
+        SkillSummaryBody: {
+            /** Description */
+            description: string;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Name */
+            name: string;
+            /** Origin */
+            origin: string;
+            /** Source Path */
+            source_path?: string | null;
+        };
+        /**
+         * SkillToggleRequestBody
+         * @description Payload to enable or disable a skill.
+         */
+        SkillToggleRequestBody: {
+            /** Enabled */
+            enabled: boolean;
+            /** Name */
+            name: string;
+            /**
+             * Scope
+             * @default workspace
+             * @enum {string}
+             */
+            scope: "workspace" | "user";
+        };
+        /**
+         * SkillToggleResponseBody
+         * @description Result of toggling skill enablement.
+         */
+        SkillToggleResponseBody: {
+            /** Enabled */
+            enabled: boolean;
+            /** Name */
+            name: string;
         };
         /** @enum {string} */
         SubagentExecutionMode: "sync" | "background";
@@ -2580,6 +3014,11 @@ export interface components {
             /** Request Id */
             request_id?: string;
         };
+        /** _ApproveActionRequestPayload */
+        _ApproveActionRequestPayload: {
+            /** Request Id */
+            request_id?: string | null;
+        };
         /** _BtwRequestPayload */
         _BtwRequestPayload: {
             /** Question */
@@ -2701,6 +3140,24 @@ export interface components {
             reason?: string | null;
             /** Run Id */
             run_id?: string | null;
+        };
+        /** _SessionModelRequestPayload */
+        _SessionModelRequestPayload: {
+            /**
+             * Model
+             * @default
+             */
+            model: string;
+            /** Reasoning Effort */
+            reasoning_effort?: string | null;
+        };
+        /** _SessionPermissionsRequestPayload */
+        _SessionPermissionsRequestPayload: {
+            /**
+             * Mode
+             * @default
+             */
+            mode: string;
         };
         /** _SetGoalRequestPayload */
         _SetGoalRequestPayload: {
@@ -3462,6 +3919,59 @@ export interface operations {
             };
         };
     };
+    _handle_approve_action_api_sessions__session_id__approve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["_ApproveActionRequestPayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ApproveActionResultBody"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     _handle_ask_side_question_api_sessions__session_id__btw_post: {
         parameters: {
             query?: never;
@@ -4145,6 +4655,46 @@ export interface operations {
             };
         };
     };
+    _handle_session_agents_overview_api_sessions__session_id__info_agents_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["SessionAgentsOverviewBody"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     _handle_session_context_usage_api_sessions__session_id__info_context_get: {
         parameters: {
             query?: {
@@ -4339,6 +4889,129 @@ export interface operations {
             };
         };
     };
+    _handle_session_hooks_listing_api_sessions__session_id__info_hooks_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["SessionHooksListingBody"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    _handle_session_mcp_inventory_api_sessions__session_id__info_mcp_get: {
+        parameters: {
+            query?: {
+                /** @description False returns the compact server summary; true adds command, url, stage, and error detail. */
+                verbose?: boolean;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["SessionMcpInventoryBody"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    _handle_session_skills_listing_api_sessions__session_id__info_skills_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["SessionSkillsListingBody"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     _handle_session_status_panel_api_sessions__session_id__info_status_get: {
         parameters: {
             query?: never;
@@ -4357,6 +5030,302 @@ export interface operations {
                 };
                 content: {
                     "application/json; charset=utf-8": components["schemas"]["SessionStatusPanelBody"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    _handle_session_token_usage_api_sessions__session_id__info_usage_get: {
+        parameters: {
+            query?: {
+                /** @description Session scope only: daily, weekly, and cumulative all project the same session totals. */
+                scope?: string;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["SessionTokenUsageBody"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    _handle_get_session_model_api_sessions__session_id__model_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["SessionModelBody"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    _handle_set_session_model_api_sessions__session_id__model_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["_SessionModelRequestPayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["SessionModelBody"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    _handle_list_pending_approvals_api_sessions__session_id__pending_approvals_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["PendingApprovalItemBody"][];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    _handle_get_session_permissions_api_sessions__session_id__permissions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["SessionPermissionsBody"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    _handle_set_session_permissions_api_sessions__session_id__permissions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["_SessionPermissionsRequestPayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["SessionPermissionsBody"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
             /** @description Not Found */
@@ -4896,6 +5865,48 @@ export interface operations {
                 };
                 content: {
                     "application/json; charset=utf-8": components["schemas"]["SkillSummaryBody"][];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    _handle_toggle_skill_api_skills_toggle_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SkillToggleRequestBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["SkillToggleResponseBody"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
             /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */

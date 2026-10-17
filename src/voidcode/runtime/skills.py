@@ -88,9 +88,9 @@ def build_runtime_contexts(
     skill_names: Iterable[str] | None = None,
 ) -> tuple[SkillRuntimeContext, ...]:
     if skill_names is None:
-        skills = registry.all()
+        skills = registry.enabled_skills()
     else:
-        skills = tuple(registry.resolve(skill_name) for skill_name in skill_names)
+        skills = tuple(registry.resolve(skill_name) for skill_name in skill_names if registry.is_enabled(skill_name))
     return tuple(build_runtime_context(skill) for skill in skills)
 
 
@@ -291,7 +291,7 @@ def loaded_skill_names(skill_registry: SkillRegistry) -> list[str]:
     # Builtin skills are catalog resources: they stay resolvable through the
     # skill tool and selected workflow refs, but they are not workspace skills
     # that were actively loaded for an ordinary run.
-    return sorted(skill_name for skill_name, skill in skill_registry.skills.items() if skill.origin != "builtin")
+    return sorted(skill_name for skill_name, skill in skill_registry.skills.items() if skill.origin != "builtin" and skill.enabled)
 
 
 def catalog_skill_context(
@@ -315,7 +315,7 @@ def catalog_skill_context(
     ]
     for skill_name in names:
         skill = skill_registry.skills.get(skill_name)
-        if skill is None:
+        if skill is None or not skill.enabled:
             continue
         lines.extend(
             (

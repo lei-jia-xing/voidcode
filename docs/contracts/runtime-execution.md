@@ -201,3 +201,61 @@ The runtime exposes real-time context token utilization derived directly from tu
    Headline token usage is calculated by applying the provider model's authoritative tokenizer to the joined prompt payload. Individual segment token counts are bounded such that `abs(used_tokens - sum(segment.tokens)) <= len(segments)`.
 4. **Concurrent Availability**:
    Context projection reads session state non-destructively, acquires no write locks, and is available idle or mid-run without blocking on busy gates.
+
+## Model Selection & Reasoning Effort Semantics (`/model`)
+
+The runtime provides dynamic model and reasoning effort selection persisting per session:
+
+1. **Immediate Metadata Persistence**:
+   Executing `/model` or `set_session_model(session_id=..., model=..., reasoning_effort=...)` immediately updates `runtime_config["model"]` and `runtime_config["reasoning_effort"]` in SQLite session metadata. Subsequent turns in the session advance using the updated model parameters.
+2. **Effort Normalization & Retention**:
+   Reasoning effort levels are validated and normalized via `normalize_reasoning_effort` (`"low"`, `"medium"`, `"high"`, `"none"`). If reasoning effort is omitted when switching models, any previously configured effort level is preserved in `runtime_config`.
+3. **Catalog Query & Discovery**:
+   Bare `/model` queries active provider catalogs via `list_available_models()` (`list_provider_summaries` and `provider_models_result`), returning provider names, model IDs, descriptions, reasoning capability flags, and supported effort choices.
+4. **Concurrent Safety (No Busy Gate)**:
+   `/model` specifies `busy_gate=False`. It executes safely mid-run without blocking on active runs or corrupting in-flight turn progression.
+
+## Permissions Presets & Policy Mapping (`/permissions`)
+
+The runtime implements governed approval policies configurable via user presets or direct approval modes:
+
+1. **Preset-to-Mode Mapping Matrix**:
+   Preset tokens map deterministically to VoidCode approval modes:
+   - **`read-only`** (aliases `readonly`, `ask`) &rarr; **`ask`** mode: Read-only operations in the workspace are auto-allowed; workspace mutations (writes, edits) and execution tools (shell commands) require explicit approval.
+   - **`auto`** (aliases `default`, `write`) &rarr; **`write`** mode: Workspace read and mutating operations (writes, edits) are auto-allowed; execution tools require approval.
+   - **`full-access`** (aliases `full_access`, `full`, `yolo`) &rarr; **`yolo`** mode: Read, write, and execution operations are auto-allowed without prompting.
+   Direct approval mode tokens (`ask`, `write`, `yolo`) are accepted interchangeably with preset labels.
+2. **Dynamic Policy Updates**:
+   `set_session_permissions` immediately replaces the active `_permission_policy` on the runtime and persists `runtime_config["approval_mode"]` into session metadata in SQLite.
+3. **Effective Read-Only Invariance**:
+   Switching permissions presets governs approval thresholds for mutating tools but cannot relax an externally frozen base read-only session. `runtime_effective_read_only_from_metadata` continues to enforce read-only denials regardless of the selected approval mode.
+4. **Concurrent Safety (No Busy Gate)**:
+   `/permissions` specifies `busy_gate=False`. Approval modes can be adjusted dynamically mid-run or while execution is paused.
+
+## Pending Approval Queue & Approve-One Semantics (`/approve`)
+
+The runtime manages pending tool approval requests across primary sessions and background delegations:
+
+1. **Unified Approval Aggregation**:
+   `list_pending_approvals` aggregates pending approvals from the primary session row (`pending_approval_json`) and any child sessions spawned by delegated background tasks (`list_background_tasks_by_parent_session`).
+2. **Empty Queue Behavior**:
+   When no approvals are pending, `approve_pending_action` returns `{approved: False, reason: "no_pending_approvals"}` without failing or mutating state.
+3. **Approve-One Semantics**:
+   When one or more actions are queued, bare `/approve` (or omitting `request_id`) selects and claims exactly the first pending approval via `_claim_pending_approval`, returning `{approved: True, request_id: ...}`.
+4. **Explicit Request Targeting**:
+   Supplying an explicit `[request_id]` claims that specific approval. If the requested ID is not present in the pending queue, it returns `{approved: False, reason: "not_found"}`. In the interactive TUI, multiple pending approvals open `ApprovePickerOverlay` for unambiguous selection.
+5. **Concurrent Safety (No Busy Gate)**:
+   `/approve` specifies `busy_gate=False`, allowing operators to approve pending actions immediately to unblock paused runs.
+
+## Runtime Inspection Projections (`/mcp`, `/hooks`, `/skills`, `/agents`, `/usage`)
+
+The runtime provides five native read-only inspection projections exposing live system state:
+
+1. **Zero-Turn Non-Blocking Invariant**:
+   All five projection commands define `busy_gate=False`, advance zero provider turns, append no events to SQLite session history, and execute safely mid-run without acquiring exclusive write locks.
+2. **Authoritative State Projection Sources**:
+   - **`/mcp` (`session_mcp_inventory`)**: Projects active Model Context Protocol servers and registered tools from `current_mcp_state()`. Compact mode returns server names, status, and tool counts; `verbose` mode exposes commands, URLs, environment configurations, and transport types.
+   - **`/hooks` (`session_hooks_listing`)**: Projects runtime lifecycle hooks from `RuntimeHooksConfig` across event surfaces (`session_start`, `pre_tool`, `post_tool`, `session_end`), returning command lines, tool match patterns, and enabled state.
+   - **`/skills` (`session_skills_listing`)**: Projects registered skills discovered by `SkillRegistry` (`list_skill_summaries`) across workspace, user, and plugin paths, sorted alphabetically with descriptions and argument hints.
+   - **`/agents` (`session_agents_overview`)**: Projects active session records from SQLite storage, running subagent delegations from `RuntimeBackgroundTaskSupervisor`, and primary agent preset configurations (`list_agent_summaries`).
+   - **`/usage` (`session_token_usage`)**: Projects cumulative token consumption (input, output, cache read/write), USD cost, and turn counts from `session.metadata["provider_usage"]`. Estimation is measured-provider-usage-first with exact per-model tokenizer fallback (superior to byte/4 heuristics; byte/4 only for unknown models).

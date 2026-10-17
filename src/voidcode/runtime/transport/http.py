@@ -18,7 +18,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, 
 from contextlib import ExitStack, asynccontextmanager, contextmanager, nullcontext, suppress
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Protocol, cast, final
+from typing import Any, Literal, Protocol, cast, final
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
@@ -66,11 +66,16 @@ from ..contracts import (
     RuntimeSessionResult,
     RuntimeStatusSnapshot,
     RuntimeStreamChunk,
+    SessionAgentsOverview,
     SessionBusyConflictError,
     SessionContextUsage,
     SessionEventBatch,
     SessionExport,
+    SessionHooksListing,
+    SessionMcpInventory,
+    SessionSkillsListing,
     SessionStatusPanel,
+    SessionTokenUsage,
     SkillSummary,
     UnknownSessionError,
     WorkspaceRegistrySnapshot,
@@ -105,7 +110,10 @@ from .http_contract import (
     JsonResponse,
     ShowThinkingQuery,
     StreamCompletion,
+    UsageScopeQuery,
+    VerboseQuery,
     _ApprovalResolutionRequestPayload,
+    _ApproveActionRequestPayload,
     _BtwRequestPayload,
     _CheckoutSessionRequestPayload,
     _CollaborationModeRequestPayload,
@@ -117,6 +125,8 @@ from .http_contract import (
     _ReviewRunRequestPayload,
     _RunStreamRequestPayload,
     _SessionCancelRequestPayload,
+    _SessionModelRequestPayload,
+    _SessionPermissionsRequestPayload,
     _SetGoalRequestPayload,
     _SettingsRequestPayload,
     _SteerSessionRequestPayload,
@@ -133,6 +143,7 @@ from .http_contract import (
 )
 from .http_models import (
     AgentSummaryBody,
+    ApproveActionResultBody,
     BackgroundTaskOutputBody,
     BackgroundTaskRetryBody,
     BackgroundTaskStateBody,
@@ -143,6 +154,7 @@ from .http_models import (
     CommandSummaryBody,
     ErrorEnvelope,
     GoalResponseBody,
+    PendingApprovalItemBody,
     ProviderInspectBody,
     ProviderModelsBody,
     ProviderSummaryBody,
@@ -154,6 +166,7 @@ from .http_models import (
     RuntimeCompactBody,
     RuntimeResponseBody,
     RuntimeStatusBody,
+    SessionAgentsOverviewBody,
     SessionCancelBody,
     SessionCheckoutBody,
     SessionContextUsageBody,
@@ -163,12 +176,20 @@ from .http_models import (
     SessionEventFrameBody,
     SessionExportBody,
     SessionExportWriteBody,
+    SessionHooksListingBody,
+    SessionMcpInventoryBody,
+    SessionModelBody,
+    SessionPermissionsBody,
     SessionResultBody,
+    SessionSkillsListingBody,
     SessionStatusPanelBody,
     SessionSteerBody,
     SessionSummaryBody,
+    SessionTokenUsageBody,
     SideQuestionResultBody,
     SkillSummaryBody,
+    SkillToggleRequestBody,
+    SkillToggleResponseBody,
     UserShellResultBody,
     WebSettingsBody,
     WorkspaceRegistryBody,
@@ -340,6 +361,18 @@ class RuntimeTransport(Protocol):
     def write_session_export(self, *, session_id: str, path: str) -> dict[str, object]: ...
     def copy_targets(self, *, session_id: str) -> tuple[CopyTarget, ...]: ...
     def session_context_usage(self, *, session_id: str, expand_items: bool = False) -> SessionContextUsage: ...
+    def session_mcp_inventory(self, *, session_id: str, verbose: bool = False) -> SessionMcpInventory: ...
+    def session_hooks_listing(self, *, session_id: str) -> SessionHooksListing: ...
+    def session_skills_listing(self, *, session_id: str) -> SessionSkillsListing: ...
+    def set_skill_enabled(self, *, name: str, enabled: bool, scope: Literal["workspace", "user"] = "workspace") -> bool: ...
+    def session_agents_overview(self, *, session_id: str) -> SessionAgentsOverview: ...
+    def session_token_usage(self, *, session_id: str, scope: str = "session") -> SessionTokenUsage: ...
+    def session_model(self, *, session_id: str) -> dict[str, object]: ...
+    def set_session_model(self, *, session_id: str, model: str, reasoning_effort: str | None = None) -> dict[str, object]: ...
+    def session_permissions(self, *, session_id: str) -> dict[str, object]: ...
+    def set_session_permissions(self, *, session_id: str, mode: str) -> dict[str, object]: ...
+    def list_pending_approvals(self, *, session_id: str) -> tuple[dict[str, object], ...]: ...
+    def approve_pending_action(self, *, session_id: str, request_id: str | None = None) -> dict[str, object]: ...
     def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState: ...
 
     def authorize_background_task_owner(self, task_id: str, *, parent_session_id: str | None) -> None: ...
@@ -775,6 +808,15 @@ class RuntimeTransportApp(FastAPI):
             response_model=list[SkillSummaryBody],
         )
         route(
+            "/api/skills/toggle",
+            self._handle_toggle_skill,
+            methods=["POST"],
+            tag="runtime",
+            summary="Enable or disable a skill",
+            response_model=SkillToggleResponseBody,
+            error_statuses=(400,),
+        )
+        route(
             "/api/commands",
             self._handle_list_commands,
             methods=["GET"],
@@ -1132,6 +1174,51 @@ class RuntimeTransportApp(FastAPI):
             error_statuses=(404,),
         )
         route(
+            "/api/sessions/{session_id}/info/mcp",
+            self._handle_session_mcp_inventory,
+            methods=["GET"],
+            tag="sessions",
+            summary="Read a session's native /mcp inventory",
+            response_model=SessionMcpInventoryBody,
+            error_statuses=(404,),
+        )
+        route(
+            "/api/sessions/{session_id}/info/hooks",
+            self._handle_session_hooks_listing,
+            methods=["GET"],
+            tag="sessions",
+            summary="Read a session's native /hooks listing",
+            response_model=SessionHooksListingBody,
+            error_statuses=(404,),
+        )
+        route(
+            "/api/sessions/{session_id}/info/skills",
+            self._handle_session_skills_listing,
+            methods=["GET"],
+            tag="sessions",
+            summary="Read a session's native /skills listing",
+            response_model=SessionSkillsListingBody,
+            error_statuses=(404,),
+        )
+        route(
+            "/api/sessions/{session_id}/info/agents",
+            self._handle_session_agents_overview,
+            methods=["GET"],
+            tag="sessions",
+            summary="Read a session's native /agents overview",
+            response_model=SessionAgentsOverviewBody,
+            error_statuses=(404,),
+        )
+        route(
+            "/api/sessions/{session_id}/info/usage",
+            self._handle_session_token_usage,
+            methods=["GET"],
+            tag="sessions",
+            summary="Read a session's native /usage activity",
+            response_model=SessionTokenUsageBody,
+            error_statuses=(404,),
+        )
+        route(
             "/api/sessions/{session_id}/shell",
             self._handle_run_user_shell,
             methods=["POST"],
@@ -1148,6 +1235,60 @@ class RuntimeTransportApp(FastAPI):
             summary="Queue a steering message for the session",
             response_model=SessionSteerBody,
             error_statuses=(400, 404, 409),
+        )
+        route(
+            "/api/sessions/{session_id}/model",
+            self._handle_get_session_model,
+            methods=["GET"],
+            tag="sessions",
+            summary="Get session model and reasoning effort",
+            response_model=SessionModelBody,
+            error_statuses=(400, 404),
+        )
+        route(
+            "/api/sessions/{session_id}/model",
+            self._handle_set_session_model,
+            methods=["POST"],
+            tag="sessions",
+            summary="Switch session model and reasoning effort",
+            response_model=SessionModelBody,
+            error_statuses=(400, 404),
+        )
+        route(
+            "/api/sessions/{session_id}/permissions",
+            self._handle_get_session_permissions,
+            methods=["GET"],
+            tag="sessions",
+            summary="Get session permissions mode",
+            response_model=SessionPermissionsBody,
+            error_statuses=(400, 404),
+        )
+        route(
+            "/api/sessions/{session_id}/permissions",
+            self._handle_set_session_permissions,
+            methods=["POST"],
+            tag="sessions",
+            summary="Set session permissions mode",
+            response_model=SessionPermissionsBody,
+            error_statuses=(400, 404),
+        )
+        route(
+            "/api/sessions/{session_id}/pending-approvals",
+            self._handle_list_pending_approvals,
+            methods=["GET"],
+            tag="sessions",
+            summary="List pending approval requests for a session",
+            response_model=list[PendingApprovalItemBody],
+            error_statuses=(400, 404),
+        )
+        route(
+            "/api/sessions/{session_id}/approve",
+            self._handle_approve_action,
+            methods=["POST"],
+            tag="sessions",
+            summary="Approve a pending action or auto-review denial",
+            response_model=ApproveActionResultBody,
+            error_statuses=(400, 404),
         )
         route(
             "/api/providers/{provider_name}/models",
@@ -1718,6 +1859,14 @@ class RuntimeTransportApp(FastAPI):
             payload = [self._serialize_skill_summary(skill) for skill in runtime.list_skill_summaries()]
         return json_response(payload)
 
+    async def _handle_toggle_skill(self, payload: SkillToggleRequestBody) -> Response:
+        with self._runtime_lease() as runtime:
+            try:
+                enabled = runtime.set_skill_enabled(name=payload.name, enabled=payload.enabled, scope=payload.scope)
+            except ValueError as exc:
+                raise HttpError(400, str(exc), code="INVALID_ARGUMENT") from None
+        return json_response({"name": payload.name, "enabled": enabled})
+
     async def _handle_list_commands(self) -> Response:
         with self._runtime_lease() as runtime:
             payload = [self._serialize_command_summary(command) for command in runtime.list_command_summaries()]
@@ -1972,6 +2121,54 @@ class RuntimeTransportApp(FastAPI):
                 raise HttpError(404, str(exc), code=error_code(exc)) from None
         return json_response(self._serialize_session_context_usage(usage))
 
+    async def _handle_session_mcp_inventory(self, session_id: str, verbose: VerboseQuery = False) -> Response:
+        session_id = self._validated_session_id(session_id)
+        with self._runtime_lease() as runtime:
+            try:
+                inventory = runtime.session_mcp_inventory(session_id=session_id, verbose=verbose)
+            except UnknownSessionError as exc:
+                raise HttpError(404, str(exc), code=error_code(exc)) from None
+        return json_response(self._serialize_session_mcp_inventory(inventory))
+
+    async def _handle_session_hooks_listing(self, session_id: str) -> Response:
+        session_id = self._validated_session_id(session_id)
+        with self._runtime_lease() as runtime:
+            try:
+                listing = runtime.session_hooks_listing(session_id=session_id)
+            except UnknownSessionError as exc:
+                raise HttpError(404, str(exc), code=error_code(exc)) from None
+        return json_response(self._serialize_session_hooks_listing(listing))
+
+    async def _handle_session_skills_listing(self, session_id: str) -> Response:
+        session_id = self._validated_session_id(session_id)
+        with self._runtime_lease() as runtime:
+            try:
+                listing = runtime.session_skills_listing(session_id=session_id)
+            except UnknownSessionError as exc:
+                raise HttpError(404, str(exc), code=error_code(exc)) from None
+        return json_response(self._serialize_session_skills_listing(listing))
+
+    async def _handle_session_agents_overview(self, session_id: str) -> Response:
+        session_id = self._validated_session_id(session_id)
+        with self._runtime_lease() as runtime:
+            try:
+                overview = runtime.session_agents_overview(session_id=session_id)
+            except UnknownSessionError as exc:
+                raise HttpError(404, str(exc), code=error_code(exc)) from None
+        return json_response(self._serialize_session_agents_overview(overview))
+
+    async def _handle_session_token_usage(self, session_id: str, scope: UsageScopeQuery = "session") -> Response:
+        session_id = self._validated_session_id(session_id)
+        normalized = scope.strip().lower() if scope.strip().lower() in {"session", "daily", "weekly", "cumulative"} else None
+        if normalized is None:
+            raise HttpError(400, "Usage: /usage [daily|weekly|cumulative]")
+        with self._runtime_lease() as runtime:
+            try:
+                usage = runtime.session_token_usage(session_id=session_id, scope=normalized)
+            except UnknownSessionError as exc:
+                raise HttpError(404, str(exc), code=error_code(exc)) from None
+        return json_response(self._serialize_session_token_usage(usage))
+
     async def _handle_get_goal(self, session_id: str) -> Response:
         session_id = self._validated_session_id(session_id)
         with self._runtime_lease() as runtime:
@@ -2109,6 +2306,90 @@ class RuntimeTransportApp(FastAPI):
             except ValueError as exc:
                 raise HttpError(404, str(exc)) from None
         return json_response({"session_id": session_id, "queued": len(queued)})
+
+    def _session_model(self, session_id: str) -> dict[str, object]:
+        with self._runtime_lease() as runtime:
+            return runtime.session_model(session_id=session_id)
+
+    async def _handle_get_session_model(self, session_id: str) -> Response:
+        session_id = self._validated_session_id(session_id)
+        try:
+            result = await asyncio.to_thread(self._session_model, session_id)
+        except UnknownSessionError as exc:
+            raise HttpError(404, str(exc), code=error_code(exc)) from None
+        except ValueError as exc:
+            raise HttpError(400, str(exc)) from None
+        return json_response(result)
+
+    def _set_session_model(self, session_id: str, model: str, reasoning_effort: str | None) -> dict[str, object]:
+        with self._runtime_lease() as runtime:
+            return runtime.set_session_model(session_id=session_id, model=model, reasoning_effort=reasoning_effort)
+
+    async def _handle_set_session_model(self, session_id: str, payload: _SessionModelRequestPayload) -> Response:
+        session_id = self._validated_session_id(session_id)
+        try:
+            result = await asyncio.to_thread(self._set_session_model, session_id, payload.model, payload.reasoning_effort)
+        except UnknownSessionError as exc:
+            raise HttpError(404, str(exc), code=error_code(exc)) from None
+        except ValueError as exc:
+            raise HttpError(400, str(exc)) from None
+        return json_response(result)
+
+    def _session_permissions(self, session_id: str) -> dict[str, object]:
+        with self._runtime_lease() as runtime:
+            return runtime.session_permissions(session_id=session_id)
+
+    async def _handle_get_session_permissions(self, session_id: str) -> Response:
+        session_id = self._validated_session_id(session_id)
+        try:
+            result = await asyncio.to_thread(self._session_permissions, session_id)
+        except UnknownSessionError as exc:
+            raise HttpError(404, str(exc), code=error_code(exc)) from None
+        except ValueError as exc:
+            raise HttpError(400, str(exc)) from None
+        return json_response(result)
+
+    def _set_session_permissions(self, session_id: str, mode: str) -> dict[str, object]:
+        with self._runtime_lease() as runtime:
+            return runtime.set_session_permissions(session_id=session_id, mode=mode)
+
+    async def _handle_set_session_permissions(self, session_id: str, payload: _SessionPermissionsRequestPayload) -> Response:
+        session_id = self._validated_session_id(session_id)
+        try:
+            result = await asyncio.to_thread(self._set_session_permissions, session_id, payload.mode)
+        except UnknownSessionError as exc:
+            raise HttpError(404, str(exc), code=error_code(exc)) from None
+        except ValueError as exc:
+            raise HttpError(400, str(exc)) from None
+        return json_response(result)
+
+    def _list_pending_approvals(self, session_id: str) -> list[dict[str, object]]:
+        with self._runtime_lease() as runtime:
+            return list(runtime.list_pending_approvals(session_id=session_id))
+
+    async def _handle_list_pending_approvals(self, session_id: str) -> Response:
+        session_id = self._validated_session_id(session_id)
+        try:
+            result = await asyncio.to_thread(self._list_pending_approvals, session_id)
+        except UnknownSessionError as exc:
+            raise HttpError(404, str(exc), code=error_code(exc)) from None
+        except ValueError as exc:
+            raise HttpError(400, str(exc)) from None
+        return json_response(result)
+
+    def _approve_pending_action(self, session_id: str, request_id: str | None) -> dict[str, object]:
+        with self._runtime_lease() as runtime:
+            return runtime.approve_pending_action(session_id=session_id, request_id=request_id)
+
+    async def _handle_approve_action(self, session_id: str, payload: _ApproveActionRequestPayload) -> Response:
+        session_id = self._validated_session_id(session_id)
+        try:
+            result = await asyncio.to_thread(self._approve_pending_action, session_id, payload.request_id)
+        except UnknownSessionError as exc:
+            raise HttpError(404, str(exc), code=error_code(exc)) from None
+        except ValueError as exc:
+            raise HttpError(400, str(exc)) from None
+        return json_response(result)
 
     async def _handle_approval_resolution(
         self,
@@ -2540,6 +2821,7 @@ class RuntimeTransportApp(FastAPI):
             "name": summary.name,
             "description": summary.description,
             "origin": summary.origin,
+            "enabled": summary.enabled,
         }
         if summary.source_path is not None:
             payload["source_path"] = summary.source_path
@@ -2607,6 +2889,87 @@ class RuntimeTransportApp(FastAPI):
                 }
                 for segment in usage.segments
             ],
+        }
+
+    @staticmethod
+    def _serialize_session_mcp_inventory(inventory: SessionMcpInventory) -> dict[str, object]:
+        return {
+            "session_id": inventory.session_id,
+            "verbose": inventory.verbose,
+            "servers": [
+                {
+                    "name": server.name,
+                    "status": server.status,
+                    "transport": server.transport,
+                    "auth": server.auth,
+                    "tool_count": server.tool_count,
+                    "tools": None if server.tools is None else list(server.tools),
+                    "command": None if server.command is None else list(server.command),
+                    "url": server.url,
+                    "stage": server.stage,
+                    "error": server.error,
+                }
+                for server in inventory.servers
+            ],
+        }
+
+    @staticmethod
+    def _serialize_session_hooks_listing(listing: SessionHooksListing) -> dict[str, object]:
+        return {
+            "session_id": listing.session_id,
+            "enabled": listing.enabled,
+            "surfaces": [
+                {
+                    "surface": surface.surface,
+                    "commands": list(surface.commands),
+                    "match": None if surface.match is None else list(surface.match),
+                }
+                for surface in listing.surfaces
+            ],
+        }
+
+    @staticmethod
+    def _serialize_session_skills_listing(listing: SessionSkillsListing) -> dict[str, object]:
+        return {
+            "session_id": listing.session_id,
+            "skills": [
+                {
+                    "name": skill.name,
+                    "description": skill.description,
+                    "origin": skill.origin,
+                    "source_path": skill.source_path,
+                    "enabled": skill.enabled,
+                }
+                for skill in listing.skills
+            ],
+        }
+
+    @staticmethod
+    def _serialize_session_agents_overview(overview: SessionAgentsOverview) -> dict[str, object]:
+        return {
+            "session_id": overview.session_id,
+            "current_session_id": overview.current_session_id,
+            "sessions": [
+                {"session_id": row.session_id, "title": row.title, "status": row.status, "turn": row.turn, "kind": row.kind}
+                for row in overview.sessions
+            ],
+            "tasks": [{"task_id": row.task_id, "status": row.status, "child_session_id": row.child_session_id} for row in overview.tasks],
+            "presets": [RuntimeTransportApp._serialize_agent_summary(preset) for preset in overview.presets],
+        }
+
+    @staticmethod
+    def _serialize_session_token_usage(usage: SessionTokenUsage) -> dict[str, object]:
+        return {
+            "session_id": usage.session_id,
+            "scope": usage.scope,
+            "model": usage.model,
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "cache_read_tokens": usage.cache_read_tokens,
+            "cache_write_tokens": usage.cache_write_tokens,
+            "cost_usd": usage.cost_usd,
+            "turn_count": usage.turn_count,
+            "estimated": usage.estimated,
         }
 
     @staticmethod

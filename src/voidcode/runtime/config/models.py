@@ -1112,9 +1112,34 @@ class AgentToolsPayload(_PayloadModel):
         return _parse_optional_bool(value, field_path="agent.tools.essential_only")
 
 
+class SkillConfigPayload(_PayloadModel):
+    name: str | None = None
+    path: str | None = None
+    enabled: bool = True
+
+    @field_validator("name", "path", mode="before")
+    @classmethod
+    def _validate_selector(cls, value: object, info: ValidationInfo) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError(f"skills.config.{info.field_name} must be a string")
+        normalized = value.strip()
+        return normalized or None
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def _validate_enabled(cls, value: object) -> bool:
+        if value is None:
+            return True
+        parsed = _parse_optional_bool(value, field_path="skills.config.enabled")
+        return True if parsed is None else parsed
+
+
 class SkillsPayload(_PayloadModel):
     enabled: bool | None = None
     paths: tuple[str, ...] | None = None
+    config: tuple[SkillConfigPayload, ...] | None = None
 
     @field_validator("enabled", mode="before")
     @classmethod
@@ -1125,6 +1150,23 @@ class SkillsPayload(_PayloadModel):
     @classmethod
     def _validate_paths(cls, value: object) -> tuple[str, ...]:
         return _parse_string_list(value, field_path="skills.paths")
+
+    @field_validator("config", mode="before")
+    @classmethod
+    def _validate_config(cls, value: object) -> tuple[SkillConfigPayload, ...] | None:
+        if value is None:
+            return None
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("skills.config must be a list")
+        entries: list[SkillConfigPayload] = []
+        for index, item in enumerate(value):
+            if isinstance(item, SkillConfigPayload):
+                entries.append(item)
+            elif isinstance(item, dict):
+                entries.append(SkillConfigPayload.model_validate(item))
+            else:
+                raise ValueError(f"skills.config[{index}] must be an object")
+        return tuple(entries)
 
 
 class CompactionPayload(_PayloadModel):
@@ -2117,6 +2159,7 @@ class UserConfigPayload(_PayloadModel):
     providers: ProviderConfigsPayload | None = None
     #: User-global hook commands, concatenated before repo-local commands per surface.
     hooks: HooksPayload | None = None
+    skills: SkillsPayload | None = None
 
     @field_validator("components", mode="before")
     @classmethod
@@ -2146,7 +2189,7 @@ class UserConfigPayload(_PayloadModel):
             raise ValueError("runtime config field 'review_model' must be a string when provided")
         return value
 
-    @field_validator("tui", "providers", mode="before")
+    @field_validator("tui", "providers", "skills", mode="before")
     @classmethod
     def _validate_user_section_shape(cls, value: object, info: ValidationInfo) -> object:
         if value is None:
@@ -2210,6 +2253,7 @@ SCHEMA_DEFINITION_NAMES: Mapping[str, str] = {
     "ToolsBuiltinPayload": "toolsBuiltinConfig",
     "ToolsLocalPayload": "localToolsConfig",
     "SkillsPayload": "skillsConfig",
+    "SkillConfigPayload": "skillConfig",
     "ContextWindowPayload": "contextWindowConfig",
     "CompactionPayload": "compactionConfig",
     "LspPayload": "lspConfig",

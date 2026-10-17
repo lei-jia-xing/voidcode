@@ -854,6 +854,62 @@ class _FixtureRuntime:
             "unchanged": None if self.rich else True,
         }
 
+    def session_model(self, *, session_id: str) -> dict[str, object]:
+        return {
+            "session_id": session_id,
+            "model": "openai/gpt-4o",
+            "provider": "openai" if self.rich else None,
+            "reasoning_effort": "high" if self.rich else None,
+        }
+
+    def set_session_model(self, *, session_id: str, model: str, reasoning_effort: str | None = None) -> dict[str, object]:
+        return {
+            "session_id": session_id,
+            "model": model,
+            "reasoning_effort": reasoning_effort if self.rich else None,
+        }
+
+    def session_permissions(self, *, session_id: str) -> dict[str, object]:
+        return {
+            "session_id": session_id,
+            "approval_mode": "write",
+            "preset": "auto",
+            "read_only": False if self.rich else None,
+        }
+
+    def set_session_permissions(self, *, session_id: str, mode: str) -> dict[str, object]:
+        return {
+            "session_id": session_id,
+            "approval_mode": "write",
+            "preset": "auto",
+        }
+
+    def list_pending_approvals(self, *, session_id: str) -> tuple[dict[str, object], ...]:
+        if not self.rich:
+            return ()
+        return (
+            {
+                "request_id": "req-1",
+                "tool_name": "write",
+                "arguments": {"path": "test.txt"},
+                "target_summary": "test.txt",
+                "reason": "edit file",
+                "policy_mode": "ask",
+                "session_id": session_id,
+            },
+        )
+
+    def approve_pending_action(self, *, session_id: str, request_id: str | None = None) -> dict[str, object]:
+        return {
+            "approved": True,
+            "session_id": session_id if self.rich else None,
+            "request_id": (request_id or "req-1") if self.rich else None,
+            "tool_name": "write" if self.rich else None,
+            "target_summary": "test.txt" if self.rich else None,
+            "reason": "edit file" if self.rich else None,
+            "message": "Approved write" if self.rich else None,
+        }
+
     def review_session(
         self,
         *,
@@ -977,6 +1033,72 @@ class _FixtureRuntime:
             segments=(contracts.ContextUsageSegment(label="System prompt", tokens=1000, items=items),) if self.rich else (),
         )
 
+    def session_mcp_inventory(self, *, session_id: str, verbose: bool = False):  # type: ignore[no-untyped-def]
+        contracts = importlib.import_module("voidcode.runtime.contracts")
+        server = contracts.McpServerProjection(
+            name="context7",
+            status="running",
+            transport="stdio" if self.rich else None,
+            auth="stdio" if self.rich else None,
+            tool_count=2 if self.rich else None,
+            tools=("query-docs", "resolve-id") if self.rich else None,
+            command=("ctx7",) if self.rich and verbose else None,
+            url=None,
+            stage="ready" if self.rich and verbose else None,
+            error=None,
+        )
+        return contracts.SessionMcpInventory(session_id=session_id, verbose=verbose, servers=(server,) if self.rich else ())
+
+    def session_hooks_listing(self, *, session_id: str):  # type: ignore[no-untyped-def]
+        contracts = importlib.import_module("voidcode.runtime.contracts")
+        surface = contracts.HookSurfaceProjection(
+            surface="session_start",
+            commands=("echo hi",),
+            match=("write*",) if self.rich else None,
+        )
+        return contracts.SessionHooksListing(session_id=session_id, enabled=True, surfaces=(surface,) if self.rich else ())
+
+    def session_skills_listing(self, *, session_id: str):  # type: ignore[no-untyped-def]
+        contracts = importlib.import_module("voidcode.runtime.contracts")
+        skill = contracts.SkillProjection(
+            name="review",
+            description="Review code",
+            origin="workspace",
+            source_path="/workspace/skills/review/SKILL.md" if self.rich else None,
+        )
+        return contracts.SessionSkillsListing(session_id=session_id, skills=(skill,) if self.rich else ())
+
+    def set_skill_enabled(self, name: str, enabled: bool, *, scope: str = "workspace") -> bool:
+        return enabled
+
+    def session_agents_overview(self, *, session_id: str):  # type: ignore[no-untyped-def]
+        contracts = importlib.import_module("voidcode.runtime.contracts")
+        preset = contracts.AgentSummary(id="default", label="Default", description="Default agent" if self.rich else None)
+        return contracts.SessionAgentsOverview(
+            session_id=session_id,
+            current_session_id=session_id if self.rich else None,
+            sessions=(contracts.AgentSessionRow(session_id=session_id, title="demo" if self.rich else None, status="completed", turn=2),)
+            if self.rich
+            else (),
+            tasks=(contracts.AgentTaskRow(task_id="task-1", status="completed", child_session_id="child-1"),) if self.rich else (),
+            presets=(preset,) if self.rich else (),
+        )
+
+    def session_token_usage(self, *, session_id: str, scope: str = "session"):  # type: ignore[no-untyped-def]
+        contracts = importlib.import_module("voidcode.runtime.contracts")
+        return contracts.SessionTokenUsage(
+            session_id=session_id,
+            scope=scope,
+            model="openai/gpt-4o" if self.rich else None,
+            input_tokens=100 if self.rich else None,
+            output_tokens=50 if self.rich else None,
+            cache_read_tokens=10 if self.rich else None,
+            cache_write_tokens=5 if self.rich else None,
+            cost_usd=0.001 if self.rich else None,
+            turn_count=2 if self.rich else None,
+            estimated=not self.rich,
+        )
+
 
 # ------------------------------------------------------------------- app plumbing
 
@@ -1087,6 +1209,10 @@ _BODIES: dict[tuple[str, str], dict[str, object]] = {
     ("POST", "/api/sessions/{session_id}/rename"): {"title": "renamed-session"},
     ("PATCH", "/api/sessions/{session_id}"): {"title": "renamed-session"},
     ("POST", "/api/sessions/{session_id}/info/export"): {"path": "exports/out.md"},
+    ("POST", "/api/sessions/{session_id}/model"): {"model": "openai/gpt-4o"},
+    ("POST", "/api/sessions/{session_id}/permissions"): {"mode": "auto"},
+    ("POST", "/api/sessions/{session_id}/approve"): {"request_id": "req-1"},
+    ("POST", "/api/skills/toggle"): {"name": "review", "enabled": True},
 }
 _SSE_TEMPLATES = frozenset({"/api/runtime/run/stream", "/api/sessions/{session_id}/events"})
 

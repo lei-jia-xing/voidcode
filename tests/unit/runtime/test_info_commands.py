@@ -1,4 +1,4 @@
-"""Native read-only info commands: /status /export /copy /context."""
+"""Native read-only info commands: /status /export /copy /context /mcp /hooks /skills /agents /usage."""
 
 from __future__ import annotations
 
@@ -134,8 +134,105 @@ def test_busy_gate_matrix_export_gated_others_not(tmp_path: Path) -> None:
             assert runtime.session_status_panel(session_id=session_id).session_id == session_id
             assert isinstance(runtime.copy_targets(session_id=session_id), tuple)
             assert runtime.session_context_usage(session_id=session_id).used_tokens > 0
+            assert runtime.session_mcp_inventory(session_id=session_id).session_id == session_id
+            assert runtime.session_hooks_listing(session_id=session_id).session_id == session_id
+            assert runtime.session_skills_listing(session_id=session_id).session_id == session_id
+            assert runtime.session_agents_overview(session_id=session_id).session_id == session_id
+            assert runtime.session_token_usage(session_id=session_id).session_id == session_id
     finally:
         ACTIVE_SESSION_REGISTRY.unregister(workspace=workspace, session_id=session_id, run_id="live-run")
+
+
+def test_mcp_inventory_compact_and_verbose(tmp_path: Path) -> None:
+    session_id = _seeded_session(tmp_path)
+    with VoidCodeRuntime(workspace=tmp_path, turn_producer=_AnswerProducer()) as runtime:
+        compact = runtime.session_mcp_inventory(session_id=session_id)
+        verbose = runtime.session_mcp_inventory(session_id=session_id, verbose=True)
+    assert compact.session_id == session_id and not compact.verbose
+    assert verbose.verbose and [s.name for s in verbose.servers] == [s.name for s in compact.servers]
+    assert [s.name for s in compact.servers] == sorted(s.name for s in compact.servers)
+    for server in compact.servers:
+        assert server.command is None and server.url is None and server.auth == server.transport
+    for server in verbose.servers:
+        assert server.command is not None
+    with VoidCodeRuntime(workspace=tmp_path, turn_producer=_AnswerProducer()) as runtime:
+        with pytest.raises((UnknownSessionError, ValueError)):
+            runtime.session_mcp_inventory(session_id="does-not-exist")
+
+
+def test_hooks_listing_surfaces_and_unknown_session(tmp_path: Path) -> None:
+    session_id = _seeded_session(tmp_path)
+    with VoidCodeRuntime(workspace=tmp_path, turn_producer=_AnswerProducer()) as runtime:
+        listing = runtime.session_hooks_listing(session_id=session_id)
+    assert listing.session_id == session_id
+    # Default workspace has no hooks config: unconfigured reads as disabled + empty.
+    assert listing.enabled is False
+    assert listing.surfaces == ()
+    with VoidCodeRuntime(workspace=tmp_path, turn_producer=_AnswerProducer()) as runtime:
+        with pytest.raises((UnknownSessionError, ValueError)):
+            runtime.session_hooks_listing(session_id="does-not-exist")
+
+
+def test_hooks_listing_projects_configured_surfaces(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from voidcode.hook.config import RuntimeHooksConfig
+
+    session_id = _seeded_session(tmp_path)
+    with VoidCodeRuntime(workspace=tmp_path, turn_producer=_AnswerProducer()) as runtime:
+        coordinator = runtime._inspection_coordinator
+        coordinator._config = replace(
+            coordinator._config,
+            hooks=RuntimeHooksConfig(on_session_start=(("echo", "hi"),), pre_tool=(("lint",),), pre_tool_match=("write*",)),
+        )
+        listing = runtime.session_hooks_listing(session_id=session_id)
+    assert listing.enabled is True
+    by_surface = {surface.surface: surface for surface in listing.surfaces}
+    assert by_surface["session_start"].commands == ("echo hi",)
+    assert by_surface["pre_tool"].commands == ("lint",)
+    assert by_surface["pre_tool"].match == ("write*",)
+    assert by_surface["session_end"].commands == ()
+
+
+def test_skills_listing_matches_registry(tmp_path: Path) -> None:
+    session_id = _seeded_session(tmp_path)
+    with VoidCodeRuntime(workspace=tmp_path, turn_producer=_AnswerProducer()) as runtime:
+        listing = runtime.session_skills_listing(session_id=session_id)
+        registry = [skill.name for skill in runtime.list_skill_summaries()]
+    assert [skill.name for skill in listing.skills] == sorted(registry)
+    with VoidCodeRuntime(workspace=tmp_path, turn_producer=_AnswerProducer()) as runtime:
+        with pytest.raises((UnknownSessionError, ValueError)):
+            runtime.session_skills_listing(session_id="does-not-exist")
+
+
+def test_agents_overview_contains_current_and_presets(tmp_path: Path) -> None:
+    session_id = _seeded_session(tmp_path)
+    with VoidCodeRuntime(workspace=tmp_path, turn_producer=_AnswerProducer()) as runtime:
+        overview = runtime.session_agents_overview(session_id=session_id)
+        presets = [agent.id for agent in runtime.list_agent_summaries()]
+    assert overview.current_session_id == session_id
+    assert session_id in [row.session_id for row in overview.sessions]
+    assert [preset.id for preset in overview.presets] == presets
+    assert isinstance(overview.tasks, tuple)
+    with VoidCodeRuntime(workspace=tmp_path, turn_producer=_AnswerProducer()) as runtime:
+        with pytest.raises((UnknownSessionError, ValueError)):
+            runtime.session_agents_overview(session_id="does-not-exist")
+
+
+def test_token_usage_scopes_project_session_totals(tmp_path: Path) -> None:
+    session_id = _seeded_session(tmp_path)
+    with VoidCodeRuntime(workspace=tmp_path, turn_producer=_AnswerProducer()) as runtime:
+        bare = runtime.session_token_usage(session_id=session_id)
+        daily = runtime.session_token_usage(session_id=session_id, scope="daily")
+        weekly = runtime.session_token_usage(session_id=session_id, scope="weekly")
+        cumulative = runtime.session_token_usage(session_id=session_id, scope="cumulative")
+    assert bare.scope == "session"
+    for scoped in (daily, weekly, cumulative):
+        assert (scoped.input_tokens, scoped.output_tokens, scoped.cost_usd) == (bare.input_tokens, bare.output_tokens, bare.cost_usd)
+    assert daily.scope == "daily" and weekly.scope == "weekly" and cumulative.scope == "cumulative"
+    with VoidCodeRuntime(workspace=tmp_path, turn_producer=_AnswerProducer()) as runtime:
+        with pytest.raises((UnknownSessionError, ValueError)):
+            runtime.session_token_usage(session_id="does-not-exist")
 
 
 def test_native_catalog_contains_info_commands(tmp_path: Path) -> None:
@@ -145,3 +242,8 @@ def test_native_catalog_contains_info_commands(tmp_path: Path) -> None:
     assert names["export"] == "native"
     assert names["copy"] == "native"
     assert names["context"] == "native"
+    assert names["mcp"] == "native"
+    assert names["hooks"] == "native"
+    assert names["skills"] == "native"
+    assert names["agents"] == "native"
+    assert names["usage"] == "native"

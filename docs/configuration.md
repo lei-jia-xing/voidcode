@@ -200,6 +200,43 @@ not markdown prompt macros and do not invoke a provider turn unless stated:
   breakdown (System prompt, Agent prompt, Tools, Goal steering, and Conversation
   history). Allowed mid-run.
 
+#### Model & approval commands
+
+- **`/model [name] [effort]`** — chooses what model and reasoning effort to use
+  for the active session. Bare `/model` opens the interactive model picker
+  overlay displaying provider models, descriptions, and reasoning effort support;
+  providing arguments (`/model <name> [effort]`) switches immediately. Model
+  switches persist to session metadata immediately without interrupting in-flight runs (no busy gate).
+- **`/permissions [preset | mode]`** — inspects or changes what VoidCode is allowed
+  to do. Bare `/permissions` opens the interactive preset picker overlay (`read-only`,
+  `auto`, `full-access`). Presets map directly to runtime approval modes (`read-only` &rarr; `ask`,
+  `auto` &rarr; `write`, `full-access` &rarr; `yolo`); passing an argument applies the mode immediately
+  to active session metadata and runtime policy. Allowed mid-run (no busy gate).
+- **`/approve [request_id]`** — approves one pending tool call or retry of a recent
+  auto-review or policy denial. If the approval queue is empty, returns an informational notice.
+  If exactly one action is pending, bare `/approve` approves it immediately; when multiple
+  actions are queued, bare `/approve` opens an interactive approval picker overlay, or specifying
+  `[request_id]` approves that specific request. Allowed mid-run (no busy gate).
+
+#### Projection commands
+
+- **`/mcp [verbose]`** — lists configured Model Context Protocol (MCP) servers and tools.
+  Bare `/mcp` shows a compact summary of server names, status, and tool counts; passing
+  `verbose` reveals detailed command, URL, environment, and transport configurations.
+  Projects runtime state non-destructively; allowed mid-run (no busy gate).
+- **`/hooks`** — inspects runtime lifecycle hooks by event surface (`session_start`,
+  `pre_tool`, `post_tool`, `session_end`). Displays configured command lines, tool match
+  patterns, and enabled status. Unconfigured reads as disabled with empty surfaces. Allowed mid-run (no busy gate).
+- **`/skills`** — lists available skills discovered by `SkillRegistry` from workspace,
+  user, and plugin directories (`$skill_name`), showing descriptions and argument hints.
+  Projects registered capabilities non-destructively; allowed mid-run (no busy gate).
+- **`/agents`** — views active agent sessions, child tasks, and primary agent presets
+  (`default`, `review`). Reports current session identity, running child delegations, and
+  available subagent profiles. Allowed mid-run (no busy gate).
+- **`/usage [daily | weekly | cumulative]`** — displays token consumption (input, output,
+  cache read/write), total USD cost, and turn count for the session, or filtered by temporal
+  scope. Estimation is measured-provider-usage-first with exact per-model tokenizer fallback (superior to byte/4 heuristics; byte/4 only for unknown models). Allowed mid-run (no busy gate).
+
 #### Collaboration & execution actions
 
 - **`/compact`** — available for an idle active session. It asks the configured

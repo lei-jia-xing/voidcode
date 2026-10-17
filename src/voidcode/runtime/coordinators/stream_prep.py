@@ -171,15 +171,19 @@ class StreamPrepCoordinator:
     @staticmethod
     def build_skill_registry_for_workspace(workspace: Path, skills_config: RuntimeSkillsConfig | None) -> SkillRegistry:
         if skills_config is None or skills_config.enabled is not True:
-            return skill_registry_with_builtins(())
-        if skills_config.paths:
+            registry = skill_registry_with_builtins(())
+        elif skills_config.paths:
             discovered = SkillRegistry.discover(
                 workspace=workspace,
                 search_paths=skills_config.paths,
             )
+            registry = skill_registry_with_builtins(discovered.all())
         else:
             discovered = SkillRegistry.discover(workspace=workspace)
-        return skill_registry_with_builtins(discovered.all())
+            registry = skill_registry_with_builtins(discovered.all())
+        if skills_config is not None and skills_config.config:
+            registry.apply_config_rules(skills_config.config)
+        return registry
 
     def build_skill_registry(self, skills_config: RuntimeSkillsConfig | None) -> SkillRegistry:
         return self.build_skill_registry_for_workspace(self._workspace, skills_config)

@@ -17,7 +17,7 @@ grammar for the chrome
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
@@ -47,6 +47,12 @@ __all__ = [
     "ExportPickerOverlay",
     "ExportPathOverlay",
     "RenameSessionOverlay",
+    "ApprovePickerOverlay",
+    "ModelPickerOverlay",
+    "PermissionsPickerOverlay",
+    "SkillsMenuOverlay",
+    "SkillsManageOverlay",
+    "SkillsToggleItem",
 ]
 
 
@@ -1824,6 +1830,157 @@ class ExportPathOverlay(_Base):
             _hint("Type a filename and press Enter · Esc cancel", theme),
         ]
         return self._panel("Save conversation", body, width)
+
+    def viewport(self, width: int, height: int) -> list[str]:  # noqa: ARG002
+        return list(self.render(width))
+
+    def wants_fullscreen(self, _width: int, _height: int) -> bool:
+        return False
+
+
+class ModelPickerOverlay(_ChoicePickerOverlay):
+    """``/model`` selection popup listing available models and reasoning options."""
+
+    def __init__(
+        self,
+        *,
+        options: tuple[tuple[str, str], ...],
+        current_model: str | None = None,
+        theme: Theme | None = None,
+    ) -> None:
+        super().__init__(title="Select model", options=options, theme=theme)
+        if current_model:
+            for idx, (val, _) in enumerate(options):
+                if val == current_model or val.endswith(f"/{current_model}"):
+                    self._highlight = idx
+                    break
+
+
+class PermissionsPickerOverlay(_ChoicePickerOverlay):
+    """``/permissions`` mode selection popup with Codex approval presets."""
+
+    PRESETS: tuple[tuple[str, str], ...] = (
+        ("read-only", "Read Only — Codex can read workspace files; approval required for edits and commands"),
+        ("auto", "Default — Codex can read and edit workspace files; approval required for commands"),
+        ("full-access", "Full Access — Codex can edit files and run commands without asking"),
+    )
+
+    def __init__(
+        self,
+        *,
+        current_preset: str | None = None,
+        theme: Theme | None = None,
+    ) -> None:
+        super().__init__(title="Permissions & Approval Mode", options=self.PRESETS, theme=theme)
+        if current_preset:
+            for idx, (val, _) in enumerate(self.PRESETS):
+                if val == current_preset:
+                    self._highlight = idx
+                    break
+
+
+class ApprovePickerOverlay(_ChoicePickerOverlay):
+    """``/approve`` selection popup for pending approval requests."""
+
+    def __init__(
+        self,
+        *,
+        options: tuple[tuple[str, str], ...],
+        theme: Theme | None = None,
+    ) -> None:
+        super().__init__(title="Auto-review Denials & Pending Approvals", options=options, theme=theme)
+
+
+@dataclass(slots=True)
+class SkillsToggleItem:
+    name: str
+    description: str
+    origin: str
+    enabled: bool
+
+
+class SkillsMenuOverlay(_ChoicePickerOverlay):
+    """``/skills`` top-level choice menu mirroring upstream Codex."""
+
+    OPTIONS: tuple[tuple[str, str], ...] = (
+        ("list", "List skills — Tip: press $ to open this list directly"),
+        ("manage", "Enable/Disable Skills — Enable or disable skills"),
+    )
+
+    def __init__(self, *, theme: Theme | None = None) -> None:
+        super().__init__(title="Skills", options=self.OPTIONS, theme=theme)
+
+
+class SkillsManageOverlay(_Base):
+    """``/skills`` manage popup with per-skill toggles (Codex parity)."""
+
+    def __init__(
+        self,
+        *,
+        items: Sequence[SkillsToggleItem],
+        on_toggle: Callable[[str, bool], None] | None = None,
+        theme: Theme | None = None,
+    ) -> None:
+        super().__init__(theme)
+        self._items = list(items)
+        self._on_toggle = on_toggle
+        self._highlight = 0
+        self._initial_state: dict[str, bool] = {item.name: item.enabled for item in items}
+
+    def handle_key(self, key: Key) -> OverlayOutcome:
+        if key.name in {"escape", "ctrl+c"}:
+            enabled_count = 0
+            disabled_count = 0
+            for item in self._items:
+                was_enabled = self._initial_state.get(item.name)
+                if was_enabled is not None and was_enabled != item.enabled:
+                    if item.enabled:
+                        enabled_count += 1
+                    else:
+                        disabled_count += 1
+            return _done((enabled_count, disabled_count))
+        if key.name in {"up", "k"}:
+            if self._items:
+                self._highlight = (self._highlight - 1) % len(self._items)
+            return _PENDING
+        if key.name in {"down", "j"}:
+            if self._items:
+                self._highlight = (self._highlight + 1) % len(self._items)
+            return _PENDING
+        if key.name in {"space", "enter"}:
+            if self._items and 0 <= self._highlight < len(self._items):
+                item = self._items[self._highlight]
+                item.enabled = not item.enabled
+                if self._on_toggle is not None:
+                    self._on_toggle(item.name, item.enabled)
+            return _PENDING
+        return _PENDING
+
+    def render(self, width: int) -> Sequence[str]:
+        avail = _body_width(width)
+        if avail <= 0:
+            return []
+        theme = self._theme
+        cursor = theme.symbol("nav.cursor")
+        body: list[str] = [
+            theme.fg("muted", "Turn skills on or off. Your changes are saved automatically."),
+            "",
+        ]
+        if not self._items:
+            body.append(theme.fg("muted", "No skills available."))
+        else:
+            for index, item in enumerate(self._items):
+                pointer = cursor if index == self._highlight else " "
+                marker = "x" if item.enabled else " "
+                name_line = f"{pointer} [{marker}] {item.name} ({item.origin})"
+                styled_name = self._bold("accent", name_line) if index == self._highlight else theme.fg("text", name_line)
+                body.extend(self._wrap(styled_name, avail))
+                if item.description:
+                    desc_line = f"    {item.description}"
+                    body.extend(self._wrap(theme.fg("muted", desc_line), avail))
+        body.append("")
+        body.append(_hint("↑/↓ move · Space/Enter toggle · Esc close", theme))
+        return self._panel("Enable/Disable Skills", body, width)
 
     def viewport(self, width: int, height: int) -> list[str]:  # noqa: ARG002
         return list(self.render(width))

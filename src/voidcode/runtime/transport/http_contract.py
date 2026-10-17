@@ -377,6 +377,21 @@ ExpandItemsQuery = Annotated[
     ),
     BeforeValidator(_coerce_show_thinking),
 ]
+VerboseQuery = Annotated[
+    bool,
+    Query(
+        summary="Full detail (`/mcp verbose`)",
+        description="False returns the compact server summary; true adds command, url, stage, and error detail.",
+    ),
+    BeforeValidator(_coerce_show_thinking),
+]
+UsageScopeQuery = Annotated[
+    str,
+    Query(
+        summary="Token activity scope (`/usage [daily|weekly|cumulative]`)",
+        description="Session scope only: daily, weekly, and cumulative all project the same session totals.",
+    ),
+]
 
 
 @final
@@ -831,3 +846,30 @@ class _RenameSessionRequestPayload(_HttpBoundaryModel):
         if not isinstance(title_val, str) or not title_val.strip():
             raise ValueError("Thread name cannot be empty.")
         return {"title": " ".join(title_val.split())}
+
+
+class _SessionModelRequestPayload(_HttpBoundaryModel):
+    model: str = Field(default="", validate_default=True)
+    reasoning_effort: str | None = None
+
+    @field_validator("model", mode="before")
+    @classmethod
+    def _validate_model(cls, value: object) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("model must be a non-empty string")
+        return value.strip()
+
+
+class _SessionPermissionsRequestPayload(_HttpBoundaryModel):
+    mode: str = Field(default="", validate_default=True)
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def _validate_mode(cls, value: object) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("mode must be a non-empty string")
+        return value.strip()
+
+
+class _ApproveActionRequestPayload(_HttpBoundaryModel):
+    request_id: str | None = None

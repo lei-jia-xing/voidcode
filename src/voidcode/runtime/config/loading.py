@@ -173,9 +173,17 @@ class RuntimeFormatterConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeSkillConfig:
+    name: str | None = None
+    path: str | None = None
+    enabled: bool = True
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeSkillsConfig:
     enabled: bool | None = None
     paths: tuple[str, ...] = ()
+    config: tuple[RuntimeSkillConfig, ...] = ()
 
 
 def _empty_context_window_tool_limits() -> dict[str, int]:
@@ -535,7 +543,7 @@ def load_runtime_config(
         hooks=_merge_hooks_configs(user=global_config.hooks, repo_local=repo_local.hooks),
         formatter=repo_local.formatter,
         tools=repo_local.tools,
-        skills=repo_local.skills,
+        skills=_merge_skills_configs(user=global_config.skills, repo_local=repo_local.skills),
         context_window=repo_local.context_window,
         lsp=resolved_lsp,
         background_task=repo_local.background_task or RuntimeBackgroundTaskConfig(),
@@ -687,6 +695,7 @@ def _load_user_config(env: Mapping[str, str]) -> RuntimeConfigOverrides:
         providers=providers,
         components=_component_selections_from_payload(config_payload.components, provenance=str(config_path)),
         hooks=_hooks_config_from_payload(config_payload.hooks),
+        skills=_skills_config_from_payload(config_payload.skills),
     )
 
 
@@ -904,7 +913,35 @@ def _parse_tools_config(
 def _skills_config_from_payload(payload: SkillsPayload | None) -> RuntimeSkillsConfig | None:
     if payload is None:
         return None
-    return RuntimeSkillsConfig(enabled=payload.enabled, paths=payload.paths or ())
+    config_entries: list[RuntimeSkillConfig] = []
+    if payload.config:
+        for entry in payload.config:
+            config_entries.append(RuntimeSkillConfig(name=entry.name, path=entry.path, enabled=entry.enabled))
+    return RuntimeSkillsConfig(enabled=payload.enabled, paths=payload.paths or (), config=tuple(config_entries))
+
+
+def _merge_skills_configs(
+    *,
+    user: RuntimeSkillsConfig | None,
+    repo_local: RuntimeSkillsConfig | None,
+) -> RuntimeSkillsConfig | None:
+    if user is None:
+        return repo_local
+    if repo_local is None:
+        return user
+    enabled = repo_local.enabled if repo_local.enabled is not None else user.enabled
+    paths = repo_local.paths if repo_local.paths else user.paths
+    merged_rules: list[RuntimeSkillConfig] = list(user.config)
+    for local_rule in repo_local.config:
+        selector_matched = False
+        for idx, rule in enumerate(merged_rules):
+            if (local_rule.name and rule.name == local_rule.name) or (local_rule.path and rule.path == local_rule.path):
+                merged_rules[idx] = local_rule
+                selector_matched = True
+                break
+        if not selector_matched:
+            merged_rules.append(local_rule)
+    return RuntimeSkillsConfig(enabled=enabled, paths=paths, config=tuple(merged_rules))
 
 
 def _context_window_config_from_payload(payload: ContextWindowPayload | None) -> RuntimeContextWindowConfig | None:
@@ -1823,6 +1860,52 @@ def save_tui_appearance_config(scope: Literal["user", "workspace"], workspace: P
     tui_payload = dict(raw_tui) if isinstance(raw_tui, dict) else {}
     tui_payload.update(_tui_appearance_payload(config))
     payload["tui"] = tui_payload
+    from .schema import write_runtime_config_payload, write_user_runtime_config_payload
+
+    return write_user_runtime_config_payload(payload) if scope == "user" else write_runtime_config_payload(workspace, payload)
+
+
+def save_skill_enablement_config(
+    name: str,
+    enabled: bool,
+    *,
+    workspace: Path,
+    scope: Literal["user", "workspace"] = "workspace",
+) -> Path:
+    config_path = user_runtime_config_path() if scope == "user" else runtime_config_path(workspace.resolve())
+    payload = _read_json_object(config_path)
+    if config_path.exists():
+        if scope == "user":
+            validate_config_model(UserConfigPayload, payload, context={"config_file": str(config_path)})
+        else:
+            validate_config_model(RuntimeConfigPayload, payload, context={"config_file": str(config_path)})
+
+    raw_skills = payload.get("skills")
+    skills_payload: dict[str, object] = dict(raw_skills) if isinstance(raw_skills, dict) else {}
+    raw_config = skills_payload.get("config")
+    config_list = [dict(c) for c in raw_config if isinstance(c, dict)] if isinstance(raw_config, list) else []
+
+    found = False
+    for item in config_list:
+        if item.get("name") == name:
+            item["enabled"] = enabled
+            found = True
+            break
+    if not found:
+        config_list.append({"name": name, "enabled": enabled})
+
+    if enabled:
+        config_list = [c for c in config_list if c.get("name") != name]
+
+    if config_list:
+        skills_payload["config"] = config_list
+    else:
+        skills_payload.pop("config", None)
+
+    if "enabled" not in skills_payload:
+        skills_payload["enabled"] = True
+
+    payload["skills"] = skills_payload
     from .schema import write_runtime_config_payload, write_user_runtime_config_payload
 
     return write_user_runtime_config_payload(payload) if scope == "user" else write_runtime_config_payload(workspace, payload)

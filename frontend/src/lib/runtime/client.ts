@@ -31,6 +31,11 @@ import {
   SessionExportWrite,
   SessionCopyTargets,
   SessionContextUsage,
+  SessionMcpInventory,
+  SessionHooksListing,
+  SessionSkillsListing,
+  SessionAgentsOverview,
+  SessionTokenUsage,
   SideQuestionResult,
   UserShellResult,
   SkillSummary,
@@ -73,6 +78,7 @@ const ROUTES = {
   providerValidate: "/api/providers/{provider_name}/validate",
   agents: "/api/agents",
   skills: "/api/skills",
+  skillsToggle: "/api/skills/toggle",
   commands: "/api/commands",
   status: "/api/status",
   statusMcpRetry: "/api/status/mcp/retry",
@@ -93,11 +99,20 @@ const ROUTES = {
   sessionInfoExport: "/api/sessions/{session_id}/info/export",
   sessionInfoCopyTargets: "/api/sessions/{session_id}/info/copy-targets",
   sessionInfoContext: "/api/sessions/{session_id}/info/context",
+  sessionInfoMcp: "/api/sessions/{session_id}/info/mcp",
+  sessionInfoHooks: "/api/sessions/{session_id}/info/hooks",
+  sessionInfoSkills: "/api/sessions/{session_id}/info/skills",
+  sessionInfoAgents: "/api/sessions/{session_id}/info/agents",
+  sessionInfoUsage: "/api/sessions/{session_id}/info/usage",
 } as const satisfies Record<string, keyof paths>;
 const NATIVE_ROUTES = {
   sessionCollaborationMode: "/api/sessions/{session_id}/collaboration-mode",
   sessionReview: "/api/sessions/{session_id}/review",
   sessionBtw: "/api/sessions/{session_id}/btw",
+  sessionModel: "/api/sessions/{session_id}/model",
+  sessionPermissions: "/api/sessions/{session_id}/permissions",
+  sessionPendingApprovals: "/api/sessions/{session_id}/pending-approvals",
+  sessionApprove: "/api/sessions/{session_id}/approve",
 } as const;
 
 export class RuntimeClientError extends Error {
@@ -379,6 +394,22 @@ export class RuntimeClient {
     return res.json();
   }
 
+  static async toggleSkill(
+    name: string,
+    enabled: boolean,
+    scope: "workspace" | "user" = "workspace",
+    signal?: AbortSignal,
+  ): Promise<{ name: string; enabled: boolean }> {
+    const res = await fetch(ROUTES.skillsToggle, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, enabled, scope }),
+      signal,
+    });
+    await expectOk(res, "Failed to toggle skill");
+    return res.json();
+  }
+
   static async listCommands(signal?: AbortSignal): Promise<CommandSummary[]> {
     const res = await fetchQuery(ROUTES.commands, signal);
     await expectOk(res, "Failed to load commands");
@@ -587,6 +618,80 @@ export class RuntimeClient {
     });
     const res = await fetchQuery(expand ? `${base}?expand=true` : base, signal);
     await expectOk(res, "Failed to load context usage");
+    return res.json();
+  }
+
+  static async getSessionMcpInventory(
+    sessionId: string,
+    verbose = false,
+    signal?: AbortSignal,
+  ): Promise<SessionMcpInventory> {
+    const base = apiPath(ROUTES.sessionInfoMcp, {
+      session_id: encodeURIComponent(sessionId),
+    });
+    const res = await fetchQuery(
+      verbose ? `${base}?verbose=true` : base,
+      signal,
+    );
+    await expectOk(res, "Failed to load MCP inventory");
+    return res.json();
+  }
+
+  static async getSessionHooksListing(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<SessionHooksListing> {
+    const res = await fetchQuery(
+      apiPath(ROUTES.sessionInfoHooks, {
+        session_id: encodeURIComponent(sessionId),
+      }),
+      signal,
+    );
+    await expectOk(res, "Failed to load hooks");
+    return res.json();
+  }
+
+  static async getSessionSkillsListing(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<SessionSkillsListing> {
+    const res = await fetchQuery(
+      apiPath(ROUTES.sessionInfoSkills, {
+        session_id: encodeURIComponent(sessionId),
+      }),
+      signal,
+    );
+    await expectOk(res, "Failed to load skills");
+    return res.json();
+  }
+
+  static async getSessionAgentsOverview(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<SessionAgentsOverview> {
+    const res = await fetchQuery(
+      apiPath(ROUTES.sessionInfoAgents, {
+        session_id: encodeURIComponent(sessionId),
+      }),
+      signal,
+    );
+    await expectOk(res, "Failed to load agents overview");
+    return res.json();
+  }
+
+  static async getSessionTokenUsage(
+    sessionId: string,
+    scope = "session",
+    signal?: AbortSignal,
+  ): Promise<SessionTokenUsage> {
+    const base = apiPath(ROUTES.sessionInfoUsage, {
+      session_id: encodeURIComponent(sessionId),
+    });
+    const res = await fetchQuery(
+      `${base}?scope=${encodeURIComponent(scope)}`,
+      signal,
+    );
+    await expectOk(res, "Failed to load token usage");
     return res.json();
   }
 
@@ -890,5 +995,131 @@ export class RuntimeClient {
     });
 
     yield* readSseStream(res, "Stream request failed");
+  }
+
+  static async getSessionModel(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<{
+    session_id: string;
+    model: string;
+    reasoning_effort?: string | null;
+    provider?: string | null;
+  }> {
+    const res = await fetch(
+      apiPath(NATIVE_ROUTES.sessionModel, { session_id: sessionId }),
+      { signal },
+    );
+    await expectOk(res, "Failed to get session model");
+    return res.json();
+  }
+
+  static async setSessionModel(
+    sessionId: string,
+    model: string,
+    reasoningEffort?: string | null,
+    signal?: AbortSignal,
+  ): Promise<{
+    session_id: string;
+    model: string;
+    reasoning_effort?: string | null;
+  }> {
+    const res = await fetch(
+      apiPath(NATIVE_ROUTES.sessionModel, { session_id: sessionId }),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          reasoning_effort: reasoningEffort ?? null,
+        }),
+        signal,
+      },
+    );
+    await expectOk(res, "Failed to set session model");
+    return res.json();
+  }
+
+  static async getSessionPermissions(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<{
+    session_id: string;
+    approval_mode: string;
+    preset: string;
+    read_only?: boolean | null;
+  }> {
+    const res = await fetch(
+      apiPath(NATIVE_ROUTES.sessionPermissions, { session_id: sessionId }),
+      { signal },
+    );
+    await expectOk(res, "Failed to get session permissions");
+    return res.json();
+  }
+
+  static async setSessionPermissions(
+    sessionId: string,
+    mode: string,
+    signal?: AbortSignal,
+  ): Promise<{ session_id: string; approval_mode: string; preset: string }> {
+    const res = await fetch(
+      apiPath(NATIVE_ROUTES.sessionPermissions, { session_id: sessionId }),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode }),
+        signal,
+      },
+    );
+    await expectOk(res, "Failed to set session permissions");
+    return res.json();
+  }
+
+  static async getPendingApprovals(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<
+    Array<{
+      request_id: string;
+      tool_name: string;
+      arguments: Record<string, unknown>;
+      target_summary: string;
+      reason: string;
+      policy_mode: string;
+      session_id: string;
+    }>
+  > {
+    const res = await fetch(
+      apiPath(NATIVE_ROUTES.sessionPendingApprovals, { session_id: sessionId }),
+      { signal },
+    );
+    await expectOk(res, "Failed to get pending approvals");
+    return res.json();
+  }
+
+  static async approveAction(
+    sessionId: string,
+    requestId?: string | null,
+    signal?: AbortSignal,
+  ): Promise<{
+    approved: boolean;
+    session_id?: string | null;
+    request_id?: string | null;
+    tool_name?: string | null;
+    target_summary?: string | null;
+    reason?: string | null;
+    message?: string | null;
+  }> {
+    const res = await fetch(
+      apiPath(NATIVE_ROUTES.sessionApprove, { session_id: sessionId }),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ request_id: requestId ?? null }),
+        signal,
+      },
+    );
+    await expectOk(res, "Failed to approve action");
+    return res.json();
   }
 }

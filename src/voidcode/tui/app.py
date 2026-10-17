@@ -44,11 +44,11 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
-from typing import Final
+from typing import Final, cast
 
 from pydantic import ValidationError
 
-from ..command.native import INIT_PROMPT, NATIVE_COMMANDS_BY_NAME
+from ..command.native import INIT_PROMPT, NATIVE_COMMANDS, NATIVE_COMMANDS_BY_NAME
 from ..core.questions import QuestionCancellation, QuestionResponse
 from ..core.tool_context import (
     ArtifactBinary,
@@ -78,9 +78,14 @@ from ..runtime.contracts import (
     ReviewTarget,
     RuntimeRequest,
     RuntimeStreamChunk,
+    SessionAgentsOverview,
     SessionContextUsage,
     SessionExport,
+    SessionHooksListing,
+    SessionMcpInventory,
+    SessionSkillsListing,
     SessionStatusPanel,
+    SessionTokenUsage,
 )
 from ..runtime.events import EventEnvelope
 from ..runtime.permissions.policy import ApprovalMode
@@ -99,14 +104,17 @@ from .keys import Key, KeyDecoder
 from .overlay import (
     AppearanceOverlay,
     ApprovalOverlay,
+    ApprovePickerOverlay,
     CopyPickerOverlay,
     ExportPathOverlay,
     ExportPickerOverlay,
     GoalConfirmOverlay,
     HelpOverlay,
+    ModelPickerOverlay,
     Overlay,
     OverlayOutcome,
     OverlayOutcomeKind,
+    PermissionsPickerOverlay,
     PromptHistoryOverlay,
     QuestionOverlay,
     RenameSessionOverlay,
@@ -116,6 +124,9 @@ from .overlay import (
     ReviewPresetPickerOverlay,
     SessionPickerOverlay,
     SideQuestionOverlay,
+    SkillsManageOverlay,
+    SkillsMenuOverlay,
+    SkillsToggleItem,
     ToolArtifactOverlay,
     TreeSelectorOverlay,
 )
@@ -348,7 +359,18 @@ class _NativeBtwResult:
 class _NativeInfoResult:
     session_id: str
     kind: str = ""
-    result: SessionStatusPanel | SessionExport | tuple[CopyTarget, ...] | SessionContextUsage | None = None
+    result: (
+        SessionStatusPanel
+        | SessionExport
+        | tuple[CopyTarget, ...]
+        | SessionContextUsage
+        | SessionMcpInventory
+        | SessionHooksListing
+        | SessionSkillsListing
+        | SessionAgentsOverview
+        | SessionTokenUsage
+        | None
+    ) = None
     error: object | None = None
 
 
@@ -1070,6 +1092,10 @@ class TuiApp:
             if isinstance(call_id, str) and call_id:
                 if tool_picker:
                     self._select_tool_artifact(call_id)
+                elif self._session_id is not None and call_id == self._session_id:
+                    self._notice("This session is already active.")
+                elif self._streaming:
+                    self._notice("Session switch is disabled while a task is in progress.")
                 else:
                     self._open_resumed_session(call_id)
         elif isinstance(overlay, TreeSelectorOverlay):
@@ -1148,6 +1174,35 @@ class TuiApp:
             self._close_overlay()
             if isinstance(filename, str) and filename:
                 self._write_export_file(filename)
+        elif isinstance(overlay, ModelPickerOverlay):
+            choice = outcome.payload if outcome.kind is OverlayOutcomeKind.DONE else None
+            self._close_overlay()
+            if isinstance(choice, str) and choice:
+                self._apply_session_model(choice)
+        elif isinstance(overlay, PermissionsPickerOverlay):
+            preset = outcome.payload if outcome.kind is OverlayOutcomeKind.DONE else None
+            self._close_overlay()
+            if isinstance(preset, str) and preset:
+                self._apply_session_permissions(preset)
+        elif isinstance(overlay, ApprovePickerOverlay):
+            request_id = outcome.payload if outcome.kind is OverlayOutcomeKind.DONE else None
+            self._close_overlay()
+            if isinstance(request_id, str) and request_id:
+                self._resolve_approval(request_id, "allow")
+        elif isinstance(overlay, SkillsMenuOverlay):
+            choice = outcome.payload if outcome.kind is OverlayOutcomeKind.DONE else None
+            self._close_overlay()
+            if choice == "list" and self._session_id is not None:
+                self._run_info_worker("skills", self._session_id)
+            elif choice == "manage":
+                self._open_manage_skills_popup()
+        elif isinstance(overlay, SkillsManageOverlay):
+            result = outcome.payload if outcome.kind is OverlayOutcomeKind.DONE else None
+            self._close_overlay()
+            if isinstance(result, tuple) and len(result) == 2:
+                enabled_count, disabled_count = result
+                if enabled_count > 0 or disabled_count > 0:
+                    self._notice(f"{enabled_count} skills enabled, {disabled_count} skills disabled")
         else:
             prompt = outcome.payload if outcome.kind is OverlayOutcomeKind.DONE else None
             self._close_overlay()
@@ -1184,7 +1239,8 @@ class TuiApp:
                         self._notice(f"/{name} does not accept arguments")
                         return
                 elif native_cmd.arg_rule == "enum":
-                    if arguments.strip() not in native_cmd.allowed_args:
+                    # Upstream matches enum args case-insensitively (/mcp VERBOSE works).
+                    if arguments.strip().lower() not in native_cmd.allowed_args:
                         allowed = ", ".join(repr(a) for a in native_cmd.allowed_args if a)
                         self._notice(f"/{name} accepts only {allowed}")
                         return
@@ -1218,7 +1274,7 @@ class TuiApp:
         elif name == "diff":
             self._command_native_diff()
         elif name == "plan":
-            self._command_native_plan(arguments.strip() == "off")
+            self._command_native_plan(arguments.strip().lower() == "off")
         elif name == "review":
             self._command_native_review(arguments)
         elif name == "goal":
@@ -1244,7 +1300,23 @@ class TuiApp:
         elif name == "copy":
             self._command_native_copy()
         elif name == "context":
-            self._command_native_context(arguments.strip() == "all")
+            self._command_native_context(arguments.strip().lower() == "all")
+        elif name == "mcp":
+            self._command_native_mcp(arguments.strip().lower() == "verbose")
+        elif name == "hooks":
+            self._command_native_hooks()
+        elif name == "skills":
+            self._command_native_skills()
+        elif name == "agents":
+            self._command_native_agents()
+        elif name == "usage":
+            self._command_native_usage(arguments.strip().lower() or "session")
+        elif name == "approve":
+            self._command_native_approve(arguments)
+        elif name == "model":
+            self._command_native_model(arguments)
+        elif name == "permissions":
+            self._command_native_permissions(arguments)
 
     def _command_native_init(self) -> None:
         self._start_prompt(INIT_PROMPT)
@@ -1648,6 +1720,16 @@ class TuiApp:
                 result = self._runtime.export_session_markdown(session_id=session_id)
             elif kind == "copy":
                 result = self._runtime.copy_targets(session_id=session_id)
+            elif kind == "mcp":
+                result = self._runtime.session_mcp_inventory(session_id=session_id, verbose=bool(args[0]) if args else False)
+            elif kind == "hooks":
+                result = self._runtime.session_hooks_listing(session_id=session_id)
+            elif kind == "skills":
+                result = self._runtime.session_skills_listing(session_id=session_id)
+            elif kind == "agents":
+                result = self._runtime.session_agents_overview(session_id=session_id)
+            elif kind == "usage":
+                result = self._runtime.session_token_usage(session_id=session_id, scope=str(args[0]) if args else "session")
             else:
                 result = self._runtime.session_context_usage(session_id=session_id, expand_items=bool(args[0]) if args else False)
         except Exception as error:
@@ -1670,6 +1752,16 @@ class TuiApp:
             self._open_copy_picker(item.result)
         elif item.kind == "context" and isinstance(item.result, SessionContextUsage):
             self._render_context_usage(item.result)
+        elif item.kind == "mcp" and isinstance(item.result, SessionMcpInventory):
+            self._render_mcp_inventory(item.result)
+        elif item.kind == "hooks" and isinstance(item.result, SessionHooksListing):
+            self._render_hooks_listing(item.result)
+        elif item.kind == "skills" and isinstance(item.result, SessionSkillsListing):
+            self._render_skills_listing(item.result)
+        elif item.kind == "agents" and isinstance(item.result, SessionAgentsOverview):
+            self._render_agents_overview(item.result)
+        elif item.kind == "usage" and isinstance(item.result, SessionTokenUsage):
+            self._render_token_usage(item.result)
         else:
             self._notice(f"✖ /{item.kind} failed: unexpected response")
 
@@ -1848,6 +1940,319 @@ class TuiApp:
             return ""
         filled = max(0, min(width, round(percent / 100 * width)))
         return "[" + "█" * filled + "░" * (width - filled) + "]"
+
+    def _command_native_mcp(self, verbose: bool) -> None:
+        # No idle gate: read-only projection, safe mid-stream (Codex parity).
+        if self._session_id is None:
+            self._notice("✖ /mcp requires an active session")
+            return
+        self._run_info_worker("mcp", self._session_id, verbose)
+
+    def _render_mcp_inventory(self, inventory: SessionMcpInventory | None) -> None:
+        assert self._view is not None
+        if inventory is None:
+            self._notice("✖ /mcp failed: empty response")
+            return
+        lines = ["MCP Tools"]
+        if not inventory.servers:
+            lines.append("  • No MCP servers configured.")
+        for server in inventory.servers:
+            count = f" ({server.tool_count} tools)" if server.tool_count is not None else " (tools undiscovered)"
+            lines.append(f"  • {server.name}: {server.status}{count}")
+            if not inventory.verbose:
+                continue
+            lines.append(f"    • Auth: {server.auth or '—'}")
+            lines.append(f"    • Tools: {', '.join(server.tools) if server.tools else '(none)'}")
+            if server.command:
+                lines.append(f"    • Command: {' '.join(server.command)}")
+            if server.url:
+                lines.append(f"    • URL: {server.url}")
+            if server.stage:
+                lines.append(f"    • Stage: {server.stage}")
+            if server.error:
+                lines.append(f"    • Error: {server.error}")
+        self._view.transcript().add(NoticeBlock(text="\n".join(lines)))
+        self._dirty = True
+
+    def _command_native_hooks(self) -> None:
+        # No idle gate: read-only projection, safe mid-stream (Codex parity).
+        if self._session_id is None:
+            self._notice("✖ /hooks requires an active session")
+            return
+        self._run_info_worker("hooks", self._session_id)
+
+    def _render_hooks_listing(self, listing: SessionHooksListing | None) -> None:
+        assert self._view is not None
+        if listing is None:
+            self._notice("✖ /hooks failed: empty response")
+            return
+        lines = ["Hooks" + ("" if listing.enabled else " (disabled)")]
+        rows = [surface for surface in listing.surfaces if surface.commands]
+        if not rows:
+            lines.append("  • No lifecycle hooks configured.")
+        for surface in rows:
+            lines.append(f"  • {surface.surface}")
+            for command in surface.commands:
+                lines.append(f"    • {command}")
+            if surface.match:
+                lines.append(f"    • match: {', '.join(surface.match)}")
+        self._view.transcript().add(NoticeBlock(text="\n".join(lines)))
+        self._dirty = True
+
+    def _command_native_skills(self) -> None:
+        # No idle gate: read-only projection, safe mid-stream (Codex parity).
+        if self._session_id is None:
+            self._notice("✖ /skills requires an active session")
+            return
+        self._overlay = SkillsMenuOverlay(theme=self._theme)
+        self._overlay_request_id = ""
+        if self._composer is not None:
+            self._composer.set_enabled(False)
+        self._dirty = True
+
+    def _open_manage_skills_popup(self) -> None:
+        if self._session_id is None:
+            return
+        listing = self._runtime.session_skills_listing(session_id=self._session_id)
+        if listing is None or not listing.skills:
+            self._notice("No skills available.")
+            return
+        items = [
+            SkillsToggleItem(
+                name=skill.name,
+                description=skill.description,
+                origin=skill.origin,
+                enabled=skill.enabled,
+            )
+            for skill in listing.skills
+        ]
+
+        def _handle_toggle(skill_name: str, enabled: bool) -> None:
+            try:
+                self._runtime.set_skill_enabled(name=skill_name, enabled=enabled)
+            except Exception as exc:
+                self._notice(f"✖ Failed to toggle skill {skill_name}: {exc}")
+
+        self._overlay = SkillsManageOverlay(items=items, on_toggle=_handle_toggle, theme=self._theme)
+        self._overlay_request_id = ""
+        if self._composer is not None:
+            self._composer.set_enabled(False)
+        self._dirty = True
+
+    def _render_skills_listing(self, listing: SessionSkillsListing | None) -> None:
+        assert self._view is not None
+        if listing is None:
+            self._notice("✖ /skills failed: empty response")
+            return
+        lines = ["Skills"]
+        if not listing.skills:
+            lines.append("  • No skills available.")
+        for skill in listing.skills:
+            lines.append(f"  • {skill.name} ({skill.origin}): {skill.description}")
+        self._view.transcript().add(NoticeBlock(text="\n".join(lines)))
+        self._dirty = True
+
+    def _command_native_agents(self) -> None:
+        # No idle gate: read-only projection, safe mid-stream (Codex parity).
+        if self._session_id is None:
+            self._notice("✖ /agents requires an active session")
+            return
+        self._run_info_worker("agents", self._session_id)
+
+    def _render_agents_overview(self, overview: SessionAgentsOverview | None) -> None:
+        assert self._view is not None
+        if overview is None:
+            self._notice("✖ /agents failed: empty response")
+            return
+        lines = ["Agents"]
+        lines.append("  Sessions:")
+        if not overview.sessions:
+            lines.append("    • (none)")
+        for row in overview.sessions:
+            marker = " (current)" if row.session_id == overview.current_session_id else ""
+            title = f" ({row.title})" if row.title else ""
+            lines.append(f"    • {row.session_id}{title}: {row.status} · turn {row.turn}{marker}")
+        lines.append("  Background tasks:")
+        if not overview.tasks:
+            lines.append("    • (none)")
+        for row in overview.tasks:
+            child = f" → {row.child_session_id}" if row.child_session_id else ""
+            lines.append(f"    • {row.task_id}: {row.status}{child}")
+        lines.append("  Presets:")
+        if not overview.presets:
+            lines.append("    • (none)")
+        for preset in overview.presets:
+            lines.append(f"    • {preset.id}: {preset.label}")
+        self._view.transcript().add(NoticeBlock(text="\n".join(lines)))
+        if overview.sessions and self._overlay is None:
+            entries: list[tuple[str, str]] = []
+            for row in overview.sessions:
+                s_title = row.title if row.title else short_session_id(row.session_id)
+                kind = f" [{row.kind}]" if row.kind and row.kind not in {"main", "top_level"} else ""
+                current = " (current)" if row.session_id == overview.current_session_id else ""
+                entries.append((row.session_id, f"{s_title}{kind} · {row.status} · turn {row.turn}{current}"))
+            self._overlay = SessionPickerOverlay(
+                sessions=entries,
+                theme=self._theme,
+                title="Active Agents",
+                action="switch",
+            )
+            self._overlay_request_id = ""
+            if self._composer is not None:
+                self._composer.set_enabled(False)
+            self._enter_alt_screen()
+        self._dirty = True
+
+    def _command_native_usage(self, scope: str) -> None:
+        # No idle gate: read-only projection, safe mid-stream (Codex parity).
+        if self._session_id is None:
+            self._notice("✖ /usage requires an active session")
+            return
+        self._run_info_worker("usage", self._session_id, scope)
+
+    def _render_token_usage(self, usage: SessionTokenUsage | None) -> None:
+        assert self._view is not None
+        if usage is None:
+            self._notice("✖ /usage failed: empty response")
+            return
+        lines = [f"Usage ({usage.scope})"]
+        if usage.model:
+            lines.append(f"Model: {usage.model}")
+        lines.append(f"Input: {usage.input_tokens if usage.input_tokens is not None else '—'}")
+        lines.append(f"Output: {usage.output_tokens if usage.output_tokens is not None else '—'}")
+        lines.append(f"Cache read: {usage.cache_read_tokens if usage.cache_read_tokens is not None else '—'}")
+        lines.append(f"Cache write: {usage.cache_write_tokens if usage.cache_write_tokens is not None else '—'}")
+        lines.append(f"Cost: ${usage.cost_usd:.4f}" if usage.cost_usd is not None else "Cost: —")
+        if usage.turn_count is not None:
+            lines.append(f"Turns: {usage.turn_count}")
+        if usage.estimated:
+            lines.append("(estimated — no provider usage anchor yet)")
+        self._view.transcript().add(NoticeBlock(text="\n".join(lines)))
+        self._dirty = True
+
+    def _command_native_model(self, arguments: str = "") -> None:
+        if self._session_id is None:
+            self._notice("Model selection is disabled until startup completes.")
+            return
+        arg = arguments.strip()
+        if arg:
+            parts = arg.split(maxsplit=1)
+            model_name = parts[0]
+            effort = parts[1] if len(parts) > 1 else None
+            self._apply_session_model(model_name, effort)
+            return
+
+        try:
+            models_info = self._runtime.list_available_models()
+        except Exception:
+            self._notice("Models are being updated; please try /model again in a moment.")
+            return
+
+        if not models_info:
+            current = self._runtime.session_model(session_id=self._session_id)
+            cur_model = cast(str, current.get("model") or "default")
+            options = ((cur_model, f"{cur_model} (current)"),)
+        else:
+            options = tuple(
+                (cast(str, m["model"]), f"{m['model']}{' — ' + str(m['description']) if m.get('description') else ''}") for m in models_info
+            )
+
+        current = self._runtime.session_model(session_id=self._session_id)
+        current_model = cast(str | None, current.get("model"))
+        self._overlay = ModelPickerOverlay(options=options, current_model=current_model, theme=self._theme)
+        self._overlay_request_id = ""
+        if self._composer is not None:
+            self._composer.set_enabled(False)
+        self._dirty = True
+
+    def _apply_session_model(self, model: str, reasoning_effort: str | None = None) -> None:
+        if self._session_id is None:
+            self._notice("Model selection is disabled until startup completes.")
+            return
+        try:
+            result = self._runtime.set_session_model(
+                session_id=self._session_id,
+                model=model,
+                reasoning_effort=reasoning_effort,
+            )
+        except Exception as error:
+            self._notice(f"✖ /model failed: {format_runtime_error(error)}")
+        else:
+            self._model = cast(str, result.get("model", model))
+            effort_suffix = f" (effort: {reasoning_effort})" if reasoning_effort else ""
+            self._notice(f"✓ Model set to {self._model}{effort_suffix}")
+
+    def _command_native_permissions(self, arguments: str = "") -> None:
+        if self._session_id is None:
+            self._notice("✖ /permissions requires an active session")
+            return
+        arg = arguments.strip()
+        if arg:
+            self._apply_session_permissions(arg)
+            return
+
+        current = self._runtime.session_permissions(session_id=self._session_id)
+        current_preset = cast(str | None, current.get("preset"))
+        self._overlay = PermissionsPickerOverlay(current_preset=current_preset, theme=self._theme)
+        self._overlay_request_id = ""
+        if self._composer is not None:
+            self._composer.set_enabled(False)
+        self._dirty = True
+
+    def _apply_session_permissions(self, preset_or_mode: str) -> None:
+        if self._session_id is None:
+            self._notice("✖ /permissions requires an active session")
+            return
+        try:
+            result = self._runtime.set_session_permissions(
+                session_id=self._session_id,
+                mode=preset_or_mode,
+            )
+        except Exception as error:
+            self._notice(f"✖ /permissions failed: {format_runtime_error(error)}")
+        else:
+            mode = cast(str, result.get("approval_mode", preset_or_mode))
+            preset = cast(str, result.get("preset", mode))
+            self._approval_mode = mode
+            self._notice(f"✓ Approval mode set to {preset} ({mode})")
+
+    def _command_native_approve(self, arguments: str = "") -> None:
+        if self._session_id is None:
+            self._notice("✖ /approve requires an active session")
+            return
+        approvals = list(self._runtime.list_pending_approvals(session_id=self._session_id))
+        if not approvals:
+            self._notice("No pending approvals in this session.")
+            return
+
+        arg = arguments.strip()
+        if arg:
+            match = next((a for a in approvals if a.get("request_id") == arg or str(a.get("tool_name")) == arg), None)
+            if match is None:
+                self._notice(f"⚠ Non-approvable or unknown request '{arg}' ignored.")
+                return
+            self._resolve_approval(cast(str, match["request_id"]), "allow")
+            return
+
+        if len(approvals) == 1:
+            req_id = cast(str, approvals[0]["request_id"])
+            tool = approvals[0].get("tool_name", "action")
+            self._resolve_approval(req_id, "allow")
+            self._notice(f"✓ Approved {tool}")
+            return
+
+        options = tuple(
+            (
+                cast(str, a["request_id"]),
+                f"{a.get('tool_name', 'tool')} — {a.get('target_summary') or a.get('reason') or a['request_id']}",
+            )
+            for a in approvals
+        )
+        self._overlay = ApprovePickerOverlay(options=options, theme=self._theme)
+        self._overlay_request_id = ""
+        if self._composer is not None:
+            self._composer.set_enabled(False)
+        self._dirty = True
 
     def _command_native_new(self, arguments: str) -> None:
         name = arguments.strip() if arguments else None
@@ -2059,7 +2464,7 @@ class TuiApp:
                 f"Statusline: {config.statusline.layout}",
                 f"Composer: {config.composer.style} · gutter={config.composer.gutter} · padding={config.composer.padding}",
                 f"Cursor: {config.composer.cursor_shape} (blink={config.composer.cursor_blink})",
-                "Native commands: /btw, /compact, /context, /copy, /diff, /export, /plan, /review, /status, !<shell command>",
+                f"Native commands: {', '.join(f'/{c.name}' if c.name != '!' else '!<shell command>' for c in NATIVE_COMMANDS)}",
                 "Appearance: " + ("saved" if self._appearance_saved else "temporary session preview; not saved"),
             )
         )

@@ -71,6 +71,21 @@ class _MockTuiRuntime:
     def session_context_usage(self, *, session_id: str, expand_items: bool = False) -> SimpleNamespace:
         return SimpleNamespace(session_id=session_id, used_tokens=10, segments=[])
 
+    def session_mcp_inventory(self, *, session_id: str, verbose: bool = False) -> None:
+        return None
+
+    def session_hooks_listing(self, *, session_id: str) -> None:
+        return None
+
+    def session_skills_listing(self, *, session_id: str) -> None:
+        return None
+
+    def session_agents_overview(self, *, session_id: str) -> None:
+        return None
+
+    def session_token_usage(self, *, session_id: str, scope: str = "session") -> None:
+        return None
+
     def get_goal(self, *, session_id: str) -> None:
         return None
 

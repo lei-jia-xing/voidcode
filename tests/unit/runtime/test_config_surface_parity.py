@@ -224,6 +224,7 @@ def _generated_corpus_rows() -> list[tuple[str, dict[str, object]]]:
 
 _HAND_WRITTEN_CORPUS: list[tuple[str, dict[str, object]]] = [
     ("top.components_empty", {"components": []}),
+    ("top.review_model_ok", {"review_model": "openai/gpt-4o"}),
     # --- mcp servers -------------------------------------------------------
     ("mcp.stdio.command_empty", {"mcp": {"servers": {"s": {"transport": "stdio", "command": []}}}}),
     ("mcp.stdio.command_empty_string", {"mcp": {"servers": {"s": {"command": [""]}}}}),

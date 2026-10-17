@@ -47,6 +47,7 @@ class SkillMetadata:
     directory: Path
     entry_path: Path
     origin: SkillOrigin = "workspace"
+    enabled: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", _validated_non_empty_string(self.name, field_name="name"))
@@ -66,5 +67,6 @@ class SkillMetadata:
         object.__setattr__(self, "directory", directory)
         object.__setattr__(self, "entry_path", entry_path)
         object.__setattr__(self, "origin", origin)
+        object.__setattr__(self, "enabled", bool(self.enabled))
         if entry_path.parent != directory:
             raise ValueError("entry_path must live inside directory")

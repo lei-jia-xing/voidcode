@@ -46,6 +46,20 @@ NATIVE_COMMANDS: Final[tuple[NativeCommand, ...]] = (
         kind="action",
     ),
     NativeCommand(
+        name="agents",
+        description="view active agent sessions and primary agent presets",
+        arg_rule="none",
+        busy_gate=False,
+        kind="action",
+    ),
+    NativeCommand(
+        name="approve",
+        description="approve one retry of a recent auto-review denial",
+        arg_rule="optional_text",
+        busy_gate=False,
+        kind="picker",
+    ),
+    NativeCommand(
         name="btw",
         description="ask a quick side question without interrupting the main conversation",
         arg_rule="optional_text",
@@ -110,6 +124,13 @@ NATIVE_COMMANDS: Final[tuple[NativeCommand, ...]] = (
         kind="action",
     ),
     NativeCommand(
+        name="hooks",
+        description="view lifecycle hooks by event",
+        arg_rule="none",
+        busy_gate=False,
+        kind="action",
+    ),
+    NativeCommand(
         name="init",
         description="create an AGENTS.md contributor guide for this repository",
         arg_rule="none",
@@ -117,11 +138,33 @@ NATIVE_COMMANDS: Final[tuple[NativeCommand, ...]] = (
         kind="action",
     ),
     NativeCommand(
+        name="mcp",
+        description="list configured MCP tools; use /mcp verbose for details",
+        arg_rule="enum",
+        busy_gate=False,
+        kind="action",
+        allowed_args=("", "verbose"),
+    ),
+    NativeCommand(
+        name="model",
+        description="choose what model and reasoning effort to use",
+        arg_rule="optional_text",
+        busy_gate=False,
+        kind="picker",
+    ),
+    NativeCommand(
         name="new",
         description="start fresh session in place",
         arg_rule="optional_text",
         busy_gate=True,
         kind="action",
+    ),
+    NativeCommand(
+        name="permissions",
+        description="choose what VoidCode is allowed to do",
+        arg_rule="optional_text",
+        busy_gate=False,
+        kind="picker",
     ),
     NativeCommand(
         name="plan",
@@ -153,11 +196,26 @@ NATIVE_COMMANDS: Final[tuple[NativeCommand, ...]] = (
         kind="picker",
     ),
     NativeCommand(
+        name="skills",
+        description="list available skills",
+        arg_rule="none",
+        busy_gate=False,
+        kind="picker",
+    ),
+    NativeCommand(
         name="status",
         description="show session, model, and usage status",
         arg_rule="none",
         busy_gate=False,
         kind="action",
+    ),
+    NativeCommand(
+        name="usage",
+        description="view session token usage",
+        arg_rule="enum",
+        busy_gate=False,
+        kind="action",
+        allowed_args=("", "daily", "weekly", "cumulative"),
     ),
 )
 

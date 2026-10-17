@@ -45,6 +45,8 @@ import {
 import { BtwDialog } from "./components/BtwDialog";
 import { ChoicePickerModal } from "./components/ChoicePickerModal";
 import { InfoDialog, type InfoDialogState } from "./components/InfoDialog";
+import { SkillsManageModal } from "./components/SkillsManageModal";
+import type { SessionSkillsListing } from "./lib/runtime/types";
 import { ReviewPanel } from "./components/ReviewPanel";
 import { ContextPanel } from "./components/ContextPanel";
 import { TodoPanel } from "./components/TodoPanel";
@@ -298,6 +300,10 @@ function App() {
   const [reviewPickerOpen, setReviewPickerOpen] = useState(false);
   const [btwBusy, setBtwBusy] = useState(false);
   const [infoDialog, setInfoDialog] = useState<InfoDialogState | null>(null);
+  const [skillsMenuListing, setSkillsMenuListing] =
+    useState<SessionSkillsListing | null>(null);
+  const [skillsManageListing, setSkillsManageListing] =
+    useState<SessionSkillsListing | null>(null);
   const [copyPicker, setCopyPicker] = useState<{
     targets: Array<{ label: string; preview: string; text: string }>;
   } | null>(null);
@@ -1077,7 +1083,12 @@ function App() {
       if (
         command === "/status" ||
         command === "/copy" ||
-        command === "/context"
+        command === "/context" ||
+        command === "/mcp" ||
+        command === "/hooks" ||
+        command === "/skills" ||
+        command === "/agents" ||
+        command === "/usage"
       ) {
         // No busy gate: read-only projections, safe mid-stream (Codex parity).
         if (!currentSessionId) {
@@ -1086,16 +1097,35 @@ function App() {
         }
         const sessionId = currentSessionId;
         const requestedScope = scope;
-        if (command === "/status" && argument) {
-          setNativeNotice(t("composer.nativeCommandArguments", { command }));
-          return true;
-        }
-        if (command === "/copy" && argument) {
+        if (
+          (command === "/status" ||
+            command === "/copy" ||
+            command === "/hooks" ||
+            command === "/skills" ||
+            command === "/agents") &&
+          argument
+        ) {
           setNativeNotice(t("composer.nativeCommandArguments", { command }));
           return true;
         }
         if (command === "/context" && argument && argument !== "all") {
           setNativeNotice(t("composer.nativeCommandArguments", { command }));
+          return true;
+        }
+        if (
+          command === "/mcp" &&
+          argument &&
+          argument.toLowerCase() !== "verbose"
+        ) {
+          setNativeNotice(t("composer.nativeMcpUsage"));
+          return true;
+        }
+        if (
+          command === "/usage" &&
+          argument &&
+          !["daily", "weekly", "cumulative"].includes(argument.toLowerCase())
+        ) {
+          setNativeNotice(t("composer.nativeUsageUsage"));
           return true;
         }
         void (async () => {
@@ -1179,42 +1209,287 @@ function App() {
               setCopyPicker({ targets: result.targets });
               return;
             }
-            const usage = await RuntimeClient.getSessionContextUsage(
+            if (command === "/context") {
+              const usage = await RuntimeClient.getSessionContextUsage(
+                sessionId,
+                argument === "all",
+              );
+              if (
+                scopeRef.current !== requestedScope ||
+                useAppStore.getState().currentSessionId !== sessionId
+              )
+                return;
+              const total = usage.total_tokens
+                ? ` / ${usage.total_tokens}`
+                : "";
+              const percent =
+                usage.percent !== null ? ` (${usage.percent}%)` : "";
+              setInfoDialog({
+                title: t("composer.nativeContextTitle"),
+                rows: [
+                  {
+                    label: "Context",
+                    value: `${usage.used_tokens}${total} tokens${percent}`,
+                  },
+                  ...(usage.model
+                    ? [{ label: "Model", value: usage.model }]
+                    : []),
+                  ...usage.segments.flatMap((segment) => [
+                    { label: segment.label, value: String(segment.tokens) },
+                    ...segment.items.map((row) => ({
+                      label: row.label,
+                      value: String(row.tokens),
+                      indent: 1,
+                    })),
+                  ]),
+                ],
+                hint: usage.over_budget
+                  ? t("composer.nativeContextOver")
+                  : usage.estimated
+                    ? t("composer.nativeContextEstimated")
+                    : null,
+              });
+              return;
+            }
+            if (command === "/mcp") {
+              const inventory = await RuntimeClient.getSessionMcpInventory(
+                sessionId,
+                argument.toLowerCase() === "verbose",
+              );
+              if (
+                scopeRef.current !== requestedScope ||
+                useAppStore.getState().currentSessionId !== sessionId
+              )
+                return;
+              setInfoDialog({
+                title: t("composer.nativeMcpTitle"),
+                rows:
+                  inventory.servers.length === 0
+                    ? [{ label: "MCP", value: t("composer.nativeMcpEmpty") }]
+                    : inventory.servers.flatMap((server) => [
+                        {
+                          label: server.name,
+                          value: `${server.status}${server.tool_count != null ? ` (${server.tool_count} tools)` : " (tools undiscovered)"}`,
+                        },
+                        ...(inventory.verbose
+                          ? [
+                              {
+                                label: "Auth",
+                                value: server.auth ?? "—",
+                                indent: 1,
+                              },
+                              {
+                                label: "Tools",
+                                value: server.tools?.join(", ") || "(none)",
+                                indent: 1,
+                              },
+                              ...(server.command
+                                ? [
+                                    {
+                                      label: "Command",
+                                      value: server.command.join(" "),
+                                      indent: 1,
+                                    },
+                                  ]
+                                : []),
+                              ...(server.url
+                                ? [
+                                    {
+                                      label: "URL",
+                                      value: server.url,
+                                      indent: 1,
+                                    },
+                                  ]
+                                : []),
+                              ...(server.error
+                                ? [
+                                    {
+                                      label: "Error",
+                                      value: server.error,
+                                      indent: 1,
+                                    },
+                                  ]
+                                : []),
+                            ]
+                          : []),
+                      ]),
+              });
+              return;
+            }
+            if (command === "/hooks") {
+              const listing =
+                await RuntimeClient.getSessionHooksListing(sessionId);
+              if (
+                scopeRef.current !== requestedScope ||
+                useAppStore.getState().currentSessionId !== sessionId
+              )
+                return;
+              const rows = listing.surfaces.filter(
+                (surface) => surface.commands.length > 0,
+              );
+              setInfoDialog({
+                title: t("composer.nativeHooksTitle"),
+                rows:
+                  rows.length === 0
+                    ? [
+                        {
+                          label: "Hooks",
+                          value: t("composer.nativeHooksEmpty"),
+                        },
+                      ]
+                    : rows.flatMap((surface) => [
+                        { label: surface.surface, value: "" },
+                        ...surface.commands.map((cmd) => ({
+                          label: "•",
+                          value: cmd,
+                          indent: 1,
+                        })),
+                        ...(surface.match
+                          ? [
+                              {
+                                label: "match",
+                                value: surface.match.join(", "),
+                                indent: 1,
+                              },
+                            ]
+                          : []),
+                      ]),
+                hint: listing.enabled
+                  ? null
+                  : t("composer.nativeHooksDisabled"),
+              });
+              return;
+            }
+            if (command === "/skills") {
+              const listing =
+                await RuntimeClient.getSessionSkillsListing(sessionId);
+              if (
+                scopeRef.current !== requestedScope ||
+                useAppStore.getState().currentSessionId !== sessionId
+              )
+                return;
+              setSkillsMenuListing(listing);
+              return;
+            }
+            if (command === "/agents") {
+              const overview =
+                await RuntimeClient.getSessionAgentsOverview(sessionId);
+              if (
+                scopeRef.current !== requestedScope ||
+                useAppStore.getState().currentSessionId !== sessionId
+              )
+                return;
+              const isCurrentSession = (id: string) =>
+                id === overview.current_session_id;
+              const handleSwitch = (targetId: string) => {
+                setInfoDialog(null);
+                if (isCurrentSession(targetId)) {
+                  setNativeNotice("This session is already active.");
+                  return;
+                }
+                if (isRunning) {
+                  setNativeNotice(
+                    "Session switch is disabled while a task is in progress.",
+                  );
+                  return;
+                }
+                void selectSession(targetId, requestedScope);
+              };
+
+              setInfoDialog({
+                title: t("composer.nativeAgentsTitle"),
+                rows: [
+                  { label: "Sessions", value: "" },
+                  ...(overview.sessions.length === 0
+                    ? [{ label: "•", value: "(none)", indent: 1 }]
+                    : overview.sessions.map((row) => ({
+                        label: row.session_id,
+                        value: `${row.status} · turn ${row.turn}${isCurrentSession(row.session_id) ? " (current)" : ""}`,
+                        indent: 1,
+                        action: {
+                          label: isCurrentSession(row.session_id)
+                            ? "(current)"
+                            : t("session.switch", "Switch"),
+                          disabled: isCurrentSession(row.session_id),
+                          onClick: () => handleSwitch(row.session_id),
+                        },
+                      }))),
+                  { label: "Background tasks", value: "" },
+                  ...(overview.tasks.length === 0
+                    ? [{ label: "•", value: "(none)", indent: 1 }]
+                    : overview.tasks.map((row) => ({
+                        label: row.task_id,
+                        value: `${row.status}${row.child_session_id ? ` → ${row.child_session_id}` : ""}`,
+                        indent: 1,
+                        action: row.child_session_id
+                          ? {
+                              label: isCurrentSession(row.child_session_id)
+                                ? "(current)"
+                                : t("session.switch", "Switch"),
+                              disabled: isCurrentSession(row.child_session_id),
+                              onClick: () =>
+                                handleSwitch(row.child_session_id!),
+                            }
+                          : undefined,
+                      }))),
+                  { label: "Presets", value: "" },
+                  ...(overview.presets.length === 0
+                    ? [{ label: "•", value: "(none)", indent: 1 }]
+                    : overview.presets.map((preset) => ({
+                        label: preset.id,
+                        value: preset.label,
+                        indent: 1,
+                      }))),
+                ],
+              });
+              return;
+            }
+            const tokenUsage = await RuntimeClient.getSessionTokenUsage(
               sessionId,
-              argument === "all",
+              argument.toLowerCase() || "session",
             );
             if (
               scopeRef.current !== requestedScope ||
               useAppStore.getState().currentSessionId !== sessionId
             )
               return;
-            const total = usage.total_tokens ? ` / ${usage.total_tokens}` : "";
-            const percent =
-              usage.percent !== null ? ` (${usage.percent}%)` : "";
             setInfoDialog({
-              title: t("composer.nativeContextTitle"),
+              title: t("composer.nativeUsageTitle"),
               rows: [
-                {
-                  label: "Context",
-                  value: `${usage.used_tokens}${total} tokens${percent}`,
-                },
-                ...(usage.model
-                  ? [{ label: "Model", value: usage.model }]
+                { label: "Scope", value: tokenUsage.scope },
+                ...(tokenUsage.model
+                  ? [{ label: "Model", value: tokenUsage.model }]
                   : []),
-                ...usage.segments.flatMap((segment) => [
-                  { label: segment.label, value: String(segment.tokens) },
-                  ...segment.items.map((row) => ({
-                    label: row.label,
-                    value: String(row.tokens),
-                    indent: 1,
-                  })),
-                ]),
+                {
+                  label: "Input",
+                  value: String(tokenUsage.input_tokens ?? "—"),
+                },
+                {
+                  label: "Output",
+                  value: String(tokenUsage.output_tokens ?? "—"),
+                },
+                {
+                  label: "Cache read",
+                  value: String(tokenUsage.cache_read_tokens ?? "—"),
+                },
+                {
+                  label: "Cache write",
+                  value: String(tokenUsage.cache_write_tokens ?? "—"),
+                },
+                {
+                  label: "Cost",
+                  value:
+                    tokenUsage.cost_usd != null
+                      ? `$${tokenUsage.cost_usd.toFixed(4)}`
+                      : "—",
+                },
+                ...(tokenUsage.turn_count != null
+                  ? [{ label: "Turns", value: String(tokenUsage.turn_count) }]
+                  : []),
               ],
-              hint: usage.over_budget
-                ? t("composer.nativeContextOver")
-                : usage.estimated
-                  ? t("composer.nativeContextEstimated")
-                  : null,
+              hint: tokenUsage.estimated
+                ? t("composer.nativeUsageEstimated")
+                : null,
             });
           } catch (error) {
             if (
@@ -1386,6 +1661,136 @@ function App() {
           );
         } catch (err) {
           setNativeNotice(`✖ /rename failed: ${errorMessage(err)}`);
+        }
+        return true;
+      }
+      if (command === "/model") {
+        if (!currentSessionId) {
+          setNativeNotice(
+            "Model selection is disabled until startup completes.",
+          );
+          return true;
+        }
+        const sessionId = currentSessionId;
+        const arg = argument.trim();
+        if (arg) {
+          const parts = arg.split(/\s+/);
+          const modelName = parts[0];
+          const effort = parts.length > 1 ? parts[1] : null;
+          try {
+            const updated = await RuntimeClient.setSessionModel(
+              sessionId,
+              modelName,
+              effort,
+            );
+            setNativeNotice(
+              `✓ Session model switched to '${updated.model}'${updated.reasoning_effort ? ` (effort: ${updated.reasoning_effort})` : ""}`,
+            );
+          } catch (err) {
+            setNativeNotice(`✖ /model failed: ${errorMessage(err)}`);
+          }
+          return true;
+        }
+        try {
+          const info = await RuntimeClient.getSessionModel(sessionId);
+          const input = window.prompt(
+            "Enter model name (and optional effort):",
+            info.model,
+          );
+          if (input === null) return true;
+          const trimmed = input.trim();
+          if (!trimmed) return true;
+          const parts = trimmed.split(/\s+/);
+          const updated = await RuntimeClient.setSessionModel(
+            sessionId,
+            parts[0],
+            parts[1] || null,
+          );
+          setNativeNotice(
+            `✓ Session model switched to '${updated.model}'${updated.reasoning_effort ? ` (effort: ${updated.reasoning_effort})` : ""}`,
+          );
+        } catch (err) {
+          setNativeNotice(`✖ /model failed: ${errorMessage(err)}`);
+        }
+        return true;
+      }
+      if (command === "/permissions") {
+        if (!currentSessionId) {
+          setNativeNotice(
+            "The session must start before you can change permissions.",
+          );
+          return true;
+        }
+        const sessionId = currentSessionId;
+        const arg = argument.trim();
+        if (arg) {
+          try {
+            const updated = await RuntimeClient.setSessionPermissions(
+              sessionId,
+              arg,
+            );
+            setNativeNotice(
+              `✓ Permission mode set to '${updated.preset}' (${updated.approval_mode})`,
+            );
+          } catch (err) {
+            setNativeNotice(`✖ /permissions failed: ${errorMessage(err)}`);
+          }
+          return true;
+        }
+        try {
+          const current = await RuntimeClient.getSessionPermissions(sessionId);
+          const input = window.prompt(
+            "Select permissions preset (read-only, auto, full-access):",
+            current.preset || current.approval_mode,
+          );
+          if (input === null) return true;
+          const trimmed = input.trim();
+          if (!trimmed) return true;
+          const updated = await RuntimeClient.setSessionPermissions(
+            sessionId,
+            trimmed,
+          );
+          setNativeNotice(
+            `✓ Permission mode set to '${updated.preset}' (${updated.approval_mode})`,
+          );
+        } catch (err) {
+          setNativeNotice(`✖ /permissions failed: ${errorMessage(err)}`);
+        }
+        return true;
+      }
+      if (command === "/approve") {
+        if (!currentSessionId) {
+          setNativeNotice("No pending approvals in this session.");
+          return true;
+        }
+        const sessionId = currentSessionId;
+        const arg = argument.trim();
+        try {
+          if (arg) {
+            const result = await RuntimeClient.approveAction(sessionId, arg);
+            if (!result.approved) {
+              setNativeNotice(
+                `⚠ ${result.message || "Approval request not found."}`,
+              );
+            } else {
+              setNativeNotice(`✓ Approved ${result.tool_name || "action"}`);
+            }
+            return true;
+          }
+          const pending = await RuntimeClient.getPendingApprovals(sessionId);
+          if (!pending || pending.length === 0) {
+            setNativeNotice("No pending approvals in this session.");
+            return true;
+          }
+          const result = await RuntimeClient.approveAction(
+            sessionId,
+            pending[0].request_id,
+          );
+          setNativeNotice(
+            `✓ Approved ${result.tool_name || pending[0].tool_name}`,
+          );
+        } catch (err) {
+          setNativeNotice(`✖ /approve failed: ${errorMessage(err)}`);
         }
         return true;
       }
@@ -2441,6 +2846,61 @@ function App() {
       />
       <BtwDialog dialog={btwDialog} onClose={() => setBtwDialog(null)} />
       <InfoDialog dialog={infoDialog} onClose={() => setInfoDialog(null)} />
+      <ChoicePickerModal
+        title={t("composer.nativeSkillsTitle")}
+        options={[
+          {
+            id: "list",
+            label: t("composer.nativeSkillsMenuList"),
+            hint: t("composer.nativeSkillsMenuListHint"),
+          },
+          {
+            id: "manage",
+            label: t("composer.nativeSkillsMenuManage"),
+            hint: t("composer.nativeSkillsMenuManageHint"),
+          },
+        ]}
+        isOpen={skillsMenuListing !== null}
+        onClose={() => setSkillsMenuListing(null)}
+        onPick={(id) => {
+          const listing = skillsMenuListing;
+          setSkillsMenuListing(null);
+          if (!listing) return;
+          if (id === "list") {
+            setInfoDialog({
+              title: t("composer.nativeSkillsTitle"),
+              rows:
+                listing.skills.length === 0
+                  ? [
+                      {
+                        label: "Skills",
+                        value: t("composer.nativeSkillsEmpty"),
+                      },
+                    ]
+                  : listing.skills.map((skill) => ({
+                      label: skill.name,
+                      value: `${skill.description} (${skill.origin})`,
+                    })),
+            });
+          } else if (id === "manage") {
+            setSkillsManageListing(listing);
+          }
+        }}
+      />
+      <SkillsManageModal
+        isOpen={skillsManageListing !== null}
+        listing={skillsManageListing}
+        onClose={() => setSkillsManageListing(null)}
+        onSkillsUpdated={() => {
+          if (currentSessionId) {
+            void RuntimeClient.getSessionSkillsListing(currentSessionId).then(
+              (updated) => {
+                setSkillsManageListing(updated);
+              },
+            );
+          }
+        }}
+      />
       <ChoicePickerModal
         title={t("composer.nativeCopyTitle")}
         options={(copyPicker?.targets ?? []).map((target, index) => ({

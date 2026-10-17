@@ -761,6 +761,7 @@ class SkillSummary:
     description: str
     origin: str
     source_path: str | None = None
+    enabled: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -1247,6 +1248,134 @@ class SessionExport:
     session_id: str
     filename: str
     markdown: str
+
+
+@dataclass(frozen=True, slots=True)
+class McpServerProjection:
+    """One configured MCP server behind native ``/mcp`` (Codex parity).
+
+    ``auth`` is the stdio/remote-http transport label (VoidCode servers carry
+    no OAuth/Bearer handshake, so upstream's auth statuses cannot apply);
+    ``tools`` are the passively known tool names (``None`` = undiscovered).
+    Verbose-only fields (``command``, ``url``, ``stage``, ``error``) stay
+    ``None`` on the compact projection.
+    """
+
+    name: str
+    status: str
+    transport: str | None = None
+    auth: str | None = None
+    tool_count: int | None = None
+    tools: tuple[str, ...] | None = None
+    command: tuple[str, ...] | None = None
+    url: str | None = None
+    stage: str | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SessionMcpInventory:
+    """Configured MCP servers behind native ``/mcp``."""
+
+    session_id: str
+    verbose: bool = False
+    servers: tuple[McpServerProjection, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class HookSurfaceProjection:
+    """One lifecycle-hook surface behind native ``/hooks`` (event → commands)."""
+
+    surface: str
+    commands: tuple[str, ...] = ()
+    match: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SessionHooksListing:
+    """Lifecycle hooks behind native ``/hooks``; ``enabled=False`` = configured off."""
+
+    session_id: str
+    enabled: bool = True
+    surfaces: tuple[HookSurfaceProjection, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SkillProjection:
+    """One skill behind native ``/skills``."""
+
+    name: str
+    description: str
+    origin: str
+    source_path: str | None = None
+    enabled: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class SessionSkillsListing:
+    """Skills behind native ``/skills``: list-only (no toggle state exists)."""
+
+    session_id: str
+    skills: tuple[SkillProjection, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SkillToggleResult:
+    """Result of toggling skill enablement."""
+
+    name: str
+    enabled: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AgentSessionRow:
+    """One live agent session behind native ``/agents`` (session list truth)."""
+
+    session_id: str
+    title: str | None = None
+    status: str = "idle"
+    turn: int = 0
+    kind: str = "top_level"
+
+
+@dataclass(frozen=True, slots=True)
+class AgentTaskRow:
+    """One background child behind native ``/agents`` (task list truth)."""
+
+    task_id: str
+    status: str = "queued"
+    child_session_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SessionAgentsOverview:
+    """Active agent sessions + primary presets behind native ``/agents``."""
+
+    session_id: str
+    current_session_id: str | None = None
+    sessions: tuple[AgentSessionRow, ...] = ()
+    tasks: tuple[AgentTaskRow, ...] = ()
+    presets: tuple[AgentSummary, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SessionTokenUsage:
+    """Session token activity behind native ``/usage`` (session scope only).
+
+    VoidCode keeps per-session cumulative metadata only (no account ledger),
+    so daily/weekly/cumulative all project the same session totals.
+    """
+
+    session_id: str
+    scope: str = "session"
+    model: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    cost_usd: float | None = None
+    turn_count: int | None = None
+    estimated: bool = True
 
 
 @dataclass(frozen=True, slots=True)
