@@ -72,6 +72,12 @@ VoidCode supports three approval tiers:
 
 In v1, approval modes govern tool permissions within the Python runtime; VoidCode does not provide an OS-level process sandbox.
 
+Consecutive read-only calls in one batch (`read`, `glob`, `grep`, read-only `lsp`)
+execute concurrently (up to 10 in flight) and complete in batch order. Writes,
+approvals, and all other tools stay serial; when any candidate needs approval
+the whole batch runs serially. There is no configuration knob: concurrency is
+automatic for eligible calls.
+
 Override the approval mode per invocation:
 
 ```bash

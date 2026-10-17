@@ -29,6 +29,29 @@ Core TurnEngine (core/engine.py)    RuntimeHost (runtime/run_loop.py)
 3. **Governed Tool Execution**: `RuntimeHost.execute()` checks permissions for each requested tool. Read-only operations execute directly; state-modifying tools pass through approval barriers based on the active `approval_mode`.
 4. **Fact Commitment**: Completed tool results (`ReportedCall`) and model turns are committed to SQLite `session_events` with monotonic sequence numbers.
 
+## Tool-Call Concurrency (Fan-Out)
+
+Batches of independent read-only tool calls execute concurrently under `RuntimeHost._maybe_start_fanout` (`src/voidcode/runtime/run_loop.py`); permission checks, persistence, streaming, and reporting remain serial on the main thread in batch order:
+
+1. **Opt-In Flag (Default Serial)**:
+   `ToolDefinition.supports_parallel` (`src/voidcode/tools/contracts.py`) defaults to `False`. Flagged tools: `read`, `glob`, `grep`, `lsp` (read-only operations only; see below). Unflagged tools never fan out.
+2. **Hard Exclusions & Contiguous Prefix**:
+   `question`, `invoke_tool`, `task`, `task_batch`, and `background_process` never fan out. `lsp` calls with `rename`, `codeAction`, or `willRenameFiles` operations never fan out. Fan-out covers only the leading contiguous run of concurrency-safe calls in `state.pending` and requires at least two; the first unsafe call stops the prefix.
+3. **Pre-Flight All-Allow Gate**:
+   Before submitting, every candidate is evaluated against tool policy, delegation policy, and the permission engine. Any non-`allow` decision or pending approval aborts the whole fan-out and the run proceeds serially.
+4. **Main-Thread Ordered Persistence & Streaming**:
+   Pool workers execute only the tool core (`_invoke_tool`); started/completed events, SQLite persistence, sequence assignment, and streaming chunks stay on the main thread via `_await_stashed_outcome` in original batch order.
+5. **Bounded Pool**:
+   A shared module-level `ThreadPoolExecutor` caps concurrency at 10 in-flight tool calls.
+6. **First-Failure-Cancels-Rest**:
+   An error outcome (raised exception or error-status `ToolFailure`) cancels all remaining stashed futures; late production after cancellation is discarded and later awaited calls observe cancellation instead of worker output.
+7. **Abort Discards Late Results**:
+   Run abort sets every stashed cancel signal and cancels all futures; outcomes arriving after abort never reach persistence or streaming.
+8. **Checkpoint Prefix & Continuation**:
+   Fan-out is disabled while a continuation (`ApprovedInvocation` / `AnsweredQuestion`) is active. Resume flows proceed serially and the authentic completed prefix is preserved unchanged.
+9. **Engine Semantics Unchanged**:
+   `TurnEngine` (`src/voidcode/core/engine.py`) still advances `pending[0]` serially; fan-out is a runtime-host execution detail invisible to turn planning.
+
 ## Session Lifecycle & Status Invariants
 
 Session state is tracked in the `sessions` table and defined by `SessionStatus` in `src/voidcode/runtime/session.py`:

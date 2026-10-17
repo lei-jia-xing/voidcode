@@ -1442,6 +1442,7 @@ class ReadTool:
         },
         effects=frozenset({ToolEffect.READ}),
         path_argument_keys=("path",),
+        supports_parallel=True,
     )
 
     def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:

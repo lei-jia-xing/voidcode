@@ -113,6 +113,7 @@ class LspTool:
             "required": ["operation", "path"],
         },
         effects=frozenset({ToolEffect.READ}),
+        supports_parallel=True,
     )
 
     def __init__(self) -> None:

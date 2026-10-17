@@ -92,6 +92,7 @@ class GlobTool:
         },
         effects=frozenset({ToolEffect.READ}),
         path_argument_keys=("path",),
+        supports_parallel=True,
     )
 
     @staticmethod

@@ -196,6 +196,7 @@ class ToolDefinition:
     # Safe read/query tools may be replayed after a process crash. Mutating
     # tools default to never replay unless they explicitly opt in.
     replay_policy: ToolReplayPolicy | None = None
+    supports_parallel: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "input_schema", own_json_object(self.input_schema))
