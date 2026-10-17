@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import time
 from collections.abc import Generator, Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, NotRequired, TypedDict, cast
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -155,7 +156,7 @@ from .execution.seams import (
     fallback_turn_producer_for_provider_error,
     select_turn_producer_for_config,
 )
-from .execution.tool_executor import RuntimeToolExecutor
+from .execution.tool_executor import RuntimeToolExecutor, _InvocationCancelSignal
 from .execution.tool_replay import ToolExecutionIntent
 from .execution.tool_result_projection import (
     _fit_numbered_progress_payload,
@@ -169,7 +170,7 @@ from .execution.tool_result_projection import (
 )
 from .execution.turn_adapter import turn_request_for_session, turn_session_snapshot
 from .execution.turn_recovery import AnsweredQuestion, ApprovedInvocation, RuntimeContinuation, persisted_turn_batch, validated_composition_turn
-from .execution_ownership import ExecutionOwnershipRevokedError
+from .execution_ownership import EXECUTION_OWNERSHIP, ExecutionLease, ExecutionOwnershipRevokedError
 from .fact_codec import encode_fact, reported_call_from_event
 from .fact_store import SqliteFactStore
 from .hook_runtime import (
@@ -180,7 +181,7 @@ from .hook_runtime import (
     run_lifecycle_hooks_for_session,
     run_tool_hooks_for_session,
 )
-from .permissions.policy import PendingApproval, PermissionPolicy, runtime_effective_read_only_from_metadata
+from .permissions.policy import PendingApproval, PermissionPolicy, resolve_permission, runtime_effective_read_only_from_metadata
 from .question import PendingQuestion
 from .reminders import (
     TODO_MID_RUN_KIND,
@@ -236,6 +237,39 @@ if TYPE_CHECKING:
 from .execution import chunk_builders
 
 logger = logging.getLogger(__name__)
+_HARD_EXCLUDED_PARALLEL_TOOLS: Final[frozenset[str]] = frozenset({"question", "invoke_tool", "task", "task_batch", "background_process"})
+_MUTATING_LSP_OPERATIONS: Final[frozenset[str]] = frozenset({"rename", "codeAction", "willRenameFiles"})
+
+# Cap tool concurrency at 10 (matching Claude Code's CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY default)
+_TOOL_CONCURRENCY_POOL: Final[concurrent.futures.ThreadPoolExecutor] = concurrent.futures.ThreadPoolExecutor(
+    max_workers=10,
+    thread_name_prefix="voidcode-tool-fanout",
+)
+
+
+@dataclass(slots=True)
+class _StashedFanoutCall:
+    call: ToolCall
+    future: concurrent.futures.Future[ToolResult | Exception]
+    cancel_signal: _InvocationCancelSignal
+
+
+def _execute_tool_core_in_pool(
+    tool: Tool,
+    invocation: ToolInvocation,
+    tool_executor: RuntimeToolExecutor,
+    caller_lease: ExecutionLease | None,
+) -> ToolResult | Exception:
+    with EXECUTION_OWNERSHIP.bind(caller_lease):
+        try:
+            return tool_executor._invoke_tool(
+                tool=tool,
+                invocation=invocation,
+                tool_timeout=invocation.context.tool_timeout_seconds,
+                cancel_signal=cast(_InvocationCancelSignal, invocation.context.abort_signal),
+            )
+        except Exception as exc:
+            return exc
 
 
 class ToolBatchRepetition:
@@ -744,6 +778,7 @@ class RuntimeRunLoopCoordinator:
         self._tool_executor = tool_executor
         self._pending_hook_guidance: list[str] = []
         self._composition_invocations: set[tuple[str, str, str]] = set()
+        self._staged_tool_call_ids: set[tuple[str, str]] = set()
 
     def update_provider_catalog_query(self, provider_catalog_query: RuntimeProviderCatalogQuery) -> None:
         """Publish the provider catalog query used by reasoning diagnostics."""
@@ -1294,8 +1329,13 @@ class RuntimeRunLoopCoordinator:
                                 pass
                         chunk = replace(chunk, session=self._fresh_composition_session(chunk.session))
                 yield chunk
-            if result.status == "aborted" and not interrupted_emitted:
-                yield from self._emit_interrupted_failure(session=host.session, sequence=host.sequence, active_turn_request=host.active_turn_request)
+            if result.status == "aborted":
+                if not host._backfilled_aborted:
+                    yield from host._backfill_aborted_batch(reason=_abort_reason(host.active_turn_request))
+                elif not host._interrupted_emitted and not interrupted_emitted:
+                    yield from self._emit_interrupted_failure(
+                        session=host.session, sequence=host.sequence, active_turn_request=host.active_turn_request
+                    )
         except Exception as error:
             raw_goal = host.session.metadata.get("thread_goal")
             if isinstance(raw_goal, dict) and raw_goal.get("status") == "active":
@@ -2625,7 +2665,8 @@ class RuntimeRunLoopCoordinator:
         if not isinstance(explicit_tool_call_id, str) or not explicit_tool_call_id.strip():
             raise ValueError("planned tool requires its authentic normalized native call identity")
         tool_call_id = explicit_tool_call_id
-        if approved is None:
+        staged_key = (session.session.id, original_tool_call.tool_call_id) if original_tool_call.tool_call_id else None
+        if approved is None and (staged_key is None or staged_key not in self._staged_tool_call_ids):
             diff_preview = None
             if original_tool_call.tool_name in WRITE_PREVIEW_TOOLS:
                 try:
@@ -2637,6 +2678,8 @@ class RuntimeRunLoopCoordinator:
             envelope = self._persist_fact(session=session, fact=ToolRequestedFact(original_tool_call, diff_preview=diff_preview))
             sequence = envelope.sequence
             yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
+            if staged_key is not None:
+                self._staged_tool_call_ids.add(staged_key)
         delegation_policy_error = runtime.delegation_tool_policy_error(session=session, tool_name=plan_tool_call.tool_name)
         if delegation_policy_error is not None:
             failed_chunk, _ = self._persist_chunk(
@@ -2802,6 +2845,7 @@ class RuntimeRunLoopCoordinator:
         tool_timeout: int | None,
         tool_results: list[ReportedCall],
         active_turn_request: TurnRequest,
+        precomputed_outcome: ToolResult | Exception | None = None,
     ) -> Generator[RuntimeStreamChunk, None, tuple[str, ToolResult | None, SessionState, int]]:
         sequence = yield from self._emit_started_tool_event(
             session=session,
@@ -2809,38 +2853,45 @@ class RuntimeRunLoopCoordinator:
             tool_call_id=tool_call_id,
         )
         if _is_abort_requested(active_turn_request):
-            yield from self._started_tool_abort_chunks(
-                session=session,
-                sequence=sequence,
-                tool_call=plan_tool_call,
-                tool_call_id=tool_call_id,
-                abort_signal=active_turn_request.abort_signal,
-            )
             return "returned", None, session, sequence
         session = self._begin_composition_tool(session, plan_tool_call)
         try:
-            read_tracking = read_tracking_for_tool_results(
-                tool_results=tuple(tool_results),
-                workspace=self._workspace,
-            )
-            tool_outcome, sequence = yield from self._execute_resolved_tool_call(
-                resolved_call=_ResolvedToolCall(
-                    tool=tool,
-                    tool_call=plan_tool_call,
-                    tool_call_id=tool_call_id,
-                ),
-                read_paths=read_tracking.read_paths,
-                read_lines=read_tracking.read_lines,
-                read_whole_files=read_tracking.read_whole_files,
-                tool_timeout=tool_timeout,
-                session=session,
-                start_sequence=sequence + 1,
-                abort_signal=active_turn_request.abort_signal,
-                parent_session_id=session.session.parent_id,
-                delegation_depth=delegation_depth_from_metadata(session.metadata),
-                remaining_spawn_budget=remaining_spawn_budget_from_metadata(session.metadata),
-                model=session_model_identity(session.metadata)[0],
-            )
+            if precomputed_outcome is not None:
+                tool_outcome = precomputed_outcome
+                if _is_abort_signal_requested(active_turn_request.abort_signal):
+                    stopped = ConfirmedStop(cancellation_signalled=True)
+                    if isinstance(tool_outcome, ToolSuccess):
+                        tool_outcome = ToolFailure(
+                            tool_name=plan_tool_call.tool_name,
+                            error="run interrupted",
+                            output=TextOutput("run interrupted"),
+                            execution=stopped,
+                        )
+                    elif isinstance(tool_outcome, ToolFailure) and tool_outcome.execution is None:
+                        tool_outcome = replace(tool_outcome, execution=stopped)
+            else:
+                read_tracking = read_tracking_for_tool_results(
+                    tool_results=tuple(tool_results),
+                    workspace=self._workspace,
+                )
+                tool_outcome, sequence = yield from self._execute_resolved_tool_call(
+                    resolved_call=_ResolvedToolCall(
+                        tool=tool,
+                        tool_call=plan_tool_call,
+                        tool_call_id=tool_call_id,
+                    ),
+                    read_paths=read_tracking.read_paths,
+                    read_lines=read_tracking.read_lines,
+                    read_whole_files=read_tracking.read_whole_files,
+                    tool_timeout=tool_timeout,
+                    session=session,
+                    start_sequence=sequence + 1,
+                    abort_signal=active_turn_request.abort_signal,
+                    parent_session_id=session.session.parent_id,
+                    delegation_depth=delegation_depth_from_metadata(session.metadata),
+                    remaining_spawn_budget=remaining_spawn_budget_from_metadata(session.metadata),
+                    model=session_model_identity(session.metadata)[0],
+                )
             if isinstance(tool_outcome, Exception):
                 raise tool_outcome
             tool_result = tool_outcome
@@ -3680,10 +3731,23 @@ class RuntimeHost:
         self.batch_started_sequence = continuation.started_sequence if continuation is not None else sequence
         self._restored_pending_turn = False
         self._terminal_phase_attempts: set[str] = set()
+        self._fanout_stash: dict[str, _StashedFanoutCall] = {}
+        self._tool_concurrency_pool = _TOOL_CONCURRENCY_POOL
         coordinator._pending_hook_guidance = []
+        self._backfilled_aborted: bool = False
+        self._interrupted_emitted: bool = False
+        self._completed_call_ids: set[str] = set()
+        if continuation is not None:
+            coordinator._staged_tool_call_ids.update(
+                (session.session.id, call.tool_call_id) for call in continuation.batch.calls if call.tool_call_id
+            )
+            self._completed_call_ids.update(r.tool_call_id for r in continuation.batch.completed_reports if r.tool_call_id)
 
     def _stage_batch(self, batch: TurnBatch) -> None:
         if self.current_batch is not batch:
+            if self._fanout_stash:
+                self._cancel_all_stashed_futures(reason="new batch staged")
+                self._fanout_stash.clear()
             if self.current_batch is not None or self.continuation is None:
                 self.batch_started_sequence = self.sequence
             self.current_batch = batch
@@ -4127,9 +4191,278 @@ class RuntimeHost:
                 raise ValueError("tool batch model-turn fact was not persisted at its observed run step")
             batch.tool_batch_id = model_turn_batch_id(model_turn_event.session_id, model_turn_event.sequence)
             self._save_batch(batch)
+            for call in batch.calls:
+                staged_key = (self.session.session.id, call.tool_call_id) if call.tool_call_id else None
+                if staged_key is not None and staged_key in self.coordinator._staged_tool_call_ids:
+                    continue
+                diff_preview = None
+                if call.tool_name in WRITE_PREVIEW_TOOLS:
+                    try:
+                        diff_preview = build_tool_call_preview(
+                            workspace=self.coordinator._workspace,
+                            tool_name=call.tool_name,
+                            arguments=call.arguments,
+                            phase="final",
+                        )
+                    except Exception:
+                        diff_preview = None
+                envelope = self.coordinator._persist_fact(
+                    session=self.session,
+                    fact=ToolRequestedFact(call, diff_preview=diff_preview),
+                )
+                self.sequence = envelope.sequence
+                yield RuntimeStreamChunk(kind="event", session=self.session, event=envelope)
+                if staged_key is not None:
+                    self.coordinator._staged_tool_call_ids.add(staged_key)
         elif isinstance(plan, ToolTurn) and model_turn_event is not None:
             raise ValueError("pending tool execution cannot create a new model-turn identity")
         return TurnObservation(True, None if batch is None else batch.tool_batch_id)
+
+    def _is_concurrency_safe(self, c: ToolCall) -> bool:
+        if c.tool_name in _HARD_EXCLUDED_PARALLEL_TOOLS:
+            return False
+        if c.tool_name == "lsp":
+            op = c.arguments.get("operation")
+            if op in _MUTATING_LSP_OPERATIONS:
+                return False
+        defn = self.tool_registry.definition(c.tool_name)
+        if defn is None or not defn.supports_parallel:
+            return False
+        return True
+
+    def _maybe_start_fanout(self, call: ToolCall, state: EngineState) -> None:
+        if self.continuation is not None:
+            return
+        if _is_abort_requested(state.request):
+            return
+        if not state.pending or state.pending[0] != call:
+            return
+        if call.tool_call_id and call.tool_call_id in self._fanout_stash:
+            return
+
+        candidate_calls: list[ToolCall] = []
+        for c in state.pending:
+            if not self._is_concurrency_safe(c):
+                break
+            candidate_calls.append(c)
+
+        if len(candidate_calls) < 2:
+            return
+
+        permission_engine = getattr(self.runtime, "_permission_engine", None)
+        if permission_engine is None:
+            return
+        effective_permission = self.runtime.run_config_from_metadata(self.session.metadata).permission
+        read_only = runtime_effective_read_only_from_metadata(self.session.metadata)
+        for c in candidate_calls:
+            if self.runtime.tool_policy_denial(session=self.session, tool_name=c.tool_name) is not None:
+                return
+            if self.runtime.delegation_tool_policy_error(session=self.session, tool_name=c.tool_name) is not None:
+                return
+            try:
+                tool_inst = self.tool_registry.resolve(c.tool_name)
+            except Exception:
+                return
+            eval_res = permission_engine.evaluate(
+                tool=tool_inst.definition,
+                tool_instance=tool_inst,
+                tool_call=c,
+                permission_rules=effective_permission.rules,
+                permission_config=effective_permission,
+            )
+            p_outcome = resolve_permission(
+                tool_inst.definition,
+                c,
+                policy=self.active_permission_policy,
+                path_scope=eval_res.path_scope,
+                operation_class=eval_res.operation_class,
+                canonical_path=eval_res.canonical_path,
+                matched_rule=eval_res.matched_rule,
+                policy_surface=eval_res.policy_surface,
+                external_decision=eval_res.external_decision,
+                rule_decision=eval_res.rule_decision,
+                read_only=read_only,
+            )
+            if p_outcome.decision != "allow" or p_outcome.pending_approval is not None:
+                return
+
+        caller_lease = EXECUTION_OWNERSHIP.bound_lease()
+        todo_state = todo_state_from_session_metadata(self.session.metadata)
+        todo_phases: tuple[TodoPhase, ...] = runtime_todo_phases_from_payload(todo_state["phases"]) if todo_state is not None else ()
+        read_tracking = read_tracking_for_tool_results(
+            tool_results=tuple(state.results),
+            workspace=self.coordinator._workspace,
+        )
+        for c in candidate_calls:
+            assert c.tool_call_id is not None
+            tool_inst = self.tool_registry.resolve(c.tool_name)
+            c_cancel_signal = _InvocationCancelSignal(state.request.abort_signal)
+            invocation = ToolInvocation(
+                tool_call=c,
+                tool_definition=tool_inst.definition,
+                context=ToolContext(
+                    session_id=self.session.session.id,
+                    run_id=run_id_from_session_metadata(self.session.metadata),
+                    invocation_id=c.tool_call_id,
+                    parent_session_id=self.session.session.parent_id,
+                    delegation_depth=delegation_depth_from_metadata(self.session.metadata),
+                    remaining_spawn_budget=remaining_spawn_budget_from_metadata(self.session.metadata),
+                    read_paths=read_tracking.read_paths,
+                    read_lines=read_tracking.read_lines,
+                    read_whole_files=read_tracking.read_whole_files,
+                    read_hash=(cast(str | None, c.arguments.get("expectedHash")) if isinstance(c.arguments.get("expectedHash"), str) else None),
+                    todo_phases=todo_phases,
+                    goal=(
+                        cast(Mapping[str, object], self.session.metadata.get("thread_goal"))
+                        if isinstance(self.session.metadata.get("thread_goal"), Mapping)
+                        else None
+                    ),
+                    goal_consecutive_blocked_turns=int(cast(int, self.session.metadata.get("goal_consecutive_blocked_turns") or 0)),
+                    tool_timeout_seconds=self.config.tool_timeout_seconds,
+                    model=session_model_identity(self.session.metadata)[0],
+                    abort_signal=c_cancel_signal,
+                ),
+            )
+            fut = self._tool_concurrency_pool.submit(
+                _execute_tool_core_in_pool,
+                tool_inst,
+                invocation,
+                self.coordinator._tool_executor,
+                caller_lease,
+            )
+            self._fanout_stash[c.tool_call_id] = _StashedFanoutCall(
+                call=c,
+                future=fut,
+                cancel_signal=c_cancel_signal,
+            )
+
+    def _cancel_all_stashed_futures(self, *, reason: str | None = None) -> None:
+        for stashed in self._fanout_stash.values():
+            stashed.cancel_signal.set_cancelled(True, reason=reason)
+            stashed.future.cancel()
+
+    def _backfill_aborted_batch(
+        self,
+        *,
+        reason: str | None = None,
+    ) -> Generator[RuntimeStreamChunk]:
+        if self._backfilled_aborted:
+            return
+        self._backfilled_aborted = True
+        self._cancel_all_stashed_futures(reason=reason)
+        self._fanout_stash.clear()
+        batch = self.current_batch or (self.state.batches[-1] if self.state and self.state.batches else None)
+        if batch is None or not batch.calls:
+            if not self._interrupted_emitted:
+                yield from self.coordinator._emit_interrupted_failure(
+                    session=self.session,
+                    sequence=self.sequence,
+                    active_turn_request=self.active_turn_request,
+                )
+                self._interrupted_emitted = True
+            return
+        completed_ids = set(self._completed_call_ids) | {r.tool_call_id for r in batch.results}
+        abort_err = "tool execution cancelled" if not reason else f"tool execution cancelled: {reason}"
+        for call in batch.calls:
+            if not call.tool_call_id or call.tool_call_id in completed_ids:
+                continue
+            placeholder_result = ToolFailure(
+                tool_name=call.tool_name,
+                error=abort_err,
+                output=TextOutput("tool execution cancelled"),
+                execution=ConfirmedStop(cancellation_signalled=True),
+            )
+            self.sequence, self.session = yield from self.coordinator._emit_tool_completed_events(
+                session=self.session,
+                sequence=self.sequence,
+                plan_tool_call=call,
+                tool_call_id=call.tool_call_id,
+                tool_result=placeholder_result,
+                batch=self.batch_snapshot,
+            )
+            report = report_call(
+                call,
+                placeholder_result,
+                final_tool_name=call.tool_name,
+                final_arguments=call.arguments,
+            )
+            batch.results.append(replace(report, tool_batch_id=batch.tool_batch_id))
+            completed_ids.add(call.tool_call_id)
+            self._completed_call_ids.add(call.tool_call_id)
+            self._save_batch(batch)
+        all_results = list(self.state.results if self.state else ())
+        for r in batch.results:
+            if r not in all_results:
+                all_results.append(r)
+        self.coordinator._capture_interrupted_checkpoint(
+            session=self.session,
+            prompt=self.active_turn_request.prompt,
+            tool_results=all_results,
+            last_event_sequence=self.sequence,
+        )
+        if not self._interrupted_emitted:
+            yield from self.coordinator._emit_interrupted_failure(
+                session=self.session,
+                sequence=self.sequence,
+                active_turn_request=self.active_turn_request,
+            )
+            self._interrupted_emitted = True
+
+    def _await_stashed_outcome(
+        self,
+        stashed: _StashedFanoutCall,
+        state: EngineState,
+        plan_tool_call: ToolCall,
+    ) -> ToolResult | Exception | None:
+        if _is_abort_requested(state.request):
+            stashed.cancel_signal.set_cancelled(True, reason=_abort_reason(state.request))
+            stashed.future.cancel()
+            self._cancel_all_stashed_futures(reason=_abort_reason(state.request))
+            return None
+        if stashed.cancel_signal.cancelled or stashed.future.cancelled():
+            return ToolFailure(
+                tool_name=plan_tool_call.tool_name,
+                error="tool execution cancelled",
+                output=TextOutput("tool execution cancelled"),
+                execution=ConfirmedStop(True),
+            )
+        outcome: ToolResult | Exception
+        while not stashed.future.done():
+            if _is_abort_requested(state.request):
+                stashed.cancel_signal.set_cancelled(True, reason=_abort_reason(state.request))
+                stashed.future.cancel()
+                self._cancel_all_stashed_futures(reason=_abort_reason(state.request))
+                return None
+            try:
+                outcome = stashed.future.result(timeout=0.02)
+                break
+            except TimeoutError:
+                continue
+            except Exception as exc:
+                outcome = exc
+                break
+        else:
+            if _is_abort_requested(state.request):
+                stashed.cancel_signal.set_cancelled(True, reason=_abort_reason(state.request))
+                stashed.future.cancel()
+                self._cancel_all_stashed_futures(reason=_abort_reason(state.request))
+                return None
+            if stashed.future.cancelled() or stashed.cancel_signal.cancelled:
+                return ToolFailure(
+                    tool_name=plan_tool_call.tool_name,
+                    error="tool execution cancelled",
+                    output=TextOutput("tool execution cancelled"),
+                    execution=ConfirmedStop(True),
+                )
+            try:
+                outcome = stashed.future.result()
+            except Exception as exc:
+                outcome = exc
+
+        if isinstance(outcome, Exception) or (isinstance(outcome, ToolFailure) and outcome.status == "error"):
+            self._cancel_all_stashed_futures(reason="sibling tool call failed")
+
+        return outcome
 
     def execute(self, call: ToolCall, state: EngineState) -> Generator[RuntimeStreamChunk, None, CallOutcome]:
         approved = self.continuation if isinstance(self.continuation, ApprovedInvocation) else None
@@ -4151,6 +4484,8 @@ class RuntimeHost:
                 (self.session.session.id, self.coordinator._composition_turn_context(self.session).scope_id, call_id)
             )
         else:
+            self._maybe_start_fanout(call, state)
+            stashed = self._fanout_stash.pop(call.tool_call_id, None) if call.tool_call_id else None
             assert isinstance(state.plan, ToolTurn)
             final_call, tool, call_id, self.sequence, input_outcome = yield from self.coordinator._plan_tool_step(
                 session=self.session,
@@ -4161,6 +4496,9 @@ class RuntimeHost:
                 approved=approved,
             )
             if input_outcome.action == "block":
+                if call_id:
+                    self._completed_call_ids.add(call_id)
+                self.continuation = None
                 self.sequence, result = yield from self.coordinator._dispatch_error_feedback_chunks(
                     session=self.session,
                     tool_name=final_call.tool_name,
@@ -4171,6 +4509,9 @@ class RuntimeHost:
                 )
                 return CallReported(result)
             if final_call.tool_name == "invoke_tool":
+                if stashed is not None:
+                    self._cancel_all_stashed_futures(reason="invoke_tool cannot be parallelized")
+                    self._fanout_stash.clear()
                 self.session, self.sequence, outcome = yield from self.coordinator._execute_invoked_tool(
                     tool_registry=self.tool_registry,
                     session=self.session,
@@ -4193,11 +4534,21 @@ class RuntimeHost:
                 active_permission_policy=self.active_permission_policy,
             )
             if action == "paused":
+                if stashed is not None:
+                    self._cancel_all_stashed_futures(reason="permission paused")
+                    self._fanout_stash.clear()
                 return CallPaused()
-            if action == "stopped":
-                assert denied is not None
-                return CallStoppedAfterReport(denied)
-            if action == "result":
+            if action in ("stopped", "result"):
+                if call_id:
+                    self._completed_call_ids.add(call_id)
+                if approved is not None or answered is not None:
+                    self.coordinator._capture_interrupted_checkpoint(
+                        session=self.session,
+                        prompt=state.request.prompt,
+                        tool_results=state.results,
+                        last_event_sequence=self.sequence,
+                    )
+                self.continuation = None
                 assert denied is not None
                 return CallReported(denied)
             final_call, call_id, _, self.session = self.coordinator._persist_resolved_tool_intent(
@@ -4213,7 +4564,19 @@ class RuntimeHost:
                 phase="pre",
             )
             if verdict == "cancel":
+                if stashed is not None:
+                    self._cancel_all_stashed_futures(reason="pre-tool hook cancelled")
+                    self._fanout_stash.clear()
                 return CallStoppedBeforeReport()
+            precomputed_outcome: ToolResult | Exception | None = None
+            if stashed is not None:
+                if final_call.arguments != stashed.call.arguments:
+                    precomputed_outcome = None
+                else:
+                    precomputed_outcome = self._await_stashed_outcome(stashed, state, final_call)
+                    if precomputed_outcome is None and _is_abort_requested(state.request):
+                        yield from self._backfill_aborted_batch(reason=_abort_reason(state.request))
+                        return CallStoppedBeforeReport()
             action, tool_result, self.session, self.sequence = yield from self.coordinator._execute_tool_and_recover(
                 session=self.session,
                 sequence=self.sequence,
@@ -4223,8 +4586,13 @@ class RuntimeHost:
                 tool_timeout=self.config.tool_timeout_seconds,
                 tool_results=state.results,
                 active_turn_request=state.request,
+                precomputed_outcome=precomputed_outcome,
             )
             if action == "returned":
+                if _is_abort_requested(state.request):
+                    yield from self._backfill_aborted_batch(reason=_abort_reason(state.request))
+                elif call_id:
+                    self._completed_call_ids.add(call_id)
                 return CallStoppedBeforeReport()
             assert tool_result is not None
         if approved is not None or answered is not None:
@@ -4257,6 +4625,8 @@ class RuntimeHost:
             tool_result=tool_result,
             batch=self.batch_snapshot,
         )
+        if call_id:
+            self._completed_call_ids.add(call_id)
         report = report_call(
             final_call,
             tool_result,
@@ -4264,7 +4634,12 @@ class RuntimeHost:
             final_arguments=final_call.arguments,
         )
         if _is_abort_requested(state.request):
-            yield from self.coordinator._emit_interrupted_failure(session=self.session, sequence=self.sequence, active_turn_request=state.request)
+            if self.current_batch is not None:
+                owned = replace(report, tool_batch_id=self.current_batch.tool_batch_id)
+                if not any(r.tool_call_id == owned.tool_call_id for r in self.current_batch.results):
+                    self.current_batch.results.append(owned)
+                self._save_batch(self.current_batch)
+            yield from self._backfill_aborted_batch(reason=_abort_reason(state.request))
             return CallStoppedAfterReport(report)
         if isinstance(tool_result, ToolSuccess):
             self.sequence, verdict = yield from self.coordinator._run_tool_hook_phase(
@@ -4291,6 +4666,9 @@ class RuntimeHost:
             self.session = self.coordinator._fresh_composition_session(self.session)
 
     def finish(self, plan: FinalTurn, state: EngineState) -> Generator[RuntimeStreamChunk, None, str | None]:
+        if self._fanout_stash:
+            self._cancel_all_stashed_futures(reason="turn finished")
+            self._fanout_stash.clear()
         self.session, self.sequence, self.pending_reminder_segment = yield from self.coordinator._todo_reminder_step(
             session=self.session,
             sequence=self.sequence,
