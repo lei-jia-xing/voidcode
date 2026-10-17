@@ -1052,7 +1052,7 @@ class VoidCodeRuntime(RuntimeSurface):
             store=self._scheduler_store,
             supervisor=self._background_task_supervisor,
             workspace=self._workspace,
-            start_task_fn=self.start_background_task,
+            start_task_fn=lambda req: self.start_background_task(req, allow_internal_metadata=True),
         )
         self._background_task_supervisor.register_task_terminal_callback(self._scheduler.on_task_terminal)
         self._scheduler.start()
@@ -3358,8 +3358,13 @@ class VoidCodeRuntime(RuntimeSurface):
         """Runtime-owned task substrate providing minimal async task lifecycle."""
         return self._background_task_supervisor
 
-    def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState:
-        validated_request = self._validated_request(request, allow_internal_metadata=True)
+    def start_background_task(
+        self,
+        request: RuntimeRequest,
+        *,
+        allow_internal_metadata: bool = False,
+    ) -> BackgroundTaskState:
+        validated_request = self._validated_request(request, allow_internal_metadata=allow_internal_metadata)
         composition = self._prepare_execution_composition(self.run_config_for_request(validated_request))
         return self._background_task_supervisor.start_background_task(
             validated_request,
@@ -3735,7 +3740,7 @@ class VoidCodeRuntime(RuntimeSurface):
                 "scheduled_task_id": sched.id,
             },
         )
-        state = self.start_background_task(request)
+        state = self.start_background_task(request, allow_internal_metadata=True)
         task_id = state.task.id
         self._scheduler_store.record_schedule_running_task_id(schedule_id=sched.id, running_task_id=task_id)
         return state

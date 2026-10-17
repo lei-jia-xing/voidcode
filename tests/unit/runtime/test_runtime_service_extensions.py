@@ -1498,7 +1498,7 @@ def test_runtime_cancel_after_tool_started_emits_terminal_tool_completed(
     assert event_types.index("runtime.tool_started") < event_types.index("runtime.tool_completed") < event_types.index("runtime.failed")
     assert completed_events[-1].payload["tool"] == "write"
     assert completed_events[-1].payload["status"] == "error"
-    assert completed_events[-1].payload["error"] == "run interrupted"
+    assert completed_events[-1].payload["error"] == "tool execution cancelled: stop before invoke"
     tool_status = cast(dict[str, object], completed_events[-1].payload["tool_status"])
     assert tool_status["phase"] == "failed"
     assert tool_status["status"] == "failed"
@@ -1622,7 +1622,7 @@ def test_runtime_cancel_after_approved_tool_started_skips_invoke_and_closes_tool
     assert event_types.index("runtime.tool_started") < event_types.index("runtime.tool_completed") < event_types.index("runtime.failed")
     assert completed_events[-1].payload["tool"] == "write"
     assert completed_events[-1].payload["status"] == "error"
-    assert completed_events[-1].payload["error"] == "run interrupted"
+    assert completed_events[-1].payload["error"] == "tool execution cancelled: approved stop before invoke"
     tool_status = cast(dict[str, object], completed_events[-1].payload["tool_status"])
     assert tool_status["phase"] == "failed"
     assert tool_status["status"] == "failed"

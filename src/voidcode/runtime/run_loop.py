@@ -4351,6 +4351,14 @@ class RuntimeHost:
         self._backfilled_aborted = True
         self._cancel_all_stashed_futures(reason=reason)
         self._fanout_stash.clear()
+        if self.continuation is not None:
+            self.coordinator._capture_interrupted_checkpoint(
+                session=self.session,
+                prompt=self.active_turn_request.prompt,
+                tool_results=list(self.state.results) if self.state else [],
+                last_event_sequence=self.sequence,
+            )
+            self.continuation = None
         batch = self.current_batch or (self.state.batches[-1] if self.state and self.state.batches else None)
         if batch is None or not batch.calls:
             if not self._interrupted_emitted:
