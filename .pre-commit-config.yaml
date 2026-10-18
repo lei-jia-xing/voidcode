@@ -27,6 +27,13 @@ repos:
         pass_filenames: false
         types_or: [python, pyi]
 
+      - id: plugin-identities
+        name: bundled plugin identities are current
+        entry: uv run python scripts/generate_plugin_identities.py --check
+        language: system
+        pass_filenames: false
+        files: ^(src/voidcode/plugins/|scripts/generate_plugin_identities\.py)
+
       - id: ty
         name: ty check
         entry: uv run ty check src

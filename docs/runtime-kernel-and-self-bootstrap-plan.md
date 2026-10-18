@@ -459,3 +459,45 @@ Web / TUI / CLI
 ### 阶段提交
 
 每个阶段完成真实 smoke、相关回归与仓库门禁后立即提交。P0 只交付合同与可执行约束；P1 必须交付真实 provider + 工作区宿主 + read/write + 审批/取消/恢复，不能用进程内 builtin 代替。
+
+## P1 实施记录（已交付行为）
+
+### 实际路径
+
+- 开发入口：`uv run python -m voidcode.kernel run/resume/show`（`src/voidcode/kernel/__main__.py`），`--workspace/--state-dir/--trust-plugin`。生产入口切换在 P4，P1 不动旧 CLI。
+- 治理引擎：`src/voidcode/kernel/engine.py`（不可变批次、intent 先行、结果+checkpoint 原子提交、CAS sequence/run/revision、审批精确绑定、read-only 覆盖 yolo、串行 workspace 锁）。
+- 准入与装配：`src/voidcode/kernel/activation.py`（artifact 内容寻址+哈希校验）、`src/voidcode/kernel/bootstrap.py`（新 `voidcode.json`、拒绝 legacy、state 必须在 workspace 外、`{NAME}_API_KEY` 解析、显式 base_url、revision pin）。
+- 持久化：`src/voidcode/kernel/storage/{store.py,schema.sql}`（5 表 + append-only triggers、RLock 线程安全、preflight 只读校验拒绝外部/legacy/空库且字节不变）。
+- 插件宿主：`src/voidcode/kernel/host.py` + `src/voidcode/plugin_host/`（独立进程、1MiB 有界 JSONL、无自动重启、取消/超时/kill 真实 `execution_stopped`）；SDK 线编解码 `src/voidcode/sdk/codec.py`，注册结构 `src/voidcode/sdk/plugin.py`。
+- 内置插件：`src/voidcode/plugins/files/`（read 有界 UTF-8 单遍哈希+50KiB/1000 行截断、write stale-hash + 原子替换；schema 拒绝未知参数）与 `src/voidcode/plugins/openai_chat/`（官方 SDK、max_retries=0、严格 finish/args 校验、usage None/0 保留、无密钥落盘/日志）。
+- 身份生成器：`scripts/generate_plugin_identities.py`（格式化后运行；`mise run plugins:identities:check` 与 pre-commit `plugin-identities` 卡点；禁止手改 files 数组）。
+
+### CLI/配置示例
+
+```json
+{
+  "schema_version": 1,
+  "model": {"model": "deepseek/deepseek-flash"},
+  "policy": {"approval_mode": "ask"},
+  "providers": {"deepseek": {"base_url": "https://api.deepseek.com", "wire": "openai-chat"}}
+}
+```
+
+```bash
+uv run python -m voidcode.kernel --workspace ./ws --state-dir ./state run "读 input 写 result" --session-id s1
+uv run python -m voidcode.kernel --workspace ./ws --state-dir ./state resume s1 --approval-request-id <id> --decision allow
+uv run python -m voidcode.kernel --workspace ./ws --state-dir ./state show s1 --events
+```
+
+密钥从显式 providers 配置或 `{NAME}_API_KEY` 环境变量解析，不进 revision/checkpoint/日志。外部插件源码需 `--trust-plugin <id>` 显式信任，工作区配置不能自授。
+
+### 无 legacy
+
+- 只读新工作区 `voidcode.json`；新配置缺失但存在 legacy `.voidcode.json` 时明确拒绝，不解析、不转换。
+- 只认新库 `kernel-v1.sqlite3`（magic `voidcode-kernel-v1`）；已存在外部/legacy/空文件在任何 pragma/schema 写入前拒绝，字节不变。
+- 无兼容 shim、无旧 import、无迁移器、无 legacy 开关。
+
+### 已知边界与 P2 下一步
+
+- 已验证：审批 allow/deny 跨重启、错误 request_id 拒绝、revision 漂移拒绝、跨批次 native call ID 复用（批次内重复 ID 拒绝）、read 前缀不重跑、RO+yolo 无 intent、外部未信任拒绝、kernel SIGKILL/SIGINT 中断不重放 mutation 且 tail 不执行、安全读恢复复用 invocation_id、kill 插件宿主后 intent 保持 pending 且 resume 不重放、未知参数拼写拒绝无副作用；真实 DeepSeek 活体检（read→write→read，跨进程审批，terminal 落盘）。
+- 未做（不在 P1 声称范围内）：无热更新（P3）、无 OS 沙箱（宿主只是受信 Python 进程）、无流式 provider、无插件状态/命令目录/通用 action（P2）、无生产入口切换（P4）。串行 workspace 执行是当前上限。
