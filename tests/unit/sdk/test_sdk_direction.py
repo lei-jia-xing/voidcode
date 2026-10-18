@@ -1,0 +1,30 @@
+from __future__ import annotations
+
+import ast
+import sys
+from pathlib import Path
+
+
+def test_sdk_cannot_depend_on_implementation_layers() -> None:
+    root = Path(__file__).resolve().parents[3] / "src" / "voidcode" / "sdk"
+    assert root.is_dir(), f"SDK directory missing: {root}"
+    sources = tuple(root.rglob("*.py"))
+    assert sources, "SDK guard did not discover any source files"
+    violations: list[str] = []
+    for source in sources:
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+            targets: tuple[str, ...] = ()
+            if isinstance(node, ast.ImportFrom):
+                if node.level > 1:
+                    violations.append(f"{source.name}:{node.lineno}: escaped relative import")
+                elif node.level == 0 and node.module:
+                    targets = (node.module,)
+            elif isinstance(node, ast.Import):
+                targets = tuple(alias.name for alias in node.names)
+            for target in targets:
+                if target == "voidcode.sdk" or target.startswith("voidcode.sdk."):
+                    continue
+                top = target.partition(".")[0]
+                if top not in sys.stdlib_module_names and top not in {"pydantic", "jsonschema"}:
+                    violations.append(f"{source.name}: prohibited SDK dependency {target}")
+    assert not violations, "\n".join(violations)
