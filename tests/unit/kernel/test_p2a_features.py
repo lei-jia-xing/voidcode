@@ -118,14 +118,14 @@ class ConfirmCommand:
     )
 
     def invoke(self, invocation, services):
-        if invocation.actor == "user":
+        if invocation.context.actor == "user":
             st, ver = services.get_state("session")
             cur = dict(st or {{}})
             cur["action_done"] = True
             services.replace_state(cur, expected_version=ver, scope="session")
             return CommandResult(status="ok", output="Action performed after confirmation")
         _, ver = services.get_state("session")
-        req_id = f"req-confirm-{{invocation.session_id}}"
+        req_id = f"req-confirm-{{invocation.context.session_id}}"
         req = ConfirmationRequest(
             request_id=req_id,
             owner="{plugin_id}",
@@ -159,7 +159,7 @@ class WriteTool:
         effects=frozenset({{ToolEffect.WRITE}}),
     )
 
-    def invoke(self, call, context):
+    def invoke(self, call, *, context, services):
         return ToolSuccess(tool_name="write_tool", output=TextOutput(text="wrote data successfully"))
 
 class LoopbackProvider:
@@ -365,6 +365,7 @@ def make_configured_kernel(
         config=config,
         plugins=(host_plugin,),
         revision_payload=rev_payload,
+        auto_drain=False,
     )
     return kernel, "hello-state"
 
@@ -499,8 +500,8 @@ def test_p2a_usage_windowing_and_unknown_semantics(tmp_path: Path) -> None:
 
         # 1. Initial usage
         u0 = kernel.usage("sess-usage")
-        assert u0.input_tokens is None
-        assert u0.output_tokens is None
+        assert u0.input_tokens == 0
+        assert u0.output_tokens == 0
         assert u0.has_unknown_usage is False
         assert u0.turn_count == 0
 

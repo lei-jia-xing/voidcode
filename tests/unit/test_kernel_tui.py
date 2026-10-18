@@ -1,0 +1,314 @@
+"""Unit tests for the generic kernel TUI client and 8 finite views."""
+
+from __future__ import annotations
+
+import pytest
+
+from voidcode.kernel.tui.views import (
+    InteractiveChoices,
+    InteractiveConfirmation,
+    InteractiveForm,
+    UnsupportedViewError,
+    render_plugin_view,
+)
+from voidcode.tui.keys import Key
+
+
+def test_unsupported_view_raises_error() -> None:
+    """A view kind outside the eight finite kinds fails visibly, never silently."""
+    with pytest.raises(UnsupportedViewError):
+        render_plugin_view({"view_type": "invalid_magic_type", "data": {}}, 80)
+
+
+def test_interactive_choices_navigation_and_selection() -> None:
+    choices = InteractiveChoices(
+        {
+            "action": "select_target",
+            "argument_name": "target_id",
+            "options": [
+                {"id": "a", "label": "Option A"},
+                {"id": "b", "label": "Option B"},
+            ],
+        }
+    )
+
+    # Navigate down
+    choices.handle_key(Key("down"))
+    assert choices.selected_index == 1
+
+    # Enter selects Option B
+    outcome = choices.handle_key(Key("enter"))
+    assert outcome == {"action": "select_target", "arguments": {"target_id": "b"}}
+
+    # Esc cancels
+    assert choices.handle_key(Key("esc")) == {"cancel": True}
+
+
+def test_interactive_confirmation_key_handling() -> None:
+    conf = InteractiveConfirmation(
+        {
+            "request_id": "req-abc",
+            "message": "Are you sure?",
+            "actions": ["allow", "deny"],
+        }
+    )
+    assert conf.selected_index == 0
+
+    # Enter on first action allows
+    assert conf.handle_key(Key("enter")) == {"request_id": "req-abc", "decision": "allow"}
+
+    # Navigate right to deny
+    conf.handle_key(Key("right"))
+    assert conf.selected_index == 1
+    assert conf.handle_key(Key("enter")) == {"request_id": "req-abc", "decision": "deny"}
+
+    # Esc automatically denies
+    assert conf.handle_key(Key("esc")) == {"request_id": "req-abc", "decision": "deny"}
+
+
+def test_interactive_form_field_editing_and_submission() -> None:
+    form = InteractiveForm(
+        {
+            "action": "save_config",
+            "fields": [
+                {"name": "title", "label": "Title", "field_type": "text", "required": True},
+                {"name": "count", "label": "Count", "field_type": "integer", "required": False},
+                {"name": "enabled", "label": "Enabled", "field_type": "boolean", "required": False},
+            ],
+            "initial_values": {"title": "Init", "count": 5, "enabled": False},
+        }
+    )
+
+    assert form.values["title"] == "Init"
+    assert form.values["count"] == 5
+    assert form.values["enabled"] is False
+
+    # Boolean cycle is unset -> true -> false -> unset, so an explicit False
+    # steps to unset and then to True.
+    form.active_index = 2
+    form.handle_key(Key("space"))
+    assert form.values["enabled"] is None
+    form.handle_key(Key("space"))
+    assert form.values["enabled"] is True
+
+    # Typing appends raw text; nothing is coerced while editing.
+    form.active_index = 1
+    form.handle_key(Key("3", text="3"))
+    assert form.values["count"] == "53"
+
+    # Type text into title
+    form.active_index = 0
+    form.handle_key(Key("!", text="!"))
+    assert form.values["title"] == "Init!"
+
+    # Submit coerces at the boundary: integer text becomes an int, boolean stays bool.
+    outcome = form.handle_key(Key("ctrl+s"))
+    assert outcome == {
+        "action": "save_config",
+        "arguments": {
+            "title": "Init!",
+            "count": 53,
+            "enabled": True,
+        },
+    }
+
+
+def test_interactive_form_never_fabricates_numbers_and_omits_blank_optionals() -> None:
+    form = InteractiveForm(
+        {
+            "action": "set_limits",
+            "fields": [
+                {"name": "budget", "label": "Budget", "field_type": "integer", "required": False},
+                {"name": "ratio", "label": "Ratio", "field_type": "number", "required": False},
+            ],
+            "initial_values": {},
+        }
+    )
+
+    # Absent optionals submit as omitted keys, never as 0 or null.
+    assert form.handle_key(Key("ctrl+s")) == {"action": "set_limits", "arguments": {}}
+
+    # "1e3" must not silently become 1: visible error, nothing submitted.
+    form.active_index = 0
+    for char in "1e3":
+        form.handle_key(Key(char, text=char))
+    assert form.handle_key(Key("ctrl+s")) is None
+    assert form.validation_error
+
+    # A real integer and a real float are submitted verbatim.
+    form.values["budget"] = "-12"
+    form.values["ratio"] = "2.5e-2"
+    assert form.handle_key(Key("ctrl+s")) == {
+        "action": "set_limits",
+        "arguments": {"budget": -12, "ratio": 0.025},
+    }
+
+    # Numeric candidates are trimmed for parsing, text stays verbatim.
+    form.values["budget"] = " 12 "
+    assert form.handle_key(Key("ctrl+s")) == {
+        "action": "set_limits",
+        "arguments": {"budget": 12, "ratio": 0.025},
+    }
+
+
+def test_interactive_form_validates_required_fields() -> None:
+    form = InteractiveForm(
+        {
+            "action": "create_item",
+            "fields": [
+                {"name": "req_field", "label": "Required Field", "field_type": "text", "required": True},
+            ],
+        }
+    )
+    # Submit with empty value should fail validation and return None
+    outcome = form.handle_key(Key("ctrl+s"))
+    assert outcome is None
+    assert form.validation_error
+
+
+def test_interactive_form_load_action_prefills_without_overwriting_dirty_edits() -> None:
+    form = InteractiveForm(
+        {
+            "action": "edit_item",
+            "load_action": "get_item",
+            "fields": [
+                {"name": "desc", "label": "Description", "field_type": "text"},
+                {"name": "notes", "label": "Notes", "field_type": "text"},
+            ],
+            "initial_values": {},
+        }
+    )
+
+    # User starts typing into desc
+    form.active_index = 0
+    form.handle_key(Key("x", text="x"))
+    assert "desc" in form.dirty_fields
+    assert form.values["desc"] == "x"
+
+    # Async load returns data for both desc and notes
+    form.populate_from_load_action({"desc": "Original Desc", "notes": "Loaded Notes"})
+
+    # User's dirty edit on desc is preserved, while clean field notes is populated!
+    assert form.values["desc"] == "x"
+    assert form.values["notes"] == "Loaded Notes"
+
+
+def test_form_nullable_field_clears_instead_of_omitting() -> None:
+    """A field the command declares nullable submits null, so a value can be cleared."""
+    form = InteractiveForm(
+        {
+            "action": "set_nullable",
+            "fields": [{"name": "budget", "label": "Budget", "field_type": "integer", "required": False}],
+            "initial_values": {"budget": 42},
+        },
+        action_schema={
+            "type": "object",
+            "properties": {"budget": {"anyOf": [{"type": "integer"}, {"type": "null"}]}},
+        },
+    )
+    form.values["budget"] = ""
+    assert form.handle_key(Key("ctrl+s")) == {"action": "set_nullable", "arguments": {"budget": None}}
+
+
+def test_form_boolean_missing_optional_nullable_and_explicit_values_stay_distinct() -> None:
+    """Missing, null, false and true are four different submissions."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "flag": {"type": "boolean"},
+            "maybe": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+        },
+    }
+    form = InteractiveForm(
+        {
+            "action": "set_flags",
+            "fields": [
+                {"name": "flag", "label": "Flag", "field_type": "boolean", "required": False},
+                {"name": "maybe", "label": "Maybe", "field_type": "boolean", "required": False},
+            ],
+        },
+        action_schema=schema,
+    )
+
+    # Absent fields are omitted: an untouched form never clears a nullable value.
+    assert form.handle_key(Key("ctrl+s")) == {"action": "set_flags", "arguments": {}}
+
+    # A present, deliberate blank on a nullable field is an explicit clear.
+    form.values["maybe"] = ""
+    assert form.handle_key(Key("ctrl+s")) == {
+        "action": "set_flags",
+        "arguments": {"maybe": None},
+    }
+
+    # An explicit false is submitted as false, not dropped.
+    form.values["flag"] = False
+    assert form.handle_key(Key("ctrl+s")) == {
+        "action": "set_flags",
+        "arguments": {"flag": False, "maybe": None},
+    }
+
+    # An explicit true is submitted as true.
+    form.values["flag"] = True
+    assert form.handle_key(Key("ctrl+s")) == {
+        "action": "set_flags",
+        "arguments": {"flag": True, "maybe": None},
+    }
+
+
+def test_form_missing_required_nullable_is_refused_until_provided() -> None:
+    form = InteractiveForm(
+        {
+            "action": "set_budget",
+            "fields": [{"name": "budget", "label": "Budget", "field_type": "integer", "required": True}],
+        },
+        action_schema={
+            "type": "object",
+            "properties": {"budget": {"anyOf": [{"type": "integer"}, {"type": "null"}]}},
+        },
+    )
+    # Absent: refused, even though null would be legal once the user acts on it.
+    assert form.handle_key(Key("ctrl+s")) is None
+    assert form.validation_error
+
+    # Clearing then re-entering a numeric works: the editor never sees the
+    # literal text of a present null.
+    form.values["budget"] = None
+    form.handle_key(Key("7", text="7"))
+    form.handle_key(Key("5", text="5"))
+    assert form.values["budget"] == "75"
+    assert form.handle_key(Key("ctrl+s")) == {"action": "set_budget", "arguments": {"budget": 75}}
+
+
+def test_form_required_boolean_missing_is_a_validation_error() -> None:
+    form = InteractiveForm(
+        {
+            "action": "set_flag",
+            "fields": [{"name": "flag", "label": "Flag", "field_type": "boolean", "required": True}],
+        }
+    )
+    assert form.handle_key(Key("ctrl+s")) is None
+    assert form.validation_error
+
+
+def test_form_optional_non_nullable_blank_is_omitted() -> None:
+    form = InteractiveForm(
+        {
+            "action": "set_limits",
+            "fields": [{"name": "ratio", "label": "Ratio", "field_type": "number", "required": False}],
+        },
+        action_schema={"type": "object", "properties": {"ratio": {"type": "number"}}},
+    )
+    assert form.handle_key(Key("ctrl+s")) == {"action": "set_limits", "arguments": {}}
+
+
+def test_form_preserves_typed_text_verbatim() -> None:
+    """Non-empty text keeps its whitespace; only blanks are normalised."""
+    form = InteractiveForm(
+        {
+            "action": "submit_form",
+            "fields": [{"name": "summary", "label": "Summary", "field_type": "multiline", "required": True}],
+        }
+    )
+    form.values["summary"] = "  keep my spacing  \n"
+    outcome = form.handle_key(Key("ctrl+s"))
+    assert outcome == {"action": "submit_form", "arguments": {"summary": "  keep my spacing  \n"}}

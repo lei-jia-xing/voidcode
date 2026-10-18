@@ -5,11 +5,43 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+from typing import Any, cast
 
-from voidcode.plugins.files.files_plugin import ReadResultBody, WriteResultBody, create_plugin
+from voidcode.plugins.files.files_plugin import ReadResultBody, WriteResultBody
+from voidcode.plugins.files.files_plugin import create_plugin as _orig_create_plugin
 from voidcode.sdk.invocation import ToolContext
+from voidcode.sdk.plugin import Plugin
 from voidcode.sdk.provider import ProviderAbortSignal
 from voidcode.sdk.tools import ConfirmedStop, ToolCall, ToolFailure, ToolSuccess
+
+
+class _DummyServices:
+    pass
+
+
+_SERVICES = cast(Any, _DummyServices())
+
+
+def create_plugin(config):
+    p = _orig_create_plugin(config)
+
+    class WrappedTool:
+        def __init__(self, inner):
+            self._inner = inner
+            self.definition = inner.definition
+
+        def invoke(self, call, *, context, services=_SERVICES):
+            return self._inner.invoke(call, context=context, services=services)
+
+    return Plugin(
+        tools=tuple(WrappedTool(t) for t in p.tools),
+        commands=p.commands,
+        providers=p.providers,
+        views=p.views,
+        context=p.context,
+        observer=p.observer,
+        close=p.close,
+    )
 
 
 class DummyAbortSignal:

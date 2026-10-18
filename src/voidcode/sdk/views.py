@@ -2,8 +2,8 @@
 
 import json
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
-from typing import Any, Literal, Protocol, cast, runtime_checkable
+from dataclasses import dataclass, field, fields, is_dataclass
+from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import TypeAdapter
 
@@ -44,6 +44,7 @@ class ChoiceOption:
 class ChoicesViewData:
     options: tuple[ChoiceOption, ...]
     action: str
+    argument_name: str = "choice"
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,17 +54,28 @@ class ConfirmationViewData:
     actions: tuple[str, ...] = ("allow", "deny")
 
 
+FormFieldType = Literal["text", "multiline", "integer", "number", "boolean"]
+
+
 @dataclass(frozen=True, slots=True)
 class FormField:
     name: str
     label: str
-    field_type: str = "text"
+    field_type: FormFieldType = "text"
+    required: bool = True
 
 
 @dataclass(frozen=True, slots=True)
 class FormViewData:
     fields: tuple[FormField, ...]
     action: str
+    initial_values: Mapping[str, object] = field(default_factory=dict)
+    load_action: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.initial_values, Mapping):
+            raise ValueError("initial_values must be a mapping")
+        object.__setattr__(self, "initial_values", own_json_object(self.initial_values))
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +105,17 @@ _VIEW_ADAPTERS: dict[str, TypeAdapter[object]] = {
 MAX_VIEW_DATA_BYTES = 64 * 1024
 
 
+def _canonical_wire(value: object) -> object:
+    """Serialize a validated view model to wire JSON, including declared field defaults."""
+    if is_dataclass(value) and not isinstance(value, type):
+        return {f.name: _canonical_wire(getattr(value, f.name)) for f in fields(value)}
+    if isinstance(value, Mapping):
+        return {str(k): _canonical_wire(v) for k, v in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_canonical_wire(v) for v in value]
+    return value
+
+
 def validate_view_data(view_type: ConfirmationUIType, data: Mapping[str, object]) -> Mapping[str, object]:
     """Validate data shape matches view_type exactly, failing visibly on mismatch."""
     adapter = _VIEW_ADAPTERS.get(view_type)
@@ -104,7 +127,10 @@ def validate_view_data(view_type: ConfirmationUIType, data: Mapping[str, object]
     if len(raw_json.encode("utf-8")) > MAX_VIEW_DATA_BYTES:
         raise ValueError(f"View data exceeds {MAX_VIEW_DATA_BYTES} bytes limit")
     parsed = adapter.validate_json(raw_json, strict=True, extra="forbid")
-    return own_json_object(asdict(cast(Any, parsed)))
+    canonical = _canonical_wire(parsed)
+    if not isinstance(canonical, Mapping):
+        raise ValueError(f"View data for {view_type} must serialize to an object")
+    return own_json_object(canonical)
 
 
 @dataclass(frozen=True, slots=True)

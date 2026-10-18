@@ -8,16 +8,19 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import importlib.util
 import inspect
 import json
 import os
 import sys
 import threading
 import time
+import traceback
 from collections.abc import Callable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
-from typing import Any, BinaryIO, Literal
+from typing import Any, BinaryIO, Literal, cast
 
 import jsonschema
 
@@ -45,6 +48,7 @@ from voidcode.sdk.hooks import (
     InvocationFinishedFact,
     PluginFact,
     RunFinishedFact,
+    StopCause,
     UsageFact,
 )
 from voidcode.sdk.invocation import ToolContext
@@ -56,7 +60,7 @@ from voidcode.sdk.manifest import (
     parse_plugin_manifest,
 )
 from voidcode.sdk.plugin import Plugin, command_definition, tool_definition
-from voidcode.sdk.provider import ProviderExecutionError, ProviderTokenUsage, ProviderTurnRequest
+from voidcode.sdk.provider import ProviderExecutionError, ProviderTokenUsage
 from voidcode.sdk.services import PluginBudget, SessionUsageReport
 from voidcode.sdk.tools import ConfirmedStop, TextOutput, ToolFailure
 
@@ -94,6 +98,52 @@ class HostAbortSignal:
             self._event.set()
         else:
             self._event.clear()
+
+
+def _report_internal_error(scope: str, exc: BaseException) -> None:
+    """Log an unexpected host-side failure to stderr for operators.
+
+    The wire response stays a redacted internal error, but the host process
+    inherits the kernel's stderr so a real traceback (no API keys) is visible
+    for debugging instead of only the exception class name.
+    """
+    print(f"[plugin-host] internal error in {scope}: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+    traceback.print_exc(file=sys.stderr)
+    sys.stderr.flush()
+
+
+def _required_text(params: Mapping[str, Any], key: str) -> str:
+    """Read a required non-empty text parameter, failing visibly instead of defaulting."""
+    value = params.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"'{key}' parameter required as non-empty string")
+    return value
+
+
+def _optional_text(params: Mapping[str, Any], key: str, default: str = "") -> str:
+    """Read an optional text parameter; an empty string is an explicit 'no value'."""
+    value = params.get(key, default)
+    if not isinstance(value, str):
+        raise ValueError(f"'{key}' parameter must be a string")
+    return value
+
+
+def _required_int(payload: Mapping[str, Any], key: str) -> int:
+    """Read a required integer field without coercing strings or booleans."""
+    value = payload.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"'{key}' must be an integer")
+    return value
+
+
+def _optional_number(payload: Mapping[str, Any], key: str) -> float | None:
+    """Read an optional numeric field without coercing strings or booleans."""
+    value = payload.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"'{key}' must be a number or null")
+    return float(value)
 
 
 def _check_arity(fn: Any, expected_arity: int, name: str) -> None:
@@ -164,10 +214,19 @@ class ServerPluginServices:
         )
         return str(resp.get("continuation_id", ""))
 
-    def get_usage(self, *, since_sequence: int = 0) -> SessionUsageReport:
+    def cancel_continuations(self, *, continuation_id: str | None = None) -> None:
+        self._server._send_reverse_rpc(
+            "continuations_cancel",
+            {
+                "lease_token": self._lease_token,
+                "continuation_id": continuation_id,
+            },
+        )
+
+    def get_usage(self, *, since_sequence: int = 0, until_sequence: int | None = None) -> SessionUsageReport:
         resp = self._server._send_reverse_rpc(
             "get_usage",
-            {"lease_token": self._lease_token, "since_sequence": since_sequence},
+            {"lease_token": self._lease_token, "since_sequence": since_sequence, "until_sequence": until_sequence},
         )
         return decode_session_usage(resp)
 
@@ -179,6 +238,7 @@ class ServerPluginServices:
     def set_budget(
         self,
         *,
+        since_sequence: int,
         max_input_tokens: int | None = None,
         max_output_tokens: int | None = None,
         max_total_tokens: int | None = None,
@@ -189,6 +249,7 @@ class ServerPluginServices:
             "set_budget",
             {
                 "lease_token": self._lease_token,
+                "since_sequence": since_sequence,
                 "max_input_tokens": max_input_tokens,
                 "max_output_tokens": max_output_tokens,
                 "max_total_tokens": max_total_tokens,
@@ -426,7 +487,11 @@ class PluginHostServer:
             self._handle_close(req_id)
             return False
         elif method == "invoke":
-            if set(params.keys()) != {"call", "context"} or not isinstance(params["call"], dict) or not isinstance(params["context"], dict):
+            if (
+                set(params.keys()) not in ({"call", "context"}, {"call", "context", "lease_token"})
+                or not isinstance(params["call"], dict)
+                or not isinstance(params["context"], dict)
+            ):
                 self._send_response(
                     {
                         "protocol_version": 1,
@@ -470,7 +535,10 @@ class PluginHostServer:
                 return True
             self._handle_invoke_command(req_id, params)
         elif method == "render_view":
-            if set(params.keys()) not in ({"name", "session_id", "lease_token"}, {"name", "session_id", "lease_token", "client_capabilities"}):
+            if set(params.keys()) not in (
+                {"name", "session_id", "lease_token", "run_id", "invocation_id"},
+                {"name", "session_id", "lease_token", "run_id", "invocation_id", "client_capabilities"},
+            ):
                 self._send_response(
                     {
                         "protocol_version": 1,
@@ -482,7 +550,10 @@ class PluginHostServer:
                 return True
             self._handle_render_view(req_id, params)
         elif method == "contribute_context":
-            if set(params.keys()) not in ({"session_id", "logical_turn", "lease_token"}, {"session_id", "owner", "logical_turn", "lease_token"}):
+            if set(params.keys()) not in (
+                {"session_id", "logical_turn", "lease_token", "run_id", "invocation_id"},
+                {"session_id", "owner", "logical_turn", "lease_token", "run_id", "invocation_id"},
+            ):
                 self._send_response(
                     {
                         "protocol_version": 1,
@@ -498,8 +569,8 @@ class PluginHostServer:
             self._handle_contribute_context(req_id, params)
         elif method == "notify_fact":
             if set(params.keys()) not in (
-                {"fact_type", "fact", "logical_turn", "lease_token"},
-                {"fact_type", "fact", "owner", "logical_turn", "lease_token"},
+                {"fact_type", "fact", "logical_turn", "lease_token", "invocation_id"},
+                {"fact_type", "fact", "owner", "logical_turn", "lease_token", "invocation_id"},
             ) or not isinstance(params.get("fact"), dict):
                 self._send_response(
                     {
@@ -566,10 +637,10 @@ class PluginHostServer:
 
                 # Check top-level module collision
                 top_module = module_name.split(".", 1)[0]
-                if top_module in declared_modules:
-                    raise ValueError(f"Duplicate plugin top-level module name across plugins: {top_module}")
-                declared_modules.add(top_module)
-
+                if module_name != "__init__":
+                    if top_module in declared_modules:
+                        raise ValueError(f"Duplicate plugin top-level module name across plugins: {top_module}")
+                    declared_modules.add(top_module)
                 # Verify all required tool capabilities are granted before import
                 for tool_decl in manifest.tools:
                     req_caps = frozenset(tool_decl.capabilities)
@@ -596,12 +667,24 @@ class PluginHostServer:
                         except ValueError as err:
                             raise ValueError(f"Top-level module conflict: module {top_module} already imported from outside root") from err
 
-                # Add root to sys.path and import module
-                root_str = str(root)
-                if root_str not in sys.path:
-                    sys.path.insert(0, root_str)
-
-                mod = importlib.import_module(module_name)
+                if module_name == "__init__":
+                    pkg_name = f"voidcode_plugin_{manifest.plugin_id.replace('-', '_')}"
+                    spec = importlib.util.spec_from_file_location(
+                        pkg_name,
+                        root / "__init__.py",
+                        submodule_search_locations=[str(root)],
+                    )
+                    if spec is None or spec.loader is None:
+                        raise ValueError(f"Failed to create package spec for plugin {manifest.plugin_id}")
+                    mod = importlib.util.module_from_spec(spec)
+                    sys.modules[pkg_name] = mod
+                    spec.loader.exec_module(mod)
+                else:
+                    # Add root to sys.path and import module
+                    root_str = str(root)
+                    if root_str not in sys.path:
+                        sys.path.insert(0, root_str)
+                    mod = importlib.import_module(module_name)
                 mod_file = getattr(mod, "__file__", None)
                 if not mod_file:
                     raise ValueError(f"Imported module {module_name} has no __file__")
@@ -817,7 +900,9 @@ class PluginHostServer:
         declared_paths = {f.path for f in manifest.files}
         expected_file = f"{module_name.replace('.', '/')}.py"
         expected_package = f"{module_name.replace('.', '/')}/__init__.py"
-        if expected_file not in declared_paths and expected_package not in declared_paths:
+        if module_name == "__init__" and "__init__.py" in declared_paths:
+            pass
+        elif expected_file not in declared_paths and expected_package not in declared_paths:
             raise ValueError(f"Entrypoint module {module_name} not found in declared files (expected {expected_file} or {expected_package})")
         return module_name, func_name
 
@@ -964,29 +1049,24 @@ class PluginHostServer:
                     )
                     return
 
-                # Create context with abort signal
+                # Swap in the live abort signal without dropping any captured
+                # field (logical_turn, capabilities, and future additions).
                 abort_signal = HostAbortSignal(cancel_event)
-                inv_context = ToolContext(
-                    workspace=context.workspace,
-                    session_id=context.session_id,
-                    run_id=context.run_id,
-                    invocation_id=context.invocation_id,
-                    revision_id=context.revision_id,
-                    actor=context.actor,
-                    capabilities=context.capabilities,
-                    abort_signal=abort_signal,
-                )
+                inv_context = replace(context, abort_signal=abort_signal)
 
+                lease_token = str(params.get("lease_token", ""))
+                services = ServerPluginServices(server=self, lease_token=lease_token)
+                tool_threw = False
                 try:
-                    result = tool_instance.invoke(call, context=inv_context)
+                    result = tool_instance.invoke(call, context=inv_context, services=services)
                 except Exception as exc:
+                    tool_threw = True
                     result = ToolFailure(
                         tool_name=call.tool_name,
                         error=f"Tool invocation failed with {type(exc).__name__}",
                         output=TextOutput(text=f"Tool invocation failed with {type(exc).__name__}"),
                         execution=ConfirmedStop(cancellation_signalled=cancel_event.is_set()),
                     )
-
                 if cancel_event.is_set() and isinstance(result, ToolFailure) and result.execution is None:
                     result = ToolFailure(
                         tool_name=result.tool_name,
@@ -1003,10 +1083,14 @@ class PluginHostServer:
                         "protocol_version": 1,
                         "id": req_id,
                         "ok": True,
-                        "result": encode_tool_result(result),
+                        "result": {
+                            "tool_result": encode_tool_result(result),
+                            "threw": tool_threw,
+                        },
                     }
                 )
             except Exception as unexp_err:
+                _report_internal_error(f"{req_id} handler", unexp_err)
                 self._send_response(
                     {
                         "protocol_version": 1,
@@ -1076,18 +1160,7 @@ class PluginHostServer:
 
                 provider_instance, _, _ = prov_entry
                 abort_signal = HostAbortSignal(cancel_event)
-                prov_req = ProviderTurnRequest(
-                    messages=request.messages,
-                    available_tools=request.available_tools,
-                    raw_model=request.raw_model,
-                    provider_name=request.provider_name,
-                    model_name=request.model_name,
-                    reasoning_effort=request.reasoning_effort,
-                    cache_retention=request.cache_retention,
-                    attempt=request.attempt,
-                    abort_signal=abort_signal,
-                    metadata=request.metadata,
-                )
+                prov_req = replace(request, abort_signal=abort_signal)
 
                 try:
                     res = provider_instance.propose_turn(prov_req)
@@ -1125,6 +1198,7 @@ class PluginHostServer:
                         }
                     )
             except Exception as unexp_err:
+                _report_internal_error(f"{req_id} handler", unexp_err)
                 self._send_response(
                     {
                         "protocol_version": 1,
@@ -1282,16 +1356,17 @@ class PluginHostServer:
                 services = ServerPluginServices(server=self, lease_token=lease_token)
 
                 invocation = CommandInvocation(
-                    session_id=context.session_id,
+                    context=context,
                     name=name,
                     arguments=args,
-                    actor=context.actor,
                     client_capabilities=client_caps,
                 )
 
+                cmd_threw = False
                 try:
                     result = cmd_instance.invoke(invocation, services)
                 except Exception as exc:
+                    cmd_threw = True
                     result = CommandResult(status="error", error=f"Command invocation failed with {type(exc).__name__}")
 
                 self._send_response(
@@ -1301,10 +1376,12 @@ class PluginHostServer:
                         "ok": True,
                         "result": {
                             "command_result": encode_command_result(result),
+                            "threw": cmd_threw,
                         },
                     }
                 )
             except Exception as unexp_err:
+                _report_internal_error(f"{req_id} handler", unexp_err)
                 self._send_response(
                     {
                         "protocol_version": 1,
@@ -1363,6 +1440,7 @@ class PluginHostServer:
                     }
                 )
             except Exception as unexp_err:
+                _report_internal_error(f"{req_id} handler", unexp_err)
                 self._send_response(
                     {
                         "protocol_version": 1,
@@ -1377,16 +1455,18 @@ class PluginHostServer:
     def _handle_contribute_context(self, req_id: str, params: dict[str, Any]) -> None:
         def worker() -> None:
             try:
-                session_id = str(params["session_id"])
-                lease_token = str(params["lease_token"])
+                session_id = _required_text(params, "session_id")
+                lease_token = _required_text(params, "lease_token")
                 owner_target = params.get("owner")
-                logical_turn = str(params.get("logical_turn", ""))
+                logical_turn = _optional_text(params, "logical_turn")
+                if self._workspace is None or self._revision_id is None:
+                    raise RuntimeError("Plugin host is not initialized")
                 context = ToolContext(
-                    workspace=self._workspace if self._workspace is not None else Path.cwd(),
+                    workspace=self._workspace,
                     session_id=session_id,
-                    run_id="context",
-                    invocation_id="context",
-                    revision_id=self._revision_id or "context",
+                    run_id=_optional_text(params, "run_id"),
+                    invocation_id=_required_text(params, "invocation_id"),
+                    revision_id=self._revision_id,
                     actor="plugin",
                     logical_turn=logical_turn,
                 )
@@ -1424,6 +1504,7 @@ class PluginHostServer:
                     }
                 )
             except Exception as unexp_err:
+                _report_internal_error(f"{req_id} handler", unexp_err)
                 self._send_response(
                     {
                         "protocol_version": 1,
@@ -1438,18 +1519,25 @@ class PluginHostServer:
     def _handle_notify_fact(self, req_id: str, params: dict[str, Any]) -> None:
         def worker() -> None:
             try:
-                fact_type = str(params["fact_type"])
-                lease_token = str(params["lease_token"])
-                logical_turn = str(params.get("logical_turn", ""))
+                fact_type = _required_text(params, "fact_type")
+                lease_token = _required_text(params, "lease_token")
+                logical_turn = _optional_text(params, "logical_turn")
                 fact_data = params["fact"]
+                if not isinstance(fact_data, Mapping):
+                    raise ValueError("'fact' parameter must be an object")
+                if self._workspace is None or self._revision_id is None:
+                    raise RuntimeError("Plugin host is not initialized")
+                session_id = _required_text(fact_data, "session_id")
+                run_id = _required_text(fact_data, "run_id")
+                revision_id = _required_text(fact_data, "revision_id")
                 context = ToolContext(
-                    workspace=self._workspace if self._workspace is not None else Path.cwd(),
-                    session_id=str(fact_data["session_id"]),
-                    run_id=str(fact_data["run_id"]),
-                    invocation_id="observer",
-                    revision_id=str(fact_data["revision_id"]),
+                    workspace=self._workspace,
+                    session_id=session_id,
+                    run_id=run_id,
+                    invocation_id=_required_text(params, "invocation_id"),
+                    revision_id=revision_id,
                     actor="plugin",
-                    logical_turn=logical_turn,
+                    logical_turn=str(fact_data.get("logical_turn", logical_turn)),
                 )
                 fact: PluginFact
                 if fact_type == "usage":
@@ -1462,40 +1550,49 @@ class PluginHostServer:
                             cache_read_tokens=usage_payload.get("cache_read_tokens"),
                             cache_write_tokens=usage_payload.get("cache_write_tokens"),
                             uncached_input_tokens=usage_payload.get("uncached_input_tokens"),
-                            cost_usd=usage_payload.get("cost_usd"),
+                            cost_usd=_optional_number(usage_payload, "cost_usd"),
                         )
                     fact = UsageFact(
-                        session_id=str(fact_data["session_id"]),
-                        run_id=str(fact_data["run_id"]),
-                        revision_id=str(fact_data["revision_id"]),
-                        logical_turn=logical_turn,
-                        event_sequence=int(fact_data["event_sequence"]),
-                        dispatch_sequence=int(fact_data["dispatch_sequence"]),
-                        provider_name=str(fact_data["provider_name"]),
-                        model_name=str(fact_data["model_name"]),
+                        session_id=session_id,
+                        run_id=run_id,
+                        revision_id=revision_id,
+                        logical_turn=context.logical_turn,
+                        event_sequence=_required_int(fact_data, "event_sequence"),
+                        dispatch_sequence=_required_int(fact_data, "dispatch_sequence"),
+                        provider_name=_required_text(fact_data, "provider_name"),
+                        model_name=_required_text(fact_data, "model_name"),
                         usage=usage_obj,
+                        elapsed_seconds=_optional_number(fact_data, "elapsed_seconds"),
+                        cost_usd=_optional_number(fact_data, "cost_usd"),
                     )
                 elif fact_type == "invocation_finished":
                     fact = InvocationFinishedFact(
-                        session_id=str(fact_data["session_id"]),
-                        run_id=str(fact_data["run_id"]),
-                        revision_id=str(fact_data["revision_id"]),
-                        logical_turn=logical_turn,
-                        event_sequence=int(fact_data["event_sequence"]),
-                        tool_name=str(fact_data["tool_name"]),
+                        session_id=session_id,
+                        run_id=run_id,
+                        revision_id=revision_id,
+                        logical_turn=context.logical_turn,
+                        event_sequence=_required_int(fact_data, "event_sequence"),
+                        tool_name=_required_text(fact_data, "tool_name"),
                         tool_call_id=fact_data.get("tool_call_id"),
                         status=fact_data["status"],
                         error=fact_data.get("error"),
                     )
                 elif fact_type == "run_finished":
+                    stop_cause_payload = fact_data.get("stop_cause")
+                    if stop_cause_payload is not None and not isinstance(stop_cause_payload, str):
+                        raise ValueError("'stop_cause' must be a string or null")
+                    status_payload = _required_text(fact_data, "status")
+                    if status_payload not in ("completed", "failed", "interrupted"):
+                        raise ValueError(f"Unknown run status: {status_payload!r}")
                     fact = RunFinishedFact(
-                        session_id=str(fact_data["session_id"]),
-                        run_id=str(fact_data["run_id"]),
-                        revision_id=str(fact_data["revision_id"]),
-                        logical_turn=logical_turn,
-                        event_sequence=int(fact_data["event_sequence"]),
-                        status=str(fact_data["status"]),
-                        elapsed_seconds=fact_data.get("elapsed_seconds"),
+                        session_id=session_id,
+                        run_id=run_id,
+                        revision_id=revision_id,
+                        logical_turn=context.logical_turn,
+                        event_sequence=_required_int(fact_data, "event_sequence"),
+                        status=status_payload,
+                        stop_cause=cast(StopCause | None, stop_cause_payload),
+                        elapsed_seconds=_optional_number(fact_data, "elapsed_seconds"),
                     )
                 else:
                     raise ValueError(f"Unknown fact_type: {fact_type}")

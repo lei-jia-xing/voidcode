@@ -1,6 +1,16 @@
 # 小内核、插件机制与自举能力实施计划
 
-状态：调研后的架构提案；尚未实施。本文覆盖小 runtime、机制插件化、热更新、自举闭环与核心升级，不只是新增 `/reload`。
+状态：**已进入实施**。P0–P2 完成并通过完整验收（**FULL P2 已验证**，不属于 P3）；P3–P6 未开始。
+
+P2 实施记录（截至本文件最近一次更新，**完整 P2 已验收**）：
+
+- 内核/宿主：`kernel/engine.py 8f1bdb60…`（当前核心；相对付费活体所用的 `95e72163…` 仅新增 SESSION 内部状态的 read-only/ask 分类，其余不变）、`kernel/host.py 4b4c8453…`、`kernel/storage/store.py 8947131f…`、`sdk/` 目录输入摘要 `b15172ef…`（经父级源码评审批准的冻结版本）。完整 Python 验收 **182 通过**（governance + vertical + unit kernel/plugins/SDK 共 150，加 Goal 27、kernel transport、kernel TUI），不重复计数。
+- 官方 goal 插件：`src/voidcode/plugins/goal/goal_plugin.py 4ee8a848…`、manifest `voidcode-plugin.json 5556ecdf…`（`scripts/generate_plugin_identities.py --check` 干净）。27 个行为用例（19 单测 + 8 集成）在本冻结栈上通过，覆盖状态严格解析、窗口化计量、未知计量、预算拒绝/解除、3 轮 blocked 审计（含同一 native batch 只算一轮）、长目标单次传输与篡改检测、第二插件隔离、进程重启保持等。
+- 真实付费活体（历史证据，保持原样）：在付费时冻结栈 `engine 95e72163…` 上对 `deepseek/deepseek-flash` 执行**空闲会话 `goal.set`**（无用户 prompt、无手工 drain），目标上下文自行驱动模型读 `17 25` → 写 `42` → 回读校验 → 显式 complete；goal `complete`、tokens 7331、elapsed 6.356s（真实测量）、`cost_usd` 保持 `None`，重启后状态一致且不产生额外工作。之后的引擎 hash 变更（SESSION 分类）不重复付费，只由通用非付费 loopback 用例覆盖。
+- 启动验收（一次性脚本，已删除）：生产命令持久化 goal 后关闭；禁用 goal 插件时普通对话正常且请求中不含 goal 上下文；恢复原配置后用原 session 重新打开，目标状态完整、无意外 provider 工作、无残留 continuation。禁用态基座对话使用新 session —— 同一 session 的在线启停属于 P3 范围。
+- 客户端证明（已完成，父级验收）：frontend `KernelApp 8ebf0d06…`、`Forma fe0d460…` 冻结；Generic 的 t9 真实全量 bundle 浏览器 `KERNEL_SMOKE_GOAL=1` 通过（1.3 分钟：冷启动恰好 1 个自动 session；同一 SID 的尾斜杠客户端切换；parked 原生审批页刷新后仍是同一 ID；原生 allow/deny；stored confirms；真实首次 `goal.edit` POST budget5000 status=ok；null POST status=ok；同一 goal ID / created_at / 精确 4503 文本）；全 goal PTY 绿（31 commits / 4618 paints，无 settled replay 与重复）；frontend 169 用例 + typecheck/eslint、transport+TUI 24、API/identity 检查全部通过。
+
+本文覆盖小 runtime、机制插件化、热更新、自举闭环与核心升级，不只是新增 `/reload`。
 
 **硬约束：不做任何旧架构向后兼容。** 可以重写 runtime 外壳、SDK、配置、插件声明、HTTP 合同和存储 schema；不保留兼容别名、双读、旧路由转发或双执行路径。复用经过验证的算法与不变量，不迁就旧对象结构。
 
@@ -501,3 +511,32 @@ uv run python -m voidcode.kernel --workspace ./ws --state-dir ./state show s1 --
 
 - 已验证：审批 allow/deny 跨重启、错误 request_id 拒绝、revision 漂移拒绝、跨批次 native call ID 复用（批次内重复 ID 拒绝）、read 前缀不重跑、RO+yolo 无 intent、外部未信任拒绝、kernel SIGKILL/SIGINT 中断不重放 mutation 且 tail 不执行、安全读恢复复用 invocation_id、kill 插件宿主后 intent 保持 pending 且 resume 不重放、未知参数拼写拒绝无副作用；真实 DeepSeek 活体检（read→write→read，跨进程审批，terminal 落盘）。
 - 未做（不在 P1 声称范围内）：无热更新（P3）、无 OS 沙箱（宿主只是受信 Python 进程）、无流式 provider、无插件状态/命令目录/通用 action（P2）、无生产入口切换（P4）。串行 workspace 执行是当前上限。
+
+## P2 实施记录（已交付行为）
+
+**状态：完整 P2 已验收**（通用三端入口 + goal 完整插件）；热更新/激活属于 P3，尚未开始。
+
+### 实际路径
+
+- 内核窄原语：`src/voidcode/kernel/engine.py`（单事务 checkpoint 引用绑定、root action budget、owner+id 取消作用域、可恢复停靠工作的显式取消、共享 fresh-work 准入、上下文失败durable failed、外部 mutation 效果分类）、`src/voidcode/kernel/host.py`（跨进程租约、按 owner 过滤的 fact 通知、确定性 keyed continuation 身份）、`src/voidcode/kernel/storage/{store.py,schema.sql}`（root_budgets/continuations.root_id/observer_receipts/session_budgets，只读 preflight 校验 root 列）、`src/voidcode/kernel/{bootstrap,activation}.py`（新 `voidcode.json`、拒绝 legacy、内容寻址 artifact、revision pin）。
+- 通用客户端：`src/voidcode/kernel/transport/{http,models,server}.py`（命令目录、会话/运行/恢复/确认/视图/continuation/usage/events 路由 + OpenAPI）、`src/voidcode/kernel/__main__.py`（CLI）、`src/voidcode/kernel/tui/`（TUI 客户端与视图）、`frontend/src/kernel/**` + `frontend/src/lib/kernel/**`（KernelApp、8 种声明式视图、生成 API 类型）。
+- SDK 与宿主：`src/voidcode/sdk/{manifest,plugin,services,tools,commands,hooks,views,codec}.py`、`src/voidcode/plugin_host/server.py`（独立进程、按调用租约、能力准入、反向 RPC 服务）。
+- 官方插件：`src/voidcode/plugins/files/`（read/write 基础工具）与 `src/voidcode/plugins/goal/`（goal 完整纵向切片：命令、tools、状态、usage accounting、prompt、确认/状态呈现，无 `thread_goal` 特权通道）。
+- 证据：`tests/integration/test_kernel_governance.py`、`test_kernel_vertical.py`、`test_kernel_transport.py`、`test_goal_plugin.py`、`tests/unit/kernel/*`、`tests/unit/plugins/{test_files,test_goal_plugin}.py`、`tests/unit/test_kernel_tui.py`、`tests/fixtures/smoke_plugin.py` + `tests/smoke_pty_tui.py`（客户端 smoke 夹具）。
+
+### 验证
+
+- 完整 Python 验收 **182 通过**（不重复计数）：governance + vertical + unit kernel/plugins/SDK 150，Goal 27（19 单测 + 8 集成），kernel transport，kernel TUI；命令见 `docs/CHANGELOG.md` 的 Verification 段。
+- 付费活体保持原记录：`deepseek/deepseek-flash` 空闲 `goal.set`（engine `95e72163…`，tokens 7331、elapsed 6.356s、cost `None`、重启无额外工作）；当前核心 `8f1bdb60…` 只新增 SESSION read-only/ask 分类，由通用非付费 loopback 用例覆盖，不重复付费。
+- 客户端证明：见本文件头部记录（真实全量 bundle 浏览器 `KERNEL_SMOKE_GOAL=1` 1.3 分钟、全 goal PTY 31 commits/4618 paints、frontend 169 + typecheck/eslint、transport+TUI 24、API/identity 检查）。
+- 边界证据覆盖：审批/确认跨重启、SIGKILL 后 native batch 前缀不重放不重复计费、审批问询不被绕过、owner 取消仅限自身、两个 owner 部分回执只补投缺失方、有限 root 预算跨 fan-out/drain/重启、未知计量与 elapsed 均 fail closed、上下文失败 durable failed 且不产生 provider 计费。
+
+### 无 legacy
+
+- 内核只读新 `voidcode.json`，存在 legacy `.voidcode.json` 时明确拒绝且不写盘；只认 `kernel-v1.sqlite3`（magic `voidcode-kernel-v1`），外部/legacy/空文件在任何 pragma/schema 写入前只读校验拒绝、字节不变。
+- 无兼容 shim、无双执行路径、无旧 payload/schema 适配；默认插件选择仍在 `kernel/bootstrap.py`，P4 迁出到应用入口。
+
+### 已知边界与下一步
+
+- P2 不包含：同会话热更新与自请求继续执行（P3，HotActivation 进行中）、生产唯一入口切换/ACP/doctor/legacy 位置探测（P4）、内核自身受控升级（P5）、完整自举验收（P6）。
+- 单 workspace 串行执行仍是当前上限。

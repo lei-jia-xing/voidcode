@@ -210,9 +210,36 @@ class KernelTransportApp(FastAPI):
         if scope.get("type") == "http":
             path = str(scope.get("path", ""))
             if path == "/api" or path.startswith("/api/"):
+                raw_headers = scope.get("headers", [])
+                headers = {name.decode("latin-1").lower(): value.decode("latin-1") for name, value in raw_headers}
+                origin = headers.get("origin")
+                if scope.get("method") == "OPTIONS":
+                    cors_resp = Response(
+                        status_code=204,
+                        headers={
+                            "access-control-allow-origin": origin or "*",
+                            "access-control-allow-methods": "GET, POST, OPTIONS",
+                            "access-control-allow-headers": "Authorization, Content-Type, Origin, Accept",
+                            "access-control-allow-credentials": "true",
+                        },
+                    )
+                    await cors_resp(scope, receive, send)
+                    return
                 challenge = self._auth_challenge(scope)
                 if challenge is not None:
                     await challenge(scope, receive, send)
+                    return
+                if origin:
+
+                    async def cors_send(message: Any) -> None:
+                        if message.get("type") == "http.response.start":
+                            msg_headers = list(message.get("headers", []))
+                            msg_headers.append((b"access-control-allow-origin", origin.encode("latin-1")))
+                            msg_headers.append((b"access-control-allow-credentials", b"true"))
+                            message["headers"] = msg_headers
+                        await send(message)
+
+                    await super().__call__(scope, receive, cors_send)
                     return
         await super().__call__(scope, receive, send)
 
@@ -230,7 +257,43 @@ class KernelTransportApp(FastAPI):
         return None
 
     def openapi(self) -> dict[str, Any]:  # type: ignore[override]
-        return super().openapi()
+        doc = super().openapi()
+        schemas = doc.setdefault("components", {}).setdefault("schemas", {})
+        from pydantic import TypeAdapter
+
+        from ...sdk.views import (
+            ChoicesViewData,
+            ConfirmationViewData,
+            DiffViewData,
+            FieldsViewData,
+            FormViewData,
+            MarkdownViewData,
+            NoticeViewData,
+            StatusViewData,
+        )
+
+        view_classes = [
+            NoticeViewData,
+            MarkdownViewData,
+            FieldsViewData,
+            ChoicesViewData,
+            ConfirmationViewData,
+            FormViewData,
+            DiffViewData,
+            StatusViewData,
+        ]
+        for cls in view_classes:
+            s = TypeAdapter(cls).json_schema(ref_template="#/components/schemas/{model}")
+            defs = s.pop("$defs", None)
+            if defs:
+                for def_name, def_schema in defs.items():
+                    schemas[def_name] = def_schema
+            schemas[cls.__name__] = s
+
+        schemas["PluginViewData"] = {"oneOf": [{"$ref": f"#/components/schemas/{cls.__name__}"} for cls in view_classes]}
+        if "PluginViewDescriptor" in schemas and "properties" in schemas["PluginViewDescriptor"]:
+            schemas["PluginViewDescriptor"]["properties"]["data"] = {"$ref": "#/components/schemas/PluginViewData"}
+        return doc
 
     def _route(
         self,
@@ -439,11 +502,16 @@ class KernelTransportApp(FastAPI):
             raise _kernel_error(exc) from None
         return _ok({"continuations": [item.as_payload() for item in results]})
 
-    async def _handle_usage(self, session_id: str, since_sequence: int = Query(default=0, ge=0)) -> Response:
+    async def _handle_usage(
+        self,
+        session_id: str,
+        since_sequence: int = Query(default=0, ge=0),
+        until_sequence: int | None = Query(default=None, ge=0),
+    ) -> Response:
         _validated_session_id(session_id)
         kernel = self._kernel_or_503()
         try:
-            report = await asyncio.to_thread(kernel.usage, session_id, since_sequence=since_sequence)
+            report = await asyncio.to_thread(kernel.usage, session_id, since_sequence=since_sequence, until_sequence=until_sequence)
         except Exception as exc:
             raise _kernel_error(exc) from None
         return _ok(report.as_payload())
@@ -467,7 +535,16 @@ class KernelTransportApp(FastAPI):
         kernel = self._kernel_or_503()
         try:
             record = await asyncio.to_thread(kernel.session, session_id)
-            initial = await asyncio.to_thread(kernel.events_after, session_id, after_sequence=after_sequence, limit=_FOLLOW_TAIL_LIMIT)
+            initial: list[StoredEvent] = []
+            cursor = after_sequence
+            while True:
+                chunk = await asyncio.to_thread(kernel.events_after, session_id, after_sequence=cursor, limit=_FOLLOW_TAIL_LIMIT)
+                if not chunk:
+                    break
+                initial.extend(chunk)
+                cursor = chunk[-1].sequence
+                if len(chunk) < _FOLLOW_TAIL_LIMIT:
+                    break
         except Exception as exc:
             raise _kernel_error(exc) from None
         head = {
@@ -487,14 +564,19 @@ class KernelTransportApp(FastAPI):
             # disconnects or a backend failure yields a terminal error frame.
             while True:
                 await asyncio.sleep(_FOLLOW_POLL_SECONDS)
-                try:
-                    pending = await asyncio.to_thread(kernel.events_after, session_id, after_sequence=cursor, limit=_FOLLOW_TAIL_LIMIT)
-                except Exception as exc:
-                    yield sse_frame({"kind": "error", "session_id": session_id, "error": f"{type(exc).__name__}: {exc}"})
-                    return
-                for event in pending:
-                    cursor = event.sequence
-                    yield sse_frame({"kind": "event", "session_id": session_id, "event": _event_payload(session_id, event)})
+                while True:
+                    try:
+                        pending = await asyncio.to_thread(kernel.events_after, session_id, after_sequence=cursor, limit=_FOLLOW_TAIL_LIMIT)
+                    except Exception as exc:
+                        yield sse_frame({"kind": "error", "session_id": session_id, "error": f"{type(exc).__name__}: {exc}"})
+                        return
+                    if not pending:
+                        break
+                    for event in pending:
+                        cursor = event.sequence
+                        yield sse_frame({"kind": "event", "session_id": session_id, "event": _event_payload(session_id, event)})
+                    if len(pending) < _FOLLOW_TAIL_LIMIT:
+                        break
 
         return EventStreamResponse(frames())
 

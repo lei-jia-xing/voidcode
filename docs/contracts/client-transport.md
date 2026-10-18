@@ -133,3 +133,113 @@ curl -X POST http://127.0.0.1:8765/api/sessions/<session_id>/approval \
 ```bash
 curl -X POST http://127.0.0.1:8765/api/sessions/<session_id>/resume
 ```
+
+## Kernel Transport & Generic Clients (P2 Architecture)
+
+The VoidCode kernel (`src/voidcode/kernel/`) exposes a name-agnostic HTTP/SSE transport (`src/voidcode/kernel/transport/http.py`) designed for zero-coupling with specific product plugins. Clients interact strictly via the command catalog, generic action invocation, bounded declarative UI views, and immutable append-only event streams.
+
+### 1. Authoritative Wire Endpoints
+
+| Method | Path | Summary / Description |
+|---|---|---|
+| `GET` | `/api/openapi.json` | Authoritative OpenAPI 3.1 specification, embedding all 8 SDK view data models. |
+| `GET` | `/api/commands` | Read the admitted command catalog (owner, description, argument schema, effects, capabilities). |
+| `GET` | `/api/sessions` | List sessions (`limit` query parameter, defaults to 100). |
+| `POST` | `/api/sessions` | Create a new session with optional requested `session_id`. |
+| `GET` | `/api/sessions/{session_id}` | Read session record (status, active revision, run ID, turn count). |
+| `GET` | `/api/sessions/{session_id}/show` | Inspect durable session state and optionally full historical events (`events=true`). |
+| `POST` | `/api/sessions/{session_id}/run` | Execute an agent turn (`prompt`, `session_id`, `max_steps`). |
+| `POST` | `/api/sessions/{session_id}/resume` | Resume execution with optional `approval_request_id` and `decision` (`allow`/`deny`). |
+| `POST` | `/api/sessions/{session_id}/invoke/{name}` | Invoke an admitted plugin command by catalog name with JSON `arguments`. |
+| `POST` | `/api/sessions/{session_id}/confirm` | Resolve a pending confirmation binding stored `request_id` and `decision`. |
+| `GET` | `/api/sessions/{session_id}/views` | Render bounded plugin UI descriptors for the session. |
+| `POST` | `/api/sessions/{session_id}/continuations` | Drain and execute pending durable continuations with plugin provenance. |
+| `GET` | `/api/sessions/{session_id}/usage` | Read truthful session token usage (`since_sequence`, `until_sequence`). |
+| `POST` | `/api/sessions/{session_id}/cancel` | Request cancellation for a single session (`{"cancellation_requested": bool}`). |
+| `GET` | `/api/sessions/{session_id}/events` | Stream session events over SSE (`after_sequence`, `follow=true/false`). |
+
+**Continuation drive semantics**: durable continuations are executed automatically by the kernel — a command or confirmation that enqueues work while its session is idle drives it in the same call, a completed or stopped run's tail drains at the next safe boundary, and a claimed continuation left by a crash is recovered on the next kernel open against its own durable checkpoint (completed prefix restored, `replay_policy="never"` intents never replayed, tail members never falsely marked executed). The explicit `/continuations` endpoint remains available as a rescue/observability path and returns only what it actually executed.
+
+### 2. The Eight Finite Declarative UI Kinds
+
+Plugins contribute presentation exclusively through 8 strict bounded view descriptors (no remote arbitrary JavaScript execution):
+
+1. **`notice`**: Inline alert message (`NoticeViewData(message, level="info"|"warning"|"error")`).
+2. **`markdown`**: Formatted markdown content (`MarkdownViewData(content)`).
+3. **`fields`**: Key-value metadata table (`FieldsViewData(rows)` where `FieldRow(label, value)`).
+4. **`choices`**: Interactive option picker (`ChoicesViewData(options, action, argument_name="choice")`).
+   - Clients display choices; selection dispatches `{ [argument_name]: option.id }` to `action`.
+5. **`confirmation`**: Approval gate (`ConfirmationViewData(request_id, message, actions=("allow", "deny"))`).
+   - Strictly binds stored `request_id`. Rendering a view cannot gain authority; decisions are submitted via `/confirm`.
+6. **`form`**: Interactive multi-field editor (`FormViewData(fields, action, initial_values={}, load_action=None)`).
+   - Supports field types: `text`, `multiline`, `integer`, `number`, `boolean`, and `required` validation.
+   - When `load_action` is present, clients verify the target command is declared with `effects: ["read"]` before executing it.
+   - Preserves unsaved user edits if loaded data arrives asynchronously; displays visible error banners on load failure without truncating or submitting stale text.
+7. **`diff`**: Unified code/text diff (`DiffViewData(before, after, path=None)`).
+8. **`status`**: State badge indicator (`StatusViewData(label, value)`).
+
+Any unrecognized or malformed view type produces an explicit visible error banner; clients never simulate or pretend success.
+
+### 3. Generic TUI Client (`voidcode.kernel.tui`)
+
+- **Launch Syntax**:
+  ```bash
+  # Connect to an existing kernel server
+  python -m voidcode.kernel tui --server http://127.0.0.1:8000 --token <bearer_token> [--session-id <id>]
+
+  # Standalone embedded mode (starts local server on free loopback port with ephemeral token)
+  python -m voidcode.kernel tui [--session-id <id>]
+  ```
+- **Settled-Prefix Commit-Once Ledger**:
+  Rows are committed to the native scrollback exactly once by the main loop, driven by the durable journal (`last_sequence` cursor). Reconnecting SSE streams, follow polling, `SIGWINCH` resizes, and switching sessions never replay, re-render, or clear settled output; only the live region (active overlay or composer) repaints.
+- **Canonical Event Rendering**:
+  The TUI renders only the persisted SDK event payloads, never provider-native wire shapes:
+  - `kernel.user_message` → `payload.content` (single source; the composer never commits the prompt optimistically).
+  - `kernel.model_turn` → `payload.result.output` / `payload.result.reasoning` / `payload.result.tool_calls[].tool_name|arguments`.
+  - `kernel.tool_completed` / `kernel.tool_interrupted` → `payload.call.tool_name` + `payload.result.output.text` (+ `payload.result.error`).
+  - `kernel.command_intent` / `kernel.command_completed` → `payload.name` + `payload.result.{status,output,error,data}` (the neutral `CommandResult` envelope; clients render `status` verbatim and show `unknown` rather than inventing a placeholder).
+  Every model- and plugin-provided string is passed through `escape_terminal_controls` before styling, so untrusted text cannot clear scrollback or switch buffers.
+- **Interactive Overlays**:
+  Choices, forms (full multiline/Unicode editing, `load_action` prefill, strict numeric literals, omitted-blank optionals) and confirmation prompts borrow the live region. A pending confirmation is only ever resolved through `POST /confirm` with its stored `request_id`: `Esc` and `Ctrl+C` on a confirmation overlay submit an explicit `deny`, never a local "cancelled" claim.
+- **Async I/O**:
+  All HTTP calls run on worker threads and hand results back through the UI queue; only the main loop writes rows. `/session <id>` and `/new` rebind the follower (fresh cursor, drained queue, new SSE generation), so rows from a previous session never leak into the new one. Local controls (`/help`, `/views`, `/session`, `/new`, `/cancel`) never shadow an admitted command with the same name.
+- **Markdown**:
+  Markdown views render through the same `rich.markdown.Markdown` primitive the transcript uses (headings, lists, tables, code), after control-byte escaping.
+
+### 3b. Native Tool Approval vs. Plugin Action Confirmation
+
+Two distinct gates reach clients over the same event stream and must not be conflated:
+
+| Gate | Event | Resolution |
+|---|---|---|
+| Native tool approval (core permission gate) | `kernel.approval_requested` → `{request_id, batch_sequence, call:{tool_name,arguments,tool_call_id}, owner}`; session becomes `waiting` | `POST /api/sessions/{id}/resume` with the exact `approval_request_id` + `decision` (`allow`/`deny`); the engine also records `kernel.approval_decided` |
+| Plugin Action confirmation | `kernel.confirmation_requested` / a `pending_confirmation` command result carrying `ui_type` + `ui_data` | `POST /api/sessions/{id}/confirm` with the stored `request_id` |
+
+Both clients keep them separate: an approval request id from the core table is never sent to `/confirm`, and a plugin confirmation request id is never sent to `/resume`. Interactive traffic (approval, confirmation, cancel, form load, run) always leaves the UI thread and returns through the UI queue, so only the main loop writes rows.
+
+### 3c. Proof Scope
+
+The client surfaces were proven against real transports, a real browser and a real PTY with the full bundled plugin set (`files` + `goal`) and native approvals:
+
+- Browser (Chromium, real uvicorn, external fixture plugin, bundled `files` and `goal`, real loopback provider): all eight view kinds with real markdown, slash dispatch, choices, stored plugin confirmation allow **and** deny, native ASK approval allow (real write effect) **and** deny (no effect, failed tool result), tri-state boolean submission read back from the durable command result, the long-Unicode goal objective pre-filled through its declared read action with no retry, an untouched submit keeping the finite budget, and a deliberate blank submitting `token_budget: null` on the real request body while the goal keeps its id, creation record and attached objective.
+- PTY (real pseudo-terminal, real kernel server): the same view kinds, form prefill and submit, SIGWINCH resize and server-restart reconnect with zero settled replays, sequential prompt identities, native approval allow/deny, stored confirmation allow/deny, cancel over HTTP, A→B→A with zero replayed rows, and the real Goal objective/budget flow.
+
+The throwaway harnesses are kept outside the repository (evidence and copies under `/tmp/voidcode-kernel-evidence/`); nothing in this document depends on them.
+
+### 4. Generic Web Client (`frontend/src/kernel/`)
+
+- **Coexistence**:
+  Accessible at `http://127.0.0.1:5173/?kernel` or `/kernel`. Coexists alongside legacy `App` until the P4 cutover.
+- **Components**:
+  Pure React components in `frontend/src/kernel/views/` (`NoticeView`, `MarkdownView`, `FieldsView`, `ChoicesView`, `ConfirmationView`, `FormView`, `DiffView`, `StatusView`, `PluginViewRenderer`).
+  - Markdown renders through the same `react-markdown` + `remark-gfm` pipeline the transcript uses (raw HTML is never evaluated).
+  - Client chrome, button labels and error text use the shared i18n resources (`kernel.*` keys in `frontend/src/i18n/locales/{en,zh-CN}.json`); plugin-provided business data is rendered verbatim.
+  - A form's `load_action` is only auto-invoked when its catalog entry declares exactly the `read` effect.
+  - Blank values follow the target command's own `argument_schema`: a field the command declares nullable submits `null` (so an existing value can be cleared), an optional field without `null` is omitted, and a required field is rejected. Numeric text is validated, never truncated or coerced to `0`.
+  - Every response, view render, form draft and SSE frame is bound to the session that issued it; switching sessions resets the transcript, pending confirmation and run state, and remounts forms keyed by session.
+- **Type Generation**:
+  Authoritative TypeScript definitions are generated from the kernel transport's live OpenAPI document:
+  ```bash
+  mise run frontend:kernel-api:generate
+  mise run frontend:kernel-api:check
+  ```

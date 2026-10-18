@@ -1,0 +1,247 @@
+{
+  "plugin_id": "goal",
+  "version": "1.0.0",
+  "sdk_protocol": 1,
+  "schema_version": 1,
+  "entrypoint": "goal_plugin:create_plugin",
+  "files": [
+    {
+      "path": "__init__.py",
+      "sha256": "bd93f29b52c2d89d5205b4a0d992d36f5f7c5b51ca25f7a0e8884f95a8a57fc0"
+    },
+    {
+      "path": "goal_plugin.py",
+      "sha256": "4ee8a848eea248910d7278973bed2e5e7d5aa0fe06ca3620eac699425245b80f"
+    }
+  ],
+  "tools": [
+    {
+      "name": "create_goal",
+      "description": "Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks. Set token_budget only when an explicit token budget is requested. Fails if an unfinished goal exists; use update_goal only for status.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "objective": {
+            "type": "string",
+            "description": "Required. The concrete objective to start pursuing. This starts a new active goal when no goal exists or replaces the current goal when it is complete."
+          },
+          "token_budget": {
+            "type": "integer",
+            "description": "Positive token budget for the new goal. Omit unless explicitly requested."
+          }
+        },
+        "required": [
+          "objective"
+        ],
+        "additionalProperties": false
+      },
+      "effects": [
+        "session"
+      ],
+      "replay_policy": "never",
+      "capabilities": []
+    },
+    {
+      "name": "update_goal",
+      "description": "Update the existing goal. Use this tool only to mark the goal achieved or genuinely blocked. Set status to complete only when the objective has actually been achieved and no required work remains. Set status to blocked only when the same blocking condition has repeated for at least three consecutive goal turns, counting the original/user-triggered turn and any automatic continuations, and the agent cannot make meaningful progress without user input or an external-state change.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "blocked"
+            ],
+            "description": "Required. Set to complete only when the objective is achieved and no required work remains. Set to blocked only after the same blocking condition has recurred for at least three consecutive goal turns and the agent is at an impasse. After a previously blocked goal is resumed, the resumed run starts a fresh blocked audit."
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "additionalProperties": false
+      },
+      "effects": [
+        "session"
+      ],
+      "replay_policy": "never",
+      "capabilities": []
+    },
+    {
+      "name": "get_goal",
+      "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "effects": [
+        "read"
+      ],
+      "replay_policy": "safe",
+      "capabilities": []
+    }
+  ],
+  "commands": [
+    {
+      "name": "goal",
+      "description": "Show current goal status and details.",
+      "argument_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "effects": [
+        "read"
+      ],
+      "capabilities": [],
+      "busy_gate": false,
+      "client_capabilities": []
+    },
+    {
+      "name": "goal.set",
+      "description": "Create a new goal or replace existing goal.",
+      "argument_schema": {
+        "type": "object",
+        "properties": {
+          "objective": {
+            "type": "string",
+            "description": "The goal objective text."
+          },
+          "token_budget": {
+            "type": "integer",
+            "description": "Optional positive integer token budget."
+          }
+        },
+        "required": [
+          "objective"
+        ],
+        "additionalProperties": false
+      },
+      "effects": [
+        "write",
+        "session"
+      ],
+      "capabilities": [
+        "workspace.write"
+      ],
+      "busy_gate": false,
+      "client_capabilities": []
+    },
+    {
+      "name": "goal.edit",
+      "description": "Edit current goal objective or token budget.",
+      "argument_schema": {
+        "type": "object",
+        "properties": {
+          "objective": {
+            "type": "string",
+            "description": "The updated goal objective text."
+          },
+          "token_budget": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Adjusted token budget (positive integer or null to uncap)."
+          }
+        },
+        "additionalProperties": false
+      },
+      "effects": [
+        "write",
+        "session"
+      ],
+      "capabilities": [
+        "workspace.write",
+        "workspace.read"
+      ],
+      "busy_gate": false,
+      "client_capabilities": []
+    },
+    {
+      "name": "goal.pause",
+      "description": "Pause the active goal.",
+      "argument_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "effects": [
+        "session"
+      ],
+      "capabilities": [],
+      "busy_gate": false,
+      "client_capabilities": []
+    },
+    {
+      "name": "goal.resume",
+      "description": "Resume paused, blocked, or limited goal.",
+      "argument_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "effects": [
+        "session"
+      ],
+      "capabilities": [],
+      "busy_gate": false,
+      "client_capabilities": []
+    },
+    {
+      "name": "goal.clear",
+      "description": "Clear current goal.",
+      "argument_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "effects": [
+        "session"
+      ],
+      "capabilities": [],
+      "busy_gate": false,
+      "client_capabilities": []
+    },
+    {
+      "name": "goal.load_objective",
+      "description": "Retrieve full objective text for large goals.",
+      "argument_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "effects": [
+        "read"
+      ],
+      "capabilities": [
+        "workspace.read"
+      ],
+      "busy_gate": false,
+      "client_capabilities": []
+    }
+  ],
+  "capabilities": [
+    {
+      "name": "workspace.write",
+      "reason": "Spill long objective text to workspace attachment."
+    },
+    {
+      "name": "workspace.read",
+      "reason": "Read spilled long objective text from workspace attachment."
+    }
+  ],
+  "providers": [],
+  "depends": [],
+  "state_schema_version": 1,
+  "config_schema": {
+    "type": "object"
+  },
+  "context": true,
+  "observed_facts": [
+    "usage",
+    "invocation_finished",
+    "run_finished"
+  ]
+}

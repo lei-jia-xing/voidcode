@@ -96,7 +96,7 @@ def decode_tool_definition(payload: Mapping[str, object]) -> ToolDefinition:
     definition = _decode(_DEFINITION, payload)
     if not definition.name or not definition.effects:
         raise ValueError("tool definition requires a name and declared effects")
-    if definition.replay_policy == "safe" and definition.effects & {ToolEffect.WRITE, ToolEffect.EXECUTE, ToolEffect.SPAWN}:
+    if definition.replay_policy == "safe" and definition.effects & {ToolEffect.WRITE, ToolEffect.EXECUTE, ToolEffect.SPAWN, ToolEffect.SESSION}:
         raise ValueError("mutating tools cannot declare safe replay")
     return definition
 

@@ -78,6 +78,42 @@ def test_foreign_file_rejection_and_byte_preservation(tmp_path: Path) -> None:
         SqliteStore(directory_path)
 
 
+def test_supported_identity_missing_root_columns_is_rejected_unchanged(tmp_path: Path) -> None:
+    """A same-version database that lacks the root action-chain columns is refused byte-unchanged.
+
+    Root action-chain truth (continuations.root_id, root_budgets) is part of the
+    schema version's contract: a file claiming this identity but missing those
+    columns must be rejected by the read-only preflight, never migrated.
+    """
+    # 1. root_budgets without its reservation counter.
+    budget_db = tmp_path / "root_budgets_missing.sqlite3"
+    store = SqliteStore(budget_db)
+    store.close()
+    with sqlite3.connect(budget_db) as conn:
+        conn.execute("ALTER TABLE root_budgets RENAME TO root_budgets_full")
+        conn.execute(
+            "CREATE TABLE root_budgets (root_id TEXT PRIMARY KEY, budget INTEGER NOT NULL, "
+            "created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL) STRICT"
+        )
+        conn.commit()
+    budget_sha_before = _file_sha256(budget_db)
+    with pytest.raises(ForeignDatabaseError, match="root_budgets schema"):
+        SqliteStore(budget_db)
+    assert _file_sha256(budget_db) == budget_sha_before
+
+    # 2. continuations without its root chain reference.
+    chain_db = tmp_path / "continuations_missing.sqlite3"
+    store = SqliteStore(chain_db)
+    store.close()
+    with sqlite3.connect(chain_db) as conn:
+        conn.execute("ALTER TABLE continuations DROP COLUMN root_id")
+        conn.commit()
+    chain_sha_before = _file_sha256(chain_db)
+    with pytest.raises(ForeignDatabaseError, match="continuations schema"):
+        SqliteStore(chain_db)
+    assert _file_sha256(chain_db) == chain_sha_before
+
+
 def test_revision_canonical_content_hashing_and_idempotence(tmp_path: Path) -> None:
     """Revisions produce identical SHA-256 digests across equivalent JSON and store idempotently."""
     db_path = tmp_path / "kernel.sqlite3"

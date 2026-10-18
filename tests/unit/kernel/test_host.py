@@ -90,7 +90,7 @@ class StubbornTool:
         effects=frozenset({ToolEffect.READ}),
     )
 
-    def invoke(self, call, *, context):
+    def invoke(self, call, *, context, services):
         while True:
             time.sleep(0.1)
 """
@@ -106,7 +106,7 @@ class NoisyTool:
         effects=frozenset({ToolEffect.READ}),
     )
 
-    def invoke(self, call, *, context):
+    def invoke(self, call, *, context, services):
         print("POLLUTING STDOUT VIA PRINT()")
         sys.stdout.write("POLLUTING STDOUT VIA SYS.STDOUT.WRITE()\\n")
         sys.stdout.flush()
@@ -128,7 +128,7 @@ class EchoTool:
         effects=frozenset({{ToolEffect.READ}}),
     )
 
-    def invoke(self, call, *, context):
+    def invoke(self, call, *, context, services):
         msg = call.arguments.get("msg", "")
         return ToolSuccess(tool_name="echo_tool", output=TextOutput(text=f"echo: {{msg}}"))
 
@@ -140,7 +140,7 @@ class FailingTool:
         effects=frozenset({{ToolEffect.READ}}),
     )
 
-    def invoke(self, call, *, context):
+    def invoke(self, call, *, context, services):
         return 1 / 0
 
 class CooperativeCancelTool:
@@ -151,7 +151,7 @@ class CooperativeCancelTool:
         effects=frozenset({{ToolEffect.READ}}),
     )
 
-    def invoke(self, call, *, context):
+    def invoke(self, call, *, context, services):
         for _ in range(100):
             if context.abort_signal and context.abort_signal.cancelled:
                 return ToolFailure(
@@ -170,7 +170,7 @@ class HangTool:
         effects=frozenset({{ToolEffect.READ}}),
     )
 
-    def invoke(self, call, *, context):
+    def invoke(self, call, *, context, services):
         time.sleep(60.0)
         return ToolSuccess(tool_name="hang_tool", output=TextOutput(text="Awake"))
 
@@ -201,7 +201,7 @@ class SecretTool:
         effects=frozenset({{ToolEffect.READ}}),
     )
 
-    def invoke(self, call, *, context):
+    def invoke(self, call, *, context, services):
         raise RuntimeError("database auth failed: secret_token=XYZZY_SECRET_UNMATCHED_VALUE_992288")
 
 {extra_code}

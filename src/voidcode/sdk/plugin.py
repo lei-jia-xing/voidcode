@@ -13,6 +13,7 @@ from .invocation import ToolContext
 from .json_values import own_json_object
 from .manifest import PluginCommandDeclaration, PluginManifest, PluginToolDeclaration
 from .provider import TurnProvider
+from .services import PluginServices
 from .tools import Tool, ToolDefinition, ToolReplayPolicy
 from .views import PluginView
 
@@ -23,8 +24,8 @@ class Plugin:
     commands: tuple[Command, ...] = ()
     providers: tuple[TurnProvider, ...] = ()
     views: tuple[PluginView, ...] = ()
-    context: Callable[[ToolContext], ContextContribution | None] | None = None
-    observer: Callable[[PluginFact, ToolContext], None] | None = None
+    context: Callable[[ToolContext, PluginServices], ContextContribution | None] | None = None
+    observer: Callable[[PluginFact, ToolContext, PluginServices], None] | None = None
     close: Callable[[], None] | None = None
 
 

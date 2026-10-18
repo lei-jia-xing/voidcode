@@ -12,9 +12,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
-from typing import Self
+from typing import Literal, Self, cast
 
 from ...sdk.json_values import json_wire_object, own_json_object
+from ...sdk.services import PluginBudget
 
 SCHEMA_MAGIC = "voidcode-kernel-v1"
 SCHEMA_VERSION = 1
@@ -114,6 +115,7 @@ class ContinuationRecord:
     payload: Mapping[str, object]
     created_at: int
     updated_at: int
+    root_id: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "payload", own_json_object(self.payload))
@@ -126,6 +128,8 @@ class StagedStateUpdate:
     scope_key: str
     payload: Mapping[str, object]
     expected_version: int
+    schema_version: int = 1
+    revision_id: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "payload", own_json_object(self.payload))
@@ -138,9 +142,32 @@ class StagedContinuationDraft:
     source: str
     payload: Mapping[str, object]
     idempotency_key: str | None = None
+    ordinal: int = 0
+    root_id: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "payload", own_json_object(self.payload))
+
+
+@dataclass(frozen=True, slots=True)
+class StagedCancellation:
+    owner: str
+    continuation_id: str | None = None
+    ordinal: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class StagedBudgetUpdate:
+    owner: str
+    action: Literal["set", "clear"]
+    budget: PluginBudget | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ObserverReceiptRecord:
+    event_sequence: int
+    owner: str
+    generation: int
 
 
 def canonical_json(value: Mapping[str, object]) -> str:
@@ -187,9 +214,68 @@ def _verify_existing_file(path: Path) -> None:
             "plugin_state",
             "action_confirmations",
             "continuations",
+            "session_budgets",
+            "observer_receipts",
+            "root_budgets",
         }
         if not required.issubset(tables):
             raise ForeignDatabaseError(f"unsupported database file or missing tables in {path}: missing {required - tables}")
+        cursor = probe.execute("PRAGMA table_info(plugin_state)")
+        plugin_state_cols = {r[1] for r in cursor.fetchall()}
+        required_plugin_state_cols = {
+            "scope",
+            "scope_key",
+            "owner",
+            "version",
+            "schema_version",
+            "revision_id",
+            "payload_json",
+            "updated_at",
+        }
+        if not required_plugin_state_cols.issubset(plugin_state_cols):
+            raise ForeignDatabaseError(f"unsupported plugin_state schema in {path}: missing {required_plugin_state_cols - plugin_state_cols}")
+
+        cursor = probe.execute("PRAGMA table_info(continuations)")
+        continuation_cols = {r[1] for r in cursor.fetchall()}
+        required_continuation_cols = {
+            "continuation_id",
+            "owner",
+            "session_id",
+            "source",
+            "run_id",
+            "revision_id",
+            "idempotency_key",
+            "root_id",
+            "status",
+            "payload_json",
+            "created_at",
+            "updated_at",
+        }
+        if not required_continuation_cols.issubset(continuation_cols):
+            raise ForeignDatabaseError(f"unsupported continuations schema in {path}: missing {required_continuation_cols - continuation_cols}")
+
+        cursor = probe.execute("PRAGMA table_info(root_budgets)")
+        root_cols = {r[1] for r in cursor.fetchall()}
+        required_root_cols = {"root_id", "budget", "reserved", "created_at", "updated_at"}
+        if not required_root_cols.issubset(root_cols):
+            raise ForeignDatabaseError(f"unsupported root_budgets schema in {path}: missing {required_root_cols - root_cols}")
+
+        cursor = probe.execute("PRAGMA table_info(session_budgets)")
+        budget_cols = {r[1] for r in cursor.fetchall()}
+        required_budget_cols = {
+            "session_id",
+            "owner",
+            "since_sequence",
+            "max_input_tokens",
+            "max_output_tokens",
+            "max_total_tokens",
+            "max_cost_usd",
+            "max_elapsed_seconds",
+            "created_at",
+            "updated_at",
+        }
+        if not required_budget_cols.issubset(budget_cols):
+            raise ForeignDatabaseError(f"unsupported session_budgets schema in {path}: missing {required_budget_cols - budget_cols}")
     except sqlite3.Error as exc:
         raise ForeignDatabaseError(f"unsupported database file or missing identity: {path}") from exc
     finally:
@@ -496,15 +582,51 @@ class SqliteStore:
         checkpoint_payload: Mapping[str, object] | None = None,
         staged_state: Sequence[StagedStateUpdate] = (),
         staged_continuations: Sequence[StagedContinuationDraft] = (),
+        staged_cancellations: Sequence[StagedCancellation] = (),
+        staged_budgets: Sequence[StagedBudgetUpdate] = (),
+        observer_receipts: Sequence[ObserverReceiptRecord] = (),
+        completed_continuation_id: str | None = None,
+        completed_continuation_status: Literal["completed", "failed", "cancelled"] = "completed",
+        root_reservation: tuple[str, int] | None = None,
         start_turn: bool = False,
+        checkpoint_bindings: Sequence[tuple[str, str]] = (),
     ) -> SessionRecord:
-        """Atomic CAS commit applying staged state updates, continuations, event drafts, and checkpoint."""
+        """Atomic CAS commit applying staged state updates, continuations, event drafts, and checkpoint.
+
+        Each `(payload_field, event_type)` binding in `checkpoint_bindings` is
+        assigned the actual appended sequence of the first event of that type in
+        THIS transaction, so a checkpoint reference can never point at a guessed
+        or not-yet-committed sequence.
+        """
         with self._lock:
             self._check_open()
             in_transaction = False
             try:
                 self._connection.execute("BEGIN IMMEDIATE")
                 in_transaction = True
+
+                if root_reservation is not None:
+                    root_id, root_limit = root_reservation
+                    reserved_at = int(time.time() * 1000)
+                    self._connection.execute(
+                        """
+                        INSERT OR IGNORE INTO root_budgets (root_id, budget, reserved, created_at, updated_at)
+                        VALUES (?, ?, 0, ?, ?)
+                        """,
+                        (root_id, max(0, root_limit), reserved_at, reserved_at),
+                    )
+                    # Reserve atomically with the event that bills this action, so a
+                    # crash after dispatch cannot refund the consumed root step.
+                    reserved = self._connection.execute(
+                        """
+                        UPDATE root_budgets
+                        SET reserved = reserved + 1, updated_at = ?
+                        WHERE root_id = ? AND reserved < budget
+                        """,
+                        (reserved_at, root_id),
+                    )
+                    if reserved.rowcount == 0:
+                        raise StoreConflict(f"root action budget exhausted for {root_id!r}")
 
                 cursor = self._connection.execute(
                     """
@@ -531,14 +653,16 @@ class SqliteStore:
                 # 1. Apply staged state updates
                 for st in staged_state:
                     payload_json = canonical_json(st.payload)
+                    actual_schema_ver = max(1, st.schema_version)
+                    actual_rev_id = st.revision_id or revision_id
                     if st.expected_version == 0:
                         try:
                             self._connection.execute(
                                 """
-                                INSERT INTO plugin_state (scope, scope_key, owner, version, payload_json, updated_at)
-                                VALUES (?, ?, ?, 1, ?, ?)
+                                INSERT INTO plugin_state (scope, scope_key, owner, version, schema_version, revision_id, payload_json, updated_at)
+                                VALUES (?, ?, ?, 1, ?, ?, ?, ?)
                                 """,
-                                (st.scope, st.scope_key, st.owner, payload_json, now),
+                                (st.scope, st.scope_key, st.owner, actual_schema_ver, actual_rev_id, payload_json, now),
                             )
                         except sqlite3.IntegrityError as exc:
                             raise StoreConflict(f"state already exists for owner {st.owner!r} in {st.scope}:{st.scope_key}") from exc
@@ -546,57 +670,146 @@ class SqliteStore:
                         c = self._connection.execute(
                             """
                             UPDATE plugin_state
-                            SET version = version + 1, payload_json = ?, updated_at = ?
+                            SET version = version + 1, schema_version = ?, revision_id = ?, payload_json = ?, updated_at = ?
                             WHERE scope = ? AND scope_key = ? AND owner = ? AND version = ?
                             """,
-                            (payload_json, now, st.scope, st.scope_key, st.owner, st.expected_version),
+                            (actual_schema_ver, actual_rev_id, payload_json, now, st.scope, st.scope_key, st.owner, st.expected_version),
                         )
                         if c.rowcount == 0:
                             raise StoreConflict(
                                 f"state CAS conflict for {st.owner!r} in {st.scope}:{st.scope_key}: expected version {st.expected_version}"
                             )
 
-                # 2. Apply staged continuations
-                for cont in staged_continuations:
-                    cont_payload_json = canonical_json(cont.payload)
-                    if cont.idempotency_key is not None:
-                        c_chk = self._connection.execute(
-                            """
-                            SELECT continuation_id FROM continuations
-                            WHERE session_id = ? AND owner = ? AND idempotency_key = ?
-                            """,
-                            (session_id, cont.owner, cont.idempotency_key),
+                # 2. Apply staged continuation operations in their recorded order, so
+                # cancel-then-enqueue keeps the new continuation while enqueue-then-cancel
+                # (including by returned id) cancels exactly the one that was enqueued.
+                ops: list[tuple[int, Literal["enqueue", "cancel"], object]] = []
+                ops.extend((c.ordinal, "enqueue", c) for c in staged_continuations)
+                ops.extend((c.ordinal, "cancel", c) for c in staged_cancellations)
+                for _ord, kind, payload in sorted(ops, key=lambda item: item[0]):
+                    if kind == "enqueue":
+                        cont = cast(StagedContinuationDraft, payload)
+                        cont_payload_json = canonical_json(cont.payload)
+                        if cont.idempotency_key is not None:
+                            c_chk = self._connection.execute(
+                                """
+                                SELECT continuation_id FROM continuations
+                                WHERE session_id = ? AND owner = ? AND idempotency_key = ?
+                                """,
+                                (session_id, cont.owner, cont.idempotency_key),
+                            )
+                            if c_chk.fetchone() is not None:
+                                continue
+                        try:
+                            self._connection.execute(
+                                """
+                                INSERT INTO continuations (
+                                    continuation_id, owner, session_id, source, run_id, revision_id,
+                                    idempotency_key, root_id, status, payload_json, created_at, updated_at
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+                                """,
+                                (
+                                    cont.continuation_id,
+                                    cont.owner,
+                                    session_id,
+                                    cont.source,
+                                    run_id,
+                                    revision_id,
+                                    cont.idempotency_key,
+                                    cont.root_id,
+                                    cont_payload_json,
+                                    now,
+                                    now,
+                                ),
+                            )
+                        except sqlite3.IntegrityError as exc:
+                            raise StoreConflict(f"continuation {cont.continuation_id!r} already exists") from exc
+                    else:
+                        canc = cast(StagedCancellation, payload)
+                        if canc.continuation_id is not None:
+                            self._connection.execute(
+                                """
+                                UPDATE continuations
+                                SET status = 'cancelled', updated_at = ?
+                                WHERE session_id = ? AND owner = ? AND continuation_id = ?
+                                  AND status IN ('pending', 'claimed')
+                                """,
+                                (now, session_id, canc.owner, canc.continuation_id),
+                            )
+                        else:
+                            self._connection.execute(
+                                """
+                                UPDATE continuations
+                                SET status = 'cancelled', updated_at = ?
+                                WHERE session_id = ? AND owner = ? AND status IN ('pending', 'claimed')
+                                """,
+                                (now, session_id, canc.owner),
+                            )
+
+                # 2c. Apply staged budgets
+                for bu in staged_budgets:
+                    if bu.action == "clear":
+                        self._connection.execute(
+                            "DELETE FROM session_budgets WHERE session_id = ? AND owner = ?",
+                            (session_id, bu.owner),
                         )
-                        if c_chk.fetchone() is not None:
-                            continue
-                    try:
+                    elif bu.action == "set" and bu.budget is not None:
                         self._connection.execute(
                             """
-                            INSERT INTO continuations (
-                                continuation_id, owner, session_id, source, run_id, revision_id,
-                                idempotency_key, status, payload_json, created_at, updated_at
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+                            INSERT INTO session_budgets (
+                                session_id, owner, since_sequence, max_input_tokens, max_output_tokens, max_total_tokens,
+                                max_cost_usd, max_elapsed_seconds, created_at, updated_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT (session_id, owner) DO UPDATE SET
+                                since_sequence = excluded.since_sequence,
+                                max_input_tokens = excluded.max_input_tokens,
+                                max_output_tokens = excluded.max_output_tokens,
+                                max_total_tokens = excluded.max_total_tokens,
+                                max_cost_usd = excluded.max_cost_usd,
+                                max_elapsed_seconds = excluded.max_elapsed_seconds,
+                                updated_at = excluded.updated_at
                             """,
                             (
-                                cont.continuation_id,
-                                cont.owner,
                                 session_id,
-                                cont.source,
-                                run_id,
-                                revision_id,
-                                cont.idempotency_key,
-                                cont_payload_json,
+                                bu.owner,
+                                bu.budget.since_sequence,
+                                bu.budget.max_input_tokens,
+                                bu.budget.max_output_tokens,
+                                bu.budget.max_total_tokens,
+                                bu.budget.max_cost_usd,
+                                bu.budget.max_elapsed_seconds,
                                 now,
                                 now,
                             ),
                         )
-                    except sqlite3.IntegrityError as exc:
-                        raise StoreConflict(f"continuation {cont.continuation_id!r} already exists") from exc
+
+                # 2d. Apply observer receipts
+                for r in observer_receipts:
+                    self._connection.execute(
+                        """
+                        INSERT OR IGNORE INTO observer_receipts (session_id, event_sequence, owner, generation, created_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (session_id, r.event_sequence, r.owner, r.generation, now),
+                    )
+
+                # 2e. Update completed continuation
+                if completed_continuation_id is not None:
+                    self._connection.execute(
+                        """
+                        UPDATE continuations
+                        SET status = ?, updated_at = ?
+                        WHERE continuation_id = ?
+                        """,
+                        (completed_continuation_status, now, completed_continuation_id),
+                    )
 
                 # 3. Append events
                 current_seq = curr_seq
+                first_sequence_by_type: dict[str, int] = {}
                 for draft in events:
                     current_seq += 1
+                    first_sequence_by_type.setdefault(draft.event_type, current_seq)
                     payload_json = canonical_json(draft.payload)
                     self._connection.execute(
                         """
@@ -633,7 +846,13 @@ class SqliteStore:
                 )
 
                 if checkpoint_kind is not None and checkpoint_payload is not None:
-                    checkpoint_json = canonical_json(checkpoint_payload)
+                    bound_payload = dict(checkpoint_payload)
+                    for bound_field, bound_event_type in checkpoint_bindings:
+                        bound_sequence = first_sequence_by_type.get(bound_event_type)
+                        if bound_sequence is None:
+                            raise StoreConflict(f"checkpoint binding {bound_field!r} has no {bound_event_type!r} event in this commit")
+                        bound_payload[bound_field] = bound_sequence
+                    checkpoint_json = canonical_json(bound_payload)
                     self._connection.execute(
                         """
                         INSERT INTO checkpoints (
@@ -829,8 +1048,10 @@ class SqliteStore:
         payload: Mapping[str, object],
         *,
         idempotency_key: str | None = None,
+        root_id: str | None = None,
+        root_budget: int | None = None,
     ) -> str:
-        """Directly enqueue a continuation in pending state."""
+        """Directly enqueue a continuation in pending state, optionally opening its root budget."""
         with self._lock:
             self._check_open()
             now = int(time.time() * 1000)
@@ -845,13 +1066,23 @@ class SqliteStore:
                 row = cursor.fetchone()
                 if row is not None:
                     return row[0]
+            if root_id is None and root_budget is not None:
+                root_id = continuation_id
+            if root_budget is not None and root_id is not None:
+                self._connection.execute(
+                    """
+                    INSERT OR IGNORE INTO root_budgets (root_id, budget, reserved, created_at, updated_at)
+                    VALUES (?, ?, 0, ?, ?)
+                    """,
+                    (root_id, max(0, root_budget), now, now),
+                )
             try:
                 self._connection.execute(
                     """
                     INSERT INTO continuations (
                         continuation_id, owner, session_id, source, run_id, revision_id,
-                        idempotency_key, status, payload_json, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+                        idempotency_key, root_id, status, payload_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
                     """,
                     (
                         continuation_id,
@@ -861,6 +1092,7 @@ class SqliteStore:
                         run_id,
                         revision_id,
                         idempotency_key,
+                        root_id,
                         canonical_json(payload),
                         now,
                         now,
@@ -869,6 +1101,30 @@ class SqliteStore:
                 return continuation_id
             except sqlite3.IntegrityError as exc:
                 raise StoreConflict(f"continuation {continuation_id!r} already exists") from exc
+
+    def ensure_root_budget(self, root_id: str, budget: int) -> None:
+        """Open a root action budget; an existing root keeps its original limit."""
+        with self._lock:
+            self._check_open()
+            now = int(time.time() * 1000)
+            self._connection.execute(
+                """
+                INSERT OR IGNORE INTO root_budgets (root_id, budget, reserved, created_at, updated_at)
+                VALUES (?, ?, 0, ?, ?)
+                """,
+                (root_id, max(0, budget), now, now),
+            )
+
+    def root_budget_state(self, root_id: str) -> tuple[int, int] | None:
+        """Return (budget, reserved) for a root action chain, or None when unknown."""
+        with self._lock:
+            self._check_open()
+            cursor = self._connection.execute(
+                "SELECT budget, reserved FROM root_budgets WHERE root_id = ?",
+                (root_id,),
+            )
+            row = cursor.fetchone()
+            return None if row is None else (int(row[0]), int(row[1]))
 
     def claim_continuations(
         self,
@@ -888,7 +1144,7 @@ class SqliteStore:
                 cursor = self._connection.execute(
                     """
                     SELECT continuation_id, owner, session_id, source, run_id, revision_id,
-                           idempotency_key, status, payload_json, created_at, updated_at
+                           idempotency_key, root_id, status, payload_json, created_at, updated_at
                     FROM continuations
                     WHERE session_id = ? AND status = 'pending'
                     ORDER BY created_at ASC
@@ -918,9 +1174,10 @@ class SqliteStore:
                             revision_id=row[5],
                             idempotency_key=row[6],
                             status="claimed",
-                            payload=json.loads(row[8]),
-                            created_at=row[9],
+                            payload=own_json_object(json.loads(row[9])),
+                            created_at=row[10],
                             updated_at=now,
+                            root_id=row[7],
                         )
                     )
                 self._connection.execute("COMMIT")
@@ -930,6 +1187,80 @@ class SqliteStore:
                 if in_transaction:
                     self._connection.execute("ROLLBACK")
                 raise
+
+    def continuation_id_for_idempotency(self, session_id: str, owner: str, idempotency_key: str) -> str | None:
+        """Return the durable continuation id already recorded for an idempotency key."""
+        with self._lock:
+            self._check_open()
+            cursor = self._connection.execute(
+                """
+                SELECT continuation_id FROM continuations
+                WHERE session_id = ? AND owner = ? AND idempotency_key = ?
+                """,
+                (session_id, owner, idempotency_key),
+            )
+            row = cursor.fetchone()
+            return None if row is None else str(row[0])
+
+    def continuation_status(self, continuation_id: str) -> str | None:
+        """Return the durable status of one continuation row, or None when absent."""
+        with self._lock:
+            self._check_open()
+            cursor = self._connection.execute(
+                "SELECT status FROM continuations WHERE continuation_id = ?",
+                (continuation_id,),
+            )
+            row = cursor.fetchone()
+            return None if row is None else str(row[0])
+
+    def continuation_owner(self, continuation_id: str) -> str | None:
+        """Return the owning plugin of one continuation row, or None when absent."""
+        with self._lock:
+            self._check_open()
+            cursor = self._connection.execute(
+                "SELECT owner FROM continuations WHERE continuation_id = ?",
+                (continuation_id,),
+            )
+            row = cursor.fetchone()
+            return None if row is None else str(row[0])
+
+    def pending_continuations(
+        self,
+        session_id: str,
+        limit: int = 1,
+    ) -> tuple[ContinuationRecord, ...]:
+        """Fetch pending continuations in order of creation."""
+        with self._lock:
+            self._check_open()
+            cursor = self._connection.execute(
+                """
+                SELECT continuation_id, owner, session_id, source, run_id, revision_id,
+                       idempotency_key, root_id, status, payload_json, created_at, updated_at
+                FROM continuations
+                WHERE session_id = ? AND status = 'pending'
+                ORDER BY created_at ASC
+                LIMIT ?
+                """,
+                (session_id, max(1, limit)),
+            )
+            rows = cursor.fetchall()
+            return tuple(
+                ContinuationRecord(
+                    continuation_id=row[0],
+                    owner=row[1],
+                    session_id=row[2],
+                    source=row[3],
+                    run_id=row[4],
+                    revision_id=row[5],
+                    idempotency_key=row[6],
+                    status=row[8],
+                    payload=own_json_object(json.loads(row[9])),
+                    created_at=row[10],
+                    updated_at=row[11],
+                    root_id=row[7],
+                )
+                for row in rows
+            )
 
     def claimed_continuations(
         self,
@@ -942,7 +1273,7 @@ class SqliteStore:
             cursor = self._connection.execute(
                 """
                 SELECT continuation_id, owner, session_id, source, run_id, revision_id,
-                       idempotency_key, status, payload_json, created_at, updated_at
+                       idempotency_key, root_id, status, payload_json, created_at, updated_at
                 FROM continuations
                 WHERE session_id = ? AND status = 'claimed'
                 ORDER BY created_at ASC
@@ -960,26 +1291,294 @@ class SqliteStore:
                     run_id=row[4],
                     revision_id=row[5],
                     idempotency_key=row[6],
-                    status=row[7],
-                    payload=own_json_object(json.loads(row[8])),
-                    created_at=row[9],
-                    updated_at=row[10],
+                    status=row[8],
+                    payload=own_json_object(json.loads(row[9])),
+                    created_at=row[10],
+                    updated_at=row[11],
+                    root_id=row[7],
                 )
                 for row in rows
             )
 
-    def complete_continuation(self, continuation_id: str) -> None:
-        """Mark a claimed continuation as completed."""
+    def complete_continuation(self, continuation_id: str, status: Literal["completed", "failed", "cancelled"] = "completed") -> None:
+        """Mark a claimed continuation as completed, failed, or cancelled."""
         with self._lock:
             self._check_open()
             now = int(time.time() * 1000)
             cursor = self._connection.execute(
                 """
                 UPDATE continuations
-                SET status = 'completed', updated_at = ?
+                SET status = ?, updated_at = ?
                 WHERE continuation_id = ?
                 """,
-                (now, continuation_id),
+                (status, now, continuation_id),
             )
             if cursor.rowcount == 0:
                 raise StoreConflict(f"continuation {continuation_id!r} does not exist")
+
+    def claim_and_start_continuation(
+        self,
+        session_id: str,
+        run_id: str,
+        logical_turn: str,
+        *,
+        revision_id: str,
+        chain_step: int = 0,
+        action_budget_remaining: int = 32,
+    ) -> tuple[ContinuationRecord, SessionRecord]:
+        """Atomically claim ONE pending continuation, emit continuation_started, advance session, and commit ready CP."""
+        with self._lock:
+            self._check_open()
+            in_transaction = False
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                in_transaction = True
+
+                cursor = self._connection.execute(
+                    """
+                    SELECT session_id, workspace, status, active_revision_id, run_id, turn, last_event_sequence
+                    FROM sessions
+                    WHERE session_id = ?
+                    """,
+                    (session_id,),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    raise StoreConflict(f"session {session_id!r} does not exist")
+                _, workspace, status, curr_revision_id, curr_run_id, curr_turn, curr_seq = row
+
+                now = int(time.time() * 1000)
+
+                c_cursor = self._connection.execute(
+                    """
+                    SELECT continuation_id, owner, session_id, source, run_id, revision_id,
+                           idempotency_key, root_id, status, payload_json, created_at, updated_at
+                    FROM continuations
+                    WHERE session_id = ? AND status = 'pending'
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                    """,
+                    (session_id,),
+                )
+                cont_row = c_cursor.fetchone()
+                if cont_row is None:
+                    c_cursor2 = self._connection.execute(
+                        """
+                        SELECT continuation_id, owner, session_id, source, run_id, revision_id,
+                               idempotency_key, root_id, status, payload_json, created_at, updated_at
+                        FROM continuations
+                        WHERE session_id = ? AND status = 'claimed'
+                        ORDER BY created_at ASC
+                        LIMIT 1
+                        """,
+                        (session_id,),
+                    )
+                    claimed_row = c_cursor2.fetchone()
+                    if claimed_row is None:
+                        raise StoreConflict(f"no pending or claimed continuations for session {session_id!r}")
+                    cont_row = claimed_row
+                    claimed_record = ContinuationRecord(
+                        continuation_id=cont_row[0],
+                        owner=cont_row[1],
+                        session_id=cont_row[2],
+                        source=cont_row[3],
+                        run_id=cont_row[4],
+                        revision_id=cont_row[5],
+                        idempotency_key=cont_row[6],
+                        status="claimed",
+                        payload=own_json_object(json.loads(cont_row[9])),
+                        created_at=cont_row[10],
+                        updated_at=cont_row[11],
+                        root_id=cont_row[7],
+                    )
+                    self._connection.execute("COMMIT")
+                    in_transaction = False
+                    return claimed_record, SessionRecord(
+                        session_id=session_id,
+                        workspace=workspace,
+                        status=status,
+                        active_revision_id=curr_revision_id,
+                        run_id=curr_run_id,
+                        turn=curr_turn,
+                        last_event_sequence=curr_seq,
+                    )
+
+                cid = cont_row[0]
+                self._connection.execute(
+                    """
+                    UPDATE continuations
+                    SET status = 'claimed', run_id = ?, updated_at = ?
+                    WHERE continuation_id = ?
+                    """,
+                    (run_id, now, cid),
+                )
+
+                cont_record = ContinuationRecord(
+                    continuation_id=cont_row[0],
+                    owner=cont_row[1],
+                    session_id=cont_row[2],
+                    source=cont_row[3],
+                    run_id=run_id,
+                    revision_id=revision_id,
+                    idempotency_key=cont_row[6],
+                    status="claimed",
+                    payload=own_json_object(json.loads(cont_row[9])),
+                    created_at=cont_row[10],
+                    updated_at=now,
+                    root_id=cont_row[7],
+                )
+
+                new_seq = curr_seq + 1
+                disp_payload = canonical_json({"continuation_id": cont_record.continuation_id, "payload": cont_record.payload})
+                self._connection.execute(
+                    """
+                    INSERT INTO session_events (
+                        session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json
+                    ) VALUES (?, ?, ?, 'kernel.continuation_started', ?, 'plugin', ?, ?)
+                    """,
+                    (session_id, new_seq, run_id, f"plugin.{cont_record.owner}", revision_id, disp_payload),
+                )
+
+                new_turn = curr_turn + 1
+                self._connection.execute(
+                    """
+                    UPDATE sessions
+                    SET status = 'running',
+                        run_id = ?,
+                        turn = ?,
+                        updated_at = ?,
+                        last_event_sequence = ?
+                    WHERE session_id = ?
+                    """,
+                    (run_id, new_turn, now, new_seq, session_id),
+                )
+
+                checkpoint_payload = {
+                    "step": 0,
+                    "continuation_id": cont_record.continuation_id,
+                    "root_id": cont_record.root_id or cont_record.continuation_id,
+                    "logical_turn": logical_turn,
+                    "chain_step": chain_step,
+                    "action_budget_remaining": action_budget_remaining,
+                }
+                checkpoint_json = canonical_json(checkpoint_payload)
+                self._connection.execute(
+                    """
+                    INSERT INTO checkpoints (
+                        session_id, kind, revision_id, run_id, last_event_sequence, payload_json, updated_at
+                    ) VALUES (?, 'ready', ?, ?, ?, ?, ?)
+                    ON CONFLICT (session_id) DO UPDATE SET
+                        kind = excluded.kind,
+                        revision_id = excluded.revision_id,
+                        run_id = excluded.run_id,
+                        last_event_sequence = excluded.last_event_sequence,
+                        payload_json = excluded.payload_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (session_id, revision_id, run_id, new_seq, checkpoint_json, now),
+                )
+
+                self._connection.execute("COMMIT")
+                in_transaction = False
+                return cont_record, SessionRecord(
+                    session_id=session_id,
+                    workspace=workspace,
+                    status="running",
+                    active_revision_id=revision_id,
+                    run_id=run_id,
+                    turn=new_turn,
+                    last_event_sequence=new_seq,
+                )
+            except Exception:
+                if in_transaction:
+                    self._connection.execute("ROLLBACK")
+                raise
+
+    def session_budgets(self, session_id: str) -> tuple[PluginBudget, ...]:
+        """Fetch all active budget constraints for a session."""
+        with self._lock:
+            self._check_open()
+            cursor = self._connection.execute(
+                """
+                SELECT owner, since_sequence, max_input_tokens, max_output_tokens, max_total_tokens, max_cost_usd, max_elapsed_seconds
+                FROM session_budgets
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            )
+            rows = cursor.fetchall()
+            return tuple(
+                PluginBudget(
+                    owner=r[0],
+                    since_sequence=r[1],
+                    max_input_tokens=r[2],
+                    max_output_tokens=r[3],
+                    max_total_tokens=r[4],
+                    max_cost_usd=r[5],
+                    max_elapsed_seconds=r[6],
+                )
+                for r in rows
+            )
+
+    def owner_budget(self, session_id: str, owner: str) -> PluginBudget | None:
+        """Fetch active budget constraint for the bound owner in a session."""
+        with self._lock:
+            self._check_open()
+            cursor = self._connection.execute(
+                """
+                SELECT owner, since_sequence, max_input_tokens, max_output_tokens, max_total_tokens, max_cost_usd, max_elapsed_seconds
+                FROM session_budgets
+                WHERE session_id = ? AND owner = ?
+                """,
+                (session_id, owner),
+            )
+            r = cursor.fetchone()
+            if r is None:
+                return None
+            return PluginBudget(
+                owner=r[0],
+                since_sequence=r[1],
+                max_input_tokens=r[2],
+                max_output_tokens=r[3],
+                max_total_tokens=r[4],
+                max_cost_usd=r[5],
+                max_elapsed_seconds=r[6],
+            )
+
+    def has_observer_receipt(self, session_id: str, event_sequence: int, owner: str, generation: int) -> bool:
+        """Check if an observer deduplication receipt already exists."""
+        with self._lock:
+            self._check_open()
+            cursor = self._connection.execute(
+                """
+                SELECT 1 FROM observer_receipts
+                WHERE session_id = ? AND event_sequence = ? AND owner = ? AND generation = ?
+                """,
+                (session_id, event_sequence, owner, generation),
+            )
+            return cursor.fetchone() is not None
+
+    def cancel_pending_continuations(self, session_id: str, owner: str, *, continuation_id: str | None = None) -> int:
+        """Directly cancel pending continuations owned by owner in session."""
+        with self._lock:
+            self._check_open()
+            now = int(time.time() * 1000)
+            if continuation_id is not None:
+                cursor = self._connection.execute(
+                    """
+                    UPDATE continuations
+                    SET status = 'cancelled', updated_at = ?
+                    WHERE session_id = ? AND owner = ? AND continuation_id = ? AND status = 'pending'
+                    """,
+                    (now, session_id, owner, continuation_id),
+                )
+            else:
+                cursor = self._connection.execute(
+                    """
+                    UPDATE continuations
+                    SET status = 'cancelled', updated_at = ?
+                    WHERE session_id = ? AND owner = ? AND status = 'pending'
+                    """,
+                    (now, session_id, owner),
+                )
+            return cursor.rowcount

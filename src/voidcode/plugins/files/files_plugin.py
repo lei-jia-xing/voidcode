@@ -14,6 +14,7 @@ from pathlib import Path
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.manifest import parse_plugin_manifest
 from voidcode.sdk.plugin import Plugin, tool_definition
+from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import (
     ConfirmedStop,
     OutputBounds,
@@ -72,7 +73,13 @@ class ReadTool:
     def __init__(self, definition: ToolDefinition) -> None:
         self.definition = definition
 
-    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+    def invoke(
+        self,
+        call: ToolCall,
+        *,
+        context: ToolContext,
+        services: PluginServices,  # noqa: ARG002 - required by the frozen Tool ABI
+    ) -> ToolResult:
         if not context.has_capability("workspace.read"):
             return ToolFailure(self.definition.name, error="Missing required capability: workspace.read")
 
@@ -284,7 +291,13 @@ class WriteTool:
     def __init__(self, definition: ToolDefinition) -> None:
         self.definition = definition
 
-    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+    def invoke(
+        self,
+        call: ToolCall,
+        *,
+        context: ToolContext,
+        services: PluginServices,  # noqa: ARG002 - required by the frozen Tool ABI
+    ) -> ToolResult:
         if not context.has_capability("workspace.write"):
             return ToolFailure(self.definition.name, error="Missing required capability: workspace.write")
 

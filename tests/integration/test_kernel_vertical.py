@@ -175,7 +175,7 @@ from voidcode.sdk.tools import ToolFailure, ToolSuccess, TextOutput
 class Counter:
     def __init__(self, definition):
         self.definition = definition
-    def invoke(self, call, *, context):
+    def invoke(self, call, *, context, services):
         target = context.workspace / call.arguments["path"]
         if {safe!r}:
             with (context.workspace / "read.invocations").open("a") as stream:
@@ -293,7 +293,12 @@ def test_interrupted_mutation_is_not_replayed(tmp_path: Path, stop: str) -> None
                     assert json.loads(stdout)["status"] == "interrupted"
             _await_lease_release(workspace)
             (workspace / "input.txt").write_text("changed after crash\n", encoding="utf-8")
-            recovered = _cli(workspace, state, "resume", "crash-session", trust=True)
+            if stop == "signal":
+                # A deliberate user stop is terminal for that run: the session admits a NEW
+                # user action directly and never replays the abandoned batch.
+                recovered = _cli(workspace, state, "run", "continue after user stop", "--session-id", "crash-session", trust=True)
+            else:
+                recovered = _cli(workspace, state, "resume", "crash-session", trust=True)
             assert recovered["status"] == "completed"
             assert (workspace / "counter.txt").read_text(encoding="utf-8") == "effect\n"
             assert not (workspace / "tail.txt").exists()

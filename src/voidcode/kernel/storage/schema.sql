@@ -55,6 +55,8 @@ CREATE TABLE plugin_state (
     scope_key TEXT NOT NULL,
     owner TEXT NOT NULL,
     version INTEGER NOT NULL CHECK (version >= 1),
+    schema_version INTEGER NOT NULL CHECK (schema_version >= 1),
+    revision_id TEXT NOT NULL REFERENCES revisions (revision_id),
     payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (scope, scope_key, owner)
@@ -83,12 +85,48 @@ CREATE TABLE continuations (
     run_id TEXT NOT NULL,
     revision_id TEXT NOT NULL REFERENCES revisions (revision_id),
     idempotency_key TEXT,
-    status TEXT NOT NULL CHECK (status IN ('pending', 'claimed', 'completed', 'cancelled')),
+    root_id TEXT,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'claimed', 'completed', 'failed', 'cancelled')),
     payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX continuations_claim_idx ON continuations (session_id, status, created_at);
+
+-- One finite action budget per root action chain (a user run, or the first
+-- continuation of a chain). Reservations happen atomically with the dispatch
+-- intent, so a crash after dispatch still consumes the step and restarts,
+-- extra drains, and sibling continuations cannot extend the root budget.
+CREATE TABLE root_budgets (
+    root_id TEXT PRIMARY KEY,
+    budget INTEGER NOT NULL CHECK (budget >= 0),
+    reserved INTEGER NOT NULL DEFAULT 0 CHECK (reserved >= 0),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE session_budgets (
+    session_id TEXT NOT NULL REFERENCES sessions (session_id),
+    owner TEXT NOT NULL,
+    since_sequence INTEGER NOT NULL DEFAULT 0 CHECK (since_sequence >= 0),
+    max_input_tokens INTEGER,
+    max_output_tokens INTEGER,
+    max_total_tokens INTEGER,
+    max_cost_usd REAL,
+    max_elapsed_seconds REAL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (session_id, owner)
+) STRICT;
+
+CREATE TABLE observer_receipts (
+    session_id TEXT NOT NULL REFERENCES sessions (session_id),
+    event_sequence INTEGER NOT NULL,
+    owner TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (session_id, event_sequence, owner, generation)
+) STRICT;
 
 CREATE TRIGGER revisions_no_update BEFORE UPDATE ON revisions
 BEGIN SELECT RAISE(ABORT, 'capability revisions are immutable'); END;

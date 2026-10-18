@@ -25,7 +25,7 @@ SDK_PROTOCOL_VERSION = 1
 
 _PLUGIN_ID_REGEX = re.compile(r"^[a-z][a-z0-9_-]*$")
 _SHA256_HEX_REGEX = re.compile(r"^[0-9a-f]{64}$")
-_MUTATING_EFFECTS = frozenset({ToolEffect.WRITE, ToolEffect.EXECUTE, ToolEffect.SPAWN})
+_MUTATING_EFFECTS = frozenset({ToolEffect.WRITE, ToolEffect.EXECUTE, ToolEffect.SPAWN, ToolEffect.SESSION})
 
 
 def _validate_non_empty_str(value: object, *, field_name: str) -> str:
@@ -139,7 +139,7 @@ class PluginToolDeclaration:
         if self.replay_policy is not None and self.replay_policy not in {"safe", "never"}:
             raise ValueError("tool declaration replay_policy must be 'safe' or 'never'")
         if self.replay_policy == "safe" and any(e in _MUTATING_EFFECTS for e in validated_effects):
-            raise ValueError("replay_policy 'safe' cannot be used with mutating effects (write/execute/spawn)")
+            raise ValueError("replay_policy 'safe' cannot be used with mutating effects (write/execute/spawn/session)")
         if not isinstance(self.capabilities, (list, tuple)):
             raise ValueError("tool declaration capabilities must be a sequence")
         caps = tuple(_validate_non_empty_str(c, field_name="capability") for c in self.capabilities)

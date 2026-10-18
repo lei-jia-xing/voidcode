@@ -80,6 +80,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     usage = commands.add_parser("usage")
     usage.add_argument("session_id")
     usage.add_argument("--since-sequence", type=int, default=0)
+    usage.add_argument("--until-sequence", type=int, default=None)
+    tui = commands.add_parser("tui")
+    tui.add_argument("--server", help="Remote or local kernel HTTP server base URL, e.g. http://127.0.0.1:8000")
+    tui.add_argument("--token", help="Bearer token for HTTP authentication")
+    tui.add_argument("--session-id", help="Session ID to attach or create")
     serve = commands.add_parser("serve")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
@@ -105,6 +110,38 @@ def main(argv: Sequence[str] | None = None) -> int:
         from .bootstrap import open_kernel, state_directory
 
         directory = args.state_dir if args.state_dir is not None else state_directory(workspace)
+        if args.command == "tui":
+            from .tui import run_tui
+
+            if args.server:
+                return run_tui(args.server, token=args.token, session_id=args.session_id)
+            import secrets
+            import socket
+            import threading
+            import time
+
+            from .transport.server import serve_kernel
+
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", 0))
+                port = probe.getsockname()[1]
+            token = secrets.token_urlsafe(16)
+            server_thread = threading.Thread(
+                target=serve_kernel,
+                kwargs={
+                    "workspace": workspace,
+                    "state_dir": directory,
+                    "trusted_plugins": frozenset(args.trust_plugin),
+                    "host": "127.0.0.1",
+                    "port": port,
+                    "bearer_token": token,
+                },
+                daemon=True,
+                name="EmbeddedKernelServer",
+            )
+            server_thread.start()
+            time.sleep(0.3)
+            return run_tui(f"http://127.0.0.1:{port}", token=token, session_id=args.session_id)
         if args.command == "serve":
             from .transport.server import serve_kernel
 
@@ -223,7 +260,7 @@ def _dispatch(kernel: Kernel, args: argparse.Namespace) -> int:
         print(json.dumps({"continuations": [item.as_payload() for item in results]}, ensure_ascii=False, allow_nan=False))
         return 0
     if args.command == "usage":
-        report = kernel.usage(args.session_id, since_sequence=args.since_sequence)
+        report = kernel.usage(args.session_id, since_sequence=args.since_sequence, until_sequence=args.until_sequence)
         print(json.dumps(report.as_payload(), ensure_ascii=False, allow_nan=False))
         return 0
     raise AssertionError(f"unhandled command: {args.command}")

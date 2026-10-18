@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, runtime_checkable
 
+from .invocation import ToolContext
 from .json_values import json_wire_object, own_json_object
 from .services import PluginServices
 from .tools import ToolEffect
@@ -32,8 +33,13 @@ class ConfirmationRequest:
             raise ValueError("owner must be a non-empty string")
         if not self.command_name or not isinstance(self.command_name, str):
             raise ValueError("command_name must be a non-empty string")
+        if not isinstance(self.arguments, Mapping):
+            raise ValueError("arguments must be a mapping")
+        from .views import validate_view_data
+
+        validated_ui_data = validate_view_data(self.ui_type, self.ui_data)
         object.__setattr__(self, "arguments", own_json_object(self.arguments))
-        object.__setattr__(self, "ui_data", own_json_object(self.ui_data))
+        object.__setattr__(self, "ui_data", validated_ui_data)
 
     def as_payload(self) -> dict[str, object]:
         return {
@@ -58,6 +64,17 @@ class CommandResult:
     confirmation: ConfirmationRequest | None = None
 
     def __post_init__(self) -> None:
+        if self.status == "pending_confirmation":
+            if self.confirmation is None:
+                raise ValueError("CommandResult with status 'pending_confirmation' requires a confirmation request")
+        else:
+            if self.confirmation is not None:
+                raise ValueError(f"CommandResult with status '{self.status}' cannot carry a confirmation request")
+
+        if self.status == "error":
+            if not self.error or not isinstance(self.error, str) or not self.error.strip():
+                raise ValueError("CommandResult with status 'error' requires a non-empty error message")
+
         if self.data is not None:
             object.__setattr__(self, "data", own_json_object(self.data))
 
@@ -104,10 +121,9 @@ class CommandDescriptor:
 class CommandInvocation:
     """Context and arguments handed to a command handler."""
 
-    session_id: str
+    context: ToolContext
     name: str
     arguments: Mapping[str, object] = field(default_factory=dict)
-    actor: str = "client"
     client_capabilities: frozenset[str] | Sequence[str] = frozenset()
 
     def __post_init__(self) -> None:

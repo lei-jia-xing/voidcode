@@ -21,6 +21,7 @@ from .limits import (
 from .limits import (
     DIAGNOSTIC_TEXT_CHARS as _MAX_DIAGNOSTIC_TEXT_CHARS,
 )
+from .services import PluginServices
 
 type SideEffectState = Literal["settled", "unknown"]
 type ToolDiagnosticsDetails = Mapping[str, object]
@@ -46,9 +47,9 @@ def has_external_mutations(effects: frozenset[ToolEffect]) -> bool:
 
 def is_read_tier(effects: frozenset[ToolEffect]) -> bool:
     """Declared external read scope, independent of execution/resource effects."""
-    if not effects or ToolEffect.WRITE in effects:
+    if not effects or ToolEffect.WRITE in effects or ToolEffect.SESSION in effects:
         return False
-    return ToolEffect.READ in effects or not has_external_mutations(effects) or ToolEffect.SESSION in effects and effects <= _SESSION_COMMAND_EFFECTS
+    return ToolEffect.READ in effects or not has_external_mutations(effects)
 
 
 #: Side-effect state the runtime may claim for a timed-out execution. ``settled``
@@ -205,6 +206,10 @@ class ToolDefinition:
             object.__setattr__(self, "effects", frozenset(ToolEffect(e) if isinstance(e, str) else e for e in self.effects))
         if not isinstance(self.path_argument_keys, tuple):
             object.__setattr__(self, "path_argument_keys", tuple(self.path_argument_keys))
+        if self.replay_policy == "safe" and any(
+            e in (ToolEffect.WRITE, ToolEffect.EXECUTE, ToolEffect.SPAWN, ToolEffect.SESSION) for e in self.effects
+        ):
+            raise ValueError("mutating tools cannot declare safe replay")
 
     def replay_policy_for(self, _arguments: Mapping[str, object] | None = None) -> ToolReplayPolicy:
         if self.replay_policy is not None:
@@ -354,7 +359,7 @@ type ToolResult = ToolSuccess[Any] | ToolFailure[Any]
 class StaticTool(Protocol):
     definition: ClassVar[ToolDefinition]
 
-    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult: ...
+    def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult: ...
 
 
 @runtime_checkable
@@ -362,7 +367,7 @@ class DynamicTool(Protocol):
     @property
     def definition(self) -> ToolDefinition: ...
 
-    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult: ...
+    def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult: ...
 
 
 @runtime_checkable
@@ -372,6 +377,7 @@ class RuntimeTimeoutAwareTool(Protocol):
         call: ToolCall,
         *,
         context: ToolContext,
+        services: PluginServices,
         timeout_seconds: int,
     ) -> ToolResult: ...
 

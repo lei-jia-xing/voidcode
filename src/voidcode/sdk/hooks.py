@@ -9,6 +9,11 @@ from .provider import ProviderTokenUsage
 
 ObservedFactKind = Literal["usage", "invocation_finished", "run_finished"]
 
+#: Canonical run status reported to observers.
+RunStatus = Literal["completed", "failed", "interrupted"]
+#: Canonical neutral stop cause shared by kernel and SDK.
+StopCause = Literal["completed", "error", "user_stop", "owner_cancel", "limit_reached", "shutdown", "host_loss"]
+
 
 @dataclass(frozen=True, slots=True)
 class ContextContribution:
@@ -34,6 +39,8 @@ class UsageFact:
     provider_name: str
     model_name: str
     usage: ProviderTokenUsage | None
+    elapsed_seconds: float | None = None
+    cost_usd: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +67,8 @@ class RunFinishedFact:
     revision_id: str
     logical_turn: str
     event_sequence: int
-    status: str
+    status: RunStatus
+    stop_cause: StopCause | None = None
     elapsed_seconds: float | None = None
 
 

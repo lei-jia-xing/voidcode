@@ -73,3 +73,11 @@ repos:
         language: system
         pass_filenames: false
         files: ^(src/voidcode/|frontend/src/lib/runtime/|scripts/generate_frontend_api_types\.py|frontend/package\.json|frontend/bun\.lock)
+      # The kernel client has its own generated contract, from the kernel
+      # transport's OpenAPI document; it is a separate gate until the P4 cutover.
+      - id: frontend-kernel-api-types
+        name: frontend kernel API types are current
+        entry: bash -lc 'uv run python -X utf8 scripts/generate_frontend_api_types.py --kernel --check'
+        language: system
+        pass_filenames: false
+        files: ^(src/voidcode/|frontend/src/lib/kernel/|scripts/generate_frontend_api_types\.py|frontend/package\.json|frontend/bun\.lock)
