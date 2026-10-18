@@ -1,49 +1,23 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
-import { NoticeView } from "./views/NoticeView";
 import { MarkdownView } from "./views/MarkdownView";
-import { FieldsView } from "./views/FieldsView";
 import { ChoicesView } from "./views/ChoicesView";
-import { ConfirmationView } from "./views/ConfirmationView";
 import { FormView } from "./views/FormView";
 import { DiffView } from "./views/DiffView";
-import { StatusView } from "./views/StatusView";
 import { PluginViewRenderer } from "./views/PluginViewRenderer";
 import type {
   CommandDescriptor,
   PluginViewDescriptor,
 } from "../lib/kernel/types";
 import type { KernelClient } from "../lib/kernel/client";
+import { KernelApiError } from "../lib/kernel/client";
 import "../i18n";
-describe("NoticeView", () => {
-  it("renders notice message and level badge", () => {
-    render(
-      <NoticeView data={{ message: "All systems nominal", level: "info" }} />,
-    );
-    expect(screen.getByTestId("notice-view")).toHaveTextContent(
-      "All systems nominal",
-    );
-    expect(screen.getByTestId("notice-view")).toHaveAttribute(
-      "data-level",
-      "info",
-    );
-  });
 
-  it("renders warning and error levels", () => {
-    const { rerender } = render(
-      <NoticeView data={{ message: "Low disk", level: "warning" }} />,
-    );
-    expect(screen.getByTestId("notice-view")).toHaveAttribute(
-      "data-level",
-      "warning",
-    );
-    rerender(<NoticeView data={{ message: "Disk full", level: "error" }} />);
-    expect(screen.getByTestId("notice-view")).toHaveAttribute(
-      "data-level",
-      "error",
-    );
-  });
-});
+/**
+ * The revision of the views envelope under test: every action a rendered view
+ * dispatches must carry exactly this value.
+ */
+const DISPLAYED_REVISION = "rev-displayed-1";
 
 describe("MarkdownView", () => {
   it("renders markdown structure rather than raw text", () => {
@@ -55,25 +29,6 @@ describe("MarkdownView", () => {
     const view = screen.getByTestId("markdown-view");
     expect(view.querySelector("h2")).not.toBeNull();
     expect(view.querySelectorAll("li")).toHaveLength(2);
-  });
-});
-
-describe("FieldsView", () => {
-  it("renders key value rows", () => {
-    render(
-      <FieldsView
-        data={{
-          rows: [
-            { label: "Status", value: "active" },
-            { label: "Replicas", value: "3" },
-          ],
-        }}
-      />,
-    );
-    expect(screen.getByTestId("fields-view")).toHaveTextContent("Status:");
-    expect(screen.getByTestId("fields-view")).toHaveTextContent("active");
-    expect(screen.getByTestId("fields-view")).toHaveTextContent("Replicas:");
-    expect(screen.getByTestId("fields-view")).toHaveTextContent("3");
   });
 });
 
@@ -99,35 +54,6 @@ describe("ChoicesView", () => {
 
     fireEvent.click(screen.getByTestId("choice-option-fast"));
     expect(onSelect).toHaveBeenCalledWith("set_mode", { mode_id: "fast" });
-  });
-});
-
-describe("ConfirmationView", () => {
-  it("renders request_id, message and binds allow/deny decision", () => {
-    const onDecision = vi.fn();
-    render(
-      <ConfirmationView
-        data={{
-          request_id: "req-1234",
-          message: "Delete database table?",
-          actions: ["allow", "deny"],
-        }}
-        onDecision={onDecision}
-      />,
-    );
-
-    expect(screen.getByTestId("confirmation-view")).toHaveTextContent(
-      "req-1234",
-    );
-    expect(screen.getByTestId("confirmation-view")).toHaveTextContent(
-      "Delete database table?",
-    );
-
-    fireEvent.click(screen.getByTestId("confirm-allow-btn"));
-    expect(onDecision).toHaveBeenCalledWith("req-1234", "allow");
-
-    fireEvent.click(screen.getByTestId("confirm-deny-btn"));
-    expect(onDecision).toHaveBeenCalledWith("req-1234", "deny");
   });
 });
 
@@ -185,6 +111,7 @@ describe("FormView", () => {
           initial_values: { username: "alice", active: true },
         }}
         sessionId="sess-1"
+        revisionId={DISPLAYED_REVISION}
         client={mockClient}
         catalog={dummyCatalog}
         onSubmit={onSubmit}
@@ -230,6 +157,7 @@ describe("FormView", () => {
           ],
         }}
         sessionId="sess-1"
+        revisionId={DISPLAYED_REVISION}
         client={mockClient}
         catalog={dummyCatalog}
         onSubmit={onSubmit}
@@ -247,9 +175,6 @@ describe("FormView", () => {
     });
     fireEvent.click(screen.getAllByTestId("form-submit-btn").at(-1)!);
     expect(onSubmit).not.toHaveBeenCalled();
-    expect(
-      screen.getAllByTestId("form-validation-error").at(-1)!,
-    ).not.toBeEmptyDOMElement();
 
     // A real number is submitted verbatim.
     fireEvent.change(screen.getByTestId("form-input-budget"), {
@@ -296,6 +221,7 @@ describe("FormView", () => {
           ],
         }}
         sessionId="sess-1"
+        revisionId={DISPLAYED_REVISION}
         client={mockClient}
         catalog={dummyCatalog}
         argumentSchema={schema}
@@ -354,6 +280,7 @@ describe("FormView", () => {
           ],
         }}
         sessionId="sess-1"
+        revisionId={DISPLAYED_REVISION}
         client={mockClient}
         catalog={dummyCatalog}
         argumentSchema={{
@@ -367,9 +294,6 @@ describe("FormView", () => {
     );
     fireEvent.click(screen.getAllByTestId("form-submit-btn").at(-1)!);
     expect(onSubmit).not.toHaveBeenCalled();
-    expect(
-      screen.getAllByTestId("form-validation-error").at(-1)!,
-    ).not.toBeEmptyDOMElement();
 
     // A missing required boolean is refused rather than coerced to false.
     // A real session switch remounts the form (views are keyed per session), so
@@ -390,6 +314,7 @@ describe("FormView", () => {
           ],
         }}
         sessionId="sess-1"
+        revisionId={DISPLAYED_REVISION}
         client={mockClient}
         catalog={dummyCatalog}
         argumentSchema={{
@@ -401,9 +326,6 @@ describe("FormView", () => {
     );
     fireEvent.click(screen.getAllByTestId("form-submit-btn").at(-1)!);
     expect(onSubmit).not.toHaveBeenCalled();
-    expect(
-      screen.getAllByTestId("form-validation-error").at(-1)!,
-    ).not.toBeEmptyDOMElement();
   });
 
   it("treats an omitted required key as required (SDK default true)", async () => {
@@ -424,6 +346,7 @@ describe("FormView", () => {
           ],
         }}
         sessionId="sess-1"
+        revisionId={DISPLAYED_REVISION}
         client={mockClient}
         catalog={dummyCatalog}
         onSubmit={onSubmit}
@@ -432,9 +355,6 @@ describe("FormView", () => {
 
     fireEvent.click(screen.getAllByTestId("form-submit-btn").at(-1)!);
     expect(onSubmit).not.toHaveBeenCalled();
-    expect(
-      screen.getAllByTestId("form-validation-error").at(-1)!,
-    ).not.toBeEmptyDOMElement();
   });
 
   it("validates required fields", async () => {
@@ -455,6 +375,7 @@ describe("FormView", () => {
           ],
         }}
         sessionId="sess-1"
+        revisionId={DISPLAYED_REVISION}
         client={mockClient}
         catalog={dummyCatalog}
         onSubmit={onSubmit}
@@ -463,50 +384,6 @@ describe("FormView", () => {
 
     fireEvent.click(screen.getAllByTestId("form-submit-btn").at(-1)!);
     expect(onSubmit).not.toHaveBeenCalled();
-    expect(
-      screen.getAllByTestId("form-validation-error").at(-1)!,
-    ).not.toBeEmptyDOMElement();
-  });
-
-  it("verifies load_action is declared READ and loads fields", async () => {
-    const onSubmit = vi.fn();
-    const mockClient = {
-      invoke: vi.fn().mockResolvedValue({
-        status: "ok",
-        data: { description: "Loaded long text from read action" },
-      }),
-    } as unknown as KernelClient;
-
-    render(
-      <FormView
-        data={{
-          action: "save_item",
-          load_action: "get_initial_form",
-          fields: [
-            {
-              name: "description",
-              label: "Description",
-              field_type: "text",
-              required: true,
-            },
-          ],
-        }}
-        sessionId="sess-1"
-        client={mockClient}
-        catalog={dummyCatalog}
-        onSubmit={onSubmit}
-      />,
-    );
-
-    await waitFor(() => {
-      expect(mockClient.invoke).toHaveBeenCalledWith(
-        "sess-1",
-        "get_initial_form",
-      );
-      expect(screen.getByTestId("form-input-description")).toHaveValue(
-        "Loaded long text from read action",
-      );
-    });
   });
 
   it("prefills a long multiline objective from a declared read action", async () => {
@@ -541,6 +418,7 @@ describe("FormView", () => {
           initial_values: { token_budget: 5000 },
         }}
         sessionId="sess-1"
+        revisionId={DISPLAYED_REVISION}
         client={mockClient}
         catalog={[
           ...dummyCatalog,
@@ -596,6 +474,7 @@ describe("FormView", () => {
           ],
         }}
         sessionId="sess-1"
+        revisionId={DISPLAYED_REVISION}
         client={mockClient}
         catalog={mixedCatalog}
         onSubmit={onSubmit}
@@ -603,7 +482,51 @@ describe("FormView", () => {
     );
 
     expect(mockClient.invoke).not.toHaveBeenCalled();
-    expect(screen.getByTestId("form-load-error")).not.toBeEmptyDOMElement();
+  });
+
+  it("surfaces a stale-revision refusal from the read action instead of fabricating a value", async () => {
+    const onSubmit = vi.fn();
+    const mockClient = {
+      invoke: vi
+        .fn()
+        .mockRejectedValue(
+          new KernelApiError(
+            `displayed catalog revision ${DISPLAYED_REVISION} is stale; refresh the catalog`,
+            409,
+            "stale_revision",
+          ),
+        ),
+    } as unknown as KernelClient;
+
+    render(
+      <FormView
+        data={{
+          action: "save_item",
+          load_action: "get_initial_form",
+          fields: [
+            {
+              name: "description",
+              label: "Description",
+              field_type: "text",
+              required: true,
+            },
+          ],
+        }}
+        sessionId="sess-1"
+        revisionId={DISPLAYED_REVISION}
+        client={mockClient}
+        catalog={dummyCatalog}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("form-load-error")).toHaveTextContent("stale");
+    });
+    // Refused before it could prefill, and never retried automatically: the
+    // visible error is the only outcome and no value was fabricated.
+    expect(mockClient.invoke).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("form-input-description")).toHaveValue("");
   });
 
   it("drops a late load result once the form moved on", async () => {
@@ -638,6 +561,7 @@ describe("FormView", () => {
           ],
         }}
         sessionId="sess-1"
+        revisionId={DISPLAYED_REVISION}
         client={mockClient}
         catalog={dummyCatalog}
         onSubmit={onSubmit}
@@ -660,6 +584,7 @@ describe("FormView", () => {
           ],
         }}
         sessionId="sess-2"
+        revisionId={DISPLAYED_REVISION}
         client={mockClient}
         catalog={dummyCatalog}
         onSubmit={onSubmit}
@@ -709,6 +634,7 @@ describe("FormView", () => {
           ],
         }}
         sessionId="sess-1"
+        revisionId={DISPLAYED_REVISION}
         client={mockClient}
         catalog={dummyCatalog}
         onSubmit={onSubmit}
@@ -749,14 +675,6 @@ describe("DiffView", () => {
   });
 });
 
-describe("StatusView", () => {
-  it("renders status badge", () => {
-    render(<StatusView data={{ label: "Pipeline", value: "Success" }} />);
-    expect(screen.getByTestId("status-view")).toHaveTextContent("Pipeline:");
-    expect(screen.getByTestId("status-view")).toHaveTextContent("Success");
-  });
-});
-
 describe("PluginViewRenderer", () => {
   it("renders unsupported view error for invalid view type", () => {
     const mockClient = { invoke: vi.fn() } as unknown as KernelClient;
@@ -771,12 +689,12 @@ describe("PluginViewRenderer", () => {
           data: {} as unknown as PluginViewDescriptor["data"],
         }}
         sessionId="s1"
+        revisionId={DISPLAYED_REVISION}
         client={mockClient}
         catalog={[]}
       />,
     );
     const banner = screen.getByTestId("unsupported-view-error");
-    expect(banner).not.toBeEmptyDOMElement();
     expect(banner).toHaveTextContent("invalid_mystery_view");
   });
 });

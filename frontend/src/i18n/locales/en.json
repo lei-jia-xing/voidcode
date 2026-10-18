@@ -486,6 +486,8 @@
   "kernel.statusInvokeFailed": "Invoke error: {{message}}",
   "kernel.statusConfirm": "Confirmation {{decision}}: {{status}}",
   "kernel.statusConfirmFailed": "Confirmation error: {{message}}",
+  "kernel.statusActivationCommitted": "Capability revision changed to {{revision}}: catalog and views refreshed",
+  "kernel.statusActivationMalformed": "Activation commit carried no target revision; catalog and views were re-read",
   "kernel.statusCreateFailed": "Failed to create session: {{message}}",
   "kernel.promptPlaceholder": "Type a message or /command...",
   "kernel.pluginViews": "Plugin Views",

@@ -18,7 +18,7 @@ from ...sdk.json_values import json_wire_object, own_json_object
 from ...sdk.services import PluginBudget
 
 SCHEMA_MAGIC = "voidcode-kernel-v1"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class StorageError(RuntimeError):
@@ -150,6 +150,23 @@ class StagedContinuationDraft:
 
 
 @dataclass(frozen=True, slots=True)
+class StagedConfirmation:
+    """A pending action confirmation created atomically with the event that announces it."""
+
+    request_id: str
+    owner: str
+    command_name: str
+    arguments: Mapping[str, object]
+    ui_type: str
+    ui_data: Mapping[str, object]
+    expected_state_version: int | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "arguments", own_json_object(self.arguments))
+        object.__setattr__(self, "ui_data", own_json_object(self.ui_data))
+
+
+@dataclass(frozen=True, slots=True)
 class StagedCancellation:
     owner: str
     continuation_id: str | None = None
@@ -167,7 +184,27 @@ class StagedBudgetUpdate:
 class ObserverReceiptRecord:
     event_sequence: int
     owner: str
-    generation: int
+
+
+@dataclass(frozen=True, slots=True)
+class PluginStateRow:
+    """One durable owner state row plus its core-owned version metadata."""
+
+    owner: str
+    scope: str
+    scope_key: str
+    payload: Mapping[str, object]
+    version: int
+    schema_version: int
+    revision_id: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "payload", own_json_object(self.payload))
+
+
+def revision_identity(payload: Mapping[str, object]) -> str:
+    """Content address of a capability revision payload, computed without storing it."""
+    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
 
 def canonical_json(value: Mapping[str, object]) -> str:
@@ -217,6 +254,7 @@ def _verify_existing_file(path: Path) -> None:
             "session_budgets",
             "observer_receipts",
             "root_budgets",
+            "workspace_state",
         }
         if not required.issubset(tables):
             raise ForeignDatabaseError(f"unsupported database file or missing tables in {path}: missing {required - tables}")
@@ -276,8 +314,49 @@ def _verify_existing_file(path: Path) -> None:
         }
         if not required_budget_cols.issubset(budget_cols):
             raise ForeignDatabaseError(f"unsupported session_budgets schema in {path}: missing {required_budget_cols - budget_cols}")
+
+        cursor = probe.execute("PRAGMA table_info(observer_receipts)")
+        receipt_cols = {r[1] for r in cursor.fetchall()}
+        required_receipt_cols = {"session_id", "event_sequence", "owner", "created_at"}
+        if not required_receipt_cols.issubset(receipt_cols) or "generation" in receipt_cols:
+            raise ForeignDatabaseError(f"unsupported observer_receipts schema in {path}: expected per-(event, owner) receipts")
+
+        cursor = probe.execute("PRAGMA table_info(workspace_state)")
+        workspace_cols = {r[1] for r in cursor.fetchall()}
+        required_workspace_cols = {"workspace", "active_revision_id", "updated_at"}
+        if not required_workspace_cols.issubset(workspace_cols):
+            raise ForeignDatabaseError(f"unsupported workspace_state schema in {path}: missing {required_workspace_cols - workspace_cols}")
     except sqlite3.Error as exc:
         raise ForeignDatabaseError(f"unsupported database file or missing identity: {path}") from exc
+    finally:
+        probe.close()
+
+
+def inspect_existing_workspace(database: Path, workspace: str) -> tuple[str | None, Mapping[str, object] | None]:
+    """Read one workspace's adopted revision without creating or changing anything.
+
+    Returns (None, None) when there is no database (or no adopted revision for this workspace),
+    (revision_id, payload) when there is, and raises for a file that is not a kernel database.
+    Never writes, never sets pragmas. One state directory may hold several workspaces.
+    """
+    if not database.exists():
+        return (None, None)
+    _verify_existing_file(database)
+    uri = f"{database.resolve().as_uri()}?mode=ro"
+    probe = sqlite3.connect(uri, uri=True)
+    try:
+        cursor = probe.execute("SELECT active_revision_id FROM workspace_state WHERE workspace = ?", (workspace,))
+        row = cursor.fetchone()
+        if row is None:
+            return (None, None)
+        revision_id = str(row[0])
+        payload_row = probe.execute("SELECT payload_json FROM revisions WHERE revision_id = ?", (revision_id,)).fetchone()
+        if payload_row is None:
+            raise ForeignDatabaseError(f"database {database} points at missing revision {revision_id}")
+        payload = json.loads(str(payload_row[0]))
+        if not isinstance(payload, dict):
+            raise ForeignDatabaseError(f"database {database} stores a malformed revision payload")
+        return (revision_id, json_wire_object(payload))
     finally:
         probe.close()
 
@@ -385,18 +464,28 @@ class SqliteStore:
             return own_json_object(json.loads(row[0]))
 
     def create_session(self, session_id: str, workspace: str, revision_id: str) -> SessionRecord:
-        """Create a new session pinned to an active revision."""
+        """Create a new session pinned to the workspace's recorded revision.
+
+        The insert takes the revision from the workspace pointer in the SAME statement and
+        requires it to still be the caller's expected revision, so a session created while a
+        capability activation commits can never be pinned to the generation that just moved.
+        """
         now = int(time.time() * 1000)
         with self._lock:
             self._check_open()
-            self._connection.execute(
+            cursor = self._connection.execute(
                 """
                 INSERT INTO sessions (
                     session_id, workspace, status, active_revision_id, run_id, turn, created_at, updated_at, last_event_sequence
-                ) VALUES (?, ?, 'idle', ?, NULL, 0, ?, ?, 0)
+                )
+                SELECT ?, ?, 'idle', w.active_revision_id, NULL, 0, ?, ?, 0
+                FROM workspace_state w
+                WHERE w.workspace = ? AND w.active_revision_id = ?
                 """,
-                (session_id, workspace, revision_id, now, now),
+                (session_id, workspace, now, now, workspace, revision_id),
             )
+            if cursor.rowcount == 0:
+                raise StoreConflict(f"workspace revision moved away from {revision_id!r}; retry against the current revision")
             return SessionRecord(
                 session_id=session_id,
                 workspace=workspace,
@@ -584,6 +673,7 @@ class SqliteStore:
         staged_continuations: Sequence[StagedContinuationDraft] = (),
         staged_cancellations: Sequence[StagedCancellation] = (),
         staged_budgets: Sequence[StagedBudgetUpdate] = (),
+        staged_confirmations: Sequence[StagedConfirmation] = (),
         observer_receipts: Sequence[ObserverReceiptRecord] = (),
         completed_continuation_id: str | None = None,
         completed_continuation_status: Literal["completed", "failed", "cancelled"] = "completed",
@@ -651,34 +741,7 @@ class SqliteStore:
                 now = int(time.time() * 1000)
 
                 # 1. Apply staged state updates
-                for st in staged_state:
-                    payload_json = canonical_json(st.payload)
-                    actual_schema_ver = max(1, st.schema_version)
-                    actual_rev_id = st.revision_id or revision_id
-                    if st.expected_version == 0:
-                        try:
-                            self._connection.execute(
-                                """
-                                INSERT INTO plugin_state (scope, scope_key, owner, version, schema_version, revision_id, payload_json, updated_at)
-                                VALUES (?, ?, ?, 1, ?, ?, ?, ?)
-                                """,
-                                (st.scope, st.scope_key, st.owner, actual_schema_ver, actual_rev_id, payload_json, now),
-                            )
-                        except sqlite3.IntegrityError as exc:
-                            raise StoreConflict(f"state already exists for owner {st.owner!r} in {st.scope}:{st.scope_key}") from exc
-                    else:
-                        c = self._connection.execute(
-                            """
-                            UPDATE plugin_state
-                            SET version = version + 1, schema_version = ?, revision_id = ?, payload_json = ?, updated_at = ?
-                            WHERE scope = ? AND scope_key = ? AND owner = ? AND version = ?
-                            """,
-                            (actual_schema_ver, actual_rev_id, payload_json, now, st.scope, st.scope_key, st.owner, st.expected_version),
-                        )
-                        if c.rowcount == 0:
-                            raise StoreConflict(
-                                f"state CAS conflict for {st.owner!r} in {st.scope}:{st.scope_key}: expected version {st.expected_version}"
-                            )
+                self._apply_state_updates(staged_state, default_revision_id=revision_id, now=now)
 
                 # 2. Apply staged continuation operations in their recorded order, so
                 # cancel-then-enqueue keeps the new continuation while enqueue-then-cancel
@@ -783,14 +846,40 @@ class SqliteStore:
                             ),
                         )
 
+                # 2c2. Create pending action confirmations with the event that announces them.
+                for confirmation in staged_confirmations:
+                    try:
+                        self._connection.execute(
+                            """
+                            INSERT INTO action_confirmations (
+                                request_id, session_id, owner, command_name, arguments_json, revision_id,
+                                expected_state_version, ui_type, ui_data_json, status, created_at, decided_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL)
+                            """,
+                            (
+                                confirmation.request_id,
+                                session_id,
+                                confirmation.owner,
+                                confirmation.command_name,
+                                canonical_json(confirmation.arguments),
+                                revision_id,
+                                confirmation.expected_state_version,
+                                confirmation.ui_type,
+                                canonical_json(confirmation.ui_data),
+                                now,
+                            ),
+                        )
+                    except sqlite3.IntegrityError as exc:
+                        raise StoreConflict(f"confirmation {confirmation.request_id!r} already exists") from exc
+
                 # 2d. Apply observer receipts
                 for r in observer_receipts:
                     self._connection.execute(
                         """
-                        INSERT OR IGNORE INTO observer_receipts (session_id, event_sequence, owner, generation, created_at)
-                        VALUES (?, ?, ?, ?, ?)
+                        INSERT OR IGNORE INTO observer_receipts (session_id, event_sequence, owner, created_at)
+                        VALUES (?, ?, ?, ?)
                         """,
-                        (session_id, r.event_sequence, r.owner, r.generation, now),
+                        (session_id, r.event_sequence, r.owner, now),
                     )
 
                 # 2e. Update completed continuation
@@ -893,6 +982,360 @@ class SqliteStore:
                     self._connection.execute("ROLLBACK")
                 raise
 
+    def _apply_state_updates(
+        self,
+        state_updates: Sequence[StagedStateUpdate],
+        *,
+        default_revision_id: str,
+        now: int,
+    ) -> None:
+        """Apply owner state copies with their optimistic-concurrency obligation, inside an open transaction."""
+        seen: set[tuple[str, str, str]] = set()
+        for st in state_updates:
+            key = (st.scope, st.scope_key, st.owner)
+            if key in seen:
+                raise StoreConflict(f"duplicate state update for {st.owner!r} in {st.scope}:{st.scope_key} in one commit")
+            seen.add(key)
+            payload_json = canonical_json(st.payload)
+            actual_schema_ver = max(1, st.schema_version)
+            actual_rev_id = st.revision_id or default_revision_id
+            if st.expected_version == 0:
+                try:
+                    self._connection.execute(
+                        """
+                        INSERT INTO plugin_state (scope, scope_key, owner, version, schema_version, revision_id, payload_json, updated_at)
+                        VALUES (?, ?, ?, 1, ?, ?, ?, ?)
+                        """,
+                        (st.scope, st.scope_key, st.owner, actual_schema_ver, actual_rev_id, payload_json, now),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    raise StoreConflict(f"state already exists for owner {st.owner!r} in {st.scope}:{st.scope_key}") from exc
+            else:
+                c = self._connection.execute(
+                    """
+                    UPDATE plugin_state
+                    SET version = version + 1, schema_version = ?, revision_id = ?, payload_json = ?, updated_at = ?
+                    WHERE scope = ? AND scope_key = ? AND owner = ? AND version = ?
+                    """,
+                    (actual_schema_ver, actual_rev_id, payload_json, now, st.scope, st.scope_key, st.owner, st.expected_version),
+                )
+                if c.rowcount == 0:
+                    raise StoreConflict(f"state CAS conflict for {st.owner!r} in {st.scope}:{st.scope_key}: expected version {st.expected_version}")
+
+    def commit_activation(
+        self,
+        *,
+        workspace: str,
+        session_id: str,
+        expected_sequence: int,
+        expected_run_id: str | None,
+        expected_revision_id: str,
+        target_revision_id: str,
+        target_payload: Mapping[str, object],
+        run_id: str,
+        status: str,
+        events: Sequence[EventDraft],
+        checkpoint_kind: Literal["ready", "approval_wait", "terminal", "interrupted"] | None,
+        checkpoint_payload: Mapping[str, object] | None,
+        state_updates: Sequence[StagedStateUpdate] = (),
+        cancelled_owners: Sequence[str] = (),
+        cleared_budget_owners: Sequence[str] = (),
+    ) -> SessionRecord:
+        """One CAS transaction that switches the workspace to a new capability revision.
+
+        Covers, atomically: the immutable revision row, every migrated/deactivated
+        owner state copy, the workspace pointer, EVERY session ref in the workspace
+        (including the acting running session), retargeted or cancelled queued work,
+        cleared budgets, the acting session's events/checkpoint, and therefore the
+        durable activation request consumption that those events record. Blockers
+        are re-verified inside the transaction, so a racing writer cannot slip a
+        second generation in.
+        """
+        target_text = canonical_json(target_payload)
+        computed_target = hashlib.sha256(target_text.encode("utf-8")).hexdigest()
+        if computed_target != target_revision_id:
+            raise ValueError("target revision payload does not match its declared identity")
+        with self._lock:
+            self._check_open()
+            in_transaction = False
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                in_transaction = True
+                now = int(time.time() * 1000)
+
+                cursor = self._connection.execute(
+                    """
+                    SELECT session_id, workspace, status, active_revision_id, run_id, turn, last_event_sequence
+                    FROM sessions
+                    WHERE session_id = ?
+                    """,
+                    (session_id,),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    raise StoreConflict(f"session {session_id!r} does not exist")
+                _, row_workspace, _, curr_revision_id, curr_run_id, curr_turn, curr_seq = row
+                if row_workspace != workspace:
+                    raise StoreConflict(f"session {session_id!r} belongs to workspace {row_workspace!r}")
+                if curr_seq != expected_sequence:
+                    raise StoreConflict(f"sequence mismatch for session {session_id!r}: expected {expected_sequence}, got {curr_seq}")
+                if expected_run_id is not None and curr_run_id != expected_run_id:
+                    raise StoreConflict(f"run_id mismatch for session {session_id!r}: expected {expected_run_id!r}, got {curr_run_id!r}")
+                if curr_revision_id != expected_revision_id:
+                    raise StoreConflict(
+                        f"active revision mismatch for session {session_id!r}: active is {curr_revision_id!r}, got {expected_revision_id!r}"
+                    )
+                if target_revision_id == expected_revision_id:
+                    raise StoreConflict("the workspace already runs the target capability revision")
+
+                blockers = self._activation_blockers_locked(workspace, session_id, exclude_claimed_in_session=True)
+                if blockers:
+                    raise StoreConflict(f"activation blocked: {'; '.join(blockers)}")
+
+                self._connection.execute(
+                    """
+                    INSERT INTO revisions (revision_id, created_at, payload_json)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT (revision_id) DO NOTHING
+                    """,
+                    (target_revision_id, now, target_text),
+                )
+                self._connection.execute(
+                    """
+                    INSERT INTO workspace_state (workspace, active_revision_id, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT (workspace) DO UPDATE SET
+                        active_revision_id = excluded.active_revision_id,
+                        updated_at = excluded.updated_at
+                    """,
+                    (workspace, target_revision_id, now),
+                )
+                self._connection.execute(
+                    """
+                    UPDATE sessions
+                    SET active_revision_id = ?, updated_at = ?
+                    WHERE workspace = ?
+                    """,
+                    (target_revision_id, now, workspace),
+                )
+
+                self._apply_state_updates(state_updates, default_revision_id=target_revision_id, now=now)
+
+                for owner in cancelled_owners:
+                    self._connection.execute(
+                        """
+                        UPDATE continuations
+                        SET status = 'cancelled', updated_at = ?
+                        WHERE status IN ('pending', 'claimed') AND owner = ?
+                          AND session_id IN (SELECT session_id FROM sessions WHERE workspace = ?)
+                        """,
+                        (now, owner, workspace),
+                    )
+                    self._connection.execute(
+                        """
+                        DELETE FROM session_budgets
+                        WHERE owner = ?
+                          AND session_id IN (SELECT session_id FROM sessions WHERE workspace = ?)
+                        """,
+                        (owner, workspace),
+                    )
+                cleared = set(cancelled_owners) | set(cleared_budget_owners)
+                for owner in cleared:
+                    self._connection.execute(
+                        """
+                        DELETE FROM session_budgets
+                        WHERE owner = ?
+                          AND session_id IN (SELECT session_id FROM sessions WHERE workspace = ?)
+                        """,
+                        (owner, workspace),
+                    )
+                # Queued work that stays enabled keeps its provenance and shared root
+                # budget, but is rebound to the revision that will execute it.
+                self._connection.execute(
+                    """
+                    UPDATE continuations
+                    SET revision_id = ?, updated_at = ?
+                    WHERE session_id = ? AND status IN ('pending', 'claimed')
+                    """,
+                    (target_revision_id, now, session_id),
+                )
+
+                current_seq = curr_seq
+                first_sequence_by_type: dict[str, int] = {}
+                for draft in events:
+                    current_seq += 1
+                    first_sequence_by_type.setdefault(draft.event_type, current_seq)
+                    self._connection.execute(
+                        """
+                        INSERT INTO session_events (
+                            session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            session_id,
+                            current_seq,
+                            run_id,
+                            draft.event_type,
+                            draft.source,
+                            draft.actor,
+                            target_revision_id,
+                            canonical_json(draft.payload),
+                        ),
+                    )
+
+                self._connection.execute(
+                    """
+                    UPDATE sessions
+                    SET status = ?, run_id = ?, updated_at = ?, last_event_sequence = ?
+                    WHERE session_id = ?
+                    """,
+                    (status, run_id, now, current_seq, session_id),
+                )
+
+                if checkpoint_kind is not None and checkpoint_payload is not None:
+                    self._connection.execute(
+                        """
+                        INSERT INTO checkpoints (
+                            session_id, kind, revision_id, run_id, last_event_sequence, payload_json, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT (session_id) DO UPDATE SET
+                            kind = excluded.kind,
+                            revision_id = excluded.revision_id,
+                            run_id = excluded.run_id,
+                            last_event_sequence = excluded.last_event_sequence,
+                            payload_json = excluded.payload_json,
+                            updated_at = excluded.updated_at
+                        """,
+                        (session_id, checkpoint_kind, target_revision_id, run_id, current_seq, canonical_json(checkpoint_payload), now),
+                    )
+
+                self._connection.execute("COMMIT")
+                in_transaction = False
+                return SessionRecord(
+                    session_id=session_id,
+                    workspace=workspace,
+                    status=status,
+                    active_revision_id=target_revision_id,
+                    run_id=run_id,
+                    turn=curr_turn,
+                    last_event_sequence=current_seq,
+                )
+            except Exception:
+                if in_transaction:
+                    self._connection.execute("ROLLBACK")
+                raise
+
+    def workspace_current(self, workspace: str) -> str | None:
+        """The capability revision the workspace is currently running, or None before first adoption."""
+        with self._lock:
+            self._check_open()
+            cursor = self._connection.execute(
+                "SELECT active_revision_id FROM workspace_state WHERE workspace = ?",
+                (workspace,),
+            )
+            row = cursor.fetchone()
+            return None if row is None else str(row[0])
+
+    def record_workspace_revision(self, workspace: str, revision_id: str) -> None:
+        """Adopt a revision for a workspace without ever overwriting an existing pointer."""
+        with self._lock:
+            self._check_open()
+            self._connection.execute(
+                """
+                INSERT INTO workspace_state (workspace, active_revision_id, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT (workspace) DO NOTHING
+                """,
+                (workspace, revision_id, int(time.time() * 1000)),
+            )
+
+    def plugin_state_rows(self, scope: str, scope_key: str) -> tuple[PluginStateRow, ...]:
+        """Every owner state row in one scope, with its core-owned version metadata."""
+        with self._lock:
+            self._check_open()
+            cursor = self._connection.execute(
+                """
+                SELECT owner, scope, scope_key, payload_json, version, schema_version, revision_id
+                FROM plugin_state
+                WHERE scope = ? AND scope_key = ?
+                ORDER BY owner ASC
+                """,
+                (scope, scope_key),
+            )
+            return tuple(
+                PluginStateRow(
+                    owner=str(row[0]),
+                    scope=str(row[1]),
+                    scope_key=str(row[2]),
+                    payload=own_json_object(json.loads(row[3])),
+                    version=int(row[4]),
+                    schema_version=int(row[5]),
+                    revision_id=str(row[6]),
+                )
+                for row in cursor.fetchall()
+            )
+
+    def _activation_blockers_locked(self, workspace: str, acting_session_id: str, *, exclude_claimed_in_session: bool) -> list[str]:
+        """Blockers that must stop a capability switch; callers hold the connection lock."""
+        blockers: list[str] = []
+        cursor = self._connection.execute(
+            """
+            SELECT session_id, status
+            FROM sessions
+            WHERE workspace = ? AND session_id <> ? AND status IN ('running', 'waiting')
+            ORDER BY session_id ASC
+            """,
+            (workspace, acting_session_id),
+        )
+        blockers.extend(f"session {row[0]} is {row[1]}" for row in cursor.fetchall())
+        cursor = self._connection.execute(
+            """
+            SELECT session_id, request_id
+            FROM action_confirmations
+            WHERE status = 'pending' AND session_id <> ?
+              AND session_id IN (SELECT session_id FROM sessions WHERE workspace = ?)
+            ORDER BY request_id ASC
+            """,
+            (acting_session_id, workspace),
+        )
+        blockers.extend(f"session {row[0]} awaits the decision for confirmation {row[1]}" for row in cursor.fetchall())
+        cursor = self._connection.execute(
+            """
+            SELECT session_id, continuation_id, owner, status
+            FROM continuations
+            WHERE status IN ('pending', 'claimed')
+              AND session_id IN (SELECT session_id FROM sessions WHERE workspace = ?)
+            ORDER BY continuation_id ASC
+            """,
+            (workspace,),
+        )
+        for row in cursor.fetchall():
+            if row[0] == acting_session_id:
+                # The acting session may keep its own queued work; it is retargeted
+                # by the activation transaction instead of being rejected.
+                continue
+            blockers.append(f"session {row[0]} has a {row[3]} continuation {row[1]} owned by {row[2]}")
+        if exclude_claimed_in_session:
+            cursor = self._connection.execute(
+                """
+                SELECT continuation_id, owner
+                FROM continuations
+                WHERE session_id = ? AND status = 'claimed'
+                ORDER BY continuation_id ASC
+                """,
+                (acting_session_id,),
+            )
+            claimed = cursor.fetchall()
+            if len(claimed) > 1:
+                blockers.append(f"session {acting_session_id} has multiple claimed continuations")
+        return blockers
+
+    def activation_blockers(self, workspace: str, acting_session_id: str) -> tuple[str, ...]:
+        """Read-only view of everything that must be idle before a capability switch."""
+        with self._lock:
+            self._check_open()
+            return tuple(self._activation_blockers_locked(workspace, acting_session_id, exclude_claimed_in_session=False))
+
     def plugin_state(self, owner: str, scope: str, scope_key: str) -> tuple[Mapping[str, object] | None, int]:
         """Fetch current plugin state and version for the given owner, scope, and scope_key."""
         with self._lock:
@@ -949,46 +1392,6 @@ class SqliteStore:
                         f"optimistic concurrency check failed for {owner!r} in {scope}:{scope_key}: expected version {expected_version}"
                     )
                 return expected_version + 1
-
-    def create_confirmation(
-        self,
-        request_id: str,
-        session_id: str,
-        owner: str,
-        command_name: str,
-        arguments: Mapping[str, object],
-        revision_id: str,
-        ui_type: str,
-        ui_data: Mapping[str, object],
-        expected_state_version: int | None = None,
-    ) -> None:
-        """Create a pending action confirmation record."""
-        with self._lock:
-            self._check_open()
-            now = int(time.time() * 1000)
-            try:
-                self._connection.execute(
-                    """
-                    INSERT INTO action_confirmations (
-                        request_id, session_id, owner, command_name, arguments_json, revision_id,
-                        expected_state_version, ui_type, ui_data_json, status, created_at, decided_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL)
-                    """,
-                    (
-                        request_id,
-                        session_id,
-                        owner,
-                        command_name,
-                        canonical_json(arguments),
-                        revision_id,
-                        expected_state_version,
-                        ui_type,
-                        canonical_json(ui_data),
-                        now,
-                    ),
-                )
-            except sqlite3.IntegrityError as exc:
-                raise StoreConflict(f"confirmation request {request_id!r} already exists") from exc
 
     def confirmation(self, request_id: str) -> ActionConfirmationRecord | None:
         """Fetch an action confirmation record by request ID."""
@@ -1346,6 +1749,8 @@ class SqliteStore:
                 if row is None:
                     raise StoreConflict(f"session {session_id!r} does not exist")
                 _, workspace, status, curr_revision_id, curr_run_id, curr_turn, curr_seq = row
+                if curr_revision_id != revision_id:
+                    raise StoreConflict(f"active revision mismatch for session {session_id!r}: active is {curr_revision_id!r}, got {revision_id!r}")
 
                 now = int(time.time() * 1000)
 
@@ -1545,16 +1950,16 @@ class SqliteStore:
                 max_elapsed_seconds=r[6],
             )
 
-    def has_observer_receipt(self, session_id: str, event_sequence: int, owner: str, generation: int) -> bool:
-        """Check if an observer deduplication receipt already exists."""
+    def has_observer_receipt(self, session_id: str, event_sequence: int, owner: str) -> bool:
+        """Whether this (source fact event, owner) pair was already delivered exactly once."""
         with self._lock:
             self._check_open()
             cursor = self._connection.execute(
                 """
                 SELECT 1 FROM observer_receipts
-                WHERE session_id = ? AND event_sequence = ? AND owner = ? AND generation = ?
+                WHERE session_id = ? AND event_sequence = ? AND owner = ?
                 """,
-                (session_id, event_sequence, owner, generation),
+                (session_id, event_sequence, owner),
             )
             return cursor.fetchone() is not None
 

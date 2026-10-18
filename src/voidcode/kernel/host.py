@@ -822,6 +822,72 @@ class HostClient:
                 return getattr(plugin.manifest, "state_schema_version", 1)
         return 1
 
+    @property
+    def loaded_plugins(self) -> tuple[HostPlugin, ...]:
+        """The plugin sets this host actually loaded, in admission order."""
+        return tuple(self._plugins)
+
+    def migrate_owner_state(self, owner: str, payload: Mapping[str, object], *, from_version: int, to_version: int) -> dict[str, Any]:
+        """Run one owner's pure old->new state transform in this host; no lease, no services."""
+        return self._pure_transform(
+            "state_migrate",
+            "mig",
+            {
+                "owner": owner,
+                "payload": json_wire_object(payload),
+                "from_version": from_version,
+                "to_version": to_version,
+            },
+        )
+
+    def prepare_deactivate_owner_state(
+        self,
+        owner: str,
+        payload: Mapping[str, object],
+        *,
+        scope: str,
+        scope_key: str,
+        tip_sequence: int | None,
+    ) -> dict[str, Any]:
+        """Run one owner's pure deactivation transform in this host; no lease, no services."""
+        return self._pure_transform(
+            "state_prepare_deactivate",
+            "deact",
+            {
+                "owner": owner,
+                "payload": json_wire_object(payload),
+                "scope": scope,
+                "scope_key": scope_key,
+                "tip_sequence": tip_sequence,
+            },
+        )
+
+    def _pure_transform(self, method: str, prefix: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Send a kernel-owned pure transform request and return the payload it produced."""
+        self._ensure_process()
+        req_id = self._next_id(prefix)
+        future: Future[dict[str, Any]] = Future()
+        with self._maps_lock:
+            self._pending[req_id] = future
+        try:
+            self._send_request({"protocol_version": 1, "id": req_id, "method": method, "params": params})
+            response = self._wait_for_future(req_id, future, 120.0, None)
+        except Exception as exc:
+            with self._maps_lock:
+                self._pending.pop(req_id, None)
+            stopped = self._kill_and_reap()
+            raise HostUnavailable(f"Failed to send {method} request: {exc}", execution_stopped=stopped) from exc
+        finally:
+            with self._maps_lock:
+                self._pending.pop(req_id, None)
+        if not response.get("ok", False):
+            err = response.get("error", {})
+            raise RuntimeError(err.get("message", f"{method} failed") if isinstance(err, dict) else f"{method} failed")
+        result = response.get("result")
+        if not isinstance(result, dict) or not isinstance(result.get("payload"), dict):
+            raise HostUnavailable(f"{method} returned a malformed result", execution_stopped=False)
+        return result["payload"]
+
     def invoke(
         self,
         call: ToolCall,

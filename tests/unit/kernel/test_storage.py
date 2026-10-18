@@ -145,6 +145,7 @@ def test_immutable_history_triggers(tmp_path: Path) -> None:
     db_path = tmp_path / "immutable.sqlite3"
     with SqliteStore(db_path) as store:
         rev_id = store.put_revision({"plugins": []})
+        store.record_workspace_revision("/workspace", rev_id)
         store.create_session("sess-imm", "/workspace", rev_id)
         store.commit(
             "sess-imm",
@@ -177,11 +178,13 @@ def test_session_lifecycle_and_foreign_key_invariants(tmp_path: Path) -> None:
     """Session creation verifies foreign keys, initial fields, and unknown-session lookups."""
     db_path = tmp_path / "lifecycle.sqlite3"
     with SqliteStore(db_path) as store:
-        # FK failure: revision does not exist
-        with pytest.raises(sqlite3.IntegrityError):
+        # A session is created on the workspace's recorded revision: a caller holding some
+        # other (never adopted) revision is refused instead of being pinned to a dead ref.
+        rev_id = store.put_revision({"config": "valid"})
+        store.record_workspace_revision("/workspace", rev_id)
+        with pytest.raises(StoreConflict):
             store.create_session("sess-bad", "/workspace", "missing-revision")
 
-        rev_id = store.put_revision({"config": "valid"})
         session = store.create_session("sess-1", "/workspace", rev_id)
 
         assert isinstance(session, SessionRecord)
@@ -195,6 +198,7 @@ def test_session_lifecycle_and_foreign_key_invariants(tmp_path: Path) -> None:
 
         # Duplicate session fails UNIQUE constraint
         with pytest.raises(sqlite3.IntegrityError):
+            store.record_workspace_revision("/workspace", rev_id)
             store.create_session("sess-1", "/workspace", rev_id)
 
         # Lookup methods
@@ -218,6 +222,7 @@ def test_commit_atomic_cas_and_stale_writer_protection(tmp_path: Path) -> None:
     db_path = tmp_path / "cas.sqlite3"
     with SqliteStore(db_path) as store:
         rev_id = store.put_revision({"plugins": ["files"]})
+        store.record_workspace_revision("/ws", rev_id)
         store.create_session("sess-cas", "/ws", rev_id)
 
         # 1. First valid commit
@@ -336,6 +341,7 @@ def test_atomic_run_rotation_for_session_resume(tmp_path: Path) -> None:
     db_path = tmp_path / "resume.sqlite3"
     with SqliteStore(db_path) as store:
         rev_id = store.put_revision({"rev": 1})
+        store.record_workspace_revision("/ws", rev_id)
         store.create_session("sess-resume", "/ws", rev_id)
 
         # Run 1 commits and pauses at approval_wait
@@ -390,6 +396,7 @@ def test_restart_prefix_and_checkpoint_alignment(tmp_path: Path) -> None:
 
     with SqliteStore(db_path) as store:
         rev_id = store.put_revision({"version": "p1"})
+        store.record_workspace_revision("/ws", rev_id)
         store.create_session("sess-rst", "/ws", rev_id)
 
         events_batch = tuple(EventDraft(f"event.{i}", "kernel", "model", {"index": i}) for i in range(1, 6))
@@ -428,6 +435,7 @@ def test_full_rollback_on_write_failure(tmp_path: Path) -> None:
     db_path = tmp_path / "rollback.sqlite3"
     with SqliteStore(db_path) as store:
         rev_id = store.put_revision({"v": 1})
+        store.record_workspace_revision("/ws", rev_id)
         store.create_session("sess-rb", "/ws", rev_id)
 
         # Baseline commit: 1 event
@@ -492,6 +500,7 @@ def test_store_close_and_context_manager(tmp_path: Path) -> None:
     db_path = tmp_path / "closed.sqlite3"
     store = SqliteStore(db_path)
     rev_id = store.put_revision({"a": 1})
+    store.record_workspace_revision("/ws", rev_id)
     store.create_session("sess-c", "/ws", rev_id)
     store.close()
 
@@ -514,6 +523,7 @@ def test_store_close_and_context_manager(tmp_path: Path) -> None:
 def test_store_can_commit_from_a_run_worker_thread(tmp_path: Path) -> None:
     with SqliteStore(tmp_path / "worker.sqlite3") as store:
         revision_id = store.put_revision({"plugin": "read"})
+        store.record_workspace_revision("/workspace", revision_id)
         store.create_session("worker", "/workspace", revision_id)
         with ThreadPoolExecutor(max_workers=1) as worker:
             committed = worker.submit(

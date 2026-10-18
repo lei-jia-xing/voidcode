@@ -6,6 +6,44 @@ covered by executable tests.
 
 ## Unreleased
 
+### Capability activation (P3)
+- Same-session hot update: a workspace runs one active capability generation, and a switch is a
+  single SQLite transaction (`SqliteStore.commit_activation`) covering the immutable revision, the
+  workspace pointer, every session ref (including the acting `running` session), migrated or
+  deactivated owner state, queue/budget changes, events, projection and checkpoint. Blockers are
+  re-checked inside the transaction; a refusal is recorded durably and nothing is cancelled
+  implicitly.
+- `Kernel` holds one immutable generation snapshot (revision, pinned SDK hash, effective config,
+  admission, host, tools, commands) so configuration, catalog, schema, context and dispatch always
+  describe the same generation. Each host dispatch holds a call slot until its result commits; an
+  activation fence refuses new dispatches and reports foreign in-flight calls as busy instead of
+  blocking them, and no lock or transaction is held across an RPC.
+- Kernel-owned `kernel_reload` tool stages a durable request and returns; the reserved
+  `kernel.reload` command uses the same activation service for explicit user switches. Approved
+  switches activate the artifact pinned *before* the approval, so later source edits cannot change
+  the approved target.
+- Pure owner hooks `Plugin.migrate_state` (candidate host) and `Plugin.prepare_deactivate` (current
+  host, session rows receive that row's own event tip, workspace rows `None`), validated against the
+  optional `PluginManifest.state_schema`; downgrades are refused and disabled owners lose their
+  queued work while keeping durable state.
+- Durable automatic continuation: a model-requested switch records a resume intent in the acting
+  session's checkpoint; the same run is the continuation, and a crash between commit and dispatch is
+  finished once by the kernel's startup driver. A user-issued reload records no intent and bills
+  nothing.
+- Restart restores the persisted revision and its immutable private configuration snapshot (0600,
+  `<state>/private/<revision_id>.json`) instead of re-admitting changed workspace source or config;
+  trust is bound to canonical source paths captured once at startup.
+- Observer facts are delivered to exactly the owners their *source* revision registered; receipts
+  are one per `(event, owner)` with the misleading `generation` column removed.
+- Kernel schema version 2: an existing v1 database is refused read-only before any write, and new
+  `workspace_state` records the workspace's active revision. Mutating client invokes and
+  confirmations now require `expected_revision` (the displayed catalog/view revision), and command
+  catalogs and rendered views return the revision they were captured under.
+- Pending plugin confirmations are durable facts: `kernel.confirmation_requested` commits atomically
+  with the confirmation row, and every decision (allow/deny/stale) emits one
+  `kernel.confirmation_decided`, so clients can restore pending requests after a reload and reduce
+  them from the event stream instead of the live command result.
+
 ### Goal plugin (P2)
 - New self-contained official plugin at `src/voidcode/plugins/goal/` (`__init__.py` +
   `goal_plugin.py`) speaking only the public SDK: tools (`create_goal`, `update_goal`,

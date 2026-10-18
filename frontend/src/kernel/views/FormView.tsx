@@ -15,6 +15,11 @@ export interface FormViewProps {
   /** The target command's argument schema: the authority on null vs. unset. */
   argumentSchema?: Record<string, unknown>;
   sessionId: string;
+  /**
+   * The revision of the views envelope that rendered this form. The declared
+   * read action is invoked under exactly this revision, never under a newer one.
+   */
+  revisionId: string;
   client: KernelClient;
   catalog: CommandDescriptor[];
   onSubmit: (action: string, args: Record<string, unknown>) => void;
@@ -135,6 +140,7 @@ function coerce(
 export const FormView: React.FC<FormViewProps> = ({
   data,
   sessionId,
+  revisionId,
   client,
   catalog,
   argumentSchema,
@@ -159,7 +165,7 @@ export const FormView: React.FC<FormViewProps> = ({
   // The same form instance can be re-pointed at a different action (a goal that
   // did not exist becomes editable): re-seed from the new descriptor's initial
   // values, keeping only what the user actually drafted.
-  const descriptorKey = `${sessionId}::${data.action}::${fields.map((f) => f.name).join(",")}`;
+  const descriptorKey = `${sessionId}::${revisionId}::${data.action}::${fields.map((f) => f.name).join(",")}`;
   const lastDescriptorRef = useRef<string>("");
   useEffect(() => {
     if (lastDescriptorRef.current === descriptorKey) {
@@ -182,7 +188,10 @@ export const FormView: React.FC<FormViewProps> = ({
 
   const attemptedRef = useRef<Record<string, true>>({});
   const loadAction = data.load_action ?? null;
-  const loadKey = `${sessionId}::${loadAction ?? ""}::${data.action}`;
+  // The revision is part of the identity: an activation commit that re-renders
+  // this form under a new generation reads its prefill under that generation,
+  // never under the one the fields were first displayed with.
+  const loadKey = `${sessionId}::${revisionId}::${loadAction ?? ""}::${data.action}`;
 
   useEffect(() => {
     if (!loadAction || attemptedRef.current[loadKey]) {
@@ -191,6 +200,7 @@ export const FormView: React.FC<FormViewProps> = ({
     attemptedRef.current[loadKey] = true;
     const requestSession = sessionId;
     const requestAction = loadAction;
+    const requestRevision = revisionId;
     const attempted = attemptedRef;
 
     // The load action must be exactly READ: any additional effect (write/execute/
@@ -215,7 +225,12 @@ export const FormView: React.FC<FormViewProps> = ({
       setLoading(true);
       setLoadError(null);
       try {
-        const res = await client.invoke(requestSession, requestAction);
+        const res = await client.invoke(
+          requestSession,
+          requestAction,
+          {},
+          requestRevision,
+        );
         if (stale()) {
           return; // the form moved on while this read was in flight
         }
@@ -259,7 +274,7 @@ export const FormView: React.FC<FormViewProps> = ({
       cancelled = true;
       delete attempted.current[loadKey];
     };
-  }, [loadAction, loadKey, catalog, client, sessionId, t]);
+  }, [loadAction, loadKey, revisionId, catalog, client, sessionId, t]);
 
   const handleChange = (name: string, value: unknown) => {
     dirtyRef.current = { ...dirtyRef.current, [name]: true };

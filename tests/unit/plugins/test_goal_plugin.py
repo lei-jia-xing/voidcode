@@ -21,9 +21,11 @@ from voidcode.plugins.goal.goal_plugin import (
     GoalResumeCommand,
     GoalSetCommand,
     GoalState,
+    GoalStatus,
     UpdateGoalTool,
     create_plugin,
     goal_observer,
+    prepare_goal_deactivation,
     read_full_objective,
     spill_objective_if_needed,
 )
@@ -1122,3 +1124,134 @@ def test_update_goal_blocked_without_turn_identity_never_credits_a_turn(tmp_path
     st, _ = services.get_state("session")
     assert st["blocked_turns_count"] == 0
     assert st["status"] == "active"
+
+
+def test_prepare_deactivation_pauses_live_goal_at_the_authentic_tip() -> None:
+    """A disable pauses a live goal and closes its open window, rewriting nothing else."""
+    now = int(time.time() * 1000)
+    goal = GoalState(
+        goal_id="g-live",
+        status="active",
+        objective="Ship the cutover",
+        created_at=now - 60_000,
+        updated_at=now,
+        token_budget=5000,
+        tokens_used=1234,
+        window_tokens_used=234,
+        window_allowance=3766,
+        input_tokens=1000,
+        output_tokens=234,
+        cache_read_tokens=10,
+        uncached_input_tokens=990,
+        has_unknown_usage=True,
+        time_used_seconds=42.5,
+        cost_usd=0.75,
+        active_windows=(ActiveWindow(start_sequence=7, end_sequence=11), ActiveWindow(start_sequence=11)),
+        blocked_turns_count=2,
+        last_blocked_logical_turn="turn-7",
+        objective_edited=True,
+    )
+
+    prepared = prepare_goal_deactivation(goal.to_dict(), "session", "session-1", 42)
+
+    assert prepared["status"] == "paused"
+    assert prepared["active_windows"] == [
+        {"start_sequence": 7, "end_sequence": 11},
+        {"start_sequence": 11, "end_sequence": 42},
+    ]
+    # No clock in the transform: the paused copy carries the timestamps the state already had.
+    assert prepared["updated_at"] == goal.updated_at
+    assert prepared["created_at"] == goal.created_at
+
+    decoded = GoalState.from_dict(prepared)
+    assert decoded is not None
+    assert decoded == replace(
+        goal,
+        status="paused",
+        active_windows=(ActiveWindow(start_sequence=7, end_sequence=11), ActiveWindow(start_sequence=11, end_sequence=42)),
+    )
+
+
+def test_prepare_deactivation_status_and_empty_state_semantics() -> None:
+    """Live statuses become paused; `complete` and an empty state are never rewritten."""
+    now = int(time.time() * 1000)
+    live_statuses: tuple[GoalStatus, ...] = ("active", "blocked", "usage-limited", "budget-limited")
+    for status in live_statuses:
+        goal = GoalState(
+            goal_id=f"g-{status}",
+            status=status,
+            objective="Task",
+            created_at=now,
+            updated_at=now,
+            active_windows=(ActiveWindow(start_sequence=3),),
+        )
+        prepared = prepare_goal_deactivation(goal.to_dict(), "session", "session-1", 9)
+        assert prepared["status"] == "paused"
+        assert prepared["goal_id"] == goal.goal_id
+        assert prepared["active_windows"] == [{"start_sequence": 3, "end_sequence": 9}]
+
+    # A tip equal to the window start closes the window the way `goal.pause` does.
+    just_opened = GoalState(
+        goal_id="g-boundary",
+        status="active",
+        objective="Task",
+        created_at=now,
+        updated_at=now,
+        active_windows=(ActiveWindow(start_sequence=3),),
+    )
+    at_start = prepare_goal_deactivation(just_opened.to_dict(), "session", "session-1", 3)
+    assert at_start["active_windows"] == [{"start_sequence": 3, "end_sequence": 3}]
+
+    complete = GoalState(
+        goal_id="g-complete",
+        status="complete",
+        objective="Done",
+        created_at=now,
+        updated_at=now,
+        active_windows=(ActiveWindow(start_sequence=1, end_sequence=5),),
+    )
+    assert prepare_goal_deactivation(complete.to_dict(), "session", "session-1", 9) == complete.to_dict()
+
+    # An owner without a goal must not gain one from a disable.
+    assert prepare_goal_deactivation({}, "session", "session-1", 9) == {}
+    assert prepare_goal_deactivation({}, "workspace", "workspace-1", None) == {}
+
+
+def test_prepare_deactivation_rejects_malformed_input_instead_of_resetting() -> None:
+    """A malformed scope, tip or state fails visibly; it never silently resets the goal."""
+    now = int(time.time() * 1000)
+    base = GoalState(
+        goal_id="g1",
+        status="active",
+        objective="Task",
+        created_at=now,
+        updated_at=now,
+        active_windows=(ActiveWindow(start_sequence=4),),
+    ).to_dict()
+
+    with pytest.raises(ValueError, match="scope"):
+        prepare_goal_deactivation(base, "galaxy", "session-1", 8)
+    # The scope/tip contract holds regardless of status, windows or an empty state.
+    with pytest.raises(ValueError, match="non-negative integer"):
+        prepare_goal_deactivation(base, "session", "session-1", True)
+    with pytest.raises(ValueError, match="non-negative integer"):
+        prepare_goal_deactivation(base, "session", "session-1", None)
+    with pytest.raises(ValueError, match="non-negative integer"):
+        prepare_goal_deactivation(base, "session", "session-1", -1)
+    with pytest.raises(ValueError, match="non-negative integer"):
+        prepare_goal_deactivation({}, "session", "session-1", None)
+    with pytest.raises(ValueError, match="no single session event tip"):
+        prepare_goal_deactivation({}, "workspace", "workspace-1", 8)
+    # A stale or corrupt tip must not close a window before it started.
+    with pytest.raises(ValueError, match="earlier point"):
+        prepare_goal_deactivation(base, "session", "session-1", 3)
+    with pytest.raises(ValueError, match="status"):
+        prepare_goal_deactivation({**base, "status": "sleeping"}, "session", "session-1", 8)
+    with pytest.raises(ValueError, match="unknown extra fields"):
+        prepare_goal_deactivation({**base, "unknown_flag": True}, "session", "session-1", 8)
+    incomplete = {key: value for key, value in base.items() if key != "window_allowance"}
+    with pytest.raises(ValueError, match="window_allowance"):
+        prepare_goal_deactivation(incomplete, "session", "session-1", 8)
+    # A workspace-scope row carries no session tip, so an open window cannot be closed truthfully.
+    with pytest.raises(ValueError, match="event tip"):
+        prepare_goal_deactivation(base, "workspace", "workspace-1", None)

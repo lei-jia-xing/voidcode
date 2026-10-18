@@ -8,6 +8,7 @@ This directory contains the authoritative technical contracts for the VoidCode r
 - [`task-delegation.md`](./task-delegation.md): Background task execution, child session presets, parent/child linkage, and result retrieval.
 - [`client-transport.md`](./client-transport.md): CLI, HTTP/SSE streaming, ACP facade, and run completion semantics.
 - [`goal-plugin.md`](./goal-plugin.md): Official Goal plugin contracts, state schema, windowed accounting, 3-turn blocked audit, and declarative views.
+- [`hot-activation.md`](./hot-activation.md): Same-session capability activation: pinned admission, immutable generation snapshots, state migration/deactivation, the activation transaction, durable automatic continuation, trust and restart restore.
 
 Detailed data shapes, configuration models, and tool definitions are defined directly in code and generated schemas:
 - Configuration schema: `schema/voidcode.config.schema.json` (generated from `src/voidcode/runtime/config/models.py`).

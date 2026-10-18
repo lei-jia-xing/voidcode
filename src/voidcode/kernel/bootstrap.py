@@ -2,19 +2,30 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import sys
-from graphlib import TopologicalSorter
+from collections.abc import Mapping
 from importlib.metadata import version
 from pathlib import Path
 
 from ..sdk.config import CONFIG_FILE_NAME, KernelConfig, KernelPluginEntry, parse_kernel_config
-from ..sdk.plugin import HostPlugin
-from .activation import admit_plugin
+from .activation import (
+    DEFAULT_CAPABILITIES,
+    Admission,
+    AdmittedPlugins,
+    admit_live,
+    canonical_source_path,
+    config_from_snapshot,
+    load_private_snapshot,
+    restore_admission,
+    sdk_source_hash,
+    write_private_snapshot,
+)
 from .engine import Kernel
-from .storage.store import canonical_json
+from .storage.store import canonical_json, inspect_existing_workspace
 
 
 def state_directory(workspace: Path) -> Path:
@@ -43,76 +54,178 @@ def open_kernel(
     workspace = workspace.resolve(strict=True)
     if not workspace.is_dir():
         raise ValueError("workspace must be a directory")
-    config = load_config(workspace)
     state_dir = state_directory(workspace) if state_dir is None else state_dir.resolve()
     if state_dir.is_relative_to(workspace):
         raise ValueError("kernel state must be outside the workspace writable by file tools")
+    database = state_dir / "kernel-v1.sqlite3"
+    sdk_root = Path(__file__).resolve().parents[1] / "sdk"
+
+    # Explicit startup trust is captured ONCE, as canonical source paths. Reload never maps an
+    # id to a live path again, so changing a plugin's configured path cannot inherit it.
+    startup_paths: dict[str, str] = {}
+    if trusted_plugins:
+        live = load_config(workspace)
+        entries = _merged_entries(live)
+        startup_paths = {name: _configured_source(workspace, entries, name) for name in trusted_plugins}
+
+    # Read-only inspection first: a fresh state directory must not write anything (and an
+    # existing one must not be created or migrated) before configuration is validated.
+    current_revision, current_payload = inspect_existing_workspace(database, str(workspace))
+
+    def admit_current(authorized: frozenset[str]) -> Admission:
+        """Re-admit the live configuration, trusting only pre-authorized canonical source paths."""
+        live = load_config(workspace)
+        admitted = admit_live(
+            live,
+            workspace=workspace,
+            state_dir=state_dir,
+            bundled_sources=_bundled_sources(),
+            authorized_paths=authorized | frozenset(startup_paths.values()),
+            capabilities=DEFAULT_CAPABILITIES,
+            plugin_config=lambda plugin_id, config: _plugin_config(plugin_id, config, live),
+        )
+        return _admission_from(admitted, config=live, entries=_merged_entries(live))
+
+    if current_revision is None:
+        # First adoption: the live configuration becomes the active revision. Its private
+        # snapshot is written before the pointer, so a crash leaves either the old state or
+        # a recoverable snapshot, and the workspace is verified free before any write here.
+        config = load_config(workspace)
+        _assert_workspace_free(workspace)
+        admission = admit_current(frozenset())
+        write_private_snapshot(state_dir, admission.revision_id, admission.private_snapshot)
+    else:
+        # A restarted kernel restores the persisted revision and its private configuration
+        # snapshot; changed workspace source or configuration is never admitted implicitly.
+        if current_payload is None:
+            raise ValueError(f"workspace revision {current_revision} disappeared from the kernel database")
+        if current_payload.get("sdk_sha256") != sdk_source_hash(sdk_root):
+            raise ValueError("installed SDK source no longer matches the active revision; this needs a controlled kernel upgrade, not a hot reload")
+        snapshot = load_private_snapshot(state_dir, current_revision)
+        config = config_from_snapshot(snapshot)
+        admission = restore_admission(current_payload, snapshot, state_dir=state_dir, config=config)
+    return Kernel(
+        workspace=workspace,
+        state_dir=state_dir,
+        config=config,
+        plugins=admission.plugins,
+        revision_payload=admission.revision_payload,
+        admission=admission,
+        admits=admit_current,
+    )
+
+
+def _assert_workspace_free(workspace: Path) -> None:
+    """Verify no other kernel owns the workspace before this process writes anything for it."""
+    descriptor = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("another kernel owns this workspace") from exc
+    finally:
+        os.close(descriptor)
+
+
+def _bundled_sources() -> dict[str, Path]:
     bundled = Path(__file__).resolve().parents[1] / "plugins"
-    sources = {"files": bundled / "files", "openai-chat": bundled / "openai_chat"}
-    entries = {name: config.plugins.get(name, KernelPluginEntry()) for name in sources}
+    return {"files": bundled / "files", "openai-chat": bundled / "openai_chat"}
+
+
+def _merged_entries(config: KernelConfig) -> dict[str, KernelPluginEntry]:
+    entries = {name: config.plugins.get(name, KernelPluginEntry()) for name in _bundled_sources()}
     entries.update(config.plugins)
-    if not trusted_plugins <= entries.keys():
-        raise ValueError("trust was supplied for an unconfigured plugin")
-    providers: dict[str, object] = {}
-    public_providers: dict[str, object] = {}
+    return entries
+
+
+def _providers(config: KernelConfig) -> tuple[dict[str, object], dict[str, object]]:
+    """Resolve private provider credentials and the redacted view that may reach revisions."""
+    private: dict[str, object] = {}
+    public: dict[str, object] = {}
     for name, entry in config.providers.items():
         if entry.base_url is None:
             raise ValueError(f"provider {name} requires an explicit base_url")
         key = entry.api_key or os.environ.get(f"{name.upper().replace('-', '_')}_API_KEY")
-        providers[name] = {"api_key": key, "base_url": entry.base_url, "wire": entry.wire}
-        public_providers[name] = {"base_url": entry.base_url, "wire": entry.wire}
+        private[name] = {"api_key": key, "base_url": entry.base_url, "wire": entry.wire}
+        public[name] = {"base_url": entry.base_url, "wire": entry.wire}
+    return private, public
 
-    admitted: dict[str, HostPlugin] = {}
+
+def _plugin_config(plugin_id: str, config: Mapping[str, object], config_source: KernelConfig) -> Mapping[str, object]:
+    """Inject product-owned credentials into a plugin configuration; never for an arbitrary plugin."""
+    resolved = dict(config)
+    if plugin_id == "openai-chat":
+        if "providers" in resolved:
+            raise ValueError("configure provider credentials/endpoints in the root providers section")
+        private, _public = _providers(config_source)
+        resolved["providers"] = private
+    return resolved
+
+
+def _configured_source(workspace: Path, entries: Mapping[str, KernelPluginEntry], plugin_id: str) -> str:
+    """Canonical path an explicitly trusted startup flag authorizes for one configured plugin."""
+    if plugin_id not in entries:
+        raise ValueError("trust was supplied for an unconfigured plugin")
+    entry = entries[plugin_id]
+    if entry.path is None:
+        return canonical_source_path(_bundled_sources()[plugin_id])
+    return canonical_source_path(workspace / str(entry.path))
+
+
+def _admission_from(admitted: AdmittedPlugins, *, config: KernelConfig, entries: Mapping[str, KernelPluginEntry]) -> Admission:
+    """Assemble the public revision payload and the private snapshot for one admitted generation."""
+    private_providers, public_providers = _providers(config)
     identities: dict[str, object] = {}
-    for plugin_id, entry in sorted(entries.items()):
-        if not entry.enabled:
-            continue
-        external = entry.path is not None
-        if external:
-            source = workspace / str(entry.path)
-        elif plugin_id in sources:
-            source = sources[plugin_id]
-        else:
-            raise ValueError(f"plugin {plugin_id} requires an explicit path")
-        plugin_config = dict(entry.config)
+    for plugin in admitted.plugins:
+        plugin_id = plugin.manifest.plugin_id
+        entry = entries[plugin_id]
         public_config = dict(entry.config)
         if plugin_id == "openai-chat":
-            if "providers" in plugin_config:
-                raise ValueError("configure provider credentials/endpoints in the root providers section")
-            plugin_config["providers"] = providers
             public_config["providers"] = public_providers
-        plugin = admit_plugin(
-            source,
-            artifacts=state_dir / "artifacts",
-            trusted=not external or plugin_id in trusted_plugins,
-            config=plugin_config,
-            capabilities=frozenset({"workspace.read", "workspace.write", "network"}),
-        )
-        if plugin.manifest.plugin_id != plugin_id:
-            raise ValueError("configured plugin identity differs from its manifest")
-        admitted[plugin_id] = plugin
         identities[plugin_id] = {
             "manifest": plugin.manifest.as_payload(),
             "artifact": plugin.root.name,
             # Never persist credentials or arbitrary plugin configuration in events/revisions.
             "config_sha256": hashlib.sha256(canonical_json(public_config).encode("utf-8")).hexdigest(),
         }
-    graph = {name: set(plugin.manifest.depends) for name, plugin in admitted.items()}
-    if any(dependency not in admitted for dependencies in graph.values() for dependency in dependencies):
-        raise ValueError("plugin dependency is missing or disabled")
-    order = tuple(TopologicalSorter(graph).static_order())
-    sdk_root = Path(__file__).resolve().parents[1] / "sdk"
-    sdk_hash = hashlib.sha256()
-    for path in sorted(sdk_root.rglob("*.py")):
-        sdk_hash.update(path.relative_to(sdk_root).as_posix().encode("utf-8") + b"\0")
-        sdk_hash.update(path.read_bytes())
-    payload = {
+    snapshot_plugins: dict[str, object] = {}
+    for source in admitted.sources:
+        entry = entries[source.plugin_id]
+        snapshot_plugins[source.plugin_id] = {
+            "enabled": entry.enabled,
+            "external": source.external,
+            "path": None if entry.path is None else str(entry.path),
+            "canonical_path": source.canonical_path,
+            "trusted": source.trusted,
+            "capabilities": sorted(admitted.plugin_capabilities.get(source.plugin_id, frozenset())),
+            "entry_config": dict(entry.config),
+            "config": dict(admitted.plugin_configs.get(source.plugin_id, entry.config)),
+        }
+    private_providers, _public = _providers(config)
+    snapshot: dict[str, object] = {
+        "version": 1,
+        "providers": private_providers,
+        "model": {"model": config.model.model, "reasoning_effort": config.model.reasoning_effort},
+        "policy": {"approval_mode": config.policy.approval_mode, "read_only": config.policy.read_only},
+        "plugins": snapshot_plugins,
+        "authorized_paths": sorted(admitted.authorized_paths),
+    }
+    payload: dict[str, object] = {
         "sdk_protocol": 1,
-        "sdk_sha256": sdk_hash.hexdigest(),
+        "sdk_sha256": sdk_source_hash(Path(__file__).resolve().parents[1] / "sdk"),
         "python": sys.implementation.cache_tag,
         "dependencies": {name: version(name) for name in ("openai", "pydantic", "jsonschema")},
         "model": {"model": config.model.model, "reasoning_effort": config.model.reasoning_effort},
         "policy": {"approval_mode": config.policy.approval_mode, "read_only": config.policy.read_only},
         "plugins": identities,
+        # Digest only: the credential-bearing configuration stays in the private snapshot.
+        "private_config_sha256": hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest(),
     }
-    return Kernel(workspace=workspace, state_dir=state_dir, config=config, plugins=tuple(admitted[name] for name in order), revision_payload=payload)
+    return Admission(
+        plugins=admitted.plugins,
+        revision_payload=payload,
+        private_snapshot=snapshot,
+        authorized_paths=admitted.authorized_paths,
+        sources=admitted.sources,
+        config=config,
+    )

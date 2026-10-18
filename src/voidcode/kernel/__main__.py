@@ -65,11 +65,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     invoke.add_argument("session_id")
     invoke.add_argument("name")
     invoke.add_argument("--arguments", default="{}")
+    invoke.add_argument("--expected-revision", required=True, help="Capability revision the displayed catalog was captured under")
     invoke.add_argument("--client-capabilities", default="")
     confirm = commands.add_parser("confirm")
     confirm.add_argument("session_id")
     confirm.add_argument("request_id")
     confirm.add_argument("--decision", choices=("allow", "deny"), required=True)
+    confirm.add_argument("--expected-revision", required=True, help="Capability revision the displayed catalog was captured under")
     confirm.add_argument("--client-capabilities", default="")
     views = commands.add_parser("views")
     views.add_argument("session_id")
@@ -230,14 +232,15 @@ def _dispatch(kernel: Kernel, args: argparse.Namespace) -> int:
         print(json.dumps({"sessions": [_session_payload(record) for record in records]}, ensure_ascii=False, allow_nan=False))
         return 0
     if args.command == "catalog":
-        descriptors = kernel.command_catalog()
-        print(json.dumps({"commands": [descriptor.as_payload() for descriptor in descriptors]}, ensure_ascii=False, allow_nan=False))
+        catalog = kernel.command_catalog()
+        print(json.dumps(catalog.as_payload(), ensure_ascii=False, allow_nan=False))
         return 0
     if args.command == "invoke":
         result = kernel.invoke_command(
             args.session_id,
             args.name,
             args.parsed_arguments,
+            expected_revision=args.expected_revision,
             client_capabilities=args.parsed_capabilities,
         )
         print(json.dumps(result.as_payload(), ensure_ascii=False, allow_nan=False))
@@ -247,13 +250,14 @@ def _dispatch(kernel: Kernel, args: argparse.Namespace) -> int:
             args.session_id,
             args.request_id,
             args.decision,
+            expected_revision=args.expected_revision,
             client_capabilities=args.parsed_capabilities,
         )
         print(json.dumps(result.as_payload(), ensure_ascii=False, allow_nan=False))
         return 0 if result.status == "ok" else 2 if result.status == "pending_confirmation" else 1
     if args.command == "views":
-        descriptors = kernel.plugin_views(args.session_id, client_capabilities=args.parsed_capabilities)
-        print(json.dumps({"views": [descriptor.as_payload() for descriptor in descriptors]}, ensure_ascii=False, allow_nan=False))
+        snapshot = kernel.plugin_views(args.session_id, client_capabilities=args.parsed_capabilities)
+        print(json.dumps(snapshot.as_payload(), ensure_ascii=False, allow_nan=False))
         return 0
     if args.command == "drain":
         results = kernel.drain_continuations(args.session_id, limit=args.limit)

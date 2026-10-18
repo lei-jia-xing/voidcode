@@ -268,6 +268,19 @@ export interface components {
             options: components["schemas"]["ChoiceOption"][];
         };
         /**
+         * CommandCatalog
+         * @description Command descriptors together with the capability revision they were captured from.
+         *
+         *     Clients bind later actions to this revision, so a descriptor can never be
+         *     displayed under one generation and executed under another.
+         */
+        CommandCatalog: {
+            /** Commands */
+            commands: components["schemas"]["CommandDescriptor"][];
+            /** Revision Id */
+            revision_id: string;
+        };
+        /**
          * CommandDescriptor
          * @description Catalog entry describing an admitted plugin command or reserved core command.
          */
@@ -323,11 +336,6 @@ export interface components {
              */
             status: "ok" | "error" | "pending_confirmation";
         };
-        /** CommandsBody */
-        CommandsBody: {
-            /** Commands */
-            commands: components["schemas"]["CommandDescriptor"][];
-        };
         /** ConfirmRequest */
         ConfirmRequest: {
             /** Client Capabilities */
@@ -337,6 +345,8 @@ export interface components {
              * @enum {string}
              */
             decision: "allow" | "deny";
+            /** Expected Revision */
+            expected_revision: string;
             /** Request Id */
             request_id: string;
         };
@@ -502,6 +512,8 @@ export interface components {
             };
             /** Client Capabilities */
             client_capabilities?: string[];
+            /** Expected Revision */
+            expected_revision: string;
         };
         /** KernelResult */
         KernelResult: {
@@ -709,8 +721,16 @@ export interface components {
             /** Error Type */
             type: string;
         };
-        /** ViewsBody */
-        ViewsBody: {
+        /**
+         * ViewsSnapshot
+         * @description Rendered views together with the capability revision of the snapshot that rendered them.
+         *
+         *     A view rendered under one generation is never relabelled with a later revision:
+         *     the client refreshes both together after an activation commit.
+         */
+        ViewsSnapshot: {
+            /** Revision Id */
+            revision_id: string;
             /** Views */
             views: components["schemas"]["PluginViewDescriptor"][];
         };
@@ -738,7 +758,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json; charset=utf-8": components["schemas"]["CommandsBody"];
+                    "application/json; charset=utf-8": components["schemas"]["CommandCatalog"];
                 };
             };
             /** @description Invalid request */
@@ -1263,9 +1283,9 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
-                "application/json": components["schemas"]["InvokeRequest"] | null;
+                "application/json": components["schemas"]["InvokeRequest"];
             };
         };
         responses: {
@@ -1620,7 +1640,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json; charset=utf-8": components["schemas"]["ViewsBody"];
+                    "application/json; charset=utf-8": components["schemas"]["ViewsSnapshot"];
                 };
             };
             /** @description Invalid request */

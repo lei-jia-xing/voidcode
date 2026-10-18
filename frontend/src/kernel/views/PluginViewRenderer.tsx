@@ -25,10 +25,24 @@ import { StatusView } from "./StatusView";
 export interface PluginViewRendererProps {
   descriptor: PluginViewDescriptor;
   sessionId: string;
+  /**
+   * The revision of the views envelope that rendered this descriptor. Every
+   * action the view can dispatch travels under exactly this revision: nothing
+   * captured under one generation is ever relabelled with a later one.
+   */
+  revisionId: string;
   client: KernelClient;
   catalog: CommandDescriptor[];
-  onAction?: (action: string, args: Record<string, unknown>) => void;
-  onConfirm?: (requestId: string, decision: "allow" | "deny") => void;
+  onAction?: (
+    action: string,
+    args: Record<string, unknown>,
+    revisionId: string,
+  ) => void;
+  onConfirm?: (
+    requestId: string,
+    decision: "allow" | "deny",
+    revisionId: string,
+  ) => void;
   onCancel?: () => void;
   disabled?: boolean;
 }
@@ -36,6 +50,7 @@ export interface PluginViewRendererProps {
 export const PluginViewRenderer: React.FC<PluginViewRendererProps> = ({
   descriptor,
   sessionId,
+  revisionId,
   client,
   catalog,
   onAction = () => {},
@@ -57,7 +72,7 @@ export const PluginViewRenderer: React.FC<PluginViewRendererProps> = ({
       return (
         <ChoicesView
           data={data as ChoicesViewData}
-          onSelect={onAction}
+          onSelect={(action, args) => onAction(action, args, revisionId)}
           disabled={disabled}
         />
       );
@@ -65,7 +80,9 @@ export const PluginViewRenderer: React.FC<PluginViewRendererProps> = ({
       return (
         <ConfirmationView
           data={data as ConfirmationViewData}
-          onDecision={onConfirm}
+          onDecision={(requestId, decision) =>
+            onConfirm(requestId, decision, revisionId)
+          }
           disabled={disabled}
         />
       );
@@ -74,13 +91,14 @@ export const PluginViewRenderer: React.FC<PluginViewRendererProps> = ({
         <FormView
           data={data as unknown as FormViewData}
           sessionId={sessionId}
+          revisionId={revisionId}
           client={client}
           catalog={catalog}
           argumentSchema={
             catalog.find((c) => c.name === (data as FormViewData).action)
               ?.argument_schema as Record<string, unknown> | undefined
           }
-          onSubmit={onAction}
+          onSubmit={(action, args) => onAction(action, args, revisionId)}
           onCancel={onCancel}
           disabled={disabled}
         />

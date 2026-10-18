@@ -119,7 +119,10 @@ def render_status(data: Mapping[str, Any], width: int) -> list[str]:
 class InteractiveChoices:
     """Interactive selector for ChoicesView."""
 
-    def __init__(self, data: Mapping[str, Any]) -> None:
+    def __init__(self, data: Mapping[str, Any], *, revision_id: str = "") -> None:
+        #: The revision of the envelope that rendered these options; the
+        #: selection is dispatched under exactly that generation.
+        self.revision_id = revision_id
         raw_options = data.get("options", [])
         self.options: list[dict[str, str]] = []
         for opt in raw_options:
@@ -164,8 +167,11 @@ class InteractiveChoices:
 class InteractiveConfirmation:
     """Interactive confirmation dialog binding request_id."""
 
-    def __init__(self, data: Mapping[str, Any]) -> None:
+    def __init__(self, data: Mapping[str, Any], *, revision_id: str = "") -> None:
         self.request_id = str(data.get("request_id", ""))
+        #: The revision this confirmation was displayed under; the stored
+        #: request id stays the identity, this is the generation the user saw.
+        self.revision_id = revision_id
         self.message = str(data.get("message", "Approve action?"))
         raw_actions = data.get("actions", ("allow", "deny"))
         self.actions = list(raw_actions) or ["allow", "deny"]
@@ -201,8 +207,11 @@ class InteractiveConfirmation:
 class InteractiveForm:
     """Interactive Form View supporting text, multiline, integer, number, boolean."""
 
-    def __init__(self, data: Mapping[str, Any], *, action_schema: Mapping[str, Any] | None = None) -> None:
+    def __init__(self, data: Mapping[str, Any], *, action_schema: Mapping[str, Any] | None = None, revision_id: str = "") -> None:
         self.action = str(data.get("action", ""))
+        #: The revision of the views envelope that rendered this form: the
+        #: read prefill and the submit both travel under it.
+        self.revision_id = revision_id
         self.load_action = data.get("load_action")
         self.load_error: str | None = None
         # The target command's own argument schema is the authority on whether a

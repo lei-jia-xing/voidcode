@@ -68,10 +68,24 @@ MAX_FRAME_SIZE: int = 1024 * 1024  # 1 MiB
 
 ALLOWED_REQUEST_KEYS: frozenset[str] = frozenset({"protocol_version", "id", "method", "params"})
 ALLOWED_METHODS: frozenset[str] = frozenset(
-    {"init", "invoke", "propose_turn", "cancel", "close", "invoke_command", "render_view", "contribute_context", "notify_fact"}
+    {
+        "init",
+        "invoke",
+        "propose_turn",
+        "cancel",
+        "close",
+        "invoke_command",
+        "render_view",
+        "contribute_context",
+        "notify_fact",
+        "state_migrate",
+        "state_prepare_deactivate",
+    }
 )
 RESERVED_COMMAND_NAMES: frozenset[str] = frozenset({"run", "resume", "show", "cancel", "close", "init", "help", "status", "sessions", "catalog"})
 RESERVED_COMMAND_PREFIXES: tuple[str, ...] = ("core.", "kernel.", "voidcode.")
+#: Names the kernel itself registers, which a plugin can never shadow.
+RESERVED_TOOL_NAMES: frozenset[str] = frozenset({"kernel_reload"})
 
 
 class HostAbortSignal:
@@ -284,6 +298,8 @@ class PluginHostServer:
         self._views: dict[str, tuple[Any, str]] = {}
         self._context_callbacks: dict[str, Callable[[ToolContext, ServerPluginServices], ContextContribution | None]] = {}
         self._observers: list[tuple[Callable[[PluginFact, ToolContext, ServerPluginServices], None], tuple[str, ...], str]] = []
+        self._state_migrators: dict[str, Callable[[Mapping[str, Any], int, int], Mapping[str, Any]]] = {}
+        self._state_deactivators: dict[str, Callable[[Mapping[str, Any], str, str, int | None], Mapping[str, Any]]] = {}
         self._pending_rpc: dict[str, Future[dict[str, Any]]] = {}
         self._rpc_counter: int = 0
         self._rpc_lock = threading.Lock()
@@ -585,6 +601,36 @@ class PluginHostServer:
                 )
                 return True
             self._handle_notify_fact(req_id, params)
+        elif method == "state_migrate":
+            if set(params.keys()) != {"owner", "payload", "from_version", "to_version"} or not isinstance(params.get("payload"), dict):
+                self._send_response(
+                    {
+                        "protocol_version": 1,
+                        "id": req_id,
+                        "ok": False,
+                        "error": {
+                            "kind": "invalid_params",
+                            "message": "state_migrate params must contain owner, payload, from_version, and to_version",
+                        },
+                    }
+                )
+                return True
+            self._handle_state_migrate(req_id, params)
+        elif method == "state_prepare_deactivate":
+            if set(params.keys()) != {"owner", "payload", "scope", "scope_key", "tip_sequence"} or not isinstance(params.get("payload"), dict):
+                self._send_response(
+                    {
+                        "protocol_version": 1,
+                        "id": req_id,
+                        "ok": False,
+                        "error": {
+                            "kind": "invalid_params",
+                            "message": "state_prepare_deactivate params must contain owner, payload, scope, scope_key, and tip_sequence",
+                        },
+                    }
+                )
+                return True
+            self._handle_state_prepare_deactivate(req_id, params)
         return True
 
     def _handle_init(self, req_id: str, params: dict[str, Any]) -> None:
@@ -643,6 +689,8 @@ class PluginHostServer:
                     declared_modules.add(top_module)
                 # Verify all required tool capabilities are granted before import
                 for tool_decl in manifest.tools:
+                    if tool_decl.name in RESERVED_TOOL_NAMES:
+                        raise ValueError(f"Tool '{tool_decl.name}' in plugin {manifest.plugin_id} is a reserved kernel tool name")
                     req_caps = frozenset(tool_decl.capabilities)
                     if not req_caps.issubset(granted_caps):
                         missing = req_caps - granted_caps
@@ -808,6 +856,12 @@ class PluginHostServer:
                 if plugin_instance.observer is not None:
                     _check_arity(plugin_instance.observer, 3, f"Plugin {manifest.plugin_id} observer callback")
                     self._observers.append((plugin_instance.observer, manifest.observed_facts, manifest.plugin_id))
+                if plugin_instance.migrate_state is not None:
+                    _check_arity(plugin_instance.migrate_state, 3, f"Plugin {manifest.plugin_id} migrate_state callback")
+                    self._state_migrators[manifest.plugin_id] = plugin_instance.migrate_state
+                if plugin_instance.prepare_deactivate is not None:
+                    _check_arity(plugin_instance.prepare_deactivate, 4, f"Plugin {manifest.plugin_id} prepare_deactivate callback")
+                    self._state_deactivators[manifest.plugin_id] = plugin_instance.prepare_deactivate
                 # Store registrations
                 for name, tool in reg_tools_dict.items():
                     if name in self._tools:
@@ -1623,6 +1677,122 @@ class PluginHostServer:
                         "id": req_id,
                         "ok": False,
                         "error": {"kind": "internal_error", "message": f"Notify fact failed: {type(exc).__name__}"},
+                    }
+                )
+
+        self._executor.submit(worker)
+
+    def _handle_state_migrate(self, req_id: str, params: dict[str, Any]) -> None:
+        """Run one owner's pure old->new state transform; no services, no lease, no side channel."""
+
+        def worker() -> None:
+            try:
+                owner = _required_text(params, "owner")
+                from_version = _required_int(params, "from_version")
+                to_version = _required_int(params, "to_version")
+                payload = params["payload"]
+                migrator = self._state_migrators.get(owner)
+                if migrator is None:
+                    self._send_response(
+                        {
+                            "protocol_version": 1,
+                            "id": req_id,
+                            "ok": False,
+                            "error": {"kind": "state_migration_unsupported", "message": f"plugin {owner} declares no migrate_state transform"},
+                        }
+                    )
+                    return
+                migrated = migrator(payload, from_version, to_version)
+                if not isinstance(migrated, Mapping):
+                    raise ValueError("migrate_state must return a JSON object")
+                self._send_response(
+                    {
+                        "protocol_version": 1,
+                        "id": req_id,
+                        "ok": True,
+                        "result": {"payload": json_wire_object(migrated)},
+                    }
+                )
+            except ValueError as exc:
+                self._send_response(
+                    {
+                        "protocol_version": 1,
+                        "id": req_id,
+                        "ok": False,
+                        "error": {"kind": "state_migration_failed", "message": str(exc)},
+                    }
+                )
+            except Exception as exc:
+                _report_internal_error(f"{req_id} state_migrate", exc)
+                self._send_response(
+                    {
+                        "protocol_version": 1,
+                        "id": req_id,
+                        "ok": False,
+                        "error": {"kind": "state_migration_failed", "message": f"state migration failed: {type(exc).__name__}"},
+                    }
+                )
+
+        self._executor.submit(worker)
+
+    def _handle_state_prepare_deactivate(self, req_id: str, params: dict[str, Any]) -> None:
+        """Run one owner's pure deactivation transform in the host that still holds its schema."""
+
+        def worker() -> None:
+            try:
+                owner = _required_text(params, "owner")
+                scope = _required_text(params, "scope")
+                scope_key = _required_text(params, "scope_key")
+                tip = params.get("tip_sequence")
+                if scope not in ("session", "workspace"):
+                    raise ValueError("scope must be 'session' or 'workspace'")
+                if scope == "session" and (isinstance(tip, bool) or not isinstance(tip, int)):
+                    raise ValueError("session-scope deactivation requires the owning session's event tip as an integer")
+                if scope == "workspace" and tip is not None:
+                    raise ValueError("workspace-scope deactivation has no single session event tip")
+                payload = params["payload"]
+                transform = self._state_deactivators.get(owner)
+                if transform is None:
+                    self._send_response(
+                        {
+                            "protocol_version": 1,
+                            "id": req_id,
+                            "ok": False,
+                            "error": {
+                                "kind": "state_deactivation_unsupported",
+                                "message": f"plugin {owner} declares no prepare_deactivate transform",
+                            },
+                        }
+                    )
+                    return
+                prepared = transform(payload, scope, scope_key, tip)
+                if not isinstance(prepared, Mapping):
+                    raise ValueError("prepare_deactivate must return a JSON object")
+                self._send_response(
+                    {
+                        "protocol_version": 1,
+                        "id": req_id,
+                        "ok": True,
+                        "result": {"payload": json_wire_object(prepared)},
+                    }
+                )
+            except ValueError as exc:
+                self._send_response(
+                    {
+                        "protocol_version": 1,
+                        "id": req_id,
+                        "ok": False,
+                        "error": {"kind": "state_deactivation_failed", "message": str(exc)},
+                    }
+                )
+            except Exception as exc:
+                _report_internal_error(f"{req_id} state_prepare_deactivate", exc)
+                self._send_response(
+                    {
+                        "protocol_version": 1,
+                        "id": req_id,
+                        "ok": False,
+                        "error": {"kind": "state_deactivation_failed", "message": f"state deactivation failed: {type(exc).__name__}"},
                     }
                 )
 

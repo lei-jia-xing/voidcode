@@ -8,8 +8,8 @@ import React, {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { KernelClient } from "../lib/kernel/client";
+import type { CommandCatalog } from "../lib/kernel/client";
 import type {
-  CommandDescriptor,
   PluginViewDescriptor,
   SessionRecord,
   SseEventFrame,
@@ -19,6 +19,16 @@ import { PluginViewRenderer } from "./views/PluginViewRenderer";
 export interface KernelAppProps {
   baseUrl?: string;
   token?: string;
+}
+
+/** One authentic pending confirmation: a typed UI envelope bound to the revision it was displayed under. */
+interface PendingConfirmationEntry {
+  owner: string;
+  name: string;
+  title: string;
+  view_type: string;
+  data: Record<string, unknown>;
+  revisionId: string;
 }
 
 export const KernelApp: React.FC<KernelAppProps> = ({
@@ -38,11 +48,17 @@ export const KernelApp: React.FC<KernelAppProps> = ({
   );
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string>("");
-  const [catalog, setCatalog] = useState<CommandDescriptor[]>([]);
+  // The catalog travels with the revision it was captured under: every command
+  // it advertises is dispatched with exactly that revision.
+  const [catalog, setCatalog] = useState<CommandCatalog>({
+    revisionId: "",
+    commands: [],
+  });
   const [events, setEvents] = useState<
     Array<{
       sequence: number;
       type: string;
+      revision_id: string;
       payload: Record<string, unknown>;
     }>
   >([]);
@@ -50,17 +66,33 @@ export const KernelApp: React.FC<KernelAppProps> = ({
     sessionId: string;
     epoch: number;
     clientKey: string;
+    revisionId: string;
     views: PluginViewDescriptor[];
-  }>({ sessionId: "", epoch: -1, clientKey: "", views: [] });
-  // A pending confirmation is a typed UI envelope (ui_type + validated ui_data),
-  // never parsed product data: the client only renders the declared view kind.
-  const [pendingConfirmation, setPendingConfirmation] = useState<{
-    owner: string;
-    name: string;
-    title: string;
-    view_type: string;
-    data: Record<string, unknown>;
-  } | null>(null);
+  }>({ sessionId: "", epoch: -1, clientKey: "", revisionId: "", views: [] });
+  // Pending confirmations are a typed UI envelope per request (ui_type +
+  // validated ui_data), never parsed product data: the client only renders the
+  // declared view kind. They are held by request id in request order, so a
+  // second request never displaces the first, and each keeps the revision it
+  // was displayed under. A request id already decided can never come back.
+  const [pendingConfirmations, setPendingConfirmations] = useState<
+    Record<string, PendingConfirmationEntry>
+  >({});
+  const resolvedConfirmationsRef = useRef<Set<string>>(new Set());
+  const pendingConfirmation = Object.values(pendingConfirmations)[0] ?? null;
+
+  const retainPendingConfirmation = useCallback(
+    (requestId: string, entry: PendingConfirmationEntry) => {
+      if (!requestId || resolvedConfirmationsRef.current.has(requestId)) {
+        return; // a decided request never resurrects, even from a late reply
+      }
+      setPendingConfirmations((prev) =>
+        // The same request is never duplicated or reset by its own duplicate fact
+        // or by the live pending_confirmation result that carries it.
+        requestId in prev ? prev : { ...prev, [requestId]: entry },
+      );
+    },
+    [],
+  );
   const [promptInput, setPromptInput] = useState<string>("");
   // Every async result is bound to the (session, epoch) it was issued for: a
   // late A reply is invalid even after the user returns to A, because the epoch
@@ -72,6 +104,11 @@ export const KernelApp: React.FC<KernelAppProps> = ({
   // from the previous transport, on top of the session and epoch.
   const clientKeyRef = useRef<string>("");
   const selectionRef = useRef<string>("");
+  // Monotonic request serials: only the newest catalog/view snapshot may render,
+  // so a reply issued before an activation commit can never overwrite the one
+  // issued after it.
+  const catalogRequestRef = useRef<number>(0);
+  const viewsRequestRef = useRef<number>(0);
   // Render-time scope is state: refs stay exclusively for async guards.
   const [scope, setScope] = useState<{
     sessionId: string;
@@ -88,12 +125,18 @@ export const KernelApp: React.FC<KernelAppProps> = ({
     effectiveBaseUrl,
     effectiveToken ?? null,
   ]);
+  // Views are only actionable when the catalog they are validated against was
+  // captured under the SAME revision: after an activation commit both are
+  // cleared and refetched, and no form/choice can be rendered from a v1 views
+  // envelope while the v2 catalog (or the reverse) is what the client holds.
   const pluginViews =
     scope.sessionId === activeSessionId &&
     scope.clientKey === renderedClientKey &&
     viewScope.sessionId === activeSessionId &&
     viewScope.clientKey === renderedClientKey &&
-    viewScope.epoch === scope.epoch
+    viewScope.epoch === scope.epoch &&
+    viewScope.revisionId !== "" &&
+    viewScope.revisionId === catalog.revisionId
       ? viewScope.views
       : [];
   const isCurrent = useCallback(
@@ -120,13 +163,23 @@ export const KernelApp: React.FC<KernelAppProps> = ({
   );
 
   /**
-   * Project one persisted event into the client's interaction state. Used for
-   * the initial backlog and for live frames alike, so a page reload or a
-   * reconnect while a run is parked still surfaces the pending gate.
+   * Project one persisted event into the client's interaction state. Called once
+   * per authenticated event, in sequence order, outside any state updater.
+   *
+   * The event carries `revision_id`: the generation that produced it, so a
+   * request-level fact (a confirmation request) binds to it, never to the
+   * current catalog. `kernel.confirmation_requested` opens the modal and
+   * `kernel.confirmation_decided` ({request_id, decision}) reduces it, so a
+   * still-pending request survives a reload and a decided one never resurrects.
    */
   const projectEvent = useCallback(
     (
-      ev: { sequence: number; type: string; payload: Record<string, unknown> },
+      ev: {
+        sequence: number;
+        type: string;
+        revision_id: string;
+        payload: Record<string, unknown>;
+      },
       session: string,
       epoch: number,
       clientKey: string,
@@ -164,36 +217,75 @@ export const KernelApp: React.FC<KernelAppProps> = ({
         return;
       }
       if (ev.type === "kernel.confirmation_requested") {
-        const p = ev.payload as {
-          request_id?: string;
-          ui_type?: string;
-          ui_data?: Record<string, unknown>;
-        };
-        if (p.request_id && p.ui_type && p.ui_data) {
-          setPendingConfirmation({
-            owner: "kernel",
+        const p = ev.payload;
+        const requestId = typeof p.request_id === "string" ? p.request_id : "";
+        const uiType = typeof p.ui_type === "string" ? p.ui_type : "";
+        const uiData = p.ui_data;
+        if (
+          requestId &&
+          uiType &&
+          uiData !== null &&
+          typeof uiData === "object"
+        ) {
+          retainPendingConfirmation(requestId, {
+            owner:
+              typeof p.owner === "string" ? p.owner : t("kernel.unknownLabel"),
             name: "pending_confirmation",
             title: t("kernel.approvalRequired"),
-            view_type: p.ui_type,
-            data: { ...p.ui_data, request_id: p.request_id },
+            view_type: uiType,
+            data: {
+              ...uiData,
+              request_id: requestId,
+            },
+            // The event's own revision created the request: no current-catalog
+            // fallback and no relabelling.
+            revisionId: ev.revision_id,
           });
         }
+        return;
+      }
+      if (ev.type === "kernel.confirmation_decided") {
+        const decided = ev.payload;
+        const requestId =
+          typeof decided.request_id === "string" ? decided.request_id : "";
+        if (requestId) {
+          // Terminal reduction: the request is closed whether or not it is the
+          // one on screen, and a late reply can never resurrect it.
+          resolvedConfirmationsRef.current.add(requestId);
+          setPendingConfirmations((prev) => {
+            if (!(requestId in prev)) return prev;
+            const next = { ...prev };
+            delete next[requestId];
+            return next;
+          });
+        }
+        return;
       }
     },
-    [t],
+    [retainPendingConfirmation, t],
   );
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const lastSequenceRef = useRef<number>(0);
   const refreshViews = useCallback(
     (sessionId: string, epoch: number, clientKey: string) => {
+      const serial = ++viewsRequestRef.current;
       client
         .views(sessionId)
-        .then((views) => {
+        .then((snapshot) => {
+          // A newer snapshot (e.g. the one right after an activation commit) has
+          // already won: an older in-flight reply never overwrites it.
+          if (viewsRequestRef.current !== serial) return;
           if (!isCurrent(sessionId, epoch, clientKey)) {
             return; // stale session/epoch/transport: never render these views
           }
-          setViewScope({ sessionId, epoch, clientKey, views });
+          setViewScope({
+            sessionId,
+            epoch,
+            clientKey,
+            revisionId: snapshot.revisionId,
+            views: snapshot.views,
+          });
         })
         .catch((err) => {
           if (!isCurrent(sessionId, epoch, clientKey)) {
@@ -204,6 +296,24 @@ export const KernelApp: React.FC<KernelAppProps> = ({
     },
     [client, isCurrent],
   );
+
+  // Refetch the catalog after an activation commit: descriptors and revision are
+  // replaced together, so no displayed command keeps the old generation.
+  const refreshCatalog = useCallback(() => {
+    const serial = ++catalogRequestRef.current;
+    client
+      .commandCatalog()
+      .then((snapshot) => {
+        if (catalogRequestRef.current !== serial) return; // a newer catalog won
+        setCatalog(snapshot);
+      })
+      .catch((err) => {
+        if (catalogRequestRef.current !== serial) return;
+        setStatusMessage(
+          t("kernel.statusCatalogFailed", { message: String(err) }),
+        );
+      });
+  }, [client, t]);
 
   const handleCreateSession = useCallback(async () => {
     const epoch = epochRef.current;
@@ -267,15 +377,19 @@ export const KernelApp: React.FC<KernelAppProps> = ({
       sessionId: "",
       epoch: -1,
       clientKey: renderedClientKey,
+      revisionId: "",
       views: [],
     });
     // The previous transport's catalog and session rows must not stay actionable
-    // under the new one.
-    setCatalog([]);
+    // under the new one, and every read it issued is refused by its own serial.
+    catalogRequestRef.current += 1;
+    viewsRequestRef.current += 1;
+    setCatalog({ revisionId: "", commands: [] });
     setSessions([]);
     setEvents([]);
     setPendingApproval(null);
-    setPendingConfirmation(null);
+    resolvedConfirmationsRef.current.clear();
+    setPendingConfirmations({});
     setIsRunning(false);
     streamReadyRef.current = false;
   }, [renderedClientKey]);
@@ -289,18 +403,7 @@ export const KernelApp: React.FC<KernelAppProps> = ({
     }
     bootstrapRef.current = issued;
 
-    issued
-      .commandCatalog()
-      .then((cat) => {
-        if (bootstrapRef.current !== issued) return;
-        setCatalog(cat);
-      })
-      .catch((err) => {
-        if (bootstrapRef.current !== issued) return;
-        setStatusMessage(
-          t("kernel.statusCatalogFailed", { message: String(err) }),
-        );
-      });
+    refreshCatalog();
 
     issued
       .listSessions()
@@ -323,7 +426,7 @@ export const KernelApp: React.FC<KernelAppProps> = ({
           t("kernel.statusListFailed", { message: String(err) }),
         );
       });
-  }, [client, handleCreateSession, t]);
+  }, [client, handleCreateSession, refreshCatalog, t]);
 
   // Invalidate the previous scope BEFORE paint: layout effect, not passive.
   // It must not act while the rendered scope still belongs to the previous
@@ -342,10 +445,17 @@ export const KernelApp: React.FC<KernelAppProps> = ({
     sessionRef.current = activeSessionId;
     selectionRef.current = activeSessionId;
     setScope({ sessionId: activeSessionId, epoch, clientKey });
-    setViewScope({ sessionId: activeSessionId, epoch, clientKey, views: [] });
+    setViewScope({
+      sessionId: activeSessionId,
+      epoch,
+      clientKey,
+      revisionId: "",
+      views: [],
+    });
     setEvents([]);
     lastSequenceRef.current = 0;
-    setPendingConfirmation(null);
+    resolvedConfirmationsRef.current.clear();
+    setPendingConfirmations({});
     setPendingApproval(null);
     setIsRunning(false);
     streamReadyRef.current = false;
@@ -391,29 +501,80 @@ export const KernelApp: React.FC<KernelAppProps> = ({
         }
 
         if (backlog || live) {
+          // Authenticated, ordered events are processed exactly once, outside any
+          // state updater: a StrictMode replay of the updater can never re-run a
+          // projection or overwrite a newer interaction state.
+          const fresh = (backlog ?? [live!])
+            .filter((e) => e.sequence > lastSequenceRef.current)
+            .sort((a, b) => a.sequence - b.sequence);
+          if (fresh.length > 0) {
+            lastSequenceRef.current = fresh[fresh.length - 1].sequence;
+          }
           setEvents((prev) => {
             const seen = new Set(prev.map((e) => e.sequence));
-            const incoming = (backlog ?? [live!]).filter(
-              (e) => !seen.has(e.sequence),
-            );
+            const incoming = fresh.filter((e) => !seen.has(e.sequence));
             if (incoming.length === 0) {
               return prev;
             }
-            const merged = [
+            return [
               ...prev,
               ...incoming.map((e) => ({
                 sequence: e.sequence,
                 type: e.type,
+                revision_id: e.revision_id,
                 payload: e.payload,
               })),
             ].sort((a, b) => a.sequence - b.sequence);
-            lastSequenceRef.current = merged[merged.length - 1].sequence;
-            // State projections use the same path for backlog and live events.
-            for (const ev of incoming) {
-              projectEvent(ev, boundSession, boundEpoch, boundClientKey);
-            }
-            return merged;
           });
+          for (const ev of fresh) {
+            projectEvent(ev, boundSession, boundEpoch, boundClientKey);
+          }
+
+          // An activation commit invalidates the displayed generation: catalog and
+          // views are cleared immediately (nothing old stays actionable), then
+          // refetched together and anything captured under another revision is
+          // dropped — never relabelled and never re-sent automatically.
+          const commits = fresh.filter(
+            (e) => e.type === "kernel.activation_committed",
+          );
+          if (commits.length > 0) {
+            const committed = commits[commits.length - 1];
+            const committedPayload = committed.payload;
+            const toRevisionId =
+              typeof committedPayload.to_revision_id === "string"
+                ? committedPayload.to_revision_id
+                : "";
+            // The row's revision column is the committed target (same fact the
+            // payload carries); a blank target is surfaced, never stored as a
+            // revision the client pretends to know.
+            const targetRevision = toRevisionId || committed.revision_id;
+            setStatusMessage(
+              toRevisionId
+                ? t("kernel.statusActivationCommitted", {
+                    revision: toRevisionId,
+                  })
+                : t("kernel.statusActivationMalformed"),
+            );
+            setPendingConfirmations((prev) =>
+              // Only a request that belongs to the committed generation survives;
+              // the others could never be resolved against it.
+              Object.fromEntries(
+                Object.entries(prev).filter(
+                  ([, entry]) => entry.revisionId === targetRevision,
+                ),
+              ),
+            );
+            setCatalog({ revisionId: "", commands: [] });
+            setViewScope((prev) =>
+              prev.sessionId === boundSession &&
+              prev.epoch === boundEpoch &&
+              prev.clientKey === boundClientKey
+                ? { ...prev, revisionId: "", views: [] }
+                : prev,
+            );
+            refreshCatalog();
+            refreshViews(boundSession, boundEpoch, boundClientKey);
+          }
         }
       },
       (err) => {
@@ -434,6 +595,7 @@ export const KernelApp: React.FC<KernelAppProps> = ({
     scope.sessionId,
     scope.clientKey,
     scope.epoch,
+    refreshCatalog,
     refreshViews,
     isCurrent,
     projectEvent,
@@ -501,14 +663,27 @@ export const KernelApp: React.FC<KernelAppProps> = ({
   const handleConfirmDecision = async (
     requestId: string,
     decision: "allow" | "deny",
+    revisionId: string,
   ) => {
     if (!activeSessionId) return;
     const issueSession = activeSessionId;
     const epoch = epochRef.current;
     const clientKey = renderedClientKey;
-    setPendingConfirmation(null);
+    setPendingConfirmations((prev) => {
+      // The click decides this exact request; the durable decided fact confirms
+      // it and can never leave a different pending request hidden.
+      if (!(requestId in prev)) return prev;
+      const next = { ...prev };
+      delete next[requestId];
+      return next;
+    });
     try {
-      const res = await client.confirm(issueSession, requestId, decision);
+      const res = await client.confirm(
+        issueSession,
+        requestId,
+        decision,
+        revisionId,
+      );
       if (!isCurrent(issueSession, epoch, clientKey)) return;
       setStatusMessage(
         t("kernel.statusConfirm", { decision, status: res.status }),
@@ -524,6 +699,7 @@ export const KernelApp: React.FC<KernelAppProps> = ({
   const handleViewAction = async (
     actionName: string,
     args: Record<string, unknown>,
+    revisionId: string,
   ) => {
     if (!activeSessionId) return;
     const issueSession = activeSessionId;
@@ -532,7 +708,12 @@ export const KernelApp: React.FC<KernelAppProps> = ({
     setIsRunning(true);
     setStatusMessage(t("kernel.statusInvoking", { name: actionName }));
     try {
-      const res = await client.invoke(issueSession, actionName, args);
+      const res = await client.invoke(
+        issueSession,
+        actionName,
+        args,
+        revisionId,
+      );
       if (!isCurrent(issueSession, epoch, clientKey)) {
         return; // session or epoch changed while the command ran: drop the reply
       }
@@ -545,17 +726,24 @@ export const KernelApp: React.FC<KernelAppProps> = ({
           ui_type?: string;
           ui_data?: Record<string, unknown>;
         };
-        if (confirmation.ui_type && confirmation.ui_data) {
-          setPendingConfirmation({
+        const requestId =
+          confirmation.request_id ?? confirmation.ui_data?.request_id;
+        if (
+          confirmation.ui_type &&
+          confirmation.ui_data &&
+          typeof requestId === "string" &&
+          requestId
+        ) {
+          retainPendingConfirmation(requestId, {
             owner: "kernel",
             name: "pending_confirmation",
             title: t("kernel.approvalRequired"),
             view_type: confirmation.ui_type,
             data: {
               ...confirmation.ui_data,
-              request_id:
-                confirmation.request_id ?? confirmation.ui_data.request_id,
+              request_id: requestId,
             },
+            revisionId,
           });
         }
       }
@@ -584,7 +772,7 @@ export const KernelApp: React.FC<KernelAppProps> = ({
 
       // Admitted plugin commands always win: local controls never shadow a
       // catalog command that happens to share the name.
-      const descriptor = catalog.find((c) => c.name === cmd);
+      const descriptor = catalog.commands.find((c) => c.name === cmd);
       if (!descriptor) {
         if (cmd === "cancel") {
           await handleCancelRun();
@@ -634,7 +822,7 @@ export const KernelApp: React.FC<KernelAppProps> = ({
           }
         }
       }
-      await handleViewAction(cmd, parsedArgs);
+      await handleViewAction(cmd, parsedArgs, catalog.revisionId);
     } else {
       // Normal run prompt (fully epoch-guarded: success, failure and finally).
       const issueSession = activeSessionId;
@@ -688,7 +876,7 @@ export const KernelApp: React.FC<KernelAppProps> = ({
     }
     const query = promptInput.slice(1).toLowerCase();
     const builtins = ["help", "cancel", "views", "new"];
-    const fromCatalog = catalog.map((c) => c.name);
+    const fromCatalog = catalog.commands.map((c) => c.name);
     const all = Array.from(new Set([...builtins, ...fromCatalog]));
     return all.filter((name) => name.toLowerCase().startsWith(query));
   }, [promptInput, catalog]);
@@ -979,8 +1167,9 @@ export const KernelApp: React.FC<KernelAppProps> = ({
                   key={`${activeSessionId}:${v.owner}-${v.name}-${idx}`}
                   descriptor={v}
                   sessionId={activeSessionId}
+                  revisionId={viewScope.revisionId}
                   client={client}
-                  catalog={catalog}
+                  catalog={catalog.commands}
                   onAction={handleViewAction}
                   onConfirm={handleConfirmDecision}
                 />
@@ -1043,8 +1232,9 @@ export const KernelApp: React.FC<KernelAppProps> = ({
                 data: pendingConfirmation.data as unknown as PluginViewDescriptor["data"],
               }}
               sessionId={activeSessionId}
+              revisionId={pendingConfirmation.revisionId}
               client={client}
-              catalog={catalog}
+              catalog={catalog.commands}
               onConfirm={handleConfirmDecision}
             />
           </div>

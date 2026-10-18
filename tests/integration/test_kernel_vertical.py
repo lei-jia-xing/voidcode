@@ -95,10 +95,26 @@ def test_native_batch_prefix_survives_approval_restart(tmp_path: Path, decision:
         pending = first["pending_approval"]
         rejected = _cli(workspace, state, "resume", first["session_id"], "--approval-request-id", "wrong-id", "--decision", "allow", code=1)
         assert "identity" in rejected["error"]
+        # A workspace configuration edit is not a capability change: the persisted revision
+        # stays active until an explicit reload, so the parked approval stays resumable and
+        # the activation barrier keeps a config-driven swap from happening underneath it.
         config["policy"] = {"approval_mode": "yolo", "read_only": True}
         (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-        changed = _cli(workspace, state, "resume", first["session_id"], "--approval-request-id", pending["request_id"], "--decision", "allow", code=1)
-        assert "revision" in changed["error"]
+        unchanged = _cli(workspace, state, "show", first["session_id"])
+        assert unchanged["revision_id"] == first["revision_id"]
+        blocked = _cli(
+            workspace,
+            state,
+            "invoke",
+            first["session_id"],
+            "kernel.reload",
+            "--arguments",
+            "{}",
+            "--expected-revision",
+            first["revision_id"],
+            code=1,
+        )
+        assert "requires an idle session" in blocked["error"]
         config["policy"] = {"approval_mode": "ask"}
         (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
         (workspace / "input.txt").write_text("new observation\n", encoding="utf-8")

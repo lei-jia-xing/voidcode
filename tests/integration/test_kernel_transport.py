@@ -228,9 +228,24 @@ def _cli(workspace: Path, state: Path, *arguments: str, code: int = 0) -> dict[s
     command = [sys.executable, "-m", "voidcode.kernel", "--workspace", str(workspace), "--state-dir", str(state)]
     if _HELLO_ID in (workspace / "voidcode.json").read_text():
         command += ["--trust-plugin", _HELLO_ID]
+    arguments = _with_displayed_revision(command, arguments)
     completed = subprocess.run([*command, *arguments], capture_output=True, text=True, timeout=60, check=False)
     assert completed.returncode == code, completed.stdout + completed.stderr
     return json.loads(completed.stdout)  # type: ignore[return-value]
+
+
+def _with_displayed_revision(command: list[str], arguments: tuple[str, ...]) -> tuple[str, ...]:
+    """Supply the catalog revision a real client would have displayed.
+
+    Invoke/confirm require the revision the client saw; these tests act as that
+    client, so they read the catalog first and echo its revision verbatim.
+    """
+    if not arguments or arguments[0] not in {"invoke", "confirm"} or "--expected-revision" in arguments:
+        return arguments
+    catalog = subprocess.run([*command, "catalog"], capture_output=True, text=True, timeout=60, check=False)
+    assert catalog.returncode == 0, catalog.stdout + catalog.stderr
+    revision = json.loads(catalog.stdout)["revision_id"]  # type: ignore[index]
+    return (*arguments, "--expected-revision", revision)
 
 
 def _free_port() -> int:
@@ -326,6 +341,89 @@ def test_cli_rejects_malformed_arguments_before_opening_kernel(tmp_path: Path) -
         assert "owner" in schema_rejected["error"]
 
 
+def test_revision_bound_actions_refuse_missing_empty_and_stale_revisions(tmp_path: Path) -> None:
+    """Every action echoes the displayed revision; a stale one is refused with no effect."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "external"
+    _hello_plugin_source(source)
+    state = tmp_path / "state"
+    with _provider([]) as server:
+        _configure(workspace, server, source)
+        _cli(workspace, state, "create-session", "--session-id", "rev-1")
+        token = "revision-bound-token"
+        with _listening_http(workspace, state, token) as base:
+            status, body = _request(base, "GET", "/api/commands", token=token)
+            assert status == 200, body.decode()
+            catalog = json.loads(body)
+            displayed = catalog["revision_id"]
+            assert displayed
+            assert any(command["name"] == "hello_set" for command in catalog["commands"])
+
+            # The catalog envelope revision is the session's active revision: one
+            # displayed generation, not a per-response guess.
+            status, body = _request(base, "GET", "/api/sessions/rev-1", token=token)
+            assert status == 200, body.decode()
+            assert json.loads(body)["active_revision_id"] == displayed
+
+            # The views envelope carries that same captured generation.
+            status, body = _request(base, "GET", "/api/sessions/rev-1/views", token=token)
+            assert status == 200, body.decode()
+            views = json.loads(body)
+            assert views["revision_id"] == displayed
+            assert views["views"][0]["name"] == "hello_view"
+
+            # Missing and empty revisions never reach a lookup: 400 invalid_params.
+            status, body = _request(
+                base, "POST", "/api/sessions/rev-1/invoke/hello_set", token=token, body={"arguments": {"greeting": "must-not-land"}}
+            )
+            assert status == 400, body.decode()
+            assert json.loads(body)["code"] == "invalid_params"
+            status, body = _request(
+                base,
+                "POST",
+                "/api/sessions/rev-1/invoke/hello_set",
+                token=token,
+                body={"arguments": {"greeting": "must-not-land"}, "expected_revision": ""},
+            )
+            assert status == 400, body.decode()
+            assert json.loads(body)["code"] == "invalid_params"
+
+            # A revision the client did not display is stale: 409, no dispatch.
+            status, body = _request(
+                base,
+                "POST",
+                "/api/sessions/rev-1/invoke/hello_set",
+                token=token,
+                body={"arguments": {"greeting": "must-not-land"}, "expected_revision": "rev-never-displayed"},
+            )
+            assert status == 409, body.decode()
+            refusal = json.loads(body)
+            assert refusal["code"] == "stale_revision"
+            assert "stale" in refusal["error"]
+
+            # confirmation rejects the stale revision before it even looks up the
+            # stored request id, so an unknown id cannot be probed under a lie.
+            status, body = _request(
+                base,
+                "POST",
+                "/api/sessions/rev-1/confirm",
+                token=token,
+                body={"request_id": "req-not-stored", "decision": "allow", "expected_revision": "rev-never-displayed"},
+            )
+            assert status == 409, body.decode()
+            assert json.loads(body)["code"] == "stale_revision"
+
+            # Nothing refused had an outside effect, and the displayed revision works.
+            status, body = _request(base, "POST", "/api/sessions/rev-1/invoke/hello_get", token=token, body={"expected_revision": displayed})
+            assert status == 200, body.decode()
+            assert json.loads(body)["data"]["greeting"] == "none"
+
+        # The CLI is the same boundary: a stale revision is refused, not defaulted.
+        stale = _cli(workspace, state, "invoke", "rev-1", "hello_set", "--expected-revision", "rev-never-displayed", code=1)
+        assert "stale" in str(stale["error"])
+
+
 def test_listening_http_bearer_and_origin_boundary(tmp_path: Path) -> None:
     """Auth: wrong/missing bearer is 401, and the token never leaks into bodies."""
     workspace = tmp_path / "workspace"
@@ -368,8 +466,18 @@ def test_cli_and_http_share_generic_command_route_with_restart(tmp_path: Path) -
         assert set_result["status"] == "ok"
         token = "shared-route-token"
         with _listening_http(workspace, state, token) as base:
-            # The CLI already exited, so HTTP owns the kernel now.
-            status, body = _request(base, "POST", "/api/sessions/shared-1/invoke/hello_get", token=token, body={})
+            # The CLI already exited, so HTTP owns the kernel now. The HTTP client
+            # acts as a real client: it reads the catalog and echoes its revision.
+            status, body = _request(base, "GET", "/api/commands", token=token)
+            assert status == 200, body.decode()
+            displayed = json.loads(body)["revision_id"]
+            status, body = _request(
+                base,
+                "POST",
+                "/api/sessions/shared-1/invoke/hello_get",
+                token=token,
+                body={"expected_revision": displayed},
+            )
             assert status == 200, body.decode()
             assert json.loads(body)["data"]["greeting"] == "persist-me"
             status, body = _request(base, "GET", "/api/sessions/shared-1/views", token=token)

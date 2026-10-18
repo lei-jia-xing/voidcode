@@ -378,25 +378,25 @@ def test_p2a_hello_state_with_context_and_persistence(tmp_path: Path) -> None:
         assert session.status == "idle"
 
         # 1. Verify initial state is none
-        get_res0 = kernel.invoke_command("sess-p2a-main", "hello_get", {})
+        get_res0 = kernel.invoke_command("sess-p2a-main", "hello_get", {}, expected_revision=kernel.command_catalog().revision_id)
         assert get_res0.status == "ok"
         assert get_res0.data is not None
         assert get_res0.data["greeting"] == "none"
         assert get_res0.data["version"] == 0
 
         # 2. Invoke hello_set command
-        set_res = kernel.invoke_command("sess-p2a-main", "hello_set", {"greeting": "awesome"})
+        set_res = kernel.invoke_command("sess-p2a-main", "hello_set", {"greeting": "awesome"}, expected_revision=kernel.command_catalog().revision_id)
         assert set_res.status == "ok"
 
         # 3. Read back updated state through public read command
-        get_res1 = kernel.invoke_command("sess-p2a-main", "hello_get", {})
+        get_res1 = kernel.invoke_command("sess-p2a-main", "hello_get", {}, expected_revision=kernel.command_catalog().revision_id)
         assert get_res1.status == "ok"
         assert get_res1.data is not None
         assert get_res1.data["greeting"] == "awesome"
         assert get_res1.data["version"] == 1
 
         # 4. Plugin views render from durable state
-        views = kernel.plugin_views("sess-p2a-main")
+        views = kernel.plugin_views("sess-p2a-main").views
         assert len(views) == 1
         assert views[0].name == "hello_view"
         assert views[0].view_type == "status"
@@ -408,7 +408,7 @@ def test_p2a_hello_state_with_context_and_persistence(tmp_path: Path) -> None:
         assert run_res.output == "turn reply with context"
 
         # Observer updated durable state through its own lease
-        get_res2 = kernel.invoke_command("sess-p2a-main", "hello_get", {})
+        get_res2 = kernel.invoke_command("sess-p2a-main", "hello_get", {}, expected_revision=kernel.command_catalog().revision_id)
         assert get_res2.status == "ok"
         assert get_res2.data is not None
         assert get_res2.data["last_observed"] == "UsageFact"
@@ -425,45 +425,65 @@ def test_p2a_confirmation_lifecycle_observes_state_and_version(tmp_path: Path) -
     with kernel:
         # --- Case 1: Deny preserves state unchanged ---
         kernel.create_session("sess-deny")
-        res_deny_req = kernel.invoke_command("sess-deny", "confirm_action", {})
+        res_deny_req = kernel.invoke_command("sess-deny", "confirm_action", {}, expected_revision=kernel.command_catalog().revision_id)
         assert res_deny_req.status == "pending_confirmation"
         assert res_deny_req.confirmation is not None
         req_id_deny = res_deny_req.confirmation.request_id
 
-        kernel.confirm_action("sess-deny", req_id_deny, "deny")
+        kernel.confirm_action("sess-deny", req_id_deny, "deny", expected_revision=kernel.command_catalog().revision_id)
         # Verify from public read command: state is UNCHANGED
-        check_deny = kernel.invoke_command("sess-deny", "hello_get", {})
+        check_deny = kernel.invoke_command("sess-deny", "hello_get", {}, expected_revision=kernel.command_catalog().revision_id)
         assert check_deny.data is not None
         assert check_deny.data["action_done"] is False
         assert check_deny.data["version"] == 0
 
         # --- Case 2: Stale detection when state version bumped ---
         kernel.create_session("sess-stale")
-        res_stale_req = kernel.invoke_command("sess-stale", "confirm_action", {})
+        res_stale_req = kernel.invoke_command("sess-stale", "confirm_action", {}, expected_revision=kernel.command_catalog().revision_id)
         assert res_stale_req.confirmation is not None
         req_id_stale = res_stale_req.confirmation.request_id
 
         # Bump state version in between!
-        kernel.invoke_command("sess-stale", "hello_set", {"greeting": "bumped"})
-        check_bumped = kernel.invoke_command("sess-stale", "hello_get", {})
+        kernel.invoke_command("sess-stale", "hello_set", {"greeting": "bumped"}, expected_revision=kernel.command_catalog().revision_id)
+        check_bumped = kernel.invoke_command("sess-stale", "hello_get", {}, expected_revision=kernel.command_catalog().revision_id)
         assert check_bumped.data is not None
         assert check_bumped.data["version"] == 1
 
         # Trying to confirm now MUST raise stale error
         with pytest.raises(ValueError, match="stale"):
-            kernel.confirm_action("sess-stale", req_id_stale, "allow")
+            kernel.confirm_action("sess-stale", req_id_stale, "allow", expected_revision=kernel.command_catalog().revision_id)
 
         # --- Case 3: Allow applies action under user actor and updates state ---
         kernel.create_session("sess-allow")
-        res_allow_req = kernel.invoke_command("sess-allow", "confirm_action", {})
+        res_allow_req = kernel.invoke_command("sess-allow", "confirm_action", {}, expected_revision=kernel.command_catalog().revision_id)
         assert res_allow_req.confirmation is not None
         req_id_allow = res_allow_req.confirmation.request_id
 
-        kernel.confirm_action("sess-allow", req_id_allow, "allow")
-        check_allowed = kernel.invoke_command("sess-allow", "hello_get", {})
+        kernel.confirm_action("sess-allow", req_id_allow, "allow", expected_revision=kernel.command_catalog().revision_id)
+        check_allowed = kernel.invoke_command("sess-allow", "hello_get", {}, expected_revision=kernel.command_catalog().revision_id)
         assert check_allowed.data is not None
         assert check_allowed.data["action_done"] is True
         assert check_allowed.data["version"] == 1
+
+        # Every confirmation lifecycle step is a durable fact a client can project from,
+        # bound to the revision that produced it.
+        def _confirmation_facts(session_id: str) -> list[tuple[str, dict[str, object]]]:
+            return [
+                (event.event_type, dict(event.payload))
+                for event in kernel.events_after(session_id)
+                if event.event_type.startswith("kernel.confirmation_")
+            ]
+
+        deny_facts = _confirmation_facts("sess-deny")
+        assert [kind for kind, _ in deny_facts] == ["kernel.confirmation_requested", "kernel.confirmation_decided"]
+        assert deny_facts[0][1]["request_id"] == req_id_deny
+        assert deny_facts[0][1]["ui_type"] == "confirmation"
+        assert deny_facts[1][1] == {"request_id": req_id_deny, "command_name": "confirm_action", "decision": "deny"}
+        stale_facts = _confirmation_facts("sess-stale")
+        assert stale_facts[-1][0] == "kernel.confirmation_decided"
+        assert stale_facts[-1][1]["decision"] == "stale"
+        allow_facts = _confirmation_facts("sess-allow")
+        assert [fact[1].get("decision") for fact in allow_facts if fact[0] == "kernel.confirmation_decided"] == ["allow"]
 
 
 def test_p2a_durable_continuation_executes_real_governed_run_and_recovers(tmp_path: Path) -> None:
@@ -472,7 +492,7 @@ def test_p2a_durable_continuation_executes_real_governed_run_and_recovers(tmp_pa
         kernel.create_session("sess-cont")
 
         # hello_set enqueues a durable continuation
-        kernel.invoke_command("sess-cont", "hello_set", {"greeting": "automated"})
+        kernel.invoke_command("sess-cont", "hello_set", {"greeting": "automated"}, expected_revision=kernel.command_catalog().revision_id)
 
         # Drain executes real governed run with provider
         results = kernel.drain_continuations("sess-cont", limit=10)
@@ -517,7 +537,7 @@ def test_p2a_usage_windowing_and_unknown_semantics(tmp_path: Path) -> None:
         first_seq = u1.through_sequence
 
         # 3. Running a command afterwards preserves usage as known
-        kernel.invoke_command("sess-usage", "hello_set", {"greeting": "test"})
+        kernel.invoke_command("sess-usage", "hello_set", {"greeting": "test"}, expected_revision=kernel.command_catalog().revision_id)
         u2 = kernel.usage("sess-usage")
         assert u2.input_tokens == 100
         assert u2.has_unknown_usage is False
@@ -600,10 +620,10 @@ def test_p2a_busy_gate_and_waiting_session_lifecycle(tmp_path: Path) -> None:
 
         # 2. Gated command MUST be rejected during waiting status
         with pytest.raises(ValueError, match="is busy and command 'gated_action' requires an idle session"):
-            kernel.invoke_command("sess-busy", "gated_action", {})
+            kernel.invoke_command("sess-busy", "gated_action", {}, expected_revision=kernel.command_catalog().revision_id)
 
         # 3. Non-gated command succeeds during waiting status
-        set_res = kernel.invoke_command("sess-busy", "hello_set", {"greeting": "during-wait"})
+        set_res = kernel.invoke_command("sess-busy", "hello_set", {"greeting": "during-wait"}, expected_revision=kernel.command_catalog().revision_id)
         assert set_res.status == "ok"
 
         # Verify an event was committed after the parked checkpoint

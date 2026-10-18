@@ -210,6 +210,7 @@ class PluginManifest:
     providers: tuple[PluginProviderDeclaration, ...] = ()
     depends: tuple[str, ...] = ()
     state_schema_version: int = 1
+    state_schema: Mapping[str, object] | None = None
     config_schema: Mapping[str, object] = field(default_factory=dict)
     context: bool = False
     observed_facts: tuple[Literal["usage", "invocation_finished", "run_finished"], ...] = ()
@@ -277,6 +278,8 @@ class PluginManifest:
 
         owned_config_schema = validate_json_schema(self.config_schema, field_name="config_schema")
         object.__setattr__(self, "config_schema", owned_config_schema)
+        if self.state_schema is not None:
+            object.__setattr__(self, "state_schema", validate_json_schema(self.state_schema, field_name="state_schema"))
 
     def as_payload(self) -> dict[str, object]:
         return {
@@ -313,6 +316,7 @@ class PluginManifest:
             "providers": [{"name": item.name, "description": item.description} for item in self.providers],
             "depends": list(self.depends),
             "state_schema_version": self.state_schema_version,
+            "state_schema": None if self.state_schema is None else json_wire_object(self.state_schema),
             "config_schema": json_wire_object(self.config_schema),
             "context": self.context,
             "observed_facts": list(self.observed_facts),

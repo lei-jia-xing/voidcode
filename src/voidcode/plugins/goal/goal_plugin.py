@@ -48,6 +48,10 @@ MAX_MODEL_OBJECTIVE_CHARS = 4000
 GoalStatus = Literal["active", "paused", "blocked", "usage-limited", "budget-limited", "complete"]
 VALID_GOAL_STATUSES: frozenset[GoalStatus] = frozenset({"active", "paused", "blocked", "usage-limited", "budget-limited", "complete"})
 
+#: Statuses whose goal is hurt by a disable, so a deactivation pauses them.
+#: `complete` is a terminal user-visible fact and is never rewritten by a deactivation.
+DEACTIVATABLE_GOAL_STATUSES: frozenset[GoalStatus] = frozenset({"active", "blocked", "usage-limited", "budget-limited"})
+
 KNOWN_GOAL_STATE_FIELDS: frozenset[str] = frozenset(
     {
         "schema_version",
@@ -1784,6 +1788,59 @@ def goal_observer(fact: PluginFact, ctx: ToolContext, services: PluginServices) 
             )
 
 
+# --- Deactivation ---
+
+
+def prepare_goal_deactivation(
+    state: Mapping[str, object],
+    scope: str,
+    scope_key: str,
+    tip_sequence: int | None,
+) -> Mapping[str, object]:
+    """Pure deactivation transform: close the live window at the authentic tip and pause the goal.
+
+    The kernel runs this in the host that still holds this schema, before the owner's
+    registrations are dropped, so there is no service, lease, store or clock to consult: the
+    paused copy is derived from the state alone and keeps the identity, objective, lifetime
+    counters, budgets and `updated_at` a disable must not rewrite. Closing the window at the
+    supplied tip stops usage attribution, and pausing keeps the goal out of context and out of
+    budget re-arming; only an explicit `goal.resume` re-opens a window and re-arms the
+    allowance with the kernel budget staged in the same commit.
+
+    The scope and tip contract is enforced before anything is decoded: session scope needs the
+    owning session's non-negative integer tip, workspace scope needs none. A tip that would
+    close an open window before it started is refused, so no inverted range is ever written.
+    """
+    _ = scope_key
+    if scope == "session":
+        if isinstance(tip_sequence, bool) or not isinstance(tip_sequence, int) or tip_sequence < 0:
+            raise ValueError(f"Session-scope goal deactivation requires the owning session's event tip as a non-negative integer: {tip_sequence!r}")
+    elif scope == "workspace":
+        if tip_sequence is not None:
+            raise ValueError(f"Workspace-scope goal deactivation has no single session event tip: {tip_sequence!r}")
+    else:
+        raise ValueError(f"Unknown goal state scope: {scope!r}")
+
+    goal = GoalState.from_dict(state)
+    if goal is None:
+        return state
+
+    open_windows = tuple(window for window in goal.active_windows if window.end_sequence is None)
+    if not open_windows and goal.status not in DEACTIVATABLE_GOAL_STATUSES:
+        return goal.to_dict()
+    if tip_sequence is None:
+        raise ValueError("Cannot close an open goal window without the owning session's event tip")
+    if any(window.start_sequence > tip_sequence for window in open_windows):
+        raise ValueError(f"Goal window starts after the session event tip {tip_sequence}: the window cannot close at an earlier point")
+
+    prepared = replace(
+        goal,
+        status="paused" if goal.status in DEACTIVATABLE_GOAL_STATUSES else goal.status,
+        active_windows=tuple(replace(window, end_sequence=tip_sequence) if window.end_sequence is None else window for window in goal.active_windows),
+    )
+    return prepared.to_dict()
+
+
 # --- Factory ---
 
 
@@ -1816,5 +1873,6 @@ def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
         providers=(),
         context=goal_context,
         observer=goal_observer,
+        prepare_deactivate=prepare_goal_deactivation,
         close=None,
     )

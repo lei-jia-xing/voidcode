@@ -78,9 +78,10 @@ class KernelHttpClient:
         except urllib.error.URLError as exc:
             raise KernelClientError(f"connection error: {exc.reason}") from exc
 
-    def command_catalog(self) -> list[dict[str, Any]]:
+    def command_catalog(self) -> tuple[str, list[dict[str, Any]]]:
+        """The catalog and the capability revision it was captured under."""
         res = self._request("GET", "/api/commands")
-        return res.get("commands", [])
+        return str(res.get("revision_id", "")), list(res.get("commands", []))
 
     def list_sessions(self, limit: int = 100) -> list[dict[str, Any]]:
         res = self._request("GET", "/api/sessions", query={"limit": limit})
@@ -125,11 +126,14 @@ class KernelHttpClient:
         name: str,
         arguments: dict[str, Any] | None = None,
         *,
+        expected_revision: str,
         client_capabilities: str = "",
     ) -> dict[str, Any]:
         caps = [c.strip() for c in client_capabilities.split(",") if c.strip()] if isinstance(client_capabilities, str) else list(client_capabilities)
         body: dict[str, Any] = {
             "arguments": arguments or {},
+            # The revision the client actually displayed; never a default.
+            "expected_revision": expected_revision,
             "client_capabilities": caps,
         }
         return self._request(
@@ -145,12 +149,14 @@ class KernelHttpClient:
         request_id: str,
         decision: str,
         *,
+        expected_revision: str,
         client_capabilities: str = "",
     ) -> dict[str, Any]:
         caps = [c.strip() for c in client_capabilities.split(",") if c.strip()] if isinstance(client_capabilities, str) else list(client_capabilities)
         body: dict[str, Any] = {
             "request_id": request_id,
             "decision": decision,
+            "expected_revision": expected_revision,
             "client_capabilities": caps,
         }
         return self._request(
@@ -160,13 +166,14 @@ class KernelHttpClient:
             timeout=60.0,
         )
 
-    def views(self, session_id: str, *, client_capabilities: str = "") -> list[dict[str, Any]]:
+    def views(self, session_id: str, *, client_capabilities: str = "") -> tuple[str, list[dict[str, Any]]]:
+        """The rendered views and the revision of the snapshot that rendered them."""
         res = self._request(
             "GET",
             f"/api/sessions/{urllib.parse.quote(session_id)}/views",
             query={"client_capabilities": client_capabilities} if client_capabilities else None,
         )
-        return res.get("views", [])
+        return str(res.get("revision_id", "")), list(res.get("views", []))
 
     def drain(self, session_id: str, *, limit: int = 10) -> list[dict[str, Any]]:
         res = self._request("POST", f"/api/sessions/{urllib.parse.quote(session_id)}/continuations", body={"limit": limit}, timeout=120.0)

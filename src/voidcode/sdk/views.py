@@ -163,6 +163,29 @@ class PluginViewDescriptor:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class ViewsSnapshot:
+    """Rendered views together with the capability revision of the snapshot that rendered them.
+
+    A view rendered under one generation is never relabelled with a later revision:
+    the client refreshes both together after an activation commit.
+    """
+
+    revision_id: str
+    views: tuple[PluginViewDescriptor, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.revision_id, str) or not self.revision_id:
+            raise ValueError("views snapshot requires the capability revision that rendered it")
+        object.__setattr__(self, "views", tuple(self.views))
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "revision_id": self.revision_id,
+            "views": [view.as_payload() for view in self.views],
+        }
+
+
 @runtime_checkable
 class PluginView(Protocol):
     """Declarative view provided by a plugin for session/workspace presentation."""

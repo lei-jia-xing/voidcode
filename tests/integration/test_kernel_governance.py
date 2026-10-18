@@ -990,6 +990,8 @@ def _gated_provider(replies: list[dict[str, object]]) -> Iterator[_GatedLoopback
 
 
 def _command(workspace: Path, state: Path, *arguments: str, trust: Sequence[str] = (_GOV_PLUGIN_ID,)) -> list[str]:
+    if arguments and arguments[0] in {"invoke", "confirm"} and "--expected-revision" not in arguments:
+        arguments = (*arguments, "--expected-revision", _cli_catalog_revision(workspace, state, trust))
     trusted: list[str] = []
     for plugin_id in trust:
         trusted += ["--trust-plugin", plugin_id]
@@ -1004,6 +1006,20 @@ def _command(workspace: Path, state: Path, *arguments: str, trust: Sequence[str]
         *trusted,
         *arguments,
     ]
+
+
+_CLI_REVISION_CACHE: dict[tuple[Path, Path], str] = {}
+
+
+def _cli_catalog_revision(workspace: Path, state: Path, trust: Sequence[str]) -> str:
+    key = (workspace, state)
+    cached = _CLI_REVISION_CACHE.get(key)
+    if cached is None:
+        res = subprocess.run(_command(workspace, state, "catalog", trust=trust), capture_output=True, text=True, timeout=60, check=False)
+        assert res.returncode == 0, res.stdout + res.stderr
+        cached = str(json.loads(res.stdout)["revision_id"])
+        _CLI_REVISION_CACHE[key] = cached
+    return cached
 
 
 def _cli(workspace: Path, state: Path, *arguments: str, trust: Sequence[str] = (_GOV_PLUGIN_ID,), code: int = 0) -> dict[str, Any]:
@@ -1042,7 +1058,29 @@ def _listening_http(workspace: Path, state: Path, token: str, *, trust: Sequence
         worker.join(timeout=10)
 
 
+_REVISION_CACHE: dict[str, str] = {}
+
+
+def _catalog_revision(base: str, token: str | None) -> str:
+    """The revision the client displayed: taken from the command catalog exactly like a real client."""
+    cached = _REVISION_CACHE.get(base)
+    if cached is None:
+        status, payload = _request(base, "GET", "/api/commands", token=token)
+        assert status == 200, payload.decode()
+        cached = str(json.loads(payload)["revision_id"])
+        _REVISION_CACHE[base] = cached
+    return cached
+
+
 def _request(base: str, method: str, path: str, *, token: str | None = None, body: object = None) -> tuple[int, bytes]:
+    # Mutating invokes and confirmations are bound to the displayed catalog revision; the
+    # transport requires it, so this helper does what a real client does instead of omitting it.
+    if method == "POST" and ("/invoke/" in path or path.endswith("/confirm")):
+        revision = _catalog_revision(base, token)
+        if body is None:
+            body = {"expected_revision": revision}
+        elif isinstance(body, dict) and "expected_revision" not in body:
+            body = {**body, "expected_revision": revision}
     data = None if body is None else json.dumps(body).encode("utf-8")
     req = urllib.request.Request(base + path, data=data, method=method)
     if data is not None:
@@ -1590,7 +1628,7 @@ def test_invalid_provider_finish_fails_loudly_but_keeps_the_bill(tmp_path: Path)
             receipt_owner_events = [
                 event.sequence
                 for event in events
-                if event.event_type == "kernel.model_turn" and not store.has_observer_receipt("finish-session", event.sequence, _GOV_PLUGIN_ID, 1)
+                if event.event_type == "kernel.model_turn" and not store.has_observer_receipt("finish-session", event.sequence, _GOV_PLUGIN_ID)
             ]
             assert receipt_owner_events == [], receipt_owner_events
 
@@ -2138,7 +2176,7 @@ def test_two_same_owner_facts_in_one_commit_do_not_cas_conflict(tmp_path: Path) 
             ]
             assert len(facts) == 4, [(event.sequence, event.event_type) for event in facts]
             for event in facts:
-                assert store.has_observer_receipt("two-fact-session", event.sequence, _GOV_PLUGIN_ID, 1), event
+                assert store.has_observer_receipt("two-fact-session", event.sequence, _GOV_PLUGIN_ID), event
 
 
 def test_observer_receipt_survives_kernel_kill_exactly_once(tmp_path: Path) -> None:
@@ -2196,7 +2234,7 @@ def test_observer_receipt_survives_kernel_kill_exactly_once(tmp_path: Path) -> N
         # A real receipt row now exists for the delivered fact (durable dedupe authority).
         with SqliteStore(state / "kernel-v1.sqlite3") as store:
             model_turn = next(event for event in store.events("obs-kill-session") if event.event_type == "kernel.model_turn")
-            assert store.has_observer_receipt("obs-kill-session", model_turn.sequence, _GOV_PLUGIN_ID, 1)
+            assert store.has_observer_receipt("obs-kill-session", model_turn.sequence, _GOV_PLUGIN_ID)
 
         # A second reopen of the same committed fact must not increment again.
         second = _cli(workspace, state, "invoke", "obs-kill-session", "gov_read_cmd")
@@ -2810,8 +2848,8 @@ def test_two_owner_partial_receipt_delivers_only_the_missing_owner(tmp_path: Pat
         with SqliteStore(state / "kernel-v1.sqlite3") as store:
             turn = next(event for event in store.events("two-owner") if event.event_type == "kernel.model_turn")
             dispatch = next(event for event in store.events("two-owner") if event.event_type == "kernel.provider_intent")
-            assert store.has_observer_receipt("two-owner", turn.sequence, _GOV_PLUGIN_ID, 1)
-            assert store.has_observer_receipt("two-owner", turn.sequence, _OBSERVER_PLUGIN_ID, 1)
+            assert store.has_observer_receipt("two-owner", turn.sequence, _GOV_PLUGIN_ID)
+            assert store.has_observer_receipt("two-owner", turn.sequence, _OBSERVER_PLUGIN_ID)
             first_owner_state, _ = store.plugin_state(_GOV_PLUGIN_ID, "session", "two-owner")
             assert first_owner_state is not None
             assert first_owner_state["usage_facts_seen"] == 1, first_owner_state
@@ -2848,7 +2886,7 @@ def test_two_owner_partial_receipt_delivers_only_the_missing_owner(tmp_path: Pat
         assert owner_state is not None
         # The receipted owner's own callback never ran again.
         assert owner_state["usage_facts_seen"] == 1, owner_state
-        assert store.has_observer_receipt("two-owner", turn.sequence, _OBSERVER_PLUGIN_ID, 1)
+        assert store.has_observer_receipt("two-owner", turn.sequence, _OBSERVER_PLUGIN_ID)
         late_events = [event.event_type for event in store.events("two-owner") if event.event_type.startswith(f"plugin.{_OBSERVER_PLUGIN_ID}.")]
         assert len(late_events) == 2, late_events
 
@@ -3152,7 +3190,7 @@ def test_replayed_run_finished_fact_keeps_its_measured_elapsed(tmp_path: Path) -
             assert owner_state["run_finished_seen"] == 1, owner_state
             assert owner_state["last_run_elapsed_seconds"] == original_ms / 1000.0, owner_state
             assert owner_state["last_run_stop_cause"] == "completed", owner_state
-            assert store.has_observer_receipt("timing-session", finished.sequence, _GOV_PLUGIN_ID, 1)
+            assert store.has_observer_receipt("timing-session", finished.sequence, _GOV_PLUGIN_ID)
 
         # Durable partial delivery state, then real downtime before the replay.
         with sqlite3.connect(state / "kernel-v1.sqlite3") as conn:

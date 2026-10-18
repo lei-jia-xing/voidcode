@@ -489,6 +489,8 @@
   "kernel.statusInvokeFailed": "调用错误：{{message}}",
   "kernel.statusConfirm": "确认 {{decision}}：{{status}}",
   "kernel.statusConfirmFailed": "确认错误：{{message}}",
+  "kernel.statusActivationCommitted": "能力修订已变为 {{revision}}：目录与视图已刷新",
+  "kernel.statusActivationMalformed": "激活提交未携带目标修订；已重新读取目录与视图",
   "kernel.statusCreateFailed": "创建会话失败：{{message}}",
   "kernel.promptPlaceholder": "输入消息或 /命令…",
   "kernel.pluginViews": "插件视图",

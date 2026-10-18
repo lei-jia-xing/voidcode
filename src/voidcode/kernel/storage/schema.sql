@@ -1,17 +1,27 @@
--- Kernel schema v1. The store verifies an existing database's identity BEFORE
--- setting pragmas or executing this DDL; foreign/legacy files are never changed.
+-- Kernel schema v2. The store verifies an existing database's identity BEFORE
+-- setting pragmas or executing this DDL; foreign/legacy files are never changed
+-- and a v1 database is refused read-only instead of being migrated in place.
 -- Future plugin-state/tasks/wakeups tables are added with their actual owners.
 
 CREATE TABLE kernel_identity (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     magic TEXT NOT NULL CHECK (magic = 'voidcode-kernel-v1'),
-    schema_version INTEGER NOT NULL CHECK (schema_version = 1)
+    schema_version INTEGER NOT NULL CHECK (schema_version = 2)
 ) STRICT;
 
 CREATE TABLE revisions (
     revision_id TEXT PRIMARY KEY,
     created_at INTEGER NOT NULL,
     payload_json TEXT NOT NULL CHECK (json_valid(payload_json))
+) STRICT;
+
+-- Workspace-level capability pointer: the revision a restarted kernel restores.
+-- Only the activation transaction (and the first adoption of a database) writes
+-- it, and every session ref in the workspace moves with it in that one commit.
+CREATE TABLE workspace_state (
+    workspace TEXT PRIMARY KEY,
+    active_revision_id TEXT NOT NULL REFERENCES revisions (revision_id),
+    updated_at INTEGER NOT NULL
 ) STRICT;
 
 CREATE TABLE sessions (
@@ -119,13 +129,16 @@ CREATE TABLE session_budgets (
     PRIMARY KEY (session_id, owner)
 ) STRICT;
 
+-- One delivery receipt per (source fact event, owner). Eligibility is derived
+-- from the source event's OWN revision (its manifest declarations), not from
+-- whoever is subscribed now, so a reload can neither re-deliver an old fact to
+-- a new subscriber nor drop one an eligible owner already received.
 CREATE TABLE observer_receipts (
     session_id TEXT NOT NULL REFERENCES sessions (session_id),
     event_sequence INTEGER NOT NULL,
     owner TEXT NOT NULL,
-    generation INTEGER NOT NULL,
     created_at INTEGER NOT NULL,
-    PRIMARY KEY (session_id, event_sequence, owner, generation)
+    PRIMARY KEY (session_id, event_sequence, owner)
 ) STRICT;
 
 CREATE TRIGGER revisions_no_update BEFORE UPDATE ON revisions

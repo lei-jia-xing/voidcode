@@ -350,6 +350,8 @@ Web / TUI / CLI
 
 **验收**：同 session 将插件 v1 改成 v2，agent 请求激活并调用 v2；语法/依赖/状态迁移失败保留 v1；工具批次不混版；审批等待拒绝切换；提交各边界杀进程后恢复唯一已提交版本，不重复副作用。
 
+**证据**：`docs/contracts/hot-activation.md` 固定准入/快照/屏障/CAS/续跑/信任合同；`tests/unit/kernel/test_activation.py`（同 session v1→v2 真实工具与状态迁移、整批不混版、自动续跑调用 v2、语法/依赖/迁移失败保留 v1、审批等待阻塞、路径信任绑定、SDK pin、禁用→普通对话→重新启用迁移暂停态、重启只恢复已持久化版本、expected_revision 与 catalog/views 快照 revision）、`tests/unit/kernel/test_host_lifecycle.py`（纯迁移/停用变换与 arity 校验）、`tests/integration/test_kernel_activation.py`（SIGKILL 于提交前/提交后：唯一已提交版本、不重复迁移、fresh kernel 自动接管欠下的续跑并执行新工具；候选宿主迁移期崩溃只否决候选）。
+
 ### P4 — 迁完产品机制，完成唯一入口切换
 
 1. todo/reminders：状态、usage/tool facts、context 与 continuation。
@@ -522,7 +524,7 @@ uv run python -m voidcode.kernel --workspace ./ws --state-dir ./state show s1 --
 - 通用客户端：`src/voidcode/kernel/transport/{http,models,server}.py`（命令目录、会话/运行/恢复/确认/视图/continuation/usage/events 路由 + OpenAPI）、`src/voidcode/kernel/__main__.py`（CLI）、`src/voidcode/kernel/tui/`（TUI 客户端与视图）、`frontend/src/kernel/**` + `frontend/src/lib/kernel/**`（KernelApp、8 种声明式视图、生成 API 类型）。
 - SDK 与宿主：`src/voidcode/sdk/{manifest,plugin,services,tools,commands,hooks,views,codec}.py`、`src/voidcode/plugin_host/server.py`（独立进程、按调用租约、能力准入、反向 RPC 服务）。
 - 官方插件：`src/voidcode/plugins/files/`（read/write 基础工具）与 `src/voidcode/plugins/goal/`（goal 完整纵向切片：命令、tools、状态、usage accounting、prompt、确认/状态呈现，无 `thread_goal` 特权通道）。
-- 证据：`tests/integration/test_kernel_governance.py`、`test_kernel_vertical.py`、`test_kernel_transport.py`、`test_goal_plugin.py`、`tests/unit/kernel/*`、`tests/unit/plugins/{test_files,test_goal_plugin}.py`、`tests/unit/test_kernel_tui.py`、`tests/fixtures/smoke_plugin.py` + `tests/smoke_pty_tui.py`（客户端 smoke 夹具）。
+- 证据：`tests/integration/test_kernel_governance.py`、`test_kernel_vertical.py`、`test_kernel_transport.py`、`test_goal_plugin.py`、`tests/unit/kernel/*`、`tests/unit/plugins/{test_files,test_goal_plugin}.py`、`tests/unit/test_kernel_tui.py`（常驻客户端边界用例）。一次性浏览器/PTY smoke 夹具与截图是临时产物，已完成证明后移出仓库，保留在 `/tmp/voidcode-kernel-evidence/`（含 `harness/kernel-smoke.spec.ts`、`smoke_pty_tui.py`、`smoke_plugin.py`），不在仓库中。
 
 ### 验证
 

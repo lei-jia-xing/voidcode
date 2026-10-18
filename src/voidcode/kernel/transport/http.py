@@ -25,15 +25,15 @@ from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.types import Receive, Scope, Send
 
-from ...sdk.commands import CommandResult
+from ...sdk.commands import CommandCatalog, CommandResult
 from ...sdk.json_values import json_wire_object
 from ...sdk.services import SessionUsageReport
+from ...sdk.views import ViewsSnapshot
 from ..bootstrap import open_kernel
 from ..engine import Kernel, KernelResult
 from ..storage.store import SessionRecord, StoredEvent
 from .models import (
     CheckpointBody,
-    CommandsBody,
     ConfirmRequest,
     ContinuationsBody,
     CreateSessionRequest,
@@ -44,7 +44,6 @@ from .models import (
     SessionsBody,
     ShowBody,
     StoredEventBody,
-    ViewsBody,
 )
 
 logger = logging.getLogger(__name__)
@@ -92,12 +91,14 @@ async def _validation_error_handler(_request: Request, exc: RequestValidationErr
     loc = loc[1:] if loc and loc[0] in {"body", "query", "path", "header", "cookie"} else loc
     path = ".".join(str(item) for item in loc)
     error_type = str(first.get("type", ""))
+    # A request that fails ingress validation never reaches a lookup or dispatch:
+    # missing/blank required fields (e.g. expected_revision) fail here, visibly.
     if error_type == "json_invalid":
-        return _error(400, "request body must be valid JSON")
+        return _error(400, "request body must be valid JSON", code="invalid_params")
     if error_type == "missing" and not path:
-        return _error(400, "request body must be valid JSON")
+        return _error(400, "request body must be valid JSON", code="invalid_params")
     message = str(first.get("msg", "invalid request"))
-    return _error(400, f"{path} {message}" if path else message)
+    return _error(400, f"{path} {message}" if path else message, code="invalid_params")
 
 
 async def _unhandled_handler(request: Request, exc: Exception) -> Response:
@@ -118,6 +119,12 @@ class EventStreamResponse(StreamingResponse):
 
 def _kernel_error(error: Exception) -> HttpError:
     message = str(error)
+    # A client acting on a stale or missing displayed revision is refused before
+    # any dispatch: the refusal is visible and never retried automatically.
+    if "is stale; refresh the catalog" in message:
+        return HttpError(409, message, code="stale_revision")
+    if "expected_revision must be the revision the client displayed" in message:
+        return HttpError(400, message, code="invalid_params")
     if isinstance(error, KeyError) or "unknown session" in message or "does not exist" in message:
         return HttpError(404, message)
     if isinstance(error, PermissionError):
@@ -337,7 +344,7 @@ class KernelTransportApp(FastAPI):
     def _register_routes(self) -> None:
         route = self._route
         route("/api/openapi.json", self._handle_openapi_document, methods=["GET"], summary="Read this API as OpenAPI", in_schema=False)
-        route("/api/commands", self._handle_command_catalog, methods=["GET"], summary="List admitted commands", response_model=CommandsBody)
+        route("/api/commands", self._handle_command_catalog, methods=["GET"], summary="List admitted commands", response_model=CommandCatalog)
         route("/api/sessions", self._handle_list_sessions, methods=["GET"], summary="List sessions", response_model=SessionsBody)
         route(
             "/api/sessions", self._handle_create_session, methods=["POST"], summary="Create a session", response_model=SessionRecord, status_code=201
@@ -360,7 +367,7 @@ class KernelTransportApp(FastAPI):
             summary="Resolve a confirmation",
             response_model=CommandResult,
         )
-        route("/api/sessions/{session_id}/views", self._handle_views, methods=["GET"], summary="Render plugin views", response_model=ViewsBody)
+        route("/api/sessions/{session_id}/views", self._handle_views, methods=["GET"], summary="Render plugin views", response_model=ViewsSnapshot)
         route(
             "/api/sessions/{session_id}/continuations",
             self._handle_drain,
@@ -380,10 +387,12 @@ class KernelTransportApp(FastAPI):
     async def _handle_command_catalog(self) -> Response:
         kernel = self._kernel_or_503()
         try:
-            descriptors = await asyncio.to_thread(kernel.command_catalog)
+            catalog = await asyncio.to_thread(kernel.command_catalog)
         except Exception as exc:
             raise _kernel_error(exc) from None
-        return _ok({"commands": [descriptor.as_payload() for descriptor in descriptors]})
+        # One immutable snapshot: descriptors and the revision they were captured
+        # from travel together, so a client can echo it verbatim later.
+        return _ok(catalog.as_payload())
 
     async def _handle_list_sessions(self, limit: int = Query(default=100, ge=1, le=1000)) -> Response:
         kernel = self._kernel_or_503()
@@ -449,19 +458,19 @@ class KernelTransportApp(FastAPI):
             raise _kernel_error(exc) from None
         return _ok(result.as_payload())
 
-    async def _handle_invoke(self, session_id: str, name: str, payload: InvokeRequest | None = None) -> Response:
+    async def _handle_invoke(self, session_id: str, name: str, payload: InvokeRequest) -> Response:
         _validated_session_id(session_id)
         if not name or "/" in name or "\0" in name or len(name) > 128:
             raise HttpError(400, "command name must be a non-empty string without '/' or NUL within 128 characters")
         kernel = self._kernel_or_503()
-        request = payload or InvokeRequest()
         try:
             result = await asyncio.to_thread(
                 kernel.invoke_command,
                 session_id,
                 name,
-                dict(request.arguments),
-                client_capabilities=frozenset(request.client_capabilities),
+                dict(payload.arguments),
+                expected_revision=payload.expected_revision,
+                client_capabilities=frozenset(payload.client_capabilities),
             )
         except Exception as exc:
             raise _kernel_error(exc) from None
@@ -476,6 +485,7 @@ class KernelTransportApp(FastAPI):
                 session_id,
                 payload.request_id,
                 payload.decision,
+                expected_revision=payload.expected_revision,
                 client_capabilities=frozenset(payload.client_capabilities),
             )
         except Exception as exc:
@@ -487,10 +497,10 @@ class KernelTransportApp(FastAPI):
         kernel = self._kernel_or_503()
         try:
             capabilities = frozenset(_capability_list_query(client_capabilities))
-            descriptors = await asyncio.to_thread(kernel.plugin_views, session_id, client_capabilities=capabilities)
+            snapshot = await asyncio.to_thread(kernel.plugin_views, session_id, client_capabilities=capabilities)
         except Exception as exc:
             raise _kernel_error(exc) from None
-        return _ok({"views": [descriptor.as_payload() for descriptor in descriptors]})
+        return _ok(snapshot.as_payload())
 
     async def _handle_drain(self, session_id: str, payload: DrainRequest | None = None) -> Response:
         _validated_session_id(session_id)

@@ -25,6 +25,18 @@ export class KernelApiError extends Error {
   }
 }
 
+/** The catalog and the capability revision it was captured under. */
+export interface CommandCatalog {
+  revisionId: string;
+  commands: CommandDescriptor[];
+}
+
+/** The rendered views and the revision of the snapshot that rendered them. */
+export interface ViewsSnapshot {
+  revisionId: string;
+  views: PluginViewDescriptor[];
+}
+
 export class KernelClient {
   private baseUrl: string;
   private token?: string;
@@ -97,12 +109,12 @@ export class KernelClient {
     return (await resp.json()) as T;
   }
 
-  async commandCatalog(): Promise<CommandDescriptor[]> {
-    const res = await this.request<{ commands: CommandDescriptor[] }>(
-      "GET",
-      "/api/commands",
-    );
-    return res.commands || [];
+  async commandCatalog(): Promise<CommandCatalog> {
+    const res = await this.request<{
+      revision_id: string;
+      commands: CommandDescriptor[];
+    }>("GET", "/api/commands");
+    return { revisionId: res.revision_id, commands: res.commands || [] };
   }
 
   async listSessions(limit: number = 100): Promise<SessionRecord[]> {
@@ -174,7 +186,8 @@ export class KernelClient {
   async invoke(
     sessionId: string,
     name: string,
-    args: Record<string, unknown> = {},
+    args: Record<string, unknown>,
+    expectedRevision: string,
     clientCapabilities: string[] = [],
   ): Promise<CommandResult> {
     return await this.request<CommandResult>(
@@ -183,6 +196,8 @@ export class KernelClient {
       {
         body: {
           arguments: args,
+          // The revision the client displayed; a stale one is refused visibly.
+          expected_revision: expectedRevision,
           client_capabilities: clientCapabilities,
         },
       },
@@ -193,6 +208,7 @@ export class KernelClient {
     sessionId: string,
     requestId: string,
     decision: "allow" | "deny",
+    expectedRevision: string,
     clientCapabilities: string[] = [],
   ): Promise<CommandResult> {
     return await this.request<CommandResult>(
@@ -202,6 +218,7 @@ export class KernelClient {
         body: {
           request_id: requestId,
           decision,
+          expected_revision: expectedRevision,
           client_capabilities: clientCapabilities,
         },
       },
@@ -211,17 +228,16 @@ export class KernelClient {
   async views(
     sessionId: string,
     clientCapabilities: string[] = [],
-  ): Promise<PluginViewDescriptor[]> {
-    const res = await this.request<{ views: PluginViewDescriptor[] }>(
-      "GET",
-      `/api/sessions/${encodeURIComponent(sessionId)}/views`,
-      {
-        query: {
-          client_capabilities: clientCapabilities.join(","),
-        },
+  ): Promise<ViewsSnapshot> {
+    const res = await this.request<{
+      revision_id: string;
+      views: PluginViewDescriptor[];
+    }>("GET", `/api/sessions/${encodeURIComponent(sessionId)}/views`, {
+      query: {
+        client_capabilities: clientCapabilities.join(","),
       },
-    );
-    return res.views || [];
+    });
+    return { revisionId: res.revision_id, views: res.views || [] };
   }
 
   async usage(

@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ...tui.composer import Composer, ComposerAction
-from ...tui.keys import KeyDecoder
+from ...tui.keys import Key, KeyDecoder
 from ...tui.region import TuiFrame
 from ...tui.term import Terminal, escape_terminal_controls, visible_width
 from .client import KernelHttpClient
@@ -28,6 +28,11 @@ logger = logging.getLogger(__name__)
 #: commands (they could clear scrollback or switch buffers), so they are made
 #: visible before the row is styled or committed.
 _WRAP_WIDTH = 100
+
+#: A lone ESC byte is ambiguous (it may start a sequence) until no further input
+#: follows: the decoder buffers it, and the loop resolves it after this window.
+#: The legacy app resolves it after the same 50 ms.
+_ESCAPE_FLUSH_SECONDS = 0.05
 
 
 def _safe(value: object) -> str:
@@ -99,6 +104,7 @@ class KernelTuiApp:
 
         self.composer = Composer(theme=resolve_theme(), width=self.terminal.width, placeholder="Type a message or /command...")
         self.key_decoder = KeyDecoder()
+        self._escape_flush_at = 0.0
         self.event_queue: queue.Queue[dict[str, Any]] = queue.Queue()
         self._session_cursors: dict[str, int] = {}
         self._generation = 0
@@ -106,7 +112,17 @@ class KernelTuiApp:
         # Native tool approval (core permission gate) is not a plugin Action
         # confirmation: it resumes the parked run with its own request id.
         self.pending_approval: dict[str, Any] | None = None
+        #: Confirmation requests that arrived while another overlay owned the live
+        #: region, keyed by request_id in request order: none is ever dropped.
+        self.queued_confirmations: dict[str, InteractiveConfirmation] = {}
+        #: Request ids already terminally decided: a late duplicate fact or direct
+        #: result for one of these can never re-open it. ponytail: retained for the
+        #: process lifetime (one id per decision); evict if that ever matters.
+        self.resolved_confirmations: set[str] = set()
         self.catalog_cache: list[dict[str, Any]] = []
+        #: The capability revision the displayed catalog came from; slash dispatch
+        #: echoes it verbatim. Rendered overlays carry their own captured revision.
+        self.catalog_revision: str = ""
         self.status_line = "Connecting to kernel..."
         self._sse_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -154,9 +170,12 @@ class KernelTuiApp:
 
     def _load_catalog(self) -> None:
         try:
-            self.catalog_cache = self.client.command_catalog()
+            revision, commands = self.client.command_catalog()
+            self.catalog_cache = commands
+            self.catalog_revision = revision
         except Exception as exc:
             self.catalog_cache = []
+            self.catalog_revision = ""
             self.status_line = f"Catalog load failed: {_safe(exc)}"
             raise RuntimeError(f"Failed to fetch command catalog from kernel transport: {exc}") from exc
 
@@ -231,12 +250,13 @@ class KernelTuiApp:
                 self.status_line = f"Run {status}" if status else self.status_line
             elif kind == "confirmation":
                 confirmation = frame.get("confirmation")
-                if isinstance(confirmation, dict) and self.active_overlay is None:
+                if isinstance(confirmation, dict):
                     ui_type = str(confirmation.get("ui_type", ""))
                     ui_data = confirmation.get("ui_data")
                     if ui_type == "confirmation" and isinstance(ui_data, dict):
-                        self.active_overlay = InteractiveConfirmation(ui_data)
-                        self.status_line = f"Confirmation required: {confirmation.get('request_id')}"
+                        # Bound to the revision the client invoked under, never to
+                        # whatever happens to be current when the user decides.
+                        self._show_or_queue_confirmation(InteractiveConfirmation(ui_data, revision_id=str(frame.get("revision_id", ""))))
             elif kind == "form_load":
                 form = frame.get("form")
                 if isinstance(form, InteractiveForm) and form is self.active_overlay:
@@ -314,6 +334,44 @@ class KernelTuiApp:
                     rows.append(f"\x1b[33m⏳ Command /{name} awaits confirmation\x1b[0m")
                 else:
                     rows.append(f"\x1b[32m✔ Command /{name}:\x1b[0m {_safe(detail)}")
+        elif etype == "kernel.activation_committed":
+            # The displayed generation changed: the catalog and the views are
+            # refetched together, and anything captured under the previous
+            # revision is dropped — never relabelled, never retried.
+            to_revision_id = str(payload.get("to_revision_id") or "")
+            overlay = self.active_overlay
+            dropped = overlay is not None and getattr(overlay, "revision_id", "") != to_revision_id
+            if dropped:
+                self.active_overlay = None
+            # A queued request from another generation can never be resolved
+            # against this one either, so it is discarded with the same rule.
+            for queued_id in [i for i, q in self.queued_confirmations.items() if q.revision_id != to_revision_id]:
+                del self.queued_confirmations[queued_id]
+            self.pending_approval = None
+            self._load_catalog()
+            self._show_views()
+            self._present_queued_confirmation()
+            suffix = " (stale action discarded)" if dropped else ""
+            rows.append(f"\x1b[33m[Capability revision changed to {_safe(to_revision_id)}: catalog and views refreshed{suffix}]\x1b[0m")
+        elif etype == "kernel.confirmation_requested":
+            # Durable pending fact: restores the modal after a reload, bound to
+            # the revision that created the request (never the current one).
+            request_id = _safe(payload.get("request_id"))
+            ui_data = payload.get("ui_data")
+            if request_id and str(payload.get("ui_type", "")) == "confirmation" and isinstance(ui_data, dict):
+                self._show_or_queue_confirmation(InteractiveConfirmation(ui_data, revision_id=str(event.get("revision_id", ""))))
+        elif etype == "kernel.confirmation_decided":
+            # Durable reduction: the request is closed whether or not its modal
+            # is on screen, so replayed history never resurrects it.
+            decided = _safe(payload.get("request_id"))
+            if decided:
+                self.resolved_confirmations.add(decided)
+                self.queued_confirmations.pop(decided, None)
+                overlay = self.active_overlay
+                if isinstance(overlay, InteractiveConfirmation) and overlay.request_id == decided:
+                    self.active_overlay = None
+                    self.status_line = "Confirmation resolved"
+                    self._present_queued_confirmation()
         elif etype == "kernel.approval_requested":
             raw_call = payload.get("call")
             call: dict[str, Any] = raw_call if isinstance(raw_call, dict) else {}
@@ -335,11 +393,57 @@ class KernelTuiApp:
         elif etype == "kernel.observer_error":
             rows.append(f"\x1b[31m[Plugin observer error]\x1b[0m {_safe(payload.get('error'))}")
 
-    def _process_input(self) -> None:
-        chunk = self.terminal.read_bytes(timeout=0.001)
-        if not chunk:
+    def _show_or_queue_confirmation(self, overlay: InteractiveConfirmation) -> None:
+        """Show one pending confirmation, or retain it until the live region frees.
+
+        The stored request id is the identity: the same request arriving again as a
+        duplicate fact or as its live pending result never resets the modal, and a
+        decided request never comes back.
+        """
+        request_id = overlay.request_id
+        if not request_id or request_id in self.resolved_confirmations:
             return
-        for key in self.key_decoder.feed(chunk):
+        current = self.active_overlay
+        if isinstance(current, InteractiveConfirmation) and current.request_id == request_id:
+            return
+        if self.active_overlay is None and self.pending_approval is None:
+            self.active_overlay = overlay
+            self.status_line = f"Confirmation required: {request_id}"
+            return
+        self.queued_confirmations.setdefault(request_id, overlay)
+
+    def _present_queued_confirmation(self) -> None:
+        """Present the oldest still-pending confirmation once the live region is free."""
+        if self.active_overlay is not None or self.pending_approval is not None:
+            return
+        while self.queued_confirmations:
+            request_id, overlay = next(iter(self.queued_confirmations.items()))
+            del self.queued_confirmations[request_id]
+            if request_id in self.resolved_confirmations:
+                continue
+            self.active_overlay = overlay
+            self.status_line = f"Confirmation required: {request_id}"
+            return
+
+    def _process_input(self) -> None:
+        now = time.monotonic()
+        chunk = self.terminal.read_bytes(timeout=0.001)
+        if chunk:
+            # A lone ESC is ambiguous until no further bytes follow: the standard
+            # disambiguation window resolves it as Esc (never as part of the next
+            # byte). The legacy app uses the same 50 ms.
+            self._escape_flush_at = now + _ESCAPE_FLUSH_SECONDS
+            keys = list(self.key_decoder.feed(chunk))
+        elif self._escape_flush_at and now >= self._escape_flush_at:
+            self._escape_flush_at = 0.0
+            keys = self.key_decoder.flush()
+        else:
+            keys = []
+        for key in keys:
+            if key.name == "escape" and (self.pending_approval is not None or self.active_overlay is not None):
+                # The decoder names the raw byte "escape"; the overlays speak
+                # "esc". The composer keeps the decoder's own name.
+                key = Key("esc")
             if key.name == "ctrl+c":
                 if isinstance(self.active_overlay, InteractiveConfirmation):
                     # Never claim the request was cancelled: deny it for real.
@@ -347,6 +451,7 @@ class KernelTuiApp:
                 elif self.active_overlay is not None:
                     self.active_overlay = None
                     self.status_line = "Overlay closed"
+                    self._present_queued_confirmation()
                 else:
                     self._cancel_active_run()
                 continue
@@ -393,6 +498,7 @@ class KernelTuiApp:
             return
         request_id = str(approval.get("request_id", ""))
         self.pending_approval = None
+        self._present_queued_confirmation()
         if not request_id:
             self.status_line = "No pending approval to resolve"
             return
@@ -423,6 +529,7 @@ class KernelTuiApp:
         if outcome.get("cancel"):
             self.active_overlay = None
             self.status_line = "Overlay closed"
+            self._present_queued_confirmation()
             return
 
         if isinstance(self.active_overlay, InteractiveConfirmation):
@@ -430,14 +537,20 @@ class KernelTuiApp:
         elif isinstance(self.active_overlay, (InteractiveChoices, InteractiveForm)):
             action = str(outcome.get("action", ""))
             arguments = outcome.get("arguments", {})
+            revision = self.active_overlay.revision_id
             self.active_overlay = None
             self.status_line = f"Dispatching /{action}..."
-            self._invoke_async(action, arguments if isinstance(arguments, dict) else {})
+            self._present_queued_confirmation()
+            self._invoke_async(action, arguments if isinstance(arguments, dict) else {}, revision)
 
     def _resolve_confirmation(self, decision: str) -> None:
         """Submit the stored request id's decision; the overlay never lies about it."""
         request_id = getattr(self.active_overlay, "request_id", "")
+        # The revision of the envelope that displayed this confirmation, captured
+        # before the overlay is closed.
+        revision = getattr(self.active_overlay, "revision_id", "")
         self.active_overlay = None
+        self._present_queued_confirmation()
         if not request_id:
             self.status_line = "No pending confirmation to resolve"
             return
@@ -446,7 +559,12 @@ class KernelTuiApp:
 
         def worker() -> None:
             try:
-                res = self.client.confirm(session_id, request_id, decision)
+                res = self.client.confirm(
+                    session_id,
+                    request_id,
+                    decision,
+                    expected_revision=revision,
+                )
                 status = str(res.get("status", ""))
                 self._queue_notice(
                     f"Confirmation {decision}: {status}",
@@ -459,12 +577,18 @@ class KernelTuiApp:
 
         threading.Thread(target=worker, daemon=True, name="KernelConfirm").start()
 
-    def _invoke_async(self, name: str, arguments: dict[str, Any]) -> None:
+    def _invoke_async(self, name: str, arguments: dict[str, Any], revision: str) -> None:
+        "Run one command off the UI thread under the revision the user actually saw."
         session_id, generation = self.session_id, self._generation
 
         def worker() -> None:
             try:
-                res = self.client.invoke_command(session_id, name, arguments)
+                res = self.client.invoke_command(
+                    session_id,
+                    name,
+                    arguments,
+                    expected_revision=revision,
+                )
                 status = str(res.get("status", ""))
                 if status == "pending_confirmation":
                     confirmation = res.get("confirmation")
@@ -473,6 +597,7 @@ class KernelTuiApp:
                             {
                                 "kind": "confirmation",
                                 "confirmation": confirmation,
+                                "revision_id": revision,
                                 "session_id": session_id,
                                 "generation": generation,
                             }
@@ -642,6 +767,8 @@ class KernelTuiApp:
                 break
         self.session_id = session_id
         self.active_overlay = None
+        self.queued_confirmations.clear()
+        self.resolved_confirmations.clear()
         self.status_line = f"Session {session_id}"
         self._start_sse_stream()
 
@@ -692,7 +819,7 @@ class KernelTuiApp:
 
     def _show_views(self, name_filter: str = "") -> None:
         try:
-            v_list = self.client.views(self.session_id)
+            views_revision, v_list = self.client.views(self.session_id)
             if name_filter:
                 wanted = name_filter.strip().lower()
                 v_list = [v for v in v_list if wanted in str(v.get("name", "")).lower() or wanted in str(v.get("title", "")).lower()]
@@ -702,16 +829,21 @@ class KernelTuiApp:
             for v in v_list:
                 vtype = v.get("view_type")
                 if vtype in ("choices", "form", "confirmation"):
-                    # Activate interactive overlay
+                    # The overlay carries the revision of this very envelope, so
+                    # the action it dispatches can never be relabelled later.
                     if vtype == "choices":
-                        self.active_overlay = InteractiveChoices(v.get("data", {}))
+                        self.active_overlay = InteractiveChoices(v.get("data", {}), revision_id=views_revision)
                     elif vtype == "form":
                         form_data = v.get("data", {})
-                        form = InteractiveForm(form_data, action_schema=self._action_schema(str(form_data.get("action", ""))))
+                        form = InteractiveForm(
+                            form_data,
+                            action_schema=self._action_schema(str(form_data.get("action", ""))),
+                            revision_id=views_revision,
+                        )
                         self._maybe_load_form_data(form)
                         self.active_overlay = form
                     elif vtype == "confirmation":
-                        self.active_overlay = InteractiveConfirmation(v.get("data", {}))
+                        self.active_overlay = InteractiveConfirmation(v.get("data", {}), revision_id=views_revision)
                     return
                 # Non-interactive view: render rows and commit
                 rows = render_plugin_view(v, self.terminal.width)
@@ -740,7 +872,11 @@ class KernelTuiApp:
                 "generation": generation,
             }
             try:
-                res = self.client.invoke_command(session_id, load_action)
+                res = self.client.invoke_command(
+                    session_id,
+                    load_action,
+                    expected_revision=target.revision_id,
+                )
                 data = res.get("data")
                 if isinstance(data, dict):
                     payload["data"] = data
@@ -757,6 +893,8 @@ class KernelTuiApp:
         if cmd_desc is None:
             self.terminal.commit_rows([f"\x1b[31mUnknown command: /{_safe(cmd_name)}\x1b[0m (try /help)"])
             return
+        # The revision of the catalog this descriptor was read from.
+        revision = self.catalog_revision
 
         schema = cmd_desc.get("argument_schema") or {}
         properties = schema.get("properties") or {}
@@ -790,7 +928,7 @@ class KernelTuiApp:
                 arguments = parsed
 
         self.status_line = f"Dispatching /{cmd_name}..."
-        self._invoke_async(cmd_name, arguments)
+        self._invoke_async(cmd_name, arguments, revision)
 
     def _render_frame(self) -> None:
         width = self.terminal.width

@@ -54,6 +54,29 @@ class ConfirmationRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class CommandCatalog:
+    """Command descriptors together with the capability revision they were captured from.
+
+    Clients bind later actions to this revision, so a descriptor can never be
+    displayed under one generation and executed under another.
+    """
+
+    revision_id: str
+    commands: tuple[CommandDescriptor, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.revision_id, str) or not self.revision_id:
+            raise ValueError("command catalog requires the capability revision it was captured from")
+        object.__setattr__(self, "commands", tuple(self.commands))
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "revision_id": self.revision_id,
+            "commands": [command.as_payload() for command in self.commands],
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class CommandResult:
     """Outcome of a command invocation, returning data, error, or confirmation request."""
 

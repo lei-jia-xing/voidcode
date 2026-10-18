@@ -7,12 +7,13 @@ import json
 import os
 import threading
 import time
-from collections.abc import Mapping, Sequence
-from contextlib import ExitStack
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Event, Lock
-from typing import Literal, get_args
+from types import MappingProxyType
+from typing import Any, Literal, cast, get_args
 from uuid import uuid4
 
 import jsonschema
@@ -27,6 +28,7 @@ from ..sdk.codec import (
     encode_tool_result,
 )
 from ..sdk.commands import (
+    CommandCatalog,
     CommandDescriptor,
     CommandResult,
 )
@@ -41,8 +43,18 @@ from ..sdk.services import (
     PluginBudget,
     SessionUsageReport,
 )
-from ..sdk.tools import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult, has_external_mutations
-from ..sdk.views import PluginViewDescriptor
+from ..sdk.tools import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult, ToolSuccess, has_external_mutations
+from ..sdk.views import PluginViewDescriptor, ViewsSnapshot
+from .activation import (
+    Admission,
+    StateCopyPlan,
+    config_from_snapshot,
+    load_private_snapshot,
+    plan_state_copies,
+    restore_admission,
+    sdk_source_hash,
+    write_private_snapshot,
+)
 from .host import HostClient, HostTimeout, HostUnavailable, InvocationCancelled, ToolInvocationOutcome
 from .storage.store import (
     Checkpoint,
@@ -52,6 +64,7 @@ from .storage.store import (
     SqliteStore,
     StagedBudgetUpdate,
     StagedCancellation,
+    StagedConfirmation,
     StagedContinuationDraft,
     StagedStateUpdate,
     StoreConflict,
@@ -97,7 +110,19 @@ def _wire_object(value: object, what: str) -> Mapping[str, object]:
     return json_wire_object(value)
 
 
-_PARKED_INTERVENING_TYPES = frozenset({"kernel.command_completed", "kernel.command_intent", "kernel.observer_error"})
+_PARKED_INTERVENING_TYPES = frozenset(
+    {
+        "kernel.command_completed",
+        "kernel.command_intent",
+        "kernel.confirmation_requested",
+        "kernel.confirmation_decided",
+        "kernel.observer_error",
+        "kernel.activation_requested",
+        "kernel.activation_committed",
+        "kernel.activation_failed",
+        "kernel.activation_blocked",
+    }
+)
 
 
 _CORE_COMMAND_SPECS: tuple[tuple[str, str, Mapping[str, object], tuple[ToolEffect, ...], bool], ...] = (
@@ -139,6 +164,110 @@ _CORE_COMMAND_SPECS: tuple[tuple[str, str, Mapping[str, object], tuple[ToolEffec
 )
 _CORE_COMMAND_NAMES = frozenset(name for name, _d, _s, _e, _g in _CORE_COMMAND_SPECS)
 
+#: Tools the kernel itself dispatches. A plugin can never shadow these names.
+_CORE_TOOL_SPECS: tuple[tuple[str, str, Mapping[str, object], tuple[ToolEffect, ...]], ...] = (
+    (
+        "kernel_reload",
+        "Request that the configured plugins be re-admitted as a new capability revision. This only stages the "
+        "request: the switch happens after the current tool batch finishes, and it needs user approval first.",
+        {
+            "type": "object",
+            "properties": {"reason": {"type": "string", "maxLength": 500}},
+            "additionalProperties": False,
+        },
+        (ToolEffect.EXECUTE,),
+    ),
+)
+CORE_TOOL_NAMES = frozenset(name for name, _d, _s, _e in _CORE_TOOL_SPECS)
+
+#: Reserved core command that activates the configured sources on explicit request.
+RELOAD_COMMAND_NAME = "kernel.reload"
+_RELOAD_COMMAND_SPEC: tuple[str, str, Mapping[str, object], tuple[ToolEffect, ...], bool] = (
+    RELOAD_COMMAND_NAME,
+    "Re-admit the configured plugin sources and switch this workspace to the new capability revision.",
+    {"type": "object", "properties": {}, "additionalProperties": False},
+    (ToolEffect.EXECUTE, ToolEffect.READ, ToolEffect.WRITE),
+    True,
+)
+
+
+def _core_command_descriptors(*, with_reload: bool) -> tuple[CommandDescriptor, ...]:
+    """Reserved core command descriptors, captured together with the revision that admits them."""
+    specs = (*_CORE_COMMAND_SPECS, _RELOAD_COMMAND_SPEC) if with_reload else _CORE_COMMAND_SPECS
+    return tuple(
+        CommandDescriptor(
+            name=name,
+            owner="core",
+            description=description,
+            argument_schema=dict(schema),
+            effects=effects,
+            busy_gate=busy_gate,
+            client_capabilities=(),
+        )
+        for name, description, schema, effects, busy_gate in specs
+    )
+
+
+def _core_tool_definitions() -> dict[str, ToolDefinition]:
+    return {
+        name: ToolDefinition(name=name, description=description, input_schema=dict(schema), effects=frozenset(effects))
+        for name, description, schema, effects in _CORE_TOOL_SPECS
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class _Snapshot:
+    """One immutable capability generation. Every dispatch reads this single pointer."""
+
+    revision_id: str
+    sdk_sha256: str
+    config: KernelConfig
+    admission: Admission | None
+    host: HostClient
+    tools: tuple[ToolDefinition, ...]
+    definitions: Mapping[str, ToolDefinition]
+    validators: Mapping[str, Any]
+    commands: tuple[CommandDescriptor, ...]
+    native_tools: Mapping[str, ToolDefinition]
+
+    @staticmethod
+    def build(
+        *,
+        revision_id: str,
+        sdk_sha256: str,
+        config: KernelConfig,
+        admission: Admission | None,
+        host: HostClient,
+        with_reload: bool,
+    ) -> _Snapshot:
+        native = MappingProxyType(_core_tool_definitions()) if with_reload else MappingProxyType({})
+        host_tools = tuple(host.tools)
+        for tool in host_tools:
+            if tool.name in native:
+                raise ValueError(f"plugin tool {tool.name!r} collides with a reserved kernel tool")
+        definitions: dict[str, ToolDefinition] = {tool.name: tool for tool in host_tools}
+        definitions.update(native)
+        return _Snapshot(
+            revision_id=revision_id,
+            sdk_sha256=sdk_sha256,
+            config=config,
+            admission=admission,
+            host=host,
+            tools=host_tools + tuple(native.values()),
+            definitions=MappingProxyType(definitions),
+            validators=MappingProxyType(
+                {name: jsonschema.Draft202012Validator(json_wire_object(definition.input_schema)) for name, definition in definitions.items()}
+            ),
+            commands=_core_command_descriptors(with_reload=with_reload) + host.commands,
+            native_tools=native,
+        )
+
+    def owner_of(self, tool_name: str) -> str:
+        return "kernel" if tool_name in self.native_tools else self.host.owner(tool_name)
+
+    def capabilities_of(self, tool_name: str) -> frozenset[str]:
+        return frozenset() if tool_name in self.native_tools else self.host.capabilities(tool_name)
+
 
 def _is_parked_intervening(event: StoredEvent) -> bool:
     """Whether an event may legitimately appear after a parked checkpoint."""
@@ -159,6 +288,8 @@ class _Cursor(BaseModel):
     stop_cause: StopCause | None = None
     action_budget_remaining: int | None = None
     root_id: str = ""
+    #: Activation request that owes this session one automatic continuation after a switch.
+    resume_intent: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +326,17 @@ class _Execution:
     run_id: str
 
 
+@dataclass(frozen=True, slots=True)
+class _PreparedActivation:
+    """A validated candidate generation, its state copies, and the generation it was prepared against."""
+
+    admission: Admission
+    host: HostClient
+    copies: StateCopyPlan
+    source: str
+    prepared_against: str
+
+
 class Kernel:
     def __init__(
         self,
@@ -205,16 +347,29 @@ class Kernel:
         plugins: tuple[HostPlugin, ...],
         revision_payload: Mapping[str, object],
         auto_drain: bool = True,
+        admission: Admission | None = None,
+        admits: Callable[[frozenset[str]], Admission] | None = None,
     ) -> None:
         self.auto_drain = auto_drain
         self.workspace = workspace.resolve(strict=True)
-        self.config = config
         self._abort = Cancellation()
         self._closed = False
         # ponytail: serialize workspace runs; per-session scheduling when concurrent runs are needed.
         self._run_lock = Lock()
         self._session_aborts: dict[str, Cancellation] = {}
         self._aborts_lock = Lock()
+        # One pointer per capability generation, plus short-critical-section call accounting.
+        # The activation fence rejects new dispatches and reports foreign in-flight calls as
+        # busy instead of blocking any run, and no lock is ever held across an RPC.
+        self._calls_lock = threading.Condition()
+        self._active_calls: dict[str, str] = {}
+        self._activating_thread: int | None = None
+        # ponytail: bounded in-process cache of per-revision observed_facts; a large
+        # multi-revision workspace could grow it, then key it by revision only.
+        self._observer_eligibility: dict[tuple[str, str], tuple[str, ...]] = {}
+        self._state_dir = state_dir
+        self._admits = admits
+        self._authorized_paths = frozenset() if admission is None else admission.authorized_paths
         with ExitStack() as resources:
             # Lock the directory inode, independent of the selected database path.
             # Opening/locking it does not create or rewrite workspace files.
@@ -224,24 +379,100 @@ class Kernel:
                 fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:
                 raise RuntimeError("another kernel owns this workspace") from exc
+            self._lease_fd = lease
             state_dir.mkdir(parents=True, exist_ok=True)
             self.store = SqliteStore(state_dir / "kernel-v1.sqlite3")
             resources.callback(self.store.close)
-            self.revision_id = self.store.put_revision(revision_payload)
-            self.host = HostClient(
+            revision_id = self.store.put_revision(revision_payload)
+            if admission is not None and admission.revision_id != revision_id:
+                raise ValueError("admission does not describe the revision payload it was opened with")
+            host = HostClient(
                 plugins,
                 workspace=self.workspace,
-                revision_id=self.revision_id,
+                revision_id=revision_id,
                 store=self.store,
                 usage_callback=self._get_session_usage,
                 budget_callback=self._get_owner_budget,
                 lease_fd=lease,
             )
-            resources.callback(self.host.close)
-            self._definitions = {tool.name: tool for tool in self.host.tools}
-            self._validators = {tool.name: jsonschema.Draft202012Validator(json_wire_object(tool.input_schema)) for tool in self.host.tools}
-            self._resources = resources.pop_all()
+            # A host whose registry cannot be published is closed here: nothing may outlive a
+            # failed construction, and the late-bound cleanup callback is registered only after
+            # the generation that owns this host is complete.
+            try:
+                self._snapshot = _Snapshot.build(
+                    revision_id=revision_id,
+                    sdk_sha256=str(revision_payload.get("sdk_sha256", "")),
+                    config=config,
+                    admission=admission,
+                    host=host,
+                    with_reload=admits is not None,
+                )
+            except BaseException:
+                host.close()
+                raise
+            # Late-bound so the callback closes whatever generation is current at shutdown.
+            resources.callback(self._close_host)
+            # Initialization work still owns the resources: a failure here unwinds the stack
+            # (host, store, workspace lease) instead of leaking an already-detached kernel.
             self._replay_pending_observers()
+            self._driver: threading.Thread | None = None
+            if self.auto_drain:
+                # A crash between an activation commit and its automatic continuation leaves a
+                # durable resume intent; this driver is what actually finishes that work.
+                self._driver = threading.Thread(target=self._drive_pending_activations, name="KernelActivationDriver", daemon=True)
+                self._driver.start()
+            # Adopt the generation LAST: a failed cold start must leave the workspace unadopted, so
+            # fixing the same authorized source and retrying works without deleting any database.
+            self.store.record_workspace_revision(str(self.workspace), revision_id)
+            self._resources = resources.pop_all()
+
+    def _close_host(self) -> None:
+        self._snapshot.host.close()
+
+    @property
+    def host(self) -> HostClient:
+        return self._snapshot.host
+
+    @property
+    def config(self) -> KernelConfig:
+        return self._snapshot.config
+
+    @property
+    def admission(self) -> Admission | None:
+        return self._snapshot.admission
+
+    @property
+    def revision_id(self) -> str:
+        return self._snapshot.revision_id
+
+    @property
+    def _definitions(self) -> Mapping[str, ToolDefinition]:
+        return self._snapshot.definitions
+
+    @property
+    def _validators(self) -> Mapping[str, Any]:
+        return self._snapshot.validators
+
+    @contextmanager
+    def _dispatch(self, description: str) -> Iterator[_Snapshot]:
+        """Capture the current generation and hold a call slot until the caller's result commits.
+
+        The slot is what makes an activation safe: a switch is refused while any foreign
+        dispatch is in flight, and refused-for-new once the fence is set, so no result can be
+        committed under a generation other than the one that produced it.
+        """
+        call_id = uuid4().hex
+        with self._calls_lock:
+            if self._activating_thread is not None and self._activating_thread != threading.get_ident():
+                raise HostUnavailable("capability activation is in progress; retry")
+            snapshot = self._snapshot
+            self._active_calls[call_id] = description
+        try:
+            yield snapshot
+        finally:
+            with self._calls_lock:
+                self._active_calls.pop(call_id, None)
+                self._calls_lock.notify_all()
 
     def __enter__(self) -> Kernel:
         return self
@@ -357,10 +588,14 @@ class Kernel:
 
     def close(self) -> None:
         self.cancel("kernel shutdown", cause="shutdown")
+        driver: threading.Thread | None = None
         with self._run_lock:
             if not self._closed:
                 self._closed = True
+                driver = self._driver
                 self._resources.close()
+        if driver is not None:
+            driver.join(timeout=5)
 
     def run(self, prompt: str, *, session_id: str | None = None, max_steps: int = 32) -> KernelResult:
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode("utf-8")) > 64 * 1024:
@@ -379,7 +614,7 @@ class Kernel:
                 try:
                     session = self.store.session(session_id)
                 except KeyError:
-                    session = self.store.create_session(session_id, str(self.workspace), self.revision_id)
+                    session = self._create_session_row(session_id)
                 if not self._admits_fresh_work(session):
                     raise ValueError("unfinished session requires explicit resume")
                 self._check_session(session)
@@ -525,22 +760,15 @@ class Kernel:
             if results[-1].run_status not in ("completed", "idle"):
                 return
 
-    def command_catalog(self) -> tuple[CommandDescriptor, ...]:
-        """Catalog of admitted plugin commands and reserved core commands."""
+    def command_catalog(self) -> CommandCatalog:
+        """Command catalog captured together with the revision that admits it.
+
+        Descriptor list and revision come from ONE immutable snapshot, so a client can
+        bind a later action to exactly the generation it displayed.
+        """
         self._ensure_open()
-        core_commands = tuple(
-            CommandDescriptor(
-                name=name,
-                owner="core",
-                description=description,
-                argument_schema=dict(schema),
-                effects=effects,
-                busy_gate=busy_gate,
-                client_capabilities=(),
-            )
-            for name, description, schema, effects, busy_gate in _CORE_COMMAND_SPECS
-        )
-        return core_commands + self.host.commands
+        snapshot = self._snapshot
+        return CommandCatalog(revision_id=snapshot.revision_id, commands=snapshot.commands)
 
     def _core_result(self, res: KernelResult) -> CommandResult:
         """Map a native run result into the command variant contract.
@@ -606,7 +834,17 @@ class Kernel:
         """Create a new durable session in idle state bound to workspace and active revision."""
         self._ensure_open()
         sid = uuid4().hex if session_id is None else session_id
-        return self.store.create_session(sid, str(self.workspace), self.revision_id)
+        return self._create_session_row(sid)
+
+    def _create_session_row(self, session_id: str) -> SessionRecord:
+        """Create a session on the workspace's recorded revision, retrying if it moves first."""
+        for _attempt in range(3):
+            recorded = self.store.workspace_current(str(self.workspace)) or self.revision_id
+            try:
+                return self.store.create_session(session_id, str(self.workspace), recorded)
+            except StoreConflict:
+                continue
+        raise StoreConflict(f"could not create session {session_id!r}: the workspace revision kept moving")
 
     def session(self, session_id: str) -> SessionRecord:
         """Fetch session metadata by ID, verifying workspace."""
@@ -804,14 +1042,22 @@ class Kernel:
         name: str,
         arguments: Mapping[str, object],
         *,
+        expected_revision: str,
         client_capabilities: frozenset[str] = frozenset(),
     ) -> CommandResult:
-        """Execute a command, handling core commands, policy checks, confirmation, and CAS commit."""
+        """Execute a command, handling core commands, policy checks, confirmation, and CAS commit.
+
+        `expected_revision` is required and must be the revision the client displayed: a
+        command advertised by one generation is never silently executed by another.
+        """
         self._ensure_open()
+        self._check_expected_revision(expected_revision)
         s = self.session(session_id)
 
         # 1. Dispatch core reserved commands through the same typed contract the
         # catalog advertises: the session id is outer authority, never an argument.
+        if name == RELOAD_COMMAND_NAME:
+            return self._invoke_reload_command(session_id, arguments)
         if name in _CORE_COMMAND_NAMES:
             core_schema = next(spec[2] for spec in _CORE_COMMAND_SPECS if spec[0] == name)
             try:
@@ -843,7 +1089,7 @@ class Kernel:
                 return CommandResult(status="ok", data=data)
             if name == "status":
                 return CommandResult(status="ok", data=self.show(session_id, events=False))
-            return CommandResult(status="ok", data={"commands": [c.as_payload() for c in self.command_catalog()]})
+            return CommandResult(status="ok", data=dict(self.command_catalog().as_payload()))
 
         # 2. Plugin command lookup
         cmd_desc = self.host._command_map.get(name)
@@ -887,97 +1133,117 @@ class Kernel:
             capabilities=command_caps,
             logical_turn=uuid4().hex,
         )
-        latest_sess = self.store.session(session_id)
-        intent_event = EventDraft(
-            event_type="kernel.command_intent",
-            source="client",
-            actor=context.actor,
-            payload={
-                "name": name,
-                "arguments": json_wire_object(arguments),
-                "invocation_id": inv_id,
-                "owner": cmd_desc.owner,
-            },
-        )
-        self.store.commit_staged(
-            session_id,
-            expected_sequence=latest_sess.last_event_sequence,
-            expected_run_id=latest_sess.run_id,
-            run_id=latest_sess.run_id or run_id,
-            revision_id=self.revision_id,
-            events=(intent_event,),
-            status=latest_sess.status,
-            checkpoint_kind=None,
-            checkpoint_payload=None,
-        )
-
-        cmd_result, staged_state, staged_events, staged_continuations, staged_cancellations, staged_budget = self.host.invoke_command(
-            session_id,
-            name,
-            arguments,
-            context=context,
-            client_capabilities=client_capabilities,
-        )
-
-        if cmd_result.status == "pending_confirmation" and cmd_result.confirmation is not None:
-            req = cmd_result.confirmation
-            self.store.create_confirmation(
-                request_id=req.request_id,
-                session_id=session_id,
-                owner=cmd_desc.owner,
-                command_name=name,
-                arguments=arguments,
-                revision_id=self.revision_id,
-                ui_type=req.ui_type,
-                ui_data=req.ui_data,
-                expected_state_version=req.expected_state_version,
-            )
-            return cmd_result
-
-        # Handle budget update
-        staged_budget_updates: list[StagedBudgetUpdate] = []
-        if staged_budget == "clear":
-            staged_budget_updates.append(StagedBudgetUpdate(owner=cmd_desc.owner, action="clear"))
-        elif isinstance(staged_budget, PluginBudget):
-            staged_budget_updates.append(StagedBudgetUpdate(owner=staged_budget.owner, action="set", budget=staged_budget))
-
-        # Commit staged state/events if ok OR intentional error (e.g. goal blocked)
-        if cmd_result.status in ("ok", "error"):
-            latest_session = self.store.session(session_id)
-            completion_event = EventDraft(
-                event_type="kernel.command_completed",
-                source=f"plugin.{cmd_desc.owner}",
+        with self._dispatch(f"command:{name}"):
+            latest_sess = self.store.session(session_id)
+            intent_event = EventDraft(
+                event_type="kernel.command_intent",
+                source="client",
                 actor=context.actor,
-                payload={"name": name, "result": cmd_result.as_payload()},
+                payload={
+                    "name": name,
+                    "arguments": json_wire_object(arguments),
+                    "invocation_id": inv_id,
+                    "owner": cmd_desc.owner,
+                },
             )
-            all_events = tuple(staged_events) + (completion_event,)
             self.store.commit_staged(
                 session_id,
-                expected_sequence=latest_session.last_event_sequence,
-                expected_run_id=latest_session.run_id,
-                run_id=latest_session.run_id or run_id,
+                expected_sequence=latest_sess.last_event_sequence,
+                expected_run_id=latest_sess.run_id,
+                run_id=latest_sess.run_id or run_id,
                 revision_id=self.revision_id,
-                events=all_events,
-                status=latest_session.status,
+                events=(intent_event,),
+                status=latest_sess.status,
                 checkpoint_kind=None,
                 checkpoint_payload=None,
-                staged_state=staged_state,
-                staged_continuations=staged_continuations,
-                staged_cancellations=staged_cancellations,
-                staged_budgets=tuple(staged_budget_updates),
             )
-            if self.auto_drain and staged_continuations:
-                latest_sess = self.store.session(session_id)
-                if self._admits_fresh_work(latest_sess):
-                    self.drain_continuations(session_id)
-            if staged_cancellations:
-                self._owner_cancel_claimed_work(
-                    session_id,
-                    staged_cancellations,
-                    f"owner {cmd_desc.owner} cancelled its durable work",
-                )
 
-        return cmd_result
+            cmd_result, staged_state, staged_events, staged_continuations, staged_cancellations, staged_budget = self.host.invoke_command(
+                session_id,
+                name,
+                arguments,
+                context=context,
+                client_capabilities=client_capabilities,
+            )
+
+            if cmd_result.status == "pending_confirmation" and cmd_result.confirmation is not None:
+                req = cmd_result.confirmation
+                latest = self.store.session(session_id)
+                self.store.commit_staged(
+                    session_id,
+                    expected_sequence=latest.last_event_sequence,
+                    expected_run_id=latest.run_id,
+                    run_id=latest.run_id or run_id,
+                    revision_id=self.revision_id,
+                    events=(
+                        EventDraft(
+                            "kernel.confirmation_requested",
+                            f"plugin.{cmd_desc.owner}",
+                            "client",
+                            req.as_payload(),
+                        ),
+                    ),
+                    status=latest.status,
+                    checkpoint_kind=None,
+                    checkpoint_payload=None,
+                    staged_confirmations=(
+                        StagedConfirmation(
+                            request_id=req.request_id,
+                            owner=cmd_desc.owner,
+                            command_name=name,
+                            arguments=req.arguments,
+                            ui_type=req.ui_type,
+                            ui_data=req.ui_data,
+                            expected_state_version=req.expected_state_version,
+                        ),
+                    ),
+                )
+                return cmd_result
+
+            # Handle budget update
+            staged_budget_updates: list[StagedBudgetUpdate] = []
+            if staged_budget == "clear":
+                staged_budget_updates.append(StagedBudgetUpdate(owner=cmd_desc.owner, action="clear"))
+            elif isinstance(staged_budget, PluginBudget):
+                staged_budget_updates.append(StagedBudgetUpdate(owner=staged_budget.owner, action="set", budget=staged_budget))
+
+            # Commit staged state/events if ok OR intentional error (e.g. goal blocked)
+            if cmd_result.status in ("ok", "error"):
+                latest_session = self.store.session(session_id)
+                completion_event = EventDraft(
+                    event_type="kernel.command_completed",
+                    source=f"plugin.{cmd_desc.owner}",
+                    actor=context.actor,
+                    payload={"name": name, "result": cmd_result.as_payload()},
+                )
+                all_events = tuple(staged_events) + (completion_event,)
+                self.store.commit_staged(
+                    session_id,
+                    expected_sequence=latest_session.last_event_sequence,
+                    expected_run_id=latest_session.run_id,
+                    run_id=latest_session.run_id or run_id,
+                    revision_id=self.revision_id,
+                    events=all_events,
+                    status=latest_session.status,
+                    checkpoint_kind=None,
+                    checkpoint_payload=None,
+                    staged_state=staged_state,
+                    staged_continuations=staged_continuations,
+                    staged_cancellations=staged_cancellations,
+                    staged_budgets=tuple(staged_budget_updates),
+                )
+                if self.auto_drain and staged_continuations:
+                    latest_sess = self.store.session(session_id)
+                    if self._admits_fresh_work(latest_sess):
+                        self.drain_continuations(session_id)
+                if staged_cancellations:
+                    self._owner_cancel_claimed_work(
+                        session_id,
+                        staged_cancellations,
+                        f"owner {cmd_desc.owner} cancelled its durable work",
+                    )
+
+            return cmd_result
 
     def confirm_action(
         self,
@@ -985,10 +1251,12 @@ class Kernel:
         request_id: str,
         decision: Literal["allow", "deny"],
         *,
+        expected_revision: str,
         client_capabilities: frozenset[str] = frozenset(),
     ) -> CommandResult:
         """Resolve a pending confirmation request by exact ID and state version."""
         self._ensure_open()
+        self._check_expected_revision(expected_revision)
         s = self.session(session_id)
         rec = self.store.confirmation(request_id)
         if rec is None or rec.session_id != session_id:
@@ -1002,10 +1270,12 @@ class Kernel:
             _, curr_ver = self.store.plugin_state(rec.owner, "session", session_id)
             if curr_ver != rec.expected_state_version:
                 self.store.decide_confirmation(request_id, "stale")
+                self._commit_confirmation_decision(session_id, request_id, rec.command_name, "stale")
                 raise ValueError(f"Confirmation request is stale: expected state version {rec.expected_state_version}, got {curr_ver}")
 
         if decision == "deny":
             self.store.decide_confirmation(request_id, "denied")
+            self._commit_confirmation_decision(session_id, request_id, rec.command_name, "deny")
             return CommandResult(status="ok", output="Action denied by user")
 
         self.store.decide_confirmation(request_id, "allowed")
@@ -1030,83 +1300,123 @@ class Kernel:
             logical_turn=uuid4().hex,
         )
 
-        cmd_result, staged_state, staged_events, staged_continuations, staged_cancellations, staged_budget = self.host.invoke_command(
-            session_id,
-            rec.command_name,
-            rec.arguments,
-            context=context,
-            client_capabilities=client_capabilities,
-        )
-
-        staged_budget_updates = []
-        if staged_budget == "clear":
-            staged_budget_updates.append(StagedBudgetUpdate(owner=cmd_desc.owner, action="clear"))
-        elif isinstance(staged_budget, PluginBudget):
-            staged_budget_updates.append(StagedBudgetUpdate(owner=staged_budget.owner, action="set", budget=staged_budget))
-
-        if cmd_result.status in ("ok", "error"):
-            latest_session = self.store.session(session_id)
-            completion_event = EventDraft(
-                event_type="kernel.command_completed",
-                source=f"plugin.{cmd_desc.owner}",
-                actor="user",
-                payload={"name": rec.command_name, "result": cmd_result.as_payload()},
+        with self._dispatch(f"command:{rec.command_name}"):
+            cmd_result, staged_state, staged_events, staged_continuations, staged_cancellations, staged_budget = self.host.invoke_command(
+                session_id,
+                rec.command_name,
+                rec.arguments,
+                context=context,
+                client_capabilities=client_capabilities,
             )
-            all_events = tuple(staged_events) + (completion_event,)
+
+            staged_budget_updates = []
+            if staged_budget == "clear":
+                staged_budget_updates.append(StagedBudgetUpdate(owner=cmd_desc.owner, action="clear"))
+            elif isinstance(staged_budget, PluginBudget):
+                staged_budget_updates.append(StagedBudgetUpdate(owner=staged_budget.owner, action="set", budget=staged_budget))
+
+            if cmd_result.status in ("ok", "error"):
+                latest_session = self.store.session(session_id)
+                completion_event = EventDraft(
+                    event_type="kernel.command_completed",
+                    source=f"plugin.{cmd_desc.owner}",
+                    actor="user",
+                    payload={"name": rec.command_name, "result": cmd_result.as_payload()},
+                )
+                all_events = tuple(staged_events) + (
+                    EventDraft(
+                        "kernel.confirmation_decided",
+                        f"plugin.{cmd_desc.owner}",
+                        "user",
+                        {"request_id": request_id, "command_name": rec.command_name, "decision": "allow"},
+                    ),
+                    completion_event,
+                )
+                self.store.commit_staged(
+                    session_id,
+                    expected_sequence=latest_session.last_event_sequence,
+                    expected_run_id=latest_session.run_id,
+                    run_id=latest_session.run_id or run_id,
+                    revision_id=self.revision_id,
+                    events=all_events,
+                    status=latest_session.status,
+                    checkpoint_kind=None,
+                    checkpoint_payload=None,
+                    staged_state=staged_state,
+                    staged_continuations=staged_continuations,
+                    staged_cancellations=staged_cancellations,
+                    staged_budgets=tuple(staged_budget_updates),
+                )
+                if self.auto_drain and staged_continuations:
+                    latest_sess = self.store.session(session_id)
+                    if self._admits_fresh_work(latest_sess):
+                        self.drain_continuations(session_id)
+                if staged_cancellations:
+                    self._owner_cancel_claimed_work(
+                        session_id,
+                        staged_cancellations,
+                        f"owner {cmd_desc.owner} cancelled its durable work",
+                    )
+
+            return cmd_result
+
+    def _commit_confirmation_decision(self, session_id: str, request_id: str, command_name: str, decision: str) -> None:
+        """Record one decided confirmation durably, so clients can reduce a pending request."""
+        session = self.store.session(session_id)
+        try:
             self.store.commit_staged(
                 session_id,
-                expected_sequence=latest_session.last_event_sequence,
-                expected_run_id=latest_session.run_id,
-                run_id=latest_session.run_id or run_id,
+                expected_sequence=session.last_event_sequence,
+                expected_run_id=session.run_id,
+                run_id=session.run_id or request_id,
                 revision_id=self.revision_id,
-                events=all_events,
-                status=latest_session.status,
+                events=(
+                    EventDraft(
+                        "kernel.confirmation_decided",
+                        "kernel",
+                        "user",
+                        {"request_id": request_id, "command_name": command_name, "decision": decision},
+                    ),
+                ),
+                status=session.status,
                 checkpoint_kind=None,
                 checkpoint_payload=None,
-                staged_state=staged_state,
-                staged_continuations=staged_continuations,
-                staged_cancellations=staged_cancellations,
-                staged_budgets=tuple(staged_budget_updates),
             )
-            if self.auto_drain and staged_continuations:
-                latest_sess = self.store.session(session_id)
-                if self._admits_fresh_work(latest_sess):
-                    self.drain_continuations(session_id)
-            if staged_cancellations:
-                self._owner_cancel_claimed_work(
-                    session_id,
-                    staged_cancellations,
-                    f"owner {cmd_desc.owner} cancelled its durable work",
-                )
-
-        return cmd_result
+        except StoreConflict:
+            # The decision itself is durable; a concurrent writer only costs the audit fact.
+            return
 
     def plugin_views(
         self,
         session_id: str,
         *,
         client_capabilities: frozenset[str] = frozenset(),
-    ) -> tuple[PluginViewDescriptor, ...]:
-        """Render declarative views contributed by admitted plugins for the session."""
+    ) -> ViewsSnapshot:
+        """Render declarative views contributed by admitted plugins for the session.
+
+        The whole set renders under ONE captured generation and carries that revision,
+        so a late view from an older revision is never relabelled with the new one.
+        """
         self._ensure_open()
         session = self.session(session_id)
-        views: list[PluginViewDescriptor] = []
-        for view_name in self.host.views:
-            try:
-                v = self.host.render_view(session_id, view_name, run_id=session.run_id or "", client_capabilities=client_capabilities)
-                views.append(v)
-            except Exception as exc:
-                owner = self.host.view_owner(view_name)
-                views.append(
-                    PluginViewDescriptor(
-                        owner=owner,
-                        name=view_name,
-                        title=f"{view_name} (error)",
-                        view_type="notice",
-                        data={"message": f"View {view_name} failed: {type(exc).__name__}", "level": "error"},
+        with self._dispatch("views") as snapshot:
+            views: list[PluginViewDescriptor] = []
+            for view_name in snapshot.host.views:
+                try:
+                    v = snapshot.host.render_view(session_id, view_name, run_id=session.run_id or "", client_capabilities=client_capabilities)
+                    views.append(v)
+                except Exception as exc:
+                    owner = snapshot.host.view_owner(view_name)
+                    views.append(
+                        PluginViewDescriptor(
+                            owner=owner,
+                            name=view_name,
+                            title=f"{view_name} (error)",
+                            view_type="notice",
+                            data={"message": f"View {view_name} failed: {type(exc).__name__}", "level": "error"},
+                        )
                     )
-                )
-        return tuple(views)
+            return ViewsSnapshot(revision_id=snapshot.revision_id, views=tuple(views))
 
     def drain_continuations(
         self,
@@ -1244,6 +1554,375 @@ class Kernel:
         if session.workspace != str(self.workspace) or session.active_revision_id != self.revision_id:
             raise ValueError("session workspace/revision differs; implicit capability upgrades are forbidden")
 
+    def _check_expected_revision(self, expected_revision: str) -> None:
+        """Bind a client action to the catalog generation it displayed."""
+        if not isinstance(expected_revision, str) or not expected_revision.strip():
+            raise ValueError("expected_revision must be the revision the client displayed")
+        if expected_revision != self.revision_id:
+            raise ValueError(f"displayed catalog revision {expected_revision} is stale; refresh the catalog")
+
+    def _invoke_reload_command(self, session_id: str, arguments: Mapping[str, object]) -> CommandResult:
+        """Reserved core command: activate the configured sources on explicit user request."""
+        validator = jsonschema.Draft202012Validator(json_wire_object(_RELOAD_COMMAND_SPEC[2]))
+        try:
+            validator.validate(json_wire_object(arguments))
+        except jsonschema.ValidationError as err:
+            return CommandResult(status="error", error=f"Command arguments failed schema: {err.message}")
+        if self._admits is None:
+            return CommandResult(status="error", error="capability activation is unavailable in this kernel")
+        if self.config.policy.read_only:
+            return CommandResult(status="error", error="read-only policy denies capability activation")
+        session = self.session(session_id)
+        if session.status not in {"idle", "completed", "failed", "interrupted"}:
+            return CommandResult(status="error", error=f"session {session_id} is busy ({session.status}); activation requires an idle session")
+        outcome = self.activate(session_id=session_id, source="client")
+        if not outcome["activated"]:
+            return CommandResult(status="error", error=str(outcome["error"]))
+        return CommandResult(status="ok", data={key: value for key, value in outcome.items() if key != "error"})
+
+    def activate(self, *, session_id: str, source: str, request_id: str = "", target_revision_id: str = "") -> dict[str, object]:
+        """Run one capability activation for an already-safe boundary.
+
+        With `target_revision_id` the activation uses exactly that pinned candidate (the one an
+        approval was bound to); otherwise the live configuration is pinned now. Returns a
+        JSON-safe outcome and never raises for a refused activation: the refusal is recorded
+        durably on the session and the active revision stays untouched.
+        """
+        self._ensure_open()
+        snapshot = self._snapshot
+        session = self.session(session_id)
+        request_id = request_id or uuid4().hex
+        blockers = self.store.activation_blockers(str(self.workspace), session_id)
+        if blockers:
+            error = f"activation blocked: {'; '.join(blockers)}"
+            self._record_activation_refusal(session_id, request_id, source, error, blockers)
+            return {"activated": False, "error": error, "request_id": request_id}
+        try:
+            if target_revision_id:
+                admission = self._pinned_target(target_revision_id)
+            else:
+                target_revision_id, admission = self._prepare_target()
+            prepared = self._prepare_activation(snapshot, admission=admission, source=source)
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            blocked = self.store.activation_blockers(str(self.workspace), session_id)
+            self._record_activation_refusal(session_id, request_id, source, error, blocked)
+            return {"activated": False, "error": error, "request_id": request_id}
+        try:
+            self._commit_activation(snapshot, session, request_id=request_id, source=source, prepared=prepared)
+        except Exception as exc:
+            self._clear_fence()
+            prepared.host.close()
+            if not isinstance(exc, StoreConflict):
+                raise
+            self._record_activation_refusal(session_id, request_id, source, str(exc), ())
+            return {"activated": False, "error": str(exc), "request_id": request_id}
+        return {
+            "activated": True,
+            "request_id": request_id,
+            "from_revision_id": snapshot.revision_id,
+            "to_revision_id": prepared.admission.revision_id,
+            "migrated_owners": list(prepared.copies.migrated_owners),
+            "deactivated_owners": list(prepared.copies.deactivated_owners),
+        }
+
+    def _bound_target(self, execution: _Execution, call: ToolCall) -> str | None:
+        """The pinned candidate an approval was bound to, if one exists for this exact native call."""
+        encoded = encode_tool_call(call)
+        target: str | None = None
+        for event in execution.events:
+            if event.event_type != "kernel.approval_requested":
+                continue
+            payload = event.payload if isinstance(event.payload, Mapping) else {}
+            bound = payload.get("target_revision_id")
+            bound_call = payload.get("call")
+            if isinstance(bound, str) and isinstance(bound_call, Mapping) and json_wire_object(bound_call) == encoded:
+                target = bound
+        return target
+
+    def _pending_activation_request(self, execution: _Execution) -> Mapping[str, object] | None:
+        """The newest staged activation request of this run that no answer has consumed yet."""
+        request: Mapping[str, object] | None = None
+        answered: set[str] = set()
+        for event in execution.events:
+            payload = event.payload if isinstance(event.payload, Mapping) else {}
+            request_id = payload.get("request_id")
+            if not isinstance(request_id, str) or not request_id:
+                continue
+            if event.event_type == "kernel.activation_requested":
+                request = payload
+            elif event.event_type in {"kernel.activation_committed", "kernel.activation_failed", "kernel.activation_blocked"}:
+                answered.add(request_id)
+        if request is None:
+            return None
+        return None if str(request.get("request_id", "")) in answered else request
+
+    def _clear_fence(self) -> None:
+        with self._calls_lock:
+            self._activating_thread = None
+            self._calls_lock.notify_all()
+
+    def _record_activation_refusal(
+        self,
+        session_id: str,
+        request_id: str,
+        source: str,
+        error: str,
+        blockers: Sequence[str],
+    ) -> None:
+        """Record why an activation did not happen, on the acting session, without consuming the request."""
+        session = self.store.session(session_id)
+        cursor = _Cursor()
+        checkpoint = self.store.checkpoint(session_id)
+        if checkpoint is not None and isinstance(checkpoint.payload, Mapping):
+            cursor = _Cursor.model_validate(json_wire_object(checkpoint.payload))
+        execution = _Execution(session, cursor, list(self.store.events(session_id)), session.run_id or request_id)
+        kind = "kernel.activation_blocked" if blockers else "kernel.activation_failed"
+        try:
+            self._commit(
+                execution,
+                session.status,
+                checkpoint.kind if checkpoint is not None else "ready",
+                EventDraft(
+                    kind,
+                    "kernel",
+                    "kernel",
+                    {
+                        "request_id": request_id,
+                        "source": source,
+                        "error": error,
+                        "blockers": list(blockers),
+                    },
+                ),
+            )
+        except StoreConflict, ValueError:
+            # The refusal is a diagnostic, never a reason to lose the durable request.
+            pass
+
+    def _prepare_target(self) -> tuple[str, Admission]:
+        """Pin the candidate the live configuration currently describes; imports no user code.
+
+        Called before an approval is requested, so what the user is asked about is exactly the
+        immutable artifact and private configuration that a later activation will use.
+        """
+        admits = self._admits
+        if admits is None:
+            raise ValueError("capability activation is unavailable in this kernel")
+        admission = admits(self._authorized_paths)
+        self.store.put_revision(admission.revision_payload)
+        write_private_snapshot(self._state_dir, admission.revision_id, admission.private_snapshot)
+        return admission.revision_id, admission
+
+    def _pinned_target(self, target_revision_id: str) -> Admission:
+        """Rebuild a previously pinned target from durable records and re-verify its bytes."""
+        payload = self.store.revision(target_revision_id)
+        snapshot = load_private_snapshot(self._state_dir, target_revision_id)
+        return restore_admission(payload, snapshot, state_dir=self._state_dir, config=config_from_snapshot(snapshot))
+
+    def _prepare_activation(self, snapshot: _Snapshot, *, admission: Admission, source: str) -> _PreparedActivation:
+        """Build, verify and migrate a candidate generation under the activation fence."""
+        thread_id = threading.get_ident()
+        with self._calls_lock:
+            if self._activating_thread is not None:
+                raise HostUnavailable("another capability activation is already in progress")
+            if self._active_calls:
+                busy = ", ".join(sorted(self._active_calls.values()))
+                raise HostUnavailable(f"capability activation is blocked by in-flight work: {busy}")
+            self._activating_thread = thread_id
+        try:
+            return self._prepare_activation_locked(snapshot, admission=admission, source=source)
+        except Exception:
+            self._clear_fence()
+            raise
+
+    def _prepare_activation_locked(self, snapshot: _Snapshot, *, admission: Admission, source: str) -> _PreparedActivation:
+        # A candidate host must load the same SDK source the active revision pinned; a
+        # mutated SDK is a controlled kernel upgrade (P5), never a silent hot reload.
+        if not snapshot.sdk_sha256:
+            raise ValueError("the active revision does not pin an SDK source hash; refusing to load candidate code")
+        installed_sdk = sdk_source_hash(self._sdk_root())
+        if installed_sdk != snapshot.sdk_sha256:
+            raise ValueError("installed SDK source no longer matches the pinned revision; run a controlled kernel upgrade")
+        if admission.revision_payload.get("sdk_sha256") != installed_sdk:
+            raise ValueError("the prepared candidate was pinned against a different SDK source; prepare it again")
+        target_revision_id = admission.revision_id
+        if target_revision_id == snapshot.revision_id:
+            raise ValueError("the configured sources already produce the active revision")
+        candidate_host: HostClient | None = None
+        try:
+            candidate_host = HostClient(
+                admission.plugins,
+                workspace=self.workspace,
+                revision_id=target_revision_id,
+                store=self.store,
+                usage_callback=self._get_session_usage,
+                budget_callback=self._get_owner_budget,
+                lease_fd=self._lease_fd,
+            )
+            # Flush facts that belong to the OLD generation before its hosts and subscriptions go away.
+            self._replay_pending_observers(require_complete=True)
+            session_ids = tuple(record.session_id for record in self.store.sessions(workspace=str(self.workspace)))
+            old_manifests = {plugin.manifest.plugin_id: plugin.manifest for plugin in snapshot.host.loaded_plugins}
+            copies = plan_state_copies(
+                store=self.store,
+                workspace=str(self.workspace),
+                session_ids=session_ids,
+                old_manifests=old_manifests,
+                candidate_manifests=admission.manifests,
+                migrate=lambda owner, payload, from_version, to_version: self._migrate_state(
+                    candidate_host, owner, payload, from_version, to_version
+                ),
+                deactivate=lambda owner, payload, scope, scope_key, tip: self._deactivate_state(snapshot.host, owner, payload, scope, scope_key, tip),
+            )
+        except Exception:
+            if candidate_host is not None:
+                candidate_host.close()
+            self._clear_fence()
+            raise
+        return _PreparedActivation(
+            admission=admission,
+            host=candidate_host,
+            copies=copies,
+            source=source,
+            prepared_against=snapshot.revision_id,
+        )
+
+    def _sdk_root(self) -> Path:
+        return Path(__file__).resolve().parents[1] / "sdk"
+
+    def _deactivated_owners(self, snapshot: _Snapshot, admission: Admission) -> frozenset[str]:
+        """Owners loaded before that the candidate does not admit: disabled, removed, or missing."""
+        loaded = {plugin.manifest.plugin_id for plugin in snapshot.host.loaded_plugins}
+        return frozenset(loaded - admission.plugin_ids)
+
+    def _migrate_state(
+        self,
+        candidate_host: HostClient,
+        owner: str,
+        payload: Mapping[str, object],
+        from_version: int,
+        to_version: int,
+    ) -> Mapping[str, object]:
+        try:
+            return candidate_host.migrate_owner_state(owner, payload, from_version=from_version, to_version=to_version)
+        except RuntimeError as exc:
+            raise ValueError(f"state migration for {owner} failed: {exc}") from exc
+
+    def _deactivate_state(
+        self,
+        host: HostClient,
+        owner: str,
+        payload: Mapping[str, object],
+        scope: str,
+        scope_key: str,
+        tip_sequence: int | None,
+    ) -> Mapping[str, object]:
+        try:
+            return host.prepare_deactivate_owner_state(
+                owner,
+                payload,
+                scope=scope,
+                scope_key=scope_key,
+                tip_sequence=tip_sequence,
+            )
+        except RuntimeError as exc:
+            raise ValueError(f"state deactivation for {owner} failed: {exc}") from exc
+
+    def _commit_activation(
+        self,
+        snapshot: _Snapshot,
+        session: SessionRecord,
+        *,
+        request_id: str,
+        source: str,
+        prepared: _PreparedActivation,
+    ) -> None:
+        """One CAS transaction, then publish one new pointer and revoke the old generation."""
+        admission = prepared.admission
+        target_revision_id = admission.revision_id
+        checkpoint = self.store.checkpoint(session.session_id)
+        checkpoint_payload: Mapping[str, object] | None = None
+        checkpoint_kind: Literal["ready", "approval_wait", "terminal", "interrupted"] | None = None
+        if checkpoint is not None and isinstance(checkpoint.payload, Mapping):
+            checkpoint_payload = self._activation_checkpoint(
+                json_wire_object(checkpoint.payload),
+                source=source,
+                request_id=request_id,
+            )
+            checkpoint_kind = cast("Literal['ready', 'approval_wait', 'terminal', 'interrupted']", checkpoint.kind)
+        disabled_owners = self._deactivated_owners(snapshot, admission)
+        # The model's request was already recorded durably by its own tool commit; this
+        # transaction only answers it (a client-initiated switch answers no staged request).
+        events = (
+            EventDraft(
+                "kernel.activation_committed",
+                "kernel",
+                "kernel",
+                {
+                    "request_id": request_id,
+                    "source": source,
+                    "from_revision_id": snapshot.revision_id,
+                    "to_revision_id": target_revision_id,
+                    "migrated_owners": list(prepared.copies.migrated_owners),
+                    "deactivated_owners": list(prepared.copies.deactivated_owners),
+                },
+            ),
+        )
+        self.store.commit_activation(
+            workspace=str(self.workspace),
+            session_id=session.session_id,
+            expected_sequence=session.last_event_sequence,
+            expected_run_id=session.run_id,
+            expected_revision_id=snapshot.revision_id,
+            target_revision_id=target_revision_id,
+            target_payload=admission.revision_payload,
+            # Control facts carry the authentic operation identity, never an invented run.
+            run_id=session.run_id or request_id,
+            status=session.status,
+            events=events,
+            checkpoint_kind=checkpoint_kind,
+            checkpoint_payload=checkpoint_payload,
+            state_updates=prepared.copies.updates,
+            cancelled_owners=tuple(sorted(disabled_owners)),
+            cleared_budget_owners=tuple(sorted(disabled_owners)),
+        )
+        # Publication: one pointer swap, then revoke the old generation. Nothing can be
+        # dispatched to the old host afterwards (it is closed and never respawns), and the
+        # candidate host was already validated and migrated before the commit.
+        with self._calls_lock:
+            self._snapshot = _Snapshot.build(
+                revision_id=target_revision_id,
+                sdk_sha256=snapshot.sdk_sha256,
+                config=admission.config,
+                admission=admission,
+                host=prepared.host,
+                with_reload=self._admits is not None,
+            )
+            self._authorized_paths = admission.authorized_paths
+            self._activating_thread = None
+            self._calls_lock.notify_all()
+        snapshot.host.close()
+
+    def _activation_checkpoint(
+        self,
+        checkpoint_payload: Mapping[str, object] | None,
+        *,
+        source: str,
+        request_id: str,
+    ) -> Mapping[str, object]:
+        """Carry the session's own cursor across the switch, plus a real resume intent where owed.
+
+        The intent is written only for a model-requested switch inside a live run: that run owes
+        one automatic continuation, and a crash before the in-process continuation persists it
+        lets a restart finish the job exactly once. A user-issued switch owes no such turn.
+        """
+        cursor = _Cursor()
+        if checkpoint_payload is not None:
+            cursor = _Cursor.model_validate(json_wire_object(checkpoint_payload))
+        if source == "model":
+            cursor.resume_intent = request_id
+        return json_wire_object(cursor.model_dump())
+
     @staticmethod
     def _event(execution: _Execution, sequence: int, kind: str) -> StoredEvent:
         if sequence < 1 or sequence > len(execution.events):
@@ -1284,13 +1963,14 @@ class Kernel:
                 pending.append(event)
         return pending
 
-    def _replay_pending_observers(self) -> None:
+    def _replay_pending_observers(self, *, require_complete: bool = False) -> None:
         """Deliver facts whose observer receipts never committed before accepting new work.
 
-        Only this kernel's workspace and active revision are touched, and only
-        owners missing a receipt for that exact source event are notified, so a
-        replay can never double-fire an observer or fire it under another
-        workspace's identity.
+        Eligibility comes from each source event's OWN revision (its manifest declarations),
+        not from whoever is subscribed now, so a reload can neither re-deliver an old fact to
+        a new subscriber nor drop one an eligible owner already received. With
+        `require_complete`, an eligible owner that is no longer registered aborts instead of
+        being papered over: an activation must never mask an undelivered fact.
         """
         for session in self.store.sessions():
             if session.workspace != str(self.workspace) or session.active_revision_id != self.revision_id:
@@ -1306,51 +1986,106 @@ class Kernel:
             )
             execution = _Execution(session, cursor, list(self.store.events(session.session_id)), session.run_id or uuid4().hex)
             for ev in pending:
-                self._deliver_fact_for_event(execution, ev)
+                self._deliver_fact_for_event(execution, ev, require_complete=require_complete)
 
-    def _deliver_fact_for_event(self, execution: _Execution, ev: StoredEvent) -> None:
-        """Notify exactly the subscribed owners still missing a receipt, then persist those receipts."""
+    def _eligible_observers(self, event: StoredEvent, fact_type: str) -> tuple[str, ...]:
+        """Owners that registered this fact type in the revision that produced the event.
+
+        For the generation that is current right now this is its live registration; for an
+        older event it comes from that revision's stored manifest declarations, so a reload
+        can never hand an old fact to a subscriber that did not exist back then.
+        """
+        if event.revision_id == self._snapshot.revision_id:
+            return self._snapshot.host._observer_owners.get(fact_type, ())
+        cache_key = (event.revision_id, fact_type)
+        cached = self._observer_eligibility.get(cache_key)
+        if cached is not None:
+            return cached
+        payload = self.store.revision(event.revision_id)
+        plugins = payload.get("plugins")
+        eligible: list[str] = []
+        if isinstance(plugins, Mapping):
+            for owner, identity in plugins.items():
+                if not isinstance(owner, str) or not isinstance(identity, Mapping):
+                    continue
+                manifest = identity.get("manifest")
+                if not isinstance(manifest, Mapping):
+                    continue
+                facts = manifest.get("observed_facts")
+                if isinstance(facts, list) and fact_type in facts:
+                    eligible.append(owner)
+        result = tuple(sorted(eligible))
+        self._observer_eligibility[cache_key] = result
+        return result
+
+    def _observer_gap_event(self, event: StoredEvent, missing: Sequence[str]) -> EventDraft:
+        """A durable diagnostic for a fact that its own revision's owner can no longer receive."""
+        return EventDraft(
+            "kernel.observer_error",
+            source="kernel",
+            actor="kernel",
+            payload={
+                "owner": ", ".join(missing),
+                "error": f"event {event.sequence} was produced by revision {event.revision_id} but its registered owner is not loaded",
+                "event_sequence": event.sequence,
+            },
+        )
+
+    def _deliver_fact_for_event(self, execution: _Execution, ev: StoredEvent, *, require_complete: bool = False) -> None:
+        """Notify exactly the owners this event's revision registered, then persist those receipts."""
         fact = self._fact_for(execution, ev)
         if fact is None:
             return
         fact_type, fact_payload = fact
         session_id = ev.session_id
-        subscribed = self.host._observer_owners.get(fact_type, ())
-        active = [o for o in subscribed if not self.store.has_observer_receipt(session_id, ev.sequence, o, 1)]
-        if not active:
-            return
-        logical_turn = str(fact_payload.get("logical_turn", ""))
-        obs_res = self.host.notify_fact(fact_type, fact_payload, owners=tuple(active), logical_turn=logical_turn)
-        receipts = tuple(ObserverReceiptRecord(event_sequence=ev.sequence, owner=o, generation=1) for o in active)
-        staged_events: list[EventDraft] = []
-        staged_budget_updates: list[StagedBudgetUpdate] = []
-        if obs_res:
-            staged_events.extend(obs_res.staged_events)
-            for owner, b_val in obs_res.staged_budgets:
-                if b_val == "clear":
-                    staged_budget_updates.append(StagedBudgetUpdate(owner=owner, action="clear"))
-                elif isinstance(b_val, PluginBudget):
-                    staged_budget_updates.append(StagedBudgetUpdate(owner=b_val.owner, action="set", budget=b_val))
-            for err in obs_res.errors:
-                staged_events.append(
-                    EventDraft(
-                        "kernel.observer_error",
-                        source=f"plugin.{err.get('owner', 'observer')}",
-                        actor="plugin",
-                        payload={"owner": err.get("owner"), "error": err.get("error")},
-                    )
+        with self._dispatch(f"observer:{fact_type}") as snapshot:
+            eligible = self._eligible_observers(ev, fact_type)
+            registered = snapshot.host._observer_owners.get(fact_type, ())
+            missing = [owner for owner in eligible if owner not in registered]
+            if missing:
+                if require_complete:
+                    raise ValueError(f"cannot activate: event {ev.sequence} of session {session_id} is still undelivered for {', '.join(missing)}")
+                self._commit_staged_rebased(
+                    execution,
+                    status=execution.session.status,
+                    kind=None,
+                    events=(self._observer_gap_event(ev, missing),),
                 )
-        self._commit_staged_rebased(
-            execution,
-            status=execution.session.status,
-            kind=None,
-            events=tuple(staged_events),
-            staged_state=obs_res.staged_state if obs_res else (),
-            staged_continuations=obs_res.staged_continuations if obs_res else (),
-            staged_cancellations=obs_res.staged_cancellations if obs_res else (),
-            staged_budgets=tuple(staged_budget_updates),
-            observer_receipts=receipts,
-        )
+            active = [o for o in eligible if o in registered and not self.store.has_observer_receipt(session_id, ev.sequence, o)]
+            if not active:
+                return
+            logical_turn = str(fact_payload.get("logical_turn", ""))
+            obs_res = snapshot.host.notify_fact(fact_type, fact_payload, owners=tuple(active), logical_turn=logical_turn)
+            receipts = tuple(ObserverReceiptRecord(event_sequence=ev.sequence, owner=o) for o in active)
+            staged_events: list[EventDraft] = []
+            staged_budget_updates: list[StagedBudgetUpdate] = []
+            if obs_res:
+                staged_events.extend(obs_res.staged_events)
+                for owner, b_val in obs_res.staged_budgets:
+                    if b_val == "clear":
+                        staged_budget_updates.append(StagedBudgetUpdate(owner=owner, action="clear"))
+                    elif isinstance(b_val, PluginBudget):
+                        staged_budget_updates.append(StagedBudgetUpdate(owner=b_val.owner, action="set", budget=b_val))
+                for err in obs_res.errors:
+                    staged_events.append(
+                        EventDraft(
+                            "kernel.observer_error",
+                            source=f"plugin.{err.get('owner', 'observer')}",
+                            actor="plugin",
+                            payload={"owner": err.get("owner"), "error": err.get("error")},
+                        )
+                    )
+            self._commit_staged_rebased(
+                execution,
+                status=execution.session.status,
+                kind=None,
+                events=tuple(staged_events),
+                staged_state=obs_res.staged_state if obs_res else (),
+                staged_continuations=obs_res.staged_continuations if obs_res else (),
+                staged_cancellations=obs_res.staged_cancellations if obs_res else (),
+                staged_budgets=tuple(staged_budget_updates),
+                observer_receipts=receipts,
+            )
 
     def _settle_unsettled_dispatches(self, execution: _Execution) -> None:
         """Settle dispatches of this run that never produced a completion event."""
@@ -1606,75 +2341,85 @@ class Kernel:
             if fact is None:
                 continue
             fact_type, fact_payload = fact
-            subscribed = self.host._observer_owners.get(fact_type, ())
-            active_owners = [o for o in subscribed if not self.store.has_observer_receipt(ev.session_id, ev.sequence, o, 1)]
+            eligible = self._eligible_observers(ev, fact_type)
+            registered = self.host._observer_owners.get(fact_type, ())
+            missing = [owner for owner in eligible if owner not in registered]
+            if missing:
+                self._commit_staged_rebased(
+                    execution,
+                    status=execution.session.status,
+                    kind=None,
+                    events=(self._observer_gap_event(ev, missing),),
+                )
+            active_owners = [o for o in eligible if o in registered and not self.store.has_observer_receipt(ev.session_id, ev.sequence, o)]
             if not active_owners:
                 continue
-            obs_res = self.host.notify_fact(
-                fact_type,
-                fact_payload,
-                owners=tuple(active_owners),
-                logical_turn=str(fact_payload.get("logical_turn", "")),
-            )
-            receipts = tuple(ObserverReceiptRecord(event_sequence=ev.sequence, owner=o, generation=1) for o in active_owners)
-            staged_events: list[EventDraft] = []
-            staged_budget_updates: list[StagedBudgetUpdate] = []
-            if obs_res:
-                staged_events.extend(obs_res.staged_events)
-                for owner, b_val in obs_res.staged_budgets:
-                    if b_val == "clear":
-                        staged_budget_updates.append(StagedBudgetUpdate(owner=owner, action="clear"))
-                    elif isinstance(b_val, PluginBudget):
-                        staged_budget_updates.append(StagedBudgetUpdate(owner=b_val.owner, action="set", budget=b_val))
-                for err in obs_res.errors:
-                    staged_events.append(
-                        EventDraft(
-                            "kernel.observer_error",
-                            source=f"plugin.{err.get('owner', 'observer')}",
-                            actor="plugin",
-                            payload={"owner": err.get("owner"), "error": err.get("error")},
+            with self._dispatch(f"observer:{fact_type}") as snapshot:
+                obs_res = snapshot.host.notify_fact(
+                    fact_type,
+                    fact_payload,
+                    owners=tuple(active_owners),
+                    logical_turn=str(fact_payload.get("logical_turn", "")),
+                )
+                receipts = tuple(ObserverReceiptRecord(event_sequence=ev.sequence, owner=o) for o in active_owners)
+                staged_events: list[EventDraft] = []
+                staged_budget_updates: list[StagedBudgetUpdate] = []
+                if obs_res:
+                    staged_events.extend(obs_res.staged_events)
+                    for owner, b_val in obs_res.staged_budgets:
+                        if b_val == "clear":
+                            staged_budget_updates.append(StagedBudgetUpdate(owner=owner, action="clear"))
+                        elif isinstance(b_val, PluginBudget):
+                            staged_budget_updates.append(StagedBudgetUpdate(owner=b_val.owner, action="set", budget=b_val))
+                    for err in obs_res.errors:
+                        staged_events.append(
+                            EventDraft(
+                                "kernel.observer_error",
+                                source=f"plugin.{err.get('owner', 'observer')}",
+                                actor="plugin",
+                                payload={"owner": err.get("owner"), "error": err.get("error")},
+                            )
                         )
-                    )
-                try:
-                    self._commit_staged_rebased(
-                        execution,
-                        status=execution.session.status,
-                        kind=None,
-                        events=tuple(staged_events),
-                        staged_state=obs_res.staged_state,
-                        staged_continuations=obs_res.staged_continuations,
-                        staged_cancellations=obs_res.staged_cancellations,
-                        staged_budgets=tuple(staged_budget_updates),
-                        observer_receipts=receipts,
-                    )
-                except StoreConflict as exc:
-                    # The source fact (and any bill) is already durable; a losing
-                    # observer proposal must surface as an owned diagnostic rather
-                    # than failing the run or silently dropping the fact.
                     try:
                         self._commit_staged_rebased(
                             execution,
                             status=execution.session.status,
                             kind=None,
-                            events=(
-                                EventDraft(
-                                    "kernel.observer_error",
-                                    source="plugin.observer",
-                                    actor="plugin",
-                                    payload={"owner": None, "error": f"observer proposals rejected: {exc}"},
-                                ),
-                            ),
-                            observer_receipts=(),
+                            events=tuple(staged_events),
+                            staged_state=obs_res.staged_state,
+                            staged_continuations=obs_res.staged_continuations,
+                            staged_cancellations=obs_res.staged_cancellations,
+                            staged_budgets=tuple(staged_budget_updates),
+                            observer_receipts=receipts,
                         )
-                    except StoreConflict, ValueError:
-                        pass
-            else:
-                self._commit_staged_rebased(
-                    execution,
-                    status=execution.session.status,
-                    kind=None,
-                    observer_receipts=receipts,
-                )
+                    except StoreConflict as exc:
+                        # The source fact (and any bill) is already durable; a losing
+                        # observer proposal must surface as an owned diagnostic rather
+                        # than failing the run or silently dropping the fact.
+                        try:
+                            self._commit_staged_rebased(
+                                execution,
+                                status=execution.session.status,
+                                kind=None,
+                                events=(
+                                    EventDraft(
+                                        "kernel.observer_error",
+                                        source="plugin.observer",
+                                        actor="plugin",
+                                        payload={"owner": None, "error": f"observer proposals rejected: {exc}"},
+                                    ),
+                                ),
+                                observer_receipts=(),
+                            )
+                        except StoreConflict, ValueError:
+                            pass
+                else:
+                    self._commit_staged_rebased(
+                        execution,
+                        status=execution.session.status,
+                        kind=None,
+                        observer_receipts=receipts,
+                    )
         return new_events
 
     def _budget_admission(self, execution: _Execution) -> KernelResult | None:
@@ -1792,8 +2537,28 @@ class Kernel:
                 cause = (session_abort.stop_cause if session_abort and session_abort.cancelled else "shutdown") or "user_stop"
                 reason = (session_abort.reason if session_abort and session_abort.cancelled else self._abort.reason) or "cancelled"
                 return self._stop(execution, reason, stop_cause=cause)
+            snapshot = self._snapshot
             cursor = execution.cursor
             if cursor.batch_sequence is None:
+                # A staged activation applies only here: the whole previous native batch has been
+                # reported and committed, so no result can mix generations, and the request is
+                # consumed durably in the same transaction as the switch.
+                pending_request = self._pending_activation_request(execution)
+                if pending_request is not None:
+                    outcome = self.activate(
+                        session_id=execution.session.session_id,
+                        source="model",
+                        request_id=str(pending_request.get("request_id", "")),
+                        target_revision_id=str(pending_request.get("target_revision_id", "")),
+                    )
+                    if outcome["activated"]:
+                        # This run is the automatic continuation the activation implied; the
+                        # next commit persists the consumed intent.
+                        execution.cursor.resume_intent = ""
+                    execution.session = self.store.session(execution.session.session_id)
+                    execution.events = list(self.store.events(execution.session.session_id))
+                    cursor = execution.cursor
+                    snapshot = self._snapshot
                 if cursor.step >= max_steps:
                     return self._stop(execution, "provider turn budget exhausted", stop_cause="limit_reached")
 
@@ -1801,206 +2566,208 @@ class Kernel:
                 if budget_stop is not None:
                     return budget_stop
 
-                model = self.config.model.model
-                if model is None:
-                    return self._fail(execution, "no model configured")
-                provider_name, separator, model_name = model.partition("/")
-                entry = self.config.providers.get(provider_name)
-                if not separator or not model_name or entry is None:
-                    return self._fail(execution, "model must name a configured provider/model")
-                # Settle any earlier dispatch of this run that never completed BEFORE
-                # context assembly: observers see unknown usage exactly once, and any
-                # budget they set (even a zero cap) or cancellation they raise is
-                # already durable when the admission checks below read it.
-                self._settle_unsettled_dispatches(execution)
-                try:
-                    messages = self._messages(execution)
-                except ValueError as exc:
-                    return self._fail(execution, str(exc))
-                except (RuntimeError, TimeoutError) as exc:
-                    # Critical context/admission failure: the run finishes durably
-                    # failed before any intent is committed or provider is billed.
-                    return self._fail(execution, f"context assembly failed: {type(exc).__name__}: {exc}")
+                with self._dispatch("provider") as snapshot:
+                    model = snapshot.config.model.model
+                    if model is None:
+                        return self._fail(execution, "no model configured")
+                    provider_name, separator, model_name = model.partition("/")
+                    entry = snapshot.config.providers.get(provider_name)
+                    if not separator or not model_name or entry is None:
+                        return self._fail(execution, "model must name a configured provider/model")
+                    # Settle any earlier dispatch of this run that never completed BEFORE
+                    # context assembly: observers see unknown usage exactly once, and any
+                    # budget they set (even a zero cap) or cancellation they raise is
+                    # already durable when the admission checks below read it.
+                    self._settle_unsettled_dispatches(execution)
+                    try:
+                        messages = self._messages(execution)
+                    except ValueError as exc:
+                        return self._fail(execution, str(exc))
+                    except (RuntimeError, TimeoutError) as exc:
+                        # Critical context/admission failure: the run finishes durably
+                        # failed before any intent is committed or provider is billed.
+                        return self._fail(execution, f"context assembly failed: {type(exc).__name__}: {exc}")
 
-                effective_abort = session_abort or self._abort
-                request = ProviderTurnRequest(
-                    messages=messages,
-                    available_tools=self.host.tools,
-                    raw_model=model,
-                    provider_name=provider_name,
-                    model_name=model_name,
-                    reasoning_effort=self.config.model.reasoning_effort,
-                    abort_signal=effective_abort,
-                )
-
-                dispatch_id = uuid4().hex
-                start_time_ms = int(time.time() * 1000)
-                # Final admission: context assembly may have taken a long RPC, so
-                # re-check cancellation and budgets immediately before the native
-                # call that reserves the root step and bills the provider.
-                late_abort = self._abort_stop(execution, session_abort)
-                if late_abort is not None:
-                    return late_abort
-                late_budget = self._budget_admission(execution)
-                if late_budget is not None:
-                    return late_budget
-                # A fresh provider dispatch is a new logical turn. The current
-                # native batch keeps this identity (checkpointed), so approvals,
-                # tool reports, and resumes all attribute to the same turn.
-                cursor.logical_turn = uuid4().hex
-                try:
-                    intent_events = self._commit(
-                        execution,
-                        "running",
-                        "ready",
-                        EventDraft(
-                            "kernel.provider_intent",
-                            "kernel",
-                            "kernel",
-                            {
-                                "attempt": cursor.step,
-                                "provider": provider_name,
-                                "model": model_name,
-                                "dispatch_id": dispatch_id,
-                                "start_time_ms": start_time_ms,
-                                "logical_turn": execution.cursor.logical_turn,
-                            },
-                        ),
-                        reserve_root=True,
+                    effective_abort = session_abort or self._abort
+                    request = ProviderTurnRequest(
+                        messages=messages,
+                        available_tools=snapshot.tools,
+                        raw_model=model,
+                        provider_name=provider_name,
+                        model_name=model_name,
+                        reasoning_effort=snapshot.config.model.reasoning_effort,
+                        abort_signal=effective_abort,
                     )
-                except StoreConflict:
-                    return self._stop(execution, "root action budget exhausted", stop_cause="limit_reached")
-                intent_seq = next(ev.sequence for ev in intent_events if ev.event_type == "kernel.provider_intent")
 
-                t0 = time.monotonic()
-                try:
-                    turn = self.host.propose_turn(request, provider=entry.wire)
-                    elapsed_ms = max(0, int((time.monotonic() - t0) * 1000))
-                except (HostUnavailable, HostTimeout, InvocationCancelled) as exc:
-                    elapsed_ms = max(0, int((time.monotonic() - t0) * 1000))
-                    self._commit(
-                        execution,
-                        "interrupted",
-                        "interrupted",
-                        EventDraft(
-                            "kernel.provider_interrupted",
-                            "kernel",
-                            "kernel",
-                            {
-                                "error": str(exc),
-                                "unknown_usage": True,
-                                "dispatch_sequence": intent_seq,
-                                "dispatch_id": dispatch_id,
-                                "elapsed_ms": elapsed_ms,
-                                "provider": provider_name,
-                                "model": model_name,
-                            },
-                        ),
-                    )
-                    # Only a real cancellation may report a user decision; a host
-                    # timeout or kill is a service failure, never a user stop.
-                    if effective_abort.cancelled:
+                    dispatch_id = uuid4().hex
+                    start_time_ms = int(time.time() * 1000)
+                    # Final admission: context assembly may have taken a long RPC, so
+                    # re-check cancellation and budgets immediately before the native
+                    # call that reserves the root step and bills the provider.
+                    late_abort = self._abort_stop(execution, session_abort)
+                    if late_abort is not None:
+                        return late_abort
+                    late_budget = self._budget_admission(execution)
+                    if late_budget is not None:
+                        return late_budget
+                    # A fresh provider dispatch is a new logical turn. The current
+                    # native batch keeps this identity (checkpointed), so approvals,
+                    # tool reports, and resumes all attribute to the same turn.
+                    cursor.logical_turn = uuid4().hex
+                    try:
+                        intent_events = self._commit(
+                            execution,
+                            "running",
+                            "ready",
+                            EventDraft(
+                                "kernel.provider_intent",
+                                "kernel",
+                                "kernel",
+                                {
+                                    "attempt": cursor.step,
+                                    "provider": provider_name,
+                                    "model": model_name,
+                                    "dispatch_id": dispatch_id,
+                                    "start_time_ms": start_time_ms,
+                                    "logical_turn": execution.cursor.logical_turn,
+                                },
+                            ),
+                            reserve_root=True,
+                        )
+                    except StoreConflict:
+                        return self._stop(execution, "root action budget exhausted", stop_cause="limit_reached")
+                    intent_seq = next(ev.sequence for ev in intent_events if ev.event_type == "kernel.provider_intent")
+
+                    t0 = time.monotonic()
+                    try:
+                        turn = snapshot.host.propose_turn(request, provider=entry.wire)
+                        elapsed_ms = max(0, int((time.monotonic() - t0) * 1000))
+                    except (HostUnavailable, HostTimeout, InvocationCancelled) as exc:
+                        elapsed_ms = max(0, int((time.monotonic() - t0) * 1000))
+                        self._commit(
+                            execution,
+                            "interrupted",
+                            "interrupted",
+                            EventDraft(
+                                "kernel.provider_interrupted",
+                                "kernel",
+                                "kernel",
+                                {
+                                    "error": str(exc),
+                                    "unknown_usage": True,
+                                    "dispatch_sequence": intent_seq,
+                                    "dispatch_id": dispatch_id,
+                                    "elapsed_ms": elapsed_ms,
+                                    "provider": provider_name,
+                                    "model": model_name,
+                                },
+                            ),
+                        )
+                        # Only a real cancellation may report a user decision; a host
+                        # timeout or kill is a service failure, never a user stop.
+                        if effective_abort.cancelled:
+                            return self._stop(
+                                execution,
+                                str(exc),
+                                stop_cause=effective_abort.stop_cause or "user_stop",
+                            )
                         return self._stop(
                             execution,
                             str(exc),
-                            stop_cause=effective_abort.stop_cause or "user_stop",
+                            stop_cause="host_loss" if isinstance(exc, HostUnavailable) else "error",
                         )
-                    return self._stop(
-                        execution,
-                        str(exc),
-                        stop_cause="host_loss" if isinstance(exc, HostUnavailable) else "error",
-                    )
-                except Exception as exc:
-                    elapsed_ms = max(0, int((time.monotonic() - t0) * 1000))
-                    self._commit(
-                        execution,
-                        "interrupted",
-                        "interrupted",
-                        EventDraft(
-                            "kernel.provider_interrupted",
-                            "kernel",
-                            "kernel",
-                            {
-                                "error": str(exc),
-                                "unknown_usage": True,
-                                "dispatch_sequence": intent_seq,
-                                "dispatch_id": dispatch_id,
-                                "elapsed_ms": elapsed_ms,
-                                "provider": provider_name,
-                                "model": model_name,
-                            },
-                        ),
-                    )
-                    return self._fail(execution, f"provider failed: {type(exc).__name__}: {exc}")
+                    except Exception as exc:
+                        elapsed_ms = max(0, int((time.monotonic() - t0) * 1000))
+                        self._commit(
+                            execution,
+                            "interrupted",
+                            "interrupted",
+                            EventDraft(
+                                "kernel.provider_interrupted",
+                                "kernel",
+                                "kernel",
+                                {
+                                    "error": str(exc),
+                                    "unknown_usage": True,
+                                    "dispatch_sequence": intent_seq,
+                                    "dispatch_id": dispatch_id,
+                                    "elapsed_ms": elapsed_ms,
+                                    "provider": provider_name,
+                                    "model": model_name,
+                                },
+                            ),
+                        )
+                        return self._fail(execution, f"provider failed: {type(exc).__name__}: {exc}")
 
-                cursor.step += 1
+                    cursor.step += 1
 
-                ids = [call.tool_call_id for call in turn.tool_calls]
-                has_duplicate_or_missing_ids = any(not identity for identity in ids) or len(ids) != len(set(ids))
-                invalid_done_reason = turn.done_reason not in {"stop", "tool_calls", "completed"}
+                    ids = [call.tool_call_id for call in turn.tool_calls]
+                    has_duplicate_or_missing_ids = any(not identity for identity in ids) or len(ids) != len(set(ids))
+                    invalid_done_reason = turn.done_reason not in {"stop", "tool_calls", "completed"}
 
-                model_turn_payload: dict[str, object] = {
-                    "result": encode_provider_result(turn),
-                    "dispatch_sequence": intent_seq,
-                    "dispatch_id": dispatch_id,
-                    "elapsed_ms": elapsed_ms,
-                    "provider": provider_name,
-                    "model": model_name,
-                }
-                if has_duplicate_or_missing_ids:
-                    self._commit(
-                        execution,
-                        "failed",
-                        "terminal",
-                        EventDraft("kernel.model_turn", "provider", "model", model_turn_payload),
-                        completed_continuation_id=execution.cursor.continuation_id,
-                        completed_continuation_status="failed",
-                    )
-                    return self._fail(execution, "provider returned missing/duplicate native call identities")
+                    model_turn_payload: dict[str, object] = {
+                        "result": encode_provider_result(turn),
+                        "dispatch_sequence": intent_seq,
+                        "dispatch_id": dispatch_id,
+                        "elapsed_ms": elapsed_ms,
+                        "provider": provider_name,
+                        "model": model_name,
+                    }
+                    if has_duplicate_or_missing_ids:
+                        self._commit(
+                            execution,
+                            "failed",
+                            "terminal",
+                            EventDraft("kernel.model_turn", "provider", "model", model_turn_payload),
+                            completed_continuation_id=execution.cursor.continuation_id,
+                            completed_continuation_status="failed",
+                        )
+                        return self._fail(execution, "provider returned missing/duplicate native call identities")
 
-                if invalid_done_reason:
-                    self._commit(
-                        execution,
-                        "failed",
-                        "terminal",
-                        EventDraft("kernel.model_turn", "provider", "model", model_turn_payload),
-                        completed_continuation_id=execution.cursor.continuation_id,
-                        completed_continuation_status="failed",
-                    )
-                    return self._fail(execution, f"provider did not complete its turn: {turn.done_reason}")
+                    if invalid_done_reason:
+                        self._commit(
+                            execution,
+                            "failed",
+                            "terminal",
+                            EventDraft("kernel.model_turn", "provider", "model", model_turn_payload),
+                            completed_continuation_id=execution.cursor.continuation_id,
+                            completed_continuation_status="failed",
+                        )
+                        return self._fail(execution, f"provider did not complete its turn: {turn.done_reason}")
 
-                if turn.tool_calls:
-                    # A native batch starts at its first member, and the checkpoint
-                    # references this exact appended turn in the same transaction:
-                    # a crash can never leave a batch event without its checkpoint ref.
-                    cursor.next_call = 0
-                    self._commit(
-                        execution,
-                        "running",
-                        "ready",
-                        EventDraft("kernel.model_turn", "provider", "model", model_turn_payload),
-                        checkpoint_bindings=(("batch_sequence", "kernel.model_turn"),),
-                    )
-                else:
-                    self._commit(
-                        execution,
-                        "completed",
-                        "terminal",
-                        EventDraft("kernel.model_turn", "provider", "model", model_turn_payload),
-                        EventDraft(
-                            "kernel.run_completed",
-                            "kernel",
-                            "kernel",
-                            {"logical_turn": execution.cursor.logical_turn, **self._measured_run_elapsed_fields(execution)},
-                        ),
-                        completed_continuation_id=execution.cursor.continuation_id,
-                        completed_continuation_status="completed",
-                    )
-                    return self._result(execution, output=turn.output, stop_cause="completed")
-                if self._abort.cancelled or (session_abort and session_abort.cancelled):
-                    cause = (session_abort.stop_cause if session_abort and session_abort.cancelled else "shutdown") or "user_stop"
-                    reason = (session_abort.reason if session_abort and session_abort.cancelled else self._abort.reason) or "cancelled"
-                    return self._stop(execution, reason, stop_cause=cause)
+                    if turn.tool_calls:
+                        # A native batch starts at its first member, and the checkpoint
+                        # references this exact appended turn in the same transaction:
+                        # a crash can never leave a batch event without its checkpoint ref.
+                        cursor.next_call = 0
+                        self._commit(
+                            execution,
+                            "running",
+                            "ready",
+                            EventDraft("kernel.model_turn", "provider", "model", model_turn_payload),
+                            checkpoint_bindings=(("batch_sequence", "kernel.model_turn"),),
+                        )
+                    else:
+                        self._commit(
+                            execution,
+                            "completed",
+                            "terminal",
+                            EventDraft("kernel.model_turn", "provider", "model", model_turn_payload),
+                            EventDraft(
+                                "kernel.run_completed",
+                                "kernel",
+                                "kernel",
+                                {"logical_turn": execution.cursor.logical_turn, **self._measured_run_elapsed_fields(execution)},
+                            ),
+                            completed_continuation_id=execution.cursor.continuation_id,
+                            completed_continuation_status="completed",
+                        )
+                        return self._result(execution, output=turn.output, stop_cause="completed")
+                    if self._abort.cancelled or (session_abort and session_abort.cancelled):
+                        cause = (session_abort.stop_cause if session_abort and session_abort.cancelled else "shutdown") or "user_stop"
+                        reason = (session_abort.reason if session_abort and session_abort.cancelled else self._abort.reason) or "cancelled"
+                        return self._stop(execution, reason, stop_cause=cause)
+
             batch, call = self._pending(execution)
             definition = self._definitions.get(call.tool_name)
             if definition is None:
@@ -2015,8 +2782,15 @@ class Kernel:
                     "request_id": uuid4().hex,
                     "batch_sequence": batch.sequence,
                     "call": encode_tool_call(call),
-                    "owner": self.host.owner(call.tool_name),
+                    "owner": snapshot.owner_of(call.tool_name),
                 }
+                if call.tool_name in snapshot.native_tools:
+                    # Pin the exact candidate this approval is about, before the user is asked:
+                    # admission imports nothing, and after approval the already-pinned artifact
+                    # is activated, so editing the workspace source in between cannot change it.
+                    target_revision_id, _admission = self._prepare_target()
+                    payload["target_revision_id"] = target_revision_id
+                    payload["activation_pending"] = True
                 self._commit(
                     execution,
                     "waiting",
@@ -2030,91 +2804,122 @@ class Kernel:
                 return stopped
 
     def _invoke(self, execution: _Execution, call: ToolCall, definition: ToolDefinition) -> KernelResult | None:
-        cursor = execution.cursor
-        if cursor.intent_sequence is None:
-            invocation_id = uuid4().hex
-            self._commit(
-                execution,
-                "running",
-                "ready",
-                EventDraft(
-                    "kernel.tool_intent",
-                    "kernel",
-                    "model",
-                    {
-                        "invocation_id": invocation_id,
-                        "batch_sequence": cursor.batch_sequence,
-                        "call": encode_tool_call(call),
-                        "owner": self.host.owner(call.tool_name),
-                        "effects": sorted(effect.value for effect in definition.effects),
-                        "replay_policy": definition.replay_policy_for(call.arguments),
-                        "logical_turn": execution.cursor.logical_turn,
-                    },
-                ),
-                checkpoint_bindings=(("intent_sequence", "kernel.tool_intent"),),
+        with self._dispatch(f"tool:{call.tool_name}") as snapshot:
+            cursor = execution.cursor
+            if cursor.intent_sequence is None:
+                invocation_id = uuid4().hex
+                self._commit(
+                    execution,
+                    "running",
+                    "ready",
+                    EventDraft(
+                        "kernel.tool_intent",
+                        "kernel",
+                        "model",
+                        {
+                            "invocation_id": invocation_id,
+                            "batch_sequence": cursor.batch_sequence,
+                            "call": encode_tool_call(call),
+                            "owner": snapshot.owner_of(call.tool_name),
+                            "effects": sorted(effect.value for effect in definition.effects),
+                            "replay_policy": definition.replay_policy_for(call.arguments),
+                            "logical_turn": execution.cursor.logical_turn,
+                        },
+                    ),
+                    checkpoint_bindings=(("intent_sequence", "kernel.tool_intent"),),
+                )
+            else:
+                intent = self._event(execution, cursor.intent_sequence, "kernel.tool_intent")
+                invocation_id = str(intent.payload["invocation_id"])
+
+            session_abort = None
+            with self._aborts_lock:
+                session_abort = self._session_aborts.get(execution.session.session_id)
+            effective_abort = session_abort or self._abort
+
+            if call.tool_name in self._snapshot.native_tools:
+                # A kernel-owned tool only stages a durable, approved request; the switch itself
+                # happens at the next batch boundary, never inside this callback's stack.
+                request_id = uuid4().hex
+                target = str(self._bound_target(execution, call) or "")
+                result: ToolResult = ToolSuccess(
+                    call.tool_name,
+                    TextOutput("activation request recorded; it is applied after this tool batch finishes"),
+                )
+                self._report(
+                    execution,
+                    call,
+                    result,
+                    staged_events=(
+                        EventDraft(
+                            "kernel.activation_requested",
+                            "kernel",
+                            "model",
+                            {
+                                "request_id": request_id,
+                                "source": "model",
+                                "run_id": execution.run_id,
+                                "logical_turn": execution.cursor.logical_turn,
+                                "reason": str(call.arguments.get("reason", "")),
+                                "target_revision_id": target,
+                            },
+                        ),
+                    ),
+                )
+                return None
+            context = ToolContext(
+                workspace=self.workspace,
+                session_id=execution.session.session_id,
+                run_id=execution.run_id,
+                invocation_id=invocation_id,
+                revision_id=snapshot.revision_id,
+                actor="model",
+                capabilities=snapshot.capabilities_of(call.tool_name),
+                logical_turn=execution.cursor.logical_turn,
+                abort_signal=effective_abort,
             )
-        else:
-            intent = self._event(execution, cursor.intent_sequence, "kernel.tool_intent")
-            invocation_id = str(intent.payload["invocation_id"])
+            try:
+                outcome = snapshot.host.invoke(call, context=context, return_outcome=True)
+                if not isinstance(outcome, ToolInvocationOutcome):
+                    raise TypeError("plugin host returned a bare tool result for an outcome request")
+                result = outcome.result
+                staged_state = outcome.staged_state
+                staged_events = outcome.staged_events
+                staged_conts = outcome.staged_continuations
+                staged_cancels = outcome.staged_cancellations
+                staged_budget = outcome.staged_budget
+            except (HostUnavailable, HostTimeout, InvocationCancelled) as exc:
+                if effective_abort.cancelled:
+                    return self._stop(execution, str(exc), stop_cause=effective_abort.stop_cause or "user_stop")
+                return self._stop(execution, str(exc), stop_cause="host_loss" if isinstance(exc, HostUnavailable) else "error")
+            except Exception as exc:
+                result = ToolFailure(call.tool_name, f"tool failed: {type(exc).__name__}: {exc}")
+                staged_state = ()
+                staged_events = ()
+                staged_conts = ()
+                staged_cancels = ()
+                staged_budget = None
 
-        session_abort = None
-        with self._aborts_lock:
-            session_abort = self._session_aborts.get(execution.session.session_id)
-        effective_abort = session_abort or self._abort
+            if result.tool_name != call.tool_name:
+                return self._stop(execution, "tool result identity differs from the dispatched native call", stop_cause="error")
 
-        context = ToolContext(
-            workspace=self.workspace,
-            session_id=execution.session.session_id,
-            run_id=execution.run_id,
-            invocation_id=invocation_id,
-            revision_id=self.revision_id,
-            actor="model",
-            capabilities=self.host.capabilities(call.tool_name),
-            logical_turn=execution.cursor.logical_turn,
-            abort_signal=effective_abort,
-        )
-        try:
-            outcome = self.host.invoke(call, context=context, return_outcome=True)
-            if not isinstance(outcome, ToolInvocationOutcome):
-                raise TypeError("plugin host returned a bare tool result for an outcome request")
-            result = outcome.result
-            staged_state = outcome.staged_state
-            staged_events = outcome.staged_events
-            staged_conts = outcome.staged_continuations
-            staged_cancels = outcome.staged_cancellations
-            staged_budget = outcome.staged_budget
-        except (HostUnavailable, HostTimeout, InvocationCancelled) as exc:
-            if effective_abort.cancelled:
-                return self._stop(execution, str(exc), stop_cause=effective_abort.stop_cause or "user_stop")
-            return self._stop(execution, str(exc), stop_cause="host_loss" if isinstance(exc, HostUnavailable) else "error")
-        except Exception as exc:
-            result = ToolFailure(call.tool_name, f"tool failed: {type(exc).__name__}: {exc}")
-            staged_state = ()
-            staged_events = ()
-            staged_conts = ()
-            staged_cancels = ()
-            staged_budget = None
-
-        if result.tool_name != call.tool_name:
-            return self._stop(execution, "tool result identity differs from the dispatched native call", stop_cause="error")
-
-        self._report(
-            execution,
-            call,
-            result,
-            staged_state=staged_state,
-            staged_events=staged_events,
-            staged_conts=staged_conts,
-            staged_cancels=staged_cancels,
-            staged_budget=staged_budget,
-        )
-        claim_id = execution.cursor.continuation_id
-        claim_owner = self.store.continuation_owner(claim_id) if claim_id is not None else None
-        if any(self._cancels_claimed(cancellation, claim_id, claim_owner) for cancellation in staged_cancels):
-            # The tool cancelled its own claimed work: the effect and audit above are
-            # durable, and this chain stops here with the owner cause it stated.
-            return self._stop(execution, "tool cancelled its own durable work", stop_cause="owner_cancel")
-        return None
+            self._report(
+                execution,
+                call,
+                result,
+                staged_state=staged_state,
+                staged_events=staged_events,
+                staged_conts=staged_conts,
+                staged_cancels=staged_cancels,
+                staged_budget=staged_budget,
+            )
+            claim_id = execution.cursor.continuation_id
+            claim_owner = self.store.continuation_owner(claim_id) if claim_id is not None else None
+            if any(self._cancels_claimed(cancellation, claim_id, claim_owner) for cancellation in staged_cancels):
+                # The tool cancelled its own claimed work: the effect and audit above are
+                # durable, and this chain stops here with the owner cause it stated.
+                return self._stop(execution, "tool cancelled its own durable work", stop_cause="owner_cancel")
+            return None
 
     def _report(
         self,
@@ -2155,7 +2960,7 @@ class Kernel:
 
         staged_budget_updates: list[StagedBudgetUpdate] = []
         if staged_budget == "clear":
-            owner = self.host.owner(call.tool_name)
+            owner = self._snapshot.owner_of(call.tool_name)
             staged_budget_updates.append(StagedBudgetUpdate(owner=owner, action="clear"))
         elif isinstance(staged_budget, PluginBudget):
             staged_budget_updates.append(StagedBudgetUpdate(owner=staged_budget.owner, action="set", budget=staged_budget))
@@ -2247,22 +3052,120 @@ class Kernel:
         # failure is never suppressed or re-wrapped here: the drive boundary
         # finishes the run failed before any provider charge.
         if not allow_pending:
-            contributions = self.host.contribute_context(
-                execution.session.session_id,
-                run_id=execution.run_id,
-                logical_turn=execution.cursor.logical_turn,
-            )
-            for c in contributions:
-                if c.get("type") == "text":
-                    owner = str(c.get("owner", "plugin"))
-                    content = str(c.get("content", ""))
-                    messages.append(ProviderMessage("system", f"[{owner} context]\n{content}"))
+            with self._dispatch("context") as snapshot:
+                contributions = snapshot.host.contribute_context(
+                    execution.session.session_id,
+                    run_id=execution.run_id,
+                    logical_turn=execution.cursor.logical_turn,
+                )
+                for c in contributions:
+                    if c.get("type") == "text":
+                        owner = str(c.get("owner", "plugin"))
+                        content = str(c.get("content", ""))
+                        messages.append(ProviderMessage("system", f"[{owner} context]\n{content}"))
+
+            activation_note = self._activation_outcome_note(execution)
+            if activation_note is not None:
+                messages.append(ProviderMessage("system", activation_note))
 
             # Hard bound check strictly AFTER contributions
             if sum(len(json.dumps(encode_message(message), allow_nan=False).encode("utf-8")) for message in messages) > 256 * 1024:
                 raise ValueError("context exceeded the kernel's hard bound; explicit compaction is required")
 
         return tuple(messages)
+
+    def _drive_pending_activations(self) -> None:
+        """Finish automatic continuations a crash interrupted right after an activation commit."""
+        try:
+            for session in self.store.sessions(workspace=str(self.workspace)):
+                if self._closed:
+                    return
+                checkpoint = self.store.checkpoint(session.session_id)
+                if checkpoint is None or not isinstance(checkpoint.payload, Mapping):
+                    continue
+                cursor = _Cursor.model_validate(json_wire_object(checkpoint.payload))
+                if not cursor.resume_intent:
+                    continue
+                try:
+                    self._continue_after_activation(session.session_id)
+                except Exception:
+                    # The intent stays durable, so the next process retries it; never crash the kernel.
+                    continue
+        except Exception:
+            return
+
+    def _continue_after_activation(self, session_id: str) -> None:
+        """Claim and drive one owed continuation, exactly once, on its own captured generation."""
+        with self._run_lock:
+            self._ensure_open()
+            with self._aborts_lock:
+                if session_id in self._session_aborts:
+                    return
+            checkpoint = self.store.checkpoint(session_id)
+            if checkpoint is None or not isinstance(checkpoint.payload, Mapping):
+                return
+            cursor = _Cursor.model_validate(json_wire_object(checkpoint.payload))
+            intent = cursor.resume_intent
+            if not intent:
+                return
+            session = self.store.session(session_id)
+            if checkpoint.revision_id != self.revision_id or session.active_revision_id != self.revision_id:
+                return
+            self._abort.set_cancelled(False)
+            cursor.resume_intent = ""
+            execution = _Execution(session, cursor, list(self.store.events(session_id)), session.run_id or intent)
+            try:
+                self._commit(
+                    execution,
+                    "running",
+                    "ready",
+                    EventDraft("kernel.activation_continued", "kernel", "kernel", {"request_id": intent}),
+                )
+            except StoreConflict:
+                return
+            budget = 32
+            root_state = self.store.root_budget_state(cursor.root_id) if cursor.root_id else None
+            if root_state is not None:
+                remaining = root_state[0] - root_state[1]
+                if remaining <= 0:
+                    self._stop(execution, "root action budget exhausted", stop_cause="limit_reached")
+                    return
+                budget = max(1, min(32, remaining))
+            abort = Cancellation()
+            with self._aborts_lock:
+                self._session_aborts[session_id] = abort
+            try:
+                self._drive(execution, max_steps=budget)
+            finally:
+                with self._aborts_lock:
+                    self._session_aborts.pop(session_id, None)
+
+    def _activation_outcome_note(self, execution: _Execution) -> str | None:
+        """Tell the next prompt what happened to a staged activation this run asked for."""
+        request_id: str | None = None
+        outcome: tuple[str, str] | None = None
+        for event in execution.events:
+            payload = event.payload if isinstance(event.payload, Mapping) else {}
+            candidate = payload.get("request_id")
+            if not isinstance(candidate, str) or not candidate:
+                continue
+            if event.run_id != execution.run_id:
+                # Only the run that asked for the switch is told about it; later turns are not
+                # re-fed an old decision as if it were news.
+                continue
+            if event.event_type == "kernel.activation_requested":
+                request_id = candidate
+                outcome = None
+            elif event.event_type == "kernel.activation_committed" and candidate == request_id:
+                outcome = ("committed", str(payload.get("to_revision_id", "")))
+            elif outcome is None and candidate == request_id and event.event_type in {"kernel.activation_failed", "kernel.activation_blocked"}:
+                outcome = ("refused", str(payload.get("error", "")))
+        if request_id is None or outcome is None:
+            return None
+        kind, detail = outcome
+        if kind == "committed":
+            return f"[kernel] capability activation {request_id} committed the revision {detail}."
+        return f"[kernel] capability activation {request_id} was refused and the previous revision is still active: {detail}"
 
     def _stop(self, execution: _Execution, message: str, *, stop_cause: StopCause = "user_stop") -> KernelResult:
         """Stop a run. A deliberate user/owner stop is terminal for the session (no replay of the

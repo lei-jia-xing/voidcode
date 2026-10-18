@@ -174,7 +174,40 @@ The model-facing text is the legacy goal prompt, migrated verbatim from `runtime
 
 ---
 
-## 6b. Verified evidence
+## 6b. Owner deactivation (disable / re-enable)
+
+Disabling the plugin is a capability activation (`kernel.reload` with the owner disabled in the
+workspace config). The kernel runs the plugin's pure `Plugin.prepare_deactivate` transform in the
+**old** host — the one that still holds this schema — and writes the returned copy in the same
+transaction that cancels the owner's queued claims and clears its session budgets. The transform
+gets no service, lease, store or clock, so every field in the copy is derived from the payload.
+
+`prepare_goal_deactivation(state, scope, scope_key, tip_sequence)`:
+- Enforces the scope/tip contract before decoding anything: session scope needs the owning
+  session's non-negative integer tip, workspace scope needs none. Decoding then uses the same
+  strict `GoalState` parser. A malformed scope, tip or payload raises (the activation fails
+  visibly with `state_deactivation_failed`) rather than resetting, coercing or partially pausing
+  the goal. An empty payload returns empty: a disable never invents a goal.
+- Closes every open window at `tip_sequence`, the owning session's authentic
+  `last_event_sequence`. A workspace-scope row carries no session tip and is refused while a
+  window is open, and a tip that precedes an open window's start is refused too, so a stale or
+  corrupt tip can never write an inverted range. Already-closed windows are copied unchanged.
+- Turns `active`, `blocked`, `usage-limited` and `budget-limited` into `paused`; `complete`
+  stays `complete`.
+- Rewrites nothing else: `goal_id`, `objective` (and its spill ref/digest, `objective_edited`),
+  `created_at`, `updated_at`, the lifetime counters, the budget fields, the unknown-usage flag
+  and `schema_version` all survive unchanged. The transform has no clock, so it never invents a
+  new `updated_at`.
+- Declares no `state_schema_version` bump and no `migrate_state`: the paused copy is the same
+  version's shape, so a disable/re-enable cycle needs no identity migration.
+
+Consequences after re-enable: a `paused` goal contributes no context (`goal_context` returns
+`None`), the observer neither re-arms attribution nor stages a budget for a paused goal, and the
+kernel never replays cancelled continuations. Only the explicit `goal.resume` re-opens a window
+and stages the kernel constraint for it in the same commit, so no unbilled window exists after a
+re-enable. Identity, creation time, lifetime usage and budget survive the whole cycle.
+
+## 6c. Verified evidence
 
 Checks are the commands themselves (run from the repository root):
 
@@ -185,11 +218,40 @@ uv run ty check src/voidcode/plugins/goal
 uv run python scripts/generate_plugin_identities.py --check
 ```
 
-Exercised on the approved frozen stack (`goal_plugin.py 4ee8a848…`,
+Exercised on the current tree (`goal_plugin.py 775062f6…`, manifest `9ef26bce…`, unit tests
+`4df18502…`, integration tests `7da375a0…`):
+
+- 22 unit cases pass (the 19 P2 behaviour cases plus 3 deactivation cases: pause-at-tip with
+  full field preservation, live-status/complete/empty-state semantics including the
+  tip-equals-window-start boundary, and malformed scope/tip/state plus inverted-window refusal).
+- All 10 integration cases pass. Two of them are the P3 deactivation cases:
+  - `test_deactivation_pure_rpc_pauses_live_goal_in_the_real_host`: the actual plugin-host
+    process returns the paused copy for an active goal, closes the window at the session's own
+    `last_event_sequence`, leaves the durable row untouched, contacts no provider, and refuses a
+    workspace-scope tip, a missing session tip and a tip behind the window start without writing
+    anything.
+  - `test_same_session_disable_and_reenable_keeps_paused_goal`: a real `kernel.reload` with the
+    owner disabled on the SAME session reports `deactivated_owners == ('goal',)`, and the durable
+    row is the paused copy with the window closed at the session's own event tip, identity,
+    `created_at`, `updated_at`, budget and counters preserved, and the owner budget cleared.
+    Disabled, the goal command is unknown and ordinary chat completes with exactly one billed
+    turn carrying no goal context and charging the goal nothing. Re-enabled, the row is still
+    paused and nothing dispatches until `goal.resume`, which arms the cap in its own commit.
+    The loopback provider reads the kernel's durable owner budget while each request is still in
+    flight, before any byte of the reply is written, and observes none for the ordinary turn
+    (disabled owner) and exactly the resume-armed cap for the first resumed dispatch
+    (`since_sequence` = the new window baseline, `max_total_tokens` = 10). That dispatch bills 25
+    tokens, the observer stages `goal_budget_limited` against the same allowance, the goal's
+    counters charge that new window only (25, never the ordinary 18), identity, `created_at` and
+    budget survive, and the model's own `update_goal` finishes the goal in the same run without
+    the concluding provider turn an uncapped run would take.
+- `ruff check` and `ty check` pass, and `scripts/generate_plugin_identities.py --check` is clean.
+
+P2 records, made against the P2 frozen stack (`goal_plugin.py 4ee8a848…`,
 manifest `5556ecdf…`, with `kernel/engine.py 95e72163…`, `kernel/host.py 4b4c8453…`,
 `kernel/storage/store.py 8947131f…`, SDK directory input `b15172ef…`):
 
-- 27 behaviour cases pass (19 unit + 8 integration).
+- 27 behaviour cases passed (19 unit + 8 integration).
 - Live `deepseek/deepseek-flash` idle `goal.set` run (no user prompt, no manual drain): the
   goal context drove read `17 25` → write `42` → read back → explicit complete; goal
   `complete`, tokens 7331, measured elapsed 6.356 s, `cost_usd` remained `None`; a fresh

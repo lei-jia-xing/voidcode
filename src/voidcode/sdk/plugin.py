@@ -26,6 +26,10 @@ class Plugin:
     views: tuple[PluginView, ...] = ()
     context: Callable[[ToolContext, PluginServices], ContextContribution | None] | None = None
     observer: Callable[[PluginFact, ToolContext, PluginServices], None] | None = None
+    #: Pure old-version -> new-version state transform, run before a capability switch.
+    migrate_state: Callable[[Mapping[str, object], int, int], Mapping[str, object]] | None = None
+    #: Pure deactivation transform, run in the current host when this owner is disabled.
+    prepare_deactivate: Callable[[Mapping[str, object], str, str, int | None], Mapping[str, object]] | None = None
     close: Callable[[], None] | None = None
 
 
