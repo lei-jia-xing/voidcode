@@ -7,16 +7,24 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
+from .commands import Command, CommandDefinition
+from .hooks import ContextContribution, PluginFact
+from .invocation import ToolContext
 from .json_values import own_json_object
-from .manifest import PluginManifest, PluginToolDeclaration
+from .manifest import PluginCommandDeclaration, PluginManifest, PluginToolDeclaration
 from .provider import TurnProvider
 from .tools import Tool, ToolDefinition, ToolReplayPolicy
+from .views import PluginView
 
 
 @dataclass(frozen=True, slots=True)
 class Plugin:
     tools: tuple[Tool, ...] = ()
+    commands: tuple[Command, ...] = ()
     providers: tuple[TurnProvider, ...] = ()
+    views: tuple[PluginView, ...] = ()
+    context: Callable[[ToolContext], ContextContribution | None] | None = None
+    observer: Callable[[PluginFact, ToolContext], None] | None = None
     close: Callable[[], None] | None = None
 
 
@@ -41,4 +49,17 @@ def tool_definition(declaration: PluginToolDeclaration) -> ToolDefinition:
         input_schema=declaration.input_schema,
         effects=frozenset(declaration.effects),
         replay_policy=cast(ToolReplayPolicy | None, declaration.replay_policy),
+    )
+
+
+def command_definition(declaration: PluginCommandDeclaration) -> CommandDefinition:
+    """Use the admitted declaration for both the catalog and the actual handler."""
+    return CommandDefinition(
+        name=declaration.name,
+        description=declaration.description,
+        argument_schema=declaration.argument_schema,
+        effects=frozenset(declaration.effects),
+        capabilities=frozenset(declaration.capabilities),
+        busy_gate=declaration.busy_gate,
+        client_capabilities=frozenset(declaration.client_capabilities),
     )

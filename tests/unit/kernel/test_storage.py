@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -93,11 +95,11 @@ def test_revision_canonical_content_hashing_and_idempotence(tmp_path: Path) -> N
         # Re-fetching returns immutable snapshot
         loaded = store.revision(rev_id_1)
         assert loaded["b"] == 2
-        assert loaded["a"]["z"] == 10  # type: ignore[index]
+        a_val = loaded["a"]
+        assert isinstance(a_val, Mapping)
+        assert a_val["z"] == 10
         with pytest.raises((TypeError, AttributeError)):
-            loaded["b"] = 999  # type: ignore[index]
-
-        # Unknown revision raises KeyError
+            cast(Any, loaded)["b"] = 999
         with pytest.raises(KeyError, match="unknown revision"):
             store.revision("0" * 64)
 
@@ -492,4 +494,6 @@ def test_store_can_commit_from_a_run_worker_thread(tmp_path: Path) -> None:
             ).result(timeout=5)
         assert committed.last_event_sequence == 1
         assert store.events("worker")[0].payload["value"] == 42
-        assert store.checkpoint("worker").payload["last"] == 42
+        cp = store.checkpoint("worker")
+        assert cp is not None
+        assert cp.payload["last"] == 42

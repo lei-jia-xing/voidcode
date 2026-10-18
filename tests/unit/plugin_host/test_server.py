@@ -129,3 +129,42 @@ def test_server_rejects_invalid_nested_params() -> None:
     assert len(lines) == 1
     assert lines[0]["ok"] is False
     assert lines[0]["error"]["kind"] == "invalid_params"
+
+
+def test_bad_per_call_params_do_not_kill_the_server_loop() -> None:
+    """A malformed per-call request answers invalid_params and the loop stays alive."""
+    bad = json.dumps({"protocol_version": 1, "id": "1", "method": "contribute_context", "params": {"session_id": "s"}}).encode("utf-8")
+    good = json.dumps({"protocol_version": 1, "id": "2", "method": "cancel", "params": {"target_id": "none"}}).encode("utf-8")
+    in_buf = io.BytesIO(bad + b"\n" + good + b"\n")
+    out_buf = io.BytesIO()
+
+    PluginHostServer(in_stream=in_buf, out_stream=out_buf, standalone=False).run()
+
+    out_buf.seek(0)
+    lines = [json.loads(line.decode("utf-8")) for line in out_buf if line.strip()]
+    assert [line["id"] for line in lines] == ["1", "2"]
+    assert lines[0]["ok"] is False
+    assert lines[0]["error"]["kind"] == "invalid_params"
+    assert lines[1]["ok"] is True
+
+
+def test_context_and_observer_arity_is_admitted_strictly() -> None:
+    """Frozen service API: context takes (ctx, services), observer takes (fact, ctx, services)."""
+    from voidcode.plugin_host.server import _check_arity
+
+    def context(ctx, services):  # noqa: ARG001
+        return None
+
+    def observer(fact, ctx, services):  # noqa: ARG001
+        return None
+
+    _check_arity(context, 2, "context")
+    _check_arity(observer, 3, "observer")
+
+    def legacy_context(ctx):  # noqa: ARG001
+        return None
+
+    import pytest
+
+    with pytest.raises(ValueError, match="must accept 2 positional arguments"):
+        _check_arity(legacy_context, 2, "context")

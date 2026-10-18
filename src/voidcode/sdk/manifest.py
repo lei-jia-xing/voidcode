@@ -11,6 +11,7 @@ import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Literal
 
 import jsonschema
 from pydantic import TypeAdapter
@@ -152,15 +153,35 @@ class PluginCommandDeclaration:
     name: str
     description: str
     argument_schema: Mapping[str, object] = field(default_factory=dict)
+    effects: tuple[ToolEffect, ...] = ()
+    capabilities: tuple[str, ...] = ()
     busy_gate: bool = False
+    client_capabilities: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _validate_non_empty_str(self.name, field_name="command declaration name")
         _validate_non_empty_str(self.description, field_name="command declaration description")
         owned_schema = validate_json_schema(self.argument_schema, field_name=f"commands[{self.name}].argument_schema")
         object.__setattr__(self, "argument_schema", owned_schema)
+        validated_effects: list[ToolEffect] = []
+        for eff in self.effects:
+            if not isinstance(eff, ToolEffect):
+                try:
+                    eff = ToolEffect(eff)
+                except ValueError, KeyError:
+                    raise ValueError(f"invalid command effect: {eff}") from None
+            validated_effects.append(eff)
+        object.__setattr__(self, "effects", tuple(validated_effects))
+        if not isinstance(self.capabilities, (list, tuple)):
+            raise ValueError("command declaration capabilities must be a sequence")
+        caps = tuple(_validate_non_empty_str(c, field_name="capability") for c in self.capabilities)
+        object.__setattr__(self, "capabilities", caps)
         if type(self.busy_gate) is not bool:
             raise ValueError("command declaration busy_gate must be a boolean")
+        if not isinstance(self.client_capabilities, (list, tuple)):
+            raise ValueError("command declaration client_capabilities must be a sequence")
+        client_caps = tuple(_validate_non_empty_str(c, field_name="client_capability") for c in self.client_capabilities)
+        object.__setattr__(self, "client_capabilities", client_caps)
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,6 +211,8 @@ class PluginManifest:
     depends: tuple[str, ...] = ()
     state_schema_version: int = 1
     config_schema: Mapping[str, object] = field(default_factory=dict)
+    context: bool = False
+    observed_facts: tuple[Literal["usage", "invocation_finished", "run_finished"], ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.plugin_id, str) or not _PLUGIN_ID_REGEX.fullmatch(self.plugin_id):
@@ -203,6 +226,16 @@ class PluginManifest:
         _validate_entrypoint(self.entrypoint, field_name="entrypoint")
         if type(self.state_schema_version) is not int or self.state_schema_version < 1:
             raise ValueError("plugin manifest state_schema_version must be >= 1")
+
+        if type(self.context) is not bool:
+            raise ValueError("plugin manifest context must be a boolean")
+        if not isinstance(self.observed_facts, (list, tuple)):
+            raise ValueError("plugin manifest observed_facts must be a sequence")
+        valid_facts = {"usage", "invocation_finished", "run_finished"}
+        for f in self.observed_facts:
+            if f not in valid_facts:
+                raise ValueError(f"invalid observed_fact: {f}")
+        object.__setattr__(self, "observed_facts", tuple(self.observed_facts))
 
         file_paths = [f.path for f in self.files]
         if len(file_paths) != len(set(file_paths)):
@@ -237,6 +270,10 @@ class PluginManifest:
             for cap in tool.capabilities:
                 if cap not in declared_caps:
                     raise ValueError(f"tool {tool.name} requires undeclared capability: {cap}")
+        for command in self.commands:
+            for cap in command.capabilities:
+                if cap not in declared_caps:
+                    raise ValueError(f"command {command.name} requires undeclared capability: {cap}")
 
         owned_config_schema = validate_json_schema(self.config_schema, field_name="config_schema")
         object.__setattr__(self, "config_schema", owned_config_schema)
@@ -265,7 +302,10 @@ class PluginManifest:
                     "name": command.name,
                     "description": command.description,
                     "argument_schema": json_wire_object(command.argument_schema),
+                    "effects": [effect.value for effect in command.effects],
+                    "capabilities": list(command.capabilities),
                     "busy_gate": command.busy_gate,
+                    "client_capabilities": list(command.client_capabilities),
                 }
                 for command in self.commands
             ],
@@ -274,6 +314,8 @@ class PluginManifest:
             "depends": list(self.depends),
             "state_schema_version": self.state_schema_version,
             "config_schema": json_wire_object(self.config_schema),
+            "context": self.context,
+            "observed_facts": list(self.observed_facts),
         }
 
 

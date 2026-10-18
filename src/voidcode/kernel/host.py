@@ -9,24 +9,40 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable, Mapping
 from concurrent.futures import Future
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+from uuid import uuid4
 
 from voidcode.sdk.codec import (
+    decode_command_descriptor,
+    decode_command_result,
     decode_provider_error,
     decode_provider_result,
     decode_tool_definition,
     decode_tool_result,
+    decode_view_descriptor,
     encode_context,
     encode_provider_request,
     encode_tool_call,
 )
+from voidcode.sdk.commands import CommandDescriptor, CommandResult
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.json_values import json_wire_object
+from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.plugin import HostPlugin
 from voidcode.sdk.provider import ProviderAbortSignal, ProviderExecutionError, ProviderTurnRequest, ProviderTurnResult
+from voidcode.sdk.services import PluginBudget, SessionUsageReport
 from voidcode.sdk.tools import ToolCall, ToolDefinition, ToolResult
+from voidcode.sdk.views import PluginViewDescriptor
+
+from .storage.store import (
+    EventDraft,
+    SqliteStore,
+    StagedContinuationDraft,
+    StagedStateUpdate,
+)
 
 __all__ = [
     "HostClient",
@@ -62,6 +78,23 @@ class InvocationCancelled(RuntimeError):
         self.execution_stopped = execution_stopped
 
 
+@dataclass
+class LeaseContext:
+    token: str
+    owner: str
+    session_id: str
+    workspace: Path
+    run_id: str
+    revision_id: str
+    invocation_id: str
+    grants: frozenset[str]
+    readonly: bool
+    staged_state: dict[tuple[str, str], tuple[Mapping[str, object], int]] = field(default_factory=dict)
+    staged_events: list[EventDraft] = field(default_factory=list)
+    staged_continuations: list[StagedContinuationDraft] = field(default_factory=list)
+    staged_budget: PluginBudget | None | Literal["clear"] = None
+
+
 class HostClient:
     """Client connection to an isolated plugin host subprocess."""
 
@@ -71,6 +104,9 @@ class HostClient:
         *,
         workspace: Path,
         revision_id: str,
+        store: SqliteStore | None = None,
+        usage_callback: Callable[[str, int], SessionUsageReport] | None = None,
+        budget_callback: Callable[[str, str], PluginBudget | None] | None = None,
         lease_fd: int | None = None,
     ) -> None:
         self.workspace = Path(workspace).resolve()
@@ -80,10 +116,16 @@ class HostClient:
         if not revision_id:
             raise ValueError("revision_id must be a non-empty string")
         self.revision_id = revision_id
+        self._store = store
+        self._usage_callback = usage_callback
+        self._budget_callback = budget_callback
 
+        self._context_owners: tuple[str, ...] = ()
+        self._observer_owners: dict[str, tuple[str, ...]] = {}
         # Client admission checks
         seen_pids: set[str] = set()
         seen_tools: set[str] = set()
+        seen_commands: set[str] = set()
         seen_providers: set[str] = set()
         seen_modules: set[str] = set()
 
@@ -111,6 +153,14 @@ class HostClient:
                 if tool_decl.name in seen_tools:
                     raise ValueError(f"Duplicate tool name declared across plugins: {tool_decl.name}")
                 seen_tools.add(tool_decl.name)
+            for cmd_decl in plugin.manifest.commands:
+                req_caps = frozenset(cmd_decl.capabilities)
+                if not req_caps.issubset(plugin.capabilities):
+                    missing = req_caps - plugin.capabilities
+                    raise ValueError(f"Plugin {pid} command {cmd_decl.name} requires capabilities {set(missing)} not granted to plugin")
+                if cmd_decl.name in seen_commands:
+                    raise ValueError(f"Duplicate command name declared across plugins: {cmd_decl.name}")
+                seen_commands.add(cmd_decl.name)
 
             for prov_decl in plugin.manifest.providers:
                 if prov_decl.name in seen_providers:
@@ -124,6 +174,8 @@ class HostClient:
         self._pending: dict[str, Future[dict[str, Any]]] = {}
         self._counter: int = 0
         self._closed: bool = False
+        self._active_leases: dict[str, LeaseContext] = {}
+        self._lease_lock = threading.Lock()
 
         # Spawn plugin host process in a new process session (process group leader)
         pass_fds = () if lease_fd is None else (lease_fd,)
@@ -169,6 +221,14 @@ class HostClient:
     def providers(self) -> tuple[str, ...]:
         return self._providers
 
+    @property
+    def commands(self) -> tuple[CommandDescriptor, ...]:
+        return self._commands
+
+    @property
+    def views(self) -> tuple[str, ...]:
+        return self._views
+
     def owner(self, tool_name: str) -> str:
         if tool_name not in self._tool_owners:
             raise KeyError(f"Tool {tool_name} not found in catalog")
@@ -178,6 +238,11 @@ class HostClient:
         if tool_name not in self._tool_capabilities:
             raise KeyError(f"Tool {tool_name} not found in catalog")
         return self._tool_capabilities[tool_name]
+
+    def view_owner(self, view_name: str) -> str:
+        if view_name not in self._view_owners:
+            raise KeyError(f"View {view_name} not found in catalog")
+        return self._view_owners[view_name]
 
     def _next_id(self, prefix: str) -> str:
         with self._maps_lock:
@@ -259,6 +324,17 @@ class HostClient:
         self._providers = tuple(str(p) for p in result.get("providers", ()))
         self._tool_owners = dict(result.get("tool_owners", {}))
         self._tool_capabilities = {k: frozenset(v) for k, v in result.get("tool_capabilities", {}).items()}
+        self._commands = tuple(decode_command_descriptor(c) for c in result.get("commands", ()))
+        self._command_map = {c.name: c for c in self._commands}
+        self._views = tuple(str(v) for v in result.get("views", ()))
+        self._view_owners = dict(result.get("view_owners", {}))
+        self._context_owners = tuple(result.get("context_owners", ()))
+        obs_map = result.get("observer_owners", {})
+        self._observer_owners = {}
+        if isinstance(obs_map, dict):
+            for k, v in obs_map.items():
+                if isinstance(v, (list, tuple)):
+                    self._observer_owners[str(k)] = tuple(str(x) for x in v)
 
     def _reader_loop(self) -> None:
         try:
@@ -282,6 +358,10 @@ class HostClient:
 
                 if not isinstance(message, dict):
                     break
+                # Check if this is a reverse RPC request from the server
+                if "method" in message:
+                    self._handle_reverse_rpc(message)
+                    continue
 
                 protocol_version = message.get("protocol_version")
                 req_id = message.get("id")
@@ -350,6 +430,165 @@ class HostClient:
             is_stopped = self._proc.poll() is not None if self._proc else True
             self._reap_pending("Host process killed and reaped", execution_stopped=is_stopped)
             return is_stopped
+
+    def _handle_reverse_rpc(self, message: dict[str, Any]) -> None:
+        rpc_id = str(message.get("id", ""))
+        method = message.get("method")
+        params = message.get("params", {})
+        if not isinstance(params, dict):
+            return
+
+        def execute_rpc() -> None:
+            try:
+                # 1. Reject any request attempting to spoof owner, actor, or scope_key
+                for forbidden in ("owner", "actor", "scope_key"):
+                    if forbidden in params:
+                        raise PermissionError(f"Reverse RPC parameter '{forbidden}' is forbidden; identity is governed by lease token")
+
+                # 2. Authenticate lease token
+                token = params.get("lease_token")
+                if not token or not isinstance(token, str):
+                    raise PermissionError("Missing required 'lease_token' in reverse RPC")
+
+                with self._lease_lock:
+                    lease = self._active_leases.get(token)
+                if lease is None:
+                    raise PermissionError("Invalid or expired service lease token")
+
+                scope = str(params.get("scope", "session"))
+                if scope not in ("session", "workspace"):
+                    raise ValueError(f"Invalid scope: {scope!r}")
+                scope_key = lease.session_id if scope == "session" else ""
+
+                if method == "state_get":
+                    if (scope, scope_key) in lease.staged_state:
+                        st, ver = lease.staged_state[(scope, scope_key)]
+                    else:
+                        if self._store is None:
+                            raise RuntimeError("Store not attached to HostClient")
+                        st, ver = self._store.plugin_state(lease.owner, scope, scope_key)
+                    resp = {"state": json_wire_object(st) if st is not None else None, "version": ver}
+
+                elif method == "state_replace":
+                    if lease.readonly:
+                        raise PermissionError("Cannot modify state from a read-only service lease")
+                    state = own_json_object(params["state"])
+                    expected_version = int(params["expected_version"])
+                    new_version = expected_version + 1
+                    lease.staged_state[(scope, scope_key)] = (state, new_version)
+                    resp = {"ok": True, "version": new_version}
+
+                elif method == "event_stage":
+                    if lease.readonly:
+                        raise PermissionError("Cannot stage events from a read-only service lease")
+                    event_type = str(params["event_type"])
+                    payload = own_json_object(params["payload"])
+                    lease.staged_events.append(
+                        EventDraft(
+                            event_type=f"plugin.{lease.owner}.{event_type}",
+                            source=f"plugin.{lease.owner}",
+                            actor="plugin",
+                            payload=payload,
+                        )
+                    )
+                    resp = {"ok": True}
+
+                elif method == "continuation_enqueue":
+                    if lease.readonly:
+                        raise PermissionError("Cannot enqueue continuations from a read-only service lease")
+                    cid = uuid4().hex
+                    payload = own_json_object(params["payload"])
+                    idempotency_key = params.get("idempotency_key")
+                    lease.staged_continuations.append(
+                        StagedContinuationDraft(
+                            continuation_id=cid,
+                            owner=lease.owner,
+                            source=f"plugin.{lease.owner}",
+                            payload=payload,
+                            idempotency_key=str(idempotency_key) if idempotency_key is not None else None,
+                        )
+                    )
+                    resp = {"continuation_id": cid}
+
+                elif method == "get_usage":
+                    since_sequence = int(params.get("since_sequence", 0))
+                    if self._usage_callback is not None:
+                        report = self._usage_callback(lease.session_id, since_sequence)
+                        resp = report.as_payload()
+                    else:
+                        resp = {
+                            "session_id": lease.session_id,
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "cache_read_tokens": 0,
+                            "uncached_input_tokens": 0,
+                            "has_unknown_usage": False,
+                            "turn_count": 0,
+                            "elapsed_seconds": 0.0,
+                            "since_sequence": since_sequence,
+                        }
+
+                elif method == "get_budget":
+                    if lease.staged_budget == "clear":
+                        resp = {"budget": None}
+                    elif lease.staged_budget is not None:
+                        resp = {"budget": lease.staged_budget.as_payload()}
+                    elif self._budget_callback is not None:
+                        b = self._budget_callback(lease.session_id, lease.owner)
+                        resp = {"budget": b.as_payload() if b is not None else None}
+                    else:
+                        resp = {"budget": None}
+
+                elif method == "set_budget":
+                    if lease.readonly:
+                        raise PermissionError("Cannot set budget from a read-only service lease")
+                    budget = PluginBudget(
+                        owner=lease.owner,
+                        max_input_tokens=params.get("max_input_tokens"),
+                        max_output_tokens=params.get("max_output_tokens"),
+                        max_total_tokens=params.get("max_total_tokens"),
+                        max_cost_usd=params.get("max_cost_usd"),
+                        max_elapsed_seconds=params.get("max_elapsed_seconds"),
+                    )
+                    lease.staged_budget = budget
+                    resp = {"ok": True}
+
+                elif method == "clear_budget":
+                    if lease.readonly:
+                        raise PermissionError("Cannot clear budget from a read-only service lease")
+                    lease.staged_budget = "clear"
+                    resp = {"ok": True}
+
+                else:
+                    self._send_request(
+                        {
+                            "protocol_version": 1,
+                            "id": rpc_id,
+                            "ok": False,
+                            "error": {"kind": "unknown_rpc", "message": f"Unknown reverse RPC method: {method}"},
+                        }
+                    )
+                    return
+
+                self._send_request(
+                    {
+                        "protocol_version": 1,
+                        "id": rpc_id,
+                        "ok": True,
+                        "result": json_wire_object(resp),
+                    }
+                )
+            except Exception as exc:
+                self._send_request(
+                    {
+                        "protocol_version": 1,
+                        "id": rpc_id,
+                        "ok": False,
+                        "error": {"kind": "rpc_failed", "message": str(exc)},
+                    }
+                )
+
+        threading.Thread(target=execute_rpc, daemon=True).start()
 
     def _attempt_cooperative_cancel(self, req_id: str) -> None:
         try:
@@ -535,6 +774,310 @@ class HostClient:
             raise RuntimeError(err.get("message", "Provider turn failed") if isinstance(err, dict) else "Provider turn failed")
 
         return decode_provider_result(response["result"])
+
+    def invoke_command(
+        self,
+        session_id: str,
+        name: str,
+        arguments: Mapping[str, object],
+        *,
+        context: ToolContext,
+        client_capabilities: frozenset[str] = frozenset(),
+        timeout_seconds: float = 120,
+    ) -> tuple[
+        CommandResult,
+        tuple[StagedStateUpdate, ...],
+        tuple[EventDraft, ...],
+        tuple[StagedContinuationDraft, ...],
+        PluginBudget | None | Literal["clear"],
+    ]:
+        """Invoke a registered command in the host process."""
+        if self._closed or self._proc is None or self._proc.poll() is not None:
+            is_stopped = self._proc.poll() is not None if self._proc else True
+            raise HostUnavailable("Plugin host is closed or process terminated", execution_stopped=is_stopped)
+
+        cmd_desc = self._command_map.get(name)
+        if cmd_desc is None:
+            raise ValueError(f"Unknown command: {name}")
+        req_id = self._next_id("cmd")
+        future: Future[dict[str, Any]] = Future()
+        with self._maps_lock:
+            self._pending[req_id] = future
+
+        lease_token = uuid4().hex
+        lease = LeaseContext(
+            token=lease_token,
+            owner=cmd_desc.owner,
+            session_id=session_id,
+            workspace=self.workspace,
+            run_id=context.run_id,
+            revision_id=self.revision_id,
+            invocation_id=context.invocation_id,
+            grants=context.capabilities,
+            readonly=False,
+        )
+        with self._lease_lock:
+            self._active_leases[lease_token] = lease
+
+        try:
+            self._send_request(
+                {
+                    "protocol_version": 1,
+                    "id": req_id,
+                    "method": "invoke_command",
+                    "params": {
+                        "name": name,
+                        "arguments": json_wire_object(arguments),
+                        "context": encode_context(context),
+                        "lease_token": lease_token,
+                        "client_capabilities": sorted(list(client_capabilities)),
+                    },
+                }
+            )
+            response = self._wait_for_future(req_id, future, timeout_seconds, context.abort_signal)
+        except Exception as exc:
+            with self._maps_lock:
+                self._pending.pop(req_id, None)
+            stopped = self._kill_and_reap()
+            raise HostUnavailable(f"Failed to send invoke_command request: {exc}", execution_stopped=stopped) from exc
+        finally:
+            with self._lease_lock:
+                self._active_leases.pop(lease_token, None)
+
+        if not response.get("ok", False):
+            err = response.get("error", {})
+            raise RuntimeError(err.get("message", "Command invocation failed") if isinstance(err, dict) else "Command invocation failed")
+
+        result_payload = response.get("result", {})
+        cmd_result = decode_command_result(result_payload["command_result"])
+
+        staged_state_updates = tuple(
+            StagedStateUpdate(
+                owner=lease.owner,
+                scope=sc,
+                scope_key=sk,
+                payload=st,
+                expected_version=ver - 1,
+            )
+            for (sc, sk), (st, ver) in lease.staged_state.items()
+        )
+        return cmd_result, staged_state_updates, tuple(lease.staged_events), tuple(lease.staged_continuations), lease.staged_budget
+
+    def render_view(
+        self,
+        session_id: str,
+        name: str,
+        *,
+        client_capabilities: frozenset[str] = frozenset(),
+        timeout_seconds: float = 30,
+    ) -> PluginViewDescriptor:
+        """Render a declarative plugin view for a session."""
+        if self._closed or self._proc is None or self._proc.poll() is not None:
+            is_stopped = self._proc.poll() is not None if self._proc else True
+            raise HostUnavailable("Plugin host is closed or process terminated", execution_stopped=is_stopped)
+
+        if name not in self._views:
+            raise ValueError(f"Unknown view: {name}")
+
+        req_id = self._next_id("view")
+        future: Future[dict[str, Any]] = Future()
+        with self._maps_lock:
+            self._pending[req_id] = future
+
+        lease_token = uuid4().hex
+        view_owner = self.view_owner(name)
+        lease = LeaseContext(
+            token=lease_token,
+            owner=view_owner,
+            session_id=session_id,
+            workspace=self.workspace,
+            run_id="view",
+            revision_id=self.revision_id,
+            invocation_id=uuid4().hex,
+            grants=frozenset(),
+            readonly=True,
+        )
+        with self._lease_lock:
+            self._active_leases[lease_token] = lease
+
+        try:
+            self._send_request(
+                {
+                    "protocol_version": 1,
+                    "id": req_id,
+                    "method": "render_view",
+                    "params": {
+                        "name": name,
+                        "session_id": session_id,
+                        "lease_token": lease_token,
+                        "client_capabilities": sorted(list(client_capabilities)),
+                    },
+                }
+            )
+            response = self._wait_for_future(req_id, future, timeout_seconds, None)
+        except Exception as exc:
+            with self._maps_lock:
+                self._pending.pop(req_id, None)
+            stopped = self._kill_and_reap()
+            raise HostUnavailable(f"Failed to send render_view request: {exc}", execution_stopped=stopped) from exc
+        finally:
+            with self._lease_lock:
+                self._active_leases.pop(lease_token, None)
+
+        if not response.get("ok", False):
+            err = response.get("error", {})
+            raise RuntimeError(err.get("message", "View rendering failed") if isinstance(err, dict) else "View rendering failed")
+
+        return decode_view_descriptor(response["result"])
+
+    def contribute_context(self, session_id: str, *, logical_turn: str = "", timeout_seconds: float = 30) -> tuple[dict[str, object], ...]:
+        if self._closed or self._proc is None or self._proc.poll() is not None:
+            return ()
+        all_contributions: list[dict[str, object]] = []
+        for owner in self._context_owners:
+            req_id = self._next_id("ctx")
+            future: Future[dict[str, Any]] = Future()
+            with self._maps_lock:
+                self._pending[req_id] = future
+
+            lease_token = uuid4().hex
+            lease = LeaseContext(
+                token=lease_token,
+                owner=owner,
+                session_id=session_id,
+                workspace=self.workspace,
+                run_id="context",
+                revision_id=self.revision_id,
+                invocation_id=uuid4().hex,
+                grants=frozenset(),
+                readonly=True,
+            )
+            with self._lease_lock:
+                self._active_leases[lease_token] = lease
+
+            try:
+                self._send_request(
+                    {
+                        "protocol_version": 1,
+                        "id": req_id,
+                        "method": "contribute_context",
+                        "params": {
+                            "session_id": session_id,
+                            "owner": owner,
+                            "logical_turn": logical_turn,
+                            "lease_token": lease_token,
+                        },
+                    }
+                )
+                response = self._wait_for_future(req_id, future, timeout_seconds, None)
+            except Exception as exc:
+                with self._maps_lock:
+                    self._pending.pop(req_id, None)
+                stopped = self._kill_and_reap()
+                raise HostUnavailable(f"Failed to send contribute_context request: {exc}", execution_stopped=stopped) from exc
+            finally:
+                with self._lease_lock:
+                    self._active_leases.pop(lease_token, None)
+
+            if not response.get("ok", False):
+                err = response.get("error", {})
+                raise RuntimeError(err.get("message", "Context contribution failed") if isinstance(err, dict) else "Context contribution failed")
+
+            contributions = response.get("result", {}).get("contributions", [])
+            if isinstance(contributions, list):
+                all_contributions.extend(contributions)
+
+        return tuple(all_contributions)
+
+    def notify_fact(
+        self,
+        fact_type: str,
+        fact: Mapping[str, object],
+        *,
+        logical_turn: str = "",
+        timeout_seconds: float = 30,
+    ) -> tuple[tuple[StagedStateUpdate, ...], tuple[EventDraft, ...], tuple[StagedContinuationDraft, ...], tuple[dict[str, str], ...]]:
+        if self._closed or self._proc is None or self._proc.poll() is not None:
+            return (), (), (), ()
+
+        subscribed_owners = self._observer_owners.get(fact_type, ())
+        if not subscribed_owners:
+            return (), (), (), ()
+
+        all_state_updates: list[StagedStateUpdate] = []
+        all_events: list[EventDraft] = []
+        all_conts: list[StagedContinuationDraft] = []
+        all_errors: list[dict[str, str]] = []
+
+        session_id = str(fact.get("session_id", ""))
+        run_id = str(fact.get("run_id", "observer"))
+        revision_id = str(fact.get("revision_id", self.revision_id))
+
+        for owner in subscribed_owners:
+            req_id = self._next_id("obs")
+            future: Future[dict[str, Any]] = Future()
+            with self._maps_lock:
+                self._pending[req_id] = future
+
+            lease_token = uuid4().hex
+            lease = LeaseContext(
+                token=lease_token,
+                owner=owner,
+                session_id=session_id,
+                workspace=self.workspace,
+                run_id=run_id,
+                revision_id=revision_id,
+                invocation_id=uuid4().hex,
+                grants=frozenset(),
+                readonly=False,
+            )
+            with self._lease_lock:
+                self._active_leases[lease_token] = lease
+
+            try:
+                self._send_request(
+                    {
+                        "protocol_version": 1,
+                        "id": req_id,
+                        "method": "notify_fact",
+                        "params": {
+                            "fact_type": fact_type,
+                            "fact": json_wire_object(fact),
+                            "owner": owner,
+                            "logical_turn": logical_turn,
+                            "lease_token": lease_token,
+                        },
+                    }
+                )
+                response = self._wait_for_future(req_id, future, timeout_seconds, None)
+            except Exception:
+                with self._maps_lock:
+                    self._pending.pop(req_id, None)
+                continue
+            finally:
+                with self._lease_lock:
+                    self._active_leases.pop(lease_token, None)
+
+            staged_state_updates = [
+                StagedStateUpdate(
+                    owner=lease.owner,
+                    scope=sc,
+                    scope_key=sk,
+                    payload=st,
+                    expected_version=ver - 1,
+                )
+                for (sc, sk), (st, ver) in lease.staged_state.items()
+            ]
+            all_state_updates.extend(staged_state_updates)
+            all_events.extend(lease.staged_events)
+            all_conts.extend(lease.staged_continuations)
+
+            if response.get("ok"):
+                raw_errs = response.get("result", {}).get("errors", [])
+                if isinstance(raw_errs, list):
+                    all_errors.extend(raw_errs)
+
+        return tuple(all_state_updates), tuple(all_events), tuple(all_conts), tuple(all_errors)
 
     def close(self) -> None:
         """Close connection to host and reap child process group cleanly."""

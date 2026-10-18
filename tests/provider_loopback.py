@@ -74,17 +74,36 @@ def _stream_response_body(response: dict[str, object]) -> bytes:
     return b"".join((*frames, b"data: [DONE]\n\n"))
 
 
-def openai_response(*, message: dict[str, object], finish: str) -> dict[str, object]:
+_DEFAULT_USAGE: dict[str, object] = {"prompt_tokens": 120, "completion_tokens": 45, "prompt_tokens_details": {"cached_tokens": 30}}
+
+
+def openai_response(
+    *,
+    message: dict[str, object],
+    finish: str,
+    usage: dict[str, object] | None | bool = True,
+) -> dict[str, object]:
+    """Build a faithful OpenAI chat-completion reply, usage block included by default.
+
+    Pass ``usage=None`` explicitly only when the test's subject IS unknown-usage
+    refusal; every other consumer gets the realistic wire behavior. ``usage=False``
+    omits the block for legacy shape tests that assert its absence.
+    """
     response_message = dict(message)
     if response_message.get("tool_calls") and not response_message.get("reasoning_content"):
         response_message["reasoning_content"] = "loopback tool-call reasoning"
-    return {
+    reply: dict[str, object] = {
         "id": "chatcmpl-loopback",
         "object": "chat.completion",
         "created": 1,
         "model": "deepseek-v4-pro",
         "choices": [{"index": 0, "message": response_message, "finish_reason": finish}],
     }
+    if usage is True:
+        reply["usage"] = dict(_DEFAULT_USAGE)
+    elif usage is not None and usage is not False:
+        reply["usage"] = usage
+    return reply
 
 
 def configure_openai_provider(

@@ -8,37 +8,66 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import inspect
 import json
 import os
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable, Mapping
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Literal
 
 import jsonschema
 
 from voidcode.sdk.codec import (
+    decode_budget,
     decode_context,
     decode_provider_request,
+    decode_session_usage,
     decode_tool_call,
+    encode_command_descriptor,
+    encode_command_result,
     encode_provider_error,
     encode_provider_result,
     encode_tool_definition,
     encode_tool_result,
+    encode_view_descriptor,
+)
+from voidcode.sdk.commands import (
+    CommandDescriptor,
+    CommandInvocation,
+    CommandResult,
+)
+from voidcode.sdk.hooks import (
+    ContextContribution,
+    InvocationFinishedFact,
+    PluginFact,
+    RunFinishedFact,
+    UsageFact,
 )
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.json_values import json_wire_object
-from voidcode.sdk.manifest import PluginFileIdentity, PluginManifest, parse_plugin_manifest
-from voidcode.sdk.plugin import Plugin, tool_definition
-from voidcode.sdk.provider import ProviderExecutionError, ProviderTurnRequest
+from voidcode.sdk.json_values import json_wire_object, own_json_object
+from voidcode.sdk.manifest import (
+    PluginCommandDeclaration,
+    PluginFileIdentity,
+    PluginManifest,
+    parse_plugin_manifest,
+)
+from voidcode.sdk.plugin import Plugin, command_definition, tool_definition
+from voidcode.sdk.provider import ProviderExecutionError, ProviderTokenUsage, ProviderTurnRequest
+from voidcode.sdk.services import PluginBudget, SessionUsageReport
 from voidcode.sdk.tools import ConfirmedStop, TextOutput, ToolFailure
 
 MAX_FRAME_SIZE: int = 1024 * 1024  # 1 MiB
 
 ALLOWED_REQUEST_KEYS: frozenset[str] = frozenset({"protocol_version", "id", "method", "params"})
-ALLOWED_METHODS: frozenset[str] = frozenset({"init", "invoke", "propose_turn", "cancel", "close"})
+ALLOWED_METHODS: frozenset[str] = frozenset(
+    {"init", "invoke", "propose_turn", "cancel", "close", "invoke_command", "render_view", "contribute_context", "notify_fact"}
+)
+RESERVED_COMMAND_NAMES: frozenset[str] = frozenset({"run", "resume", "show", "cancel", "close", "init", "help", "status", "sessions", "catalog"})
+RESERVED_COMMAND_PREFIXES: tuple[str, ...] = ("core.", "kernel.", "voidcode.")
 
 
 class HostAbortSignal:
@@ -67,6 +96,111 @@ class HostAbortSignal:
             self._event.clear()
 
 
+def _check_arity(fn: Any, expected_arity: int, name: str) -> None:
+    try:
+        sig = inspect.signature(fn)
+        params = list(sig.parameters.values())
+        pos_params = [p for p in params if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+        var_args = any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params)
+        if not var_args and len(pos_params) != expected_arity:
+            raise ValueError(f"{name} must accept {expected_arity} positional arguments, got {len(pos_params)}")
+    except (ValueError, TypeError) as exc:
+        if "must accept" in str(exc):
+            raise
+
+
+class ServerPluginServices:
+    """Implementation of PluginServices running inside the plugin host server."""
+
+    def __init__(
+        self,
+        server: PluginHostServer,
+        lease_token: str,
+    ) -> None:
+        self._server = server
+        self._lease_token = lease_token
+
+    def get_state(self, scope: Literal["session", "workspace"] = "session") -> tuple[Mapping[str, object] | None, int]:
+        resp = self._server._send_reverse_rpc("state_get", {"lease_token": self._lease_token, "scope": scope})
+        state = resp.get("state")
+        version = int(resp.get("version", 0))
+        return (own_json_object(state) if isinstance(state, Mapping) else None, version)
+
+    def replace_state(
+        self,
+        state: Mapping[str, object],
+        expected_version: int,
+        scope: Literal["session", "workspace"] = "session",
+    ) -> int:
+        resp = self._server._send_reverse_rpc(
+            "state_replace",
+            {
+                "lease_token": self._lease_token,
+                "scope": scope,
+                "state": json_wire_object(state),
+                "expected_version": expected_version,
+            },
+        )
+        return int(resp.get("version", expected_version + 1))
+
+    def stage_event(self, event_type: str, payload: Mapping[str, object]) -> None:
+        self._server._send_reverse_rpc(
+            "event_stage",
+            {
+                "lease_token": self._lease_token,
+                "event_type": event_type,
+                "payload": json_wire_object(payload),
+            },
+        )
+
+    def enqueue_continuation(self, payload: Mapping[str, object], *, idempotency_key: str | None = None) -> str:
+        resp = self._server._send_reverse_rpc(
+            "continuation_enqueue",
+            {
+                "lease_token": self._lease_token,
+                "payload": json_wire_object(payload),
+                "idempotency_key": idempotency_key,
+            },
+        )
+        return str(resp.get("continuation_id", ""))
+
+    def get_usage(self, *, since_sequence: int = 0) -> SessionUsageReport:
+        resp = self._server._send_reverse_rpc(
+            "get_usage",
+            {"lease_token": self._lease_token, "since_sequence": since_sequence},
+        )
+        return decode_session_usage(resp)
+
+    def get_budget(self) -> PluginBudget | None:
+        resp = self._server._send_reverse_rpc("get_budget", {"lease_token": self._lease_token})
+        raw = resp.get("budget")
+        return decode_budget(raw) if isinstance(raw, Mapping) else None
+
+    def set_budget(
+        self,
+        *,
+        max_input_tokens: int | None = None,
+        max_output_tokens: int | None = None,
+        max_total_tokens: int | None = None,
+        max_cost_usd: float | None = None,
+        max_elapsed_seconds: float | None = None,
+    ) -> None:
+        self._server._send_reverse_rpc(
+            "set_budget",
+            {
+                "lease_token": self._lease_token,
+                "max_input_tokens": max_input_tokens,
+                "max_output_tokens": max_output_tokens,
+                "max_total_tokens": max_total_tokens,
+                "max_cost_usd": max_cost_usd,
+                "max_elapsed_seconds": max_elapsed_seconds,
+            },
+        )
+
+    def clear_budget(self) -> None:
+        self._server._send_reverse_rpc("clear_budget", {"lease_token": self._lease_token})
+
+
 class PluginHostServer:
     """Stdio-driven plugin host executing plugins in an isolated process."""
 
@@ -85,6 +219,33 @@ class PluginHostServer:
         self._plugins: list[Plugin] = []
         self._tools: dict[str, tuple[Any, Any, str]] = {}  # name -> (tool, decl, plugin_id)
         self._providers: dict[str, tuple[Any, Any, str]] = {}  # name -> (provider, decl, plugin_id)
+        self._commands: dict[str, tuple[Any, PluginCommandDeclaration, str]] = {}
+        self._views: dict[str, tuple[Any, str]] = {}
+        self._context_callbacks: dict[str, Callable[[ToolContext, ServerPluginServices], ContextContribution | None]] = {}
+        self._observers: list[tuple[Callable[[PluginFact, ToolContext, ServerPluginServices], None], tuple[str, ...], str]] = []
+        self._pending_rpc: dict[str, Future[dict[str, Any]]] = {}
+        self._rpc_counter: int = 0
+        self._rpc_lock = threading.Lock()
+
+    def _send_reverse_rpc(self, method: str, params: dict[str, Any], timeout: float = 30.0) -> dict[str, Any]:
+        with self._rpc_lock:
+            self._rpc_counter += 1
+            rpc_id = f"rpc-{self._rpc_counter}"
+            fut: Future[dict[str, Any]] = Future()
+            self._pending_rpc[rpc_id] = fut
+        try:
+            self._send_response(
+                {
+                    "protocol_version": 1,
+                    "id": rpc_id,
+                    "method": method,
+                    "params": params,
+                }
+            )
+            return fut.result(timeout=timeout)
+        finally:
+            with self._rpc_lock:
+                self._pending_rpc.pop(rpc_id, None)
 
     def _send_response(self, payload: dict[str, object]) -> None:
         data = json.dumps(payload, allow_nan=False).encode("utf-8") + b"\n"
@@ -146,6 +307,19 @@ class PluginHostServer:
                         }
                     )
                     break
+
+                if "ok" in message and "method" not in message:
+                    rpc_id = str(message.get("id", ""))
+                    with self._rpc_lock:
+                        fut = self._pending_rpc.get(rpc_id)
+                    if fut is not None and not fut.done():
+                        if message.get("ok"):
+                            fut.set_result(message.get("result", {}))
+                        else:
+                            err_info = message.get("error", {})
+                            msg = err_info.get("message", "Reverse RPC failed") if isinstance(err_info, dict) else "Reverse RPC failed"
+                            fut.set_exception(RuntimeError(msg))
+                    continue
 
                 if not self._dispatch(message):
                     break
@@ -261,7 +435,7 @@ class PluginHostServer:
                         "error": {"kind": "invalid_params", "message": "Invoke params must contain call and context objects"},
                     }
                 )
-                return False
+                return True
             self._handle_invoke(req_id, params)
         elif method == "propose_turn":
             if set(params.keys()) not in ({"request"}, {"request", "provider"}) or not isinstance(params["request"], dict):
@@ -273,8 +447,73 @@ class PluginHostServer:
                         "error": {"kind": "invalid_params", "message": "Propose turn params must contain request object"},
                     }
                 )
-                return False
+                return True
             self._handle_propose_turn(req_id, params)
+        elif method == "invoke_command":
+            if (
+                set(params.keys())
+                not in ({"name", "arguments", "context", "lease_token"}, {"name", "arguments", "context", "lease_token", "client_capabilities"})
+                or not isinstance(params.get("arguments"), dict)
+                or not isinstance(params.get("context"), dict)
+            ):
+                self._send_response(
+                    {
+                        "protocol_version": 1,
+                        "id": req_id,
+                        "ok": False,
+                        "error": {
+                            "kind": "invalid_params",
+                            "message": "Invoke command params must contain name, arguments, context, and lease_token",
+                        },
+                    }
+                )
+                return True
+            self._handle_invoke_command(req_id, params)
+        elif method == "render_view":
+            if set(params.keys()) not in ({"name", "session_id", "lease_token"}, {"name", "session_id", "lease_token", "client_capabilities"}):
+                self._send_response(
+                    {
+                        "protocol_version": 1,
+                        "id": req_id,
+                        "ok": False,
+                        "error": {"kind": "invalid_params", "message": "Render view params must contain name, session_id, and lease_token"},
+                    }
+                )
+                return True
+            self._handle_render_view(req_id, params)
+        elif method == "contribute_context":
+            if set(params.keys()) not in ({"session_id", "logical_turn", "lease_token"}, {"session_id", "owner", "logical_turn", "lease_token"}):
+                self._send_response(
+                    {
+                        "protocol_version": 1,
+                        "id": req_id,
+                        "ok": False,
+                        "error": {
+                            "kind": "invalid_params",
+                            "message": "Contribute context params must contain session_id, logical_turn, and lease_token",
+                        },
+                    }
+                )
+                return True
+            self._handle_contribute_context(req_id, params)
+        elif method == "notify_fact":
+            if set(params.keys()) not in (
+                {"fact_type", "fact", "logical_turn", "lease_token"},
+                {"fact_type", "fact", "owner", "logical_turn", "lease_token"},
+            ) or not isinstance(params.get("fact"), dict):
+                self._send_response(
+                    {
+                        "protocol_version": 1,
+                        "id": req_id,
+                        "ok": False,
+                        "error": {
+                            "kind": "invalid_params",
+                            "message": "Notify fact params must contain fact_type, fact object, logical_turn, and lease_token",
+                        },
+                    }
+                )
+                return True
+            self._handle_notify_fact(req_id, params)
         return True
 
     def _handle_init(self, req_id: str, params: dict[str, Any]) -> None:
@@ -309,11 +548,16 @@ class PluginHostServer:
                     raise ValueError(f"Plugin root is not a directory: {root}")
 
                 manifest = parse_plugin_manifest(spec.get("manifest"))
-                if manifest.commands:
-                    raise ValueError(f"Plugin {manifest.plugin_id} declares commands, which are unsupported in P1")
                 config = spec.get("config", {})
                 granted_caps = frozenset(str(c) for c in spec.get("capabilities", []))
 
+                for cmd_decl in manifest.commands:
+                    if cmd_decl.name in RESERVED_COMMAND_NAMES or any(cmd_decl.name.startswith(p) for p in RESERVED_COMMAND_PREFIXES):
+                        raise ValueError(f"Command '{cmd_decl.name}' in plugin {manifest.plugin_id} is a reserved command name or prefix")
+                    req_caps = frozenset(cmd_decl.capabilities)
+                    if not req_caps.issubset(granted_caps):
+                        missing = req_caps - granted_caps
+                        raise ValueError(f"Plugin {manifest.plugin_id} command {cmd_decl.name} requires capabilities {set(missing)} not granted")
                 # Verify files and hashes
                 self._check_plugin_files(root, manifest.files)
 
@@ -423,6 +667,64 @@ class PluginHostServer:
                 if reg_prov_names != manifest_prov_names:
                     raise ValueError(f"Plugin {manifest.plugin_id} providers mismatch: registered {reg_prov_names} vs manifest {manifest_prov_names}")
 
+                # Verify registered commands match manifest exactly
+                seen_reg_cmds: set[str] = set()
+                reg_cmds_dict: dict[str, Any] = {}
+                for c in plugin_instance.commands:
+                    name = c.definition.name
+                    if name in seen_reg_cmds:
+                        raise ValueError(f"Plugin {manifest.plugin_id} registered duplicate command name: {name}")
+                    seen_reg_cmds.add(name)
+                    reg_cmds_dict[name] = c
+
+                manifest_cmds_dict = {c.name: c for c in manifest.commands}
+                reg_cmd_names = set(reg_cmds_dict)
+                manifest_cmd_names = set(manifest_cmds_dict)
+                if reg_cmd_names != manifest_cmd_names:
+                    raise ValueError(f"Plugin {manifest.plugin_id} commands mismatch: registered {reg_cmd_names} vs manifest {manifest_cmd_names}")
+
+                for name, c in reg_cmds_dict.items():
+                    decl = manifest_cmds_dict[name]
+                    expected_def = command_definition(decl)
+                    if c.definition != expected_def:
+                        raise ValueError(f"Command {name} definition mismatch with manifest: registered {c.definition} vs {expected_def}")
+
+                # Verify registered views
+                seen_reg_views: set[str] = set()
+                reg_views_dict: dict[str, Any] = {}
+                for v in plugin_instance.views:
+                    name = v.name
+                    if name in seen_reg_views:
+                        raise ValueError(f"Plugin {manifest.plugin_id} registered duplicate view name: {name}")
+                    seen_reg_views.add(name)
+                    reg_views_dict[name] = v
+
+                for name, cmd in reg_cmds_dict.items():
+                    if name in self._commands:
+                        raise ValueError(f"Duplicate command name registered across plugins: {name}")
+                    self._commands[name] = (cmd, manifest_cmds_dict[name], manifest.plugin_id)
+
+                for name, view in reg_views_dict.items():
+                    if name in self._views:
+                        raise ValueError(f"Duplicate view name registered across plugins: {name}")
+                    self._views[name] = (view, manifest.plugin_id)
+                if manifest.context and plugin_instance.context is None:
+                    raise ValueError(f"Plugin {manifest.plugin_id} declared context=True but provided no context callback")
+                if not manifest.context and plugin_instance.context is not None:
+                    raise ValueError(f"Plugin {manifest.plugin_id} provided context callback but declared context=False")
+                if plugin_instance.context is not None:
+                    _check_arity(plugin_instance.context, 2, f"Plugin {manifest.plugin_id} context callback")
+                    self._context_callbacks[manifest.plugin_id] = plugin_instance.context
+
+                if manifest.observed_facts and plugin_instance.observer is None:
+                    raise ValueError(
+                        f"Plugin {manifest.plugin_id} declared observed_facts={manifest.observed_facts} but provided no observer callback"
+                    )
+                if not manifest.observed_facts and plugin_instance.observer is not None:
+                    raise ValueError(f"Plugin {manifest.plugin_id} provided observer callback but declared no observed_facts")
+                if plugin_instance.observer is not None:
+                    _check_arity(plugin_instance.observer, 3, f"Plugin {manifest.plugin_id} observer callback")
+                    self._observers.append((plugin_instance.observer, manifest.observed_facts, manifest.plugin_id))
                 # Store registrations
                 for name, tool in reg_tools_dict.items():
                     if name in self._tools:
@@ -439,6 +741,21 @@ class PluginHostServer:
             # Build catalog
             catalog_tools = [encode_tool_definition(tool.definition) for tool, _, _ in self._tools.values()]
             catalog_providers = list(self._providers.keys())
+            catalog_commands = [
+                encode_command_descriptor(
+                    CommandDescriptor(
+                        name=decl.name,
+                        owner=plugin_id,
+                        description=decl.description,
+                        argument_schema=decl.argument_schema,
+                        effects=decl.effects,
+                        capabilities=decl.capabilities,
+                        busy_gate=decl.busy_gate,
+                        client_capabilities=decl.client_capabilities,
+                    )
+                )
+                for _, decl, plugin_id in self._commands.values()
+            ]
             owners = {name: plugin_id for name, (_, _, plugin_id) in self._tools.items()}
             capabilities = {name: list(decl.capabilities) for name, (_, decl, _) in self._tools.items()}
 
@@ -450,13 +767,21 @@ class PluginHostServer:
                     "result": {
                         "tools": catalog_tools,
                         "providers": catalog_providers,
+                        "commands": catalog_commands,
+                        "views": list(self._views.keys()),
+                        "view_owners": {name: plugin_id for name, (_, plugin_id) in self._views.items()},
                         "tool_owners": owners,
                         "tool_capabilities": capabilities,
+                        "context_owners": list(self._context_callbacks.keys()),
+                        "observer_owners": {
+                            fact_type: [pid for _, obs_facts, pid in self._observers if fact_type in obs_facts]
+                            for fact_type in ("usage", "invocation_finished", "run_finished")
+                        },
                     },
                 }
             )
         except Exception as e:
-            err_msg = str(e) if isinstance(e, ValueError) else f"Initialization failed with {type(e).__name__}"
+            err_msg = str(e) if isinstance(e, ValueError) else f"Initialization failed with {type(e).__name__}: {e}"
             self._send_response(
                 {
                     "protocol_version": 1,
@@ -811,6 +1136,398 @@ class PluginHostServer:
             finally:
                 with self._tasks_lock:
                     self._active_tasks.pop(req_id, None)
+
+        self._executor.submit(worker)
+
+    def _handle_invoke_command(self, req_id: str, params: dict[str, Any]) -> None:
+        cancel_event = threading.Event()
+        with self._tasks_lock:
+            if req_id in self._active_tasks:
+                self._send_response(
+                    {
+                        "protocol_version": 1,
+                        "id": req_id,
+                        "ok": False,
+                        "error": {"kind": "duplicate_id", "message": f"Request id '{req_id}' is already active"},
+                    }
+                )
+                return
+            self._active_tasks[req_id] = cancel_event
+
+        def worker() -> None:
+            try:
+                try:
+                    name = str(params["name"])
+                    args = own_json_object(params["arguments"])
+                    context = decode_context(params["context"])
+                    client_caps = frozenset(str(c) for c in params.get("client_capabilities", ()))
+                except Exception as dec_err:
+                    self._send_response(
+                        {
+                            "protocol_version": 1,
+                            "id": req_id,
+                            "ok": False,
+                            "error": {"kind": "invalid_params", "message": f"Invalid params: {type(dec_err).__name__}"},
+                        }
+                    )
+                    return
+
+                # Context check
+                if self._workspace is None or context.workspace.resolve() != self._workspace.resolve():
+                    self._send_response(
+                        {
+                            "protocol_version": 1,
+                            "id": req_id,
+                            "ok": False,
+                            "error": {"kind": "context_mismatch", "message": "Context workspace mismatch"},
+                        }
+                    )
+                    return
+
+                if self._revision_id is None or context.revision_id != self._revision_id:
+                    self._send_response(
+                        {
+                            "protocol_version": 1,
+                            "id": req_id,
+                            "ok": False,
+                            "error": {"kind": "context_mismatch", "message": "Context revision mismatch"},
+                        }
+                    )
+                    return
+
+                cmd_entry = self._commands.get(name)
+                if cmd_entry is None:
+                    res = CommandResult(status="error", error=f"Unknown command: {name}")
+                    self._send_response(
+                        {
+                            "protocol_version": 1,
+                            "id": req_id,
+                            "ok": True,
+                            "result": {
+                                "command_result": encode_command_result(res),
+                                "staged_state": [],
+                                "staged_events": [],
+                                "staged_continuations": [],
+                            },
+                        }
+                    )
+                    return
+
+                cmd_instance, cmd_decl, plugin_id = cmd_entry
+
+                # Schema validation of command arguments
+                if cmd_decl.argument_schema:
+                    try:
+                        args_wire = json_wire_object(args)
+                        schema_wire = json_wire_object(cmd_decl.argument_schema)
+                        jsonschema.validate(instance=args_wire, schema=schema_wire)
+                    except jsonschema.ValidationError as val_err:
+                        res = CommandResult(status="error", error=f"Input validation error: {val_err.message}")
+                        self._send_response(
+                            {
+                                "protocol_version": 1,
+                                "id": req_id,
+                                "ok": True,
+                                "result": {
+                                    "command_result": encode_command_result(res),
+                                    "staged_state": [],
+                                    "staged_events": [],
+                                    "staged_continuations": [],
+                                },
+                            }
+                        )
+                        return
+
+                # Capabilities check
+                required_caps = frozenset(cmd_decl.capabilities)
+                if not required_caps.issubset(context.capabilities):
+                    missing = required_caps - context.capabilities
+                    res = CommandResult(status="error", error=f"Missing capability grants: {set(missing)}")
+                    self._send_response(
+                        {
+                            "protocol_version": 1,
+                            "id": req_id,
+                            "ok": True,
+                            "result": {
+                                "command_result": encode_command_result(res),
+                                "staged_state": [],
+                                "staged_events": [],
+                                "staged_continuations": [],
+                            },
+                        }
+                    )
+                    return
+
+                # Client capabilities check
+                req_client_caps = frozenset(cmd_decl.client_capabilities)
+                if not req_client_caps.issubset(client_caps):
+                    missing_client = req_client_caps - client_caps
+                    res = CommandResult(status="error", error=f"Client lacks required capabilities: {set(missing_client)}")
+                    self._send_response(
+                        {
+                            "protocol_version": 1,
+                            "id": req_id,
+                            "ok": True,
+                            "result": {
+                                "command_result": encode_command_result(res),
+                                "staged_state": [],
+                                "staged_events": [],
+                                "staged_continuations": [],
+                            },
+                        }
+                    )
+                    return
+
+                lease_token = str(params["lease_token"])
+                services = ServerPluginServices(server=self, lease_token=lease_token)
+
+                invocation = CommandInvocation(
+                    session_id=context.session_id,
+                    name=name,
+                    arguments=args,
+                    actor=context.actor,
+                    client_capabilities=client_caps,
+                )
+
+                try:
+                    result = cmd_instance.invoke(invocation, services)
+                except Exception as exc:
+                    result = CommandResult(status="error", error=f"Command invocation failed with {type(exc).__name__}")
+
+                self._send_response(
+                    {
+                        "protocol_version": 1,
+                        "id": req_id,
+                        "ok": True,
+                        "result": {
+                            "command_result": encode_command_result(result),
+                        },
+                    }
+                )
+            except Exception as unexp_err:
+                self._send_response(
+                    {
+                        "protocol_version": 1,
+                        "id": req_id,
+                        "ok": False,
+                        "error": {"kind": "internal_error", "message": f"Internal error: {type(unexp_err).__name__}"},
+                    }
+                )
+            finally:
+                with self._tasks_lock:
+                    self._active_tasks.pop(req_id, None)
+
+        self._executor.submit(worker)
+
+    def _handle_render_view(self, req_id: str, params: dict[str, Any]) -> None:
+        def worker() -> None:
+            try:
+                view_name = str(params["name"])
+                session_id = str(params["session_id"])
+                lease_token = str(params["lease_token"])
+                client_caps = frozenset(str(c) for c in params.get("client_capabilities", ()))
+
+                view_entry = self._views.get(view_name)
+                if view_entry is None:
+                    self._send_response(
+                        {
+                            "protocol_version": 1,
+                            "id": req_id,
+                            "ok": False,
+                            "error": {"kind": "unknown_view", "message": f"Unknown view: {view_name}"},
+                        }
+                    )
+                    return
+
+                view_instance, plugin_id = view_entry
+                services = ServerPluginServices(server=self, lease_token=lease_token)
+                try:
+                    desc = view_instance.render(session_id, services, client_capabilities=client_caps)
+                except Exception as exc:
+                    self._send_response(
+                        {
+                            "protocol_version": 1,
+                            "id": req_id,
+                            "ok": False,
+                            "error": {"kind": "render_failed", "message": f"View render failed with {type(exc).__name__}"},
+                        }
+                    )
+                    return
+
+                self._send_response(
+                    {
+                        "protocol_version": 1,
+                        "id": req_id,
+                        "ok": True,
+                        "result": encode_view_descriptor(desc),
+                    }
+                )
+            except Exception as unexp_err:
+                self._send_response(
+                    {
+                        "protocol_version": 1,
+                        "id": req_id,
+                        "ok": False,
+                        "error": {"kind": "internal_error", "message": f"Internal error: {type(unexp_err).__name__}"},
+                    }
+                )
+
+        self._executor.submit(worker)
+
+    def _handle_contribute_context(self, req_id: str, params: dict[str, Any]) -> None:
+        def worker() -> None:
+            try:
+                session_id = str(params["session_id"])
+                lease_token = str(params["lease_token"])
+                owner_target = params.get("owner")
+                logical_turn = str(params.get("logical_turn", ""))
+                context = ToolContext(
+                    workspace=self._workspace if self._workspace is not None else Path.cwd(),
+                    session_id=session_id,
+                    run_id="context",
+                    invocation_id="context",
+                    revision_id=self._revision_id or "context",
+                    actor="plugin",
+                    logical_turn=logical_turn,
+                )
+                services = ServerPluginServices(server=self, lease_token=lease_token)
+                contributions: list[dict[str, object]] = []
+
+                if owner_target is not None:
+                    cb = self._context_callbacks.get(str(owner_target))
+                    targets = [(str(owner_target), cb)] if cb is not None else []
+                else:
+                    targets = list(self._context_callbacks.items())
+
+                for plugin_id, cb in targets:
+                    try:
+                        c = cb(context, services)
+                        if isinstance(c, ContextContribution):
+                            contributions.append({"type": "text", "content": c.content, "owner": plugin_id})
+                    except Exception as exc:
+                        self._send_response(
+                            {
+                                "protocol_version": 1,
+                                "id": req_id,
+                                "ok": False,
+                                "error": {"kind": "context_failed", "message": f"Context provider {plugin_id} failed: {type(exc).__name__}: {exc}"},
+                            }
+                        )
+                        return
+
+                self._send_response(
+                    {
+                        "protocol_version": 1,
+                        "id": req_id,
+                        "ok": True,
+                        "result": {"contributions": contributions},
+                    }
+                )
+            except Exception as unexp_err:
+                self._send_response(
+                    {
+                        "protocol_version": 1,
+                        "id": req_id,
+                        "ok": False,
+                        "error": {"kind": "internal_error", "message": f"Internal error: {type(unexp_err).__name__}"},
+                    }
+                )
+
+        self._executor.submit(worker)
+
+    def _handle_notify_fact(self, req_id: str, params: dict[str, Any]) -> None:
+        def worker() -> None:
+            try:
+                fact_type = str(params["fact_type"])
+                lease_token = str(params["lease_token"])
+                logical_turn = str(params.get("logical_turn", ""))
+                fact_data = params["fact"]
+                context = ToolContext(
+                    workspace=self._workspace if self._workspace is not None else Path.cwd(),
+                    session_id=str(fact_data["session_id"]),
+                    run_id=str(fact_data["run_id"]),
+                    invocation_id="observer",
+                    revision_id=str(fact_data["revision_id"]),
+                    actor="plugin",
+                    logical_turn=logical_turn,
+                )
+                fact: PluginFact
+                if fact_type == "usage":
+                    usage_payload = fact_data.get("usage")
+                    usage_obj = None
+                    if isinstance(usage_payload, Mapping):
+                        usage_obj = ProviderTokenUsage(
+                            input_tokens=usage_payload.get("input_tokens"),
+                            output_tokens=usage_payload.get("output_tokens"),
+                            cache_read_tokens=usage_payload.get("cache_read_tokens"),
+                            cache_write_tokens=usage_payload.get("cache_write_tokens"),
+                            uncached_input_tokens=usage_payload.get("uncached_input_tokens"),
+                            cost_usd=usage_payload.get("cost_usd"),
+                        )
+                    fact = UsageFact(
+                        session_id=str(fact_data["session_id"]),
+                        run_id=str(fact_data["run_id"]),
+                        revision_id=str(fact_data["revision_id"]),
+                        logical_turn=logical_turn,
+                        event_sequence=int(fact_data["event_sequence"]),
+                        dispatch_sequence=int(fact_data["dispatch_sequence"]),
+                        provider_name=str(fact_data["provider_name"]),
+                        model_name=str(fact_data["model_name"]),
+                        usage=usage_obj,
+                    )
+                elif fact_type == "invocation_finished":
+                    fact = InvocationFinishedFact(
+                        session_id=str(fact_data["session_id"]),
+                        run_id=str(fact_data["run_id"]),
+                        revision_id=str(fact_data["revision_id"]),
+                        logical_turn=logical_turn,
+                        event_sequence=int(fact_data["event_sequence"]),
+                        tool_name=str(fact_data["tool_name"]),
+                        tool_call_id=fact_data.get("tool_call_id"),
+                        status=fact_data["status"],
+                        error=fact_data.get("error"),
+                    )
+                elif fact_type == "run_finished":
+                    fact = RunFinishedFact(
+                        session_id=str(fact_data["session_id"]),
+                        run_id=str(fact_data["run_id"]),
+                        revision_id=str(fact_data["revision_id"]),
+                        logical_turn=logical_turn,
+                        event_sequence=int(fact_data["event_sequence"]),
+                        status=str(fact_data["status"]),
+                        elapsed_seconds=fact_data.get("elapsed_seconds"),
+                    )
+                else:
+                    raise ValueError(f"Unknown fact_type: {fact_type}")
+
+                services = ServerPluginServices(server=self, lease_token=lease_token)
+                owner_target = params.get("owner")
+                observer_errors: list[dict[str, str]] = []
+                for obs, observed_kinds, plugin_id in self._observers:
+                    if owner_target is not None and plugin_id != owner_target:
+                        continue
+                    if fact_type in observed_kinds:
+                        try:
+                            obs(fact, context, services)
+                        except Exception as exc:
+                            observer_errors.append({"owner": plugin_id, "error": f"{type(exc).__name__}: {exc}"})
+                self._send_response(
+                    {
+                        "protocol_version": 1,
+                        "id": req_id,
+                        "ok": True,
+                        "result": {"observed": True, "errors": observer_errors},
+                    }
+                )
+            except Exception as exc:
+                self._send_response(
+                    {
+                        "protocol_version": 1,
+                        "id": req_id,
+                        "ok": False,
+                        "error": {"kind": "internal_error", "message": f"Notify fact failed: {type(exc).__name__}"},
+                    }
+                )
 
         self._executor.submit(worker)
 

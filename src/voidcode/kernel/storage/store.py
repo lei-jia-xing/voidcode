@@ -81,6 +81,68 @@ class Checkpoint:
         object.__setattr__(self, "payload", own_json_object(self.payload))
 
 
+@dataclass(frozen=True, slots=True)
+class ActionConfirmationRecord:
+    request_id: str
+    session_id: str
+    owner: str
+    command_name: str
+    arguments: Mapping[str, object]
+    revision_id: str
+    expected_state_version: int | None
+    ui_type: str
+    ui_data: Mapping[str, object]
+    status: str
+    created_at: int
+    decided_at: int | None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "arguments", own_json_object(self.arguments))
+        object.__setattr__(self, "ui_data", own_json_object(self.ui_data))
+
+
+@dataclass(frozen=True, slots=True)
+class ContinuationRecord:
+    continuation_id: str
+    owner: str
+    session_id: str
+    source: str
+    run_id: str
+    revision_id: str
+    idempotency_key: str | None
+    status: str
+    payload: Mapping[str, object]
+    created_at: int
+    updated_at: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "payload", own_json_object(self.payload))
+
+
+@dataclass(frozen=True, slots=True)
+class StagedStateUpdate:
+    owner: str
+    scope: str
+    scope_key: str
+    payload: Mapping[str, object]
+    expected_version: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "payload", own_json_object(self.payload))
+
+
+@dataclass(frozen=True, slots=True)
+class StagedContinuationDraft:
+    continuation_id: str
+    owner: str
+    source: str
+    payload: Mapping[str, object]
+    idempotency_key: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "payload", own_json_object(self.payload))
+
+
 def canonical_json(value: Mapping[str, object]) -> str:
     """Produce deterministic, sorted, compact UTF-8 JSON without NaN."""
     return json.dumps(
@@ -114,6 +176,20 @@ def _verify_existing_file(path: Path) -> None:
         row = cursor.fetchone()
         if row is None or row[0] != SCHEMA_MAGIC or row[1] != SCHEMA_VERSION:
             raise ForeignDatabaseError(f"unsupported database identity in {path}: expected ({SCHEMA_MAGIC!r}, {SCHEMA_VERSION}), got {row!r}")
+        cursor = probe.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = {r[0] for r in cursor.fetchall()}
+        required = {
+            "kernel_identity",
+            "revisions",
+            "sessions",
+            "session_events",
+            "checkpoints",
+            "plugin_state",
+            "action_confirmations",
+            "continuations",
+        }
+        if not required.issubset(tables):
+            raise ForeignDatabaseError(f"unsupported database file or missing tables in {path}: missing {required - tables}")
     except sqlite3.Error as exc:
         raise ForeignDatabaseError(f"unsupported database file or missing identity: {path}") from exc
     finally:
@@ -270,21 +346,71 @@ class SqliteStore:
                 last_event_sequence=row[6],
             )
 
-    def events(self, session_id: str, after_sequence: int = 0) -> tuple[StoredEvent, ...]:
-        """Fetch stored events for a session strictly after a given sequence number."""
+    def sessions(self, workspace: str | None = None, limit: int = 100) -> tuple[SessionRecord, ...]:
+        """Fetch sessions, optionally filtered by workspace, ordered by updated_at descending."""
         with self._lock:
             self._check_open()
-            # Verify session exists
-            self.session(session_id)
-            cursor = self._connection.execute(
-                """
-                SELECT session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json
-                FROM session_events
-                WHERE session_id = ? AND sequence > ?
-                ORDER BY sequence ASC
-                """,
-                (session_id, after_sequence),
+            capped_limit = max(1, limit)
+            if workspace is not None:
+                cursor = self._connection.execute(
+                    """
+                    SELECT session_id, workspace, status, active_revision_id, run_id, turn, last_event_sequence
+                    FROM sessions
+                    WHERE workspace = ?
+                    ORDER BY updated_at DESC
+                    LIMIT ?
+                    """,
+                    (workspace, capped_limit),
+                )
+            else:
+                cursor = self._connection.execute(
+                    """
+                    SELECT session_id, workspace, status, active_revision_id, run_id, turn, last_event_sequence
+                    FROM sessions
+                    ORDER BY updated_at DESC
+                    LIMIT ?
+                    """,
+                    (capped_limit,),
+                )
+            return tuple(
+                SessionRecord(
+                    session_id=row[0],
+                    workspace=row[1],
+                    status=row[2],
+                    active_revision_id=row[3],
+                    run_id=row[4],
+                    turn=row[5],
+                    last_event_sequence=row[6],
+                )
+                for row in cursor.fetchall()
             )
+
+    def events(self, session_id: str, after_sequence: int = 0, limit: int | None = None) -> tuple[StoredEvent, ...]:
+        """Fetch stored events for a session strictly after a given sequence number, optionally limited."""
+        with self._lock:
+            self._check_open()
+            self.session(session_id)
+            if limit is not None:
+                cursor = self._connection.execute(
+                    """
+                    SELECT session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json
+                    FROM session_events
+                    WHERE session_id = ? AND sequence > ?
+                    ORDER BY sequence ASC
+                    LIMIT ?
+                    """,
+                    (session_id, after_sequence, max(1, limit)),
+                )
+            else:
+                cursor = self._connection.execute(
+                    """
+                    SELECT session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json
+                    FROM session_events
+                    WHERE session_id = ? AND sequence > ?
+                    ORDER BY sequence ASC
+                    """,
+                    (session_id, after_sequence),
+                )
             return tuple(
                 StoredEvent(
                     session_id=row[0],
@@ -298,6 +424,10 @@ class SqliteStore:
                 )
                 for row in cursor.fetchall()
             )
+
+    def events_after(self, session_id: str, *, after_sequence: int = 0, limit: int = 100) -> tuple[StoredEvent, ...]:
+        """Bounded tail read of stored events for continuous SSE streaming."""
+        return self.events(session_id, after_sequence=after_sequence, limit=limit)
 
     def checkpoint(self, session_id: str) -> Checkpoint | None:
         """Fetch the current checkpoint of a session, or None if none has been committed."""
@@ -339,6 +469,36 @@ class SqliteStore:
         start_turn: bool = False,
     ) -> SessionRecord:
         """Atomic CAS commit appending events, advancing session state, and upserting a checkpoint."""
+        return self.commit_staged(
+            session_id,
+            expected_sequence=expected_sequence,
+            expected_run_id=expected_run_id,
+            run_id=run_id,
+            revision_id=revision_id,
+            events=events,
+            status=status,
+            checkpoint_kind=checkpoint_kind,
+            checkpoint_payload=checkpoint_payload,
+            start_turn=start_turn,
+        )
+
+    def commit_staged(
+        self,
+        session_id: str,
+        *,
+        expected_sequence: int | None = None,
+        expected_run_id: str | None = None,
+        run_id: str,
+        revision_id: str,
+        events: tuple[EventDraft, ...] | Sequence[EventDraft],
+        status: str,
+        checkpoint_kind: str | None = None,
+        checkpoint_payload: Mapping[str, object] | None = None,
+        staged_state: Sequence[StagedStateUpdate] = (),
+        staged_continuations: Sequence[StagedContinuationDraft] = (),
+        start_turn: bool = False,
+    ) -> SessionRecord:
+        """Atomic CAS commit applying staged state updates, continuations, event drafts, and checkpoint."""
         with self._lock:
             self._check_open()
             in_transaction = False
@@ -360,14 +520,81 @@ class SqliteStore:
 
                 _, workspace, _, curr_revision_id, curr_run_id, curr_turn, curr_seq = row
 
-                if curr_seq != expected_sequence:
+                if expected_sequence is not None and curr_seq != expected_sequence:
                     raise StoreConflict(f"sequence mismatch for session {session_id!r}: expected {expected_sequence}, got {curr_seq}")
-                if curr_run_id != expected_run_id:
+                if expected_run_id is not None and curr_run_id != expected_run_id:
                     raise StoreConflict(f"run_id mismatch for session {session_id!r}: expected {expected_run_id!r}, got {curr_run_id!r}")
                 if curr_revision_id != revision_id:
                     raise StoreConflict(f"active revision mismatch for session {session_id!r}: active is {curr_revision_id!r}, got {revision_id!r}")
+                now = int(time.time() * 1000)
 
-                current_seq = expected_sequence
+                # 1. Apply staged state updates
+                for st in staged_state:
+                    payload_json = canonical_json(st.payload)
+                    if st.expected_version == 0:
+                        try:
+                            self._connection.execute(
+                                """
+                                INSERT INTO plugin_state (scope, scope_key, owner, version, payload_json, updated_at)
+                                VALUES (?, ?, ?, 1, ?, ?)
+                                """,
+                                (st.scope, st.scope_key, st.owner, payload_json, now),
+                            )
+                        except sqlite3.IntegrityError as exc:
+                            raise StoreConflict(f"state already exists for owner {st.owner!r} in {st.scope}:{st.scope_key}") from exc
+                    else:
+                        c = self._connection.execute(
+                            """
+                            UPDATE plugin_state
+                            SET version = version + 1, payload_json = ?, updated_at = ?
+                            WHERE scope = ? AND scope_key = ? AND owner = ? AND version = ?
+                            """,
+                            (payload_json, now, st.scope, st.scope_key, st.owner, st.expected_version),
+                        )
+                        if c.rowcount == 0:
+                            raise StoreConflict(
+                                f"state CAS conflict for {st.owner!r} in {st.scope}:{st.scope_key}: expected version {st.expected_version}"
+                            )
+
+                # 2. Apply staged continuations
+                for cont in staged_continuations:
+                    cont_payload_json = canonical_json(cont.payload)
+                    if cont.idempotency_key is not None:
+                        c_chk = self._connection.execute(
+                            """
+                            SELECT continuation_id FROM continuations
+                            WHERE session_id = ? AND owner = ? AND idempotency_key = ?
+                            """,
+                            (session_id, cont.owner, cont.idempotency_key),
+                        )
+                        if c_chk.fetchone() is not None:
+                            continue
+                    try:
+                        self._connection.execute(
+                            """
+                            INSERT INTO continuations (
+                                continuation_id, owner, session_id, source, run_id, revision_id,
+                                idempotency_key, status, payload_json, created_at, updated_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+                            """,
+                            (
+                                cont.continuation_id,
+                                cont.owner,
+                                session_id,
+                                cont.source,
+                                run_id,
+                                revision_id,
+                                cont.idempotency_key,
+                                cont_payload_json,
+                                now,
+                                now,
+                            ),
+                        )
+                    except sqlite3.IntegrityError as exc:
+                        raise StoreConflict(f"continuation {cont.continuation_id!r} already exists") from exc
+
+                # 3. Append events
+                current_seq = curr_seq
                 for draft in events:
                     current_seq += 1
                     payload_json = canonical_json(draft.payload)
@@ -390,8 +617,8 @@ class SqliteStore:
                     )
 
                 new_turn = curr_turn + 1 if start_turn else curr_turn
-                now = int(time.time() * 1000)
 
+                # 4. Update session
                 self._connection.execute(
                     """
                     UPDATE sessions
@@ -405,31 +632,31 @@ class SqliteStore:
                     (status, run_id, new_turn, now, current_seq, session_id),
                 )
 
-                checkpoint_json = canonical_json(checkpoint_payload)
-                self._connection.execute(
-                    """
-                    INSERT INTO checkpoints (
-                        session_id, kind, revision_id, run_id, last_event_sequence, payload_json, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT (session_id) DO UPDATE SET
-                        kind = excluded.kind,
-                        revision_id = excluded.revision_id,
-                        run_id = excluded.run_id,
-                        last_event_sequence = excluded.last_event_sequence,
-                        payload_json = excluded.payload_json,
-                        updated_at = excluded.updated_at
-                    """,
-                    (
-                        session_id,
-                        checkpoint_kind,
-                        revision_id,
-                        run_id,
-                        current_seq,
-                        checkpoint_json,
-                        now,
-                    ),
-                )
-
+                if checkpoint_kind is not None and checkpoint_payload is not None:
+                    checkpoint_json = canonical_json(checkpoint_payload)
+                    self._connection.execute(
+                        """
+                        INSERT INTO checkpoints (
+                            session_id, kind, revision_id, run_id, last_event_sequence, payload_json, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT (session_id) DO UPDATE SET
+                            kind = excluded.kind,
+                            revision_id = excluded.revision_id,
+                            run_id = excluded.run_id,
+                            last_event_sequence = excluded.last_event_sequence,
+                            payload_json = excluded.payload_json,
+                            updated_at = excluded.updated_at
+                        """,
+                        (
+                            session_id,
+                            checkpoint_kind,
+                            revision_id,
+                            run_id,
+                            current_seq,
+                            checkpoint_json,
+                            now,
+                        ),
+                    )
                 self._connection.execute("COMMIT")
                 in_transaction = False
 
@@ -446,3 +673,313 @@ class SqliteStore:
                 if in_transaction:
                     self._connection.execute("ROLLBACK")
                 raise
+
+    def plugin_state(self, owner: str, scope: str, scope_key: str) -> tuple[Mapping[str, object] | None, int]:
+        """Fetch current plugin state and version for the given owner, scope, and scope_key."""
+        with self._lock:
+            self._check_open()
+            cursor = self._connection.execute(
+                """
+                SELECT payload_json, version
+                FROM plugin_state
+                WHERE scope = ? AND scope_key = ? AND owner = ?
+                """,
+                (scope, scope_key, owner),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return (None, 0)
+            return (own_json_object(json.loads(row[0])), row[1])
+
+    def replace_plugin_state(
+        self,
+        owner: str,
+        scope: str,
+        scope_key: str,
+        payload: Mapping[str, object],
+        expected_version: int,
+    ) -> int:
+        """Optimistic CAS state replacement for a plugin owner."""
+        with self._lock:
+            self._check_open()
+            now = int(time.time() * 1000)
+            payload_json = canonical_json(payload)
+            if expected_version == 0:
+                try:
+                    self._connection.execute(
+                        """
+                        INSERT INTO plugin_state (scope, scope_key, owner, version, payload_json, updated_at)
+                        VALUES (?, ?, ?, 1, ?, ?)
+                        """,
+                        (scope, scope_key, owner, payload_json, now),
+                    )
+                    return 1
+                except sqlite3.IntegrityError as exc:
+                    raise StoreConflict(f"state already exists for owner {owner!r} in {scope}:{scope_key}") from exc
+            else:
+                cursor = self._connection.execute(
+                    """
+                    UPDATE plugin_state
+                    SET version = version + 1, payload_json = ?, updated_at = ?
+                    WHERE scope = ? AND scope_key = ? AND owner = ? AND version = ?
+                    """,
+                    (payload_json, now, scope, scope_key, owner, expected_version),
+                )
+                if cursor.rowcount == 0:
+                    raise StoreConflict(
+                        f"optimistic concurrency check failed for {owner!r} in {scope}:{scope_key}: expected version {expected_version}"
+                    )
+                return expected_version + 1
+
+    def create_confirmation(
+        self,
+        request_id: str,
+        session_id: str,
+        owner: str,
+        command_name: str,
+        arguments: Mapping[str, object],
+        revision_id: str,
+        ui_type: str,
+        ui_data: Mapping[str, object],
+        expected_state_version: int | None = None,
+    ) -> None:
+        """Create a pending action confirmation record."""
+        with self._lock:
+            self._check_open()
+            now = int(time.time() * 1000)
+            try:
+                self._connection.execute(
+                    """
+                    INSERT INTO action_confirmations (
+                        request_id, session_id, owner, command_name, arguments_json, revision_id,
+                        expected_state_version, ui_type, ui_data_json, status, created_at, decided_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL)
+                    """,
+                    (
+                        request_id,
+                        session_id,
+                        owner,
+                        command_name,
+                        canonical_json(arguments),
+                        revision_id,
+                        expected_state_version,
+                        ui_type,
+                        canonical_json(ui_data),
+                        now,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise StoreConflict(f"confirmation request {request_id!r} already exists") from exc
+
+    def confirmation(self, request_id: str) -> ActionConfirmationRecord | None:
+        """Fetch an action confirmation record by request ID."""
+        with self._lock:
+            self._check_open()
+            cursor = self._connection.execute(
+                """
+                SELECT request_id, session_id, owner, command_name, arguments_json, revision_id,
+                       expected_state_version, ui_type, ui_data_json, status, created_at, decided_at
+                FROM action_confirmations
+                WHERE request_id = ?
+                """,
+                (request_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return ActionConfirmationRecord(
+                request_id=row[0],
+                session_id=row[1],
+                owner=row[2],
+                command_name=row[3],
+                arguments=json.loads(row[4]),
+                revision_id=row[5],
+                expected_state_version=row[6],
+                ui_type=row[7],
+                ui_data=json.loads(row[8]),
+                status=row[9],
+                created_at=row[10],
+                decided_at=row[11],
+            )
+
+    def decide_confirmation(self, request_id: str, decision: str) -> None:
+        """Transition a pending confirmation record to allowed, denied, or stale."""
+        with self._lock:
+            self._check_open()
+            now = int(time.time() * 1000)
+            cursor = self._connection.execute(
+                """
+                UPDATE action_confirmations
+                SET status = ?, decided_at = ?
+                WHERE request_id = ? AND status = 'pending'
+                """,
+                (decision, now, request_id),
+            )
+            if cursor.rowcount == 0:
+                raise StoreConflict(f"confirmation {request_id!r} is not in pending state or does not exist")
+
+    def enqueue_continuation(
+        self,
+        continuation_id: str,
+        owner: str,
+        session_id: str,
+        source: str,
+        run_id: str,
+        revision_id: str,
+        payload: Mapping[str, object],
+        *,
+        idempotency_key: str | None = None,
+    ) -> str:
+        """Directly enqueue a continuation in pending state."""
+        with self._lock:
+            self._check_open()
+            now = int(time.time() * 1000)
+            if idempotency_key is not None:
+                cursor = self._connection.execute(
+                    """
+                    SELECT continuation_id FROM continuations
+                    WHERE session_id = ? AND owner = ? AND idempotency_key = ?
+                    """,
+                    (session_id, owner, idempotency_key),
+                )
+                row = cursor.fetchone()
+                if row is not None:
+                    return row[0]
+            try:
+                self._connection.execute(
+                    """
+                    INSERT INTO continuations (
+                        continuation_id, owner, session_id, source, run_id, revision_id,
+                        idempotency_key, status, payload_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+                    """,
+                    (
+                        continuation_id,
+                        owner,
+                        session_id,
+                        source,
+                        run_id,
+                        revision_id,
+                        idempotency_key,
+                        canonical_json(payload),
+                        now,
+                        now,
+                    ),
+                )
+                return continuation_id
+            except sqlite3.IntegrityError as exc:
+                raise StoreConflict(f"continuation {continuation_id!r} already exists") from exc
+
+    def claim_continuations(
+        self,
+        session_id: str,
+        limit: int,
+        run_id: str,
+    ) -> tuple[ContinuationRecord, ...]:
+        """Atomically claim up to `limit` pending continuations for a session under run_id."""
+        with self._lock:
+            self._check_open()
+            now = int(time.time() * 1000)
+            capped_limit = max(1, limit)
+            in_transaction = False
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                in_transaction = True
+                cursor = self._connection.execute(
+                    """
+                    SELECT continuation_id, owner, session_id, source, run_id, revision_id,
+                           idempotency_key, status, payload_json, created_at, updated_at
+                    FROM continuations
+                    WHERE session_id = ? AND status = 'pending'
+                    ORDER BY created_at ASC
+                    LIMIT ?
+                    """,
+                    (session_id, capped_limit),
+                )
+                rows = cursor.fetchall()
+                records: list[ContinuationRecord] = []
+                for row in rows:
+                    cid = row[0]
+                    self._connection.execute(
+                        """
+                        UPDATE continuations
+                        SET status = 'claimed', run_id = ?, updated_at = ?
+                        WHERE continuation_id = ?
+                        """,
+                        (run_id, now, cid),
+                    )
+                    records.append(
+                        ContinuationRecord(
+                            continuation_id=row[0],
+                            owner=row[1],
+                            session_id=row[2],
+                            source=row[3],
+                            run_id=run_id,
+                            revision_id=row[5],
+                            idempotency_key=row[6],
+                            status="claimed",
+                            payload=json.loads(row[8]),
+                            created_at=row[9],
+                            updated_at=now,
+                        )
+                    )
+                self._connection.execute("COMMIT")
+                in_transaction = False
+                return tuple(records)
+            except Exception:
+                if in_transaction:
+                    self._connection.execute("ROLLBACK")
+                raise
+
+    def claimed_continuations(
+        self,
+        session_id: str,
+        limit: int = 100,
+    ) -> tuple[ContinuationRecord, ...]:
+        """Fetch previously claimed continuations for recovery in order of creation."""
+        with self._lock:
+            self._check_open()
+            cursor = self._connection.execute(
+                """
+                SELECT continuation_id, owner, session_id, source, run_id, revision_id,
+                       idempotency_key, status, payload_json, created_at, updated_at
+                FROM continuations
+                WHERE session_id = ? AND status = 'claimed'
+                ORDER BY created_at ASC
+                LIMIT ?
+                """,
+                (session_id, max(1, limit)),
+            )
+            rows = cursor.fetchall()
+            return tuple(
+                ContinuationRecord(
+                    continuation_id=row[0],
+                    owner=row[1],
+                    session_id=row[2],
+                    source=row[3],
+                    run_id=row[4],
+                    revision_id=row[5],
+                    idempotency_key=row[6],
+                    status=row[7],
+                    payload=own_json_object(json.loads(row[8])),
+                    created_at=row[9],
+                    updated_at=row[10],
+                )
+                for row in rows
+            )
+
+    def complete_continuation(self, continuation_id: str) -> None:
+        """Mark a claimed continuation as completed."""
+        with self._lock:
+            self._check_open()
+            now = int(time.time() * 1000)
+            cursor = self._connection.execute(
+                """
+                UPDATE continuations
+                SET status = 'completed', updated_at = ?
+                WHERE continuation_id = ?
+                """,
+                (now, continuation_id),
+            )
+            if cursor.rowcount == 0:
+                raise StoreConflict(f"continuation {continuation_id!r} does not exist")

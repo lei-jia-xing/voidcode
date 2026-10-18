@@ -50,6 +50,46 @@ CREATE TABLE checkpoints (
     updated_at INTEGER NOT NULL
 ) STRICT;
 
+CREATE TABLE plugin_state (
+    scope TEXT NOT NULL CHECK (scope IN ('session', 'workspace')),
+    scope_key TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    version INTEGER NOT NULL CHECK (version >= 1),
+    payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (scope, scope_key, owner)
+) STRICT;
+
+CREATE TABLE action_confirmations (
+    request_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions (session_id),
+    owner TEXT NOT NULL,
+    command_name TEXT NOT NULL,
+    arguments_json TEXT NOT NULL CHECK (json_valid(arguments_json)),
+    revision_id TEXT NOT NULL REFERENCES revisions (revision_id),
+    expected_state_version INTEGER,
+    ui_type TEXT NOT NULL CHECK (ui_type IN ('notice', 'markdown', 'fields', 'choices', 'confirmation', 'form', 'diff', 'status')),
+    ui_data_json TEXT NOT NULL CHECK (json_valid(ui_data_json)),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'allowed', 'denied', 'stale')),
+    created_at INTEGER NOT NULL,
+    decided_at INTEGER
+) STRICT;
+
+CREATE TABLE continuations (
+    continuation_id TEXT PRIMARY KEY,
+    owner TEXT NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions (session_id),
+    source TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    revision_id TEXT NOT NULL REFERENCES revisions (revision_id),
+    idempotency_key TEXT,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'claimed', 'completed', 'cancelled')),
+    payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX continuations_claim_idx ON continuations (session_id, status, created_at);
+
 CREATE TRIGGER revisions_no_update BEFORE UPDATE ON revisions
 BEGIN SELECT RAISE(ABORT, 'capability revisions are immutable'); END;
 CREATE TRIGGER revisions_no_delete BEFORE DELETE ON revisions

@@ -25,6 +25,7 @@ class ToolContext:
     revision_id: str
     actor: str
     capabilities: frozenset[str] = frozenset()
+    logical_turn: str = ""
     abort_signal: ProviderAbortSignal | None = None
 
     def __post_init__(self) -> None:

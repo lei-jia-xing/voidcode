@@ -11,9 +11,16 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
+from .commands import (
+    CommandDescriptor,
+    CommandInvocation,
+    CommandResult,
+    ConfirmationRequest,
+)
 from .invocation import ToolContext
 from .json_values import json_wire_object
 from .provider import ProviderCacheRetention, ProviderExecutionError, ProviderMessage, ProviderTurnRequest, ProviderTurnResult
+from .services import ContinuationResult, PluginBudget, SessionUsageReport
 from .tools import (
     AttachmentOutput,
     ConfirmedStop,
@@ -31,6 +38,7 @@ from .tools import (
     ToolSuccess,
     UnconfirmedStop,
 )
+from .views import PluginViewDescriptor
 
 
 def _wire(value: object) -> object:
@@ -163,6 +171,7 @@ class _Context(_WireModel):
     revision_id: str = Field(min_length=1)
     actor: str = Field(min_length=1)
     capabilities: frozenset[str] = frozenset()
+    logical_turn: str = ""
 
 
 _CONTEXT = TypeAdapter(_Context)
@@ -182,6 +191,7 @@ def decode_context(payload: Mapping[str, object]) -> ToolContext:
         revision_id=wire.revision_id,
         actor=wire.actor,
         capabilities=wire.capabilities,
+        logical_turn=wire.logical_turn,
     )
 
 
@@ -282,3 +292,79 @@ def decode_tool_result(payload: Mapping[str, object]) -> ToolResult:
         else:
             execution = UnconfirmedStop(observation.cancellation_signalled)
     return ToolFailure(wire.tool_name, wire.error, decoded, body, wire.diagnostics, execution, wire.timeout_seconds)
+
+
+_COMMAND_DESCRIPTOR = TypeAdapter(CommandDescriptor)
+_COMMAND_INVOCATION = TypeAdapter(CommandInvocation)
+_CONFIRMATION_REQUEST = TypeAdapter(ConfirmationRequest)
+_COMMAND_RESULT = TypeAdapter(CommandResult)
+_VIEW_DESCRIPTOR = TypeAdapter(PluginViewDescriptor)
+_CONTINUATION_RESULT = TypeAdapter(ContinuationResult)
+_SESSION_USAGE = TypeAdapter(SessionUsageReport)
+
+
+def encode_command_descriptor(descriptor: CommandDescriptor | Mapping[str, object]) -> dict[str, object]:
+    return _encode(descriptor)
+
+
+def decode_command_descriptor(payload: Mapping[str, object]) -> CommandDescriptor:
+    return _decode(_COMMAND_DESCRIPTOR, payload)
+
+
+def encode_command_invocation(invocation: CommandInvocation | Mapping[str, object]) -> dict[str, object]:
+    return _encode(invocation)
+
+
+def decode_command_invocation(payload: Mapping[str, object]) -> CommandInvocation:
+    return _decode(_COMMAND_INVOCATION, payload)
+
+
+def encode_command_result(result: CommandResult | Mapping[str, object]) -> dict[str, object]:
+    return _encode(result)
+
+
+def decode_command_result(payload: Mapping[str, object]) -> CommandResult:
+    return _decode(_COMMAND_RESULT, payload)
+
+
+def encode_confirmation_request(request: ConfirmationRequest | Mapping[str, object]) -> dict[str, object]:
+    return _encode(request)
+
+
+def decode_confirmation_request(payload: Mapping[str, object]) -> ConfirmationRequest:
+    return _decode(_CONFIRMATION_REQUEST, payload)
+
+
+def encode_view_descriptor(descriptor: PluginViewDescriptor | Mapping[str, object]) -> dict[str, object]:
+    return _encode(descriptor)
+
+
+def decode_view_descriptor(payload: Mapping[str, object]) -> PluginViewDescriptor:
+    return _decode(_VIEW_DESCRIPTOR, payload)
+
+
+def encode_continuation_result(result: ContinuationResult | Mapping[str, object]) -> dict[str, object]:
+    return _encode(result)
+
+
+def decode_continuation_result(payload: Mapping[str, object]) -> ContinuationResult:
+    return _decode(_CONTINUATION_RESULT, payload)
+
+
+def encode_session_usage(report: SessionUsageReport | Mapping[str, object]) -> dict[str, object]:
+    return _encode(report)
+
+
+def decode_session_usage(payload: Mapping[str, object]) -> SessionUsageReport:
+    return _decode(_SESSION_USAGE, payload)
+
+
+_BUDGET = TypeAdapter(PluginBudget)
+
+
+def encode_budget(budget: PluginBudget | Mapping[str, object]) -> dict[str, object]:
+    return _encode(budget)
+
+
+def decode_budget(payload: Mapping[str, object]) -> PluginBudget:
+    return _decode(_BUDGET, payload)
