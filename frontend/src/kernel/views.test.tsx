@@ -67,6 +67,7 @@ describe("FormView", () => {
       capabilities: [],
       client_capabilities: [],
       busy_gate: false,
+      direct_user: false,
     },
     {
       owner: "test",
@@ -76,6 +77,7 @@ describe("FormView", () => {
       capabilities: [],
       client_capabilities: [],
       busy_gate: false,
+      direct_user: false,
     },
   ];
   it("renders inputs with initial values and submits values", async () => {
@@ -430,6 +432,7 @@ describe("FormView", () => {
             capabilities: [],
             client_capabilities: [],
             busy_gate: false,
+            direct_user: false,
           },
         ]}
         onSubmit={onSubmit}
@@ -456,6 +459,7 @@ describe("FormView", () => {
         capabilities: [],
         client_capabilities: [],
         busy_gate: false,
+        direct_user: false,
       },
     ];
 

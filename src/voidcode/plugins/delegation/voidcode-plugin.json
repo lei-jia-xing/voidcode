@@ -1,0 +1,189 @@
+{
+  "plugin_id": "delegation",
+  "version": "1.0.0",
+  "sdk_protocol": 1,
+  "schema_version": 1,
+  "entrypoint": "__init__:create_plugin",
+  "files": [
+    {
+      "path": "__init__.py",
+      "sha256": "f60dcaf452087fdd6e878be5b6e55eb76e585f4faf4c1fe62bb6d4845afcdce4"
+    },
+    {
+      "path": "delegation_plugin.py",
+      "sha256": "88df30608f27fc66178b75434553fa2aa7359ffc1d720dc7752e1200648ba015"
+    },
+    {
+      "path": "presets.py",
+      "sha256": "47f8159b5a1c9ebbe49e056d34a620e50ecc855219c546cf32e12b5a6382f6b2"
+    }
+  ],
+  "tools": [
+    {
+      "name": "task",
+      "description": "Delegate work to a child session, or read and cancel a child this session started.\n\nSpawn usage:\n- Pass prompt with the full delegated task text; label is an optional short tag for the child.\n- subagent_type runs the child under a builtin profile: execute, review, explore, research, or plan. The child's prompt becomes that profile's text plus your prompt, its tools become the profile's allowlist, and a read-only profile keeps the child read-only.\n- tool_allowlist narrows the child's tools and can never widen your own scope; pass it without subagent_type.\n- max_steps caps the child's steps (default 32).\n- run_in_background=true (default) starts the child and returns its task_id immediately. false spawns and waits, returning the child's status and output in this same call.\n- Depth, the chain's spawn budget, and your own tool scope always bound the child.\n\nControl usage:\n- operation=\"output\" with task_id joins that child once and returns its status, output, error, and stop_cause. timeout bounds the wait in milliseconds (default 300000); status \"running\" means the child outlived it and is still working.\n- operation=\"cancel\" with task_id requests cancellation of a child this session started.\n\nScheduling a child and awaiting it with operation=\"output\" is the whole control surface: there is no roster listing, steering, keep-alive, retry, or structured-output validation. Do not sleep, poll in a loop, or relaunch equivalent work.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Full delegated task prompt for the child session."
+          },
+          "label": {
+            "type": "string",
+            "description": "Optional short delegation label."
+          },
+          "subagent_type": {
+            "type": "string",
+            "enum": [
+              "execute",
+              "review",
+              "explore",
+              "research",
+              "plan"
+            ],
+            "description": "Optional builtin child profile; the child runs that profile's prompt text, tools, and read-only stance. Omit to inherit your own tool scope instead."
+          },
+          "tool_allowlist": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Optional tool names the child may use; never wider than your own scope."
+          },
+          "max_steps": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 32,
+            "description": "Step cap for the child session."
+          },
+          "run_in_background": {
+            "type": "boolean",
+            "default": true,
+            "description": "true returns the task_id immediately; false waits for the child to finish."
+          },
+          "operation": {
+            "type": "string",
+            "enum": [
+              "output",
+              "cancel"
+            ],
+            "description": "output joins a child this session started; cancel requests its cancellation."
+          },
+          "task_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Child session id returned by a spawn."
+          },
+          "timeout": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 300000,
+            "description": "Millisecond wait bound for a synchronous spawn or operation=output."
+          }
+        },
+        "required": []
+      },
+      "effects": [
+        "read",
+        "spawn",
+        "session"
+      ],
+      "replay_policy": "never",
+      "capabilities": []
+    },
+    {
+      "name": "task_batch",
+      "description": "Dispatch bounded independent child work as one background group.\n\nUsage:\n- Pass tasks with 1-100 items. Every item requires prompt and accepts optional label, tool_allowlist, max_steps, and subagent_type (a builtin child profile: execute, review, explore, research, or plan).\n- Every item is validated before anything is created; when all items are valid they all start in the background under one fresh group id.\n- A result with partial=true lists the created and the failed items. Created children stay recorded and are never retried or cancelled automatically.\n- Items must be independent: nested delegation, dependencies, keep-alive, and automatic whole-group cancellation are not supported.\n- Read the group with operation=\"output\" and parallel_group_id: each child is joined once and reported as a bounded per-child status, without prompts, transcripts, or child output.\n\nExample: task_batch(tasks=[{\"prompt\":\"Find the opening hours in the visitor guide\"},{\"prompt\":\"Summarize transport options from the visitor guide\"}])",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "tasks": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "description": "Independent child requests; all children start in the background under one fresh group.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "prompt": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Full delegated task prompt for this child session."
+                },
+                "label": {
+                  "type": "string",
+                  "description": "Optional short delegation label."
+                },
+                "subagent_type": {
+                  "type": "string",
+                  "enum": [
+                    "execute",
+                    "review",
+                    "explore",
+                    "research",
+                    "plan"
+                  ],
+                  "description": "Optional builtin child profile; this child runs that profile's prompt text, tools, and read-only stance."
+                },
+                "tool_allowlist": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "description": "Optional tool names this child may use; never wider than your own scope."
+                },
+                "max_steps": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "default": 32,
+                  "description": "Step cap for this child session."
+                }
+              },
+              "required": [
+                "prompt"
+              ]
+            }
+          },
+          "operation": {
+            "type": "string",
+            "enum": [
+              "output"
+            ],
+            "description": "output reads a group this session started instead of spawning one."
+          },
+          "parallel_group_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Group id returned by an earlier task_batch call."
+          }
+        },
+        "required": []
+      },
+      "effects": [
+        "read",
+        "spawn",
+        "session"
+      ],
+      "replay_policy": "never",
+      "capabilities": []
+    }
+  ],
+  "commands": [],
+  "capabilities": [],
+  "providers": [],
+  "depends": [],
+  "state_schema_version": 1,
+  "config_schema": {
+    "type": "object"
+  },
+  "context": false
+}

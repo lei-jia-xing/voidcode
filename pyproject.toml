@@ -67,7 +67,7 @@ syntax = [
 ]
 
 [project.scripts]
-voidcode = "voidcode.cli:main"
+voidcode = "voidcode.kernel.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/lei-jia-xing/voidcode"
@@ -87,7 +87,6 @@ include = [
   "scripts",
   "src/voidcode",
   "tests",
-  "schema",
   "README.md",
   "LICENSE",
   "NOTICE",

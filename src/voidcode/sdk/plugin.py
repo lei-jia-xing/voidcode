@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import cast
 
 from .commands import Command, CommandDefinition
-from .hooks import ContextContribution, PluginFact
+from .hooks import ContextContribution, PluginFact, RunLifecycle, ToolIntent, ToolOutcome
 from .invocation import ToolContext
 from .json_values import own_json_object
 from .manifest import PluginCommandDeclaration, PluginManifest, PluginToolDeclaration
@@ -26,6 +26,15 @@ class Plugin:
     views: tuple[PluginView, ...] = ()
     context: Callable[[ToolContext, PluginServices], ContextContribution | None] | None = None
     observer: Callable[[PluginFact, ToolContext, PluginServices], None] | None = None
+    #: Lifecycle notifications: run once at the start and once at the end of each run.
+    session_start: Callable[[RunLifecycle, ToolContext, PluginServices], str | None] | None = None
+    session_end: Callable[[RunLifecycle, ToolContext, PluginServices], str | None] | None = None
+    #: Pre-tool gate: runs before the invocation is admitted. Returning a reason DENIES the
+    #: call, and so does a gate failure (fail-closed): a gate can only refuse, never widen.
+    pre_tool: Callable[[ToolIntent, ToolContext, PluginServices], str | None] | None = None
+    #: Post-tool hook: runs inside the governed invocation after a successful tool result,
+    #: before that result becomes durable. Returns an optional note appended to the result.
+    post_tool: Callable[[ToolOutcome, ToolContext, PluginServices], str | None] | None = None
     #: Pure old-version -> new-version state transform, run before a capability switch.
     migrate_state: Callable[[Mapping[str, object], int, int], Mapping[str, object]] | None = None
     #: Pure deactivation transform, run in the current host when this owner is disabled.
@@ -54,6 +63,8 @@ def tool_definition(declaration: PluginToolDeclaration) -> ToolDefinition:
         input_schema=declaration.input_schema,
         effects=frozenset(declaration.effects),
         replay_policy=cast(ToolReplayPolicy | None, declaration.replay_policy),
+        path_argument_keys=tuple(declaration.path_argument_keys),
+        supports_parallel=declaration.supports_parallel,
     )
 
 
@@ -67,4 +78,6 @@ def command_definition(declaration: PluginCommandDeclaration) -> CommandDefiniti
         capabilities=frozenset(declaration.capabilities),
         busy_gate=declaration.busy_gate,
         client_capabilities=frozenset(declaration.client_capabilities),
+        direct_user=declaration.direct_user,
+        client_syntax=declaration.client_syntax,
     )

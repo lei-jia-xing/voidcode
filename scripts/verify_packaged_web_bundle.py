@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import os
 import queue
+import socket
 import subprocess
 import sys
 import tempfile
@@ -32,7 +33,7 @@ def _assert_wheel_contains_web_bundle(wheel_path: Path) -> None:
 def _wait_for_url(process: subprocess.Popen[str]) -> str:
     stdout = process.stdout
     if stdout is None:
-        raise SystemExit("packaged launcher stdout pipe is unavailable")
+        raise SystemExit("packaged server stdout pipe is unavailable")
     return _wait_for_url_from_stream(stdout=stdout, poll=process.poll, timeout_seconds=30.0)
 
 
@@ -67,21 +68,19 @@ def _wait_for_url_from_stream(
         except queue.Empty:
             if poll_fn() is not None:
                 output = "".join(buffered_lines).strip()
-                raise SystemExit(
-                    "packaged launcher exited before printing its local URL" + (f"\nlauncher output:\n{output}" if output else "")
-                ) from None
+                raise SystemExit("packaged server exited before printing its web URL" + (f"\nserver output:\n{output}" if output else "")) from None
             continue
 
         if item is None:
             if poll_fn() is not None:
                 output = "".join(buffered_lines).strip()
-                raise SystemExit("packaged launcher exited before printing its local URL" + (f"\nlauncher output:\n{output}" if output else ""))
+                raise SystemExit("packaged server exited before printing its web URL" + (f"\nserver output:\n{output}" if output else ""))
             continue
 
         buffered_lines.append(item)
-        if "Local server running at:" in item:
-            return item.split("Local server running at:", 1)[1].strip()
-    raise SystemExit("timed out waiting for packaged launcher URL")
+        if "web client:" in item:
+            return item.split("web client:", 1)[1].strip()
+    raise SystemExit("timed out waiting for the packaged server's web client URL")
 
 
 def _probe_launcher(url: str) -> None:
@@ -91,21 +90,32 @@ def _probe_launcher(url: str) -> None:
             with urllib.request.urlopen(url, timeout=5) as response:
                 body = response.read(200).decode("utf-8", errors="replace")
                 if response.status != 200:
-                    raise SystemExit(f"packaged launcher returned HTTP {response.status}")
+                    raise SystemExit(f"packaged server returned HTTP {response.status}")
                 if "<!DOCTYPE html>" not in body:
-                    raise SystemExit("packaged launcher did not return frontend HTML")
+                    raise SystemExit("packaged server did not return frontend HTML")
                 return
         except Exception:
             time.sleep(0.25)
-    raise SystemExit(f"timed out probing packaged launcher URL: {url}")
+    raise SystemExit(f"timed out probing packaged server URL: {url}")
 
 
-def _verify_installed_launcher(wheel_path: Path) -> None:
+def _free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def _verify_installed_server(wheel_path: Path) -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
         venv_dir = root / "venv"
         workspace = root / "workspace"
         workspace.mkdir()
+        state_dir = root / "state"
+        state_dir.mkdir()
+        # The kernel requires an explicit workspace configuration; this probe only needs the
+        # transport to boot and serve the packaged web bundle.
+        (workspace / "voidcode.json").write_text('{"schema_version": 1}', encoding="utf-8")
         venv.EnvBuilder(with_pip=True).create(venv_dir)
         python = _venv_python(venv_dir)
         subprocess.run(
@@ -120,17 +130,18 @@ def _verify_installed_launcher(wheel_path: Path) -> None:
                 str(python),
                 "-m",
                 "voidcode",
-                "web",
                 "--workspace",
                 str(workspace),
+                "serve",
                 "--host",
                 "127.0.0.1",
-                "--no-open",
+                "--port",
+                str(_free_port()),
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            env={**os.environ, "PYTHONUNBUFFERED": "1", "XDG_STATE_HOME": str(state_dir)},
         )
         try:
             url = _wait_for_url(process)
@@ -149,7 +160,7 @@ def main() -> int:
         raise SystemExit("usage: verify_packaged_web_bundle.py <wheel-path>")
     wheel_path = Path(sys.argv[1]).resolve()
     _assert_wheel_contains_web_bundle(wheel_path)
-    _verify_installed_launcher(wheel_path)
+    _verify_installed_server(wheel_path)
     return 0
 
 

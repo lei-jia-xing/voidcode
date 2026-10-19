@@ -1,4 +1,4 @@
--- Kernel schema v2. The store verifies an existing database's identity BEFORE
+-- Kernel schema v3. The store verifies an existing database's identity BEFORE
 -- setting pragmas or executing this DDL; foreign/legacy files are never changed
 -- and a v1 database is refused read-only instead of being migrated in place.
 -- Future plugin-state/tasks/wakeups tables are added with their actual owners.
@@ -6,7 +6,7 @@
 CREATE TABLE kernel_identity (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     magic TEXT NOT NULL CHECK (magic = 'voidcode-kernel-v1'),
-    schema_version INTEGER NOT NULL CHECK (schema_version = 2)
+    schema_version INTEGER NOT NULL CHECK (schema_version = 4)
 ) STRICT;
 
 CREATE TABLE revisions (
@@ -33,7 +33,13 @@ CREATE TABLE sessions (
     turn INTEGER NOT NULL DEFAULT 0 CHECK (turn >= 0),
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
-    last_event_sequence INTEGER NOT NULL DEFAULT 0 CHECK (last_event_sequence >= 0)
+    last_event_sequence INTEGER NOT NULL DEFAULT 0 CHECK (last_event_sequence >= 0),
+    -- Delegated child lineage: the chain root, the nesting depth, and an optional per-session
+    -- tool visibility scope (NULL = the whole admitted catalog). A child can only narrow.
+    parent_session_id TEXT REFERENCES sessions (session_id),
+    root_session_id TEXT NOT NULL,
+    depth INTEGER NOT NULL DEFAULT 0 CHECK (depth >= 0),
+    tool_allowlist_json TEXT CHECK (tool_allowlist_json IS NULL OR json_valid(tool_allowlist_json))
 ) STRICT;
 
 CREATE TABLE session_events (
@@ -96,6 +102,7 @@ CREATE TABLE continuations (
     revision_id TEXT NOT NULL REFERENCES revisions (revision_id),
     idempotency_key TEXT,
     root_id TEXT,
+    role TEXT NOT NULL DEFAULT 'system' CHECK (role IN ('system', 'user')),
     status TEXT NOT NULL CHECK (status IN ('pending', 'claimed', 'completed', 'failed', 'cancelled')),
     payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
     created_at INTEGER NOT NULL,
@@ -115,6 +122,24 @@ CREATE TABLE root_budgets (
     updated_at INTEGER NOT NULL
 ) STRICT;
 
+-- Durable, owner-scoped wakeups: a plugin schedules a future turn and the kernel claims it
+-- atomically with the authentic run it creates. There is no TTL/reaper: a claimed row is
+-- completed by the run's terminal path, and a crashed claim stays visible instead of replaying.
+CREATE TABLE wakeups (
+    wakeup_id TEXT PRIMARY KEY,
+    owner TEXT NOT NULL,
+    workspace TEXT NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions (session_id),
+    payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+    role TEXT NOT NULL DEFAULT 'system' CHECK (role IN ('system', 'user')),
+    due_at INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'claimed', 'completed', 'failed', 'cancelled')),
+    claim_run_id TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX wakeups_due_idx ON wakeups (status, due_at);
+
 CREATE TABLE session_budgets (
     session_id TEXT NOT NULL REFERENCES sessions (session_id),
     owner TEXT NOT NULL,
@@ -127,6 +152,32 @@ CREATE TABLE session_budgets (
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (session_id, owner)
+) STRICT;
+
+-- Owner-owned restrictive overlays (plan mode and similar). Only tightening tiers exist, an
+-- owner can revoke only its own row, and the kernel policy's frozen read_only is never touched
+-- by them; they survive capability reloads because they are keyed by session, not revision.
+CREATE TABLE session_overlays (
+    session_id TEXT NOT NULL REFERENCES sessions (session_id),
+    owner TEXT NOT NULL,
+    tier TEXT NOT NULL CHECK (tier IN ('read-only')),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (session_id, owner)
+) STRICT;
+
+-- At most one verified window projection per session: a plugin declares which committed
+-- prefix its summary replaces, the kernel verifies the boundary and measures the accounting,
+-- and assembly substitutes the replacement for that prefix. Events are never rewritten.
+CREATE TABLE window_projections (
+    session_id TEXT PRIMARY KEY REFERENCES sessions (session_id),
+    owner TEXT NOT NULL,
+    covered_from_sequence INTEGER NOT NULL CHECK (covered_from_sequence >= 1),
+    covered_to_sequence INTEGER NOT NULL CHECK (covered_to_sequence >= covered_from_sequence),
+    replacement TEXT NOT NULL,
+    covered_bytes INTEGER NOT NULL CHECK (covered_bytes >= 0),
+    dropped_bytes INTEGER NOT NULL CHECK (dropped_bytes >= 0),
+    created_at INTEGER NOT NULL
 ) STRICT;
 
 -- One delivery receipt per (source fact event, owner). Eligibility is derived

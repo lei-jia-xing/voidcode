@@ -1,269 +1,121 @@
 # Client Transport Contract
 
-This document defines the transport layer contracts connecting clients (CLI, TUI, Web, ACP) to the VoidCode runtime.
+This document defines how clients (the kernel CLI, the inline TUI, and the web client) talk to a VoidCode kernel. There is exactly one contract: the generic kernel API plus the command catalog, declarative views, and append-only event stream. No client surface has product-specific routes.
 
-## Transport Overview
+## Surfaces
 
-VoidCode exposes its runtime service through multiple client adapters:
-
-- **CLI (`voidcode run`, `sessions`, `tasks`)**: Synchronous command-line execution and state management.
-- **TUI (`voidcode tui`)**: Interactive terminal interface with native scrollback.
-- **HTTP Server (`voidcode serve`) / Web Launcher (`voidcode web`)**: FastAPI-based server in `src/voidcode/runtime/transport/http.py`.
-- **ACP Facade (`voidcode acp`)**: External stdio JSON-RPC facade for editor integrations.
-
-## Server-Sent Events (SSE) Protocol
-
-The runtime streams execution events using Server-Sent Events over HTTP. Each frame is formatted with standard SSE framing:
-```text
-data: <json_payload>\n\n
-```
-
-### 1. Active Run Streaming: `POST /api/runtime/run/stream`
-Initiates or continues an execution turn. Each frame conforms to `RunStreamFrameBody` (`src/voidcode/runtime/transport/http_models.py`):
-- `kind: "event"`: Contains an `event` field with the serialized `EventBody`.
-- `kind: "output"`: Contains text content emitted incrementally as chunks or as final text (`output: str | null`). The output frame itself carries text content and does not indicate turn or run completion.
-
-Request payload fields (`_RunStreamRequestPayload` in `src/voidcode/runtime/transport/http_contract.py`):
-- `prompt`: Required non-empty string.
-- `session_id`: Optional string targeting an existing session.
-- `parent_session_id`: Optional parent session identifier.
-- `metadata`: Optional dictionary of request metadata.
-Note: Extra properties (such as `workspace`) are rejected by schema validation. Workspace context is bound by the HTTP server at startup.
-
-### 2. Session Replay & Live Following: `GET /api/sessions/{session_id}/events`
-Streams the event history for a persisted session. Each frame conforms to `SessionEventFrameBody`:
-- **Initial Frame**: Sent with `kind: "session"`, carrying session metadata, workspace, status, and turn counter.
-- **Subsequent Frames**: Sent with `kind: "event"`, carrying `EventBody` items (`output` is `null`).
-- **Follow Modes**:
-  - `follow=false` (default): Emits initial session state and replays stored event history, then closes the connection.
-  - `follow=true`: Replays stored history and then continues polling, streaming newly appended events until the session reaches terminal status.
-  - `after_sequence=N`: Filters events to those with sequence numbers strictly greater than `N` (defaults to `0`; negative values are rejected).
-
-### EventBody Structure
-
-Every event payload in an event frame contains these core properties:
-
-| Field | Type | Description |
+| Surface | Entry | Transport |
 |---|---|---|
-| `session_id` | `string` | The session identifier. |
-| `sequence` | `integer` | Monotonic event sequence number within the session. |
-| `event_type` | `string` | The event type (e.g., `runtime.request_received`, `core.model_turn`, `core.response_ready`, `runtime.tool_started`, `runtime.tool_completed`). |
-| `source` | `string` | Originating subsystem (`runtime`, `core`, or `tool`). |
-| `payload` | `object` | Event-specific data dictionary. |
-| `delegated_lifecycle` | `object` | Optional delegation correlation metadata (null for top-level events). |
+| Kernel CLI | `python -m voidcode.kernel <subcommand>` (also the `voidcode` console script) | in-process kernel, or HTTP via the TUI's remote mode |
+| TUI | `python -m voidcode.kernel tui [--server URL --token TOKEN --session-id ID]` | HTTP/SSE against an embedded or remote kernel |
+| Web | built React bundle served by the kernel at `/` | HTTP/SSE, same origin; `/api` requires the bearer token |
+| HTTP | `python -m voidcode.kernel serve [--host --port --bearer-token] [--open]` | FastAPI app, loopback bind only |
 
-### Example SSE Frame Sequence
+The kernel binds `127.0.0.1`, `::1`, or `localhost` only. Every request under `/api` requires `Authorization: Bearer <token>`; the token is generated per launch unless `--bearer-token` supplies one, and it is printed to stdout at startup and nowhere else. Static files outside `/api` are unauthenticated (they are the client bundle), and a request path under `/api` can never be served as a static file. Errors use one envelope: `{"error": "<message>", "code": "<code>"}`.
 
-```text
-data: {"kind":"event","event":{"session_id":"sess_123","sequence":1,"event_type":"runtime.request_received","source":"runtime","payload":{"prompt":"Inspect README.md"},"delegated_lifecycle":null},"output":null}
+## Kernel CLI
 
-data: {"kind":"output","event":null,"output":"I will inspect "}
-
-data: {"kind":"output","event":null,"output":"the README file."}
-
-data: {"kind":"event","event":{"session_id":"sess_123","sequence":2,"event_type":"core.response_ready","source":"core","payload":{"output_preview":"I will inspect the README file."},"delegated_lifecycle":null},"output":null}
-```
-
-Run completion is not signaled by an artificial completion event in the stream; clients determine terminal completion from the persistent session status (`completed`, `failed`, `interrupted`) via `GET /api/sessions/{session_id}` or when following finishes at terminal status.
-
-## Lifecycle & State Distinctions
-
-Client integrations must observe these technical distinctions:
-
-1. **`core.response_ready` vs. Run Completion**:
-   `core.response_ready` signals that a single model generation turn finished. It is *not* run completion; the runtime may proceed to evaluate tool calls and execute further turns.
-2. **Output Frames vs. Run Completion**:
-   Arrival of an output frame (`kind: "output"`) represents a streamed text chunk, not run completion.
-3. **SSE Connection EOF vs. Success**:
-   A closed SSE connection indicates that the HTTP response stream ended (due to completion, disconnect, or timeout). Run success is determined solely by the persistent session status.
-4. **Terminal Session States**:
-   A run is complete only when the session reaches a terminal status:
-   - `completed`: Successfully finished its plan.
-   - `failed`: Terminal execution failure.
-   - `interrupted`: Terminated prior to normal completion (such as user cancellation, process exit, or session overlap).
-5. **`waiting` Status Semantics**:
-   When an execution encounters an approval gate (`runtime.approval_requested`) or question (`runtime.question_requested`), the session pauses in the `waiting` status. It remains in `waiting` until resolved via approval or question answer endpoints.
-
-## Source-Generated Wire Types
-
-The live OpenAPI specification is served at:
-```text
-GET /api/openapi.json
-```
-
-Frontend TypeScript types are automatically compiled from this document:
-
-```bash
-# Regenerate TypeScript wire models
-mise run frontend:api:generate
-
-# Verify committed types match backend models
-mise run frontend:api:check
-```
-
-Do not edit `frontend/src/lib/runtime/generated/api.d.ts` manually.
-
-## Common Client Interaction Flows
-
-### 1. Execute and Stream a Run
-```bash
-curl -N -X POST http://127.0.0.1:8765/api/runtime/run/stream \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": "Summarize README.md"}'
-```
-
-### 2. Replay and Follow Session Events
-```bash
-# Replay stored events and disconnect
-curl http://127.0.0.1:8765/api/sessions/<session_id>/events
-
-# Stream live events following sequence 0
-curl -N "http://127.0.0.1:8765/api/sessions/<session_id>/events?follow=true&after_sequence=0"
-```
-
-### 3. Resolve Pending Approval
-When a session is `waiting` for tool execution approval:
-```bash
-curl -X POST http://127.0.0.1:8765/api/sessions/<session_id>/approval \
-  -H "Content-Type: application/json" \
-  -d '{"request_id": "<request_id>", "decision": "allow"}'
-```
-
-### 4. Resume an Interrupted Session
-```bash
-curl -X POST http://127.0.0.1:8765/api/sessions/<session_id>/resume
-```
-
-## Kernel Transport & Generic Clients (P2 Architecture)
-
-The VoidCode kernel (`src/voidcode/kernel/`) exposes a name-agnostic HTTP/SSE transport (`src/voidcode/kernel/transport/http.py`) designed for zero-coupling with specific product plugins. Clients interact strictly via the command catalog, generic action invocation, bounded declarative UI views, and immutable append-only event streams.
-
-### 1. Authoritative Wire Endpoints
-
-| Method | Path | Summary / Description |
+| Subcommand | Purpose | Exit code |
 |---|---|---|
-| `GET` | `/api/openapi.json` | Authoritative OpenAPI 3.1 specification, embedding all 8 SDK view data models. |
-| `GET` | `/api/commands` | Read the admitted command catalog: one envelope (`revision_id` + `commands` with owner, description, argument schema, effects, capabilities) captured from ONE immutable snapshot. |
-| `GET` | `/api/sessions` | List sessions (`limit` query parameter, defaults to 100). |
-| `POST` | `/api/sessions` | Create a new session with optional requested `session_id`. |
-| `GET` | `/api/sessions/{session_id}` | Read session record (status, active revision, run ID, turn count). |
-| `GET` | `/api/sessions/{session_id}/show` | Inspect durable session state and optionally full historical events (`events=true`). |
+| `run "<prompt>" [--session-id] [--max-steps]` | Execute one agent turn; prints the `KernelResult` JSON. | `0` ok, `1` failed, `130` interrupted |
+| `resume <session_id> [--approval-request-id --decision allow\|deny] [--max-steps]` | Continue a session, optionally resolving one native tool approval. | same as `run` |
+| `create-session [--session-id]` | Create an empty session. | `0` |
+| `sessions [--limit]` | List this workspace's sessions. | `0` |
+| `show <session_id> [--events]` | Read durable state (and optionally the raw event history) without configuration, host, or revision checks. | `0` |
+| `catalog` | Print the admitted command catalog (`revision_id` + commands). | `0` |
+| `invoke <session_id> <name> --arguments JSON --expected-revision ID [--client-capabilities]` | Invoke one admitted command. | `0` ok, `2` pending confirmation, `1` error |
+| `confirm <session_id> <request_id> --decision allow\|deny --expected-revision ID [--client-capabilities]` | Resolve a stored plugin confirmation. | `0` ok, `2` pending confirmation, `1` error |
+| `views <session_id> [--client-capabilities]` | Print the rendered plugin views envelope. | `0` |
+| `drain <session_id> [--limit]` | Execute pending durable continuations. | `0` |
+| `usage <session_id> [--since-sequence --until-sequence]` | Print the truthful session usage report. | `0` |
+| `tui [--server --token --session-id]` | Start the TUI (embedded kernel unless `--server` is given). | — |
+| `serve [--host --port --bearer-token] [--open]` | Start the HTTP/SSE server plus the web bundle (`--open` launches a browser). | — |
+
+Root options: `--workspace PATH` (default: current directory), `--state-dir PATH`, `--trust-plugin PLUGIN_ID` (repeatable). `invoke` arguments must be a JSON object; `--client-capabilities` is a comma-separated list of capability names. Every failure (including malformed arguments, refused trust, or a missing config) prints `{"status": "failed", "error": "..."}` and exits non-zero.
+
+## HTTP API
+
+| Method | Path | Summary |
+|---|---|---|
+| `GET` | `/api/openapi.json` | The API as OpenAPI 3.1, including the eight view data models. |
+| `GET` | `/api/commands` | Admitted command catalog: one envelope (`revision_id` + `commands`) captured from one immutable snapshot. |
+| `GET` | `/api/sessions?limit=N` | List sessions for this workspace (default 100). |
+| `POST` | `/api/sessions` | Create a session (optional requested `session_id`); `201`. |
+| `GET` | `/api/sessions/{session_id}` | Session record: status, active revision, run id, turn, last event sequence. |
+| `GET` | `/api/sessions/{session_id}/show?events=true` | Durable session state plus optional full event history. |
 | `POST` | `/api/sessions/{session_id}/run` | Execute an agent turn (`prompt`, `session_id`, `max_steps`). |
-| `POST` | `/api/sessions/{session_id}/resume` | Resume execution with optional `approval_request_id` and `decision` (`allow`/`deny`). |
-| `POST` | `/api/sessions/{session_id}/invoke/{name}` | Invoke an admitted plugin command by catalog name with JSON `arguments` and the required `expected_revision`. |
-| `POST` | `/api/sessions/{session_id}/confirm` | Resolve a pending confirmation binding stored `request_id`, `decision`, and the required `expected_revision`. |
-| `GET` | `/api/sessions/{session_id}/views` | Render bounded plugin UI descriptors for the session: one envelope (`revision_id` + `views`) rendered under one captured generation. |
-| `POST` | `/api/sessions/{session_id}/continuations` | Drain and execute pending durable continuations with plugin provenance. |
-| `GET` | `/api/sessions/{session_id}/usage` | Read truthful session token usage (`since_sequence`, `until_sequence`). |
-| `POST` | `/api/sessions/{session_id}/cancel` | Request cancellation for a single session (`{"cancellation_requested": bool}`). |
-| `GET` | `/api/sessions/{session_id}/events` | Stream session events over SSE (`after_sequence`, `follow=true/false`). |
+| `POST` | `/api/sessions/{session_id}/resume` | Resume execution, optionally with `approval_request_id` and `decision` (`allow`/`deny`). |
+| `POST` | `/api/sessions/{session_id}/invoke/{name}` | Invoke an admitted command with JSON `arguments` and the required `expected_revision`. |
+| `POST` | `/api/sessions/{session_id}/confirm` | Resolve a stored confirmation by `request_id`, `decision`, and the required `expected_revision`. |
+| `GET` | `/api/sessions/{session_id}/views?client_capabilities=` | Render plugin views: one envelope (`revision_id` + `views`); `client_capabilities` is a comma-separated list of capability names. |
+| `POST` | `/api/sessions/{session_id}/continuations` | Drain and execute pending durable continuations. |
+| `GET` | `/api/sessions/{session_id}/usage?since_sequence=&until_sequence=` | Truthful token usage for the session. |
+| `POST` | `/api/sessions/{session_id}/cancel` | Request cancellation for one session. |
+| `GET` | `/api/sessions/{session_id}/events?after_sequence=&follow=` | Replay (and optionally follow) the session event stream over SSE. |
 
-### 1b. Revision Binding (no implicit upgrades)
+## Revision Binding
 
 A command advertised by one capability generation is never executed by another:
 
-- `GET /api/commands` returns `{"revision_id": str, "commands": [...]}` — the descriptors and the revision they were captured from come from one immutable snapshot, and `GET /api/sessions/{id}/views` returns `{"revision_id": str, "views": [...]}` the same way.
-- `POST /invoke/{name}` and `POST /confirm` REQUIRE `expected_revision`: the revision of the catalog (or of the views envelope) the client actually displayed. Missing and empty values fail ingress validation (`400`, `code: "invalid_params"`); a value that is not the active revision is refused before any lookup or dispatch with `409` and `code: "stale_revision"` (`displayed catalog revision <given> is stale; refresh the catalog`). There is no "use whatever is current" default and no automatic mutating retry: the refusal is surfaced to the user, who refreshes.
-- Every rendered form, choice, command and read-only `load_action` sends the revision of the envelope that rendered it; a late v1 render is never relabelled with a later revision.
-- `kernel.reload` (a reserved core command) activates the configured sources on explicit user request. `kernel.activation_committed` carries `{"request_id", "source", "from_revision_id", "to_revision_id", "migrated_owners", "deactivated_owners"}` and its event `revision_id` column is the NEW revision. Clients refetch catalog and views together, and drop confirmations/pending actions captured under any other revision; `kernel.activation_requested`, `kernel.activation_failed` (nothing changed; notice only) and `kernel.activation_blocked` (another session, approval, or queued work blocks the switch, with `blockers`) complete the family.
-- The native tool-approval `request_id` (core permission table, resolved via `/resume`) is never the plugin confirmation `request_id` (stored confirmation record, resolved via `/confirm` with its stored revision as identity plus the client's displayed revision).
+- `GET /api/commands` and `GET /api/sessions/{id}/views` each return their descriptors together with the `revision_id` they were captured from; the two are separate envelopes.
+- `POST /invoke/{name}` and `POST /confirm` require `expected_revision`. A missing or empty value fails ingress validation (`400`, `code: "invalid_params"`); a value that is not the active revision is refused before any lookup or dispatch with `409`, `code: "stale_revision"`. There is no "use whatever is current" default and no automatic retry: the client refreshes and the user retries.
+- Every rendered form, choice, command, and read-only `load_action` dispatches with the revision of the envelope that rendered it; a pending confirmation keeps the revision it was displayed under.
+- `kernel.reload` (a reserved core command) activates the configured sources on explicit user request and emits `kernel.activation_committed` with `{request_id, source, from_revision_id, to_revision_id, migrated_owners, deactivated_owners}`. Clients refetch the catalog and the views together and drop anything captured under another revision. `kernel.activation_requested`, `kernel.activation_failed` (nothing changed), and `kernel.activation_blocked` (with `blockers`) complete the family.
 
-**Continuation drive semantics**: durable continuations are executed automatically by the kernel — a command or confirmation that enqueues work while its session is idle drives it in the same call, a completed or stopped run's tail drains at the next safe boundary, and a claimed continuation left by a crash is recovered on the next kernel open against its own durable checkpoint (completed prefix restored, `replay_policy="never"` intents never replayed, tail members never falsely marked executed). The explicit `/continuations` endpoint remains available as a rescue/observability path and returns only what it actually executed.
+## Event Stream (SSE)
 
-### 2. The Eight Finite Declarative UI Kinds
+`GET /api/sessions/{id}/events` returns `text/event-stream`. Each frame is `data: <json>\n\n`.
 
-Plugins contribute presentation exclusively through 8 strict bounded view descriptors (no remote arbitrary JavaScript execution):
+- **Head frame** (always first): `{"session": <session record>, "events": [<stored event>, ...]}` — the session record plus everything already appended after `after_sequence` (default `0`; negative values are rejected).
+- **Follow frames** (`follow=true` only): `{"kind": "event", "session_id": ..., "event": {<stored event>}}` as new events are appended. A backend failure during follow yields `{"kind": "error", "session_id": ..., "error": "..."}` and ends the stream.
+- **Stored event fields**: `session_id`, `sequence` (monotonic within the session), `type` (for example `kernel.user_message`, `kernel.model_turn`, `kernel.tool_completed`, `kernel.approval_requested`, `kernel.confirmation_requested`, `kernel.command_completed`), `run_id`, `revision_id`, `source`, `actor`, `payload`.
 
-1. **`notice`**: Inline alert message (`NoticeViewData(message, level="info"|"warning"|"error")`).
-2. **`markdown`**: Formatted markdown content (`MarkdownViewData(content)`).
-3. **`fields`**: Key-value metadata table (`FieldsViewData(rows)` where `FieldRow(label, value)`).
-4. **`choices`**: Interactive option picker (`ChoicesViewData(options, action, argument_name="choice")`).
-   - Clients display choices; selection dispatches `{ [argument_name]: option.id }` to `action`.
-5. **`confirmation`**: Approval gate (`ConfirmationViewData(request_id, message, actions=("allow", "deny"))`).
-   - Strictly binds stored `request_id`. Rendering a view cannot gain authority; decisions are submitted via `/confirm`.
-6. **`form`**: Interactive multi-field editor (`FormViewData(fields, action, initial_values={}, load_action=None)`).
-   - Supports field types: `text`, `multiline`, `integer`, `number`, `boolean`, and `required` validation.
-   - When `load_action` is present, clients verify the target command is declared with `effects: ["read"]` before executing it.
-   - Preserves unsaved user edits if loaded data arrives asynchronously; displays visible error banners on load failure without truncating or submitting stale text.
-7. **`diff`**: Unified code/text diff (`DiffViewData(before, after, path=None)`).
-8. **`status`**: State badge indicator (`StatusViewData(label, value)`).
+`follow=false` (default) replays and closes. `follow=true` crosses run boundaries: `completed`, `failed`, and `interrupted` end a *run*, not the session, so the stream ends only when the client disconnects or a terminal error frame is sent.
 
-Any unrecognized or malformed view type produces an explicit visible error banner; clients never simulate or pretend success.
+## Declarative Views
 
-### 3. Generic TUI Client (`voidcode.kernel.tui`)
+Plugins contribute presentation exclusively through eight bounded descriptors; clients never execute plugin-supplied markup or script:
 
-- **Launch Syntax**:
-  ```bash
-  # Connect to an existing kernel server
-  python -m voidcode.kernel tui --server http://127.0.0.1:8000 --token <bearer_token> [--session-id <id>]
+1. `notice` — inline alert (`message`, `level` ∈ `info`/`warning`/`error`).
+2. `markdown` — formatted markdown content.
+3. `fields` — key/value rows (`FieldRow(label, value)`).
+4. `choices` — option picker (`options`, `action`, `argument_name`); selection dispatches `{ "<argument_name>": <option id> }` to `action`.
+5. `confirmation` — approval gate bound to a stored `request_id`; decisions go through `/confirm`, never a local claim.
+6. `form` — multi-field editor (`fields`, `action`, optional `initial_values` and `load_action`); field types `text`, `multiline`, `integer`, `number`, `boolean`, with `required` validation. A `load_action` is only auto-invoked when the catalog declares that command with exactly the `read` effect.
+7. `diff` — unified diff (`before`, `after`, optional `path`).
+8. `status` — state badge (`label`, `value`).
 
-  # Standalone embedded mode (starts local server on free loopback port with ephemeral token)
-  python -m voidcode.kernel tui [--session-id <id>]
-  ```
-- **Settled-Prefix Commit-Once Ledger**:
-  Rows are committed to the native scrollback exactly once by the main loop, driven by the durable journal (`last_sequence` cursor). Reconnecting SSE streams, follow polling, `SIGWINCH` resizes, and switching sessions never replay, re-render, or clear settled output; only the live region (active overlay or composer) repaints.
-- **Canonical Event Rendering**:
-  The TUI renders only the persisted SDK event payloads, never provider-native wire shapes:
-  - `kernel.user_message` → `payload.content` (single source; the composer never commits the prompt optimistically).
-  - `kernel.model_turn` → `payload.result.output` / `payload.result.reasoning` / `payload.result.tool_calls[].tool_name|arguments`.
-  - `kernel.tool_completed` / `kernel.tool_interrupted` → `payload.call.tool_name` + `payload.result.output.text` (+ `payload.result.error`).
-  - `kernel.command_intent` / `kernel.command_completed` → `payload.name` + `payload.result.{status,output,error,data}` (the neutral `CommandResult` envelope; clients render `status` verbatim and show `unknown` rather than inventing a placeholder).
-  Every model- and plugin-provided string is passed through `escape_terminal_controls` before styling, so untrusted text cannot clear scrollback or switch buffers.
-- **Interactive Overlays**:
-  Choices, forms (full multiline/Unicode editing, `load_action` prefill, strict numeric literals, omitted-blank optionals) and confirmation prompts borrow the live region. A pending confirmation is only ever resolved through `POST /confirm` with its stored `request_id`: `Esc` and `Ctrl+C` on a confirmation overlay submit an explicit `deny`, never a local "cancelled" claim.
-- **Revision Binding**:
-  Every overlay captures the revision of the envelope that rendered it: a choices selection, a form submit and a `load_action` prefill are all dispatched with that captured revision, and a confirmation keeps the revision it was displayed under (never "whatever is current"). Slash commands resolve against the displayed catalog and echo its revision. `kernel.activation_committed` refetches the catalog and the views together in the same event, drops any overlay captured under another revision with a visible row, and never re-sends or auto-retries the stale action; the durable ledger still shows the old action exactly once.
-- **Durable Pending Confirmations**:
-  A plugin confirmation is projected from its facts, not only from the live command result: `kernel.confirmation_requested` restores the pending dialog bound to the event's own `revision_id` after a reconnect, and `kernel.confirmation_decided` clears exactly that `request_id` — whether or not that request is the one on screen — so a replayed decided request never resurrects a dialog and a pending one survives both a client restart and a server restart without the command being re-issued. Requests that arrive while a form (or any other overlay) owns the live region are retained by `request_id` in request order and presented when it frees: none is dropped, the oldest still-pending request comes next after a decision, and a request arriving while another modal is shown never displaces it. The stored `request_id` stays the identity; the decision is submitted with the fact's revision.
-- **Escape**:
-  A lone ESC is resolved after the decoder's 50 ms disambiguation window instead of staying buffered forever. Overlays receive it as `esc` (confirmation → explicit deny; form/choices → close, which then presents the oldest retained pending), while the composer keeps the decoder's `escape` (cancel turn).
-- **Async I/O**:
-  All HTTP calls run on worker threads and hand results back through the UI queue; only the main loop writes rows. `/session <id>` and `/new` rebind the follower (fresh cursor, drained queue, new SSE generation), so rows from a previous session never leak into the new one. Local controls (`/help`, `/views`, `/session`, `/new`, `/cancel`) never shadow an admitted command with the same name.
-- **Markdown**:
-  Markdown views render through the same `rich.markdown.Markdown` primitive the transcript uses (headings, lists, tables, code), after control-byte escaping.
+An unrecognized or malformed view is reported visibly; clients never simulate success.
 
-### 3b. Native Tool Approval vs. Plugin Action Confirmation
+## The Two Decision Gates
 
-Two distinct gates reach clients over the same event stream and must not be conflated:
-
-| Gate | Event | Resolution |
+| Gate | Request fact | Resolution |
 |---|---|---|
-| Native tool approval (core permission gate) | `kernel.approval_requested` → `{request_id, batch_sequence, call:{tool_name,arguments,tool_call_id}, owner}`; session becomes `waiting` | `POST /api/sessions/{id}/resume` with the exact `approval_request_id` + `decision` (`allow`/`deny`); the engine also records `kernel.approval_decided` |
-| Plugin Action confirmation | `kernel.confirmation_requested` (payload: the SDK `ConfirmationRequest` — `request_id`, `owner`, `command_name`, `arguments`, `ui_type`, `ui_data`, `expected_state_version`) committed with the pending record, and `kernel.confirmation_decided` (`request_id`, `command_name`, `decision`) on every decision; a `pending_confirmation` command result carries the same request live | `POST /api/sessions/{id}/confirm` with the stored `request_id` and the revision the client displayed |
+| Native tool approval | `kernel.approval_requested` carries the approval `request_id`, the batch/call identity, and the owner; the session parks in `waiting`. | `POST /resume` with the exact `approval_request_id` and `decision`; the engine records `kernel.approval_decided`. |
+| Plugin action confirmation | `kernel.confirmation_requested` carries the SDK `ConfirmationRequest` (`request_id`, `owner`, `command_name`, `arguments`, `ui_type`, `ui_data`, and optionally `expected_state_version`); `kernel.confirmation_decided` clears exactly that request. | `POST /confirm` with the stored `request_id`, the decision, and the revision the client displayed. |
 
-Both clients keep them separate: an approval request id from the core table is never sent to `/confirm`, and a plugin confirmation request id is never sent to `/resume`. Both clients project the durable facts directly: `kernel.confirmation_requested` adds a pending modal bound to the event's own `revision_id` (never the current catalog) — a duplicate fact, or the same request's live `pending_confirmation` result, never re-opens or resets one already known, and a second request never displaces the first — and `kernel.confirmation_decided` removes exactly that `request_id` whether it is on screen or waiting, so replayed history never resurrects a resolved dialog. A client that reconnects (a fresh process, a page reload) or comes back after a server restart restores a still-pending request from the ledger alone, re-issuing no command, and the restored modal renders before any catalog metadata has arrived: the decision needs only the fact's revision (`/confirm` is submitted with it) and a generation that has since moved on is refused `409 / stale_revision` with no effect. Interactive traffic (approval, confirmation, cancel, form load, run) always leaves the UI thread and returns through the UI queue, so only the main loop writes rows.
+A request id from one gate is never sent to the other endpoint. Both are projected from durable facts, so a client restart or a server restart restores a pending dialog without the command being re-issued, and a replayed decided request never resurrects one.
 
-### 3c. Proof Scope
+## TUI Client
 
-The client surfaces were proven against real transports, a real browser and a real PTY with the full bundled plugin set (`files` + `goal`) and native approvals:
+- Launched embedded (starts a kernel and an ephemeral loopback server with its own token) or remote with `--server`/`--token`.
+- Inline scrollback with a **commit-once ledger**: rows are committed to the native scrollback exactly once by the main loop, driven by a durable `last_sequence` cursor. Reconnects, follow polling, resizes, and session switches never replay or clear settled output; only the live region repaints.
+- Renders persisted SDK payloads only (`kernel.user_message`, `kernel.model_turn`, `kernel.tool_completed`, `kernel.command_intent`/`kernel.command_completed`), escaping terminal control bytes in every model- and plugin-provided string.
+- Slash input resolves against the displayed catalog and echoes its revision; overlays capture the revision that rendered them. `Esc`/`Ctrl+C` on a confirmation overlay submit an explicit `deny`, never a local "cancelled".
+- Local controls that are not admitted commands: `/tui help|sessions|session <id>|new|views [name]|cancel|quit` (bare forms work when no admitted command owns the name). `/tui <control>` always reaches the client control, so a plugin cannot shadow navigation.
+- All HTTP work happens on worker threads; only the main loop writes rows.
 
-- Browser (Chromium, real uvicorn, external fixture plugin, bundled `files` and `goal`, real loopback provider): all eight view kinds with real markdown, slash dispatch, choices, stored plugin confirmation allow **and** deny, native ASK approval allow (real write effect) **and** deny (no effect, failed tool result), tri-state boolean submission read back from the durable command result, the long-Unicode goal objective pre-filled through its declared read action with no retry, an untouched submit keeping the finite budget, and a deliberate blank submitting `token_budget: null` on the real request body while the goal keeps its id, creation record and attached objective.
-- PTY (real pseudo-terminal, real kernel server): the same view kinds, form prefill and submit, SIGWINCH resize and server-restart reconnect with zero settled replays, sequential prompt identities, native approval allow/deny, stored confirmation allow/deny, cancel over HTTP, A→B→A with zero replayed rows, and the real Goal objective/budget flow.
+## Web Client
 
-The throwaway harnesses are kept outside the repository (evidence and copies under `/tmp/voidcode-kernel-evidence/`); nothing in this document depends on them.
+The built bundle is served by the kernel at `/` (an exact file when present, otherwise `index.html`, so client-side routes survive a reload). During frontend development, Vite serves the app on `127.0.0.1:5173` and proxies `/api` to the kernel (`VITE_BACKEND_URL`, default `http://127.0.0.1:8765`).
 
-**P3 revision binding** was proven against real surfaces with a real external plugin that flips v1 → v2 inside ONE session (`kernel.reload` from the client surface):
+The kernel app (`frontend/src/kernel/`) renders the same catalog and views with pure components in `frontend/src/kernel/views/`; markdown goes through `react-markdown` + `remark-gfm` and never evaluates raw HTML. Every response, view render, form draft, and SSE frame is bound to the session that issued it, and revision binding follows the HTTP rules above.
 
-- HTTP + CLI (real listening server, real plugin): catalog/views envelopes and the session's active revision agree; the commit moves `from_revision_id` → `to_revision_id`; an action carrying the superseded displayed revision is refused with `409 / stale_revision` and leaves no outside effect; the refreshed catalog/views carry the new revision and the new content, and only the v2 command shows the new behaviour; a full SSE replay has every sequence once and a tail cursor returns exactly the later events; the CLI refuses the stale revision instead of defaulting.
-- PTY (real pseudo-terminal, real TUI, real server): the displayed v1 command ran under the revision that rendered it; the activation commit refreshed catalog and views in place; the refreshed v2 command produced its new behaviour; the stale v1 action ran exactly once and was never auto-retried; a server restart reconnected the stream without replaying a settled row. Separately, a gated command's pending confirmation was proven durable: the same `request_id` the live modal showed was the one the ledger committed under the displayed revision, a fresh TUI process restored that pending modal from the ledger alone (no command re-issued), a backend restart under the live TUI left it intact, the allow decision submitted the fact's own revision and executed the plugin effect exactly once, and a reconnect after the decision replayed the ledger without resurrecting the dialog. A further scenario kept a real plugin form owning the live region while another real client created two requests: both were retained (none dropped), an external deny removed the unseen oldest without it ever appearing, closing the form presented the still-pending request under its authentic id with no reconnect and no re-issued command, a third request arriving behind the visible modal did not displace it, deciding that modal presented the third, and Esc denied it through the real decoder flush path — three intents, exactly one allow effect, and every decision terminal exactly once.
-- Browser (real Chromium, real server, real plugin): the request bodies of a click-dispatched command carried the displayed revision before and after the switch; an activation requested while a views read was in flight was refused visibly (`HostUnavailable: capability activation is blocked by in-flight work: views`) with the UI still on v1, then committed on the next attempt; the sidebar refreshed to the v2 generation by itself and stayed there; a stale revision sent from the page was answered `409 / stale_revision` with the durable effect unchanged; reloading the page replayed each event row once and still displayed the v2 generation. A second scenario withheld the REAL `/api/commands` response for 10s across a reload: the pending modal came back from the authentic SSE fact at ~2.1s, before any catalog metadata existed; the allow decision carried that fact's revision, landed the plugin effect exactly once, and a further reload replayed the ledger without resurrecting the dialog. A third scenario held a page-issued gated command's HTTP reply while its authentic requested fact showed the modal, had another real client decide it, and released the late `pending_confirmation` reply: the resolved modal never resurrected. Two requests created by another real client were both held with the first actionable; allowing it left the second actionable, denying it emptied the banner, both confirm bodies carried the displayed revision, the ledger held exactly those decisions, only the allows landed effects, and a reload replayed the ledger once showing no confirmation.
+TypeScript types are generated from the kernel transport's OpenAPI document:
 
-### 4. Generic Web Client (`frontend/src/kernel/`)
+```bash
+mise run frontend:api:generate
+mise run frontend:api:check
+```
 
-- **Coexistence**:
-  Accessible at `http://127.0.0.1:5173/?kernel` or `/kernel`. Coexists alongside legacy `App` until the P4 cutover.
-- **Components**:
-  Pure React components in `frontend/src/kernel/views/` (`NoticeView`, `MarkdownView`, `FieldsView`, `ChoicesView`, `ConfirmationView`, `FormView`, `DiffView`, `StatusView`, `PluginViewRenderer`).
-  - Markdown renders through the same `react-markdown` + `remark-gfm` pipeline the transcript uses (raw HTML is never evaluated).
-  - Client chrome, button labels and error text use the shared i18n resources (`kernel.*` keys in `frontend/src/i18n/locales/{en,zh-CN}.json`); plugin-provided business data is rendered verbatim.
-  - A form's `load_action` is only auto-invoked when its catalog entry declares exactly the `read` effect.
-  - Blank values follow the target command's own `argument_schema`: a field the command declares nullable submits `null` (so an existing value can be cleared), an optional field without `null` is omitted, and a required field is rejected. Numeric text is validated, never truncated or coerced to `0`.
-  - Every response, view render, form draft and SSE frame is bound to the session that issued it; switching sessions resets the transcript, pending confirmation and run state, and remounts forms keyed by session.
-  - Revision binding: the catalog and the views are held with the revision they were captured under. Each rendered form, choice, command and read-only `load_action` dispatches with the revision of its own envelope, a pending confirmation keeps the revision it was displayed under, and `kernel.activation_committed` refetches catalog + views together, clears confirmations captured under another revision, and drops superseded in-flight reads (monotonic request serials) so an older reply can never overwrite the new generation. Nothing is auto-retried.
-  - Pending confirmations are held by `request_id` in request order, not in a single slot: an authentic `kernel.confirmation_requested` adds one, `kernel.confirmation_decided` removes exactly that id whether it is the one on screen or queued, and the oldest still-pending request is the actionable banner. A decided id is remembered, so a late invoke reply carrying `pending_confirmation` can never resurrect a resolved request, and a duplicate fact or the same request's live result never resets the banner.
-- **Type Generation**:
-  Authoritative TypeScript definitions are generated from the kernel transport's live OpenAPI document:
-  ```bash
-  mise run frontend:kernel-api:generate
-  mise run frontend:kernel-api:check
-  ```
+Do not hand-edit `frontend/src/lib/kernel/generated/api.d.ts`.

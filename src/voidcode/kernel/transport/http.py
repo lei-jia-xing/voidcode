@@ -22,7 +22,7 @@ from fastapi import FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException
-from starlette.responses import JSONResponse, Response, StreamingResponse
+from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.types import Receive, Scope, Send
 
 from ...sdk.commands import CommandCatalog, CommandResult
@@ -174,6 +174,7 @@ class KernelTransportApp(FastAPI):
         kernel_factory: Callable[[], Kernel],
         bearer_token: str | None = None,
         allow_origin: str | None = None,
+        frontend_dist: Path | None = None,
     ) -> None:
         super().__init__(
             title="VoidCode kernel API",
@@ -194,6 +195,9 @@ class KernelTransportApp(FastAPI):
         self._kernel: Kernel | None = None
         self._bearer_token = bearer_token
         self._allow_origin = allow_origin
+        #: The static web bundle this process serves at "/", when one is built. The bundle is
+        #: public exactly like the legacy launcher's: only /api carries the bearer token.
+        self._frontend_dist = frontend_dist.resolve() if frontend_dist is not None and frontend_dist.is_dir() else None
         self._register_routes()
 
     @asynccontextmanager
@@ -380,6 +384,25 @@ class KernelTransportApp(FastAPI):
         )  # noqa: E501
         route("/api/sessions/{session_id}/cancel", self._handle_cancel, methods=["POST"], summary="Request cancellation for one session")
         route("/api/sessions/{session_id}/events", self._handle_events, methods=["GET"], summary="Replay session events", streaming_frame=ShowBody)
+        if self._frontend_dist is not None:
+            # The single-page client: an exact file when one exists, otherwise index.html, so a
+            # client-side route survives a reload. Registered last so every /api route wins, and
+            # never in the OpenAPI document: it is not part of the API contract.
+            self.add_api_route("/{path:path}", self._handle_static, methods=["GET"], include_in_schema=False, response_class=FileResponse)
+
+    async def _handle_static(self, path: str) -> Response:
+        dist = self._frontend_dist
+        if dist is None:  # pragma: no cover - the route is only registered with a bundle
+            raise HttpError(404, "not found", code="not_found")
+        if path == "api" or path.startswith("api/"):
+            raise HttpError(404, "not found", code="not_found")
+        if path:
+            candidate = (dist / path).resolve()
+            # A traversal or absolute path resolves outside the bundle and falls through to the
+            # SPA entry point instead of reading an arbitrary file.
+            if candidate.is_file() and candidate.is_relative_to(dist):
+                return FileResponse(candidate)
+        return FileResponse(dist / "index.html")
 
     async def _handle_openapi_document(self) -> Response:
         return _ok(self.openapi())
@@ -625,13 +648,14 @@ def create_kernel_app(
     trusted_plugins: frozenset[str] = frozenset(),
     bearer_token: str | None = None,
     allow_origin: str | None = None,
+    frontend_dist: Path | None = None,
 ) -> KernelTransportApp:
     resolved_workspace = workspace.resolve(strict=True)
 
     def factory() -> Kernel:
         return open_kernel(resolved_workspace, state_dir=state_dir, trusted_plugins=trusted_plugins)
 
-    return KernelTransportApp(kernel_factory=factory, bearer_token=bearer_token, allow_origin=allow_origin)
+    return KernelTransportApp(kernel_factory=factory, bearer_token=bearer_token, allow_origin=allow_origin, frontend_dist=frontend_dist)
 
 
 def create_kernel_app_with_factory(
@@ -639,6 +663,7 @@ def create_kernel_app_with_factory(
     kernel_factory: Callable[[], Kernel],
     bearer_token: str | None = None,
     allow_origin: str | None = None,
+    frontend_dist: Path | None = None,
 ) -> KernelTransportApp:
     """Build the app against an explicit factory (tests and OpenAPI generation)."""
-    return KernelTransportApp(kernel_factory=kernel_factory, bearer_token=bearer_token, allow_origin=allow_origin)
+    return KernelTransportApp(kernel_factory=kernel_factory, bearer_token=bearer_token, allow_origin=allow_origin, frontend_dist=frontend_dist)

@@ -12,6 +12,7 @@ from importlib.metadata import version
 from pathlib import Path
 
 from ..sdk.config import CONFIG_FILE_NAME, KernelConfig, KernelPluginEntry, parse_kernel_config
+from ..sdk.manifest import MANIFEST_FILE_NAME, parse_plugin_manifest
 from .activation import (
     DEFAULT_CAPABILITIES,
     Admission,
@@ -75,6 +76,7 @@ def open_kernel(
     def admit_current(authorized: frozenset[str]) -> Admission:
         """Re-admit the live configuration, trusting only pre-authorized canonical source paths."""
         live = load_config(workspace)
+        private_providers, _public = _providers(live)
         admitted = admit_live(
             live,
             workspace=workspace,
@@ -82,7 +84,7 @@ def open_kernel(
             bundled_sources=_bundled_sources(),
             authorized_paths=authorized | frozenset(startup_paths.values()),
             capabilities=DEFAULT_CAPABILITIES,
-            plugin_config=lambda plugin_id, config: _plugin_config(plugin_id, config, live),
+            plugin_config=lambda plugin_id, source, config: _plugin_config(plugin_id, config, source=source, private_providers=private_providers),
         )
         return _admission_from(admitted, config=live, entries=_merged_entries(live))
 
@@ -128,8 +130,39 @@ def _assert_workspace_free(workspace: Path) -> None:
 
 
 def _bundled_sources() -> dict[str, Path]:
+    """The plugin sources shipped with the kernel: id -> source directory.
+
+    A bundled id is always trusted (the source ships with the kernel, so trusting it says
+    nothing about user code); anything else needs an explicit `path` and explicit trust.
+    """
     bundled = Path(__file__).resolve().parents[1] / "plugins"
-    return {"files": bundled / "files", "openai-chat": bundled / "openai_chat"}
+    #: The shipped default-on plugin set: every product mechanism is an ordinary plugin, so the
+    #: bundled list is the product surface. A workspace can disable any of them by id.
+    ids = (
+        "agents",
+        "ast_grep",
+        "btw",
+        "compaction",
+        "cron",
+        "delegation",
+        "effectiveness",
+        "exec",
+        "files",
+        "formatter",
+        "goal",
+        "hooks",
+        "lsp",
+        "mcp",
+        "plan",
+        "providers",
+        "review",
+        "session_info",
+        "skills",
+        "todo",
+        "user_shell",
+        "web",
+    )
+    return {plugin_id: bundled / plugin_id.replace("-", "_") for plugin_id in ids}
 
 
 def _merged_entries(config: KernelConfig) -> dict[str, KernelPluginEntry]:
@@ -139,26 +172,44 @@ def _merged_entries(config: KernelConfig) -> dict[str, KernelPluginEntry]:
 
 
 def _providers(config: KernelConfig) -> tuple[dict[str, object], dict[str, object]]:
-    """Resolve private provider credentials and the redacted view that may reach revisions."""
+    """Resolve private provider credentials and the redacted view that may reach revisions.
+
+    Provider names are opaque: the kernel neither knows nor validates a wire protocol. Each name
+    reaches the plugin that declared it as a provider, flattened to the vendor's own vocabulary
+    plus the two typed fields the kernel resolves itself.
+    """
     private: dict[str, object] = {}
     public: dict[str, object] = {}
     for name, entry in config.providers.items():
         if entry.base_url is None:
             raise ValueError(f"provider {name} requires an explicit base_url")
         key = entry.api_key or os.environ.get(f"{name.upper().replace('-', '_')}_API_KEY")
-        private[name] = {"api_key": key, "base_url": entry.base_url, "wire": entry.wire}
-        public[name] = {"base_url": entry.base_url, "wire": entry.wire}
+        private[name] = {**entry.extra, "api_key": key, "base_url": entry.base_url}
+        public[name] = {"base_url": entry.base_url}
     return private, public
 
 
-def _plugin_config(plugin_id: str, config: Mapping[str, object], config_source: KernelConfig) -> Mapping[str, object]:
-    """Inject product-owned credentials into a plugin configuration; never for an arbitrary plugin."""
+def _declared_providers(source: Path) -> frozenset[str]:
+    """Provider names a plugin source declares, read without importing or admitting it."""
+    manifest = parse_plugin_manifest(json.loads((source / MANIFEST_FILE_NAME).read_text(encoding="utf-8")))
+    return frozenset(item.name for item in manifest.providers)
+
+
+def _plugin_config(
+    plugin_id: str,
+    config: Mapping[str, object],
+    *,
+    source: Path,
+    private_providers: Mapping[str, object],
+) -> Mapping[str, object]:
+    """Inject endpoint credentials for exactly the provider names this plugin declares."""
     resolved = dict(config)
-    if plugin_id == "openai-chat":
+    declared = _declared_providers(source)
+    configured = declared.intersection(private_providers)
+    if configured:
         if "providers" in resolved:
-            raise ValueError("configure provider credentials/endpoints in the root providers section")
-        private, _public = _providers(config_source)
-        resolved["providers"] = private
+            raise ValueError(f"plugin {plugin_id} must configure provider credentials in the root providers section")
+        resolved["providers"] = {name: private_providers[name] for name in sorted(configured)}
     return resolved
 
 
@@ -172,16 +223,35 @@ def _configured_source(workspace: Path, entries: Mapping[str, KernelPluginEntry]
     return canonical_source_path(workspace / str(entry.path))
 
 
+def _validate_providers(config: KernelConfig, admitted: AdmittedPlugins) -> None:
+    """A configured provider name must be a name some admitted plugin actually declares."""
+    if not config.providers:
+        return
+    declared = {item.name for plugin in admitted.plugins for item in plugin.manifest.providers}
+    missing = sorted(set(config.providers) - declared)
+    if missing:
+        raise ValueError(f"provider {missing[0]!r} is not declared by any admitted plugin")
+    model = config.model.model
+    if model is not None:
+        provider_name, separator, model_name = model.partition("/")
+        if not separator or not model_name or provider_name not in config.providers:
+            raise ValueError("model must name a configured provider/model")
+        if provider_name not in declared:
+            raise ValueError(f"model provider {provider_name!r} is not declared by any admitted plugin")
+
+
 def _admission_from(admitted: AdmittedPlugins, *, config: KernelConfig, entries: Mapping[str, KernelPluginEntry]) -> Admission:
     """Assemble the public revision payload and the private snapshot for one admitted generation."""
+    _validate_providers(config, admitted)
     private_providers, public_providers = _providers(config)
     identities: dict[str, object] = {}
     for plugin in admitted.plugins:
         plugin_id = plugin.manifest.plugin_id
         entry = entries[plugin_id]
         public_config = dict(entry.config)
-        if plugin_id == "openai-chat":
-            public_config["providers"] = public_providers
+        declared_names = sorted({item.name for item in plugin.manifest.providers}.intersection(public_providers))
+        if declared_names:
+            public_config["providers"] = {name: public_providers[name] for name in declared_names}
         identities[plugin_id] = {
             "manifest": plugin.manifest.as_payload(),
             "artifact": plugin.root.name,
@@ -201,7 +271,6 @@ def _admission_from(admitted: AdmittedPlugins, *, config: KernelConfig, entries:
             "entry_config": dict(entry.config),
             "config": dict(admitted.plugin_configs.get(source.plugin_id, entry.config)),
         }
-    private_providers, _public = _providers(config)
     snapshot: dict[str, object] = {
         "version": 1,
         "providers": private_providers,

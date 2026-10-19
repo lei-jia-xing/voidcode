@@ -155,13 +155,12 @@ def _kernel_with_loopback(
 
     config = {
         "schema_version": 1,
-        "model": {"model": "loopback/exact-model"},
+        "model": {"model": "endpoint/exact-model"},
         "policy": {"approval_mode": "yolo"},
         "providers": {
-            "loopback": {
+            "endpoint": {
                 "api_key": "loopback-test-key",
                 "base_url": f"http://127.0.0.1:{server.server_port}/v1",
-                "wire": "openai-chat",
             }
         },
         "plugins": plugins_cfg,
@@ -435,6 +434,15 @@ def test_goal_set_on_idle_session_starts_automatic_work(tmp_path: Path) -> None:
         assert len(server.requests) >= 4
         assert (workspace / "sum.txt").read_text(encoding="utf-8") == "42"
 
+        # The goal instructions arrive in the legacy user role, verbatim: with no user prompt in
+        # this session the user messages of the first dispatch are the goal contribution alone, and
+        # no kernel `[<owner> context]` wrapper is applied to them.
+        first_messages = server.requests[0]["messages"]
+        assert isinstance(first_messages, list)
+        user_contents = [str(message["content"]) for message in first_messages if message["role"] == "user"]
+        assert any("Read two integers from input.txt" in content for content in user_contents)
+        assert not any(str(message["content"]).startswith("[goal context]") for message in first_messages)
+
         goal_res = _invoke(kernel, session_id, "goal", {})
         goal = goal_res.data["goal"]
         assert goal["status"] == "complete"
@@ -634,7 +642,7 @@ def _seed_known_zero_dispatch(kernel: Kernel, session_id: str) -> int:
                 "kernel",
                 {
                     "attempt": 0,
-                    "provider": "loopback",
+                    "provider": "endpoint",
                     "model": "exact-model",
                     "dispatch_id": dispatch_id,
                     "start_time_ms": int(time.time() * 1000),
@@ -663,7 +671,7 @@ def _seed_known_zero_dispatch(kernel: Kernel, session_id: str) -> int:
                     "dispatch_sequence": dispatch_sequence,
                     "dispatch_id": dispatch_id,
                     "elapsed_ms": 0,
-                    "provider": "loopback",
+                    "provider": "endpoint",
                     "model": "exact-model",
                 },
             ),

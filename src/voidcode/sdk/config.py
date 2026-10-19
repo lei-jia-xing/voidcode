@@ -6,7 +6,6 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Literal
 
 from .json_values import own_json_object
 
@@ -45,17 +44,33 @@ class KernelPolicyConfig:
 
 @dataclass(frozen=True, slots=True)
 class KernelProviderEntry:
-    wire: Literal["openai-chat"] = "openai-chat"
+    """Endpoint configuration for one provider name registered by an admitted plugin.
+
+    The configured name IS the selection: the kernel passes it to the host unchanged and never
+    knows a wire protocol, vendor, or adapter identity.
+    """
+
     api_key: str | None = field(default=None, repr=False)
     base_url: str | None = None
+    #: Every other configured field, passed to the declaring plugin verbatim. The kernel does
+    #: not know a vendor, a header name, or a query parameter, so it neither validates nor
+    #: interprets these: they are the provider's own credentials vocabulary, and a repr must
+    #: never expose a credential the kernel cannot recognize.
+    extra: Mapping[str, object] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
-        if self.wire != "openai-chat":
-            raise ValueError("provider wire must be 'openai-chat'")
         if self.api_key is not None and (not isinstance(self.api_key, str) or not self.api_key):
             raise ValueError("provider api_key must be a non-empty string")
         if self.base_url is not None and (not isinstance(self.base_url, str) or not self.base_url):
             raise ValueError("provider base_url must be a non-empty string")
+        if not isinstance(self.extra, Mapping):
+            raise ValueError("provider extra fields must be an object")
+        for name in self.extra:
+            if not isinstance(name, str) or not name:
+                raise ValueError("provider extra field names must be non-empty strings")
+        if set(self.extra) & {"api_key", "base_url"}:
+            raise ValueError("provider extra fields must not repeat api_key or base_url")
+        object.__setattr__(self, "extra", own_json_object(self.extra))
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,19 +161,16 @@ def parse_kernel_config(payload: object) -> KernelConfig:
             raise ValueError(f"kernel config provider id must match [a-z][a-z0-9_-]*: {name!r}")
         if not isinstance(entry, dict):
             raise ValueError(f"kernel config providers.{name} must be an object")
-        unknown_entry = sorted(set(entry) - {"wire", "api_key", "base_url"})
-        if unknown_entry:
-            raise ValueError(f"kernel config providers.{name} has unsupported field: {unknown_entry[0]}")
-        wire = entry.get("wire", "openai-chat")
-        if wire != "openai-chat":
-            raise ValueError(f"kernel config providers.{name}.wire must be 'openai-chat'")
         api_key = entry.get("api_key")
         if api_key is not None and (not isinstance(api_key, str) or not api_key):
             raise ValueError(f"kernel config providers.{name}.api_key must be a non-empty string")
         base_url = entry.get("base_url")
         if base_url is not None and (not isinstance(base_url, str) or not base_url):
             raise ValueError(f"kernel config providers.{name}.base_url must be a non-empty string")
-        providers[name] = KernelProviderEntry(wire=wire, api_key=api_key, base_url=base_url)
+        # Vendor fields are opaque: everything that is not the typed api_key/base_url travels
+        # to the declaring plugin exactly as configured (auth headers, account ids, regions).
+        extra = {key: value for key, value in entry.items() if key not in {"api_key", "base_url"}}
+        providers[name] = KernelProviderEntry(api_key=api_key, base_url=base_url, extra=extra)
 
     raw_plugins = payload.get("plugins", {})
     if not isinstance(raw_plugins, dict):

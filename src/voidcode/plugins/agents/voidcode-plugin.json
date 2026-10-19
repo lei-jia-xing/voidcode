@@ -1,0 +1,123 @@
+{
+  "plugin_id": "agents",
+  "version": "1.0.0",
+  "sdk_protocol": 1,
+  "schema_version": 1,
+  "entrypoint": "__init__:create_plugin",
+  "files": [
+    {
+      "path": "__init__.py",
+      "sha256": "4ddceddaa2f44345dcda4113fc325ee411776e16f71d4210156553d96dca52c6"
+    },
+    {
+      "path": "agent_plugin.py",
+      "sha256": "dc3f88494048cf2da65165e284dde3a4c234ea1de2d59d83da272616cbe75f84"
+    },
+    {
+      "path": "builtin.py",
+      "sha256": "e942c15d5d187958256364a9fdba2ce7c7df72b50711029886f72340a74b4ab1"
+    },
+    {
+      "path": "frontmatter.py",
+      "sha256": "8ca971c10a59323ca3ae8d8ed33eb623c030fa562fec8e8e7ba58e73f0f795f5"
+    },
+    {
+      "path": "hook_preset_refs.py",
+      "sha256": "1eecc37e12e7d82d26d8a025da9b87a17b46f40e0aa6d9609f67313f5a28be5f"
+    },
+    {
+      "path": "models.py",
+      "sha256": "d7fd3bb151122f27c647c3b6804962558711e914c591811df1a585d13605cea0"
+    },
+    {
+      "path": "profiles/default.txt",
+      "sha256": "7298a44356a6bb9b3a4b39fdafb25aaae31857655b605489fb70c988fb2f8d9f"
+    },
+    {
+      "path": "profiles/execute.txt",
+      "sha256": "27c9e54449d1cd10b8bf92045807ddece30ec8e6d5cd530f6b56db1c69d6ad3e"
+    },
+    {
+      "path": "profiles/explore.txt",
+      "sha256": "85aeb0d5ac6790b7d1ad4b7c5278c87d5b2705f621542a62f7ea60914c0fac42"
+    },
+    {
+      "path": "profiles/plan.txt",
+      "sha256": "e1495a7f83596a75462fa2166f74046a7cc06d769f8dfc2c99bcd52465a5e572"
+    },
+    {
+      "path": "profiles/research.txt",
+      "sha256": "7afd978797be53ff7a0984716af956d029f3357a65d0e118236c640958ea308e"
+    },
+    {
+      "path": "profiles/review.txt",
+      "sha256": "03d93d54e7a070192b5680772cff71f5d2646a5a35db928fb0e2ddcac11cb5e5"
+    },
+    {
+      "path": "prompts.py",
+      "sha256": "9557de60b58397be973398649c739ec9265ef610f649ec3cad8a16da0f44ac5d"
+    },
+    {
+      "path": "registry.py",
+      "sha256": "11304c583b858329105a1a7af7241773923d0dd08734843e972c60ee0dd9ec3e"
+    }
+  ],
+  "tools": [],
+  "commands": [
+    {
+      "name": "agents",
+      "description": "List agent profiles (builtin and workspace/user discovered).",
+      "argument_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "effects": [
+        "read"
+      ],
+      "capabilities": [
+        "workspace.read"
+      ],
+      "busy_gate": false,
+      "client_capabilities": []
+    },
+    {
+      "name": "agents.show",
+      "description": "Show one agent profile's rendered prompt and declared tool allowlist.",
+      "argument_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Agent profile id."
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "effects": [
+        "read"
+      ],
+      "capabilities": [
+        "workspace.read"
+      ],
+      "busy_gate": false,
+      "client_capabilities": []
+    }
+  ],
+  "capabilities": [
+    {
+      "name": "workspace.read",
+      "reason": "Read project agent profile markdown under .voidcode/agents."
+    }
+  ],
+  "providers": [],
+  "depends": [],
+  "state_schema_version": 1,
+  "config_schema": {
+    "type": "object"
+  },
+  "context": false
+}

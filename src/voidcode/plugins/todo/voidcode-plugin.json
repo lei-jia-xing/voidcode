@@ -1,0 +1,349 @@
+{
+  "plugin_id": "todo",
+  "version": "1.0.0",
+  "sdk_protocol": 1,
+  "schema_version": 1,
+  "entrypoint": "todo_plugin:create_plugin",
+  "files": [
+    {
+      "path": "__init__.py",
+      "sha256": "30a30ffe48a49d6074b5bab0f352d350016403b4ff6c7459ca3ff5a01e4db8c2"
+    },
+    {
+      "path": "todo_plugin.py",
+      "sha256": "190dce8c6f450797dc462f29828413c5961aaa2f7eb0c7365363083a24c3a7e3"
+    }
+  ],
+  "tools": [
+    {
+      "name": "todo",
+      "description": "Apply one operation to the runtime-owned todo list. The operation is one of init, start, done, drop, block, unblock, append, rm, or view. Use init with list=[{phase, items}] (or items plus optional phase) to create a plan. Use exact task content and phase names for targeting. Start a task before starting implementation and mark it done immediately after finishing. Only one task can be in_progress; the runtime normalizes that invariant. block accepts an optional reason, and view never mutates state. This tool does not write workspace files.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "op": {
+            "type": "string",
+            "enum": [
+              "init",
+              "start",
+              "done",
+              "drop",
+              "block",
+              "unblock",
+              "append",
+              "rm",
+              "view"
+            ]
+          },
+          "list": {
+            "type": "array",
+            "description": "init phases, each with phase and non-empty items",
+            "items": {
+              "type": "object",
+              "properties": {
+                "phase": {
+                  "type": "string"
+                },
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "phase",
+                "items"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "task": {
+            "type": "string",
+            "description": "Exact task content target"
+          },
+          "phase": {
+            "type": "string",
+            "description": "Exact phase name target or append destination"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Task strings for init or append"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Optional reason for block"
+          }
+        },
+        "required": [
+          "op"
+        ],
+        "additionalProperties": false
+      },
+      "effects": [
+        "session"
+      ],
+      "replay_policy": "never",
+      "capabilities": []
+    }
+  ],
+  "commands": [
+    {
+      "name": "todo",
+      "description": "Show the current todo list.",
+      "argument_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "effects": [
+        "read"
+      ],
+      "capabilities": [],
+      "busy_gate": false,
+      "client_capabilities": []
+    },
+    {
+      "name": "todo.clear",
+      "description": "Clear the todo list.",
+      "argument_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "effects": [
+        "session"
+      ],
+      "capabilities": [],
+      "busy_gate": false,
+      "client_capabilities": []
+    }
+  ],
+  "capabilities": [],
+  "providers": [],
+  "depends": [],
+  "state_schema_version": 2,
+  "state_schema": {
+    "type": "object",
+    "required": [
+      "schema_version",
+      "revision",
+      "phases",
+      "summary",
+      "reminders"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "schema_version": {
+        "type": "integer",
+        "enum": [
+          2
+        ]
+      },
+      "revision": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "phases": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": [
+            "name",
+            "tasks"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "tasks": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "content",
+                  "status"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "content": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "pending",
+                      "in_progress",
+                      "completed",
+                      "abandoned",
+                      "blocked"
+                    ]
+                  },
+                  "blocker": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "summary": {
+        "type": "object",
+        "required": [
+          "total",
+          "pending",
+          "in_progress",
+          "completed",
+          "abandoned",
+          "blocked",
+          "active"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "total": {
+            "type": "integer"
+          },
+          "pending": {
+            "type": "integer"
+          },
+          "in_progress": {
+            "type": "integer"
+          },
+          "completed": {
+            "type": "integer"
+          },
+          "abandoned": {
+            "type": "integer"
+          },
+          "blocked": {
+            "type": "integer"
+          },
+          "active": {
+            "type": "integer"
+          }
+        }
+      },
+      "reminders": {
+        "type": "object",
+        "required": [
+          "todo",
+          "todo_mid_run",
+          "invocations",
+          "cursor_sequence",
+          "cycle_run_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "todo": {
+            "type": "object",
+            "required": [
+              "attempts",
+              "awaiting_progress",
+              "progress_watermark",
+              "cycle_run_id"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "awaiting_progress": {
+                "type": "boolean"
+              },
+              "progress_watermark": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "cycle_run_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          "todo_mid_run": {
+            "type": "object",
+            "required": [
+              "attempts",
+              "mutations",
+              "mutation_baseline",
+              "cycle_run_id"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "mutations": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "mutation_baseline": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "cycle_run_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          "invocations": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "cursor_sequence": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "cycle_run_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "reminders": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "todo": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "max_per_cycle": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "context": true,
+  "observed_facts": [
+    "invocation_finished",
+    "run_finished"
+  ]
+}

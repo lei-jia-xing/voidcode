@@ -1,0 +1,180 @@
+{
+  "plugin_id": "lsp",
+  "version": "1.0.0",
+  "sdk_protocol": 1,
+  "schema_version": 1,
+  "entrypoint": "__init__:create_plugin",
+  "files": [
+    {
+      "path": "__init__.py",
+      "sha256": "c4bac91881679514f34624144885ccc193236cefdb470918289aa4077aaa5579"
+    },
+    {
+      "path": "artifacts.py",
+      "sha256": "302187742ef3a2e40c00decd593497c259cef11ee61acc8e105e280c7eca4f44"
+    },
+    {
+      "path": "contracts.py",
+      "sha256": "7352b5bdf708372850e2227e3a8dcddefb1a0a8f13b65ed4fa6e3e4b68ec2620"
+    },
+    {
+      "path": "inventory.py",
+      "sha256": "cae3adec55922bc6db1e63bfeca0eea51c7f1ce8b4723d1ae194f1a1f5199cc7"
+    },
+    {
+      "path": "lsp_manager.py",
+      "sha256": "f6434980dfbaaadbd056eead2a57ea7bed21b86846ec57b979935476cc722943"
+    },
+    {
+      "path": "lsp_tool.py",
+      "sha256": "78252cb43297d2b67c8c902dcec95a2957197e6e73c9aa5c423bc66280c9bfd2"
+    },
+    {
+      "path": "lsp_types.py",
+      "sha256": "728b734412788e6f2fcb3d3815674dfc8e0faefad859d6f8efa204af55284360"
+    },
+    {
+      "path": "presets.py",
+      "sha256": "a18809799f6f94f22aa8398ebef1598b51c9643b87365eae35584c7c6538bc5b"
+    },
+    {
+      "path": "registry.py",
+      "sha256": "e84748a2b7d8fc737b3be9e50020b0a866812a07b64b86131c5bd33b23fd3d92"
+    },
+    {
+      "path": "roots.py",
+      "sha256": "9129f703366f045b84cc9b073407d9751040234bf7cac8d4ba2e88763312f283"
+    }
+  ],
+  "tools": [
+    {
+      "name": "lsp",
+      "description": "LSP client for basic code intelligence lookups.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": [
+              "codeAction",
+              "diagnostics",
+              "documentSymbol",
+              "findReferences",
+              "goToDefinition",
+              "goToImplementation",
+              "hover",
+              "incomingCalls",
+              "outgoingCalls",
+              "rename",
+              "willRenameFiles",
+              "workspaceSymbol"
+            ],
+            "description": "LSP operation. Preferred names include diagnostics, goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, goToImplementation, incomingCalls, and outgoingCalls."
+          },
+          "path": {
+            "type": "string",
+            "description": "Workspace-relative file path used for target selection and server resolution."
+          },
+          "line": {
+            "type": "integer",
+            "description": "1-based line number as shown in editors. Required for position-based operations."
+          },
+          "character": {
+            "type": "integer",
+            "description": "1-based character number as shown in editors. Required for position-based operations."
+          },
+          "query": {
+            "type": "string",
+            "description": "Optional workspaceSymbol search query. Empty string requests all symbols."
+          },
+          "server": {
+            "type": "string",
+            "description": "Optional configured LSP server name."
+          },
+          "newName": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Replacement symbol name for rename."
+          },
+          "newPath": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Destination workspace-relative path for willRenameFiles."
+          },
+          "endLine": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Optional 1-based end line for codeAction; defaults to line."
+          },
+          "endCharacter": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Optional 1-based end character for codeAction; defaults to character."
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Optional LSP diagnostics used as codeAction context."
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 1,
+            "description": "1-based result page offset."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "default": 50,
+            "description": "Maximum results to render per page."
+          }
+        },
+        "required": [
+          "operation",
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "effects": [
+        "read"
+      ],
+      "capabilities": [
+        "workspace.read"
+      ],
+      "path_argument_keys": [
+        "path"
+      ],
+      "supports_parallel": true
+    }
+  ],
+  "commands": [
+    {
+      "name": "lsp",
+      "description": "List the language servers this workspace resolves to and their state.",
+      "argument_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "effects": [],
+      "capabilities": [],
+      "busy_gate": false,
+      "client_capabilities": []
+    }
+  ],
+  "providers": [],
+  "capabilities": [
+    {
+      "name": "workspace.read",
+      "reason": "Read workspace files for language-server requests"
+    }
+  ],
+  "depends": [],
+  "state_schema_version": 1,
+  "config_schema": {
+    "type": "object"
+  }
+}

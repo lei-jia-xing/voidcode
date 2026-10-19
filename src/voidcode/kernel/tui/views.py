@@ -13,8 +13,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from ...tui.keys import Key
-from ...tui.term import escape_terminal_controls, render_lines
+from .keys import Key
+from .term import escape_terminal_controls, render_lines
 
 #: Strict numeric literals: no silent truncation, no scientific-integer coercion.
 _INTEGER_PATTERN = re.compile(r"^[+-]?\d+$")

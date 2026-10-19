@@ -204,7 +204,7 @@ def admit_live(
     trusted_ids: frozenset[str] = frozenset(),
     authorized_paths: frozenset[str] = frozenset(),
     capabilities: frozenset[str] = DEFAULT_CAPABILITIES,
-    plugin_config: Callable[[str, Mapping[str, object]], Mapping[str, object]] | None = None,
+    plugin_config: Callable[[str, Path, Mapping[str, object]], Mapping[str, object]] | None = None,
 ) -> AdmittedPlugins:
     """Admit every configured plugin from its configured source; never imports candidate code.
 
@@ -236,7 +236,7 @@ def admit_live(
         sources.append(PluginSource(plugin_id=plugin_id, canonical_path=canonical, external=external, enabled=entry.enabled, trusted=trusted))
         if not entry.enabled:
             continue
-        resolved_config = dict(plugin_config(plugin_id, dict(entry.config))) if plugin_config is not None else dict(entry.config)
+        resolved_config = dict(plugin_config(plugin_id, source, dict(entry.config))) if plugin_config is not None else dict(entry.config)
         plugin = admit_plugin(
             source,
             artifacts=state_dir / "artifacts",
@@ -502,9 +502,11 @@ def config_from_snapshot(snapshot: Mapping[str, object]) -> KernelConfig:
         policy=KernelPolicyConfig(approval_mode=policy.get("approval_mode", "ask"), read_only=policy.get("read_only", False)),
         providers={
             name: KernelProviderEntry(
-                wire=entry["wire"],
                 api_key=entry.get("api_key"),
                 base_url=entry.get("base_url"),
+                # The private snapshot holds the flattened vendor vocabulary, so the typed
+                # fields are reconstructed only to be flattened back on the next admission.
+                extra={key: value for key, value in entry.items() if key not in {"api_key", "base_url"}},
             )
             for name, entry in providers.items()
             if isinstance(entry, Mapping)

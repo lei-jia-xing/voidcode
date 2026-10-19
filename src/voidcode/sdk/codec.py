@@ -20,13 +20,14 @@ from .commands import (
 from .invocation import ToolContext
 from .json_values import json_wire_object
 from .provider import ProviderCacheRetention, ProviderExecutionError, ProviderMessage, ProviderTurnRequest, ProviderTurnResult
-from .services import ContinuationResult, PluginBudget, SessionUsageReport
+from .services import ContinuationResult, PluginBudget, SessionInfo, SessionUsageReport
 from .tools import (
     AttachmentOutput,
     ConfirmedStop,
     EmptyOutput,
     OpaqueToolBody,
     OutputBounds,
+    ReadObservation,
     TextOutput,
     ToolCall,
     ToolDefinition,
@@ -163,6 +164,17 @@ def decode_provider_error(payload: Mapping[str, object]) -> ProviderExecutionErr
     return _decode(_PROVIDER_ERROR, payload)
 
 
+class _ObservedLines(_WireModel):
+    path: str = Field(min_length=1)
+    content_hash: str
+    lines: list[Annotated[int, Field(ge=1)]] = Field(default_factory=list)
+
+
+class _ObservedFile(_WireModel):
+    path: str = Field(min_length=1)
+    content_hash: str
+
+
 class _Context(_WireModel):
     workspace: Path
     session_id: str = Field(min_length=1)
@@ -172,13 +184,38 @@ class _Context(_WireModel):
     actor: str = Field(min_length=1)
     capabilities: frozenset[str] = frozenset()
     logical_turn: str = ""
+    invocation_depth: int = Field(default=0, ge=0)
+    read_paths: frozenset[str] = frozenset()
+    #: Coverage keys are tuples, which JSON has no shape for: they travel as records.
+    read_lines: list[_ObservedLines] = Field(default_factory=list)
+    read_whole_files: list[_ObservedFile] = Field(default_factory=list)
+    read_hash: str | None = None
 
 
 _CONTEXT = TypeAdapter(_Context)
 
 
 def encode_context(context: ToolContext | Mapping[str, object]) -> dict[str, object]:
-    return _encode(context)
+    """Encode a tool context. Callback handles (progress, abort) never cross the wire."""
+    if isinstance(context, Mapping):
+        return _encode(context)
+    return {
+        "workspace": str(context.workspace),
+        "session_id": context.session_id,
+        "run_id": context.run_id,
+        "invocation_id": context.invocation_id,
+        "revision_id": context.revision_id,
+        "actor": context.actor,
+        "capabilities": sorted(context.capabilities),
+        "logical_turn": context.logical_turn,
+        "invocation_depth": context.invocation_depth,
+        "read_paths": sorted(context.read_paths),
+        "read_lines": [
+            {"path": path, "content_hash": digest, "lines": sorted(lines)} for (path, digest), lines in sorted(context.read_lines.items())
+        ],
+        "read_whole_files": [{"path": path, "content_hash": digest} for path, digest in sorted(context.read_whole_files)],
+        "read_hash": context.read_hash,
+    }
 
 
 def decode_context(payload: Mapping[str, object]) -> ToolContext:
@@ -192,6 +229,11 @@ def decode_context(payload: Mapping[str, object]) -> ToolContext:
         actor=wire.actor,
         capabilities=wire.capabilities,
         logical_turn=wire.logical_turn,
+        invocation_depth=wire.invocation_depth,
+        read_paths=wire.read_paths,
+        read_lines={(item.path, item.content_hash): frozenset(item.lines) for item in wire.read_lines},
+        read_whole_files=frozenset((item.path, item.content_hash) for item in wire.read_whole_files),
+        read_hash=wire.read_hash,
     )
 
 
@@ -222,11 +264,22 @@ class _Execution(_WireModel):
     side_effect_state: Literal["settled", "unknown"]
 
 
+class _ReadObservation(_WireModel):
+    path: str = Field(min_length=1)
+    content_hash: str
+    lines: list[int] = Field(default_factory=list)
+    line_count: int = Field(default=0, ge=0)
+    whole_file: bool = False
+    clipped: bool = False
+
+
 class _ToolResult(_WireModel):
     status: Literal["ok", "error"]
     tool_name: str = Field(min_length=1)
     output: Annotated[_Text | _Empty | _Attachment, Field(discriminator="type")]
     body: dict[str, object] | None = None
+    #: Only ever sent by a read-shaped success; absent means "made no file visible".
+    coverage: list[_ReadObservation] | None = None
     error: str | None = None
     diagnostics: ToolDiagnostics | None = None
     execution: _Execution | None = None
@@ -247,6 +300,8 @@ def encode_tool_result(result: ToolResult | Mapping[str, object]) -> dict[str, o
         "output": {"type": output_type, **_encode(output)},
         "body": None if result.body is None else result.body.as_payload(),
     }
+    if isinstance(result, ToolSuccess) and result.coverage:
+        payload["coverage"] = [observation.as_payload() for observation in result.coverage]
     if isinstance(result, ToolFailure):
         execution = result.execution
         payload.update(
@@ -279,9 +334,15 @@ def decode_tool_result(payload: Mapping[str, object]) -> ToolResult:
     if wire.status == "ok":
         if any(value is not None for value in (wire.error, wire.diagnostics, wire.execution, wire.timeout_seconds)):
             raise ValueError("success result contains failure-only fields")
-        return ToolSuccess(wire.tool_name, decoded, body)
+        coverage = tuple(
+            ReadObservation(item.path, item.content_hash, tuple(item.lines), item.line_count, item.whole_file, item.clipped)
+            for item in wire.coverage or ()
+        )
+        return ToolSuccess(wire.tool_name, decoded, body, coverage)
     if wire.error is None:
         raise ValueError("failure result requires an error")
+    if wire.coverage:
+        raise ValueError("failure result must not carry coverage")
     execution = None
     if wire.execution is not None:
         observation = wire.execution
@@ -368,3 +429,43 @@ def encode_budget(budget: PluginBudget | Mapping[str, object]) -> dict[str, obje
 
 def decode_budget(payload: Mapping[str, object]) -> PluginBudget:
     return _decode(_BUDGET, payload)
+
+
+class _SessionInfo(_WireModel):
+    session_id: str = Field(min_length=1)
+    status: str
+    run_id: str | None = None
+    revision_id: str = Field(min_length=1)
+    parent_session_id: str | None = None
+    root_session_id: str = Field(min_length=1)
+    depth: int = Field(default=0, ge=0)
+    turn: int = Field(default=0, ge=0)
+    last_event_sequence: int = Field(default=0, ge=0)
+    tool_allowlist: list[str] | None = None
+    pending_approval: dict[str, object] | None = None
+    chain_budget: int | None = None
+    chain_reserved: int | None = None
+    budget: PluginBudget | None = None
+
+
+_SESSION_INFO = TypeAdapter(_SessionInfo)
+
+
+def decode_session_info(payload: Mapping[str, object]) -> SessionInfo:
+    wire = _decode(_SESSION_INFO, payload)
+    return SessionInfo(
+        session_id=wire.session_id,
+        status=wire.status,
+        run_id=wire.run_id,
+        revision_id=wire.revision_id,
+        parent_session_id=wire.parent_session_id,
+        root_session_id=wire.root_session_id,
+        depth=wire.depth,
+        turn=wire.turn,
+        last_event_sequence=wire.last_event_sequence,
+        tool_allowlist=None if wire.tool_allowlist is None else tuple(wire.tool_allowlist),
+        pending_approval=wire.pending_approval,
+        chain_budget=wire.chain_budget,
+        chain_reserved=wire.chain_reserved,
+        budget=wire.budget,
+    )

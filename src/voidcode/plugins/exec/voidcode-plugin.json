@@ -1,0 +1,234 @@
+{
+  "plugin_id": "exec",
+  "version": "1.0.0",
+  "sdk_protocol": 1,
+  "schema_version": 1,
+  "entrypoint": "__init__:create_plugin",
+  "files": [
+    {
+      "path": "__init__.py",
+      "sha256": "ad963c1ce9fe03caba38e040c8faae89458a77761760065f20a2aea312cf1d90"
+    },
+    {
+      "path": "args.py",
+      "sha256": "bfccfab8b2ac951534957d5fef3de13d206a91ff75dc7a14942c20b3dcc591d6"
+    },
+    {
+      "path": "artifacts.py",
+      "sha256": "302187742ef3a2e40c00decd593497c259cef11ee61acc8e105e280c7eca4f44"
+    },
+    {
+      "path": "background_process.py",
+      "sha256": "8d027490dd2c7330d516ec553ce0157c39d46bac03a3f0b4269d99a2b4a0f764"
+    },
+    {
+      "path": "shell_exec.py",
+      "sha256": "60e81be543a6094e7a9acf2ffda415697f9d047128e227bb74650c35f84f64ae"
+    }
+  ],
+  "tools": [
+    {
+      "name": "shell_exec",
+      "description": "Execute a command inside the current workspace.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Shell command to execute in the workspace."
+          },
+          "timeout": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 600,
+            "description": "Timeout in seconds (max 600)"
+          },
+          "description": {
+            "type": "string",
+            "description": "Human-readable description of the command"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "additionalProperties": false
+      },
+      "effects": [
+        "execute",
+        "spawn"
+      ],
+      "capabilities": [
+        "workspace.write"
+      ]
+    },
+    {
+      "name": "background_process",
+      "description": "Manage a long-running background process. Use op=start to launch, ps to list the current workspace processes, logs to read bounded output, send to write stdin, or stop to terminate a process. Process rows are scoped to the current owner and workspace.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": true,
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "op",
+              "command"
+            ],
+            "properties": {
+              "op": {
+                "const": "start",
+                "description": "Start a supervised process that outlives this call."
+              },
+              "command": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Shell command to run in the workspace for the lifetime of the process."
+              },
+              "description": {
+                "type": "string",
+                "description": "Human-readable description of the process, persisted with its identity."
+              },
+              "ready_pattern": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "description": "Text to wait for in the process output before returning."
+              },
+              "ready_timeout": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 30,
+                "default": 10,
+                "description": "Seconds to wait for ready_pattern (1-30, default 10)."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "op"
+            ],
+            "properties": {
+              "op": {
+                "const": "ps",
+                "description": "List the processes of this workspace and session."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "op",
+              "process_id"
+            ],
+            "properties": {
+              "op": {
+                "const": "logs",
+                "description": "Read a bounded, line-paged window of a process's output."
+              },
+              "process_id": {
+                "type": "string",
+                "description": "Process id returned by op=start."
+              },
+              "stream": {
+                "type": "string",
+                "enum": [
+                  "stdout",
+                  "stderr",
+                  "both"
+                ],
+                "default": "both",
+                "description": "Which output stream to read."
+              },
+              "offset": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000000,
+                "default": 0,
+                "description": "Number of leading lines to skip; page from next_offset to read on."
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500,
+                "default": 500,
+                "description": "Maximum lines to return (1-500)."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "op",
+              "process_id",
+              "input"
+            ],
+            "properties": {
+              "op": {
+                "const": "send",
+                "description": "Write to a process's standard input."
+              },
+              "process_id": {
+                "type": "string",
+                "description": "Process id returned by op=start."
+              },
+              "input": {
+                "type": "string",
+                "description": "Text written to the process's standard input."
+              },
+              "newline": {
+                "type": "boolean",
+                "default": true,
+                "description": "Append a newline to input (default true)."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "op",
+              "process_id"
+            ],
+            "properties": {
+              "op": {
+                "const": "stop",
+                "description": "Stop a process and its whole process group."
+              },
+              "process_id": {
+                "type": "string",
+                "description": "Process id returned by op=start."
+              }
+            }
+          }
+        ]
+      },
+      "effects": [
+        "execute",
+        "spawn"
+      ],
+      "capabilities": [
+        "workspace.write"
+      ]
+    }
+  ],
+  "commands": [],
+  "providers": [],
+  "capabilities": [
+    {
+      "name": "workspace.write",
+      "reason": "Run commands and background processes that read and modify workspace files"
+    }
+  ],
+  "depends": [],
+  "state_schema_version": 1,
+  "config_schema": {
+    "type": "object"
+  }
+}

@@ -1,430 +1,145 @@
 # Configuration Guide
 
-VoidCode supports configuration at the workspace level, user level, and per-invocation via CLI flags and environment variables.
+VoidCode is configured by exactly one file per workspace: `voidcode.json` at the workspace root, read by the kernel at startup. The kernel has no configuration CLI, no user-level configuration file, and no per-run override.
 
-## Configuration Sources
+Configuration is adopted as a *revision*: the first start of a workspace with an empty state directory adopts the live file, and a later restart restores that persisted revision (and its private snapshot) instead of silently re-reading the workspace. To apply an edited `voidcode.json`, run the reserved `kernel.reload` command on an idle session (`voidcode catalog` prints it; `voidcode invoke <session_id> kernel.reload --expected-revision <revision_id>`); it re-admits the live file and commits a new revision (refused while the session is busy, and refused entirely under `policy.read_only`). Pointing `--state-dir` at a new directory adopts the current file as a fresh first revision.
 
-For `model` and `approval_mode`, settings resolve in priority order:
-1. **CLI Flags & Request Overrides** (e.g. `--model`, `--approval-mode`)
-2. **Workspace Configuration (`.voidcode.json`)**
-3. **Environment Variables** (e.g. `VOIDCODE_MODEL`)
-4. **User Configuration (`~/.config/voidcode/config.json` on POSIX)**
-5. **System Defaults** (`yolo` approval mode)
+Plugins may additionally read their own resources (for example agent profiles under `$XDG_CONFIG_HOME/voidcode/agents`), but that never overrides `voidcode.json`.
 
-Provider configurations merge repo-local over environment over user settings.
-Inspect effective configuration at any time:
+## Configuration File
 
-```bash
-uv run voidcode config show --workspace .
-```
-
-To display the complete JSON Schema:
-
-```bash
-uv run voidcode config schema
-```
-
-## Initializing Workspace Configuration
-
-Generate a starter `.voidcode.json` using the interactive or flag-driven CLI command:
-
-```bash
-# Generate config with a specific model
-uv run voidcode config init --model openai/gpt-4o-mini --workspace .
-
-# Include full example fields
-uv run voidcode config init --model openai/gpt-4o-mini --with-examples --workspace .
-```
-
-## Configuration Format
-
-A standard `.voidcode.json` file:
+`voidcode.json` is required — the kernel refuses to start without it — and is validated strictly: the payload must be a JSON object, must not exceed 256 KiB, and any unknown field inside `voidcode.json`, `model`, or `policy` is an error rather than a silently ignored key.
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/lei-jia-xing/voidcode/master/schema/voidcode.config.schema.json",
-  "model": "openai/gpt-4o-mini",
-  "approval_mode": "yolo"
-}
-```
-
-### Key Settings
-
-| Field | Type | Description |
-|---|---|---|
-| `$schema` | `string` | URL of the published schema for editor auto-completion. |
-| `model` | `string` | Canonical provider and model name in `provider/model` format (e.g. `openai/gpt-4o-mini`). |
-| `approval_mode` | `string` | Approval tier: `yolo` (default), `ask`, or `write`. |
-| `tool_timeout_seconds` | `integer` | Optional timeout in seconds for individual tool executions (unset by default). |
-| `reasoning_effort` | `string` | Optional reasoning effort for models supporting reasoning: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. |
-| `providers` | `object` | Custom provider endpoints and base URLs. |
-| `tools` | `object` | Tool allowlists and per-tool configurations. |
-| `skills` | `object` | Enabled skills and skill directory configurations. |
-| `hooks` | `object` | Lifecycle hook configurations. |
-
-## Approval Modes
-
-VoidCode supports three approval tiers:
-
-- **`yolo` (Default)**: Fully autonomous mode. Auto-approves tool executions without interactive prompts.
-- **`ask`**: Prompts for user approval before executing state-modifying tools (file writes, edits, and shell commands). Read-only inspection tools (`read`, `glob`, `grep`, `ast_grep`) execute automatically.
-- **`write`**: Automatically approves file write and edit operations, but prompts for approval on shell command execution (`shell_exec`).
-
-In v1, approval modes govern tool permissions within the Python runtime; VoidCode does not provide an OS-level process sandbox.
-
-Consecutive read-only calls in one batch (`read`, `glob`, `grep`, read-only `lsp`)
-execute concurrently (up to 10 in flight) and complete in batch order. Writes,
-approvals, and all other tools stay serial; when any candidate needs approval
-the whole batch runs serially. There is no configuration knob: concurrency is
-automatic for eligible calls.
-
-Override the approval mode per invocation:
-
-```bash
-uv run voidcode run "Update dependency versions in package.json" --approval-mode write --workspace .
-```
-
-## Custom Provider Endpoints
-
-To connect to private or proxy OpenAI-compatible endpoints:
-
-```json
-{
-  "model": "my-provider/custom-model",
+  "schema_version": 1,
+  "model": {
+    "model": "openai/gpt-4o-mini",
+    "reasoning_effort": "medium"
+  },
+  "policy": {
+    "approval_mode": "ask",
+    "read_only": false
+  },
   "providers": {
-    "custom": {
-      "my-provider": {
-        "base_url": "https://api.example.com/v1",
-        "timeout_seconds": 30
-      }
+    "openai": {
+      "api_key": "sk-...",
+      "base_url": "https://api.openai.com/v1",
+      "timeout_seconds": 30
+    }
+  },
+  "plugins": {
+    "files": { "enabled": true },
+    "providers": { "enabled": true },
+    "effectiveness": { "enabled": false },
+    "my-linter": {
+      "enabled": true,
+      "path": "../voidcode-plugins/my-linter",
+      "config": { "strict": true }
     }
   }
 }
 ```
 
-## Web Search Configuration
+The `my-linter` entry illustrates an external plugin: the directory must exist, and starting the kernel against it needs `--trust-plugin my-linter`.
 
-The built-in `web_search` tool resolves search queries across 14 supported providers:
+### Top-Level Fields
 
-- `exa` (`EXA_API_KEY`)
-- `tavily` (`TAVILY_API_KEY`)
-- `brave` (`BRAVE_API_KEY`)
-- `deepseek` (`DEEPSEEK_API_KEY`)
-- `tinyfish` (`TINYFISH_API_KEY`)
-- `jina` (`JINA_API_KEY`)
-- `kagi` (`KAGI_API_KEY`)
-- `firecrawl` (`FIRECRAWL_API_KEY`, optional)
-- `kimi` (`KIMI_SEARCH_API_KEY` or `MOONSHOT_SEARCH_API_KEY`)
-- `parallel` (`PARALLEL_API_KEY`)
-- `synthetic` (`SYNTHETIC_API_KEY`)
-- `searxng` (`SEARXNG_ENDPOINT` or `SEARXNG_URL`)
-- `startpage` (keyless)
-- `duckduckgo` (keyless)
+| Field | Type | Description |
+|---|---|---|
+| `schema_version` | integer | Required to be `1` when present (the default). Any other value is refused. |
+| `model` | object | Model selection: `model` and `reasoning_effort`. |
+| `policy` | object | Execution policy: `approval_mode` and `read_only`. |
+| `providers` | object | Endpoint configuration for provider names declared by admitted plugins. |
+| `plugins` | object | Per-plugin enablement, configuration, and source override. |
 
-### Provider Precedence & Filtering
+No other top-level field is accepted.
 
-Candidates are evaluated in fallback order until a provider succeeds:
-1. `exa`
-2. `tavily`
-3. `brave`
-4. `deepseek`
-5. `tinyfish`
-6. `jina`
-7. `kagi`
-8. `firecrawl`
-9. `kimi`
-10. `parallel`
-11. `synthetic`
-12. `searxng`
-13. `startpage`
-14. `duckduckgo`
+### `model`
 
-Two environment variables configure candidate ordering and exclusions:
-- `VOIDCODE_WEB_SEARCH_ORDER`: Comma-separated list of provider IDs (e.g. `brave,exa`) to prioritize first. Unlisted providers follow in default order.
-- `VOIDCODE_WEB_SEARCH_EXCLUDE`: Comma-separated list of provider IDs (e.g. `startpage,duckduckgo`) to omit from the candidate pool.
+| Field | Type | Description |
+|---|---|---|
+| `model` | string | `provider/model`, where `provider` must be a key in the root `providers` section *and* a name some admitted plugin declares as a provider. A model that names an unconfigured or undeclared provider is refused at admission. |
+| `reasoning_effort` | string | One of `low`, `medium`, `high`, `none`. |
 
-## Custom Primary Agents
+### `policy`
 
-VoidCode supports custom agent definitions written in Markdown with YAML frontmatter. Custom agents can operate as top-level primary agents or delegated subagents.
+| Field | Type | Description |
+|---|---|---|
+| `approval_mode` | string | `ask` (default), `write`, or `yolo`. |
+| `read_only` | boolean | Default `false`. When true, externally mutating effects (`WRITE`, `EXECUTE`, `SPAWN`) are refused outright. |
 
-### Location
+Policy semantics:
 
-Custom agents are discovered in priority order (project overrides user):
+- **`ask`** — externally mutating work (`WRITE`, `EXECUTE`, `SPAWN`) waits for an explicit approval; reads and internal session state changes proceed.
+- **`write`** — file mutations proceed; command execution and process spawning still wait.
+- **`yolo`** — mutating work proceeds without a gate.
+- **`read_only`** — checked before approval mode, so it is stronger than `yolo`: a mutating tool is refused rather than prompted. `READ` and `SESSION` effects are never refused.
 
-1. **Project Agents**: `.voidcode/agents/<agent-id>.md`
-2. **User Agents**: `~/.config/voidcode/agents/<agent-id>.md` (or `$XDG_CONFIG_HOME/voidcode/agents/`)
+There is no per-invocation override (no `--model`, `--approval-mode`, or in-session policy command): the active policy comes from `voidcode.json` for the workspace.
 
-### Defining a Custom Primary Agent
+### `providers`
 
-To define a top-level primary agent, set `mode: primary` in the frontmatter:
+Each key is a provider name matching `[a-z][a-z0-9_-]*`, and it must be declared by an admitted plugin — configuring a provider nobody declares is an error, not a no-op.
 
-```markdown
----
-name: Lead Reviewer
-id: lead-reviewer
-description: Autonomous code review and quality assessment lead
-mode: primary
-model: openai/gpt-4o
-tool_allowlist:
-  - read
-  - glob
-  - grep
----
-You are the lead reviewer for this workspace. Focus on correctness, edge cases, and maintainability.
+| Field | Type | Description |
+|---|---|---|
+| `api_key` | string | Optional. When omitted, the kernel falls back to `<PROVIDER>_API_KEY` in the environment, uppercased with `-` replaced by `_` (for example `openai` → `OPENAI_API_KEY`). |
+| `base_url` | string | Required for every configured provider. |
+| *any other field* | any JSON value | Passed to the declaring plugin verbatim and validated there against that plugin's own configuration schema. The kernel assigns no vendor meaning to them: for OpenAI-wire providers the plugin accepts `organization`, `project`, `timeout_seconds`, and `transient_retry`. `api_key` and `base_url` may not be repeated here. |
+
+Credentials never reach events, revisions, or the workspace: they are written only into the private 0600 snapshot inside the state directory, while revisions and events carry a digest.
+
+### `plugins`
+
+Each key is a plugin id matching `[a-z][a-z0-9_-]*`.
+
+| Field | Type | Description |
+|---|---|---|
+| `enabled` | boolean | Default `true`. A disabled plugin is not admitted; its tools, commands, and views disappear from the catalog. |
+| `path` | string | Optional. A source directory resolved relative to the workspace, for plugins that do not ship with the kernel. A non-bundled id without a `path` is refused. |
+| `config` | object | Plugin-owned configuration, validated against the plugin manifest's `config_schema`. Provider credentials belong in the root `providers` section; a plugin `config` that repeats a `providers` key is refused. |
+
+Bundled plugin ids (those shipped in `src/voidcode/plugins/`) need no entry at all: they are enabled with an empty configuration by default, and an entry only exists to disable one, configure it, or point it at a different source.
+
+## Plugin Trust
+
+Trust is a startup decision about a concrete source path, never something a running session can grant itself:
+
+- **Bundled ids** are trusted by construction — they ship with the kernel, so trusting them says nothing about user code.
+- **External sources** (`plugins.<id>.path`) require `--trust-plugin <id>` on the command line that starts the kernel:
+
+  ```bash
+  uv run python -m voidcode.kernel run "summarize the workspace" --trust-plugin my-linter
+  ```
+
+  The flag authorizes the *canonical path the configuration resolves to for that id*, and that authorization is recorded in the revision's private snapshot. A restart of that revision restores the pinned artifact from the snapshot without needing the flag again; pointing the id at a different directory is a different path and needs a new explicit trust decision (and, because the persisted revision is restored on restart, a reload or a fresh state directory to take effect).
+- **`kernel.reload`** re-admits the live configuration, but only trusts source paths already authorized in the current generation. Adding a brand-new external plugin is therefore a restart with `--trust-plugin`, not a reload.
+- Trust is about source bytes, not sandboxing: an admitted plugin runs in its own host process with the capability set the kernel grants (`workspace.read`, `workspace.write`, `network`), and a manifest whose requests exceed that set is refused at admission.
+
+Changed plugin source, changed configuration, or a changed SDK is never admitted implicitly: an edited plugin file produces a new identity, and a restart against a revision whose SDK hash no longer matches fails with an explicit "controlled kernel upgrade" error instead of silently running new code under an old revision.
+
+## State Directory
+
+Kernel state lives outside the workspace, at:
+
+```text
+$XDG_STATE_HOME/voidcode/kernel-v1/<sha256-of-the-workspace-path>/
 ```
 
-### Selecting the Agent
+(default `$XDG_STATE_HOME` is `~/.local/state`). It contains:
 
-Select the custom agent in `.voidcode.json`:
+- `kernel-v1.sqlite3` — sessions, append-only events, checkpoints, capability revisions, and confirmation records;
+- `artifacts/<identity>/` — the pinned copies of admitted plugin sources;
+- `private/<revision>.json` — the 0600 configuration snapshot for one revision, the only place provider credentials are stored.
 
-```json
-{
-  "agent": {
-    "preset": "lead-reviewer"
-  }
-}
-```
+`--state-dir PATH` overrides the derived directory. The state directory must not be inside the workspace: the kernel refuses a state directory that the workspace's file tools could write to.
 
-Or select it per-request via the `--agent` CLI option or request metadata:
+Sessions are per-workspace: `voidcode sessions` and `voidcode show` only report sessions whose stored workspace matches, and a session belonging to another workspace is refused.
 
-```bash
-uv run voidcode run "Review recent changes" --agent lead-reviewer --workspace .
-```
+## Legacy Configuration and State
 
-During runtime execution and session resumption, custom primary agent identity, prompt materialization, and configuration are durably admitted through runtime composition without requiring installed Python packages.
+Legacy configuration is rejected, never converted:
 
-## Prompt Commands & Command Lookup
-
-Prompt commands (`/command [arguments]`) expand into user prompt text before core turn execution.
-
-### Native slash actions
-
-The interactive TUI and web composer reserve these runtime-owned actions; they are
-not markdown prompt macros and do not invoke a provider turn unless stated:
-
-#### Session commands
-
-- **`/new [title]`** — creates a fresh empty session and switches the active
-  view to it. Clears live transcript and composer state while preserving active
-  workspace and model configuration. Rejects mid-task while a run is in flight.
-- **`/clear`** — clears conversation history by transitioning to a new session
-  with an empty transcript, retaining active runtime configuration. Rejects
-  mid-task while a run is in flight.
-- **`/resume [id | title]`** — switches to a saved session and reloads its
-  persisted event history into the transcript. Bare `/resume` opens an
-  interactive session picker; providing a session ID or title prefix resumes
-  directly. Rejects mid-task while a run is in flight.
-- **`/fork [title]`** — branches the current session from its historical event
-  prefix up to the latest completed turn into a new independent session. Inherits
-  parent capability snapshots (model, provider, reasoning effort) and accepts an
-  optional title. Rejects mid-task while a run is in flight or during pending
-  plan/review operations.
-- **`/rename <title>`** — sets a user-facing title for the current session and
-  records a `session.renamed` event. Bare `/rename` opens an in-place rename
-  overlay; providing arguments renames immediately. Allowed concurrently even
-  while a task is in progress.
-
-#### Info commands
-
-- **`/status`** — displays a structured diagnostic panel of current session
-  state without invoking a provider turn. Reports session ID, execution status,
-  active model and provider, base URL, collaboration mode, active thread goal
-  (status and objective), and cumulative token/cost usage. Allowed mid-run.
-- **`/export [path]`** — renders the full session event history into structured
-  Markdown (`# Session`, `## User`, `## Assistant`, tool calls, and results).
-  Bare `/export` writes to `voidcode-session-<id>.md` in the workspace root;
-  passing a relative path writes to that location inside the workspace (path
-  traversal outside the workspace is rejected). Because export is an explicit
-  user-directed action, it writes directly without tool approval gates, but
-  requires an idle session (rejected mid-task).
-- **`/copy`** — extracts structured copy targets from the last assistant
-  response (such as full text, fenced code blocks by language, or blockquotes).
-  Bare `/copy` presents a choice selector or copies directly to the system
-  clipboard via OSC 52 or local clipboard providers. Allowed mid-run.
-- **`/context`** — inspects the token usage breakdown of the runtime's
-  assembled prompt projection without advancing a model turn. Reports total used
-  tokens, context window capacity, utilization percentage, and a segment-by-segment
-  breakdown (System prompt, Agent prompt, Tools, Goal steering, and Conversation
-  history). Allowed mid-run.
-
-#### Model & approval commands
-
-- **`/model [name] [effort]`** — chooses what model and reasoning effort to use
-  for the active session. Bare `/model` opens the interactive model picker
-  overlay displaying provider models, descriptions, and reasoning effort support;
-  providing arguments (`/model <name> [effort]`) switches immediately. Model
-  switches persist to session metadata immediately without interrupting in-flight runs (no busy gate).
-- **`/permissions [preset | mode]`** — inspects or changes what VoidCode is allowed
-  to do. Bare `/permissions` opens the interactive preset picker overlay (`read-only`,
-  `auto`, `full-access`). Presets map directly to runtime approval modes (`read-only` &rarr; `ask`,
-  `auto` &rarr; `write`, `full-access` &rarr; `yolo`); passing an argument applies the mode immediately
-  to active session metadata and runtime policy. Allowed mid-run (no busy gate).
-- **`/approve [request_id]`** — approves one pending tool call or retry of a recent
-  auto-review or policy denial. If the approval queue is empty, returns an informational notice.
-  If exactly one action is pending, bare `/approve` approves it immediately; when multiple
-  actions are queued, bare `/approve` opens an interactive approval picker overlay, or specifying
-  `[request_id]` approves that specific request. Allowed mid-run (no busy gate).
-
-#### Projection commands
-
-- **`/mcp [verbose]`** — lists configured Model Context Protocol (MCP) servers and tools.
-  Bare `/mcp` shows a compact summary of server names, status, and tool counts; passing
-  `verbose` reveals detailed command, URL, environment, and transport configurations.
-  Projects runtime state non-destructively; allowed mid-run (no busy gate).
-- **`/hooks`** — inspects runtime lifecycle hooks by event surface (`session_start`,
-  `pre_tool`, `post_tool`, `session_end`). Displays configured command lines, tool match
-  patterns, and enabled status. Unconfigured reads as disabled with empty surfaces. Allowed mid-run (no busy gate).
-- **`/skills`** — lists available skills discovered by `SkillRegistry` from workspace
-  directories (`.voidcode/skills` or configured paths), showing descriptions and argument hints.
-  Projects registered capabilities non-destructively; allowed mid-run (no busy gate).
-- **`/agents`** — views active agent sessions, child tasks, and primary agent presets
-  (`default`, `review`). Reports current session identity, running child delegations, and
-  available subagent profiles. Allowed mid-run (no busy gate).
-- **`/usage [daily | weekly | cumulative]`** — displays token consumption (input, output,
-  cache read/write), total USD cost, and turn count for the session, or filtered by temporal
-  scope. Estimation is measured-provider-usage-first with exact per-model tokenizer fallback (superior to byte/4 heuristics; byte/4 only for unknown models). Allowed mid-run (no busy gate).
-
-#### Collaboration & execution actions
-
-- **`/compact`** — available for an idle active session. It asks the configured
-  provider for a bounded continuation summary, persists the summary and compaction
-  event, and reuses it after reopening the session. If a provider summary is
-  unavailable, the runtime may still persist bounded tool-result compaction; the
-  result reports that outcome explicitly. It fails visibly while the session is
-  busy.
-- **`/diff`** — reads the aggregate Git diff (staged, unstaged, and untracked
-  files) without a model call. Clean workspaces, non-Git directories, and Git
-  errors remain distinct states.
-- **`/plan`** and **`/plan off`** — enter or leave the reversible collaboration
-  mode. Plan mode narrows the shared runtime permission gate to read-only while
-  preserving the session's immutable base policy; leaving it cannot relax an
-  externally read-only session. No shell-command parsing is used.
-- **`/review [focus | target]`** — runs the governed read-only review agent
-  (`preset: review`) over one of four selectable review targets: uncommitted
-  changes (`uncommitted`, default), base branch comparison (`base_branch`),
-  specific commit (`commit`), or custom instructions (`custom`). Model selection
-  prefers `review_model` (with automated reasoning effort fallback) and falls
-  back to the parent session model. The review child requires a terminal `yield`
-  invocation to return findings, preserving parent session history and state.
-  Diffs exceeding 262,144 bytes (256 KiB) reject visibly rather than silently truncating.
-- **`/goal [objective | clear | edit | pause | resume]`** — creates, inspects, or mutates
-  the persistent thread goal for the active session (bare `/goal` prints status and usage).
-  Long objectives (>4000 characters) are automatically spilled to
-  `.voidcode/attachments/<uuid>/goal-objective.md`.
-  When an active goal has a positive token budget, completed turns charge their
-  token usage against the goal (plan mode turns excluded); reaching the budget
-  transitions the status to `budget-limited`. `/goal clear` clears the goal,
-  `/goal pause` suspends pursuit, `/goal resume` reactivates it with continuation
-  guidance, and `/goal edit` loads the objective into the composer.
-- **`!<command>`** — native shell escape. Runs the shell command directly in the
-  workspace without starting a provider turn. Because typed `!` commands constitute
-  explicit user action, they bypass approval checks and sandbox restrictions
-  (including under read-only/plan mode). The command, duration, and output are
-  persisted as a `runtime.user_shell_executed` event in session history, available
-  idle or mid-turn for subsequent provider turn context.
-- **`/btw <question>`** — native side question. Answers quick user inquiries
-  directly against the current session context prefix without modifying session
-  history, appending events, or altering transcripts. Runs exactly one provider turn
-  with zero tools offered; works while the session is idle or running (no busy gate).
-- **`/init`** — native contributor guide generation (Codex parity). Submits a fixed
-  prompt instructing the model to inspect repository evidence and produce or
-  maintain `AGENTS.md` without overwriting existing guidelines. Executes as a
-  normal governed agent turn under session tool approval policies; disabled while
-  a task is in progress (busy-gated).
-- **`/loop [interval] <prompt>`** — schedules a prompt or slash command to run on a
-  recurring interval as a background task. Intervals accept `Ns`, `Nm`, `Nh`, `Nd`
-  (e.g. `5m`, `30m`, `2h`, `1d`); defaults to `10m` if omitted. Trailing `every <N> <unit>`
-  syntax (e.g. `/loop check the deploy every 20m`) is also supported. Creation immediately
-  fires the initial background task iteration and persists the schedule in the workspace
-  SQLite database. Recurring loops automatically expire after 7 days (Claude parity).
-  `/loop` specifies `busy_gate=False` and executes immediately without waiting for active runs.
-Native commands are defined in a single authoritative table (`src/voidcode/command/native.py:NATIVE_COMMANDS`).
-Inspection catalog generation (`GET /api/commands`), TUI validation/dispatch, and web client routing
-derive from this shared definition. Slash commands (`/`) are a closed set of built-in native commands (Codex parity);
-custom markdown macro templates and prompt command expansions are removed.
-
-Custom capability extensibility is provided via Skills (`$skill_name`). Skill discovery is
-workspace-only, scanning `.voidcode/skills/` (and paths configured under `skills.paths`) for
-`SKILL.md` manifests. Built-in skills have been removed; all active skills are defined by the
-workspace. See `src/voidcode/skills/registry.py` (`SkillRegistry`).
-
-
-## Scheduled Tasks & Cron
-
-VoidCode provides scheduled task execution with Claude parity, supporting periodic automation, background execution, and tool-driven task governance.
-
-### Schedule Grammar
-
-Schedule expressions accept four canonical forms (`schedule_expr.py`):
-
-1. **`every <N><s|m|h|d>`** (Interval):
-   Executes periodically at the specified frequency (e.g. `every 10s`, `every 5m`, `every 2h`, `every 1d`). The minimum interval is 1 second.
-2. **`at <ISO-8601>`** (One-Shot Timestamp):
-   Fires once at the designated calendar timestamp (e.g. `at 2026-10-18T09:00:00Z`).
-3. **`cron <min> <hour> <day> <month> <dow>`** (Cron Expression):
-   Standard 5-field cron cadence (e.g. `cron */5 * * * *` for every 5 minutes, `cron 0 9 * * 1-5` for weekdays at 09:00). Supports lists (`1,15`), ranges (`1-5`), and steps (`*/10`).
-4. **`once`** (Immediate One-Shot):
-   Fires once on the next scheduler tick.
-
-### `/loop` Native Command
-
-The `/loop` native slash command creates a recurring background task and triggers an immediate execution:
-
-```
-/loop [interval] <prompt>
-```
-
-- **Default Interval**: Omitting the interval defaults to `10m` (e.g. `/loop check the deploy`).
-- **Interval Formats**: Supports leading interval tokens (`/loop 5m check status`) or natural trailing clauses (`/loop check status every 5m`).
-- **Immediate Fire**: The first iteration dispatches immediately as an asynchronous background task upon creation.
-- **Confirmation**: Echoes the assigned schedule ID, cadence, and 7-day auto-expiration notice.
-
-### 7-Day Auto-Expiration
-
-Recurring schedules (`every` and `cron`) are provisioned with an automatic 7-day expiration from the creation timestamp (`DEFAULT_RECURRING_EXPIRY_SECONDS = 604,800`). When a schedule passes its expiration timestamp, the scheduler executes one final due run and deletes the schedule from the database upon task completion. To cancel a schedule before expiration, use `voidcode cron remove <id>` or the `cron_delete` agent tool.
-
-One-shot schedules (`at` and `once`) do not auto-expire; they delete immediately upon successful execution, or remain in the store with `enabled = 0` if execution fails (OpenClaw parity).
-
-### CLI Management (`voidcode cron`)
-
-Scheduled tasks are managed from the command line using the `voidcode cron` group:
-
-```bash
-# List all schedules in the workspace
-voidcode cron list [--workspace <path>] [--json]
-
-# Inspect detailed schedule attributes and prompt
-voidcode cron show <schedule_id> [--workspace <path>] [--json]
-
-# Enable or disable a schedule
-voidcode cron enable <schedule_id> [--workspace <path>] [--json]
-voidcode cron disable <schedule_id> [--workspace <path>] [--json]
-
-# Remove (cancel) a schedule
-voidcode cron remove <schedule_id> [--workspace <path>] [--json]
-```
-
-Workspaces enforce a ceiling of 50 active scheduled tasks (`MAX_SCHEDULES_PER_WORKSPACE = 50`). Attempts to create additional schedules via the `cron_create` tool reject visibly until an existing schedule is removed.
-## Hierarchical Project Instructions & Local Overrides
-
-VoidCode supports hierarchical instructions aligned with Codex (`AGENTS.md` and `AGENTS.override.md`):
-
-### Precedence per Directory
-
-Within any directory, a local override file takes precedence over standard project instructions:
-1. `AGENTS.override.md` (local uncommitted overrides; winning file)
-2. `AGENTS.md` (standard committed project guidance)
-
-### Project Root Hierarchy Discovery
-
-When a session initializes with a workspace directory (serving as current working directory), the runtime resolves the project root by walking upward until the nearest `.git` directory or `.git` worktree file marker is found. If no `.git` marker exists, traversal stops strictly at the workspace boundary (preventing arbitrary parent filesystem inspection).
-
-Instructions are loaded and ordered from project root down to the workspace directory:
-- Project root instructions establish the baseline rules.
-- Subproject/child directory instructions refine and specialize guidance.
-- Root/ancestor baseline rules are selected before touched-file rules; overall file-count and byte limits still apply.
-- An aggregate UTF-8 byte budget (`MAX_TOTAL_RULE_BYTES = 36,000`) includes truncation text; provider-visible rule content never exceeds the cap. If later applicable files are omitted at the cap, the final included rule's metadata reports `truncated: true`; zero-byte caps expose an empty truncated entry.
-
-## Shell Command Approval
-
-Shell commands use the active runtime approval mode (`ask`, `write`, or `yolo`) and explicit approve/deny decisions. Any configured `permission.rules[].command` value is a whole-command text glob matched against the original command string; it is not parsed for shell semantics or split into subcommands. Compound commands and quoting are passed unchanged to the shell, with approval providing the safety boundary.
+- A workspace with a legacy `.voidcode.json` and no `voidcode.json` fails with an explicit error (`legacy .voidcode.json is not supported; create voidcode.json explicitly`). Nothing is read from the legacy file, and no converter exists.
+- Legacy session/state databases from the pre-kernel architecture are neither imported nor auto-deleted. The kernel never reads them. Removing that historical data is a manual user action with `rm`; there is no cleanup command.

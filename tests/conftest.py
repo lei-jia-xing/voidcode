@@ -1,18 +1,12 @@
 from __future__ import annotations
 
-import importlib
 import ipaddress
 import os
 import socket
 import ssl
-import subprocess
 import tempfile
-import threading
-import time
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
-from urllib.error import URLError
 
 import pytest
 
@@ -20,38 +14,6 @@ os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 os.environ.setdefault("PYTHONUTF8", "1")
 os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="voidcode-pytest-config-")
 os.environ["APPDATA"] = tempfile.mkdtemp(prefix="voidcode-pytest-appdata-")
-
-# How long a leaked ``voidcode-background-task-*`` worker may take to finish its
-# final durable writes before the test is declared to have left it running.
-_BACKGROUND_WORKER_JOIN_TIMEOUT_SECONDS = 10.0
-
-
-@pytest.fixture(autouse=True)
-def _join_leaked_background_workers(_isolated_xdg_runtime_dirs: None) -> Iterator[None]:
-    """Join any background-task worker a test left running before isolation ends.
-
-    Depends on ``_isolated_xdg_runtime_dirs`` so the join runs *first* on
-    teardown, while the test's own XDG/database override is still in place: a
-    worker still running its final durable writes then finalizes against its own
-    temp database instead of the developer's.
-
-    Many tests construct a runtime, dispatch a delegated task, and assert on its
-    terminal state without closing the runtime (``runtime.__exit__`` is what
-    joins background-task workers). The worker is a daemon and may still be
-    running when the test body returns, so left alone it outlives the test and
-    the environment the test ran under.
-
-    The bounded join keeps this deterministic and fails loudly, naming the
-    offending threads, if a worker cannot be stopped at all — that would be a
-    real shutdown defect rather than test noise.
-    """
-    yield
-    leaked = [thread for thread in threading.enumerate() if thread.name.startswith("voidcode-background-task-")]
-    deadline = time.monotonic() + _BACKGROUND_WORKER_JOIN_TIMEOUT_SECONDS
-    for thread in leaked:
-        thread.join(timeout=max(deadline - time.monotonic(), 0.0))
-    still_alive = sorted(thread.name for thread in leaked if thread.is_alive())
-    assert not still_alive, f"test left background-task workers running after {_BACKGROUND_WORKER_JOIN_TIMEOUT_SECONDS}s: {still_alive}"
 
 
 @pytest.fixture(autouse=True)
@@ -73,20 +35,16 @@ def _isolated_xdg_runtime_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
 
 
 # ---------------------------------------------------------------------------
-# Offline guards: no test may reach the outside world by accident.
+# Offline guard: no test may reach the outside world by accident.
 #
-# Three machine-dependent costs live behind "the real thing": a connect to an
-# unroutable host burns the full timeout per call (and a routed one makes the
-# assertion depend on the host), provider model discovery performs a live
-# ``GET /v1/models``, and the doctor probes every formatter binary for its
-# ``--version`` (``npx --version`` alone costs seconds when npm cannot reach its
-# registry). Each guard fails or answers deterministically *and immediately*
-# while keeping the observable contract the caller already sees on a failed
-# network: model discovery still reports ``source="fallback"`` with
-# ``last_refresh_status="failed"``, and the formatter check still reports the
-# status it derives from ``shutil.which``.
-#
-# A test whose subject *is* the live network opts out with ``allow_live_network``.
+# A connect to an unroutable host burns the full timeout per call (and a routed
+# one makes the assertion depend on the host), so a real non-loopback connect
+# fails immediately instead. Loopback stays open: transport and loopback-provider
+# tests run real local servers. A test whose subject *is* the live network opts
+# out with ``allow_live_network``. Plugin code runs in the out-of-process plugin
+# host, so this guard covers the test and kernel processes only; a plugin's own
+# network use is the plugin's declared capability, exercised with loopback
+# endpoints in tests.
 # ---------------------------------------------------------------------------
 
 _OPT_OUT_FIXTURE = "allow_live_network"
@@ -94,12 +52,11 @@ _OPT_OUT_FIXTURE = "allow_live_network"
 
 @pytest.fixture
 def allow_live_network() -> None:
-    """Opt a test out of the autouse offline guards.
+    """Opt a test out of the autouse offline guard.
 
-    Requesting this fixture lets the test open real non-loopback sockets, use the
-    live model-discovery fetcher, and launch the real external tool probes the
-    doctor would run. Only a test whose subject is the real network may ask for
-    it; everything else stays deterministic.
+    Requesting this fixture lets the test open real non-loopback sockets. Only a
+    test whose subject is the real network may ask for it; everything else stays
+    deterministic.
     """
     return None
 
@@ -146,53 +103,3 @@ def _deny_live_sockets(request: pytest.FixtureRequest, monkeypatch: pytest.Monke
     for socket_class in (socket.socket, ssl.SSLSocket):
         monkeypatch.setattr(socket_class, "connect", guarded_connect)
         monkeypatch.setattr(socket_class, "connect_ex", guarded_connect_ex)
-
-
-@pytest.fixture(autouse=True)
-def _deny_live_model_discovery(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Cut the provider model-discovery HTTP call, offline and instantly.
-
-    ``model_catalog`` performs discovery with the module-level ``urlopen``; that
-    is the single seam every provider fetch routes through, and the one the
-    discovery tests already stub per-test (their ``monkeypatch.setattr`` wins
-    because it is applied after this fixture). Raising ``URLError`` reproduces
-    exactly what an unreachable provider host already produces, so callers keep
-    observing the same fallback result without waiting out the connect timeout.
-    """
-    if _OPT_OUT_FIXTURE in request.fixturenames:
-        return
-
-    catalog = importlib.import_module("voidcode.provider.model_catalog")
-
-    def _offline_urlopen(http_request: Any, *args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        raise URLError(f"live model discovery is disabled in tests: {http_request.full_url}")
-
-    monkeypatch.setattr(catalog, "urlopen", _offline_urlopen)
-
-
-class _CannedSubprocess:
-    """Stand-in for ``voidcode.doctor.checker``'s ``subprocess`` module.
-
-    The doctor's executable checks only need the probe to succeed: the check's
-    status comes from ``shutil.which``, and no test observes the tool's real
-    version string. Keeping the launch out of the unit tests removes a
-    machine-dependent external process (and its registry traffic).
-    """
-
-    TimeoutExpired = subprocess.TimeoutExpired
-    CalledProcessError = subprocess.CalledProcessError
-
-    @staticmethod
-    def run(args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        del kwargs
-        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
-
-
-@pytest.fixture(autouse=True)
-def _stub_external_tool_probes(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Answer the doctor's ``<tool> --version`` probes without launching a tool."""
-    if _OPT_OUT_FIXTURE in request.fixturenames:
-        return
-    checker = importlib.import_module("voidcode.doctor.checker")
-    monkeypatch.setattr(checker, "subprocess", _CannedSubprocess)

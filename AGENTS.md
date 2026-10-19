@@ -4,63 +4,117 @@ This document is the primary reference for autonomous agents and developers modi
 
 ## Architecture & Subsystem Boundaries
 
-Responsibilities are split as follows:
+VoidCode is a small trusted kernel plus a Python plugin SDK, a bundled official plugin set, and a replaceable out-of-process plugin host:
 
 ```mermaid
 graph LR
-    Runtime["src/voidcode/runtime/<br/>(Governance, State, Persistence)"]
-    Core["src/voidcode/core/<br/>(TurnEngine, Transcripts)"]
-    Tools["src/voidcode/tools/<br/>(Tool Definitions & Execution)"]
-    Common["src/voidcode/common/<br/>(Shared Values & Parsing)"]
-    Provider["src/voidcode/provider/<br/>(Model Adapters & Pricing)"]
+    SDK["src/voidcode/sdk/<br/>(contracts only)"]
+    Kernel["src/voidcode/kernel/<br/>(engine, host, storage, transport, tui, activation, artifacts, coverage, bootstrap)"]
+    Host["src/voidcode/plugin_host/<br/>(out-of-process plugin host, identity verification, process leases)"]
+    Plugins["src/voidcode/plugins/<br/>(bundled plugins)"]
 
-    Runtime --> Core
-    Runtime --> Tools
-    Runtime --> Common
-    Core --> Provider
-    Tools --> Common
+    Kernel --> SDK
+    Host --> SDK
+    Plugins --> SDK
+    Kernel --> Host
+    Host --> Plugins
 ```
 
-- **Runtime Control Plane (`src/voidcode/runtime/`)**:
-  Sole authority for execution governance, permissions, approval gates, SQLite persistence, lifecycle hooks, and recovery. Collaboration flows into `VoidCodeRuntime` (`service.py`).
-- **Core Turn Engine (`src/voidcode/core/`)**:
-  Host-agnostic turn progression engine (`TurnEngine` in `engine.py`). Core advances conversations and plans tool batches. Core never accesses SQLite, filesystem state directly, or product policy.
-- **Tools Layer (`src/voidcode/tools/`)**:
-  Implements discrete tool capabilities (`read`, `write`, `edit`, `shell_exec`, `glob`, `grep`, `task`). Tools declare their effect tiers and execute under runtime supervision.
-- **Common Utilities Layer (`src/voidcode/common/`)**:
-  Owns structured data snapshotting (`json_values.py`), frontmatter parsing (`frontmatter.py`), and output limits (`output_limits.py`).
-- **Provider Adapters (`src/voidcode/provider/`)**:
-  Native API client adapters (Anthropic, OpenAI, Google) translating between VoidCode's neutral turn models and upstream provider wire protocols.
-- **Frontend Client (`frontend/`)**:
-  React 19 single-page application. Communicates with the runtime via HTTP REST and Server-Sent Events. See [`frontend/AGENTS.md`](./frontend/AGENTS.md).
+- **SDK (`src/voidcode/sdk/`)**:
+  The only contract surface shared by the kernel, the plugin host, and every plugin: plugin registration (`plugin.py`), manifests (`manifest.py`), tools (`tools.py`), commands (`commands.py`), invocation context (`invocation.py`), provider contracts (`provider.py`), hook/observer contracts (`hooks.py`), declarative views (`views.py`), scoped services (`services.py`), configuration parsing (`config.py`), plus the shared JSON/limit helpers (`json_values.py`, `codec.py`, `limits.py`).
+- **Kernel (`src/voidcode/kernel/`)**:
+  The product: `engine.py` runs governed turns over append-only events with durable native tool batches, approvals and confirmation gates; `bootstrap.py` owns configuration, plugin trust and the per-workspace state directory; `activation.py` pins trusted plugin bytes into content-addressed artifacts and switches capability revisions; `host.py` manages plugin host processes and invocation lifecycles; `storage/` owns the SQLite store and schema; `transport/` serves the HTTP/SSE API and the built web client; `tui/` is the inline-scrollback client; `artifacts.py` owns kernel artifacts; `coverage.py` tracks what a session's model has genuinely been shown.
+- **Plugin host (`src/voidcode/plugin_host/`)**:
+  Runs plugin code outside the kernel process: `server.py` is the stdio host that verifies admitted identities and serves invocations, `processes.py` owns lease-scoped child processes and supervised background processes.
+- **Bundled plugins (`src/voidcode/plugins/`)**:
+  The official plugins ship in the wheel and are trusted by construction. They own all product mechanisms — tools, commands, providers, hooks, views, and session state — using the same public SDK a third-party plugin gets.
+
+### Layer Rules
+
+1. **The SDK has no implementation dependencies.** `sdk/` may import the standard library, `pydantic`, and `jsonschema` only; never `kernel/`, `plugin_host/`, or `plugins/`. Enforced by `tests/unit/sdk/test_sdk_direction.py`.
+2. **The kernel imports no concrete plugin.** The kernel knows plugin ids, manifests, and artifacts, never a plugin module: every tool, command, provider, and view arrives through admission (`kernel/activation.py`) and the plugin host.
+3. **Plugins import only the SDK** (plus their own third-party dependencies). A plugin that needs kernel behavior asks for it through `PluginServices`; there is no private kernel entry for bundled plugins.
 
 ## Where to Look
 
 | Task / Domain | Location | Key Entrypoint |
 |---|---|---|
-| Runtime service orchestration | `src/voidcode/runtime/` | `service.py` (`VoidCodeRuntime`) |
-| Turn execution & host seam | `src/voidcode/runtime/` | `run_loop.py` (`RuntimeHost`) |
-| Turn engine & batch execution | `src/voidcode/core/` | `engine.py` (`TurnEngine`) |
-| Session & event persistence | `src/voidcode/runtime/storage/` | `sqlite.py` (`SqliteSessionStore`) |
-| Permissions & approval flow | `src/voidcode/runtime/permissions/` | `policy.py`, `engine.py` |
-| Background tasks & workers | `src/voidcode/runtime/background/` | `supervisor.py` (`RuntimeBackgroundTaskSupervisor`) |
-| Built-in tool implementations | `src/voidcode/tools/` | `contracts.py`, `delegation/task.py` |
-| CLI commands & flags | `src/voidcode/cli/` | `app.py`, `commands/run.py` |
-| HTTP & SSE transport | `src/voidcode/runtime/transport/` | `http.py`, `http_models.py` |
-| Shared values, limits & parsing | `src/voidcode/common/` | `json_values.py`, `frontmatter.py`, `output_limits.py` |
+| Governed turns, approvals, budgets, continuations | `src/voidcode/kernel/` | `engine.py` (`Kernel`) |
+| Product wiring: config, trust, state directory, revision restore | `src/voidcode/kernel/` | `bootstrap.py` (`open_kernel`, `state_directory`) |
+| Plugin admission, pinned artifacts, hot activation | `src/voidcode/kernel/` | `activation.py` (`admit_live`, `restore_admission`) |
+| Plugin host processes and invocation lifecycles (kernel side) | `src/voidcode/kernel/` | `host.py` (`HostClient`) |
+| Out-of-process plugin host, identity verification, process leases | `src/voidcode/plugin_host/` | `server.py`, `processes.py` |
+| Append-only session persistence | `src/voidcode/kernel/storage/` | `store.py` (`SqliteStore`), `schema.sql` |
+| HTTP/SSE transport and served web bundle | `src/voidcode/kernel/transport/` | `http.py`, `server.py`, `static.py` |
+| Inline TUI client | `src/voidcode/kernel/tui/` | `terminal_app.py`, `client.py`, `views.py` |
+| CLI entry point and subcommands | `src/voidcode/kernel/` | `__main__.py` (`main`) |
+| SDK contracts (the only shared surface) | `src/voidcode/sdk/` | `plugin.py`, `manifest.py`, `tools.py`, `commands.py`, `services.py` |
+| Bundled plugins | `src/voidcode/plugins/<plugin_id>/` | `voidcode-plugin.json` + its entry module |
+| Web client (kernel app) | `frontend/src/kernel/` | `KernelApp.tsx`, `views/` |
+| Plugin identity gate | `scripts/` | `generate_plugin_identities.py` |
+
+## Entry Points & Product Surfaces
+
+One CLI serves every operation: `python -m voidcode.kernel <subcommand>` (the `voidcode` console script is the same entry point once installed).
+
+- **Agent runs**: `run "<prompt>" [--session-id] [--max-steps]`, `resume <session_id> [--approval-request-id --decision allow|deny] [--max-steps]`.
+- **Session truth**: `create-session`, `sessions [--limit]`, `show <session_id> [--events]` (a rescue read that needs no configuration, host, or revision check).
+- **Capability surface**: `catalog`, `invoke <session_id> <name> --arguments JSON --expected-revision <id>`, `confirm <session_id> <request_id> --decision allow|deny --expected-revision <id>`, `views <session_id>`, `drain <session_id> [--limit]`, `usage <session_id> [--since-sequence] [--until-sequence]`.
+- **Clients**: `tui [--server URL --token TOKEN --session-id ID]` (embedded kernel by default), `serve [--host] [--port] [--bearer-token]` (loopback only; serves `/api` plus the built web bundle at `/`).
+- **Root options**: `--workspace PATH` (default: the current directory), `--state-dir PATH`, `--trust-plugin PLUGIN_ID` (repeatable).
+
+In-session commands come from the kernel command catalog: the reserved core commands (`run`, `resume`, `show`, `status`, `help`, `kernel.reload`) plus every plugin-declared command. They reach every client the same way — `/<name>` in the TUI and web client, `voidcode invoke` from the CLI — and there is no client-side command table.
+
+## Plugin Anatomy & Identity Workflow
+
+A plugin is a directory with a `voidcode-plugin.json` manifest and the exact source files the manifest pins:
+
+- **Manifest keys** (`src/voidcode/sdk/manifest.py`): `schema_version`, `sdk_protocol`, `plugin_id` (`[a-z][a-z0-9_-]*`), `version`, `entrypoint` (`module:callable`), `files` (path + sha256 identities), `capabilities`, `config_schema`, `state_schema` / `state_schema_version`, `tools`, `commands`, `providers`, `hooks`, and `depends` (plugin dependency closure).
+- **Admission never imports the candidate.** `admit_plugin` (`kernel/activation.py`) validates the manifest, verifies every declared file hash, refuses undeclared Python sources, checks requested capabilities against the granted set (`workspace.read`, `workspace.write`, `network`), validates the plugin configuration against its `config_schema`, and copies the pinned bytes into `artifacts/<identity>` inside the state directory. The identity is the manifest hash, so an edited plugin source is a *new* identity, never an in-place mutation of an admitted one.
+- **Identity regeneration**: after editing any bundled plugin source or manifest, run `mise run plugins:identities:generate`; `mise run plugins:identities:check` (also a pre-commit hook) refuses drift. Never hand-edit the `files` array.
+- **Revisions**: the admitted generation is the capability *revision*. The SDK source hash is pinned into the revision, so a changed SDK refuses to restart against an older workspace revision ("controlled kernel upgrade"); the workspace needs a fresh state directory rather than a hot reload.
+- **Hot activation**: `kernel.reload` re-admits the live configuration and commits a new revision in-session; it only trusts source paths already authorized in the current generation. New external trust is a startup decision (`--trust-plugin`), never something a running session can grant itself.
+
+## Configuration & State
+
+- **Configuration**: `voidcode.json` at the workspace root, and only that file. The kernel rejects a legacy `.voidcode.json` explicitly and performs no conversion. See [`docs/configuration.md`](./docs/configuration.md).
+- **State**: `$XDG_STATE_HOME/voidcode/kernel-v1/<workspace-sha256>/`, containing `kernel-v1.sqlite3`, `artifacts/` (pinned plugin sources), and `private/` (the 0600 configuration snapshot carrying credentials). The state directory must live outside the workspace; `--state-dir` overrides it.
+- **Persistence**: session history is an append-only SQLite event stream. There is no fork, undo, revert, checkout, or import: clients are commit-once ledgers over durable facts.
+- **Credentials**: provider `api_key` values live only in the private snapshot; revisions and events carry digests, never secrets.
 
 ## Engineering Conventions & Taste
 
 - **Validate at the Ingress Boundary**:
-  External inputs (CLI options, HTTP requests, configuration files, and external process outputs) are validated once upon entry. Internal code relies on strongly typed dataclasses and Pydantic models.
+  Configuration, manifests, CLI arguments, command arguments, and HTTP bodies are validated once at entry (strict parsers that reject unknown fields). Internal code relies on typed dataclasses and Protocol contracts.
 - **Fail Visibly**:
-  Preserve `None` and distinct unknown states from known values. Missing required contract fields raise a clear error.
+  Preserve `None` and distinct unknown states from known values. Missing required contract fields raise a clear error; a service that cannot answer says so instead of inventing a placeholder.
 - **Immutable Append-Only Events**:
-  SQLite `session_events` rows are immutable historical facts. Current session views, transcript projections, and replay checkpoints derive from this event stream.
-- **Durable Identity on Recovery**:
-  Checkpointed and resumed sessions restore the authentic completed prefix of tool results. Tool intents that were pending with `replay_policy="never"` are not replayed; recovery restores safe checkpoint state and obtains a fresh provider turn.
+  Persisted events are historical facts. Session views, transcripts, usage, and plugin views are projections of that stream.
+- **Pinned Identity on Recovery**:
+  A restart restores the persisted revision, its pinned plugin artifacts, and its private configuration snapshot. Changed workspace source or configuration is never admitted implicitly, and interrupted mutations are never replayed blindly.
 - **Standard Library First**:
-  Prefer simple, readable Python 3.14 standard library constructs before introducing new abstractions or dependencies. Maintain single authoritative implementation paths.
+  Prefer simple, readable Python 3.14 standard library constructs before introducing abstractions or dependencies, and keep a single authoritative implementation path.
+
+## Developer Commands
+
+```bash
+# Full gate: lint, typecheck, plugin identities, Python tests, frontend checks
+mise run check
+
+# Same hooks the commit gate runs
+uv run pre-commit run --all-files
+
+# Individual checks
+mise run lint            # Ruff
+mise run format          # Ruff formatter
+mise run typecheck       # ty
+mise run test            # Python test suite
+mise run test:coverage   # Python tests with coverage summary
+
+# Bundled plugin identities (run after editing plugin sources)
+mise run plugins:identities:generate
+mise run plugins:identities:check
+```
 
 ## Code Navigation (CodeGraph)
 
@@ -74,27 +128,10 @@ codegraph init .
 codegraph sync .
 
 # Structural search across the codebase
-codegraph query --path . 'TurnEngine'
+codegraph query --path . 'Kernel'
 
 # Inspect symbol definitions
-codegraph node --path . --file src/voidcode/core/engine.py TurnEngine
-```
-
-## Developer Commands
-
-```bash
-# Code Quality & Verification
-mise run check           # Full verification: lint, typecheck, schema, tests, frontend
-mise run lint            # Lint check with Ruff
-mise run format          # Format with Ruff
-mise run typecheck       # Static typecheck with ty
-mise run test            # Run unit and integration tests
-mise run test:coverage   # Run tests with coverage summary
-
-# Python CLI Exploration
-uv run voidcode --help
-uv run voidcode run "PROMPT" --workspace .
-uv run voidcode config show --workspace .
+codegraph node --path . --file src/voidcode/kernel/engine.py Kernel
 ```
 
 ## Detailed Documentation References
@@ -103,4 +140,4 @@ uv run voidcode config show --workspace .
 - [Configuration Guide](./docs/configuration.md)
 - [Coding Standards](./docs/coding-standards.md)
 - [Testing Policy](./docs/testing.md)
-- [Runtime Contracts](./docs/contracts/README.md)
+- [Kernel & Plugin Contracts](./docs/contracts/README.md)

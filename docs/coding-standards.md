@@ -14,11 +14,10 @@ VoidCode prioritizes readability, explicit boundaries, and repeatable local veri
 
 VoidCode enforces clean boundaries across its backend layers:
 
-- **`src/voidcode/runtime/`**: Owns session lifecycle, permissions, approvals, SQLite persistence, and hooks.
-- **`src/voidcode/core/`**: Host-agnostic turn progression through `TurnEngine`.
-- **`src/voidcode/tools/`**: Built-in tool implementations.
-- **`src/voidcode/common/`**: Shared data modeling, snapshotting, and template parsing.
-- **`src/voidcode/provider/`**: Provider adapters for upstream LLM APIs.
+- **`src/voidcode/sdk/`**: The shared contract surface (manifest, plugin, tools, commands, services, provider, hooks, views, invocation, config). It may import only the standard library, `pydantic`, and `jsonschema` — never the kernel, the plugin host, or a plugin.
+- **`src/voidcode/kernel/`**: Governance, append-only persistence, plugin admission and activation, artifacts, HTTP/SSE transport, and the TUI. It imports no concrete plugin.
+- **`src/voidcode/plugin_host/`**: The out-of-process plugin host: stdio protocol, identity verification, and lease-scoped/supervised child processes.
+- **`src/voidcode/plugins/`**: The bundled plugins, built on the public SDK exactly like third-party plugins.
 
 ## Python Standards
 
@@ -31,7 +30,7 @@ VoidCode enforces clean boundaries across its backend layers:
 
 - Built with Bun, Vite, and React 19 in `frontend/`.
 - Validate with `bun run lint` and `bun run typecheck`.
-- Backend wire models are generated from OpenAPI schemas via `mise run frontend:api:generate`; do not hand-edit `src/lib/runtime/generated/api.d.ts`.
+- Kernel wire models are generated from the kernel transport's OpenAPI schema via `mise run frontend:kernel-api:generate`; do not hand-edit `src/lib/kernel/generated/api.d.ts`.
 - Preserve dual language support (English and zh-CN) when modifying UI copy.
 
 ## Commit Conventions

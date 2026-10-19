@@ -1,0 +1,206 @@
+{
+  "plugin_id": "cron",
+  "version": "1.0.0",
+  "sdk_protocol": 1,
+  "schema_version": 1,
+  "entrypoint": "__init__:create_plugin",
+  "files": [
+    {
+      "path": "__init__.py",
+      "sha256": "835705aceff71558bc6638dc42734738c758bb740e5953682997a4395fc4cc85"
+    },
+    {
+      "path": "cron_plugin.py",
+      "sha256": "e93c38d6d84678e46915a3a4d100976b8382b80b5260f14a1a8b140ee546956b"
+    },
+    {
+      "path": "loop_command.py",
+      "sha256": "5b99fd839048a83873adc92efd70b806d99239729f599d8831c16be3789e9a6e"
+    },
+    {
+      "path": "schedule_expr.py",
+      "sha256": "9a504f0480091c1b35cb34c909acc5a319362abdebd1f1d16c84eda5350257e5"
+    }
+  ],
+  "tools": [
+    {
+      "name": "cron_create",
+      "description": "Schedule a prompt to run at a future time — either recurring on an interval or cron schedule, or once at a specific time. Max 50 schedules per session. Returns the schedule ID and human-readable cadence.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "schedule": {
+            "type": "string",
+            "description": "Schedule expression: 'every <N><s|m|h|d>' (e.g. 'every 10m'), 'at <ISO-8601>' (e.g. 'at 2026-10-18T10:00:00'), 'cron <min> <hour> <day> <month> <dow>' (e.g. 'cron */5 * * * *'), or 'once'."
+          },
+          "prompt": {
+            "type": "string",
+            "description": "The prompt to enqueue and execute on each fire."
+          }
+        },
+        "required": [
+          "schedule",
+          "prompt"
+        ],
+        "additionalProperties": false
+      },
+      "effects": [
+        "session"
+      ],
+      "replay_policy": "never",
+      "capabilities": [],
+      "supports_parallel": false,
+      "path_argument_keys": []
+    },
+    {
+      "name": "cron_delete",
+      "description": "Cancel a scheduled cron job by ID.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Schedule/job ID to cancel."
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "effects": [
+        "session"
+      ],
+      "replay_policy": "never",
+      "capabilities": [],
+      "supports_parallel": false,
+      "path_argument_keys": []
+    },
+    {
+      "name": "cron_list",
+      "description": "List scheduled cron jobs in this session.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "effects": [
+        "read"
+      ],
+      "replay_policy": "safe",
+      "capabilities": [],
+      "supports_parallel": true,
+      "path_argument_keys": []
+    }
+  ],
+  "commands": [
+    {
+      "name": "loop",
+      "description": "Run a prompt or slash command on a recurring interval, firing it immediately.",
+      "argument_schema": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "type": "string",
+            "description": "Raw /loop arguments: '[interval] <prompt>'."
+          }
+        },
+        "additionalProperties": false
+      },
+      "effects": [
+        "session"
+      ],
+      "capabilities": [],
+      "busy_gate": false,
+      "client_capabilities": [],
+      "direct_user": false,
+      "client_syntax": "/loop"
+    }
+  ],
+  "capabilities": [],
+  "providers": [],
+  "depends": [],
+  "state_schema_version": 1,
+  "state_schema": {
+    "type": "object",
+    "required": [
+      "schema_version",
+      "schedules",
+      "cursor_sequence"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "schema_version": {
+        "type": "integer",
+        "enum": [
+          1
+        ]
+      },
+      "cursor_sequence": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "schedules": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "required": [
+            "schedule_text",
+            "kind",
+            "prompt",
+            "enabled",
+            "expires_at",
+            "wakeup_id",
+            "created_at"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "schedule_text": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "every",
+                "at",
+                "cron",
+                "once"
+              ]
+            },
+            "prompt": {
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "expires_at": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "wakeup_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "created_at": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    }
+  },
+  "config_schema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "context": false,
+  "observed_facts": [
+    "run_finished"
+  ]
+}

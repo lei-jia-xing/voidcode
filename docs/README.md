@@ -4,11 +4,11 @@ Welcome to the VoidCode documentation. Here you will find guides on architecture
 
 ## Guides
 
-- [`architecture.md`](./architecture.md): Deep-dive into the local-first runtime architecture, subsystem boundaries, and execution model.
-- [`configuration.md`](./configuration.md): Workspace configuration (`.voidcode.json`), approval modes, custom providers, and schema references.
+- [`architecture.md`](./architecture.md): Kernel + plugin architecture, layer rules, durability model, and state layout.
+- [`configuration.md`](./configuration.md): `voidcode.json`, approval policy, providers, plugin trust, and legacy handling.
 - [`coding-standards.md`](./coding-standards.md): Engineering standards, type boundaries, and Conventional Commits conventions.
-- [`testing.md`](./testing.md): Testing strategy, offline safety guards, and verification commands.
+- [`testing.md`](./testing.md): Test tiers, loopback providers, offline guards, and verification commands.
 
 ## Technical Contracts
 
-- [`contracts/README.md`](./contracts/README.md): Authoritative contracts for runtime execution, background task delegation, and client transport.
+- [`contracts/README.md`](./contracts/README.md): Kernel durability semantics and the index of kernel, activation, goal, and client transport contracts.

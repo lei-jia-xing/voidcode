@@ -1,1 +1,0 @@
-"""OpenAI Chat provider plugin."""

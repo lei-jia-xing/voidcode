@@ -46,20 +46,12 @@ dir = "frontend"
 depends = ["frontend:lint", "frontend:typecheck", "frontend:test"]
 
 [tasks."frontend:api:generate"]
-description = "Generate frontend/src/lib/runtime/generated/api.d.ts from the transport's OpenAPI document"
+description = "Generate frontend/src/lib/kernel/generated/api.d.ts from the kernel transport's OpenAPI document"
 run = "uv run python -X utf8 scripts/generate_frontend_api_types.py"
 
 [tasks."frontend:api:check"]
-description = "Fail when the committed generated API types no longer match the backend schema"
-run = "uv run python -X utf8 scripts/generate_frontend_api_types.py --check"
-
-[tasks."frontend:kernel-api:generate"]
-description = "Generate frontend/src/lib/kernel/generated/api.d.ts from the kernel transport's OpenAPI document"
-run = "uv run python -X utf8 scripts/generate_frontend_api_types.py --kernel"
-
-[tasks."frontend:kernel-api:check"]
 description = "Fail when the committed generated kernel API types no longer match the backend schema"
-run = "uv run python -X utf8 scripts/generate_frontend_api_types.py --kernel --check"
+run = "uv run python -X utf8 scripts/generate_frontend_api_types.py --check"
 
 [tasks."frontend:check:e2e"]
 depends = ["frontend:check", "frontend:e2e"]
@@ -88,10 +80,6 @@ run = "uv build"
 description = "Regenerate src/voidcode/provider/model_catalog_data.json from the upstream catalog mirror"
 run = "uv run python -X utf8 scripts/generate_model_catalog.py"
 
-[tasks."schema:check"]
-description = "Fail when schema/voidcode.config.schema.json is not the schema generated from the config payload models"
-run = "uv run python scripts/generate_config_schema.py --check"
-
 [tasks."plugins:identities:generate"]
 description = "Pin bundled plugin source files after edits and formatting"
 run = "uv run python scripts/generate_plugin_identities.py"
@@ -101,10 +89,10 @@ description = "Reject bundled plugin source/manifest identity drift"
 run = "uv run python scripts/generate_plugin_identities.py --check"
 
 [tasks.check]
-depends = ["lint", "typecheck", "schema:check", "plugins:identities:check", "test", "frontend:api:check", "frontend:kernel-api:check", "frontend:check"]
+depends = ["lint", "typecheck", "plugins:identities:check", "test", "frontend:api:check", "frontend:check"]
 
 [tasks.ci]
-depends = ["lint", "typecheck", "test:coverage", "plugins:identities:check", "build", "frontend:api:check", "frontend:kernel-api:check", "frontend:check", "frontend:build"]
+depends = ["lint", "typecheck", "test:coverage", "plugins:identities:check", "build", "frontend:api:check", "frontend:check", "frontend:build"]
 
 [tasks.pre-commit]
 run = "uv run pre-commit run --all-files"

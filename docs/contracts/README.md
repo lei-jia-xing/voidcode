@@ -1,21 +1,20 @@
-# Runtime Contracts
+# Kernel & Plugin Contracts
 
-This directory contains the authoritative technical contracts for the VoidCode runtime, client integration, and execution model.
+This directory contains the authoritative technical contracts for the VoidCode kernel, its plugin seam, and client integration.
 
 ## Contracts
 
-- [`runtime-execution.md`](./runtime-execution.md): Execution boundary, ownership leases, lifecycle, SQLite event persistence, and checkpoint recovery.
-- [`task-delegation.md`](./task-delegation.md): Background task execution, child session presets, parent/child linkage, and result retrieval.
-- [`client-transport.md`](./client-transport.md): CLI, HTTP/SSE streaming, ACP facade, and run completion semantics.
+- [`client-transport.md`](./client-transport.md): Kernel HTTP/SSE API, kernel CLI, inline TUI, and the web client: catalog/revision binding, view descriptors, event streams, and the two decision gates.
 - [`goal-plugin.md`](./goal-plugin.md): Official Goal plugin contracts, state schema, windowed accounting, 3-turn blocked audit, and declarative views.
 - [`hot-activation.md`](./hot-activation.md): Same-session capability activation: pinned admission, immutable generation snapshots, state migration/deactivation, the activation transaction, durable automatic continuation, trust and restart restore.
 
-Detailed data shapes, configuration models, and tool definitions are defined directly in code and generated schemas:
-- Configuration schema: `schema/voidcode.config.schema.json` (generated from `src/voidcode/runtime/config/models.py`).
-- Tool definitions: `src/voidcode/tools/contracts.py`.
-- Runtime events: `src/voidcode/runtime/events.py`.
+Wire models, configuration, manifests, and tool definitions are defined directly in code, which is the only source of truth:
+- SDK contracts and manifest schema: `src/voidcode/sdk/` (`manifest.py`, `tools.py`, `commands.py`, `views.py`, `config.py`).
+- Kernel configuration parsing: `src/voidcode/sdk/config.py` (`voidcode.json`).
+- Kernel event vocabulary and dispatch: `src/voidcode/kernel/engine.py`.
+- HTTP wire models: `src/voidcode/kernel/transport/models.py`; the live OpenAPI document is served at `GET /api/openapi.json`.
 
-## Kernel (P2) Durability Semantics
+## Kernel Durability Semantics
 
 The kernel (`src/voidcode/kernel/`) governs runs over append-only events and durable native batches:
 

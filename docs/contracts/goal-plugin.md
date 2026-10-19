@@ -146,6 +146,13 @@ The model-facing text is the legacy goal prompt, migrated verbatim from `runtime
 - Tool descriptions (`get_goal`, `create_goal`, `update_goal` and their property descriptions)
   are the legacy `tools/goal.py` text, declared once in `goal_plugin.py` and mirrored in the
   manifest that admission compares against.
+- Delivery role: the prompt is contributed in the **legacy user role** —
+  `ContextContribution(content=..., role="user")` — so the provider receives the exact text as a
+  user message and the kernel never re-wraps it as `[goal context]` system prose. That matches
+  the legacy delivery, where the TUI submitted `continuation_prompt` as the user's prompt and
+  the runtime merged `budget_limit_prompt` into the request prompt as steering. The durable
+  `pursue_goal` continuation stays an internal system trigger; the text itself always travels
+  through the context contribution, so a continuation-driven turn still sees it exactly once.
 
 ## 6. Commands
 
@@ -218,12 +225,16 @@ uv run ty check src/voidcode/plugins/goal
 uv run python scripts/generate_plugin_identities.py --check
 ```
 
-Exercised on the current tree (`goal_plugin.py 775062f6…`, manifest `9ef26bce…`, unit tests
-`4df18502…`, integration tests `7da375a0…`):
+Exercised on the current tree (`goal_plugin.py a1c98c41…`, manifest `e156eeca…`, unit tests
+`4df18502…`, integration tests `1e93226b…`):
 
 - 22 unit cases pass (the 19 P2 behaviour cases plus 3 deactivation cases: pause-at-tip with
   full field preservation, live-status/complete/empty-state semantics including the
   tip-equals-window-start boundary, and malformed scope/tip/state plus inverted-window refusal).
+- The prompt reaches the provider verbatim in the legacy user role on the typed context ABI:
+  `test_goal_set_on_idle_session_starts_automatic_work` drives a session with no user prompt and
+  asserts the first dispatch carries the objective inside a user message while no message uses
+  the `[goal context]` system framing.
 - All 10 integration cases pass. Two of them are the P3 deactivation cases:
   - `test_deactivation_pure_rpc_pauses_live_goal_in_the_real_host`: the actual plugin-host
     process returns the paused copy for an active goal, closes the window at the session's own

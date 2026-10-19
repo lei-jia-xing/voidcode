@@ -1,0 +1,92 @@
+{
+  "plugin_id": "session_info",
+  "version": "1.0.0",
+  "sdk_protocol": 1,
+  "schema_version": 1,
+  "entrypoint": "__init__:create_plugin",
+  "files": [
+    {
+      "path": "__init__.py",
+      "sha256": "a4120b0a19712062fdbc8bb1bcc7660f9b5636b63b6349cf1980027fe499296c"
+    },
+    {
+      "path": "panels.py",
+      "sha256": "59a41ed5e4f1f3e3a0da44e2c141142304c1ac23104d033b6c5b113ba859b4fd"
+    }
+  ],
+  "tools": [],
+  "commands": [
+    {
+      "name": "session_status",
+      "description": "Show the current session identity, event counts, usage and budget.",
+      "argument_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "effects": [],
+      "capabilities": [],
+      "busy_gate": false,
+      "client_capabilities": []
+    },
+    {
+      "name": "context",
+      "description": "Show what the model context is made of, with measured and estimated sizes.",
+      "argument_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "effects": [],
+      "capabilities": [],
+      "busy_gate": false,
+      "client_capabilities": []
+    },
+    {
+      "name": "usage",
+      "description": "Show measured token usage, cost and the active budget for this session.",
+      "argument_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "effects": [],
+      "capabilities": [],
+      "busy_gate": false,
+      "client_capabilities": []
+    },
+    {
+      "name": "export",
+      "description": "Export the session transcript as Markdown.",
+      "argument_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "effects": [],
+      "capabilities": [],
+      "busy_gate": false,
+      "client_capabilities": []
+    },
+    {
+      "name": "copy",
+      "description": "List copyable blocks from the last assistant response.",
+      "argument_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "effects": [],
+      "capabilities": [],
+      "busy_gate": false,
+      "client_capabilities": []
+    }
+  ],
+  "providers": [],
+  "capabilities": [],
+  "depends": [],
+  "state_schema_version": 1,
+  "config_schema": {
+    "type": "object"
+  }
+}

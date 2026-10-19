@@ -14,12 +14,22 @@ def serve_kernel(*, workspace: Path, state_dir: Path | None, trusted_plugins: fr
     import uvicorn
 
     from .http import create_kernel_app
+    from .static import frontend_distribution
 
     if host not in {"127.0.0.1", "::1", "localhost"}:
         raise ValueError("kernel transport binds loopback only")
     token = bearer_token or generate_bearer_token()
-    app = create_kernel_app(workspace=workspace, state_dir=state_dir, trusted_plugins=trusted_plugins, bearer_token=token)
+    frontend_dist = frontend_distribution()
+    app = create_kernel_app(
+        workspace=workspace,
+        state_dir=state_dir,
+        trusted_plugins=trusted_plugins,
+        bearer_token=token,
+        frontend_dist=frontend_dist,
+    )
     # The credential travels on this explicit startup channel only: stdout at
     # launch, never in events, errors, or workspace files.
     print(f"kernel bearer token: {token}", flush=True)
+    if frontend_dist is not None:
+        print(f"web client: http://{host}:{port}/", flush=True)
     uvicorn.run(app, host=host, port=port, lifespan="auto", log_level="warning")

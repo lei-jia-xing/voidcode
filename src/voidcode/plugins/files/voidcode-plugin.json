@@ -3,40 +3,493 @@
   "version": "1.0.0",
   "sdk_protocol": 1,
   "schema_version": 1,
-  "entrypoint": "files_plugin:create_plugin",
+  "entrypoint": "__init__:create_plugin",
   "files": [
     {
       "path": "__init__.py",
-      "sha256": "770ec83c5811805f3bcea4530be8f6753812c4678a32f5c20574546e183dcc80"
+      "sha256": "586729aaa5a4562c0663a76765986b586577f67dc25b48d8546972bca58c3768"
     },
     {
-      "path": "files_plugin.py",
-      "sha256": "7cc4ba204d5c9ebe0340e9d11071572b02dc7eebdfbe4d01e2dcce33f564aa26"
+      "path": "apply_patch.py",
+      "sha256": "2e5174b7310f1e71bad93bfa92ea7f73c53433f9561febdc60ad8efb146b82b9"
+    },
+    {
+      "path": "apply_workspace_edit.py",
+      "sha256": "33f1fdfe9d6fcd8c5ec9f200ecb8d421f604a05bfc1c4da6100059c9f452f601"
+    },
+    {
+      "path": "args.py",
+      "sha256": "2cc09c85cda7dfa297f3ba6d21214756b34a80392eed57b69958037561856559"
+    },
+    {
+      "path": "artifacts.py",
+      "sha256": "302187742ef3a2e40c00decd593497c259cef11ee61acc8e105e280c7eca4f44"
+    },
+    {
+      "path": "edit_tool.py",
+      "sha256": "5482a0b755d3fb3bb0f8b6c29a0acc8bca8a4b49d506e26aac48534026d1f542"
+    },
+    {
+      "path": "edits_hooks.py",
+      "sha256": "e422666a5a2fd4a76a1fb97bd3bd4f8aab2e4ebb7e76893761bb556d93df7e0f"
+    },
+    {
+      "path": "gitignore.py",
+      "sha256": "33d9276ce4d6fe8ea96da72f352a82ab9667f49034903785387c03e9fa1f59ca"
+    },
+    {
+      "path": "glob_tool.py",
+      "sha256": "1b7576255e3634bea36567b27780acdcf0d9e9d3b080ce369baa32b198d1c8d5"
+    },
+    {
+      "path": "grep_tool.py",
+      "sha256": "603df3d35d41d6d690e2403b073971bdcff6e2e3fa11b337a31e457278865e24"
+    },
+    {
+      "path": "guards.py",
+      "sha256": "4578b73908b9d265f50ff9d893e2a4ca16f95d81892b08fa29bb1c197f55c098"
+    },
+    {
+      "path": "read_formats.py",
+      "sha256": "f21fe31c452ca78b3b5bbbf39f0db89bc51a1bb85ee59fb694271452495e49ed"
+    },
+    {
+      "path": "read_tool.py",
+      "sha256": "b751016ed68876e1bc3e03c910da6583b315790d596361beea755aa94e3db91f"
+    },
+    {
+      "path": "repair.py",
+      "sha256": "57b45fc25000b184d4c9fe065d27ce4d546abc7c1137843d4b7dd8d3b9305725"
+    },
+    {
+      "path": "write_tool.py",
+      "sha256": "c64334878b125836b2889e32e7b39b229aca7e5c21e8ccd40e64b46c9a8fd828"
     }
   ],
   "tools": [
     {
-      "name": "read",
-      "description": "Read a UTF-8 text file from the current workspace.",
+      "name": "apply_workspace_edit",
+      "description": "Apply validated LSP text edits with document-version checks; runtime approval governs filesystem access.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "positionEncoding": {
+            "type": "string",
+            "enum": [
+              "utf-8",
+              "utf-16",
+              "utf-32"
+            ],
+            "description": "LSP position encoding; defaults to the opened document's negotiated encoding or UTF-16."
+          },
+          "edits": {
+            "type": "array",
+            "minItems": 1,
+            "description": "Text edits with 1-based line/character ranges. Every edit requires expectedHash from read. expectedVersion, when provided, must match the currently opened LSP document.",
+            "items": {
+              "type": "object",
+              "required": [
+                "path",
+                "startLine",
+                "startCharacter",
+                "endLine",
+                "endCharacter",
+                "newText",
+                "expectedHash"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "startLine": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "startCharacter": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "endLine": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "endCharacter": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "newText": {
+                  "type": "string"
+                },
+                "expectedHash": {
+                  "type": "string"
+                },
+                "expectedVersion": {
+                  "type": "integer",
+                  "description": "Optional open-document version from the LSP result; checked against runtime document state."
+                },
+                "version": {
+                  "type": "integer",
+                  "description": "LSP documentChanges version; checked when supplied."
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "edits"
+        ],
+        "additionalProperties": false
+      },
+      "effects": [
+        "write"
+      ],
+      "capabilities": [
+        "workspace.write"
+      ],
+      "path_argument_keys": [
+        "edits[].path"
+      ]
+    },
+    {
+      "name": "edit",
+      "description": "Edit files by replacing text (single replacement or ordered batch) or applying a patch. OldString replacements require exact current file text; advisory near-match suggestions are never applied. When constructing oldString from read output, omit any leading line-number prefix such as '42: ' and pass only the file's actual text.",
       "input_schema": {
         "type": "object",
         "properties": {
           "path": {
             "type": "string",
-            "description": "Path relative to the workspace."
+            "description": "Workspace-relative or absolute path to the file to edit."
           },
-          "offset": {
-            "type": "integer",
-            "minimum": 1,
-            "default": 1,
-            "description": "1-based line offset."
+          "oldString": {
+            "type": "string",
+            "description": "The exact text to replace (single replacement mode)."
+          },
+          "newString": {
+            "type": "string",
+            "description": "The replacement text (single replacement mode)."
+          },
+          "replaceAll": {
+            "type": "boolean",
+            "description": "Replace all occurrences of oldString (default: false)."
+          },
+          "expectedHash": {
+            "type": "string",
+            "description": "Required SHA-256 hash of the target file content from prior read output. Rejects stale edits when the file changed since that read."
+          },
+          "edits": {
+            "type": "array",
+            "minItems": 1,
+            "description": "Ordered replacements; each oldString must match the current file state at that step.",
+            "items": {
+              "type": "object",
+              "required": [
+                "oldString",
+                "newString"
+              ],
+              "properties": {
+                "oldString": {
+                  "type": "string",
+                  "description": "Exact text to replace."
+                },
+                "newString": {
+                  "type": "string",
+                  "description": "Replacement text."
+                },
+                "replaceAll": {
+                  "type": "boolean",
+                  "description": "Replace every match; defaults to false."
+                }
+              }
+            }
+          },
+          "patch": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Patch text using unified diff or marker patch format (*** Begin Patch / *** End Patch)."
+          },
+          "expectedHashes": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Map of relative file paths to their SHA-256 content hashes from prior read output. Required for existing files modified or deleted by the patch."
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "path",
+              "oldString",
+              "newString",
+              "expectedHash"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "edits"
+                  ]
+                },
+                {
+                  "required": [
+                    "patch"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "required": [
+              "path",
+              "edits",
+              "expectedHash"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "oldString"
+                  ]
+                },
+                {
+                  "required": [
+                    "newString"
+                  ]
+                },
+                {
+                  "required": [
+                    "patch"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "required": [
+              "patch"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "path"
+                  ]
+                },
+                {
+                  "required": [
+                    "oldString"
+                  ]
+                },
+                {
+                  "required": [
+                    "newString"
+                  ]
+                },
+                {
+                  "required": [
+                    "edits"
+                  ]
+                }
+              ]
+            }
+          }
+        ],
+        "additionalProperties": false
+      },
+      "effects": [
+        "write"
+      ],
+      "capabilities": [
+        "workspace.write"
+      ],
+      "path_argument_keys": [
+        "path"
+      ]
+    },
+    {
+      "name": "glob",
+      "description": "Find files matching a glob pattern.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "description": "The glob pattern to match files against"
+          },
+          "path": {
+            "type": "string",
+            "description": "Directory to search; relative paths are based at the workspace root."
+          },
+          "include_hidden": {
+            "type": "boolean",
+            "description": "Include hidden files and directories (name starts with '.'); defaults to true to preserve existing behaviour. Set false to skip them."
+          },
+          "respect_gitignore": {
+            "type": "boolean",
+            "description": "Also skip paths matched by the search root's .gitignore; defaults to false. The matcher only reads the root .gitignore (no nested/global excludes)."
           },
           "limit": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 1000,
-            "default": 1000,
-            "description": "Maximum number of lines to read."
+            "maximum": 5000,
+            "description": "Maximum number of files to return; defaults to 100."
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "additionalProperties": false
+      },
+      "effects": [
+        "read"
+      ],
+      "capabilities": [
+        "workspace.read"
+      ],
+      "path_argument_keys": [
+        "path"
+      ],
+      "supports_parallel": true
+    },
+    {
+      "name": "grep",
+      "description": "Search workspace files. Pattern is literal by default; set regex=true to use regular expressions, and ignore_case=true for case-insensitive matching.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "description": "Text to search for; treated literally unless regex=true."
+          },
+          "path": {
+            "type": "string",
+            "description": "File or directory to search, relative to the workspace; defaults to workspace root."
+          },
+          "regex": {
+            "type": "boolean",
+            "description": "Treat pattern as a regular expression; defaults to false."
+          },
+          "ignore_case": {
+            "type": "boolean",
+            "description": "Match case-insensitively; defaults to false."
+          },
+          "context": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of surrounding lines to include for each match."
+          },
+          "include": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional glob filters for files to include."
+          },
+          "exclude": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional glob filters for files to exclude."
+          },
+          "respect_gitignore": {
+            "type": "boolean",
+            "description": "Also skip paths matched by the search root's .gitignore; defaults to false. The matcher only reads the root .gitignore (no nested/global excludes)."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5000,
+            "description": "Maximum matching lines to return; defaults to 200."
+          }
+        },
+        "required": [
+          "pattern",
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "effects": [
+        "read"
+      ],
+      "capabilities": [
+        "workspace.read"
+      ],
+      "path_argument_keys": [
+        "path"
+      ],
+      "supports_parallel": true
+    },
+    {
+      "name": "read",
+      "description": "Read a file inside the current workspace.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Internal URLs: voidcode://tool/<name> reads a tool's guidance and input schema; voidcode://rule/<name> reads a bounded workspace rule catalog entry; voidcode://artifact/<id> reads a bounded slice of the current session's spilled tool-output artifact; voidcode://transcript/<session_id> reads a bounded, payload-stripped transcript of the current session or of a child session it spawned."
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "1-based starting file line, SQLite row, Notebook cell, or PDF text line; Notebook cell offsets use `offset` rather than `cell`."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2000,
+            "description": "Maximum file lines, SQLite rows, Notebook cells, or PDF text lines to return."
+          },
+          "byte_offset": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Zero-based UTF-8 byte offset for continuing a long artifact line; use the returned next_byte_offset."
+          },
+          "byte_limit": {
+            "type": "integer",
+            "minimum": 4,
+            "maximum": 47104,
+            "description": "Maximum UTF-8 bytes in an artifact page; requires byte_offset."
+          },
+          "view": {
+            "type": "string",
+            "enum": [
+              "raw",
+              "sqlite",
+              "notebook",
+              "pdf"
+            ],
+            "description": "Select a read-only derived view; raw returns the original file bytes/text and preserves ordinary file-read semantics."
+          },
+          "table": {
+            "type": "string",
+            "description": "SQLite table to inspect; defaults to the first user table."
+          },
+          "query": {
+            "type": "string",
+            "description": "One read-only SQLite SELECT/WITH query."
+          },
+          "cell": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Zero-based notebook cell index to inspect alone."
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "One-based PDF page to extract."
+          },
+          "output_offset": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "1-based notebook output index within `cell`; requires the zero-based cell selector."
+          },
+          "output_limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "description": "Maximum notebook outputs to return for `cell`; continue with next_output_offset."
           }
         },
         "required": [
@@ -47,10 +500,13 @@
       "effects": [
         "read"
       ],
-      "replay_policy": "safe",
       "capabilities": [
         "workspace.read"
-      ]
+      ],
+      "path_argument_keys": [
+        "path"
+      ],
+      "supports_parallel": true
     },
     {
       "name": "write",
@@ -84,6 +540,9 @@
       "replay_policy": "never",
       "capabilities": [
         "workspace.write"
+      ],
+      "path_argument_keys": [
+        "path"
       ]
     }
   ],

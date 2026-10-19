@@ -1,0 +1,60 @@
+{
+  "plugin_id": "formatter",
+  "version": "1.0.0",
+  "sdk_protocol": 1,
+  "schema_version": 1,
+  "entrypoint": "__init__:create_plugin",
+  "files": [
+    {
+      "path": "__init__.py",
+      "sha256": "caf910739c1bd26fe40774ef23b7a9f8806e6cf53e641b24752a79f068ea039f"
+    },
+    {
+      "path": "formatter_config.py",
+      "sha256": "2ce4d156c147e0df238a5c867c2967e04d319d7d92696b97bdc07b3e835ade51"
+    },
+    {
+      "path": "formatter_executor.py",
+      "sha256": "6adac1655cddf6498d1243c7bfe1ef08b285b6f4ebcde0ae442305d466593be7"
+    },
+    {
+      "path": "formatter_plugin.py",
+      "sha256": "006f1aadd09bda4137afd5fb9b1735c1c79f0bea90bf1284e141e1306a4df952"
+    }
+  ],
+  "tools": [],
+  "commands": [],
+  "hooks": [
+    {
+      "kind": "post_tool",
+      "match": [
+        "write",
+        "edit",
+        "apply_workspace_edit",
+        "apply_patch",
+        "ast_grep"
+      ],
+      "mutating": true
+    }
+  ],
+  "capabilities": [],
+  "providers": [],
+  "depends": [],
+  "state_schema_version": 1,
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean"
+      },
+      "format_on_write": {
+        "type": "boolean"
+      },
+      "languages": {
+        "type": "object"
+      }
+    }
+  },
+  "context": false
+}

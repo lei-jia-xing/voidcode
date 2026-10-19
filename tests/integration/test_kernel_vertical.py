@@ -46,11 +46,14 @@ def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
 
 
 def _configure(workspace: Path, server: OpenAILoopbackServer, **policy: object) -> dict[str, object]:
+    # This file asserts an authentic reasoning replay on the wire, and a provider only replays
+    # its persisted reasoning when its own thinking rule requires it for tool calls — so the
+    # configured provider is `deepseek`, which does (an `endpoint`-style provider would not).
     config = {
         "schema_version": 1,
-        "model": {"model": "loopback/exact-model"},
+        "model": {"model": "deepseek/exact-model"},
         "policy": policy,
-        "providers": {"loopback": {"api_key": "loopback-secret-not-for-storage", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
+        "providers": {"deepseek": {"api_key": "loopback-secret-not-for-storage", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
     return config
@@ -237,19 +240,31 @@ def create_plugin(config):
     (source / "voidcode-plugin.json").write_text(json.dumps(manifest.as_payload()), encoding="utf-8")
 
 
+#: Cold start is not just the kernel: the subprocess admits the whole bundled plugin set and
+#: spawns the plugin host before its first tool call can write a marker, and these tests run
+#: under parallel xdist workers. The old 15 s cutoff failed here while the durable database
+#: proved the process was still making progress, so the wait is generous and the failure
+#: message now carries how long it actually waited.
+_STARTUP_DEADLINE_SECONDS = 60
+
+
 def _await_marker(path: Path, process: subprocess.Popen[str]) -> None:
-    deadline = time.monotonic() + 15
+    started = time.monotonic()
+    deadline = started + _STARTUP_DEADLINE_SECONDS
     while not path.is_file():
         if process.poll() is not None or time.monotonic() >= deadline:
-            stdout, stderr = process.communicate(timeout=5)
-            pytest.fail(f"invocation never reached its side effect: {stdout} {stderr}")
+            elapsed = time.monotonic() - started
+            if process.poll() is None:
+                process.kill()
+            stdout, stderr = process.communicate(timeout=15)
+            pytest.fail(f"invocation never reached its side effect within {elapsed:.1f}s: {stdout} {stderr}")
         time.sleep(0.02)
 
 
 def _await_lease_release(workspace: Path) -> None:
     descriptor = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + _STARTUP_DEADLINE_SECONDS
         while True:
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -295,7 +310,7 @@ def test_interrupted_mutation_is_not_replayed(tmp_path: Path, stop: str) -> None
             if stop == "host":
                 host_pid = int((workspace / "host.pid").read_text(encoding="utf-8").strip())
                 os.kill(host_pid, signal.SIGKILL)
-                stdout, stderr = process.communicate(timeout=15)
+                stdout, stderr = process.communicate(timeout=_STARTUP_DEADLINE_SECONDS)
                 assert process.returncode == 130, stdout + stderr
                 assert json.loads(stdout)["status"] == "interrupted"
             else:
@@ -303,7 +318,9 @@ def test_interrupted_mutation_is_not_replayed(tmp_path: Path, stop: str) -> None
                     process.kill()
                 else:
                     process.send_signal(signal.SIGINT)
-                stdout, stderr = process.communicate(timeout=15)
+                # A signaled run must drain its plugin host and settle; the shared startup
+                # bound covers a loaded machine's slow shutdown.
+                stdout, stderr = process.communicate(timeout=_STARTUP_DEADLINE_SECONDS)
                 assert process.returncode == (-signal.SIGKILL if stop == "kill" else 130), stdout + stderr
                 if stop == "signal":
                     assert json.loads(stdout)["status"] == "interrupted"
@@ -326,7 +343,7 @@ def test_interrupted_mutation_is_not_replayed(tmp_path: Path, stop: str) -> None
         finally:
             if process.poll() is None:
                 process.kill()
-                process.communicate(timeout=15)
+                process.communicate(timeout=_STARTUP_DEADLINE_SECONDS)
 
 
 def test_safe_read_recovery_reuses_the_durable_invocation_identity(tmp_path: Path) -> None:
@@ -349,7 +366,7 @@ def test_safe_read_recovery_reuses_the_durable_invocation_identity(tmp_path: Pat
         try:
             _await_marker(workspace / "read.entered", process)
             process.kill()
-            process.communicate(timeout=15)
+            process.communicate(timeout=_STARTUP_DEADLINE_SECONDS)
             _await_lease_release(workspace)
             (workspace / "input.txt").write_text("fresh recovery observation\n", encoding="utf-8")
             (workspace / "release").touch()
@@ -361,4 +378,4 @@ def test_safe_read_recovery_reuses_the_durable_invocation_identity(tmp_path: Pat
         finally:
             if process.poll() is None:
                 process.kill()
-                process.communicate(timeout=15)
+                process.communicate(timeout=_STARTUP_DEADLINE_SECONDS)

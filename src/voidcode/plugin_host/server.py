@@ -6,6 +6,7 @@ dispatches tool and provider invocations over bounded JSONL.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import importlib
 import importlib.util
@@ -13,14 +14,16 @@ import inspect
 import json
 import os
 import sys
+import tempfile
 import threading
 import time
 import traceback
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, BinaryIO, Literal, cast
+from uuid import uuid4
 
 import jsonschema
 
@@ -28,6 +31,7 @@ from voidcode.sdk.codec import (
     decode_budget,
     decode_context,
     decode_provider_request,
+    decode_session_info,
     decode_session_usage,
     decode_tool_call,
     encode_command_descriptor,
@@ -48,7 +52,10 @@ from voidcode.sdk.hooks import (
     InvocationFinishedFact,
     PluginFact,
     RunFinishedFact,
+    RunLifecycle,
     StopCause,
+    ToolIntent,
+    ToolOutcome,
     UsageFact,
 )
 from voidcode.sdk.invocation import ToolContext
@@ -61,10 +68,84 @@ from voidcode.sdk.manifest import (
 )
 from voidcode.sdk.plugin import Plugin, command_definition, tool_definition
 from voidcode.sdk.provider import ProviderExecutionError, ProviderTokenUsage
-from voidcode.sdk.services import PluginBudget, SessionUsageReport
+from voidcode.sdk.services import (
+    ArtifactPage,
+    ArtifactReference,
+    ChildOutcome,
+    EventView,
+    PluginBudget,
+    ProcessHandle,
+    ProcessOutput,
+    ProcessResult,
+    SessionInfo,
+    SessionUsageReport,
+    ToolInvocationReceipt,
+)
 from voidcode.sdk.tools import ConfirmedStop, TextOutput, ToolFailure
 
+from .processes import ProcessRegistry
+
 MAX_FRAME_SIZE: int = 1024 * 1024  # 1 MiB
+
+#: One artifact spill chunk, sized so its base64 form always fits one frame.
+_ARTIFACT_CHUNK_BYTES: int = 256 * 1024
+
+
+def _decode_event_views(response: Mapping[str, object]) -> tuple[EventView, ...]:
+    raw = response.get("events")
+    if not isinstance(raw, list):
+        raise RuntimeError("host returned malformed event views")
+    views: list[EventView] = []
+    for item in raw:
+        if not isinstance(item, Mapping):
+            raise RuntimeError("host returned a malformed event view")
+        payload = item.get("payload")
+        views.append(
+            EventView(
+                sequence=_required_int(item, "sequence"),
+                event_type=_required_text(item, "event_type"),
+                run_id=_required_text(item, "run_id"),
+                revision_id=_required_text(item, "revision_id"),
+                source=_required_text(item, "source"),
+                actor=_required_text(item, "actor"),
+                payload=payload if isinstance(payload, Mapping) else None,
+                payload_truncated=bool(item.get("payload_truncated", False)),
+            )
+        )
+    return tuple(views)
+
+
+def _decode_process_handle(payload: object) -> ProcessHandle:
+    if not isinstance(payload, Mapping):
+        raise RuntimeError("host returned a malformed process handle")
+    return ProcessHandle(
+        process_id=str(payload.get("process_id", "")),
+        pid=int(payload.get("pid", 0)),
+        start_time=str(payload.get("start_time", "")),
+        stdout_path=str(payload.get("stdout_path", "")),
+        stderr_path=str(payload.get("stderr_path", "")),
+        running=bool(payload.get("running", False)),
+        exit_code=None if payload.get("exit_code") is None else int(str(payload["exit_code"])),
+    )
+
+
+def _background_spool(server: PluginHostServer) -> Path:
+    """Host-owned spool directory for a background process with no caller-chosen logs."""
+    return server.background_spool
+
+
+def _artifact_sha256(reference: ArtifactReference | Mapping[str, object] | str) -> str:
+    """Accept the reference shapes a plugin legitimately holds and extract its digest."""
+    if isinstance(reference, ArtifactReference):
+        return reference.sha256
+    if isinstance(reference, str):
+        return reference
+    if isinstance(reference, Mapping):
+        value = reference.get("sha256")
+        if isinstance(value, str):
+            return value
+    raise ValueError("artifact reference must carry a sha256 digest")
+
 
 ALLOWED_REQUEST_KEYS: frozenset[str] = frozenset({"protocol_version", "id", "method", "params"})
 ALLOWED_METHODS: frozenset[str] = frozenset(
@@ -77,7 +158,11 @@ ALLOWED_METHODS: frozenset[str] = frozenset(
         "invoke_command",
         "render_view",
         "contribute_context",
+        "run_lifecycle",
+        "pre_tool",
+        "post_tool",
         "notify_fact",
+        "stop_background",
         "state_migrate",
         "state_prepare_deactivate",
     }
@@ -180,15 +265,200 @@ class ServerPluginServices:
         self,
         server: PluginHostServer,
         lease_token: str,
+        *,
+        cancel_event: threading.Event | None = None,
     ) -> None:
         self._server = server
         self._lease_token = lease_token
+        self._cancel_event = cancel_event
+        self._stance: Mapping[str, Any] | None = None
+
+    def _lease_stance(self) -> Mapping[str, Any]:
+        """The kernel's stance for this lease; fetched once per invocation."""
+        if self._stance is None:
+            self._stance = self._server._send_reverse_rpc("lease_stance", {"lease_token": self._lease_token})
+        return self._stance
+
+    def run_process(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path | str | None = None,
+        env: Mapping[str, str] | None = None,
+        stdin: bytes | str | None = None,
+        timeout_seconds: float | None = None,
+        max_output_bytes: int = 262144,
+        on_output: Callable[[str, bytes], None] | None = None,
+    ) -> ProcessResult:
+        stance = self._lease_stance()
+        if stance.get("hook") or stance.get("readonly"):
+            raise PermissionError("this lease may not run processes: read-only and hook leases do not touch the machine")
+        workspace = self._server.workspace
+        resolved_cwd = workspace if cwd is None else Path(cwd)
+        if cwd is not None and not resolved_cwd.is_dir():
+            raise ValueError(f"run_process cwd is not a directory: {resolved_cwd}")
+        return self._server.processes.run(
+            argv,
+            cwd=resolved_cwd,
+            env=env,
+            stdin=stdin,
+            timeout_seconds=timeout_seconds,
+            max_output_bytes=max_output_bytes,
+            cancel_event=self._cancel_event,
+            on_output=on_output,
+        )
+
+    def spill_artifact(
+        self,
+        data: bytes | str,
+        *,
+        media_type: str = "text/plain; charset=utf-8",
+    ) -> ArtifactReference:
+        payload = data.encode("utf-8") if isinstance(data, str) else bytes(data)
+        media_type = str(media_type)
+        if not media_type:
+            raise ValueError("spill_artifact media_type must not be empty")
+        spill_id: str | None = None
+        total = 0
+        # One chunk per RPC keeps every frame well inside the protocol's bound.
+        for start in range(0, max(len(payload), 1), _ARTIFACT_CHUNK_BYTES):
+            chunk = payload[start : start + _ARTIFACT_CHUNK_BYTES]
+            final = start + len(chunk) >= len(payload)
+            resp = self._server._send_reverse_rpc(
+                "artifact_spill",
+                {
+                    "lease_token": self._lease_token,
+                    "spill_id": spill_id,
+                    "media_type": media_type,
+                    "data": base64.b64encode(chunk).decode("ascii"),
+                    "final": final,
+                },
+                timeout=60.0,
+            )
+            if final:
+                return ArtifactReference(
+                    sha256=str(resp.get("sha256", "")),
+                    bytes=int(resp.get("bytes", total)),
+                    media_type=str(resp.get("media_type", media_type)),
+                )
+            spill_id = str(resp.get("spill_id", ""))
+            total = int(resp.get("bytes", 0))
+        raise RuntimeError("artifact spill produced no chunks")
+
+    def read_artifact(
+        self,
+        reference: ArtifactReference | Mapping[str, object] | str,
+        *,
+        offset: int = 0,
+        limit: int = 65536,
+    ) -> ArtifactPage:
+        resp = self._server._send_reverse_rpc(
+            "artifact_read",
+            {
+                "lease_token": self._lease_token,
+                "sha256": _artifact_sha256(reference),
+                "offset": int(offset),
+                "limit": int(limit),
+            },
+            timeout=60.0,
+        )
+        try:
+            decoded = base64.b64decode(str(resp.get("data", "")), validate=True)
+        except Exception as exc:  # pragma: no cover - malformed host payload
+            raise RuntimeError(f"host returned an unreadable artifact page: {exc}") from exc
+        return ArtifactPage(
+            sha256=str(resp.get("sha256", "")),
+            offset=int(resp.get("offset", offset)),
+            total_bytes=int(resp.get("total_bytes", 0)),
+            data=decoded,
+            eof=bool(resp.get("eof", False)),
+            media_type=str(resp.get("media_type", "")),
+        )
+
+    def spawn_process(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path | str | None = None,
+        env: Mapping[str, str] | None = None,
+        stdin: bool = False,
+        stdout_path: Path | str | None = None,
+        stderr_path: Path | str | None = None,
+        process_id: str | None = None,
+    ) -> ProcessHandle:
+        self._require_writable_stance("run background processes")
+        identifier = process_id or f"proc-{uuid4().hex[:16]}"
+        spool = self._server.background_spool
+        resolved_cwd = self._server.workspace if cwd is None else Path(cwd)
+        if cwd is not None and not resolved_cwd.is_dir():
+            raise ValueError(f"spawn_process cwd is not a directory: {resolved_cwd}")
+        return self._server.processes.spawn(
+            argv,
+            session_id=str(self._lease_stance().get("session_id", "")),
+            cwd=resolved_cwd,
+            env=env,
+            stdin=bool(stdin),
+            stdout_path=Path(stdout_path) if stdout_path is not None else spool / f"{identifier}.stdout.log",
+            stderr_path=Path(stderr_path) if stderr_path is not None else spool / f"{identifier}.stderr.log",
+            process_id=identifier,
+        )
+
+    def write_process(self, process_id: str, data: bytes | str) -> int:
+        self._require_writable_stance("write to background processes")
+        payload = data.encode("utf-8") if isinstance(data, str) else bytes(data)
+        return self._server.processes.write(str(process_id), payload, session_id=self._session_id())
+
+    def read_process_output(
+        self,
+        process_id: str,
+        *,
+        stream: Literal["stdout", "stderr"] = "stdout",
+        offset: int = 0,
+        limit: int = 65536,
+    ) -> ProcessOutput:
+        data, total, eof, running = self._server.processes.read_output(
+            str(process_id),
+            stream=stream,
+            offset=int(offset),
+            limit=int(limit),
+            session_id=self._session_id(),
+        )
+        return ProcessOutput(
+            process_id=str(process_id),
+            stream=stream,
+            offset=int(offset),
+            total_bytes=total,
+            data=data,
+            eof=eof,
+            running=running,
+        )
+
+    def cancel_process(self, process_id: str, reason: str = "owner cancellation") -> bool:
+        self._require_writable_stance("stop background processes")
+        del reason  # the stop is by process group; a reason would only be a log line we do not own
+        return self._server.processes.cancel(str(process_id), session_id=self._session_id())
+
+    def list_processes(self) -> tuple[ProcessHandle, ...]:
+        return self._server.processes.list_background(session_id=self._session_id())
+
+    def _session_id(self) -> str:
+        return str(self._lease_stance().get("session_id", ""))
+
+    def _require_writable_stance(self, action: str) -> None:
+        """Starting or stopping a process is machine work: a restrictive lease may not do it."""
+        stance = self._lease_stance()
+        if stance.get("hook") or stance.get("readonly"):
+            raise PermissionError(f"this lease may not {action}: read-only and hook leases do not touch the machine")
 
     def get_state(self, scope: Literal["session", "workspace"] = "session") -> tuple[Mapping[str, object] | None, int]:
         resp = self._server._send_reverse_rpc("state_get", {"lease_token": self._lease_token, "scope": scope})
         state = resp.get("state")
         version = int(resp.get("version", 0))
         return (own_json_object(state) if isinstance(state, Mapping) else None, version)
+
+    def get_state_schema_version(self, scope: Literal["session", "workspace"] = "session") -> int:
+        resp = self._server._send_reverse_rpc("state_schema_version", {"lease_token": self._lease_token, "scope": scope})
+        return int(resp.get("schema_version", 0))
 
     def replace_state(
         self,
@@ -207,6 +477,185 @@ class ServerPluginServices:
         )
         return int(resp.get("version", expected_version + 1))
 
+    def spawn_child(
+        self,
+        prompt: str,
+        *,
+        label: str = "",
+        tool_allowlist: tuple[str, ...] | None = None,
+        max_steps: int = 32,
+        readonly: bool = False,
+    ) -> str:
+        resp = self._server._send_reverse_rpc(
+            "child_spawn",
+            {
+                "lease_token": self._lease_token,
+                "prompt": prompt,
+                "label": label,
+                "max_steps": max_steps,
+                "tool_allowlist": list(tool_allowlist) if tool_allowlist is not None else None,
+                "readonly": readonly,
+            },
+        )
+        return str(resp.get("child_session_id", ""))
+
+    def join_child(self, child_session_id: str, *, timeout_seconds: float = 300.0) -> ChildOutcome:
+        resp = self._server._send_reverse_rpc(
+            "child_join",
+            {"lease_token": self._lease_token, "child_session_id": child_session_id, "timeout_seconds": timeout_seconds},
+            timeout=timeout_seconds + 30.0,
+        )
+        payload = resp.get("outcome")
+        if not isinstance(payload, Mapping):
+            raise RuntimeError("host returned a malformed child outcome")
+        status = str(payload.get("status", "failed"))
+        if status not in ("completed", "failed", "interrupted", "cancelled", "running", "waiting"):
+            raise RuntimeError(f"host returned an unknown child status: {status!r}")
+        return ChildOutcome(
+            child_session_id=str(payload.get("child_session_id", child_session_id)),
+            status=status,
+            output=None if payload.get("output") is None else str(payload["output"]),
+            error=None if payload.get("error") is None else str(payload["error"]),
+            stop_cause=None if payload.get("stop_cause") is None else str(payload["stop_cause"]),
+        )
+
+    def project_window(
+        self,
+        *,
+        covered_from_sequence: int,
+        covered_to_sequence: int,
+        replacement: str,
+    ) -> None:
+        self._server._send_reverse_rpc(
+            "window_project",
+            {
+                "lease_token": self._lease_token,
+                "covered_from_sequence": covered_from_sequence,
+                "covered_to_sequence": covered_to_sequence,
+                "replacement": replacement,
+            },
+        )
+
+    def window_projection(self) -> Mapping[str, object] | None:
+        resp = self._server._send_reverse_rpc("window_projection_get", {"lease_token": self._lease_token})
+        projection = resp.get("projection")
+        return projection if isinstance(projection, Mapping) else None
+
+    def clear_window_projection(self) -> bool:
+        resp = self._server._send_reverse_rpc("window_projection_clear", {"lease_token": self._lease_token})
+        return bool(resp.get("cleared", False))
+
+    def set_overlay(self, tier: Literal["read-only"] = "read-only") -> None:
+        self._server._send_reverse_rpc("overlay_set", {"lease_token": self._lease_token, "tier": tier})
+
+    def clear_overlay(self) -> bool:
+        resp = self._server._send_reverse_rpc("overlay_clear", {"lease_token": self._lease_token})
+        return bool(resp.get("cleared", False))
+
+    def schedule_wakeup(
+        self,
+        payload: Mapping[str, object],
+        *,
+        due_at_ms: int,
+        idempotency_key: str | None = None,
+        role: Literal["system", "user"] = "system",
+    ) -> str:
+        resp = self._server._send_reverse_rpc(
+            "wakeup_schedule",
+            {
+                "lease_token": self._lease_token,
+                "payload": json_wire_object(payload),
+                "due_at_ms": due_at_ms,
+                "idempotency_key": idempotency_key,
+                "role": role,
+            },
+        )
+        return str(resp.get("wakeup_id", ""))
+
+    def cancel_wakeup(self, wakeup_id: str) -> bool:
+        resp = self._server._send_reverse_rpc(
+            "wakeup_cancel",
+            {"lease_token": self._lease_token, "wakeup_id": wakeup_id},
+        )
+        return bool(resp.get("cancelled", False))
+
+    def read_events(
+        self,
+        *,
+        after_sequence: int = 0,
+        limit: int = 100,
+        include_payload: bool = True,
+    ) -> tuple[EventView, ...]:
+        resp = self._server._send_reverse_rpc(
+            "events_read",
+            {"lease_token": self._lease_token, "after_sequence": after_sequence, "limit": limit, "include_payload": include_payload},
+        )
+        return _decode_event_views(resp)
+
+    def session_info(self) -> SessionInfo:
+        response = self._server._send_reverse_rpc("session_info", {"lease_token": self._lease_token})
+        payload = response.get("session")
+        if not isinstance(payload, Mapping):
+            raise RuntimeError("host returned malformed session information")
+        return decode_session_info(payload)
+
+    def read_child_events(
+        self,
+        child_session_id: str,
+        *,
+        after_sequence: int = 0,
+        limit: int = 100,
+        include_payload: bool = True,
+    ) -> tuple[EventView, ...]:
+        response = self._server._send_reverse_rpc(
+            "child_events_read",
+            {
+                "lease_token": self._lease_token,
+                "child_session_id": child_session_id,
+                "after_sequence": after_sequence,
+                "limit": limit,
+                "include_payload": include_payload,
+            },
+        )
+        return _decode_event_views(response)
+
+    def invoke_tool(
+        self,
+        name: str,
+        arguments: Mapping[str, object] | None = None,
+        *,
+        expected_revision: str,
+    ) -> ToolInvocationReceipt:
+        response = self._server._send_reverse_rpc(
+            "invoke_tool",
+            {
+                "lease_token": self._lease_token,
+                "name": name,
+                "arguments": json_wire_object(arguments if arguments is not None else {}),
+                "expected_revision": expected_revision,
+            },
+        )
+        return ToolInvocationReceipt(
+            request_id=_required_text(response, "request_id"),
+            tool_name=_required_text(response, "tool_name"),
+            depth=_required_int(response, "depth"),
+        )
+
+    def model_query(self, prompt: str, *, model: str | None = None, max_output_tokens: int | None = None) -> str:
+        resp = self._server._send_reverse_rpc(
+            "model_query",
+            {"lease_token": self._lease_token, "prompt": prompt, "model": model, "max_output_tokens": max_output_tokens},
+            timeout=180.0,
+        )
+        return str(resp.get("output", ""))
+
+    def cancel_child(self, child_session_id: str, reason: str = "owner cancellation") -> bool:
+        resp = self._server._send_reverse_rpc(
+            "child_cancel",
+            {"lease_token": self._lease_token, "child_session_id": child_session_id, "reason": reason},
+        )
+        return bool(resp.get("cancelled", False))
+
     def stage_event(self, event_type: str, payload: Mapping[str, object]) -> None:
         self._server._send_reverse_rpc(
             "event_stage",
@@ -217,10 +666,17 @@ class ServerPluginServices:
             },
         )
 
-    def enqueue_continuation(self, payload: Mapping[str, object], *, idempotency_key: str | None = None) -> str:
+    def enqueue_continuation(
+        self,
+        payload: Mapping[str, object],
+        *,
+        idempotency_key: str | None = None,
+        role: Literal["system", "user"] = "system",
+    ) -> str:
         resp = self._server._send_reverse_rpc(
             "continuation_enqueue",
             {
+                "role": role,
                 "lease_token": self._lease_token,
                 "payload": json_wire_object(payload),
                 "idempotency_key": idempotency_key,
@@ -297,12 +753,44 @@ class PluginHostServer:
         self._commands: dict[str, tuple[Any, PluginCommandDeclaration, str]] = {}
         self._views: dict[str, tuple[Any, str]] = {}
         self._context_callbacks: dict[str, Callable[[ToolContext, ServerPluginServices], ContextContribution | None]] = {}
+        self._post_tool_hooks: list[tuple[Callable[[object, ToolContext, ServerPluginServices], str | None], tuple[str, ...], bool, str]] = []
+        self._pre_tool_hooks: list[tuple[Callable[[object, ToolContext, ServerPluginServices], str | None], tuple[str, ...], bool, str]] = []
+        self._lifecycle_hooks: dict[str, tuple[Callable[[object, ToolContext, ServerPluginServices], str | None], str]] = {}
         self._observers: list[tuple[Callable[[PluginFact, ToolContext, ServerPluginServices], None], tuple[str, ...], str]] = []
         self._state_migrators: dict[str, Callable[[Mapping[str, Any], int, int], Mapping[str, Any]]] = {}
         self._state_deactivators: dict[str, Callable[[Mapping[str, Any], str, str, int | None], Mapping[str, Any]]] = {}
         self._pending_rpc: dict[str, Future[dict[str, Any]]] = {}
         self._rpc_counter: int = 0
         self._rpc_lock = threading.Lock()
+        #: Every child process this host started for a lease; reaped on shutdown.
+        self.processes = ProcessRegistry()
+        #: Where a background process spools its output when the caller names no log path.
+        self.background_spool = Path(tempfile.mkdtemp(prefix="voidcode-process-"))
+
+    @property
+    def workspace(self) -> Path:
+        """The workspace this host generation was initialized for."""
+        if self._workspace is None:
+            raise RuntimeError("plugin host has no workspace yet")
+        return self._workspace
+
+    def _send_progress(self, lease_token: str, payload: Mapping[str, object]) -> None:
+        """Use the existing reverse-RPC writer without making a reporting tool wait for an ack."""
+        try:
+            with self._rpc_lock:
+                self._rpc_counter += 1
+                rpc_id = f"progress-{self._rpc_counter}"
+            self._send_response(
+                {
+                    "protocol_version": 1,
+                    "id": rpc_id,
+                    "method": "progress_notify",
+                    "params": {"lease_token": lease_token, "payload": json_wire_object(payload)},
+                }
+            )
+        except Exception:
+            # Progress is observational; loss of a report must not replace the tool's result.
+            return
 
     def _send_reverse_rpc(self, method: str, params: dict[str, Any], timeout: float = 30.0) -> dict[str, Any]:
         with self._rpc_lock:
@@ -565,6 +1053,12 @@ class PluginHostServer:
                 )
                 return True
             self._handle_render_view(req_id, params)
+        elif method == "run_lifecycle":
+            self._handle_run_lifecycle(req_id, params)
+        elif method == "pre_tool":
+            self._handle_pre_tool(req_id, params)
+        elif method == "post_tool":
+            self._handle_post_tool(req_id, params)
         elif method == "contribute_context":
             if set(params.keys()) not in (
                 {"session_id", "logical_turn", "lease_token", "run_id", "invocation_id"},
@@ -583,6 +1077,18 @@ class PluginHostServer:
                 )
                 return True
             self._handle_contribute_context(req_id, params)
+        elif method == "stop_background":
+            if set(params.keys()) != set():
+                self._send_response(
+                    {
+                        "protocol_version": 1,
+                        "id": req_id,
+                        "ok": False,
+                        "error": {"kind": "invalid_params", "message": "stop_background params must be empty"},
+                    }
+                )
+                return True
+            self._handle_stop_background(req_id)
         elif method == "notify_fact":
             if set(params.keys()) not in (
                 {"fact_type", "fact", "logical_turn", "lease_token", "invocation_id"},
@@ -856,6 +1362,28 @@ class PluginHostServer:
                 if plugin_instance.observer is not None:
                     _check_arity(plugin_instance.observer, 3, f"Plugin {manifest.plugin_id} observer callback")
                     self._observers.append((plugin_instance.observer, manifest.observed_facts, manifest.plugin_id))
+                post_tool_decls = [decl for decl in manifest.hooks if decl.kind == "post_tool"]
+                if bool(post_tool_decls) != (plugin_instance.post_tool is not None):
+                    raise ValueError(f"Plugin {manifest.plugin_id} must declare a post_tool hook exactly when it provides the callback")
+                if plugin_instance.post_tool is not None:
+                    _check_arity(plugin_instance.post_tool, 3, f"Plugin {manifest.plugin_id} post_tool callback")
+                    for decl in post_tool_decls:
+                        self._post_tool_hooks.append((plugin_instance.post_tool, decl.match, decl.mutating, manifest.plugin_id))
+                for kind, attribute in (("session_start", "session_start"), ("session_end", "session_end")):
+                    declares = any(decl.kind == kind for decl in manifest.hooks)
+                    callback = getattr(plugin_instance, attribute)
+                    if declares != (callback is not None):
+                        raise ValueError(f"Plugin {manifest.plugin_id} must declare a {kind} hook exactly when it provides the callback")
+                    if callback is not None:
+                        _check_arity(callback, 3, f"Plugin {manifest.plugin_id} {kind} callback")
+                        self._lifecycle_hooks[f"{manifest.plugin_id}\0{kind}"] = (callback, manifest.plugin_id)
+                pre_tool_decls = [decl for decl in manifest.hooks if decl.kind == "pre_tool"]
+                if bool(pre_tool_decls) != (plugin_instance.pre_tool is not None):
+                    raise ValueError(f"Plugin {manifest.plugin_id} must declare a pre_tool hook exactly when it provides the callback")
+                if plugin_instance.pre_tool is not None:
+                    _check_arity(plugin_instance.pre_tool, 3, f"Plugin {manifest.plugin_id} pre_tool callback")
+                    for decl in pre_tool_decls:
+                        self._pre_tool_hooks.append((plugin_instance.pre_tool, decl.match, decl.mutating, manifest.plugin_id))
                 if plugin_instance.migrate_state is not None:
                     _check_arity(plugin_instance.migrate_state, 3, f"Plugin {manifest.plugin_id} migrate_state callback")
                     self._state_migrators[manifest.plugin_id] = plugin_instance.migrate_state
@@ -889,6 +1417,8 @@ class PluginHostServer:
                         capabilities=decl.capabilities,
                         busy_gate=decl.busy_gate,
                         client_capabilities=decl.client_capabilities,
+                        direct_user=decl.direct_user,
+                        client_syntax=decl.client_syntax,
                     )
                 )
                 for _, decl, plugin_id in self._commands.values()
@@ -910,6 +1440,13 @@ class PluginHostServer:
                         "tool_owners": owners,
                         "tool_capabilities": capabilities,
                         "context_owners": list(self._context_callbacks.keys()),
+                        "post_tool_hooks": [
+                            {"owner": pid, "match": list(match), "mutating": mutating} for _, match, mutating, pid in self._post_tool_hooks
+                        ],
+                        "pre_tool_hooks": [
+                            {"owner": pid, "match": list(match), "mutating": mutating} for _, match, mutating, pid in self._pre_tool_hooks
+                        ],
+                        "lifecycle_hooks": sorted(f"{pid}\0{kind}" for pid, kind in (key.split("\0") for key in self._lifecycle_hooks)),
                         "observer_owners": {
                             fact_type: [pid for _, obs_facts, pid in self._observers if fact_type in obs_facts]
                             for fact_type in ("usage", "invocation_finished", "run_finished")
@@ -985,6 +1522,18 @@ class PluginHostServer:
             }
         )
         self._shutdown_event.set()
+
+    def _handle_stop_background(self, req_id: str) -> None:
+        """The owner is shutting down: supervised processes end with it, by group."""
+        self.processes.stop_background()
+        self._send_response(
+            {
+                "protocol_version": 1,
+                "id": req_id,
+                "ok": True,
+                "result": {"stopped": True},
+            }
+        )
 
     def _handle_invoke(self, req_id: str, params: dict[str, Any]) -> None:
         cancel_event = threading.Event()
@@ -1106,10 +1655,14 @@ class PluginHostServer:
                 # Swap in the live abort signal without dropping any captured
                 # field (logical_turn, capabilities, and future additions).
                 abort_signal = HostAbortSignal(cancel_event)
-                inv_context = replace(context, abort_signal=abort_signal)
 
                 lease_token = str(params.get("lease_token", ""))
-                services = ServerPluginServices(server=self, lease_token=lease_token)
+                inv_context = replace(
+                    context,
+                    abort_signal=abort_signal,
+                    emit_tool_progress=lambda payload: self._send_progress(lease_token, payload),
+                )
+                services = ServerPluginServices(server=self, lease_token=lease_token, cancel_event=cancel_event)
                 tool_threw = False
                 try:
                     result = tool_instance.invoke(call, context=inv_context, services=services)
@@ -1506,6 +2059,143 @@ class PluginHostServer:
 
         self._executor.submit(worker)
 
+    def _handle_run_lifecycle(self, req_id: str, params: dict[str, Any]) -> None:
+        def worker() -> None:
+            try:
+                owner = _required_text(params, "owner")
+                kind = _required_text(params, "kind")
+                lease_token = _required_text(params, "lease_token")
+                if self._workspace is None or self._revision_id is None:
+                    raise RuntimeError("Plugin host is not initialized")
+                entry = self._lifecycle_hooks.get(f"{owner}\0{kind}")
+                if entry is None:
+                    self._send_response({"protocol_version": 1, "id": req_id, "ok": True, "result": {"note": None}})
+                    return
+                callback, _pid = entry
+                lifecycle = RunLifecycle(
+                    phase="start" if kind == "session_start" else "end",
+                    session_id=_required_text(params, "session_id"),
+                    run_id=_required_text(params, "run_id"),
+                    logical_turn=_optional_text(params, "logical_turn"),
+                    status=cast("Literal['completed', 'failed', 'interrupted', '']", _optional_text(params, "status")),
+                    error=(params.get("error") if isinstance(params.get("error"), str) and params.get("error") else None),
+                )
+                context = ToolContext(
+                    workspace=self._workspace,
+                    session_id=lifecycle.session_id,
+                    run_id=lifecycle.run_id,
+                    invocation_id=_required_text(params, "invocation_id"),
+                    revision_id=self._revision_id,
+                    actor="plugin",
+                    logical_turn=lifecycle.logical_turn,
+                )
+                services = ServerPluginServices(server=self, lease_token=lease_token)
+                note = callback(lifecycle, context, services)
+                if note is not None and not isinstance(note, str):
+                    raise ValueError(f"{kind} hook of {owner} must return str or None")
+                self._send_response({"protocol_version": 1, "id": req_id, "ok": True, "result": {"note": note}})
+            except Exception as exc:
+                self._send_response(
+                    {
+                        "protocol_version": 1,
+                        "id": req_id,
+                        "ok": False,
+                        "error": {"kind": "hook_failed", "message": f"Lifecycle hook failed: {type(exc).__name__}: {exc}"},
+                    }
+                )
+
+        self._executor.submit(worker)
+
+    def _handle_pre_tool(self, req_id: str, params: dict[str, Any]) -> None:
+        def worker() -> None:
+            try:
+                owner = _required_text(params, "owner")
+                lease_token = _required_text(params, "lease_token")
+                if self._workspace is None or self._revision_id is None:
+                    raise RuntimeError("Plugin host is not initialized")
+                intent = ToolIntent(
+                    tool_name=_required_text(params, "tool_name"),
+                    tool_call_id=_optional_text(params, "tool_call_id") or None,
+                    arguments=json_wire_object(params.get("arguments") or {}),
+                )
+                context = ToolContext(
+                    workspace=self._workspace,
+                    session_id=_required_text(params, "session_id"),
+                    run_id=_optional_text(params, "run_id"),
+                    invocation_id=_required_text(params, "invocation_id"),
+                    revision_id=self._revision_id,
+                    actor="plugin",
+                    logical_turn=_optional_text(params, "logical_turn"),
+                )
+                services = ServerPluginServices(server=self, lease_token=lease_token)
+                for callback, _, _, plugin_id in self._pre_tool_hooks:
+                    if plugin_id != owner:
+                        continue
+                    reason = callback(intent, context, services)
+                    if reason is not None:
+                        if not isinstance(reason, str) or not reason.strip():
+                            raise ValueError(f"pre_tool gate of {plugin_id} must return a non-empty reason or None")
+                        self._send_response({"protocol_version": 1, "id": req_id, "ok": True, "result": {"reason": reason}})
+                        return
+                self._send_response({"protocol_version": 1, "id": req_id, "ok": True, "result": {"reason": None}})
+            except Exception as exc:
+                self._send_response(
+                    {
+                        "protocol_version": 1,
+                        "id": req_id,
+                        "ok": False,
+                        "error": {"kind": "hook_failed", "message": f"Gate failed: {type(exc).__name__}: {exc}"},
+                    }
+                )
+
+        self._executor.submit(worker)
+
+    def _handle_post_tool(self, req_id: str, params: dict[str, Any]) -> None:
+        def worker() -> None:
+            try:
+                owner = _required_text(params, "owner")
+                lease_token = _required_text(params, "lease_token")
+                if self._workspace is None or self._revision_id is None:
+                    raise RuntimeError("Plugin host is not initialized")
+                outcome = ToolOutcome(
+                    tool_name=_required_text(params, "tool_name"),
+                    tool_call_id=_optional_text(params, "tool_call_id") or None,
+                    status=cast("Literal['ok', 'error', 'cancelled']", _required_text(params, "status")),
+                    text=_optional_text(params, "text"),
+                    arguments=json_wire_object(params.get("arguments") or {}),
+                )
+                context = ToolContext(
+                    workspace=self._workspace,
+                    session_id=_required_text(params, "session_id"),
+                    run_id=_optional_text(params, "run_id"),
+                    invocation_id=_required_text(params, "invocation_id"),
+                    revision_id=self._revision_id,
+                    actor="plugin",
+                    logical_turn=_optional_text(params, "logical_turn"),
+                )
+                services = ServerPluginServices(server=self, lease_token=lease_token)
+                note: str | None = None
+                for callback, _, _, plugin_id in self._post_tool_hooks:
+                    if plugin_id != owner:
+                        continue
+                    returned = callback(outcome, context, services)
+                    if returned is not None:
+                        if not isinstance(returned, str):
+                            raise ValueError(f"post_tool hook of {plugin_id} must return str or None")
+                        note = returned
+                self._send_response({"protocol_version": 1, "id": req_id, "ok": True, "result": {"note": note}})
+            except Exception as exc:
+                self._send_response(
+                    {
+                        "protocol_version": 1,
+                        "id": req_id,
+                        "ok": False,
+                        "error": {"kind": "hook_failed", "message": f"Hook failed: {type(exc).__name__}: {exc}"},
+                    }
+                )
+
+        self._executor.submit(worker)
+
     def _handle_contribute_context(self, req_id: str, params: dict[str, Any]) -> None:
         def worker() -> None:
             try:
@@ -1537,7 +2227,7 @@ class PluginHostServer:
                     try:
                         c = cb(context, services)
                         if isinstance(c, ContextContribution):
-                            contributions.append({"type": "text", "content": c.content, "owner": plugin_id})
+                            contributions.append({"type": "text", "content": c.content, "owner": plugin_id, "role": c.role})
                     except Exception as exc:
                         self._send_response(
                             {
@@ -1630,6 +2320,8 @@ class PluginHostServer:
                         tool_call_id=fact_data.get("tool_call_id"),
                         status=fact_data["status"],
                         error=fact_data.get("error"),
+                        owner=_optional_text(fact_data, "owner"),
+                        effects=tuple(str(item) for item in fact_data.get("effects", ())),
                     )
                 elif fact_type == "run_finished":
                     stop_cause_payload = fact_data.get("stop_cause")
@@ -1806,18 +2498,21 @@ class PluginHostServer:
         for ev in events:
             ev.set()
 
-        # 2. Call plugin.close() with bounded timeout per plugin
+        # 2. Every child process this host started dies with the generation that started it.
+        self.processes.reap_all()
+
+        # 3. Call plugin.close() with bounded timeout per plugin
         for plugin in self._plugins:
             if plugin.close is not None and callable(plugin.close):
                 th = threading.Thread(target=plugin.close, daemon=True)
                 th.start()
                 th.join(timeout=0.5)
 
-        # 3. Give running workers brief cooperative grace
+        # 4. Give running workers brief cooperative grace
         self._executor.shutdown(wait=False, cancel_futures=True)
         time.sleep(0.2)
 
-        # 4. If standalone server process, exit hard so stubborn callbacks cannot hang process
+        # 5. If standalone server process, exit hard so stubborn callbacks cannot hang process
         if self._standalone:
             os._exit(0)
 

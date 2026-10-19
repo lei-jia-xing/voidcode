@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -12,7 +13,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -38,12 +39,14 @@ from voidcode.sdk.services import PluginBudget, SessionUsageReport
 from voidcode.sdk.tools import ToolCall, ToolDefinition, ToolEffect, ToolResult, is_read_tier
 from voidcode.sdk.views import PluginViewDescriptor
 
+from .artifacts import SHA256_PATTERN, ArtifactStore, normalize_media_type
 from .storage.store import (
     EventDraft,
     SqliteStore,
     StagedCancellation,
     StagedContinuationDraft,
     StagedStateUpdate,
+    canonical_json,
 )
 
 __all__ = [
@@ -99,6 +102,11 @@ class LeaseContext:
     invocation_id: str
     grants: frozenset[str]
     readonly: bool
+    #: Authentic actor of the invocation that created this lease ("model", "user", "plugin").
+    actor: str = "model"
+    #: Hook leases are observers of a settled invocation: they can never start nested work.
+    hook: bool = False
+    invocation_depth: int = 0
     staged_state: dict[tuple[str, str], tuple[Mapping[str, object], int, int]] = field(default_factory=dict)
     staged_events: list[EventDraft] = field(default_factory=list)
     staged_continuations: list[StagedContinuationDraft] = field(default_factory=list)
@@ -128,6 +136,27 @@ class CallbackChanges:
     errors: tuple[dict[str, str], ...] = ()
 
 
+#: One spill chunk must fit one 1 MiB RPC frame even after base64 encoding.
+_ARTIFACT_CHUNK_BYTES = 256 * 1024
+
+
+def _require_sha256(value: object) -> str:
+    """One content address, validated before it can ever become a path."""
+    if not isinstance(value, str) or not SHA256_PATTERN.match(value):
+        raise ValueError("artifact reference must be a lowercase sha256 digest")
+    return value
+
+
+def _decode_artifact_bytes(value: object) -> bytes:
+    """Decode one base64 spill chunk, refusing anything larger than a frame can carry."""
+    if not isinstance(value, str):
+        raise ValueError("spill data must be a base64 string")
+    data = base64.b64decode(value, validate=True)
+    if len(data) > _ARTIFACT_CHUNK_BYTES:
+        raise ValueError(f"spill chunk exceeds {_ARTIFACT_CHUNK_BYTES} bytes")
+    return data
+
+
 def _required_fact_field(fact: Mapping[str, object], field_name: str) -> str:
     """Read one required observer-fact identity field, failing visibly when absent."""
     value = fact.get(field_name)
@@ -148,6 +177,12 @@ class HostClient:
         store: SqliteStore | None = None,
         usage_callback: Callable[[str, int, int | None], SessionUsageReport] | None = None,
         budget_callback: Callable[[str, str], PluginBudget | None] | None = None,
+        spawn_child_callback: Callable[[str, str, str, int, tuple[str, ...] | None, bool], str] | None = None,
+        join_child_callback: Callable[[str, str, float], Mapping[str, object]] | None = None,
+        cancel_child_callback: Callable[[str, str, str], bool] | None = None,
+        model_query_callback: Callable[[str, str, str | None, int | None], str] | None = None,
+        progress_callback: Callable[[LeaseContext, Mapping[str, object]], None] | None = None,
+        artifacts_dir: Path | None = None,
         lease_fd: int | None = None,
     ) -> None:
         self.workspace = Path(workspace).resolve()
@@ -160,9 +195,18 @@ class HostClient:
         self._store = store
         self._usage_callback = usage_callback
         self._budget_callback = budget_callback
+        self._spawn_child_callback = spawn_child_callback
+        self._join_child_callback = join_child_callback
+        self._cancel_child_callback = cancel_child_callback
+        self._model_query_callback = model_query_callback
+        self._progress_callback = progress_callback
+        self._artifacts = None if artifacts_dir is None else ArtifactStore(artifacts_dir)
 
         self._context_owners: tuple[str, ...] = ()
         self._observer_owners: dict[str, tuple[str, ...]] = {}
+        self._post_tool_hooks: tuple[tuple[str, tuple[str, ...], bool], ...] = ()
+        self._pre_tool_hooks: tuple[tuple[str, tuple[str, ...], bool], ...] = ()
+        self._lifecycle_hooks: tuple[tuple[str, str], ...] = ()
         # Client admission checks
         seen_pids: set[str] = set()
         seen_tools: set[str] = set()
@@ -176,14 +220,18 @@ class HostClient:
                 raise ValueError(f"Duplicate plugin id: {pid}")
             seen_pids.add(pid)
 
-            # Check entrypoint and module collision using top-level package name
+            # Check entrypoint and module collision using the top-level package name. An
+            # `__init__` entrypoint is loaded as a per-plugin package under a unique name the
+            # host derives from the plugin id, so it shares no top-level name with any other
+            # plugin; only a package-qualified entrypoint can collide.
             if ":" not in plugin.manifest.entrypoint:
                 raise ValueError(f"Invalid entrypoint format: {plugin.manifest.entrypoint}")
             mod_full = plugin.manifest.entrypoint.split(":", 1)[0]
             top_mod = mod_full.split(".", 1)[0]
-            if top_mod in seen_modules:
-                raise ValueError(f"Top-level module conflict across plugins: {top_mod}")
-            seen_modules.add(top_mod)
+            if mod_full != "__init__":
+                if top_mod in seen_modules:
+                    raise ValueError(f"Top-level module conflict across plugins: {top_mod}")
+                seen_modules.add(top_mod)
 
             # Check grants: plugin capabilities must cover all its tools' required capabilities
             for tool_decl in plugin.manifest.tools:
@@ -305,6 +353,67 @@ class HostClient:
             raise KeyError(f"View {view_name} not found in catalog")
         return self._view_owners[view_name]
 
+    def _store_window_projection(
+        self,
+        lease: LeaseContext,
+        covered_from_sequence: int,
+        covered_to_sequence: int,
+        replacement: str,
+    ) -> None:
+        """Verify a declared projection against durable truth, then record the measured accounting.
+
+        The kernel owns the numbers: coverage must be a committed prefix of this session that ends
+        a completed native batch (so no tool call is separated from its report), and the covered
+        bytes are measured by encoding those events. A projection that would not shrink the
+        window is refused rather than stored.
+        """
+        store = self._store
+        if store is None:
+            raise RuntimeError("Store not attached to HostClient")
+        if not replacement.strip():
+            raise ValueError("a window projection must carry non-empty replacement content")
+        events = store.events(lease.session_id)
+        if not events:
+            raise ValueError("session has no events to project")
+        last_sequence = events[-1].sequence
+        if covered_from_sequence != events[0].sequence:
+            raise ValueError("a window projection must start at the session's first event")
+        if covered_to_sequence < covered_from_sequence or covered_to_sequence > last_sequence:
+            raise ValueError(f"covered_to_sequence must be within 1..{last_sequence}")
+        covered = [event for event in events if event.sequence <= covered_to_sequence]
+        # Integrity: the replaced prefix must be batch-complete, so every assistant tool call it
+        # covers is answered inside it and the surviving tail still starts at a message boundary.
+        calls_covered = 0
+        results_covered = 0
+        for event in covered:
+            if event.event_type == "kernel.model_turn":
+                result = dict(event.payload).get("result")
+                calls = result.get("tool_calls") if isinstance(result, Mapping) else None
+                calls_covered += len(calls) if isinstance(calls, (list, tuple)) else 0
+            elif event.event_type in ("kernel.tool_completed", "kernel.tool_interrupted"):
+                results_covered += 1
+        if calls_covered != results_covered:
+            raise ValueError("a window projection must cover whole native tool batches")
+        covered_bytes = sum(len(canonical_json(dict(event.payload))) for event in covered)
+        replacement_bytes = len(replacement.encode("utf-8"))
+        if replacement_bytes >= covered_bytes:
+            raise ValueError("a window projection must be smaller than the window it replaces")
+        store.set_window_projection(
+            lease.session_id,
+            lease.owner,
+            covered_from_sequence=covered_from_sequence,
+            covered_to_sequence=covered_to_sequence,
+            replacement=replacement,
+            covered_bytes=covered_bytes,
+            dropped_bytes=covered_bytes - replacement_bytes,
+        )
+
+    def _capabilities_of_owner(self, owner: str) -> frozenset[str]:
+        for plugin in self._plugins:
+            if plugin.manifest.plugin_id == owner:
+                return plugin.capabilities
+        return frozenset()
+
     def _next_id(self, prefix: str) -> str:
         with self._maps_lock:
             self._counter += 1
@@ -390,6 +499,27 @@ class HostClient:
         self._views = tuple(str(v) for v in result.get("views", ()))
         self._view_owners = dict(result.get("view_owners", {}))
         self._context_owners = tuple(result.get("context_owners", ()))
+        self._post_tool_hooks = tuple(
+            (
+                str(entry["owner"]),
+                tuple(str(pattern) for pattern in entry.get("match", ("*",))),
+                bool(entry.get("mutating", False)),
+            )
+            for entry in result.get("post_tool_hooks", ())
+            if isinstance(entry, Mapping)
+        )
+        self._pre_tool_hooks = tuple(
+            (
+                str(entry["owner"]),
+                tuple(str(pattern) for pattern in entry.get("match", ("*",))),
+                bool(entry.get("mutating", False)),
+            )
+            for entry in result.get("pre_tool_hooks", ())
+            if isinstance(entry, Mapping)
+        )
+        self._lifecycle_hooks = tuple(
+            (owner, kind) for owner, _, kind in (str(entry).partition("\0") for entry in result.get("lifecycle_hooks", ())) if owner and kind
+        )
         obs_map = result.get("observer_owners", {})
         self._observer_owners = {}
         if isinstance(obs_map, dict):
@@ -492,15 +622,88 @@ class HostClient:
             self._reap_pending("Host process killed and reaped", execution_stopped=is_stopped)
             return is_stopped
 
+    #: A hook lease observes one settled moment: it may read, never mutate durable state.
+    #: Anything else is refused loudly, because a silent drop is worse than a refusal.
+    _HOOK_LEASE_METHODS: frozenset[str] = frozenset(
+        {
+            "state_get",
+            "state_schema_version",
+            "events_read",
+            "child_events_read",
+            "session_info",
+            "get_usage",
+            "get_budget",
+            "lease_stance",
+            "artifact_read",
+        }
+    )
+
     def _execute_lease_rpc(self, method: str, params: dict[str, Any], rpc_id: str, lease: LeaseContext) -> None:
         """Run one reverse RPC; each mutation re-validates the lease under the lock."""
         try:
+            if lease.hook and method not in self._HOOK_LEASE_METHODS:
+                # A hook runs inside the invocation it observes: it can neither stage durable
+                # facts (they would be dropped, since hooks commit no state) nor start nested
+                # governed work. Observers and tools are the channels that own durable writes.
+                raise PermissionError(f"hook leases cannot call {method}: hooks observe, they do not stage state or start work")
             scope = str(params.get("scope", "session"))
             if scope not in ("session", "workspace"):
                 raise ValueError(f"Invalid scope: {scope!r}")
             scope_key = lease.session_id if scope == "session" else str(lease.workspace)
 
-            if method == "state_get":
+            if method == "artifact_spill":
+                # Spilling writes the kernel's own store, never the workspace or the machine: a
+                # read-only lease may spill output it cannot otherwise carry, but a hook lease is
+                # an observer of a settled moment and has no result to carry bytes into.
+                if lease.hook:
+                    raise PermissionError("hook leases cannot spill artifacts: hooks observe, they produce no result")
+                store = self._require_artifacts()
+                try:
+                    data = _decode_artifact_bytes(params.get("data"))
+                except ValueError as exc:
+                    raise ValueError(f"artifact spill payload is not valid base64: {exc}") from exc
+                spill_id_raw = params.get("spill_id")
+                if spill_id_raw is None:
+                    spill_id, spill = store.start_spill(normalize_media_type(params.get("media_type")), owner=lease.token)
+                else:
+                    spill_id = str(spill_id_raw)
+                    spill = store.spill(spill_id)
+                try:
+                    spill.append(data)
+                    if params.get("final"):
+                        digest, size, media_type = store.finish(spill_id)
+                        resp = {"sha256": digest, "bytes": size, "media_type": media_type}
+                    else:
+                        resp = {"spill_id": spill_id, "bytes": spill.written}
+                except Exception:
+                    store.discard(spill_id)
+                    raise
+
+            elif method == "artifact_read":
+                sha256 = _require_sha256(params.get("sha256"))
+                offset = _require_int(params.get("offset", 0), "offset")
+                data, total, eof, media_type = self._require_artifacts().read(
+                    sha256,
+                    offset=offset,
+                    limit=_require_int(params.get("limit", 65536), "limit"),
+                )
+                resp = {
+                    "sha256": sha256,
+                    "offset": offset,
+                    "total_bytes": total,
+                    "data": base64.b64encode(data).decode("ascii"),
+                    "eof": eof,
+                    "media_type": media_type,
+                }
+
+            elif method == "lease_stance":
+                # The host enforces what only the kernel knows: how restrictive this lease is.
+                # It answers about the presented lease and nothing else, so it carries no identity.
+                # The session is what partitions supervised processes, so it travels with the
+                # stance: a session can never read or stop another session's logs.
+                resp = {"hook": lease.hook, "readonly": lease.readonly, "session_id": lease.session_id}
+
+            elif method == "state_get":
                 staged = lease.staged_state.get((scope, scope_key))
                 if staged is not None:
                     st, ver, _baseline = staged
@@ -509,6 +712,237 @@ class HostClient:
                         raise RuntimeError("Store not attached to HostClient")
                     st, ver = self._store.plugin_state(lease.owner, scope, scope_key)
                 resp = {"state": json_wire_object(st) if st is not None else None, "version": ver}
+
+            elif method == "child_spawn":
+                # A read-only owner may delegate read-only work (reviews under plan mode):
+                # the child inherits the restrictive stance, so no privilege is created.
+                if lease.readonly and not bool(params.get("readonly", False)):
+                    raise PermissionError("a read-only lease may only spawn child work that stays read-only")
+                if self._spawn_child_callback is None:
+                    raise RuntimeError("child spawning is unavailable")
+                raw_scope = params.get("tool_allowlist")
+                if raw_scope is not None and (not isinstance(raw_scope, list) or not all(isinstance(item, str) for item in raw_scope)):
+                    raise ValueError("tool_allowlist must be a list of tool names or null")
+                resp = {
+                    "child_session_id": self._spawn_child_callback(
+                        lease.session_id,
+                        str(params.get("prompt", "")),
+                        str(params.get("label", "")),
+                        _require_int(params.get("max_steps", 32), "max_steps"),
+                        None if raw_scope is None else tuple(str(item) for item in raw_scope),
+                        bool(params.get("readonly", False)) or lease.readonly,
+                    )
+                }
+
+            elif method == "child_join":
+                if self._join_child_callback is None:
+                    raise RuntimeError("child joining is unavailable")
+                raw_timeout = params.get("timeout_seconds", 300.0)
+                timeout_seconds = float(raw_timeout) if isinstance(raw_timeout, (int, float)) and not isinstance(raw_timeout, bool) else 300.0
+                outcome = self._join_child_callback(lease.session_id, str(params.get("child_session_id", "")), timeout_seconds)
+                resp = {"outcome": json_wire_object(outcome)}
+
+            elif method == "child_cancel":
+                if self._cancel_child_callback is None:
+                    raise RuntimeError("child cancellation is unavailable")
+                resp = {
+                    "cancelled": self._cancel_child_callback(
+                        lease.session_id,
+                        str(params.get("child_session_id", "")),
+                        str(params.get("reason", "owner cancellation")),
+                    )
+                }
+
+            elif method == "window_project":
+                if lease.hook:
+                    raise PermissionError("hook leases cannot project a session window")
+                if lease.readonly:
+                    raise PermissionError("Cannot project a session window from a read-only service lease")
+                if self._store is None:
+                    raise RuntimeError("Store not attached to HostClient")
+                resp = {"ok": True}
+                self._store_window_projection(
+                    lease,
+                    _require_int(params.get("covered_from_sequence"), "covered_from_sequence"),
+                    _require_int(params.get("covered_to_sequence"), "covered_to_sequence"),
+                    str(params.get("replacement", "")),
+                )
+
+            elif method == "window_projection_get":
+                if self._store is None:
+                    raise RuntimeError("Store not attached to HostClient")
+                record = self._store.window_projection(lease.session_id)
+                resp = {"projection": None if record is None else asdict(record)}
+
+            elif method == "window_projection_clear":
+                if lease.hook:
+                    raise PermissionError("hook leases cannot clear a session window projection")
+                if lease.readonly:
+                    raise PermissionError("Cannot clear a session window projection from a read-only service lease")
+                if self._store is None:
+                    raise RuntimeError("Store not attached to HostClient")
+                resp = {"cleared": self._store.clear_window_projection(lease.session_id)}
+
+            elif method == "overlay_set":
+                if lease.actor != "user":
+                    raise PermissionError("restrictive overlays require authentic user authority")
+                if self._store is None:
+                    raise RuntimeError("Store not attached to HostClient")
+                resp = {"ok": True}
+                self._store.set_session_overlay(lease.session_id, lease.owner, str(params.get("tier", "read-only")))
+
+            elif method == "overlay_clear":
+                if lease.actor != "user":
+                    raise PermissionError("restrictive overlays require authentic user authority")
+                if self._store is None:
+                    raise RuntimeError("Store not attached to HostClient")
+                resp = {"cleared": self._store.clear_session_overlay(lease.session_id, lease.owner)}
+
+            elif method == "wakeup_schedule":
+                if lease.hook:
+                    raise PermissionError("post-tool hooks cannot start nested governed work")
+                if lease.readonly:
+                    raise PermissionError("Cannot schedule wakeups from a read-only service lease")
+                if self._store is None:
+                    raise RuntimeError("Store not attached to HostClient")
+                raw_due = params.get("due_at_ms")
+                due_at = _require_int(raw_due, "due_at_ms")
+                if due_at < 0:
+                    raise ValueError("due_at_ms must be >= 0")
+                raw_role = params.get("role", "system")
+                if raw_role not in ("system", "user"):
+                    raise ValueError("role must be 'system' or 'user'")
+                raw_key = params.get("idempotency_key")
+                idempotency_key = str(raw_key) if isinstance(raw_key, str) and raw_key else None
+                wakeup_id = (
+                    uuid4().hex
+                    if idempotency_key is None
+                    else hashlib.sha256("\0".join((lease.session_id, lease.owner, "wakeup", idempotency_key)).encode("utf-8")).hexdigest()
+                )
+                self._store.schedule_wakeup(
+                    wakeup_id,
+                    lease.owner,
+                    str(lease.workspace),
+                    lease.session_id,
+                    own_json_object(params["payload"]),
+                    due_at,
+                    str(raw_role),
+                )
+                resp = {"wakeup_id": wakeup_id}
+
+            elif method == "wakeup_cancel":
+                if lease.readonly:
+                    raise PermissionError("Cannot cancel wakeups from a read-only service lease")
+                if self._store is None:
+                    raise RuntimeError("Store not attached to HostClient")
+                resp = {"cancelled": self._store.cancel_wakeup(str(params.get("wakeup_id", "")), lease.owner)}
+
+            elif method == "events_read":
+                if self._store is None:
+                    raise RuntimeError("Store not attached to HostClient")
+                after = _require_int(params.get("after_sequence", 0), "after_sequence")
+                limit = _require_int(params.get("limit", 100), "limit")
+                if after < 0 or limit < 1 or limit > 200:
+                    raise ValueError("after_sequence must be >= 0 and limit within 1..200")
+                include_payload = params.get("include_payload", True)
+                if type(include_payload) is not bool:
+                    raise ValueError("include_payload must be a boolean")
+                resp = {"events": self._event_views(lease.session_id, after, limit, include_payload)}
+
+            elif method == "child_events_read":
+                # The kernel owns lineage, so the caller never supplies the reason it may read:
+                # a child of the SAME root chain is the whole privilege.
+                if self._store is None:
+                    raise RuntimeError("Store not attached to HostClient")
+                child_id = params.get("child_session_id")
+                if not isinstance(child_id, str) or not child_id or child_id == lease.session_id:
+                    raise ValueError("child_session_id must name another session")
+                after = _require_int(params.get("after_sequence", 0), "after_sequence")
+                limit = _require_int(params.get("limit", 100), "limit")
+                if after < 0 or limit < 1 or limit > 200:
+                    raise ValueError("after_sequence must be >= 0 and limit within 1..200")
+                caller = self._store.session(lease.session_id)
+                child = self._store.session(child_id)
+                if child.parent_session_id is None or child.root_session_id != caller.root_session_id:
+                    raise PermissionError("child events are readable only within the caller's own root chain")
+                include_payload = params.get("include_payload", True)
+                if type(include_payload) is not bool:
+                    raise ValueError("include_payload must be a boolean")
+                resp = {"events": self._event_views(child_id, after, limit, include_payload)}
+
+            elif method == "session_info":
+                if self._store is None:
+                    raise RuntimeError("Store not attached to HostClient")
+                resp = {"session": self._store.session_info(lease.session_id, lease.owner).as_payload()}
+
+            elif method == "invoke_tool":
+                name = params.get("name")
+                if not isinstance(name, str) or not name.strip():
+                    raise ValueError("invoke_tool requires a non-empty name")
+                revision = params.get("expected_revision")
+                if revision != self.revision_id:
+                    raise ValueError("invoke_tool expected_revision differs from the active revision")
+                raw_arguments = params.get("arguments", {})
+                if not isinstance(raw_arguments, Mapping):
+                    raise ValueError("invoke_tool arguments must be an object")
+                request_id = uuid4().hex
+                depth = lease.invocation_depth + 1
+                call = ToolCall(name, own_json_object(raw_arguments), tool_call_id=request_id)
+                checkpoint = None if self._store is None else self._store.checkpoint(lease.session_id)
+                root_id = "" if checkpoint is None or checkpoint.kind == "terminal" else checkpoint.payload.get("root_id", "")
+                with self._lease_lock:
+                    if lease.revoked:
+                        raise PermissionError("Service lease was revoked")
+                    lease.staged_events.append(
+                        EventDraft(
+                            "kernel.tool_deferred",
+                            "kernel",
+                            "plugin",
+                            {
+                                "request_id": request_id,
+                                "call": encode_tool_call(call),
+                                "expected_revision": revision,
+                                "requester": lease.owner,
+                                "root_id": root_id,
+                                "caller_invocation_id": lease.invocation_id,
+                                "depth": depth,
+                            },
+                        )
+                    )
+                resp = {"request_id": request_id, "tool_name": name, "depth": depth}
+
+            elif method == "progress_notify":
+                # A callback reporting on work still in flight. Observational only: the tool's
+                # own result is what carries truth, so a failed report never changes it.
+                if self._progress_callback is None:
+                    raise RuntimeError("progress reporting is unavailable")
+                payload = params.get("payload")
+                if not isinstance(payload, Mapping):
+                    raise ValueError("progress payload must be an object")
+                with self._lease_lock:
+                    if lease.revoked:
+                        raise PermissionError("Service lease was revoked")
+                    self._progress_callback(lease, own_json_object(payload))
+                resp = {"ok": True}
+
+            elif method == "model_query":
+                if self._model_query_callback is None:
+                    raise RuntimeError("governed model queries are unavailable")
+                raw_model = params.get("model")
+                if raw_model is not None and not isinstance(raw_model, str):
+                    raise ValueError("model must be a string or null")
+                raw_max = params.get("max_output_tokens")
+                if raw_max is not None:
+                    raw_max = _require_int(raw_max, "max_output_tokens")
+                resp = {"output": self._model_query_callback(lease.session_id, str(params.get("prompt", "")), raw_model, raw_max)}
+
+            elif method == "state_schema_version":
+                if self._store is None:
+                    raise RuntimeError("Store not attached to HostClient")
+                _payload, _version, stored_schema = self._store.plugin_state_meta(lease.owner, scope, scope_key)
+                # The stored row's schema version only: 0 means "nothing stored yet", which is
+                # unambiguous for an owner deciding whether it must migrate its own state.
+                resp = {"schema_version": stored_schema}
 
             elif method == "state_replace":
                 with self._lease_lock:
@@ -556,6 +990,10 @@ class HostClient:
 
             elif method == "continuation_enqueue":
                 payload = own_json_object(params["payload"])
+                raw_role = params.get("role", "system")
+                if raw_role not in ("system", "user"):
+                    raise ValueError("role must be 'system' or 'user'")
+                role = str(raw_role)
                 raw_key = params.get("idempotency_key")
                 idempotency_key = str(raw_key) if raw_key is not None else None
                 with self._lease_lock:
@@ -590,6 +1028,8 @@ class HostClient:
                             if idempotency_key is None
                             else hashlib.sha256("\0".join((lease.session_id, lease.owner, idempotency_key)).encode("utf-8")).hexdigest()
                         )
+                        if lease.hook:
+                            raise PermissionError("post-tool hooks cannot start nested governed work")
                         lease.op_counter += 1
                         lease.staged_continuations.append(
                             StagedContinuationDraft(
@@ -599,6 +1039,7 @@ class HostClient:
                                 payload=payload,
                                 idempotency_key=idempotency_key,
                                 ordinal=lease.op_counter,
+                                role=role,
                             )
                         )
                 resp = {"continuation_id": cid}
@@ -697,6 +1138,37 @@ class HostClient:
                     "error": {"kind": "invalid_params", "message": f"Service call rejected: {type(exc).__name__}: {exc}"},
                 }
             )
+
+    def _event_views(self, session_id: str, after: int, limit: int, include_payload: bool) -> list[dict[str, object]]:
+        """One bounded page of a session's events; the payload budget is shared by the page."""
+        if self._store is None:
+            raise RuntimeError("Store not attached to HostClient")
+        views: list[dict[str, object]] = []
+        budget = 64 * 1024
+        for event in self._store.events(session_id, after_sequence=after, limit=limit):
+            payload_wire: dict[str, object] | None = None
+            truncated = False
+            if include_payload:
+                serialized = json.dumps(json_wire_object(event.payload), ensure_ascii=False, allow_nan=False)
+                if len(serialized.encode("utf-8")) > budget:
+                    truncated = True
+                    payload_wire = {"truncated": True, "original_bytes": len(serialized.encode("utf-8"))}
+                else:
+                    budget -= len(serialized.encode("utf-8"))
+                    payload_wire = json_wire_object(event.payload)
+            views.append(
+                {
+                    "sequence": event.sequence,
+                    "event_type": event.event_type,
+                    "run_id": event.run_id,
+                    "revision_id": event.revision_id,
+                    "source": event.source,
+                    "actor": event.actor,
+                    "payload": payload_wire,
+                    "payload_truncated": truncated,
+                }
+            )
+        return views
 
     def _handle_reverse_rpc(self, message: dict[str, Any]) -> None:
         rpc_id = str(message.get("id", ""))
@@ -816,6 +1288,15 @@ class HostClient:
             with self._maps_lock:
                 self._pending.pop(req_id, None)
 
+    def _release_artifacts(self) -> None:
+        if self._artifacts is not None:
+            self._artifacts.discard_all()
+
+    def _require_artifacts(self) -> ArtifactStore:
+        if self._artifacts is None:
+            raise RuntimeError("the kernel did not attach an artifact store to this host")
+        return self._artifacts
+
     def state_schema_version(self, owner: str) -> int:
         for plugin in self._plugins:
             if plugin.manifest.plugin_id == owner:
@@ -895,6 +1376,7 @@ class HostClient:
         context: ToolContext,
         timeout_seconds: float = 120,
         return_outcome: bool = False,
+        readonly: bool = False,
     ) -> ToolResult | ToolInvocationOutcome:
         """Invoke a registered tool in the host process."""
         self._ensure_process()
@@ -923,7 +1405,9 @@ class HostClient:
 
         tool_owner = self.owner(call.tool_name)
         tool_desc = self._tool_map[call.tool_name]
-        is_ro = is_read_tier(tool_desc.effects)
+        # A tool lease is restricted when the session's effective stance is restrictive,
+        # even if the tool's own effects are read-tier or spawn-tier.
+        is_ro = readonly or is_read_tier(tool_desc.effects)
         lease_token = uuid4().hex
         lease = LeaseContext(
             token=lease_token,
@@ -935,6 +1419,8 @@ class HostClient:
             invocation_id=context.invocation_id,
             grants=context.capabilities,
             readonly=is_ro,
+            actor=context.actor,
+            invocation_depth=context.invocation_depth,
         )
         with self._lease_lock:
             self._active_leases[lease_token] = lease
@@ -964,6 +1450,8 @@ class HostClient:
             with self._lease_lock:
                 lease.revoked = True
                 self._active_leases.pop(lease_token, None)
+            if self._artifacts is not None:
+                self._artifacts.discard_owner(lease_token)
 
         if not response.get("ok", False):
             err = response.get("error", {})
@@ -1101,6 +1589,7 @@ class HostClient:
             invocation_id=context.invocation_id,
             grants=context.capabilities,
             readonly=not any(e in (ToolEffect.WRITE, ToolEffect.EXECUTE, ToolEffect.SPAWN, ToolEffect.SESSION) for e in cmd_desc.effects),
+            actor=context.actor,
         )
         with self._lease_lock:
             self._active_leases[lease_token] = lease
@@ -1132,6 +1621,8 @@ class HostClient:
             with self._lease_lock:
                 lease.revoked = True
                 self._active_leases.pop(lease_token, None)
+            if self._artifacts is not None:
+                self._artifacts.discard_owner(lease_token)
         if not response.get("ok", False):
             err = response.get("error", {})
             raise RuntimeError(err.get("message", "Command invocation failed") if isinstance(err, dict) else "Command invocation failed")
@@ -1199,6 +1690,7 @@ class HostClient:
             invocation_id=uuid4().hex,
             grants=frozenset(),
             readonly=True,
+            actor="plugin",
         )
         with self._lease_lock:
             self._active_leases[lease_token] = lease
@@ -1235,6 +1727,250 @@ class HostClient:
 
         return decode_view_descriptor(response["result"])
 
+    @property
+    def lifecycle_hooks(self) -> tuple[tuple[str, str], ...]:
+        """Declared lifecycle hooks: (owner, kind) pairs, kinds session_start/session_end."""
+        return self._lifecycle_hooks
+
+    @property
+    def pre_tool_hooks(self) -> tuple[tuple[str, tuple[str, ...], bool], ...]:
+        """Declared pre-tool gates: (owner, tool match patterns, mutating)."""
+        return self._pre_tool_hooks
+
+    @property
+    def post_tool_hooks(self) -> tuple[tuple[str, tuple[str, ...], bool], ...]:
+        """Declared post-tool hooks: (owner, tool match patterns, mutating)."""
+        return self._post_tool_hooks
+
+    def run_lifecycle(
+        self,
+        owner: str,
+        kind: str,
+        *,
+        session_id: str,
+        run_id: str,
+        logical_turn: str = "",
+        status: str = "",
+        error: str | None = None,
+        readonly: bool = True,
+        timeout_seconds: float = 30,
+    ) -> str | None:
+        """Notify one owner's lifecycle hook; returns its note (never a decision)."""
+        self._ensure_process()
+        req_id = self._next_id("life")
+        future: Future[dict[str, Any]] = Future()
+        with self._maps_lock:
+            self._pending[req_id] = future
+        lease_token = uuid4().hex
+        invocation_id = uuid4().hex
+        lease = LeaseContext(
+            token=lease_token,
+            owner=owner,
+            session_id=session_id,
+            workspace=self.workspace,
+            run_id=run_id,
+            revision_id=self.revision_id,
+            invocation_id=invocation_id,
+            grants=self._capabilities_of_owner(owner),
+            readonly=readonly,
+            actor="plugin",
+            hook=True,
+        )
+        with self._lease_lock:
+            self._active_leases[lease_token] = lease
+        try:
+            self._send_request(
+                {
+                    "protocol_version": 1,
+                    "id": req_id,
+                    "method": "run_lifecycle",
+                    "params": {
+                        "owner": owner,
+                        "kind": kind,
+                        "session_id": session_id,
+                        "run_id": run_id,
+                        "invocation_id": invocation_id,
+                        "lease_token": lease_token,
+                        "logical_turn": logical_turn,
+                        "status": status,
+                        "error": error,
+                    },
+                }
+            )
+            response = self._wait_for_future(req_id, future, timeout_seconds, None)
+        except Exception as exc:
+            with self._maps_lock:
+                self._pending.pop(req_id, None)
+            stopped = self._kill_and_reap()
+            raise HostUnavailable(f"Failed to send run_lifecycle request: {exc}", execution_stopped=stopped) from exc
+        finally:
+            with self._lease_lock:
+                self._active_leases.pop(lease_token, None)
+
+        if not response.get("ok", False):
+            error_info = response.get("error", {})
+            message = error_info.get("message", "lifecycle hook failed") if isinstance(error_info, Mapping) else "lifecycle hook failed"
+            raise RuntimeError(str(message))
+        note = response.get("result", {}).get("note")
+        return note if isinstance(note, str) else None
+
+    def pre_tool(
+        self,
+        owner: str,
+        *,
+        session_id: str,
+        run_id: str,
+        tool_name: str,
+        tool_call_id: str | None,
+        arguments: Mapping[str, object],
+        readonly: bool,
+        logical_turn: str = "",
+        timeout_seconds: float = 30,
+    ) -> str | None:
+        """Ask one owner's pre-tool gate whether this call may run.
+
+        Returns a denial reason, or None to allow. The gate observes the intent: it cannot
+        rewrite the call, and a failure on this path is the caller's to treat as a refusal.
+        """
+        self._ensure_process()
+        req_id = self._next_id("gate")
+        future: Future[dict[str, Any]] = Future()
+        with self._maps_lock:
+            self._pending[req_id] = future
+        lease_token = uuid4().hex
+        invocation_id = uuid4().hex
+        lease = LeaseContext(
+            token=lease_token,
+            owner=owner,
+            session_id=session_id,
+            workspace=self.workspace,
+            run_id=run_id,
+            revision_id=self.revision_id,
+            invocation_id=invocation_id,
+            grants=self._capabilities_of_owner(owner),
+            readonly=readonly,
+            actor="plugin",
+            hook=True,
+        )
+        with self._lease_lock:
+            self._active_leases[lease_token] = lease
+        try:
+            self._send_request(
+                {
+                    "protocol_version": 1,
+                    "id": req_id,
+                    "method": "pre_tool",
+                    "params": {
+                        "owner": owner,
+                        "session_id": session_id,
+                        "run_id": run_id,
+                        "invocation_id": invocation_id,
+                        "lease_token": lease_token,
+                        "tool_name": tool_name,
+                        "tool_call_id": tool_call_id,
+                        "arguments": json_wire_object(arguments),
+                        "logical_turn": logical_turn,
+                    },
+                }
+            )
+            response = self._wait_for_future(req_id, future, timeout_seconds, None)
+        except Exception as exc:
+            with self._maps_lock:
+                self._pending.pop(req_id, None)
+            stopped = self._kill_and_reap()
+            raise HostUnavailable(f"Failed to send pre_tool request: {exc}", execution_stopped=stopped) from exc
+        finally:
+            with self._lease_lock:
+                self._active_leases.pop(lease_token, None)
+
+        if not response.get("ok", False):
+            error = response.get("error", {})
+            message = error.get("message", "pre-tool gate failed") if isinstance(error, Mapping) else "pre-tool gate failed"
+            raise RuntimeError(str(message))
+        reason = response.get("result", {}).get("reason")
+        return reason if isinstance(reason, str) else None
+
+    def post_tool(
+        self,
+        owner: str,
+        *,
+        session_id: str,
+        run_id: str,
+        tool_name: str,
+        tool_call_id: str | None,
+        status: str,
+        text: str,
+        arguments: Mapping[str, object],
+        readonly: bool,
+        logical_turn: str = "",
+        timeout_seconds: float = 30,
+    ) -> str | None:
+        """Run one owner's post-tool hook inside the governed invocation.
+
+        The hook observes a settled result under its own lease: it cannot start nested
+        governed work, and its failure is the caller's to record, never a rewrite of the
+        tool verdict this invocation already decided.
+        """
+        self._ensure_process()
+        req_id = self._next_id("hook")
+        future: Future[dict[str, Any]] = Future()
+        with self._maps_lock:
+            self._pending[req_id] = future
+        lease_token = uuid4().hex
+        invocation_id = uuid4().hex
+        lease = LeaseContext(
+            token=lease_token,
+            owner=owner,
+            session_id=session_id,
+            workspace=self.workspace,
+            run_id=run_id,
+            revision_id=self.revision_id,
+            invocation_id=invocation_id,
+            grants=self._capabilities_of_owner(owner),
+            readonly=readonly,
+            actor="plugin",
+            hook=True,
+        )
+        with self._lease_lock:
+            self._active_leases[lease_token] = lease
+        try:
+            self._send_request(
+                {
+                    "protocol_version": 1,
+                    "id": req_id,
+                    "method": "post_tool",
+                    "params": {
+                        "owner": owner,
+                        "session_id": session_id,
+                        "run_id": run_id,
+                        "invocation_id": invocation_id,
+                        "lease_token": lease_token,
+                        "tool_name": tool_name,
+                        "tool_call_id": tool_call_id,
+                        "status": status,
+                        "text": text,
+                        "arguments": json_wire_object(arguments),
+                        "logical_turn": logical_turn,
+                    },
+                }
+            )
+            response = self._wait_for_future(req_id, future, timeout_seconds, None)
+        except Exception as exc:
+            with self._maps_lock:
+                self._pending.pop(req_id, None)
+            stopped = self._kill_and_reap()
+            raise HostUnavailable(f"Failed to send post_tool request: {exc}", execution_stopped=stopped) from exc
+        finally:
+            with self._lease_lock:
+                self._active_leases.pop(lease_token, None)
+
+        if not response.get("ok", False):
+            error = response.get("error", {})
+            message = error.get("message", "post-tool hook failed") if isinstance(error, Mapping) else "post-tool hook failed"
+            raise RuntimeError(str(message))
+        note = response.get("result", {}).get("note")
+        return note if isinstance(note, str) else None
+
     def contribute_context(
         self,
         session_id: str,
@@ -1265,6 +2001,7 @@ class HostClient:
                 invocation_id=uuid4().hex,
                 grants=frozenset(),
                 readonly=True,
+                actor="plugin",
             )
             with self._lease_lock:
                 self._active_leases[lease_token] = lease
@@ -1356,6 +2093,7 @@ class HostClient:
                 invocation_id=uuid4().hex,
                 grants=frozenset(),
                 readonly=False,
+                actor="plugin",
             )
             with self._lease_lock:
                 self._active_leases[lease_token] = lease
@@ -1427,8 +2165,21 @@ class HostClient:
             errors=tuple(all_errors),
         )
 
+    def stop_background_processes(self) -> None:
+        """Owner shutdown: supervised background processes end with the kernel that started them.
+
+        A *host* swap is not an owner shutdown: a background process started by one generation keeps
+        running across a reload, which is exactly why the caller persists its identity. Best effort:
+        a host that is already gone has nothing left to stop.
+        """
+        try:
+            self._send_request({"protocol_version": 1, "id": self._next_id("bgstop"), "method": "stop_background", "params": {}})
+        except Exception:
+            pass
+
     def close(self) -> None:
         """Close connection to host and reap child process group cleanly."""
+        self._release_artifacts()
         with self._lifecycle_lock:
             if not self._closed:
                 self._closed = True
@@ -1458,6 +2209,13 @@ class HostClient:
                                 pass
             is_stopped = self._proc.poll() is not None if self._proc else True
             self._reap_pending("HostClient closed", execution_stopped=is_stopped)
+            if is_stopped and self._proc is not None and self._proc.stdin is not None:
+                with self._write_lock:
+                    try:
+                        self._proc.stdin.close()
+                    except OSError:
+                        # A dead host cannot consume buffered protocol bytes; still close our pipe.
+                        pass
 
     def __enter__(self) -> HostClient:
         return self

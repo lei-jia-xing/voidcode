@@ -195,9 +195,9 @@ def create_plugin(config):
 def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path, **policy: object) -> None:
     config = {
         "schema_version": 1,
-        "model": {"model": "loopback/exact-model"},
+        "model": {"model": "endpoint/exact-model"},
         "policy": policy or {"approval_mode": "yolo"},
-        "providers": {"loopback": {"api_key": "loopback-secret-not-for-storage", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
+        "providers": {"endpoint": {"api_key": "loopback-secret-not-for-storage", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
         "plugins": {_HELLO_ID: {"path": str(source)}},
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
@@ -371,7 +371,7 @@ def test_revision_bound_actions_refuse_missing_empty_and_stale_revisions(tmp_pat
             assert status == 200, body.decode()
             views = json.loads(body)
             assert views["revision_id"] == displayed
-            assert views["views"][0]["name"] == "hello_view"
+            assert "hello_view" in [view["name"] for view in views["views"]]
 
             # Missing and empty revisions never reach a lookup: 400 invalid_params.
             status, body = _request(
@@ -483,7 +483,8 @@ def test_cli_and_http_share_generic_command_route_with_restart(tmp_path: Path) -
             status, body = _request(base, "GET", "/api/sessions/shared-1/views", token=token)
             assert status == 200, body.decode()
             views = json.loads(body)["views"]
-            assert views and views[0]["data"]["value"] == "persist-me"
+            hello = next(view for view in views if view["name"] == "hello_view")
+            assert hello["data"]["value"] == "persist-me"
         # Cross-restart within the same revision: fresh CLI process reads the
         # same durable state without touching voidcode.json.
         again = _cli(workspace, state, "invoke", "shared-1", "hello_get")

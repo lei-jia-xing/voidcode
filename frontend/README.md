@@ -1,57 +1,79 @@
-# VoidCode Web Frontend
+# VoidCode Web Client
 
-Web client for VoidCode built with React 19, TypeScript, Tailwind CSS, and Bun.
+Browser client for the VoidCode kernel, built with React 19, TypeScript, Tailwind CSS, Vite, and Bun.
+
+The client is `src/kernel/KernelApp.tsx` (mounted unconditionally by `src/main.tsx`). It speaks only to the kernel's HTTP/SSE transport under `/api/*`, renders the kernel's declarative plugin views, and keeps no local model of session state: the kernel's append-only event log and its per-revision command catalog are the source of truth.
 
 ## Quickstart
 
-Run development commands from the `frontend/` directory:
+Run commands from the `frontend/` directory:
 
 ```bash
-cd frontend
-
-# Install dependencies
 bun install
-
-# Start Vite dev server with HMR
-bun run dev
-
-# Build for production
-bun run build
-
-# Preview production build locally
-bun run preview
+bun run dev        # Vite dev server with HMR on http://127.0.0.1:5173
+bun run build      # typecheck + production bundle into dist/
+bun run preview    # preview the production bundle
 ```
 
-## Available Scripts
+## Scripts
 
-- `bun run dev` - Start Vite development server with HMR.
-- `bun run build` - Typecheck and build for production.
-- `bun run preview` - Preview production build locally.
-- `bun run lint` - Run ESLint.
-- `bun run format` - Format code with Prettier.
-- `bun run typecheck` - Run TypeScript typecheck.
-- `bun run test` - Run tests with Vitest (jsdom).
-- `bun run test:e2e` - Run Playwright end-to-end tests.
+- `bun run dev` - Vite development server with HMR (`/api` proxied to `VITE_BACKEND_URL`).
+- `bun run build` - Typecheck and build for production into `dist/`.
+- `bun run preview` - Preview the production build locally.
+- `bun run lint` - ESLint (zero warnings).
+- `bun run format` / `bun run format:check` - Prettier.
+- `bun run typecheck` - TypeScript, no emit.
+- `bun run test` - Vitest unit/component tests (jsdom).
+- `bun run test:e2e` - Playwright end-to-end smoke against a real kernel server (build `dist/` first).
 
-## Connecting to Backend
+## Running against a kernel server
 
-The frontend communicates with VoidCode via HTTP/SSE. Before connecting, ensure your provider credentials and workspace configuration are initialized as described in the [Repository Quickstart](../README.md#quickstart).
-
-From the repository root, start the local runtime server:
+From the repository root, start the kernel CLI's server. It serves `/api/*` and, once `frontend/dist` is built, the client itself at `/`:
 
 ```bash
-uv run voidcode serve --workspace . --port 8765
+bun install --cwd frontend && bun run --cwd frontend build
+
+uv run voidcode --workspace . serve --port 8765
 ```
 
-From `frontend/`, point the Vite dev server to your running backend:
+The command prints `kernel bearer token: <token>` at launch and `web client: http://127.0.0.1:8765/`. Open the printed URL with the token as a query parameter:
+
+```text
+http://127.0.0.1:8765/?token=<token>
+```
+
+Only `/api/*` is authenticated; the static bundle is public. The client takes its identity from two query parameters (both optional; same origin and no token by default):
+
+| Parameter | Meaning |
+|---|---|
+| `server` | Kernel base URL, e.g. `http://127.0.0.1:8765`; default is the page's own origin. |
+| `token` | Bearer token sent as `Authorization: Bearer <token>` on every `/api` request. |
+
+For development with HMR, run the dev server against a kernel server instead of building:
 
 ```bash
 VITE_BACKEND_URL=http://127.0.0.1:8765 bun run dev
+# then open http://127.0.0.1:5173/?token=<token>
 ```
 
-To build and launch the integrated web interface from the repository root:
+The kernel reads one config file, `voidcode.json` in the workspace (`{"schema_version": 1}` is a complete minimal file). A legacy `.voidcode.json` is an error and is never converted.
+
+## API surface
+
+The client uses `GET /api/commands` (catalog + revision), `GET|POST /api/sessions`, and per session `GET /show`, `POST /run`, `POST /resume`, `POST /invoke/{name}`, `POST /confirm`, `POST /cancel`, `GET /views`, `GET /usage`, and `GET /events` (SSE). Types come from `GET /api/openapi.json` and are generated into `src/lib/kernel/generated/api.d.ts`; never edit that file by hand:
 
 ```bash
-mise run frontend:build
-uv run voidcode web --workspace . --port 8000 --no-open
+mise run frontend:api:generate   # regenerate after a transport model change
+mise run frontend:api:check      # fail when the committed types are stale
 ```
+
+## End-to-end tests
+
+`e2e/kernel.spec.ts` is the only end-to-end spec. It spawns the real kernel server on a throwaway workspace and state dir whose `voidcode.json` is just `{"schema_version": 1}`, opens the bundle the kernel serves at `/`, and asserts that the client renders, creates a session, and renders the committed result of the `/session_status` plugin command. No provider is configured, so nothing in the smoke reaches a model.
+
+```bash
+bun run build       # the served bundle is dist/index.html
+bun run test:e2e    # spawns `uv run python -X utf8 -m voidcode.kernel ... serve` itself
+```
+
+Requirements: `uv` on `PATH` (the spec starts the kernel from the repository root) and the Playwright Chromium build (`bunx playwright install chromium`). `mise run frontend:e2e` runs the build and the spec in one step.

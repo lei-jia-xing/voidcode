@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from voidcode.kernel.tui.keys import Key
 from voidcode.kernel.tui.views import (
     InteractiveChoices,
     InteractiveConfirmation,
@@ -11,7 +12,6 @@ from voidcode.kernel.tui.views import (
     UnsupportedViewError,
     render_plugin_view,
 )
-from voidcode.tui.keys import Key
 
 
 def test_unsupported_view_raises_error() -> None:

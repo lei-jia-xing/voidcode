@@ -1566,7 +1566,13 @@ def _fact_total_tokens(usage: ProviderTokenUsage) -> int | None:
 
 
 def goal_context(ctx: ToolContext, services: PluginServices) -> ContextContribution | None:
-    """Contribute active goal instructions to model context."""
+    """Contribute active goal instructions to model context, in the legacy user role.
+
+    The goal prompt is the legacy user-facing turn text (`runtime/goal.py` templates, submitted
+    as the user's prompt by the TUI and merged into the request prompt as steering by the
+    runtime), so it is declared `role="user"` and reaches the provider verbatim instead of being
+    re-wrapped in `[goal context]` system prose.
+    """
     _ = ctx
     state_data, _ = services.get_state("session")
     if not state_data:
@@ -1579,7 +1585,7 @@ def goal_context(ctx: ToolContext, services: PluginServices) -> ContextContribut
         return None
 
     prompt = render_context_prompt(goal)
-    return ContextContribution(content=prompt)
+    return ContextContribution(content=prompt, role="user")
 
 
 def goal_observer(fact: PluginFact, ctx: ToolContext, services: PluginServices) -> None:

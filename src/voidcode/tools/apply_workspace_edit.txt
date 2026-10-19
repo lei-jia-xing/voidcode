@@ -1,8 +1,0 @@
-Apply validated LSP text edits after a complete range preflight; runtime approval governs filesystem access.
-
-Usage:
-- Pass a non-empty `edits` array; each edit includes a workspace-relative or absolute `path`, 1-based line/character range, `newText`, and the SHA-256 `expectedHash` from a prior read result.
-- `expectedVersion` (or `version`) is optional; when supplied it must match the runtime's actual opened LSP document state, otherwise the edit fails closed. The opened document's raw UTF-8 hash is also checked.
-- `positionEncoding` is optional; an opened document's negotiated `utf-8`, `utf-16`, or `utf-32` encoding is used, otherwise LSP's default `utf-16` applies. CRLF bytes are preserved.
-- Success reports formatter-final byte count, content hash, diff, and formatter result when configured.
-- Read every target file first; stale or missing hashes reject the operation before writes. Use this tool for coordinated LSP range edits; use `edit` for text replacements or patches.

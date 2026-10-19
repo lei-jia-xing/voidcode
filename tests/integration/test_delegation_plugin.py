@@ -1,0 +1,278 @@
+"""End-to-end integration test for the Delegation plugin on the real kernel stack.
+
+Drives the real kernel, plugin host, loopback provider and durable storage: a parent run whose
+model calls ``task(prompt=..., run_in_background=false)`` spawns a real child session, the child's
+run completes against the same provider, and its outcome comes back inside the parent's tool
+result with ``kernel.child_spawned``/``kernel.child_finished`` facts on the parent session.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from pathlib import Path
+from threading import Thread
+
+import pytest
+
+from tests.provider_loopback import OpenAILoopbackServer, openai_response
+from voidcode.kernel.bootstrap import open_kernel
+from voidcode.kernel.engine import Kernel
+from voidcode.plugins.delegation.delegation_plugin import TaskBatchTool, TaskTool
+from voidcode.plugins.delegation.presets import EXPLORE_PROMPT_BODY
+from voidcode.sdk.manifest import PluginFileIdentity, PluginManifest, PluginToolDeclaration
+from voidcode.sdk.tools import ToolDefinition
+
+_DELEGATION_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "delegation"
+_TODO_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "todo"
+_PLUGIN_FILES = ("__init__.py", "delegation_plugin.py", "presets.py")
+
+
+@contextmanager
+def _loopback_server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
+    server = OpenAILoopbackServer(replies)
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        worker.join(timeout=5)
+        server.server_close()
+
+
+_CREATED_KERNELS: list[Kernel] = []
+
+
+@pytest.fixture(autouse=True)
+def _close_created_kernels() -> Iterator[None]:
+    yield
+    while _CREATED_KERNELS:
+        _CREATED_KERNELS.pop().close()
+
+
+def _declaration(definition: ToolDefinition) -> PluginToolDeclaration:
+    return PluginToolDeclaration(
+        name=definition.name,
+        description=definition.description,
+        input_schema=definition.input_schema,
+        effects=tuple(definition.effects),
+        replay_policy=definition.replay_policy,
+    )
+
+
+def _admitted_source(tmp_path: Path) -> Path:
+    """Materialize an admitted delegation plugin root from the real sources.
+
+    The kernel only admits a source whose ``voidcode-plugin.json`` pins its file hashes, and the
+    committed manifest is owned by the packaging lane: this suite builds one from the plugin's own
+    tool definitions, so it proves the real sources without depending on that file.
+    """
+    source = tmp_path / "delegation-source"
+    source.mkdir()
+    for name in _PLUGIN_FILES:
+        (source / name).write_bytes((_DELEGATION_PLUGIN_ROOT / name).read_bytes())
+    manifest = PluginManifest(
+        plugin_id="delegation",
+        version="1.0.0",
+        # A multi-module plugin is admitted as a package (its own modules import their presets).
+        entrypoint="__init__:create_plugin",
+        files=tuple(PluginFileIdentity(path=name, sha256=hashlib.sha256((source / name).read_bytes()).hexdigest()) for name in _PLUGIN_FILES),
+        tools=tuple(_declaration(tool.definition) for tool in (TaskTool(), TaskBatchTool())),
+    )
+    (source / "voidcode-plugin.json").write_text(json.dumps(manifest.as_payload()), encoding="utf-8")
+    return source
+
+
+def _kernel(tmp_path: Path, server: OpenAILoopbackServer) -> Kernel:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    config = {
+        "schema_version": 1,
+        "model": {"model": "endpoint/test-model"},
+        # Spawning is an external mutation: approval_mode "ask" would park the parent on an
+        # approval request instead of running the delegated child.
+        "policy": {"approval_mode": "yolo"},
+        "providers": {
+            "endpoint": {
+                "api_key": "loopback-test-key",
+                "base_url": f"http://127.0.0.1:{server.server_port}/v1",
+            }
+        },
+        "plugins": {
+            # The bundled files plugin is not under test here and is rewritten by another P4 lane.
+            "files": {"enabled": False},
+            # Explicitly out of the picture: this suite proves the delegation plugin alone.
+            "todo": {"path": str(_TODO_PLUGIN_ROOT), "enabled": False},
+            "delegation": {"path": str(_admitted_source(tmp_path)), "enabled": True},
+        },
+    }
+    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    kernel = open_kernel(workspace, state_dir=state_dir, trusted_plugins=frozenset({"delegation"}))
+    _CREATED_KERNELS.append(kernel)
+    return kernel
+
+
+def _task_call(call_id: str, arguments: dict[str, object]) -> dict[str, object]:
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {"name": "task", "arguments": json.dumps(arguments)},
+    }
+
+
+def _tool_names(request: dict[str, object]) -> list[str]:
+    tools = request.get("tools")
+    if not isinstance(tools, list):
+        return []
+    return [str(entry["function"]["name"]) for entry in tools if isinstance(entry, dict) and isinstance(entry.get("function"), dict)]  # type: ignore[union-attr]
+
+
+def _messages(request: dict[str, object]) -> list[dict[str, object]]:
+    messages = request.get("messages")
+    return [entry for entry in messages if isinstance(entry, dict)] if isinstance(messages, list) else []
+
+
+def test_parent_spawns_a_real_child_and_receives_its_output(tmp_path: Path) -> None:
+    replies: list[dict[str, object]] = [
+        # Parent: delegate the work and wait for the child in the same call.
+        openai_response(
+            message={
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [_task_call("call-task-1", {"prompt": "count the visitor guide doors", "label": "doors", "run_in_background": False})],
+            },
+            finish="tool_calls",
+            usage={"prompt_tokens": 50, "completion_tokens": 20, "total_tokens": 70},
+        ),
+        # Child: one turn, one answer.
+        openai_response(
+            message={"role": "assistant", "content": "child answer: 12 doors"},
+            finish="stop",
+            usage={"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28},
+        ),
+        # Parent: the tool result is in context, so the run can finish.
+        openai_response(
+            message={"role": "assistant", "content": "delegation complete"},
+            finish="stop",
+            usage={"prompt_tokens": 80, "completion_tokens": 6, "total_tokens": 86},
+        ),
+    ]
+    with _loopback_server(replies) as server:
+        kernel = _kernel(tmp_path, server)
+        parent_id = kernel.create_session("parent").session_id
+        result = kernel.run("count the doors", session_id=parent_id)
+        assert result.status == "completed"
+        assert result.output == "delegation complete"
+
+        # The real child session ran the delegated prompt itself.
+        assert len(server.requests) == 3
+        assert "task" in _tool_names(server.requests[0])
+        child_prompt = _messages(server.requests[1])[-1]
+        assert child_prompt["role"] == "user"
+        assert child_prompt["content"] == "count the visitor guide doors"
+
+        # The child's own output came back inside the parent's tool result.
+        tool_messages = [message for message in _messages(server.requests[2]) if message.get("role") == "tool"]
+        assert len(tool_messages) == 1
+        tool_text = str(tool_messages[0]["content"])
+        body = json.loads(tool_text.splitlines()[0])
+        assert body["operation"] == "spawn"
+        assert body["label"] == "doors"
+        assert body["status"] == "completed"
+        assert body["output"] == "child answer: 12 doors"
+        assert "child answer: 12 doors" in tool_text
+        child_id = str(body["task_id"])
+
+        # A real child session is linked to the parent, and its run left a durable terminal fact.
+        child = kernel.session(child_id)
+        assert child.parent_session_id == parent_id
+        assert child.status == "completed"
+
+        parent_events = kernel.events_after(parent_id)
+        spawned = [event for event in parent_events if event.event_type == "kernel.child_spawned"]
+        finished = [event for event in parent_events if event.event_type == "kernel.child_finished"]
+        assert len(spawned) == 1
+        assert spawned[0].payload["child_session_id"] == child_id
+        assert spawned[0].payload["label"] == "doors"
+        assert spawned[0].payload["depth"] == 1
+        assert len(finished) == 1
+        assert finished[0].payload["child_session_id"] == child_id
+        assert finished[0].payload["status"] == "completed"
+        assert finished[0].payload["output"] == "child answer: 12 doors"
+
+        # The plugin's own session state records the child it started.
+        stored = kernel.store.plugin_state("delegation", "session", parent_id)
+        assert stored is not None
+        payload, version = stored
+        assert payload is not None
+        assert payload["schema_version"] == 1
+        children = payload["children"]
+        assert isinstance(children, Mapping)
+        assert list(children) == [child_id]
+        assert version >= 1
+
+
+def test_preset_child_gets_the_profile_prompt_and_a_visible_scope_downgrade(tmp_path: Path) -> None:
+    """A preset child materializes the profile text; an unavailable scope degrades visibly.
+
+    This workspace disables the bundled ``files`` plugin, so the explore preset's allowlist names
+    tools the active revision does not admit: the child still runs, on the parent's scope, and the
+    tool result and the note say so instead of failing the spawn.
+    """
+    replies: list[dict[str, object]] = [
+        openai_response(
+            message={
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    _task_call(
+                        "call-task-1",
+                        {"prompt": "summarize the visitor guide", "subagent_type": "explore", "run_in_background": False},
+                    )
+                ],
+            },
+            finish="tool_calls",
+        ),
+        openai_response(message={"role": "assistant", "content": "child answer: explored"}, finish="stop"),
+        openai_response(message={"role": "assistant", "content": "preset delegation complete"}, finish="stop"),
+    ]
+    with _loopback_server(replies) as server:
+        kernel = _kernel(tmp_path, server)
+        parent_id = kernel.create_session("parent").session_id
+        result = kernel.run("explore the visitor guide", session_id=parent_id)
+
+        assert result.status == "completed", result.error
+        assert len(server.requests) == 3
+        child_prompt = _messages(server.requests[1])[-1]
+        assert child_prompt["content"] == f"{EXPLORE_PROMPT_BODY}\n\nsummarize the visitor guide"
+
+        tool_text = str([message for message in _messages(server.requests[2]) if message.get("role") == "tool"][0]["content"])
+        body = json.loads(tool_text.splitlines()[0])
+        assert body["subagent_type"] == "explore"
+        assert body["status"] == "completed"
+        assert body["output"] == "child answer: explored"
+        notes = body["notes"]
+        assert len(notes) == 1
+        assert notes[0].startswith("preset 'explore' scope was unavailable (")
+        assert "tool_allowlist names an unknown tool: glob" in notes[0], "the disabled files plugin owns read/glob/grep"
+        assert notes[0].endswith("); the child inherited the parent tool scope instead")
+        assert "preset=explore" in tool_text
+        assert f"note: {notes[0]}" in tool_text
+
+        child_id = str(body["task_id"])
+        child = kernel.session(child_id)
+        assert child.parent_session_id == parent_id
+        assert child.tool_allowlist is None, "the fallback runs the child on the parent's scope"
+        assert kernel.store.session_overlays(child_id) == ("read-only",), "a read-only preset keeps its stance"
+
+        stored = kernel.store.plugin_state("delegation", "session", parent_id)
+        assert stored is not None
+        payload, _version = stored
+        children = payload["children"]
+        assert isinstance(children, Mapping)
+        assert children[child_id]["subagent_type"] == "explore"

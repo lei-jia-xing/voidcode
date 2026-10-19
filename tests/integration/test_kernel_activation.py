@@ -50,9 +50,9 @@ def _configure(workspace: Path, server: OpenAILoopbackServer, plugin_path: Path,
     workspace.mkdir(parents=True, exist_ok=True)
     config = {
         "schema_version": 1,
-        "model": {"model": "loopback/exact-model"},
+        "model": {"model": "endpoint/exact-model"},
         "policy": {"approval_mode": "yolo", "read_only": False},
-        "providers": {"loopback": {"api_key": "loopback-secret-not-for-storage", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
+        "providers": {"endpoint": {"api_key": "loopback-secret-not-for-storage", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
         "plugins": {PLUGIN_ID: {"path": str(plugin_path), "enabled": enabled}},
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
@@ -88,11 +88,19 @@ def _spawn(workspace: Path, state: Path, *arguments: str) -> subprocess.Popen[st
     )
 
 
-def _await(predicate, process: subprocess.Popen[str], *, timeout: float = 30.0) -> None:
+#: Cold start admits the whole bundled plugin set before the reload flow can reach its marker,
+#: under parallel xdist workers; 30 s was tight and the failure path itself raised
+#: TimeoutExpired by calling communicate() on a process that was still running.
+_CRASH_STARTUP_DEADLINE_SECONDS = 60.0
+
+
+def _await(predicate, process: subprocess.Popen[str], *, timeout: float = _CRASH_STARTUP_DEADLINE_SECONDS) -> None:
     deadline = time.monotonic() + timeout
     while not predicate():
         if process.poll() is not None or time.monotonic() >= deadline:
-            stdout, stderr = process.communicate(timeout=5)
+            if process.poll() is None:
+                process.kill()
+            stdout, stderr = process.communicate(timeout=15)
             pytest.fail(f"condition never became true: {stdout} {stderr}")
         time.sleep(0.02)
 
@@ -142,11 +150,13 @@ def _peek(process: subprocess.Popen[str]) -> str:
     return "" if process.poll() is None else "another kernel owns this workspace"
 
 
-def _await_durable(predicate, process: subprocess.Popen[str], *, timeout: float = 45.0) -> None:
+def _await_durable(predicate, process: subprocess.Popen[str], *, timeout: float = _CRASH_STARTUP_DEADLINE_SECONDS) -> None:
     deadline = time.monotonic() + timeout
     while not predicate():
         if time.monotonic() >= deadline:
-            stdout, stderr = process.communicate(timeout=5)
+            if process.poll() is None:
+                process.kill()
+            stdout, stderr = process.communicate(timeout=15)
             pytest.fail(f"durable condition never became true: {stdout} {stderr}")
         time.sleep(0.05)
 

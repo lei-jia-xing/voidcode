@@ -39,11 +39,14 @@ def make_p2a_plugin(
     observer_raises: bool = False,
     include_provider: bool = False,
     reserved_command: str | None = None,
+    direct_user_command: bool = False,
 ) -> tuple[Path, PluginManifest]:
     root = tmp_path / plugin_id
     root.mkdir(parents=True, exist_ok=True)
 
     declared_cmds = list(command_names)
+    if direct_user_command:
+        declared_cmds.append("shell_like")
     if reserved_command is not None:
         declared_cmds.append(reserved_command)
 
@@ -91,7 +94,15 @@ class HelloGetCommand:
         return CommandResult(
             status="ok",
             output=f"Greeting: {{greeting}}, Action: {{action_done}}",
-            data={{"greeting": greeting, "action_done": action_done, "last_observed": last_obs, "version": ver}},
+            data={{
+                "greeting": greeting,
+                "action_done": action_done,
+                "last_observed": last_obs,
+                "version": ver,
+                "schema_version": services.get_state_schema_version("session"),
+                "observed_owner": (st or {{}}).get("last_owner", ""),
+                "observed_effects": (st or {{}}).get("last_effects", []),
+            }},
         )
 
 class GatedCommand:
@@ -137,6 +148,26 @@ class ConfirmCommand:
         )
         return CommandResult(status="pending_confirmation", confirmation=req)
 
+class ShellLikeCommand:
+    definition = CommandDefinition(
+        name="shell_like",
+        description="Direct-user command",
+        argument_schema={{"type": "object"}},
+        effects=frozenset({{ToolEffect.WRITE}}),
+        capabilities=frozenset({{"test.write"}}),
+        busy_gate=False,
+        direct_user=True,
+        client_syntax="!",
+    )
+
+    def invoke(self, invocation, services):
+        st, ver = services.get_state("session")
+        cur = dict(st or {{}})
+        cur["shell_actor"] = invocation.context.actor
+        services.replace_state(cur, expected_version=ver, scope="session")
+        return CommandResult(status="ok", output="ran as the user")
+
+
 class HelloView:
     name = "hello_view"
 
@@ -163,7 +194,7 @@ class WriteTool:
         return ToolSuccess(tool_name="write_tool", output=TextOutput(text="wrote data successfully"))
 
 class LoopbackProvider:
-    name = "openai-chat"
+    name = "endpoint"
 
     def propose_turn(self, request):
         # Inspect messages for continuation or context
@@ -204,6 +235,10 @@ def plugin_observer(fact, context, services):
     st, ver = services.get_state("session")
     cur = dict(st or {{}})
     cur["last_observed"] = type(fact).__name__
+    if hasattr(fact, "tool_name"):
+        # Invocation facts carry the owner and the declared effects that governed the call.
+        cur["last_owner"] = getattr(fact, "owner", "")
+        cur["last_effects"] = list(getattr(fact, "effects", ()) or ())
     services.replace_state(cur, expected_version=ver, scope="session")
 
 def create_plugin(config):
@@ -216,6 +251,8 @@ def create_plugin(config):
         commands.append(GatedCommand())
     if "confirm_action" in {declared_cmds!r}:
         commands.append(ConfirmCommand())
+    if "shell_like" in {declared_cmds!r}:
+        commands.append(ShellLikeCommand())
 
     views = []
     if "hello_view" in {list(view_names)!r}:
@@ -287,6 +324,19 @@ def create_plugin(config):
                     busy_gate=False,
                 )
             )
+        elif cmd == "shell_like":
+            command_decls.append(
+                PluginCommandDeclaration(
+                    name="shell_like",
+                    description="Direct-user command",
+                    argument_schema={"type": "object"},
+                    effects=(ToolEffect.WRITE,),
+                    capabilities=("test.write",),
+                    busy_gate=False,
+                    direct_user=True,
+                    client_syntax="!",
+                )
+            )
         elif cmd == reserved_command:
             command_decls.append(
                 PluginCommandDeclaration(
@@ -299,7 +349,7 @@ def create_plugin(config):
     provider_decls = ()
     tool_decls = ()
     if include_provider:
-        provider_decls = (PluginProviderDeclaration(name="openai-chat", description="Loopback provider"),)
+        provider_decls = (PluginProviderDeclaration(name="endpoint", description="Loopback provider"),)
         tool_decls = (
             PluginToolDeclaration(
                 name="write_tool",
@@ -334,6 +384,8 @@ def make_configured_kernel(
     include_observer: bool = False,
     observer_raises: bool = False,
     include_provider: bool = False,
+    direct_user_command: bool = False,
+    read_only: bool = False,
 ) -> tuple[Kernel, str]:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -345,6 +397,7 @@ def make_configured_kernel(
         include_observer=include_observer,
         observer_raises=observer_raises,
         include_provider=include_provider,
+        direct_user_command=direct_user_command,
     )
     host_plugin = HostPlugin(
         root=root,
@@ -354,9 +407,9 @@ def make_configured_kernel(
     )
 
     config = KernelConfig(
-        model=KernelModelConfig(model="openai-chat/test-model" if include_provider else None),
-        providers={"openai-chat": KernelProviderEntry(wire="openai-chat")} if include_provider else {},
-        policy=KernelPolicyConfig(approval_mode="ask", read_only=False),
+        model=KernelModelConfig(model="endpoint/test-model" if include_provider else None),
+        providers={"endpoint": KernelProviderEntry()} if include_provider else {},
+        policy=KernelPolicyConfig(approval_mode="ask", read_only=read_only),
     )
     rev_payload = {"revision": "p2a-test"}
     kernel = Kernel(
@@ -383,6 +436,8 @@ def test_p2a_hello_state_with_context_and_persistence(tmp_path: Path) -> None:
         assert get_res0.data is not None
         assert get_res0.data["greeting"] == "none"
         assert get_res0.data["version"] == 0
+        # No row yet: the accessor reports the absence, not a fabricated version.
+        assert get_res0.data["schema_version"] == 0
 
         # 2. Invoke hello_set command
         set_res = kernel.invoke_command("sess-p2a-main", "hello_set", {"greeting": "awesome"}, expected_revision=kernel.command_catalog().revision_id)
@@ -394,6 +449,8 @@ def test_p2a_hello_state_with_context_and_persistence(tmp_path: Path) -> None:
         assert get_res1.data is not None
         assert get_res1.data["greeting"] == "awesome"
         assert get_res1.data["version"] == 1
+        # The stored row carries this plugin's declared state schema version.
+        assert get_res1.data["schema_version"] == 1
 
         # 4. Plugin views render from durable state
         views = kernel.plugin_views("sess-p2a-main").views
@@ -579,6 +636,33 @@ def test_p2a_usage_windowing_and_unknown_semantics(tmp_path: Path) -> None:
         assert u_windowed.has_unknown_usage is False
 
 
+def test_direct_user_command_authority_and_declarative_syntax(tmp_path: Path) -> None:
+    kernel, _ = make_configured_kernel(tmp_path, direct_user_command=True)
+    with kernel:
+        catalog = {command.name: command for command in kernel.command_catalog().commands}
+        assert catalog["shell_like"].direct_user is True
+        assert catalog["shell_like"].client_syntax == "!"
+        assert catalog["hello_set"].direct_user is False
+
+        kernel.create_session("sess-direct-user")
+        result = kernel.invoke_command("sess-direct-user", "shell_like", {}, expected_revision=kernel.revision_id)
+        assert result.status == "ok"
+        # The kernel set the actor itself: the plugin saw authentic user authority.
+        events = [event for event in kernel.events_after("sess-direct-user") if event.event_type == "kernel.command_completed"]
+        assert events and events[0].actor == "user"
+
+
+def test_read_only_policy_allows_only_direct_user_commands(tmp_path: Path) -> None:
+    kernel, _ = make_configured_kernel(tmp_path, direct_user_command=True, read_only=True)
+    with kernel:
+        kernel.create_session("sess-read-only")
+        denied = kernel.invoke_command("sess-read-only", "hello_set", {"greeting": "x"}, expected_revision=kernel.revision_id)
+        assert denied.status == "error"
+        assert "read-only" in (denied.error or "")
+        allowed = kernel.invoke_command("sess-read-only", "shell_like", {}, expected_revision=kernel.revision_id)
+        assert allowed.status == "ok"
+
+
 def test_p2a_reserved_command_name_rejection(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -608,7 +692,7 @@ def test_p2a_reserved_command_name_rejection(tmp_path: Path) -> None:
 
 
 def test_p2a_busy_gate_and_waiting_session_lifecycle(tmp_path: Path) -> None:
-    kernel, _ = make_configured_kernel(tmp_path, include_context=True, include_provider=True)
+    kernel, _ = make_configured_kernel(tmp_path, include_context=True, include_observer=True, include_provider=True)
     with kernel:
         kernel.create_session("sess-busy")
 
@@ -640,6 +724,13 @@ def test_p2a_busy_gate_and_waiting_session_lifecycle(tmp_path: Path) -> None:
 
         sess_done = kernel.session("sess-busy")
         assert sess_done.status == "completed"
+
+        # The completed governed invocation reached the observer with its owner and the
+        # declared effects the kernel actually enforced.
+        observed = kernel.invoke_command("sess-busy", "hello_get", {}, expected_revision=kernel.command_catalog().revision_id)
+        assert observed.data is not None
+        assert observed.data["observed_owner"] == "hello-state"
+        assert tuple(observed.data["observed_effects"]) == ("write",)
 
 
 def test_p2a_observer_failure_is_diagnostic_not_fatal(tmp_path: Path) -> None:

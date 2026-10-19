@@ -119,6 +119,10 @@ class PluginToolDeclaration:
     effects: tuple[ToolEffect, ...] = (ToolEffect.READ,)
     replay_policy: str | None = None
     capabilities: tuple[str, ...] = ()
+    #: Arguments naming workspace paths, so a path-aware consumer can read them without a name branch.
+    path_argument_keys: tuple[str, ...] = ()
+    #: Whether this tool may run in a parallel native batch alongside its siblings.
+    supports_parallel: bool = False
 
     def __post_init__(self) -> None:
         _validate_non_empty_str(self.name, field_name="tool declaration name")
@@ -144,6 +148,14 @@ class PluginToolDeclaration:
             raise ValueError("tool declaration capabilities must be a sequence")
         caps = tuple(_validate_non_empty_str(c, field_name="capability") for c in self.capabilities)
         object.__setattr__(self, "capabilities", caps)
+        if not isinstance(self.path_argument_keys, (list, tuple)):
+            raise ValueError("tool declaration path_argument_keys must be a sequence")
+        keys = tuple(_validate_non_empty_str(key, field_name="path_argument_key") for key in self.path_argument_keys)
+        if len(keys) != len(set(keys)):
+            raise ValueError(f"tool {self.name} declares duplicate path argument keys")
+        object.__setattr__(self, "path_argument_keys", keys)
+        if type(self.supports_parallel) is not bool:
+            raise ValueError("tool declaration supports_parallel must be a boolean")
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +169,10 @@ class PluginCommandDeclaration:
     capabilities: tuple[str, ...] = ()
     busy_gate: bool = False
     client_capabilities: tuple[str, ...] = ()
+    #: Invoked only by an authentic user ingress, with direct-user authority (no agent claim).
+    direct_user: bool = False
+    #: Declarative client syntax prefix (e.g. "!"); clients route it, the kernel never parses it.
+    client_syntax: str | None = None
 
     def __post_init__(self) -> None:
         _validate_non_empty_str(self.name, field_name="command declaration name")
@@ -182,6 +198,13 @@ class PluginCommandDeclaration:
             raise ValueError("command declaration client_capabilities must be a sequence")
         client_caps = tuple(_validate_non_empty_str(c, field_name="client_capability") for c in self.client_capabilities)
         object.__setattr__(self, "client_capabilities", client_caps)
+        if type(self.direct_user) is not bool:
+            raise ValueError("command declaration direct_user must be a boolean")
+        if self.client_syntax is not None:
+            if not isinstance(self.client_syntax, str) or not self.client_syntax.strip() or len(self.client_syntax) > 8:
+                raise ValueError("command declaration client_syntax must be 1..8 non-space characters")
+            if any(character.isspace() for character in self.client_syntax):
+                raise ValueError("command declaration client_syntax must not contain whitespace")
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +219,26 @@ class PluginCapabilityRequest:
         _validate_non_empty_str(self.reason, field_name="capability declaration reason")
 
 
+HookKind = Literal["pre_tool", "post_tool", "session_start", "session_end"]
+
+
+@dataclass(frozen=True, slots=True)
+class PluginHookDeclaration:
+    """One declared hook: strongly typed kind, explicit tool match, declared mutation stance."""
+
+    kind: HookKind
+    match: tuple[str, ...] = ("*",)
+    mutating: bool = False
+
+    def __post_init__(self) -> None:
+        if self.kind not in ("pre_tool", "post_tool", "session_start", "session_end"):
+            raise ValueError(f"unsupported hook kind: {self.kind!r}")
+        if not self.match or any(not isinstance(pattern, str) or not pattern for pattern in self.match):
+            raise ValueError("hook match must list at least one non-empty tool name or '*'")
+        if not isinstance(self.mutating, bool):
+            raise ValueError("hook mutating must be a boolean")
+
+
 @dataclass(frozen=True, slots=True)
 class PluginManifest:
     plugin_id: str
@@ -207,6 +250,8 @@ class PluginManifest:
     tools: tuple[PluginToolDeclaration, ...] = ()
     commands: tuple[PluginCommandDeclaration, ...] = ()
     capabilities: tuple[PluginCapabilityRequest, ...] = ()
+    hooks: tuple[PluginHookDeclaration, ...] = ()
+    hooks: tuple[PluginHookDeclaration, ...] = ()
     providers: tuple[PluginProviderDeclaration, ...] = ()
     depends: tuple[str, ...] = ()
     state_schema_version: int = 1
@@ -297,6 +342,8 @@ class PluginManifest:
                     "effects": [effect.value for effect in tool.effects],
                     "replay_policy": tool.replay_policy,
                     "capabilities": list(tool.capabilities),
+                    "path_argument_keys": list(tool.path_argument_keys),
+                    "supports_parallel": tool.supports_parallel,
                 }
                 for tool in self.tools
             ],
@@ -309,10 +356,13 @@ class PluginManifest:
                     "capabilities": list(command.capabilities),
                     "busy_gate": command.busy_gate,
                     "client_capabilities": list(command.client_capabilities),
+                    "direct_user": command.direct_user,
+                    "client_syntax": command.client_syntax,
                 }
                 for command in self.commands
             ],
             "capabilities": [{"name": item.name, "reason": item.reason} for item in self.capabilities],
+            "hooks": [{"kind": hook.kind, "match": list(hook.match), "mutating": hook.mutating} for hook in self.hooks],
             "providers": [{"name": item.name, "description": item.description} for item in self.providers],
             "depends": list(self.depends),
             "state_schema_version": self.state_schema_version,

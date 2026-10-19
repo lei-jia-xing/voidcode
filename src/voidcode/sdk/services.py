@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
 from .json_values import json_wire_object, own_json_object
@@ -49,6 +50,56 @@ class ContinuationResult:
 
 
 @dataclass(frozen=True, slots=True)
+class EventView:
+    """One bounded, read-only view of a committed session event."""
+
+    sequence: int
+    event_type: str
+    run_id: str
+    revision_id: str
+    source: str
+    actor: str
+    payload: Mapping[str, object] | None = None
+    payload_truncated: bool = False
+
+    def __post_init__(self) -> None:
+        if self.payload is not None:
+            object.__setattr__(self, "payload", own_json_object(self.payload))
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "sequence": self.sequence,
+            "event_type": self.event_type,
+            "run_id": self.run_id,
+            "revision_id": self.revision_id,
+            "source": self.source,
+            "actor": self.actor,
+            "payload": None if self.payload is None else json_wire_object(self.payload),
+            "payload_truncated": self.payload_truncated,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ChildOutcome:
+    """Outcome of a delegated child session, as observed by its parent."""
+
+    child_session_id: str
+    status: Literal["completed", "failed", "interrupted", "cancelled", "running", "waiting"]
+    output: str | None = None
+    error: str | None = None
+    stop_cause: str | None = None
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "child_session_id": self.child_session_id,
+            "status": self.status,
+            "output": self.output,
+            "error": self.error,
+            "stop_cause": self.stop_cause,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class PluginBudget:
     """Owner-scoped budget constraints for an active goal or task."""
 
@@ -70,6 +121,166 @@ class PluginBudget:
             "max_cost_usd": self.max_cost_usd,
             "max_elapsed_seconds": self.max_elapsed_seconds,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactReference:
+    """Identity of one immutable, content-addressed artifact in the kernel's store."""
+
+    sha256: str
+    bytes: int
+    media_type: str = "application/octet-stream"
+
+    def as_payload(self) -> dict[str, object]:
+        return {"sha256": self.sha256, "bytes": self.bytes, "media_type": self.media_type}
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactPage:
+    """One bounded read of an artifact: `data` at `offset`, `eof` when the store ends there."""
+
+    sha256: str
+    offset: int
+    total_bytes: int
+    data: bytes
+    eof: bool
+    #: The type the artifact was stored with; empty when its producer declared none.
+    media_type: str = ""
+
+    @property
+    def text(self) -> str:
+        """The page decoded UTF-8 (invalid bytes replaced) for callers that page text."""
+        return self.data.decode("utf-8", errors="replace")
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessHandle:
+    """Identity of one supervised background process, as the caller persists it.
+
+    `pid` alone is not an identity: `start_time` is the kernel's own start stamp for that pid, so a
+    later reuse of the number can never be mistaken for this process.
+    """
+
+    process_id: str
+    pid: int
+    start_time: str
+    stdout_path: str
+    stderr_path: str
+    running: bool = True
+    exit_code: int | None = None
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "process_id": self.process_id,
+            "pid": self.pid,
+            "start_time": self.start_time,
+            "stdout_path": self.stdout_path,
+            "stderr_path": self.stderr_path,
+            "running": self.running,
+            "exit_code": self.exit_code,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessOutput:
+    """One bounded page of a supervised process's log, with its liveness at read time."""
+
+    process_id: str
+    stream: str
+    offset: int
+    total_bytes: int
+    data: bytes
+    eof: bool
+    running: bool
+
+    @property
+    def text(self) -> str:
+        """The page decoded UTF-8 (invalid bytes replaced) for callers that page text."""
+        return self.data.decode("utf-8", errors="replace")
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessResult:
+    """Outcome of one lease-scoped child process.
+
+    `stdout`/`stderr` are decoded UTF-8 (invalid bytes replaced) and bounded; when a stream was
+    cut at the capture bound `truncated` is set, so a caller never mistakes a clipped capture for
+    complete output. A process the runtime stopped is reported by `timed_out`/`cancelled`, which
+    are separate from the real exit status.
+    """
+
+    exit_code: int | None
+    stdout: str
+    stderr: str
+    duration_ms: int
+    truncated: bool = False
+    timed_out: bool = False
+    cancelled: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class SessionInfo:
+    """Neutral facts about one session, read as one row (never a scan).
+
+    `pending_approval` is the parked approval request this session is waiting on, if any, in the
+    same shape the kernel reports to a client. `chain_budget`/`chain_reserved` are the caller's
+    root action chain's total and spent actions; nested requests consume this same budget.
+    """
+
+    session_id: str
+    status: str
+    run_id: str | None
+    revision_id: str
+    parent_session_id: str | None
+    root_session_id: str
+    depth: int
+    turn: int
+    last_event_sequence: int
+    tool_allowlist: tuple[str, ...] | None = None
+    pending_approval: Mapping[str, object] | None = None
+    chain_budget: int | None = None
+    chain_reserved: int | None = None
+    budget: PluginBudget | None = None
+
+    def __post_init__(self) -> None:
+        if self.pending_approval is not None:
+            object.__setattr__(self, "pending_approval", own_json_object(self.pending_approval))
+        if self.tool_allowlist is not None:
+            object.__setattr__(self, "tool_allowlist", tuple(self.tool_allowlist))
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "session_id": self.session_id,
+            "status": self.status,
+            "run_id": self.run_id,
+            "revision_id": self.revision_id,
+            "parent_session_id": self.parent_session_id,
+            "root_session_id": self.root_session_id,
+            "depth": self.depth,
+            "turn": self.turn,
+            "last_event_sequence": self.last_event_sequence,
+            "tool_allowlist": None if self.tool_allowlist is None else list(self.tool_allowlist),
+            "pending_approval": None if self.pending_approval is None else json_wire_object(self.pending_approval),
+            "chain_budget": self.chain_budget,
+            "chain_reserved": self.chain_reserved,
+            "budget": None if self.budget is None else self.budget.as_payload(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ToolInvocationReceipt:
+    """A same-session request staged with the caller's result, never executed inside its RPC.
+
+    The kernel runs it after the callback returns, through ordinary admission and approval.
+    Its committed result is available in this session's events under `request_id`.
+    """
+
+    request_id: str
+    tool_name: str
+    depth: int
+
+    def as_payload(self) -> dict[str, object]:
+        return {"request_id": self.request_id, "tool_name": self.tool_name, "depth": self.depth}
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +325,10 @@ class PluginServices(Protocol):
         """Fetch current state and version for the bound owner in the given scope."""
         ...
 
+    def get_state_schema_version(self, scope: Literal["session", "workspace"] = "session") -> int:
+        """Declared state schema version of the bound owner's current row (0 when it has none)."""
+        ...
+
     def replace_state(
         self,
         state: Mapping[str, object],
@@ -127,8 +342,250 @@ class PluginServices(Protocol):
         """Stage a plugin-namespaced event to be committed atomically with this turn."""
         ...
 
-    def enqueue_continuation(self, payload: Mapping[str, object], *, idempotency_key: str | None = None) -> str:
-        """Enqueue a durable continuation to be processed asynchronously by the session."""
+    def enqueue_continuation(
+        self,
+        payload: Mapping[str, object],
+        *,
+        idempotency_key: str | None = None,
+        role: Literal["system", "user"] = "system",
+    ) -> str:
+        """Enqueue a durable continuation that the session renders as a message of `role`.
+
+        A `user`-role continuation with a string `text` field is rendered verbatim as a user
+        message; any other payload is rendered as its JSON under the kernel's attribution line.
+        """
+        ...
+
+    def spawn_child(
+        self,
+        prompt: str,
+        *,
+        label: str = "",
+        tool_allowlist: tuple[str, ...] | None = None,
+        max_steps: int = 32,
+        readonly: bool = False,
+    ) -> str:
+        """Start a delegated child session of the bound session; returns its durable session id.
+
+        The child can only be narrower than its parent: depth, the chain's spawn budget, the
+        parent's tool scope, and the parent's restrictive stance all bound it. A read-only lease
+        may therefore delegate read-only work, but never spawn a writable child; `readonly=True`
+        records the child's stance durably on the child session (the kernel owns that record).
+        """
+        ...
+
+    def join_child(self, child_session_id: str, *, timeout_seconds: float = 300.0) -> ChildOutcome:
+        """Wait for a child this session spawned to reach a terminal state (no polling)."""
+        ...
+
+    def project_window(
+        self,
+        *,
+        covered_from_sequence: int,
+        covered_to_sequence: int,
+        replacement: str,
+    ) -> None:
+        """Declare the projection that replaces a committed prefix of this session's window.
+
+        The kernel verifies the boundary (it must end a completed native batch) and measures the
+        accounting itself: the covered bytes are the encoded size of the replaced events, and the
+        dropped bytes are what the replacement does not carry. A projection that would grow the
+        window is refused. Events are never rewritten; only assembly substitutes the replacement.
+        """
+        ...
+
+    def window_projection(self) -> Mapping[str, object] | None:
+        """The session's current verified projection (coverage, replacement, measured accounting)."""
+        ...
+
+    def clear_window_projection(self) -> bool:
+        """Drop this session's projection, making the raw window visible again."""
+        ...
+
+    def set_overlay(self, tier: Literal["read-only"] = "read-only") -> None:
+        """Tighten the bound session with an owner-owned restrictive overlay.
+
+        Overlays can only restrict; an owner revokes exactly its own row, and the kernel's
+        frozen policy is never affected. This call requires an authentic user-authority
+        invocation (e.g. a `direct_user` command), never a model/agent path.
+        """
+        ...
+
+    def clear_overlay(self) -> bool:
+        """Revoke this owner's own overlay; returns whether one was active."""
+        ...
+
+    def schedule_wakeup(
+        self,
+        payload: Mapping[str, object],
+        *,
+        due_at_ms: int,
+        idempotency_key: str | None = None,
+        role: Literal["system", "user"] = "system",
+    ) -> str:
+        """Schedule a future turn of the bound session; the kernel claims it atomically.
+
+        With an idempotency key the identity is deterministic, so re-scheduling the same future
+        point never creates a second wakeup.
+        """
+        ...
+
+    def cancel_wakeup(self, wakeup_id: str) -> bool:
+        """Cancel a pending wakeup owned by this plugin (claimed wakeups are untouched)."""
+        ...
+
+    def read_events(
+        self,
+        *,
+        after_sequence: int = 0,
+        limit: int = 100,
+        include_payload: bool = True,
+    ) -> tuple[EventView, ...]:
+        """Read this session's committed events, bounded in count and payload size."""
+        ...
+
+    def session_info(self) -> SessionInfo:
+        """Facts about the bound session: status, run, revision, lineage, approval, chain budget.
+
+        One row read of this session's own record; the chain budget it reports is the caller's
+        root chain, which is what bounds delegation and nested invocation.
+        """
+        ...
+
+    def read_child_events(
+        self,
+        child_session_id: str,
+        *,
+        after_sequence: int = 0,
+        limit: int = 100,
+        include_payload: bool = True,
+    ) -> tuple[EventView, ...]:
+        """Read a child session's committed events, bounded in count and payload size.
+
+        Restricted to this session's own root chain: the kernel checks the lineage, so a plugin
+        can never read an unrelated session by naming it. Bounds are the same as `read_events`.
+        """
+        ...
+
+    def invoke_tool(
+        self,
+        name: str,
+        arguments: Mapping[str, object] | None = None,
+        *,
+        expected_revision: str,
+    ) -> ToolInvocationReceipt:
+        """Invoke another tool through this session's ordinary admission path.
+
+        The kernel resolves the target in the active revision the caller displayed
+        (`expected_revision`), applies the session's tool scope, read-only stance, pre-tool gates,
+        declared-effect approval policy, and the target's capabilities exactly as it does for a
+        model-requested call. Requests are staged atomically with the caller's result and execute
+        only after its callback returns; this receipt never waits on execution or human consent.
+        Approvable targets go through the ordinary approval boundary, never a rejection for
+        needing approval. Recursion consumes the chain's action budget and carries kernel-counted
+        depth. Hook leases cannot invoke.
+        """
+        ...
+
+    def run_process(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path | str | None = None,
+        env: Mapping[str, str] | None = None,
+        stdin: bytes | str | None = None,
+        timeout_seconds: float | None = None,
+        max_output_bytes: int = 262144,
+        on_output: Callable[[str, bytes], None] | None = None,
+    ) -> ProcessResult:
+        """Run one child process of this plugin host, in its own process group under this lease.
+
+        Nothing here crosses an RPC: the host owns the process, the bytes, and the bounds, and the
+        kernel's own governance already decided whether the calling tool may execute at all. What
+        the lease adds is stance: a read-only lease and a hook lease are refused outright, because
+        neither may touch the machine. `env` overrides the inherited environment; `cwd` defaults to
+        the workspace. Each stream is captured up to `max_output_bytes` and the excess is dropped
+        with `truncated` set. A lease cancellation kills the whole group before returning.
+        """
+        ...
+
+    def spill_artifact(self, data: bytes | str, *, media_type: str = "text/plain; charset=utf-8") -> ArtifactReference:
+        """Store bytes under their own content address and return the reference to them.
+
+        The artifact exists (immutably) before any fact that references it commits, so a result
+        carrying a reference can never point at missing bytes. Spilling touches only the kernel's
+        own store: a read-only lease may spill output it could not otherwise carry, a hook lease
+        (an observer) may not.
+        """
+        ...
+
+    def read_artifact(
+        self,
+        reference: ArtifactReference | Mapping[str, object] | str,
+        *,
+        offset: int = 0,
+        limit: int = 65536,
+    ) -> ArtifactPage:
+        """Read one bounded page of an artifact; `eof` when the page reaches the end."""
+        ...
+
+    def spawn_process(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path | str | None = None,
+        env: Mapping[str, str] | None = None,
+        stdin: bool = False,
+        stdout_path: Path | str | None = None,
+        stderr_path: Path | str | None = None,
+        process_id: str | None = None,
+    ) -> ProcessHandle:
+        """Start a supervised process that outlives this invocation, and return its identity.
+
+        Supervised means the host owns the live process and its group: `cancel_process` stops the
+        whole group, and the owner's shutdown stops every supervised process. What the caller owns
+        is the identity — persist `ProcessHandle` (pid + start_time + log paths): after the caller's
+        own restart the host no longer supervises that process, and only that identity can tell a
+        live process from a recycled pid. Output goes to the log paths you name (created, never
+        truncated); pass none and the host spools into its own temporary files, whose paths the
+        returned handle carries. A duplicate `process_id` is refused, so a retried start cannot
+        silently create a second process.
+        """
+        ...
+
+    def write_process(self, process_id: str, data: bytes | str) -> int:
+        """Write to a supervised process's stdin; returns the bytes accepted.
+
+        Only for processes started with `stdin=True` in this host: a process that survived a host
+        restart keeps running but its pipe did not, so that write is refused rather than lost.
+        """
+        ...
+
+    def read_process_output(
+        self,
+        process_id: str,
+        *,
+        stream: Literal["stdout", "stderr"] = "stdout",
+        offset: int = 0,
+        limit: int = 65536,
+    ) -> ProcessOutput:
+        """Read one bounded page of a supervised process's log, with its liveness."""
+        ...
+
+    def cancel_process(self, process_id: str, reason: str = "owner cancellation") -> bool:
+        """Stop a supervised process: SIGTERM its group, then SIGKILL; True when it is gone."""
+        ...
+
+    def list_processes(self) -> tuple[ProcessHandle, ...]:
+        """Every process this host supervises for this session, running or already exited."""
+        ...
+
+    def model_query(self, prompt: str, *, model: str | None = None, max_output_tokens: int | None = None) -> str:
+        """One governed provider turn with no tools and no history; returns the text output."""
+        ...
+
+    def cancel_child(self, child_session_id: str, reason: str = "owner cancellation") -> bool:
+        """Cancel a child this session spawned, whether it is running or parked for approval."""
         ...
 
     def cancel_continuations(self, *, continuation_id: str | None = None) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import threading
@@ -21,10 +22,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..sdk.codec import (
     decode_provider_result,
+    decode_tool_call,
     decode_tool_result,
     encode_message,
     encode_provider_result,
     encode_tool_call,
+    encode_tool_definition,
     encode_tool_result,
 )
 from ..sdk.commands import (
@@ -33,17 +36,28 @@ from ..sdk.commands import (
     CommandResult,
 )
 from ..sdk.config import KernelConfig
-from ..sdk.hooks import StopCause
+from ..sdk.hooks import RequestWindow, StopCause, WindowSegment
 from ..sdk.invocation import ToolContext
 from ..sdk.json_values import json_wire_object
 from ..sdk.plugin import HostPlugin
 from ..sdk.provider import ProviderMessage, ProviderTurnRequest
 from ..sdk.services import (
+    ChildOutcome,
     ContinuationResult,
     PluginBudget,
     SessionUsageReport,
 )
-from ..sdk.tools import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult, ToolSuccess, has_external_mutations
+from ..sdk.tools import (
+    TextOutput,
+    ToolCall,
+    ToolDefinition,
+    ToolEffect,
+    ToolFailure,
+    ToolResult,
+    ToolSuccess,
+    denied_under_restriction,
+    has_external_mutations,
+)
 from ..sdk.views import PluginViewDescriptor, ViewsSnapshot
 from .activation import (
     Admission,
@@ -55,7 +69,8 @@ from .activation import (
     sdk_source_hash,
     write_private_snapshot,
 )
-from .host import HostClient, HostTimeout, HostUnavailable, InvocationCancelled, ToolInvocationOutcome
+from .coverage import model_result_text, read_coverage
+from .host import HostClient, HostTimeout, HostUnavailable, InvocationCancelled, LeaseContext, ToolInvocationOutcome
 from .storage.store import (
     Checkpoint,
     EventDraft,
@@ -69,6 +84,7 @@ from .storage.store import (
     StagedStateUpdate,
     StoreConflict,
     StoredEvent,
+    canonical_json,
 )
 
 
@@ -116,6 +132,11 @@ _PARKED_INTERVENING_TYPES = frozenset(
         "kernel.command_intent",
         "kernel.confirmation_requested",
         "kernel.confirmation_decided",
+        "kernel.child_spawned",
+        "kernel.child_finished",
+        "kernel.model_query",
+        "kernel.tool_deferred",
+        "kernel.tool_progress",
         "kernel.observer_error",
         "kernel.activation_requested",
         "kernel.activation_committed",
@@ -179,6 +200,15 @@ _CORE_TOOL_SPECS: tuple[tuple[str, str, Mapping[str, object], tuple[ToolEffect, 
     ),
 )
 CORE_TOOL_NAMES = frozenset(name for name, _d, _s, _e in _CORE_TOOL_SPECS)
+
+#: Delegation limits inherited from the pre-cutover policy: a chain nests at most this deep
+#: and spawns at most this many children in total.
+#: Client ingress guard for a prompt typed by a client.
+CLIENT_PROMPT_MAX_BYTES = 64 * 1024
+#: Kernel guard for a delegated prompt; owners enforce their own tighter product caps.
+CHILD_PROMPT_MAX_BYTES = 256 * 1024
+DELEGATION_MAX_DEPTH = 3
+DELEGATION_SPAWN_BUDGET = 4
 
 #: Reserved core command that activates the configured sources on explicit request.
 RELOAD_COMMAND_NAME = "kernel.reload"
@@ -280,6 +310,10 @@ class _Cursor(BaseModel):
     next_call: int = Field(default=0, ge=0)
     intent_sequence: int | None = Field(default=None, ge=1)
     approval_sequence: int | None = Field(default=None, ge=1)
+    #: A plugin-requested call, executed only after its caller's callback has returned.
+    deferred_sequence: int | None = Field(default=None, ge=1)
+    deferred_depth: int = Field(default=0, ge=0)
+    deferred_only: bool = False
     step: int = Field(default=0, ge=0)
     abandon_batch: bool = False
     continuation_id: str | None = None
@@ -354,8 +388,12 @@ class Kernel:
         self.workspace = workspace.resolve(strict=True)
         self._abort = Cancellation()
         self._closed = False
-        # ponytail: serialize workspace runs; per-session scheduling when concurrent runs are needed.
-        self._run_lock = Lock()
+        # One run lock per session: independent sessions (delegated children, cron firings, a
+        # user turn beside a background run) execute concurrently in the same workspace. The
+        # activation barrier does not depend on this lock; it uses the dispatch fence and the
+        # in-transaction blocker check.
+        self._session_locks: dict[str, Lock] = {}
+        self._session_locks_guard = Lock()
         self._session_aborts: dict[str, Cancellation] = {}
         self._aborts_lock = Lock()
         # One pointer per capability generation, plus short-critical-section call accounting.
@@ -369,6 +407,10 @@ class Kernel:
         self._observer_eligibility: dict[tuple[str, str], tuple[str, ...]] = {}
         self._state_dir = state_dir
         self._admits = admits
+        # One watcher per live child session: join waits on it instead of polling, and the
+        # recorded outcome is what a parent receives even after the child has exited.
+        self._child_outcomes: dict[str, tuple[threading.Event, dict[str, object]]] = {}
+        self._child_outcomes_lock = Lock()
         self._authorized_paths = frozenset() if admission is None else admission.authorized_paths
         with ExitStack() as resources:
             # Lock the directory inode, independent of the selected database path.
@@ -393,6 +435,14 @@ class Kernel:
                 store=self.store,
                 usage_callback=self._get_session_usage,
                 budget_callback=self._get_owner_budget,
+                spawn_child_callback=lambda parent, prompt, label, max_steps, scope, readonly: self.spawn_child(
+                    parent, prompt, label=label, tool_allowlist=scope, max_steps=max_steps, readonly=readonly
+                ),
+                join_child_callback=lambda parent, child, timeout: self.join_child(parent, child, timeout_seconds=timeout).as_payload(),
+                cancel_child_callback=self.cancel_child,
+                model_query_callback=self.governed_model_query,
+                progress_callback=self._report_progress,
+                artifacts_dir=self._state_dir / "artifacts",
                 lease_fd=lease,
             )
             # A host whose registry cannot be published is closed here: nothing may outlive a
@@ -416,15 +466,37 @@ class Kernel:
             # (host, store, workspace lease) instead of leaking an already-detached kernel.
             self._replay_pending_observers()
             self._driver: threading.Thread | None = None
+            self._ticker: threading.Thread | None = None
             if self.auto_drain:
                 # A crash between an activation commit and its automatic continuation leaves a
                 # durable resume intent; this driver is what actually finishes that work.
                 self._driver = threading.Thread(target=self._drive_pending_activations, name="KernelActivationDriver", daemon=True)
                 self._driver.start()
+                self._ticker = threading.Thread(target=self._wakeup_loop, name="KernelWakeupTicker", daemon=True)
+                self._ticker.start()
             # Adopt the generation LAST: a failed cold start must leave the workspace unadopted, so
             # fixing the same authorized source and retrying works without deleting any database.
             self.store.record_workspace_revision(str(self.workspace), revision_id)
             self._resources = resources.pop_all()
+
+    @contextmanager
+    def _session_lock(self, session_id: str) -> Iterator[None]:
+        """Serialize work of ONE session; different sessions never block each other."""
+        with self._session_locks_guard:
+            lock = self._session_locks.get(session_id)
+            if lock is None:
+                lock = Lock()
+                self._session_locks[session_id] = lock
+        with lock:
+            yield
+
+    def _drain_session_locks(self) -> None:
+        """Wait for every in-flight session run to finish; callers have already set `_closed`."""
+        with self._session_locks_guard:
+            locks = list(self._session_locks.values())
+        for lock in locks:
+            with lock:
+                continue
 
     def _close_host(self) -> None:
         self._snapshot.host.close()
@@ -522,7 +594,7 @@ class Kernel:
             else None
         )
         try:
-            if cursor.batch_sequence is not None:
+            if cursor.batch_sequence is not None or cursor.deferred_sequence is not None:
                 # The parked batch is never replayed: report its members as interrupted first.
                 self._interrupt_batch(execution)
             self._commit(
@@ -589,24 +661,49 @@ class Kernel:
     def close(self) -> None:
         self.cancel("kernel shutdown", cause="shutdown")
         driver: threading.Thread | None = None
-        with self._run_lock:
-            if not self._closed:
-                self._closed = True
-                driver = self._driver
-                self._resources.close()
+        ticker: threading.Thread | None = None
+        with self._session_locks_guard:
+            if self._closed:
+                return
+            self._closed = True
+            driver = self._driver
+            ticker = self._ticker
+        # No new session work can start (run/resume check `_closed` under their lock), so
+        # draining every session lock now waits only for work that was already admitted.
+        self._drain_session_locks()
+        snapshot = self._snapshot
+        if snapshot is not None:
+            # The kernel's own shutdown is an owner shutdown: supervised background processes end
+            # with it. A reload keeps them: the host swap is not the owner going away.
+            snapshot.host.stop_background_processes()
+        self._resources.close()
         if driver is not None:
             driver.join(timeout=5)
+        if ticker is not None:
+            ticker.join(timeout=5)
 
     def run(self, prompt: str, *, session_id: str | None = None, max_steps: int = 32) -> KernelResult:
-        if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode("utf-8")) > 64 * 1024:
-            raise ValueError("prompt must be nonempty UTF-8 text within 64 KiB")
+        return self._run(prompt, session_id=session_id, max_steps=max_steps, prompt_max_bytes=CLIENT_PROMPT_MAX_BYTES)
+
+    def _run(
+        self,
+        prompt: str,
+        *,
+        session_id: str | None = None,
+        max_steps: int = 32,
+        prompt_max_bytes: int,
+    ) -> KernelResult:
+        # The client ingress guard is deliberately tighter than the delegated-prompt guard:
+        # a kernel-driven child run carries a delegated payload (e.g. a review diff).
+        if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode("utf-8")) > prompt_max_bytes:
+            raise ValueError(f"prompt must be nonempty UTF-8 text within {prompt_max_bytes // 1024} KiB")
         self._validate_steps(max_steps)
         if session_id is not None and (not isinstance(session_id, str) or not session_id or len(session_id) > 128 or "\0" in session_id):
             raise ValueError("session_id must be nonempty text within 128 characters without NUL")
-        with self._run_lock:
+        session_id = uuid4().hex if session_id is None else session_id
+        with self._session_lock(session_id):
             self._ensure_open()
             self._abort.set_cancelled(False)
-            session_id = uuid4().hex if session_id is None else session_id
             abort = Cancellation()
             with self._aborts_lock:
                 self._session_aborts[session_id] = abort
@@ -635,7 +732,7 @@ class Kernel:
                         execution.cursor = _Cursor.model_validate(json_wire_object(previous.payload))
                         execution.cursor.step = 0
                         execution.cursor.stop_cause = None
-                    if execution.cursor.batch_sequence is not None:
+                    if execution.cursor.batch_sequence is not None or execution.cursor.deferred_sequence is not None:
                         # The stopped batch is never replayed: report its members before the new turn.
                         self._interrupt_batch(execution)
                     # The new user turn owns its own fresh root budget: the stopped
@@ -658,7 +755,7 @@ class Kernel:
         max_steps: int = 32,
     ) -> KernelResult:
         self._validate_steps(max_steps)
-        with self._run_lock:
+        with self._session_lock(session_id):
             self._ensure_open()
             self._abort.set_cancelled(False)
             abort = Cancellation()
@@ -714,7 +811,12 @@ class Kernel:
                         definition = self._definitions.get(call.tool_name)
                         if definition is None:
                             raise ValueError("approved tool is not in the active capability revision")
-                        denial = self._denial(call, definition)
+                        resume_read_only = self._session_read_only(execution.session.session_id)
+                        denial = self._denial(call, definition, read_only=resume_read_only)
+                        if denial is None:
+                            # The gate is re-asked on the approval path too: consent to run a
+                            # tool never overrides a gate that refuses it.
+                            denial = self._gate_denial(execution, self._snapshot, call, readonly=resume_read_only)
                         if denial:
                             self._report(execution, call, ToolFailure(call.tool_name, denial))
                         else:
@@ -759,6 +861,33 @@ class Kernel:
                 return
             if results[-1].run_status not in ("completed", "idle"):
                 return
+
+    def _drain_deferred_requests(self, session_id: str) -> None:
+        """A command's callback has returned; run its committed requests without a model call."""
+        with self._session_lock(session_id):
+            self._ensure_open()
+            session = self.session(session_id)
+            if not self._admits_fresh_work(session):
+                return
+            root_id = uuid4().hex
+            execution = _Execution(
+                session,
+                _Cursor(root_id=root_id, action_budget_remaining=32, deferred_only=True, logical_turn=uuid4().hex),
+                list(self.store.events(session_id)),
+                uuid4().hex,
+            )
+            if self._next_deferred(execution) is None:
+                return
+            self.store.ensure_root_budget(root_id, 32)
+            abort = Cancellation()
+            with self._aborts_lock:
+                self._session_aborts[session_id] = abort
+            try:
+                self._commit(execution, "running", "ready", EventDraft("kernel.tool_deferred_started", "kernel", "plugin", {}))
+                self._drive(execution, max_steps=32)
+            finally:
+                with self._aborts_lock:
+                    self._session_aborts.pop(session_id, None)
 
     def command_catalog(self) -> CommandCatalog:
         """Command catalog captured together with the revision that admits it.
@@ -1107,9 +1236,12 @@ class Kernel:
             raise PermissionError(f"Client lacks required capabilities for command '{name}': missing {set(missing)}")
 
         # 5. Core read-only policy check: external mutation only, so reads and
-        # internal SESSION state operations stay available in every mode.
+        # internal SESSION state operations stay available in every mode. A command
+        # that declares direct-user authority runs on authentic client ingress only
+        # (the kernel sets the actor itself), so the user's own explicit action is
+        # not blocked by a read-only session; agent/plugin paths never reach this.
         self._check_session(s)
-        if self.config.policy.read_only and has_external_mutations(frozenset(cmd_desc.effects)):
+        if self._session_read_only(session_id) and denied_under_restriction(frozenset(cmd_desc.effects)) and not cmd_desc.direct_user:
             return CommandResult(status="error", error="read-only policy denies command write effects")
 
         # 6. Schema validation of arguments
@@ -1123,15 +1255,22 @@ class Kernel:
         run_id = s.run_id or uuid4().hex
         inv_id = uuid4().hex
         command_caps = frozenset(cmd_desc.capabilities)
+        coverage = read_coverage(self.store.events(session_id), workspace=self.workspace, session_id=session_id)
         context = ToolContext(
             workspace=self.workspace,
             session_id=session_id,
             run_id=run_id,
             invocation_id=inv_id,
             revision_id=self.revision_id,
-            actor="client",
+            # Direct-user commands run on authentic client ingress with the kernel-set user
+            # actor; every other command is attributed to the client acting for the model.
+            actor="user" if cmd_desc.direct_user else "client",
             capabilities=command_caps,
             logical_turn=uuid4().hex,
+            read_paths=coverage.read_paths,
+            read_lines=coverage.read_lines,
+            read_whole_files=coverage.read_whole_files,
+            read_hash=coverage.read_hash,
         )
         with self._dispatch(f"command:{name}"):
             latest_sess = self.store.session(session_id)
@@ -1243,7 +1382,9 @@ class Kernel:
                         f"owner {cmd_desc.owner} cancelled its durable work",
                     )
 
-            return cmd_result
+        if any(event.event_type == "kernel.tool_deferred" for event in staged_events):
+            self._drain_deferred_requests(session_id)
+        return cmd_result
 
     def confirm_action(
         self,
@@ -1289,6 +1430,7 @@ class Kernel:
         run_id = s.run_id or uuid4().hex
         inv_id = uuid4().hex
         command_caps = frozenset(cmd_desc.capabilities)
+        coverage = read_coverage(self.store.events(session_id), workspace=self.workspace, session_id=session_id)
         context = ToolContext(
             workspace=self.workspace,
             session_id=session_id,
@@ -1298,6 +1440,10 @@ class Kernel:
             actor="user",
             capabilities=command_caps,
             logical_turn=uuid4().hex,
+            read_paths=coverage.read_paths,
+            read_lines=coverage.read_lines,
+            read_whole_files=coverage.read_whole_files,
+            read_hash=coverage.read_hash,
         )
 
         with self._dispatch(f"command:{rec.command_name}"):
@@ -1358,7 +1504,9 @@ class Kernel:
                         f"owner {cmd_desc.owner} cancelled its durable work",
                     )
 
-            return cmd_result
+        if any(event.event_type == "kernel.tool_deferred" for event in staged_events):
+            self._drain_deferred_requests(session_id)
+        return cmd_result
 
     def _commit_confirmation_decision(self, session_id: str, request_id: str, command_name: str, decision: str) -> None:
         """Record one decided confirmation durably, so clients can reduce a pending request."""
@@ -1427,7 +1575,7 @@ class Kernel:
     ) -> tuple[ContinuationResult, ...]:
         """Claim and execute pending continuations as governed runs with plugin provenance."""
         self._validate_steps(max_steps)
-        with self._run_lock:
+        with self._session_lock(session_id):
             self._ensure_open()
             self._abort.set_cancelled(False)
             s = self.session(session_id)
@@ -1757,6 +1905,14 @@ class Kernel:
                 store=self.store,
                 usage_callback=self._get_session_usage,
                 budget_callback=self._get_owner_budget,
+                spawn_child_callback=lambda parent, prompt, label, max_steps, scope, readonly: self.spawn_child(
+                    parent, prompt, label=label, tool_allowlist=scope, max_steps=max_steps, readonly=readonly
+                ),
+                join_child_callback=lambda parent, child, timeout: self.join_child(parent, child, timeout_seconds=timeout).as_payload(),
+                cancel_child_callback=self.cancel_child,
+                model_query_callback=self.governed_model_query,
+                progress_callback=self._report_progress,
+                artifacts_dir=self._state_dir / "artifacts",
                 lease_fd=self._lease_fd,
             )
             # Flush facts that belong to the OLD generation before its hosts and subscriptions go away.
@@ -1789,6 +1945,316 @@ class Kernel:
 
     def _sdk_root(self) -> Path:
         return Path(__file__).resolve().parents[1] / "sdk"
+
+    def spawn_child(
+        self,
+        parent_session_id: str,
+        prompt: str,
+        *,
+        label: str = "",
+        tool_allowlist: tuple[str, ...] | None = None,
+        max_steps: int = 32,
+        readonly: bool = False,
+    ) -> str:
+        """Create and start a delegated child session under `parent_session_id`.
+
+        Limits are kernel-owned: depth, the chain's spawn budget, and the parent's tool scope.
+        The child inherits the kernel policy unchanged (a request can never widen it), and its
+        allowlist may only narrow the parent's visible catalog.
+        """
+        if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode("utf-8")) > CHILD_PROMPT_MAX_BYTES:
+            # A kernel guard, not a product budget: a delegated prompt may carry a whole
+            # review diff, so owners enforce their own tighter caps before calling here.
+            raise ValueError(f"child prompt must be nonempty UTF-8 text within {CHILD_PROMPT_MAX_BYTES // 1024} KiB")
+        self._validate_steps(max_steps)
+        self._ensure_open()
+        parent = self.session(parent_session_id)
+        depth = parent.depth + 1
+        if depth > DELEGATION_MAX_DEPTH:
+            raise ValueError(f"delegation depth limit exceeded: depth {depth} exceeds max {DELEGATION_MAX_DEPTH}")
+        if self.store.count_root_children(parent.root_session_id) >= DELEGATION_SPAWN_BUDGET:
+            raise ValueError("delegation spawn budget exhausted for this chain")
+        scope = self._child_tool_scope(parent, tool_allowlist)
+        child_id = uuid4().hex
+        self.store.create_child_session(
+            child_id,
+            str(self.workspace),
+            self.revision_id,
+            parent_session_id=parent.session_id,
+            root_session_id=parent.root_session_id,
+            depth=depth,
+            tool_allowlist=scope,
+        )
+        if readonly:
+            # Kernel-owned stance record: the child stays restricted even if the parent's
+            # own overlay is later cleared, and no plugin can revoke it.
+            self.store.set_session_overlay(child_id, "kernel")
+        watcher = threading.Event()
+        with self._child_outcomes_lock:
+            self._child_outcomes[child_id] = (watcher, {})
+        self._commit_control_event(
+            parent.session_id,
+            EventDraft(
+                "kernel.child_spawned",
+                "kernel",
+                "plugin",
+                {
+                    "child_session_id": child_id,
+                    "label": label,
+                    "depth": depth,
+                    "tool_allowlist": list(scope) if scope is not None else None,
+                },
+            ),
+        )
+        thread = threading.Thread(
+            target=self._run_child,
+            args=(parent.session_id, child_id, prompt, max_steps),
+            name=f"KernelChild-{child_id[:8]}",
+            daemon=True,
+        )
+        thread.start()
+        return child_id
+
+    def _child_tool_scope(self, parent: SessionRecord, requested: tuple[str, ...] | None) -> tuple[str, ...] | None:
+        """Validate a requested child tool scope: known names, and never wider than the parent."""
+        if requested is None:
+            return parent.tool_allowlist
+        if not isinstance(requested, (list, tuple)) or not requested:
+            raise ValueError("tool_allowlist must be a non-empty sequence of tool names")
+        names = tuple(sorted({str(name) for name in requested}))
+        unknown = [name for name in names if name not in self._snapshot.definitions]
+        if unknown:
+            raise ValueError(f"tool_allowlist names an unknown tool: {unknown[0]}")
+        if parent.tool_allowlist is not None:
+            widened = sorted(set(names) - set(parent.tool_allowlist))
+            if widened:
+                raise ValueError(f"tool_allowlist widens the parent scope: {widened[0]}")
+        return names
+
+    def _run_child(self, parent_session_id: str, child_id: str, prompt: str, max_steps: int) -> None:
+        """Drive one child run to a terminal state and record its outcome for the parent."""
+        try:
+            result = self._run(prompt, session_id=child_id, max_steps=max_steps, prompt_max_bytes=CHILD_PROMPT_MAX_BYTES)
+            outcome: dict[str, object] = {
+                "status": result.status,
+                "output": result.output,
+                "error": result.error,
+                "stop_cause": result.stop_cause,
+            }
+        except Exception as exc:
+            outcome = {
+                "status": "failed",
+                "output": None,
+                "error": f"{type(exc).__name__}: {exc}",
+                "stop_cause": "error",
+            }
+        self._commit_control_event(
+            parent_session_id,
+            EventDraft("kernel.child_finished", "kernel", "plugin", {"child_session_id": child_id, **outcome}),
+        )
+        with self._child_outcomes_lock:
+            entry = self._child_outcomes.get(child_id)
+            if entry is not None:
+                entry[1].update(outcome)
+                entry[0].set()
+
+    def join_child(self, parent_session_id: str, child_id: str, *, timeout_seconds: float = 300.0) -> ChildOutcome:
+        """Wait for a child of this parent to finish; works for a live child or after a restart."""
+        self._ensure_open()
+        child = self._owned_child(parent_session_id, child_id)
+        with self._child_outcomes_lock:
+            entry = self._child_outcomes.get(child_id)
+        if entry is not None:
+            entry[0].wait(timeout=max(0.0, timeout_seconds))
+            with self._child_outcomes_lock:
+                if entry[1]:
+                    return self._child_outcome(child_id, entry[1])
+        # No live watcher (restart, or the child thread outlived a close): the durable records
+        # are the truth. The parent's kernel.child_finished event carries the measured outcome.
+        finished = next(
+            (
+                event
+                for event in reversed(self.store.events(parent_session_id))
+                if event.event_type == "kernel.child_finished" and event.payload.get("child_session_id") == child_id
+            ),
+            None,
+        )
+        if finished is not None:
+            return self._child_outcome(child_id, dict(finished.payload))
+        status = child.status
+        if status == "completed":
+            return ChildOutcome(child_session_id=child_id, status="completed")
+        if status == "failed":
+            return ChildOutcome(child_session_id=child_id, status="failed")
+        if status == "waiting":
+            return ChildOutcome(child_session_id=child_id, status="waiting")
+        if status == "interrupted":
+            return ChildOutcome(child_session_id=child_id, status="cancelled")
+        # No live watcher and no terminal fact: the child's run did not survive.
+        return ChildOutcome(child_session_id=child_id, status="interrupted")
+
+    def cancel_child(self, parent_session_id: str, child_id: str, reason: str = "owner cancellation") -> bool:
+        """Cancel a child of this parent, whether it is executing or parked for approval."""
+        self._owned_child(parent_session_id, child_id)
+        return self.cancel_session(child_id, reason, cause="owner_cancel")
+
+    def _owned_child(self, parent_session_id: str, child_id: str) -> SessionRecord:
+        child = self.session(child_id)
+        if child.parent_session_id != parent_session_id:
+            raise PermissionError("child session does not belong to this parent session")
+        return child
+
+    def _child_outcome(self, child_id: str, payload: Mapping[str, object]) -> ChildOutcome:
+        status = str(payload.get("status", "failed"))
+        if status not in ("completed", "failed", "interrupted", "cancelled"):
+            status = "failed"
+        return ChildOutcome(
+            child_session_id=child_id,
+            status=status,  # type: ignore[arg-type]
+            output=None if payload.get("output") is None else str(payload["output"]),
+            error=None if payload.get("error") is None else str(payload["error"]),
+            stop_cause=None if payload.get("stop_cause") is None else str(payload["stop_cause"]),
+        )
+
+    def tick(self, now_ms: int | None = None) -> dict[str, object]:
+        """Fire at most one due wakeup: claim it atomically with its run, then drive that run."""
+        self._ensure_open()
+        now = int(time.time() * 1000) if now_ms is None else now_ms
+        if type(now) is not int or now < 0:
+            raise ValueError("now_ms must be a non-negative integer")
+        run_id = uuid4().hex
+        logical_turn = uuid4().hex
+        claimed = self.store.claim_and_start_wakeup(
+            str(self.workspace),
+            now,
+            run_id=run_id,
+            logical_turn=logical_turn,
+            revision_id=self.revision_id,
+        )
+        if claimed is None:
+            return {"fired": None}
+        wakeup, session = claimed
+        self.store.ensure_root_budget(wakeup.wakeup_id, 32)
+        cursor = _Cursor(root_id=wakeup.wakeup_id, logical_turn=logical_turn, action_budget_remaining=32)
+        execution = _Execution(session, cursor, list(self.store.events(session.session_id)), run_id)
+        with self._session_lock(session.session_id):
+            result = self._drive(execution, max_steps=32)
+        if result.status in ("completed", "idle"):
+            terminal: Literal["completed", "failed", "cancelled"] = "completed"
+        elif result.status == "failed":
+            terminal = "failed"
+        elif result.stop_cause in ("user_stop", "owner_cancel"):
+            terminal = "cancelled"
+        else:
+            terminal = "failed"
+        self.store.complete_wakeup(wakeup.wakeup_id, terminal)
+        return {"fired": wakeup.wakeup_id, "session_id": session.session_id, "status": result.status, "wakeup_status": terminal}
+
+    def _wakeup_loop(self) -> None:
+        """Kernel-owned tick: one due wakeup per interval, never replaying missed slots."""
+        while not self._closed:
+            try:
+                if self.tick()["fired"] is not None:
+                    continue
+            except Exception:
+                # A tick failure is visible to the next tick; it never kills the kernel.
+                pass
+            time.sleep(1.0)
+
+    def governed_model_query(
+        self,
+        session_id: str,
+        prompt: str,
+        model: str | None = None,
+        max_output_tokens: int | None = None,
+    ) -> str:
+        """One provider turn with no tools and no session history, for plugin-side questions.
+
+        The turn is truthful: its usage becomes a durable control fact, it cannot see or alter
+        the session's conversation, and cancellation/timeout are the kernel's.
+        """
+        if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode("utf-8")) > 64 * 1024:
+            raise ValueError("model query prompt must be nonempty UTF-8 text within 64 KiB")
+        self._ensure_open()
+        self.session(session_id)
+        selected = model or self.config.model.model
+        if selected is None:
+            raise ValueError("no model configured")
+        provider_name, separator, model_name = selected.partition("/")
+        if not separator or not model_name or provider_name not in self.config.providers:
+            raise ValueError("model must name a configured provider/model")
+        metadata: dict[str, object] = {"session_id": session_id, "purpose": "plugin_query"}
+        if max_output_tokens is not None:
+            if type(max_output_tokens) is not int or max_output_tokens < 1:
+                raise ValueError("max_output_tokens must be a positive integer")
+            metadata["max_output_tokens"] = max_output_tokens
+        request = ProviderTurnRequest(
+            messages=(ProviderMessage("user", prompt),),
+            available_tools=(),
+            raw_model=selected,
+            provider_name=provider_name,
+            model_name=model_name,
+            reasoning_effort=self.config.model.reasoning_effort,
+            metadata=metadata,
+            abort_signal=self._abort,
+        )
+        with self._dispatch("model-query") as snapshot:
+            turn = snapshot.host.propose_turn(request, provider=provider_name)
+        if turn.tool_calls:
+            raise RuntimeError("governed model query returned tool calls; none were offered")
+        self._commit_control_event(
+            session_id,
+            EventDraft(
+                "kernel.model_query",
+                "kernel",
+                "plugin",
+                {
+                    "provider": provider_name,
+                    "model": model_name,
+                    "usage": None if turn.usage is None else turn.usage.metadata_payload(),
+                    "cost_usd": None if turn.usage is None else turn.usage.cost_usd,
+                },
+            ),
+        )
+        return turn.output or ""
+
+    def _commit_control_event(self, session_id: str, event: EventDraft) -> None:
+        """Append one kernel control fact on a session without disturbing its run state."""
+        try:
+            session = self.store.session(session_id)
+            self.store.commit_staged(
+                session_id,
+                expected_sequence=session.last_event_sequence,
+                expected_run_id=session.run_id,
+                run_id=session.run_id or uuid4().hex,
+                revision_id=self.revision_id,
+                events=(event,),
+                status=session.status,
+                checkpoint_kind=None,
+                checkpoint_payload=None,
+            )
+        except Exception:
+            # A control fact is diagnostic; losing it never blocks the owner's real work.
+            return
+
+    def _report_progress(self, lease: LeaseContext, payload: Mapping[str, object]) -> None:
+        if len(canonical_json(payload).encode("utf-8")) > 16 * 1024:
+            raise ValueError("progress report exceeds the 16 KiB bound")
+        self._commit_control_event(
+            lease.session_id,
+            EventDraft(
+                "kernel.tool_progress",
+                f"plugin.{lease.owner}",
+                lease.actor,
+                {
+                    "invocation_id": lease.invocation_id,
+                    "owner": lease.owner,
+                    "run_id": lease.run_id,
+                    "revision_id": lease.revision_id,
+                    "progress": json_wire_object(payload),
+                },
+            ),
+        )
 
     def _deactivated_owners(self, snapshot: _Snapshot, admission: Admission) -> frozenset[str]:
         """Owners loaded before that the candidate does not admit: disabled, removed, or missing."""
@@ -2251,6 +2717,24 @@ class Kernel:
             res_data = ev.payload.get("result")
             res_dict = res_data if isinstance(res_data, Mapping) else {}
             tool_status = "error" if (ev.event_type == "kernel.tool_interrupted" or res_dict.get("status") == "error") else "ok"
+            owner = ""
+            effects: list[str] = []
+            invocation_id = ev.payload.get("invocation_id")
+            if isinstance(invocation_id, str):
+                intent_ev = next(
+                    (
+                        candidate
+                        for candidate in execution.events
+                        if candidate.event_type == "kernel.tool_intent" and candidate.payload.get("invocation_id") == invocation_id
+                    ),
+                    None,
+                )
+                if intent_ev is not None:
+                    raw_owner = intent_ev.payload.get("owner")
+                    owner = raw_owner if isinstance(raw_owner, str) else ""
+                    raw_effects = intent_ev.payload.get("effects")
+                    if isinstance(raw_effects, (list, tuple)):
+                        effects = [str(item) for item in raw_effects]
             return "invocation_finished", {
                 "session_id": ev.session_id,
                 "run_id": ev.run_id,
@@ -2261,6 +2745,8 @@ class Kernel:
                 "tool_call_id": call_dict.get("tool_call_id"),
                 "status": tool_status,
                 "error": str(res_dict["error"]) if "error" in res_dict and res_dict["error"] is not None else None,
+                "owner": owner,
+                "effects": effects,
             }
         if ev.event_type in ("kernel.run_completed", "kernel.run_failed", "kernel.run_interrupted"):
             if ev.event_type == "kernel.run_interrupted":
@@ -2493,6 +2979,9 @@ class Kernel:
 
     def _pending(self, execution: _Execution) -> tuple[StoredEvent, ToolCall]:
         cursor = execution.cursor
+        if cursor.deferred_sequence is not None:
+            event = self._event(execution, cursor.deferred_sequence, "kernel.tool_deferred")
+            return event, decode_tool_call(_wire_object(event.payload["call"], "deferred tool call"))
         if cursor.batch_sequence is None:
             raise ValueError("checkpoint has no pending batch")
         event = self._event(execution, cursor.batch_sequence, "kernel.model_turn")
@@ -2501,14 +2990,223 @@ class Kernel:
             raise ValueError("checkpoint is outside its native batch")
         return event, turn.tool_calls[cursor.next_call]
 
-    def _denial(self, call: ToolCall, definition: ToolDefinition) -> str | None:
+    def _next_deferred(self, execution: _Execution) -> StoredEvent | None:
+        """Unsettled requests of this chain, in commit order; no synthetic provider turns."""
+        completed = {
+            event.payload["batch_sequence"]
+            for event in execution.events
+            if event.event_type in {"kernel.tool_completed", "kernel.tool_interrupted"} and event.payload.get("deferred") is True
+        }
+        return next(
+            (
+                event
+                for event in execution.events
+                if event.event_type == "kernel.tool_deferred"
+                and event.sequence not in completed
+                and event.payload.get("root_id", "") in {"", execution.cursor.root_id}
+            ),
+            None,
+        )
+
+    def _post_tool_hooks(
+        self,
+        execution: _Execution,
+        snapshot: _Snapshot,
+        call: ToolCall,
+        result: ToolResult,
+    ) -> ToolResult:
+        """Run declared post-tool hooks inside this invocation, before its result is durable.
+
+        Only a successful result is offered: a hook observes what the tool actually did and
+        appends one note (a formatter reporting what it changed), never a rewritten verdict.
+        A hook failure is recorded as a visible note on the same result, so a broken hook
+        cannot silently disappear from the record the model and the events both carry.
+        """
+        if isinstance(result, ToolFailure):
+            return result
+        text = result.output.text if isinstance(result.output, TextOutput) else ""
+        candidates = [hook for hook in snapshot.host.post_tool_hooks if call.tool_name in hook[1] or "*" in hook[1]]
+        if not candidates:
+            return result
+        restricted = self._session_read_only(execution.session.session_id)
+        notes: list[str] = []
+        for owner, _match, mutating in candidates:
+            if mutating and restricted:
+                # A mutating hook cannot run under a restrictive stance: formatting writes files.
+                notes.append(f"[hook {owner} skipped: read-only policy]")
+                continue
+            try:
+                note = snapshot.host.post_tool(
+                    owner,
+                    session_id=execution.session.session_id,
+                    run_id=execution.run_id,
+                    tool_name=call.tool_name,
+                    tool_call_id=call.tool_call_id,
+                    status="ok",
+                    text=text,
+                    arguments=call.arguments,
+                    readonly=restricted,
+                    logical_turn=execution.cursor.logical_turn,
+                )
+            except HostUnavailable, HostTimeout:
+                raise
+            except Exception as exc:
+                notes.append(f"[hook {owner} failed: {type(exc).__name__}: {exc}]")
+                continue
+            if note:
+                notes.append(note)
+        if not notes:
+            return result
+        return ToolSuccess(
+            result.tool_name,
+            TextOutput("\n\n".join((text, *notes))),
+            result.body,
+        )
+
+    @staticmethod
+    def _request_window(
+        messages: tuple[ProviderMessage, ...],
+        tools: tuple[ToolDefinition, ...],
+    ) -> RequestWindow:
+        """Measure the request exactly as it is about to be sent (kernel truth, no estimates).
+
+        Per-segment facts are character counts and digests of the literal strings, so a client
+        panel derives its view from measurements; token counts stay provider-reported usage.
+        """
+        segments: list[WindowSegment] = []
+        message_characters = 0
+        for message in messages:
+            content = message.content or ""
+            characters = len(content)
+            message_characters += characters
+            segments.append(
+                WindowSegment(
+                    role=message.role,
+                    characters=characters,
+                    sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                    tool_calls=len(message.tool_calls),
+                    tool_name=message.tool_name,
+                    reasoning_characters=len(message.reasoning or ""),
+                )
+            )
+        tool_schema_characters = sum(len(canonical_json(encode_tool_definition(tool))) for tool in tools)
+        return RequestWindow(
+            message_characters=message_characters,
+            tool_schema_characters=tool_schema_characters,
+            segments=tuple(segments),
+            tool_count=len(tools),
+        )
+
+    def _lifecycle_events(
+        self,
+        execution: _Execution,
+        snapshot: _Snapshot,
+        kind: str,
+        *,
+        status: str = "",
+        error: str | None = None,
+    ) -> tuple[EventDraft, ...]:
+        """Notify declared lifecycle hooks and return one durable record per owner.
+
+        Lifecycle hooks are notifications: a note is recorded, and a hook that fails or times out
+        is recorded as failed — neither can change what the run itself decided, and neither is
+        silent. They are fired once per run because the record they leave is the guard.
+        """
+        hooks = [owner for owner, hook_kind in snapshot.host.lifecycle_hooks if hook_kind == kind]
+        events: list[EventDraft] = []
+        for owner in hooks:
+            payload: dict[str, object] = {"hook_kind": kind, "owner": owner, "run_id": execution.run_id}
+            try:
+                note = snapshot.host.run_lifecycle(
+                    owner,
+                    kind,
+                    session_id=execution.session.session_id,
+                    run_id=execution.run_id,
+                    logical_turn=execution.cursor.logical_turn,
+                    status=status,
+                    error=error,
+                )
+            except HostUnavailable, HostTimeout:
+                raise
+            except Exception as exc:
+                payload["error"] = f"{type(exc).__name__}: {exc}"
+            else:
+                if note:
+                    payload["note"] = note
+            payload["logical_turn"] = execution.cursor.logical_turn
+            events.append(EventDraft("kernel.hook_invoked", "plugin", "plugin", payload))
+        return tuple(events)
+
+    def _lifecycle_fired(self, execution: _Execution, kind: str) -> bool:
+        return any(
+            event.event_type == "kernel.hook_invoked"
+            and dict(event.payload).get("hook_kind") == kind
+            and dict(event.payload).get("run_id") == execution.run_id
+            for event in execution.events
+        )
+
+    def _gate_denial(
+        self,
+        execution: _Execution,
+        snapshot: _Snapshot,
+        call: ToolCall,
+        *,
+        readonly: bool,
+    ) -> str | None:
+        """Ask every declared pre-tool gate; failure or a stated reason denies the call.
+
+        Fail-closed by construction: a gate that errors, times out, or vanishes denies, because
+        a gate exists to refuse work and a broken gate must never be read as permission.
+        """
+        gates = [hook for hook in snapshot.host.pre_tool_hooks if call.tool_name in hook[1] or "*" in hook[1]]
+        for owner, _match, mutating in gates:
+            if mutating and readonly:
+                continue
+            try:
+                reason = snapshot.host.pre_tool(
+                    owner,
+                    session_id=execution.session.session_id,
+                    run_id=execution.run_id,
+                    tool_name=call.tool_name,
+                    tool_call_id=call.tool_call_id,
+                    arguments=call.arguments,
+                    readonly=readonly,
+                    logical_turn=execution.cursor.logical_turn,
+                )
+            except HostUnavailable, HostTimeout:
+                raise
+            except Exception as exc:
+                return f"pre-tool gate {owner} failed: {type(exc).__name__}: {exc}"
+            if reason:
+                return f"pre-tool gate {owner} denied the call: {reason}"
+        return None
+
+    def _session_read_only(self, session_id: str) -> bool:
+        """Effective read-only for one session: the frozen kernel policy OR owner overlays."""
+        if self.config.policy.read_only:
+            return True
+        return bool(self.store.session_overlays(session_id))
+
+    def _visible_tools(self, execution: _Execution, snapshot: _Snapshot) -> tuple[ToolDefinition, ...]:
+        """The catalog this session may see: policy scope, then restrictive overlays."""
+        tools = snapshot.tools
+        scope = execution.session.tool_allowlist
+        if scope is not None:
+            tools = tuple(tool for tool in tools if tool.name in scope)
+        if self._session_read_only(execution.session.session_id):
+            tools = tuple(tool for tool in tools if not denied_under_restriction(tool.effects))
+        return tools
+
+    def _denial(self, call: ToolCall, definition: ToolDefinition, *, read_only: bool | None = None) -> str | None:
         try:
             self._validators[definition.name].validate(json_wire_object(call.arguments))
         except jsonschema.ValidationError:
             return "tool arguments failed the admitted JSON schema"
         # read_only denies EXTERNAL mutation only: reads and internal state
-        # operations (SESSION) stay available in every mode.
-        if self.config.policy.read_only and has_external_mutations(definition.effects):
+        # operations (SESSION) stay available in every mode. The session's effective
+        # restriction includes its owner overlays (plan mode) as well as the frozen policy.
+        restricted = self.config.policy.read_only if read_only is None else read_only
+        if restricted and denied_under_restriction(definition.effects):
             return "read-only policy denies the declared tool effects"
         return None
 
@@ -2539,7 +3237,29 @@ class Kernel:
                 return self._stop(execution, reason, stop_cause=cause)
             snapshot = self._snapshot
             cursor = execution.cursor
-            if cursor.batch_sequence is None:
+            if cursor.batch_sequence is None and cursor.deferred_sequence is None:
+                request = self._next_deferred(execution)
+                if request is not None:
+                    cursor.deferred_sequence = request.sequence
+                    cursor.deferred_depth = cast(int, request.payload["depth"])
+                    try:
+                        self._commit(
+                            execution,
+                            "running",
+                            "ready",
+                            EventDraft(
+                                "kernel.tool_deferred_claimed",
+                                "kernel",
+                                "plugin",
+                                {"request_id": request.payload["request_id"], "depth": cursor.deferred_depth},
+                            ),
+                            reserve_root=True,
+                        )
+                    except StoreConflict:
+                        _, call = self._pending(execution)
+                        self._report(execution, call, ToolFailure(call.tool_name, "root action budget exhausted"))
+                        return self._stop(execution, "root action budget exhausted", stop_cause="limit_reached")
+            if cursor.batch_sequence is None and cursor.deferred_sequence is None:
                 # A staged activation applies only here: the whole previous native batch has been
                 # reported and committed, so no result can mix generations, and the request is
                 # consumed durably in the same transaction as the switch.
@@ -2559,6 +3279,19 @@ class Kernel:
                     execution.events = list(self.store.events(execution.session.session_id))
                     cursor = execution.cursor
                     snapshot = self._snapshot
+                if cursor.deferred_only:
+                    self._commit(
+                        execution,
+                        "completed",
+                        "terminal",
+                        EventDraft(
+                            "kernel.run_completed",
+                            "kernel",
+                            "plugin",
+                            {"output": None, "logical_turn": cursor.logical_turn, **self._measured_run_elapsed_fields(execution)},
+                        ),
+                    )
+                    return self._result(execution)
                 if cursor.step >= max_steps:
                     return self._stop(execution, "provider turn budget exhausted", stop_cause="limit_reached")
 
@@ -2567,6 +3300,10 @@ class Kernel:
                     return budget_stop
 
                 with self._dispatch("provider") as snapshot:
+                    if not self._lifecycle_fired(execution, "session_start"):
+                        started = self._lifecycle_events(execution, snapshot, "session_start")
+                        if started:
+                            self._commit(execution, "running", "ready", *started)
                     model = snapshot.config.model.model
                     if model is None:
                         return self._fail(execution, "no model configured")
@@ -2591,7 +3328,7 @@ class Kernel:
                     effective_abort = session_abort or self._abort
                     request = ProviderTurnRequest(
                         messages=messages,
-                        available_tools=snapshot.tools,
+                        available_tools=self._visible_tools(execution, snapshot),
                         raw_model=model,
                         provider_name=provider_name,
                         model_name=model_name,
@@ -2614,6 +3351,7 @@ class Kernel:
                     # native batch keeps this identity (checkpointed), so approvals,
                     # tool reports, and resumes all attribute to the same turn.
                     cursor.logical_turn = uuid4().hex
+                    window = self._request_window(messages, request.available_tools)
                     try:
                         intent_events = self._commit(
                             execution,
@@ -2630,6 +3368,9 @@ class Kernel:
                                     "dispatch_id": dispatch_id,
                                     "start_time_ms": start_time_ms,
                                     "logical_turn": execution.cursor.logical_turn,
+                                    # Measured inventory of this exact request: a client
+                                    # panel reads facts here instead of estimating tokens.
+                                    "request_window": window.as_payload(),
                                 },
                             ),
                             reserve_root=True,
@@ -2640,7 +3381,7 @@ class Kernel:
 
                     t0 = time.monotonic()
                     try:
-                        turn = snapshot.host.propose_turn(request, provider=entry.wire)
+                        turn = snapshot.host.propose_turn(request, provider=provider_name)
                         elapsed_ms = max(0, int((time.monotonic() - t0) * 1000))
                     except (HostUnavailable, HostTimeout, InvocationCancelled) as exc:
                         elapsed_ms = max(0, int((time.monotonic() - t0) * 1000))
@@ -2759,6 +3500,7 @@ class Kernel:
                                 "kernel",
                                 {"logical_turn": execution.cursor.logical_turn, **self._measured_run_elapsed_fields(execution)},
                             ),
+                            *self._lifecycle_events(execution, snapshot, "session_end", status="completed"),
                             completed_continuation_id=execution.cursor.continuation_id,
                             completed_continuation_status="completed",
                         )
@@ -2769,11 +3511,25 @@ class Kernel:
                         return self._stop(execution, reason, stop_cause=cause)
 
             batch, call = self._pending(execution)
+            if cursor.deferred_sequence is not None and batch.payload["expected_revision"] != snapshot.revision_id:
+                self._report(execution, call, ToolFailure(call.tool_name, "requested tool belongs to a different capability revision"))
+                continue
+            scope = execution.session.tool_allowlist
+            if scope is not None and call.tool_name not in scope:
+                self._report(
+                    execution,
+                    call,
+                    ToolFailure(call.tool_name, "tool is outside this session's profile scope"),
+                )
+                continue
             definition = self._definitions.get(call.tool_name)
             if definition is None:
                 self._report(execution, call, ToolFailure(call.tool_name, "tool is not in the active capability revision"))
                 continue
-            denial = self._denial(call, definition)
+            effective_read_only = self._session_read_only(execution.session.session_id)
+            denial = self._denial(call, definition, read_only=effective_read_only)
+            if denial is None:
+                denial = self._gate_denial(execution, snapshot, call, readonly=effective_read_only)
             if denial:
                 self._report(execution, call, ToolFailure(call.tool_name, denial))
                 continue
@@ -2795,7 +3551,7 @@ class Kernel:
                     execution,
                     "waiting",
                     "approval_wait",
-                    EventDraft("kernel.approval_requested", "kernel", "model", payload),
+                    EventDraft("kernel.approval_requested", "kernel", "plugin" if cursor.deferred_sequence is not None else "model", payload),
                     checkpoint_bindings=(("approval_sequence", "kernel.approval_requested"),),
                 )
                 return self._result(execution, pending_approval=payload)
@@ -2815,15 +3571,16 @@ class Kernel:
                     EventDraft(
                         "kernel.tool_intent",
                         "kernel",
-                        "model",
+                        "plugin" if cursor.deferred_sequence is not None else "model",
                         {
                             "invocation_id": invocation_id,
-                            "batch_sequence": cursor.batch_sequence,
+                            "batch_sequence": cursor.deferred_sequence or cursor.batch_sequence,
                             "call": encode_tool_call(call),
                             "owner": snapshot.owner_of(call.tool_name),
                             "effects": sorted(effect.value for effect in definition.effects),
                             "replay_policy": definition.replay_policy_for(call.arguments),
                             "logical_turn": execution.cursor.logical_turn,
+                            "depth": cursor.deferred_depth,
                         },
                     ),
                     checkpoint_bindings=(("intent_sequence", "kernel.tool_intent"),),
@@ -2867,19 +3624,36 @@ class Kernel:
                     ),
                 )
                 return None
+            coverage = read_coverage(
+                execution.events,
+                workspace=self.workspace,
+                session_id=execution.session.session_id,
+                arguments=call.arguments,
+                path_argument_keys=definition.path_argument_keys,
+            )
             context = ToolContext(
                 workspace=self.workspace,
                 session_id=execution.session.session_id,
                 run_id=execution.run_id,
                 invocation_id=invocation_id,
                 revision_id=snapshot.revision_id,
-                actor="model",
+                actor="plugin" if cursor.deferred_sequence is not None else "model",
                 capabilities=snapshot.capabilities_of(call.tool_name),
                 logical_turn=execution.cursor.logical_turn,
                 abort_signal=effective_abort,
+                invocation_depth=cursor.deferred_depth,
+                read_paths=coverage.read_paths,
+                read_lines=coverage.read_lines,
+                read_whole_files=coverage.read_whole_files,
+                read_hash=coverage.read_hash,
             )
             try:
-                outcome = snapshot.host.invoke(call, context=context, return_outcome=True)
+                outcome = snapshot.host.invoke(
+                    call,
+                    context=context,
+                    return_outcome=True,
+                    readonly=self._session_read_only(execution.session.session_id),
+                )
                 if not isinstance(outcome, ToolInvocationOutcome):
                     raise TypeError("plugin host returned a bare tool result for an outcome request")
                 result = outcome.result
@@ -2902,6 +3676,8 @@ class Kernel:
 
             if result.tool_name != call.tool_name:
                 return self._stop(execution, "tool result identity differs from the dispatched native call", stop_cause="error")
+
+            result = self._post_tool_hooks(execution, snapshot, call, result)
 
             self._report(
                 execution,
@@ -2935,25 +3711,45 @@ class Kernel:
         staged_budget: PluginBudget | None | Literal["clear"] = None,
     ) -> None:
         cursor = execution.cursor
-        batch_sequence = cursor.batch_sequence
-        cursor.next_call += 1
+        deferred = cursor.deferred_sequence is not None
+        batch_sequence = cursor.deferred_sequence or cursor.batch_sequence
+        invocation_id: str | None = None
+        if cursor.intent_sequence is not None:
+            intent = self._event(execution, cursor.intent_sequence, "kernel.tool_intent")
+            raw_invocation = intent.payload.get("invocation_id")
+            invocation_id = raw_invocation if isinstance(raw_invocation, str) else None
         cursor.intent_sequence = None
         cursor.approval_sequence = None
-        turn = decode_provider_result(_wire_object(self._event(execution, batch_sequence or 0, "kernel.model_turn").payload["result"], "model turn"))
-        if cursor.next_call == len(turn.tool_calls):
-            cursor.batch_sequence = None
-            cursor.next_call = 0
+        if deferred:
+            cursor.deferred_sequence = None
+            cursor.deferred_depth = 0
             cursor.abandon_batch = False
-        payload = {
+        else:
+            cursor.next_call += 1
+            turn = decode_provider_result(
+                _wire_object(self._event(execution, batch_sequence or 0, "kernel.model_turn").payload["result"], "model turn")
+            )
+            if cursor.next_call == len(turn.tool_calls):
+                cursor.batch_sequence = None
+                cursor.next_call = 0
+                cursor.abandon_batch = False
+        payload: dict[str, object] = {
             "batch_sequence": batch_sequence,
             "call": encode_tool_call(call),
             "result": encode_tool_result(result),
             "logical_turn": execution.cursor.logical_turn,
         }
+        if deferred:
+            request = self._event(execution, batch_sequence or 0, "kernel.tool_deferred")
+            payload["deferred"] = True
+            payload["request_id"] = request.payload["request_id"]
+            payload["depth"] = request.payload["depth"]
+        if invocation_id is not None:
+            payload["invocation_id"] = invocation_id
         report_event = EventDraft(
             "kernel.tool_interrupted" if interrupted else "kernel.tool_completed",
             "kernel" if interrupted else "tool",
-            "model",
+            "plugin" if deferred else "model",
             payload,
         )
         all_events = (report_event,) + staged_events
@@ -2979,7 +3775,7 @@ class Kernel:
     def _interrupt_batch(self, execution: _Execution) -> None:
         first = execution.cursor.intent_sequence is not None
         execution.cursor.abandon_batch = True
-        while execution.cursor.batch_sequence is not None:
+        while execution.cursor.batch_sequence is not None or execution.cursor.deferred_sequence is not None:
             _, call = self._pending(execution)
             message = (
                 "execution was interrupted; external effects are unknown; not replayed"
@@ -2994,7 +3790,22 @@ class Kernel:
         pending_calls: tuple[ToolCall, ...] = ()
         pending_index = 0
         batch_sequence: int | None = None
+        # A verified projection replaces a committed prefix with its owner's summary, so a long
+        # session keeps a bounded window without rewriting a single historical event.
+        projection = self.store.window_projection(execution.session.session_id)
+        projected_through = 0
+        if projection is not None:
+            projected_through = projection.covered_to_sequence
+            messages.append(
+                ProviderMessage(
+                    "system",
+                    f"[window summary by {projection.owner}; {projection.covered_to_sequence} covered events "
+                    f"({projection.covered_bytes} bytes -> {projection.dropped_bytes} dropped)]\n{projection.replacement}",
+                )
+            )
         for event in execution.events:
+            if event.sequence <= projected_through:
+                continue
             if event.event_type == "kernel.user_message":
                 if pending_calls:
                     raise ValueError("user message crossed an unfinished native batch")
@@ -3005,7 +3816,24 @@ class Kernel:
                 p_payload = event.payload.get("payload")
                 p_map = p_payload if isinstance(p_payload, Mapping) else {}
                 payload_str = json.dumps(json_wire_object(p_map), ensure_ascii=False)
-                messages.append(ProviderMessage("system", f"[Durable continuation from {event.source}]\n{payload_str}"))
+                if event.payload.get("role") == "user":
+                    # The owner declared a user-role message: its text (or payload) is verbatim.
+                    text = p_map.get("text")
+                    messages.append(ProviderMessage("user", text if isinstance(text, str) else payload_str))
+                else:
+                    messages.append(ProviderMessage("system", f"[Durable continuation from {event.source}]\n{payload_str}"))
+            elif event.event_type == "kernel.wakeup_fired":
+                if pending_calls:
+                    raise ValueError("wakeup crossed an unfinished native batch")
+                w_payload = event.payload.get("payload")
+                w_map = w_payload if isinstance(w_payload, Mapping) else {}
+                payload_str = json.dumps(json_wire_object(w_map), ensure_ascii=False)
+                if event.payload.get("role") == "user":
+                    text = w_map.get("text")
+                    messages.append(ProviderMessage("user", text if isinstance(text, str) else payload_str))
+                else:
+                    owner_label = str(event.payload.get("owner", event.source))
+                    messages.append(ProviderMessage("system", f"[Durable wakeup from {owner_label}]\n{payload_str}"))
             elif event.event_type == "kernel.model_turn":
                 if pending_calls:
                     raise ValueError("provider turn crossed an unfinished native batch")
@@ -3018,22 +3846,28 @@ class Kernel:
                     pending_index = 0
                     batch_sequence = event.sequence
             elif event.event_type in {"kernel.tool_completed", "kernel.tool_interrupted"}:
+                if event.payload.get("deferred") is True:
+                    request = self._event(execution, cast(int, event.payload["batch_sequence"]), "kernel.tool_deferred")
+                    if event.payload["call"] != request.payload["call"]:
+                        raise ValueError("deferred tool result does not match its committed request")
+                    result = decode_tool_result(_wire_object(event.payload["result"], "tool result"))
+                    text, _clipped = model_result_text(result)
+                    messages.append(
+                        ProviderMessage(
+                            "user",
+                            f"[Untrusted deferred tool result: {result.tool_name}; "
+                            f"invocation {event.payload.get('invocation_id', 'not-dispatched')}; "
+                            f"request {request.payload['request_id']}; caller {request.payload['caller_invocation_id']}]\n{text or ''}",
+                        )
+                    )
+                    continue
                 if not pending_calls or event.payload["batch_sequence"] != batch_sequence:
                     raise ValueError("reported tool result crossed an unfinished native batch")
                 call = pending_calls[pending_index]
                 if _wire_object(event.payload["call"], "tool call") != json_wire_object(encode_tool_call(call)):
                     raise ValueError("reported tool result does not match the active batch call")
                 result = decode_tool_result(_wire_object(event.payload["result"], "tool result"))
-                output = result.output
-                text = output.text if isinstance(output, TextOutput) else output.presentation
-                if result.body is not None:
-                    body = json.dumps(result.body.as_payload(), ensure_ascii=False, allow_nan=False)
-                    text = body if text is None else f"{body}\n{text}"
-                if isinstance(result, ToolFailure):
-                    text = result.error if text is None else f"{result.error}\n{text}"
-                if text is not None and len(text.encode("utf-8")) > 50 * 1024:
-                    text = text.encode("utf-8")[: 50 * 1024].decode("utf-8", errors="ignore")
-                    text += "\n[model projection truncated; durable result unchanged]"
+                text, _clipped = model_result_text(result)
                 messages.append(
                     ProviderMessage("tool", text, tool_call_id=call.tool_call_id, tool_name=call.tool_name, is_error=isinstance(result, ToolFailure))
                 )
@@ -3059,9 +3893,14 @@ class Kernel:
                     logical_turn=execution.cursor.logical_turn,
                 )
                 for c in contributions:
-                    if c.get("type") == "text":
-                        owner = str(c.get("owner", "plugin"))
-                        content = str(c.get("content", ""))
+                    if c.get("type") != "text":
+                        continue
+                    owner = str(c.get("owner", "plugin"))
+                    content = str(c.get("content", ""))
+                    if c.get("role") == "user":
+                        # Declarative role: verbatim, never re-wrapped as kernel system prose.
+                        messages.append(ProviderMessage("user", content))
+                    else:
                         messages.append(ProviderMessage("system", f"[{owner} context]\n{content}"))
 
             activation_note = self._activation_outcome_note(execution)
@@ -3075,11 +3914,13 @@ class Kernel:
         return tuple(messages)
 
     def _drive_pending_activations(self) -> None:
-        """Finish automatic continuations a crash interrupted right after an activation commit."""
+        """Finish committed command-tool work and activation continuations left across restart."""
         try:
             for session in self.store.sessions(workspace=str(self.workspace)):
                 if self._closed:
                     return
+                if self._admits_fresh_work(session):
+                    self._drain_deferred_requests(session.session_id)
                 checkpoint = self.store.checkpoint(session.session_id)
                 if checkpoint is None or not isinstance(checkpoint.payload, Mapping):
                     continue
@@ -3096,7 +3937,7 @@ class Kernel:
 
     def _continue_after_activation(self, session_id: str) -> None:
         """Claim and drive one owed continuation, exactly once, on its own captured generation."""
-        with self._run_lock:
+        with self._session_lock(session_id):
             self._ensure_open()
             with self._aborts_lock:
                 if session_id in self._session_aborts:
@@ -3209,6 +4050,7 @@ class Kernel:
                 "kernel",
                 {"error": message, "logical_turn": execution.cursor.logical_turn, **self._measured_run_elapsed_fields(execution)},
             ),
+            *self._lifecycle_events(execution, self._snapshot, "session_end", status="failed", error=message),
             completed_continuation_id=execution.cursor.continuation_id,
             completed_continuation_status="failed",
         )

@@ -5,14 +5,18 @@ from importlib.resources import files
 
 import pytest
 
+from voidcode.kernel.storage.store import SCHEMA_VERSION
+
 
 def test_historical_facts_cannot_be_rewritten_or_orphaned() -> None:
     with sqlite3.connect(":memory:") as connection:
         connection.execute("PRAGMA foreign_keys = ON")
         connection.executescript(files("voidcode.kernel.storage").joinpath("schema.sql").read_text(encoding="utf-8"))
-        connection.execute("INSERT INTO kernel_identity VALUES (1, 'voidcode-kernel-v1', 2)")
+        connection.execute(f"INSERT INTO kernel_identity VALUES (1, 'voidcode-kernel-v1', {SCHEMA_VERSION})")
         connection.execute("INSERT INTO revisions VALUES ('revision', 1, '{}')")
-        connection.execute("INSERT INTO sessions VALUES ('session', '/workspace', 'running', 'revision', 'run', 1, 1, 1, 1)")
+        connection.execute(
+            "INSERT INTO sessions VALUES ('session', '/workspace', 'running', 'revision', 'run', 1, 1, 1, 1, NULL, 'session', 0, NULL)"
+        )
         connection.execute("INSERT INTO session_events VALUES ('session', 1, 'run', 'tool.completed', 'tool', 'model', 'revision', '{}')")
         for statement in (
             "UPDATE session_events SET payload_json = '{\"changed\":true}'",

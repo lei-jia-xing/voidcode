@@ -1,14 +1,21 @@
-"""Development entry point; the production entry cuts over after plugin migration."""
+"""The VoidCode CLI: one kernel process, its plugins, and its clients.
+
+``run/resume/show`` drive work, ``sessions/catalog/invoke/confirm/views/drain/usage`` are
+client surfaces, ``tui`` attaches the terminal client, and ``serve`` serves the HTTP API and
+the built web client.
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
 import signal
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .. import __version__
 from ..sdk.json_values import json_wire_object, own_json_object
 from .storage.store import SessionRecord, SqliteStore
 
@@ -38,8 +45,43 @@ def _parse_capabilities(raw: str | None) -> frozenset[str]:
     return frozenset(items)
 
 
+_COMMANDS = frozenset(
+    {"run", "resume", "show", "create-session", "sessions", "catalog", "invoke", "confirm", "views", "drain", "usage", "tui", "serve"}
+)
+_ROOT_VALUE_OPTIONS = frozenset({"--workspace", "--state-dir", "--trust-plugin"})
+
+
+def _normalized_argv(argv: Sequence[str]) -> list[str]:
+    """Accept root options before *or* after the subcommand, as the legacy CLI did.
+
+    ``argparse`` only knows the root options before the subcommand, but
+    ``voidcode serve --workspace .`` is what a user types; the root pairs found
+    after the command are hoisted in front of it.
+    """
+    tokens = list(argv)
+    command_at = next((index for index, token in enumerate(tokens) if token in _COMMANDS), None)
+    if command_at is None:
+        return tokens
+    head, rest = tokens[:command_at], tokens[command_at:]
+    tail: list[str] = []
+    index = 1  # rest[0] is the command itself
+    while index < len(rest):
+        name, separator, _inline = rest[index].partition("=")
+        if name in _ROOT_VALUE_OPTIONS:
+            if separator or index + 1 >= len(rest):
+                head.append(rest[index])
+            else:
+                head.extend((rest[index], rest[index + 1]))
+                index += 1
+        else:
+            tail.append(rest[index])
+        index += 1
+    return [*head, rest[0], *tail]
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m voidcode.kernel")
+    parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("--workspace", type=Path, default=Path.cwd())
     parser.add_argument("--state-dir", type=Path)
     parser.add_argument("--trust-plugin", action="append", default=[], metavar="PLUGIN_ID")
@@ -91,7 +133,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
     serve.add_argument("--bearer-token")
-    args = parser.parse_args(argv)
+    #: The replaced `voidcode web` opened the browser; serving the bundle is now the same command.
+    serve.add_argument("--open", dest="open_browser", action="store_true", help="Open the served web client in a browser")
+    args = parser.parse_args(_normalized_argv(argv if argv is not None else sys.argv[1:]))
     try:
         workspace = args.workspace.resolve(strict=True)
         if args.command == "show":
@@ -147,6 +191,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "serve":
             from .transport.server import serve_kernel
 
+            if args.open_browser:
+                import webbrowser
+
+                webbrowser.open(f"http://{args.host}:{args.port}/")
             serve_kernel(
                 workspace=workspace,
                 state_dir=directory,

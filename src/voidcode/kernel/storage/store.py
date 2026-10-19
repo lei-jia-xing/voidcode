@@ -15,10 +15,10 @@ from pathlib import Path
 from typing import Literal, Self, cast
 
 from ...sdk.json_values import json_wire_object, own_json_object
-from ...sdk.services import PluginBudget
+from ...sdk.services import PluginBudget, SessionInfo
 
 SCHEMA_MAGIC = "voidcode-kernel-v1"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 
 class StorageError(RuntimeError):
@@ -42,6 +42,12 @@ class SessionRecord:
     run_id: str | None
     turn: int
     last_event_sequence: int
+    #: Delegated child lineage; root sessions point at themselves with depth 0.
+    root_session_id: str = ""
+    parent_session_id: str | None = None
+    depth: int = 0
+    #: Per-session tool visibility scope; None means the whole admitted catalog.
+    tool_allowlist: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +122,8 @@ class ContinuationRecord:
     created_at: int
     updated_at: int
     root_id: str | None = None
+    #: Message role the kernel renders this continuation with ("system" by default).
+    role: str = "system"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "payload", own_json_object(self.payload))
@@ -144,9 +152,49 @@ class StagedContinuationDraft:
     idempotency_key: str | None = None
     ordinal: int = 0
     root_id: str | None = None
+    role: str = "system"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "payload", own_json_object(self.payload))
+
+
+@dataclass(frozen=True, slots=True)
+class WakeupRecord:
+    """One durable wakeup: the owner's future turn, claimed atomically with its run."""
+
+    wakeup_id: str
+    owner: str
+    workspace: str
+    session_id: str
+    payload: Mapping[str, object]
+    role: str
+    due_at: int
+    status: str
+    claim_run_id: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "payload", own_json_object(self.payload))
+
+
+@dataclass(frozen=True, slots=True)
+class StagedWakeup:
+    """A wakeup scheduled atomically with the callback that scheduled it."""
+
+    wakeup_id: str
+    owner: str
+    session_id: str
+    payload: Mapping[str, object]
+    due_at: int
+    role: str = "system"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "payload", own_json_object(self.payload))
+
+
+@dataclass(frozen=True, slots=True)
+class StagedWakeupCancel:
+    wakeup_id: str
+    owner: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +266,37 @@ def canonical_json(value: Mapping[str, object]) -> str:
     )
 
 
+def _allowlist_from_json(raw: object) -> tuple[str, ...] | None:
+    """Decode a session tool scope, refusing anything that is not a list of names."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    parsed = json.loads(raw)
+    if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
+        raise StorageError("session tool scope is malformed")
+    return tuple(parsed)
+
+
+def _session_record(row: tuple[object, ...]) -> SessionRecord:
+    """Map one sessions row onto its immutable record, including delegation lineage."""
+    allowlist = _allowlist_from_json(row[10] if len(row) > 10 else None)
+    root = row[8] if len(row) > 8 and isinstance(row[8], str) and row[8] else str(row[0])
+    parent = row[7] if len(row) > 7 and isinstance(row[7], str) and row[7] else None
+    depth = row[9] if len(row) > 9 and isinstance(row[9], int) else 0
+    return SessionRecord(
+        session_id=str(row[0]),
+        workspace=str(row[1]),
+        status=str(row[2]),
+        active_revision_id=str(row[3]),
+        run_id=None if row[4] is None else str(row[4]),
+        turn=row[5] if isinstance(row[5], int) else 0,
+        last_event_sequence=row[6] if isinstance(row[6], int) else 0,
+        root_session_id=root,
+        parent_session_id=parent,
+        depth=depth,
+        tool_allowlist=allowlist,
+    )
+
+
 def _load_schema_sql() -> str:
     return files("voidcode.kernel.storage").joinpath("schema.sql").read_text(encoding="utf-8")
 
@@ -255,6 +334,9 @@ def _verify_existing_file(path: Path) -> None:
             "observer_receipts",
             "root_budgets",
             "workspace_state",
+            "wakeups",
+            "session_overlays",
+            "window_projections",
         }
         if not required.issubset(tables):
             raise ForeignDatabaseError(f"unsupported database file or missing tables in {path}: missing {required - tables}")
@@ -315,6 +397,12 @@ def _verify_existing_file(path: Path) -> None:
         if not required_budget_cols.issubset(budget_cols):
             raise ForeignDatabaseError(f"unsupported session_budgets schema in {path}: missing {required_budget_cols - budget_cols}")
 
+        cursor = probe.execute("PRAGMA table_info(wakeups)")
+        wakeup_cols = {r[1] for r in cursor.fetchall()}
+        required_wakeup_cols = {"wakeup_id", "owner", "workspace", "session_id", "payload_json", "role", "due_at", "status", "claim_run_id"}
+        if not required_wakeup_cols.issubset(wakeup_cols):
+            raise ForeignDatabaseError(f"unsupported wakeups schema in {path}: missing {required_wakeup_cols - wakeup_cols}")
+
         cursor = probe.execute("PRAGMA table_info(observer_receipts)")
         receipt_cols = {r[1] for r in cursor.fetchall()}
         required_receipt_cols = {"session_id", "event_sequence", "owner", "created_at"}
@@ -359,6 +447,20 @@ def inspect_existing_workspace(database: Path, workspace: str) -> tuple[str | No
         return (revision_id, json_wire_object(payload))
     finally:
         probe.close()
+
+
+@dataclass(frozen=True, slots=True)
+class WindowProjectionRecord:
+    """One verified projection: the committed prefix it replaces and its measured accounting."""
+
+    session_id: str
+    owner: str
+    covered_from_sequence: int
+    covered_to_sequence: int
+    replacement: str
+    covered_bytes: int
+    dropped_bytes: int
+    created_at: int
 
 
 class SqliteStore:
@@ -476,13 +578,14 @@ class SqliteStore:
             cursor = self._connection.execute(
                 """
                 INSERT INTO sessions (
-                    session_id, workspace, status, active_revision_id, run_id, turn, created_at, updated_at, last_event_sequence
+                    session_id, workspace, status, active_revision_id, run_id, turn, created_at, updated_at, last_event_sequence,
+                    parent_session_id, root_session_id, depth, tool_allowlist_json
                 )
-                SELECT ?, ?, 'idle', w.active_revision_id, NULL, 0, ?, ?, 0
+                SELECT ?, ?, 'idle', w.active_revision_id, NULL, 0, ?, ?, 0, NULL, ?, 0, NULL
                 FROM workspace_state w
                 WHERE w.workspace = ? AND w.active_revision_id = ?
                 """,
-                (session_id, workspace, now, now, workspace, revision_id),
+                (session_id, workspace, now, now, session_id, workspace, revision_id),
             )
             if cursor.rowcount == 0:
                 raise StoreConflict(f"workspace revision moved away from {revision_id!r}; retry against the current revision")
@@ -494,7 +597,446 @@ class SqliteStore:
                 run_id=None,
                 turn=0,
                 last_event_sequence=0,
+                root_session_id=session_id,
             )
+
+    def create_child_session(
+        self,
+        session_id: str,
+        workspace: str,
+        revision_id: str,
+        *,
+        parent_session_id: str,
+        root_session_id: str,
+        depth: int,
+        tool_allowlist: tuple[str, ...] | None = None,
+    ) -> SessionRecord:
+        """Create a delegated child session that can only be narrower than its parent.
+
+        The lineage is durable and the insert still takes the revision from the workspace
+        pointer, so a child can never be pinned to a generation that just moved.
+        """
+        now = int(time.time() * 1000)
+        allowlist_json = None if tool_allowlist is None else json.dumps(list(tool_allowlist))
+        with self._lock:
+            self._check_open()
+            cursor = self._connection.execute(
+                """
+                INSERT INTO sessions (
+                    session_id, workspace, status, active_revision_id, run_id, turn, created_at, updated_at, last_event_sequence,
+                    parent_session_id, root_session_id, depth, tool_allowlist_json
+                )
+                SELECT ?, ?, 'idle', w.active_revision_id, NULL, 0, ?, ?, 0, ?, ?, ?, ?
+                FROM workspace_state w
+                WHERE w.workspace = ? AND w.active_revision_id = ?
+                """,
+                (session_id, workspace, now, now, parent_session_id, root_session_id, depth, allowlist_json, workspace, revision_id),
+            )
+            if cursor.rowcount == 0:
+                raise StoreConflict(f"workspace revision moved away from {revision_id!r}; retry against the current revision")
+            return SessionRecord(
+                session_id=session_id,
+                workspace=workspace,
+                status="idle",
+                active_revision_id=revision_id,
+                run_id=None,
+                turn=0,
+                last_event_sequence=0,
+                root_session_id=root_session_id,
+                parent_session_id=parent_session_id,
+                depth=depth,
+                tool_allowlist=tool_allowlist,
+            )
+
+    def set_session_overlay(self, session_id: str, owner: str, tier: str = "read-only") -> None:
+        """Add (or keep) one owner's restrictive overlay on a session; tiers can only tighten."""
+        if tier != "read-only":
+            raise ValueError(f"unsupported overlay tier: {tier!r}")
+        now = int(time.time() * 1000)
+        with self._lock:
+            self._check_open()
+            self.session(session_id)
+            self._connection.execute(
+                """
+                INSERT INTO session_overlays (session_id, owner, tier, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (session_id, owner) DO UPDATE SET updated_at = excluded.updated_at
+                """,
+                (session_id, owner, tier, now, now),
+            )
+
+    def clear_session_overlay(self, session_id: str, owner: str) -> bool:
+        """Revoke exactly this owner's overlay; other owners and the kernel policy stay."""
+        with self._lock:
+            self._check_open()
+            cursor = self._connection.execute(
+                "DELETE FROM session_overlays WHERE session_id = ? AND owner = ?",
+                (session_id, owner),
+            )
+            return cursor.rowcount > 0
+
+    def session_overlays(self, session_id: str) -> tuple[str, ...]:
+        """Tiers currently restricting this session (one row per owner)."""
+        with self._lock:
+            self._check_open()
+            rows = self._connection.execute(
+                "SELECT tier FROM session_overlays WHERE session_id = ? ORDER BY owner ASC",
+                (session_id,),
+            ).fetchall()
+            return tuple(str(row[0]) for row in rows)
+
+    def set_window_projection(
+        self,
+        session_id: str,
+        owner: str,
+        *,
+        covered_from_sequence: int,
+        covered_to_sequence: int,
+        replacement: str,
+        covered_bytes: int,
+        dropped_bytes: int,
+    ) -> None:
+        """Record the session's verified window projection (one per session, latest wins)."""
+        now = int(time.time() * 1000)
+        with self._lock:
+            self._check_open()
+            self.session(session_id)
+            self._connection.execute(
+                """
+                INSERT INTO window_projections (
+                    session_id, owner, covered_from_sequence, covered_to_sequence,
+                    replacement, covered_bytes, dropped_bytes, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (session_id) DO UPDATE SET
+                    owner = excluded.owner,
+                    covered_from_sequence = excluded.covered_from_sequence,
+                    covered_to_sequence = excluded.covered_to_sequence,
+                    replacement = excluded.replacement,
+                    covered_bytes = excluded.covered_bytes,
+                    dropped_bytes = excluded.dropped_bytes,
+                    created_at = excluded.created_at
+                """,
+                (
+                    session_id,
+                    owner,
+                    covered_from_sequence,
+                    covered_to_sequence,
+                    replacement,
+                    covered_bytes,
+                    dropped_bytes,
+                    now,
+                ),
+            )
+
+    def window_projection(self, session_id: str) -> WindowProjectionRecord | None:
+        with self._lock:
+            self._check_open()
+            row = self._connection.execute(
+                """
+                SELECT session_id, owner, covered_from_sequence, covered_to_sequence,
+                       replacement, covered_bytes, dropped_bytes, created_at
+                FROM window_projections WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return WindowProjectionRecord(
+            session_id=str(row[0]),
+            owner=str(row[1]),
+            covered_from_sequence=int(row[2]),
+            covered_to_sequence=int(row[3]),
+            replacement=str(row[4]),
+            covered_bytes=int(row[5]),
+            dropped_bytes=int(row[6]),
+            created_at=int(row[7]),
+        )
+
+    def clear_window_projection(self, session_id: str) -> bool:
+        """Drop a projection when its owner is deactivated: the raw window becomes visible again."""
+        with self._lock:
+            self._check_open()
+            cursor = self._connection.execute("DELETE FROM window_projections WHERE session_id = ?", (session_id,))
+            return cursor.rowcount > 0
+
+    def clear_owner_projections(self, owner: str) -> int:
+        with self._lock:
+            self._check_open()
+            cursor = self._connection.execute("DELETE FROM window_projections WHERE owner = ?", (owner,))
+            return cursor.rowcount
+
+    def claim_and_start_wakeup(
+        self,
+        workspace: str,
+        now: int,
+        *,
+        run_id: str,
+        logical_turn: str,
+        revision_id: str,
+        action_budget_remaining: int = 32,
+    ) -> tuple[WakeupRecord, SessionRecord] | None:
+        """Claim ONE due wakeup and create its authentic running session in the same transaction.
+
+        There is no TTL or reaper: a crash before this commit leaves the wakeup pending, and a
+        crash after it leaves a claimed wakeup whose session is visibly interrupted. The claim
+        and the run identity can never diverge, and two tickers can never both claim the row.
+        """
+        with self._lock:
+            self._check_open()
+            in_transaction = False
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                in_transaction = True
+                now_ms = now
+                cursor = self._connection.execute(
+                    """
+                    SELECT wakeup_id, owner, workspace, session_id, payload_json, role, due_at, status, claim_run_id
+                    FROM wakeups
+                    WHERE workspace = ? AND status = 'pending' AND due_at <= ?
+                    ORDER BY due_at ASC, created_at ASC
+                    LIMIT 1
+                    """,
+                    (workspace, now_ms),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    self._connection.execute("COMMIT")
+                    in_transaction = False
+                    return None
+                wakeup = WakeupRecord(
+                    wakeup_id=str(row[0]),
+                    owner=str(row[1]),
+                    workspace=str(row[2]),
+                    session_id=str(row[3]),
+                    payload=own_json_object(json.loads(row[4])),
+                    role=str(row[5]),
+                    due_at=int(row[6]),
+                    status=str(row[7]),
+                    claim_run_id=str(row[8]) if row[8] is not None else None,
+                )
+                claimed = self._connection.execute(
+                    """
+                    UPDATE wakeups SET status = 'claimed', claim_run_id = ?, updated_at = ?
+                    WHERE wakeup_id = ? AND status = 'pending'
+                    """,
+                    (run_id, now_ms, wakeup.wakeup_id),
+                )
+                if claimed.rowcount == 0:
+                    raise StoreConflict(f"wakeup {wakeup.wakeup_id!r} was claimed concurrently")
+                s_cursor = self._connection.execute(
+                    """
+                    SELECT session_id, workspace, status, active_revision_id, run_id, turn, last_event_sequence,
+                           parent_session_id, root_session_id, depth, tool_allowlist_json
+                    FROM sessions
+                    WHERE session_id = ?
+                    """,
+                    (wakeup.session_id,),
+                )
+                session_row = s_cursor.fetchone()
+                if session_row is None:
+                    raise StoreConflict(f"wakeup {wakeup.wakeup_id!r} names an unknown session")
+                session = _session_record(session_row)
+                if session.active_revision_id != revision_id:
+                    raise StoreConflict("wakeup session belongs to another capability revision")
+                if session.status in ("running", "waiting"):
+                    raise StoreConflict(f"wakeup session {session.session_id!r} is busy ({session.status})")
+                new_seq = session.last_event_sequence + 1
+                fired_payload = canonical_json(
+                    {
+                        "wakeup_id": wakeup.wakeup_id,
+                        "owner": wakeup.owner,
+                        "payload": json_wire_object(wakeup.payload),
+                        "role": wakeup.role,
+                        "logical_turn": logical_turn,
+                    }
+                )
+                self._connection.execute(
+                    """
+                    INSERT INTO session_events (
+                        session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json
+                    ) VALUES (?, ?, ?, 'kernel.wakeup_fired', ?, 'plugin', ?, ?)
+                    """,
+                    (session.session_id, new_seq, run_id, f"plugin.{wakeup.owner}", revision_id, fired_payload),
+                )
+                checkpoint_payload = canonical_json(
+                    {
+                        "batch_sequence": None,
+                        "next_call": 0,
+                        "intent_sequence": None,
+                        "approval_sequence": None,
+                        "step": 0,
+                        "abandon_batch": False,
+                        "continuation_id": None,
+                        "chain_step": 0,
+                        "logical_turn": logical_turn,
+                        "stop_cause": None,
+                        "action_budget_remaining": action_budget_remaining,
+                        "root_id": wakeup.wakeup_id,
+                        "resume_intent": "",
+                    }
+                )
+                self._connection.execute(
+                    """
+                    INSERT INTO checkpoints (
+                        session_id, kind, revision_id, run_id, last_event_sequence, payload_json, updated_at
+                    ) VALUES (?, 'ready', ?, ?, ?, ?, ?)
+                    ON CONFLICT (session_id) DO UPDATE SET
+                        kind = 'ready',
+                        revision_id = excluded.revision_id,
+                        run_id = excluded.run_id,
+                        last_event_sequence = excluded.last_event_sequence,
+                        payload_json = excluded.payload_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (session.session_id, revision_id, run_id, new_seq, checkpoint_payload, now_ms),
+                )
+                self._connection.execute(
+                    """
+                    UPDATE sessions
+                    SET status = 'running', run_id = ?, updated_at = ?, last_event_sequence = ?
+                    WHERE session_id = ?
+                    """,
+                    (run_id, now_ms, new_seq, session.session_id),
+                )
+                self._connection.execute("COMMIT")
+                in_transaction = False
+                return (
+                    WakeupRecord(
+                        wakeup_id=wakeup.wakeup_id,
+                        owner=wakeup.owner,
+                        workspace=wakeup.workspace,
+                        session_id=wakeup.session_id,
+                        payload=wakeup.payload,
+                        role=wakeup.role,
+                        due_at=wakeup.due_at,
+                        status="claimed",
+                        claim_run_id=run_id,
+                    ),
+                    SessionRecord(
+                        session_id=session.session_id,
+                        workspace=session.workspace,
+                        status="running",
+                        active_revision_id=revision_id,
+                        run_id=run_id,
+                        turn=session.turn,
+                        last_event_sequence=new_seq,
+                        root_session_id=session.root_session_id,
+                        parent_session_id=session.parent_session_id,
+                        depth=session.depth,
+                        tool_allowlist=session.tool_allowlist,
+                    ),
+                )
+            except Exception:
+                if in_transaction:
+                    self._connection.execute("ROLLBACK")
+                raise
+
+    def schedule_wakeup(
+        self,
+        wakeup_id: str,
+        owner: str,
+        workspace: str,
+        session_id: str,
+        payload: Mapping[str, object],
+        due_at: int,
+        role: str = "system",
+    ) -> str:
+        """Insert a pending wakeup now (its own transaction).
+
+        ponytail: scheduling is not staged with the callback's result commit; a crash between
+        them can leave a wakeup the tool did not report. The claim+run pair stays atomic, which
+        is what prevents duplicate or stuck executions. Stage it later if a plugin needs the
+        schedule to be exactly-once with its result.
+        """
+        now = int(time.time() * 1000)
+        with self._lock:
+            self._check_open()
+            self._connection.execute(
+                """
+                INSERT INTO wakeups (
+                    wakeup_id, owner, workspace, session_id, payload_json, role, due_at,
+                    status, claim_run_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)
+                ON CONFLICT (wakeup_id) DO NOTHING
+                """,
+                (
+                    wakeup_id,
+                    owner,
+                    workspace,
+                    session_id,
+                    canonical_json(payload),
+                    role if role in ("system", "user") else "system",
+                    due_at,
+                    now,
+                    now,
+                ),
+            )
+            return wakeup_id
+
+    def cancel_wakeup(self, wakeup_id: str, owner: str) -> bool:
+        """Cancel one pending wakeup of this owner; already claimed wakeups are not touched."""
+        with self._lock:
+            self._check_open()
+            cursor = self._connection.execute(
+                "UPDATE wakeups SET status = 'cancelled', updated_at = ? WHERE wakeup_id = ? AND owner = ? AND status = 'pending'",
+                (int(time.time() * 1000), wakeup_id, owner),
+            )
+            return cursor.rowcount > 0
+
+    def complete_wakeup(self, wakeup_id: str, status: Literal["completed", "failed", "cancelled"] = "completed") -> None:
+        """Settle a claimed wakeup once its run reached a terminal state."""
+        with self._lock:
+            self._check_open()
+            self._connection.execute(
+                "UPDATE wakeups SET status = ?, updated_at = ? WHERE wakeup_id = ? AND status = 'claimed'",
+                (status, int(time.time() * 1000), wakeup_id),
+            )
+
+    def pending_wakeups(self, workspace: str | None = None, limit: int = 100) -> tuple[WakeupRecord, ...]:
+        """Read pending wakeups (diagnostics and tests); ordered by due time."""
+        with self._lock:
+            self._check_open()
+            if workspace is None:
+                cursor = self._connection.execute(
+                    """
+                    SELECT wakeup_id, owner, workspace, session_id, payload_json, role, due_at, status, claim_run_id
+                    FROM wakeups WHERE status = 'pending' ORDER BY due_at ASC LIMIT ?
+                    """,
+                    (max(1, limit),),
+                )
+            else:
+                cursor = self._connection.execute(
+                    """
+                    SELECT wakeup_id, owner, workspace, session_id, payload_json, role, due_at, status, claim_run_id
+                    FROM wakeups WHERE workspace = ? AND status = 'pending' ORDER BY due_at ASC LIMIT ?
+                    """,
+                    (workspace, max(1, limit)),
+                )
+            return tuple(
+                WakeupRecord(
+                    wakeup_id=str(row[0]),
+                    owner=str(row[1]),
+                    workspace=str(row[2]),
+                    session_id=str(row[3]),
+                    payload=own_json_object(json.loads(row[4])),
+                    role=str(row[5]),
+                    due_at=int(row[6]),
+                    status=str(row[7]),
+                    claim_run_id=str(row[8]) if row[8] is not None else None,
+                )
+                for row in cursor.fetchall()
+            )
+
+    def count_root_children(self, root_session_id: str) -> int:
+        """How many child sessions one chain root has already spawned (its durable budget)."""
+        with self._lock:
+            self._check_open()
+            row = self._connection.execute(
+                "SELECT COUNT(*) FROM sessions WHERE root_session_id = ? AND parent_session_id IS NOT NULL",
+                (root_session_id,),
+            ).fetchone()
+            return int(row[0]) if row is not None else 0
 
     def session(self, session_id: str) -> SessionRecord:
         """Fetch session metadata by session ID."""
@@ -502,7 +1044,8 @@ class SqliteStore:
             self._check_open()
             cursor = self._connection.execute(
                 """
-                SELECT session_id, workspace, status, active_revision_id, run_id, turn, last_event_sequence
+                SELECT session_id, workspace, status, active_revision_id, run_id, turn, last_event_sequence,
+                       parent_session_id, root_session_id, depth, tool_allowlist_json
                 FROM sessions
                 WHERE session_id = ?
                 """,
@@ -511,14 +1054,61 @@ class SqliteStore:
             row = cursor.fetchone()
             if row is None:
                 raise KeyError(f"unknown session: {session_id}")
-            return SessionRecord(
-                session_id=row[0],
-                workspace=row[1],
-                status=row[2],
-                active_revision_id=row[3],
-                run_id=row[4],
-                turn=row[5],
-                last_event_sequence=row[6],
+            return _session_record(row)
+
+    def session_info(self, session_id: str, owner: str) -> SessionInfo:
+        """Read session, parked approval and budgets in one consistent row."""
+        with self._lock:
+            self._check_open()
+            row = self._connection.execute(
+                """
+                SELECT s.session_id, s.workspace, s.status, s.active_revision_id, s.run_id,
+                       s.turn, s.last_event_sequence, s.parent_session_id, s.root_session_id,
+                       s.depth, s.tool_allowlist_json, a.payload_json, r.budget, r.reserved,
+                       b.owner, b.since_sequence, b.max_input_tokens, b.max_output_tokens,
+                       b.max_total_tokens, b.max_cost_usd, b.max_elapsed_seconds
+                FROM sessions s
+                LEFT JOIN checkpoints c ON c.session_id = s.session_id AND c.run_id = s.run_id
+                LEFT JOIN session_events a ON a.session_id = s.session_id
+                    AND a.sequence = json_extract(c.payload_json, '$.approval_sequence')
+                    AND c.kind = 'approval_wait' AND a.event_type = 'kernel.approval_requested'
+                LEFT JOIN root_budgets r ON r.root_id = json_extract(c.payload_json, '$.root_id')
+                LEFT JOIN session_budgets b ON b.session_id = s.session_id AND b.owner = ?
+                WHERE s.session_id = ?
+                """,
+                (owner, session_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"unknown session: {session_id}")
+            session = _session_record(row[:11])
+            budget = (
+                None
+                if row[14] is None
+                else PluginBudget(
+                    owner=row[14],
+                    since_sequence=row[15],
+                    max_input_tokens=row[16],
+                    max_output_tokens=row[17],
+                    max_total_tokens=row[18],
+                    max_cost_usd=row[19],
+                    max_elapsed_seconds=row[20],
+                )
+            )
+            return SessionInfo(
+                session_id=session.session_id,
+                status=session.status,
+                run_id=session.run_id,
+                revision_id=session.active_revision_id,
+                parent_session_id=session.parent_session_id,
+                root_session_id=session.root_session_id,
+                depth=session.depth,
+                turn=session.turn,
+                last_event_sequence=session.last_event_sequence,
+                tool_allowlist=session.tool_allowlist,
+                pending_approval=None if row[11] is None else json.loads(row[11]),
+                chain_budget=row[12],
+                chain_reserved=row[13],
+                budget=budget,
             )
 
     def sessions(self, workspace: str | None = None, limit: int = 100) -> tuple[SessionRecord, ...]:
@@ -529,7 +1119,8 @@ class SqliteStore:
             if workspace is not None:
                 cursor = self._connection.execute(
                     """
-                    SELECT session_id, workspace, status, active_revision_id, run_id, turn, last_event_sequence
+                    SELECT session_id, workspace, status, active_revision_id, run_id, turn, last_event_sequence,
+                           parent_session_id, root_session_id, depth, tool_allowlist_json
                     FROM sessions
                     WHERE workspace = ?
                     ORDER BY updated_at DESC
@@ -540,25 +1131,15 @@ class SqliteStore:
             else:
                 cursor = self._connection.execute(
                     """
-                    SELECT session_id, workspace, status, active_revision_id, run_id, turn, last_event_sequence
+                    SELECT session_id, workspace, status, active_revision_id, run_id, turn, last_event_sequence,
+                           parent_session_id, root_session_id, depth, tool_allowlist_json
                     FROM sessions
                     ORDER BY updated_at DESC
                     LIMIT ?
                     """,
                     (capped_limit,),
                 )
-            return tuple(
-                SessionRecord(
-                    session_id=row[0],
-                    workspace=row[1],
-                    status=row[2],
-                    active_revision_id=row[3],
-                    run_id=row[4],
-                    turn=row[5],
-                    last_event_sequence=row[6],
-                )
-                for row in cursor.fetchall()
-            )
+            return tuple(_session_record(row) for row in cursor.fetchall())
 
     def events(self, session_id: str, after_sequence: int = 0, limit: int | None = None) -> tuple[StoredEvent, ...]:
         """Fetch stored events for a session strictly after a given sequence number, optionally limited."""
@@ -674,6 +1255,8 @@ class SqliteStore:
         staged_cancellations: Sequence[StagedCancellation] = (),
         staged_budgets: Sequence[StagedBudgetUpdate] = (),
         staged_confirmations: Sequence[StagedConfirmation] = (),
+        staged_wakeups: Sequence[StagedWakeup] = (),
+        staged_wakeup_cancels: Sequence[StagedWakeupCancel] = (),
         observer_receipts: Sequence[ObserverReceiptRecord] = (),
         completed_continuation_id: str | None = None,
         completed_continuation_status: Literal["completed", "failed", "cancelled"] = "completed",
@@ -720,7 +1303,8 @@ class SqliteStore:
 
                 cursor = self._connection.execute(
                     """
-                    SELECT session_id, workspace, status, active_revision_id, run_id, turn, last_event_sequence
+                    SELECT session_id, workspace, status, active_revision_id, run_id, turn, last_event_sequence,
+                           parent_session_id, root_session_id, depth, tool_allowlist_json
                     FROM sessions
                     WHERE session_id = ?
                     """,
@@ -730,7 +1314,7 @@ class SqliteStore:
                 if row is None:
                     raise StoreConflict(f"session {session_id!r} does not exist")
 
-                _, workspace, _, curr_revision_id, curr_run_id, curr_turn, curr_seq = row
+                (_, workspace, _, curr_revision_id, curr_run_id, curr_turn, curr_seq, curr_parent, curr_root, curr_depth, curr_allowlist) = row
 
                 if expected_sequence is not None and curr_seq != expected_sequence:
                     raise StoreConflict(f"sequence mismatch for session {session_id!r}: expected {expected_sequence}, got {curr_seq}")
@@ -768,8 +1352,8 @@ class SqliteStore:
                                 """
                                 INSERT INTO continuations (
                                     continuation_id, owner, session_id, source, run_id, revision_id,
-                                    idempotency_key, root_id, status, payload_json, created_at, updated_at
-                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+                                    idempotency_key, root_id, role, status, payload_json, created_at, updated_at
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
                                 """,
                                 (
                                     cont.continuation_id,
@@ -780,6 +1364,7 @@ class SqliteStore:
                                     revision_id,
                                     cont.idempotency_key,
                                     cont.root_id,
+                                    cont.role if cont.role in ("system", "user") else "system",
                                     cont_payload_json,
                                     now,
                                     now,
@@ -871,6 +1456,39 @@ class SqliteStore:
                         )
                     except sqlite3.IntegrityError as exc:
                         raise StoreConflict(f"confirmation {confirmation.request_id!r} already exists") from exc
+
+                # 2c3. Schedule or cancel owner wakeups with the callback that asked for them.
+                for wakeup in staged_wakeups:
+                    try:
+                        self._connection.execute(
+                            """
+                            INSERT INTO wakeups (
+                                wakeup_id, owner, workspace, session_id, payload_json, role, due_at,
+                                status, claim_run_id, created_at, updated_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)
+                            """,
+                            (
+                                wakeup.wakeup_id,
+                                wakeup.owner,
+                                workspace,
+                                wakeup.session_id,
+                                canonical_json(wakeup.payload),
+                                wakeup.role if wakeup.role in ("system", "user") else "system",
+                                wakeup.due_at,
+                                now,
+                                now,
+                            ),
+                        )
+                    except sqlite3.IntegrityError as exc:
+                        raise StoreConflict(f"wakeup {wakeup.wakeup_id!r} already exists") from exc
+                for cancel in staged_wakeup_cancels:
+                    self._connection.execute(
+                        """
+                        UPDATE wakeups SET status = 'cancelled', updated_at = ?
+                        WHERE wakeup_id = ? AND owner = ? AND status = 'pending'
+                        """,
+                        (now, cancel.wakeup_id, cancel.owner),
+                    )
 
                 # 2d. Apply observer receipts
                 for r in observer_receipts:
@@ -975,6 +1593,10 @@ class SqliteStore:
                     active_revision_id=revision_id,
                     run_id=run_id,
                     turn=new_turn,
+                    root_session_id=curr_root,
+                    parent_session_id=curr_parent,
+                    depth=curr_depth,
+                    tool_allowlist=_allowlist_from_json(curr_allowlist),
                     last_event_sequence=current_seq,
                 )
             except Exception:
@@ -1065,7 +1687,8 @@ class SqliteStore:
 
                 cursor = self._connection.execute(
                     """
-                    SELECT session_id, workspace, status, active_revision_id, run_id, turn, last_event_sequence
+                    SELECT session_id, workspace, status, active_revision_id, run_id, turn, last_event_sequence,
+                           parent_session_id, root_session_id, depth, tool_allowlist_json
                     FROM sessions
                     WHERE session_id = ?
                     """,
@@ -1074,7 +1697,7 @@ class SqliteStore:
                 row = cursor.fetchone()
                 if row is None:
                     raise StoreConflict(f"session {session_id!r} does not exist")
-                _, row_workspace, _, curr_revision_id, curr_run_id, curr_turn, curr_seq = row
+                (_, row_workspace, _, curr_revision_id, curr_run_id, curr_turn, curr_seq, curr_parent, curr_root, curr_depth, curr_allowlist) = row
                 if row_workspace != workspace:
                     raise StoreConflict(f"session {session_id!r} belongs to workspace {row_workspace!r}")
                 if curr_seq != expected_sequence:
@@ -1122,6 +1745,18 @@ class SqliteStore:
                 self._apply_state_updates(state_updates, default_revision_id=target_revision_id, now=now)
 
                 for owner in cancelled_owners:
+                    # A deactivated owner's generic constraints die with it: an orphaned
+                    # restrictive overlay must never keep blocking ordinary chat.
+                    self._connection.execute(
+                        "DELETE FROM session_overlays WHERE owner = ?",
+                        (owner,),
+                    )
+                    # A deactivated owner's projection disappears with it: the raw window
+                    # becomes visible again instead of a summary nobody owns.
+                    self._connection.execute(
+                        "DELETE FROM window_projections WHERE owner = ?",
+                        (owner,),
+                    )
                     self._connection.execute(
                         """
                         UPDATE continuations
@@ -1219,6 +1854,10 @@ class SqliteStore:
                     run_id=run_id,
                     turn=curr_turn,
                     last_event_sequence=current_seq,
+                    root_session_id=curr_root,
+                    parent_session_id=curr_parent,
+                    depth=curr_depth,
+                    tool_allowlist=_allowlist_from_json(curr_allowlist),
                 )
             except Exception:
                 if in_transaction:
@@ -1335,6 +1974,23 @@ class SqliteStore:
         with self._lock:
             self._check_open()
             return tuple(self._activation_blockers_locked(workspace, acting_session_id, exclude_claimed_in_session=False))
+
+    def plugin_state_meta(self, owner: str, scope: str, scope_key: str) -> tuple[Mapping[str, object] | None, int, int]:
+        """Owner state with its optimistic version AND its declared schema version (0 when absent)."""
+        with self._lock:
+            self._check_open()
+            cursor = self._connection.execute(
+                """
+                SELECT payload_json, version, schema_version
+                FROM plugin_state
+                WHERE scope = ? AND scope_key = ? AND owner = ?
+                """,
+                (scope, scope_key, owner),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return (None, 0, 0)
+            return (own_json_object(json.loads(row[0])), int(row[1]), int(row[2]))
 
     def plugin_state(self, owner: str, scope: str, scope_key: str) -> tuple[Mapping[str, object] | None, int]:
         """Fetch current plugin state and version for the given owner, scope, and scope_key."""
@@ -1547,7 +2203,7 @@ class SqliteStore:
                 cursor = self._connection.execute(
                     """
                     SELECT continuation_id, owner, session_id, source, run_id, revision_id,
-                           idempotency_key, root_id, status, payload_json, created_at, updated_at
+                           idempotency_key, root_id, status, payload_json, created_at, updated_at, role
                     FROM continuations
                     WHERE session_id = ? AND status = 'pending'
                     ORDER BY created_at ASC
@@ -1581,6 +2237,7 @@ class SqliteStore:
                             created_at=row[10],
                             updated_at=now,
                             root_id=row[7],
+                            role=str(row[12]),
                         )
                     )
                 self._connection.execute("COMMIT")
@@ -1638,7 +2295,7 @@ class SqliteStore:
             cursor = self._connection.execute(
                 """
                 SELECT continuation_id, owner, session_id, source, run_id, revision_id,
-                       idempotency_key, root_id, status, payload_json, created_at, updated_at
+                       idempotency_key, root_id, status, payload_json, created_at, updated_at, role
                 FROM continuations
                 WHERE session_id = ? AND status = 'pending'
                 ORDER BY created_at ASC
@@ -1661,6 +2318,7 @@ class SqliteStore:
                     created_at=row[10],
                     updated_at=row[11],
                     root_id=row[7],
+                    role=str(row[12]),
                 )
                 for row in rows
             )
@@ -1676,7 +2334,7 @@ class SqliteStore:
             cursor = self._connection.execute(
                 """
                 SELECT continuation_id, owner, session_id, source, run_id, revision_id,
-                       idempotency_key, root_id, status, payload_json, created_at, updated_at
+                       idempotency_key, root_id, status, payload_json, created_at, updated_at, role
                 FROM continuations
                 WHERE session_id = ? AND status = 'claimed'
                 ORDER BY created_at ASC
@@ -1699,6 +2357,7 @@ class SqliteStore:
                     created_at=row[10],
                     updated_at=row[11],
                     root_id=row[7],
+                    role=str(row[12]),
                 )
                 for row in rows
             )
@@ -1739,7 +2398,8 @@ class SqliteStore:
 
                 cursor = self._connection.execute(
                     """
-                    SELECT session_id, workspace, status, active_revision_id, run_id, turn, last_event_sequence
+                    SELECT session_id, workspace, status, active_revision_id, run_id, turn, last_event_sequence,
+                           parent_session_id, root_session_id, depth, tool_allowlist_json
                     FROM sessions
                     WHERE session_id = ?
                     """,
@@ -1748,7 +2408,7 @@ class SqliteStore:
                 row = cursor.fetchone()
                 if row is None:
                     raise StoreConflict(f"session {session_id!r} does not exist")
-                _, workspace, status, curr_revision_id, curr_run_id, curr_turn, curr_seq = row
+                (_, workspace, status, curr_revision_id, curr_run_id, curr_turn, curr_seq, curr_parent, curr_root, curr_depth, curr_allowlist) = row
                 if curr_revision_id != revision_id:
                     raise StoreConflict(f"active revision mismatch for session {session_id!r}: active is {curr_revision_id!r}, got {revision_id!r}")
 
@@ -1757,7 +2417,7 @@ class SqliteStore:
                 c_cursor = self._connection.execute(
                     """
                     SELECT continuation_id, owner, session_id, source, run_id, revision_id,
-                           idempotency_key, root_id, status, payload_json, created_at, updated_at
+                           idempotency_key, root_id, status, payload_json, created_at, updated_at, role
                     FROM continuations
                     WHERE session_id = ? AND status = 'pending'
                     ORDER BY created_at ASC
@@ -1770,7 +2430,7 @@ class SqliteStore:
                     c_cursor2 = self._connection.execute(
                         """
                         SELECT continuation_id, owner, session_id, source, run_id, revision_id,
-                               idempotency_key, root_id, status, payload_json, created_at, updated_at
+                               idempotency_key, root_id, status, payload_json, created_at, updated_at, role
                         FROM continuations
                         WHERE session_id = ? AND status = 'claimed'
                         ORDER BY created_at ASC
@@ -1795,6 +2455,7 @@ class SqliteStore:
                         created_at=cont_row[10],
                         updated_at=cont_row[11],
                         root_id=cont_row[7],
+                        role=str(cont_row[12]),
                     )
                     self._connection.execute("COMMIT")
                     in_transaction = False
@@ -1806,6 +2467,10 @@ class SqliteStore:
                         run_id=curr_run_id,
                         turn=curr_turn,
                         last_event_sequence=curr_seq,
+                        root_session_id=curr_root,
+                        parent_session_id=curr_parent,
+                        depth=curr_depth,
+                        tool_allowlist=_allowlist_from_json(curr_allowlist),
                     )
 
                 cid = cont_row[0]
@@ -1831,10 +2496,13 @@ class SqliteStore:
                     created_at=cont_row[10],
                     updated_at=now,
                     root_id=cont_row[7],
+                    role=str(cont_row[12]),
                 )
 
                 new_seq = curr_seq + 1
-                disp_payload = canonical_json({"continuation_id": cont_record.continuation_id, "payload": cont_record.payload})
+                disp_payload = canonical_json(
+                    {"continuation_id": cont_record.continuation_id, "payload": cont_record.payload, "role": cont_record.role}
+                )
                 self._connection.execute(
                     """
                     INSERT INTO session_events (
@@ -1891,6 +2559,10 @@ class SqliteStore:
                     status="running",
                     active_revision_id=revision_id,
                     run_id=run_id,
+                    root_session_id=curr_root,
+                    parent_session_id=curr_parent,
+                    depth=curr_depth,
+                    tool_allowlist=_allowlist_from_json(curr_allowlist),
                     turn=new_turn,
                     last_event_sequence=new_seq,
                 )

@@ -6,6 +6,182 @@ covered by executable tests.
 
 ## Unreleased
 
+### P4 cutover: the kernel + plugin architecture is the product
+- Removed the legacy runtime stack: `VoidCodeRuntime`/`run_loop`, `core/`, `tools/`, `provider/`,
+  `common/`, `command/`, `hook/`, `formatter/`, `agent/`, `skills/`, `mcp/`, `lsp/`, `acp/`,
+  `doctor/`, the legacy `cli/` and the legacy HTTP/SPA server. `voidcode` (and
+  `python -m voidcode.kernel`) is now the single product CLI: `run`, `resume`, `show`,
+  `create-session`, `sessions`, `catalog`, `invoke`, `confirm`, `views`, `drain`, `usage`, `tui`,
+  `serve`, with `--workspace`, `--state-dir`, and `--trust-plugin`.
+- Configuration is `voidcode.json` only (kernel `schema_version`, `model`, `policy`, `providers`,
+  `plugins`). A legacy `.voidcode.json` is rejected explicitly; no conversion is performed, and the
+  configuration CLI (`config show/schema/init`) and generated config schema are gone.
+- State is per-workspace: `$XDG_STATE_HOME/voidcode/kernel-v1/<workspace-sha256>/`, holding
+  `kernel-v1.sqlite3`, pinned plugin `artifacts/`, and the 0600 `private/` configuration snapshot.
+  Legacy session databases are neither imported nor auto-deleted: removing historical data is a
+  manual action.
+- ACP and doctor are deleted with no replacement (plugin inventories `/mcp` and `/lsp` cover part
+  of the capability report). The HTTP surface is the generic kernel `/api` contract: no legacy
+  REST routes, no session fork/undo/checkout/import, no `sessions rewind` family.
+- The human task surface is removed: delegation is agent-facing through the `task`/`task_batch`
+  tools only, and `/effectiveness` is session-scoped rather than a workspace-wide rollup.
+- All product behavior ships as bundled plugins (providers, files, exec, lsp, mcp,
+  web, ast_grep, session_info, todo, plan, skills, agents, review, delegation, btw, cron,
+  compaction, hooks, formatter, user_shell, effectiveness, goal) admitted by manifest identity and
+  running in a separate plugin host process.
+
+### P4 kernel/SDK seams (S5)
+- Session facts and child tails: `PluginServices.session_info()` reads status, run/revision,
+  lineage, pending approval, owner budget and root-chain accounting in one SQL row. Bounded
+  `read_child_events(child_session_id, after_sequence, limit)` pages are admitted by the kernel's
+  persisted same-root lineage, never by a plugin's claim about its children.
+- Same-session tool requests: `services.invoke_tool(name, arguments, expected_revision=...)`
+  returns a staged `ToolInvocationReceipt` immediately. The request commits with its caller's
+  result, then runs after the callback through the ordinary scope, schema, stance, pre-tool,
+  effects and durable approval pipeline. Approvals park the session instead of blocking a
+  service RPC; nested depth is kernel-owned and every request spends the same root action
+  budget. Hook leases cannot enqueue work, and interrupted mutations are never replayed.
+  Deferred results remain attributed user-level data notes with tool, request and invocation
+  identities, counted in the ordinary request window; they never fabricate provider calls or
+  promote tool output to system authority.
+- Committed read coverage: tools attach neutral `ReadObservation` metadata to `ToolSuccess`.
+  The kernel derives `ToolContext.read_paths`, `read_lines`, `read_whole_files` and `read_hash`
+  from durable, model-visible results after the shared output bound. Partial, truncated or
+  clipped results grant nothing; content versions and sessions never merge, and reopening
+  the host rebuilds the same coverage without an in-memory ledger.
+- Provider-specific configuration stays opaque: `api_key` and `base_url` remain typed while
+  unknown provider fields are delivered as private, flat vendor options. The private 0600
+  snapshot restores them on restart; revisions and session events never contain them.
+- Tool progress: the SDK context's `emit_tool_progress` reports over the existing host channel.
+  Bounded, lease-attributed `kernel.tool_progress` events reach the existing session SSE stream
+  while the invocation is still running; reporting is observational and never waits for an ack.
+- Bundled admission boots the whole product set — `providers`, `files`, `exec`, `mcp`, `lsp`,
+  `web`, `ast_grep`, `session_info` and every product plugin — as one generation. Package entry
+  modules have per-plugin identities, so bundled `__init__` entries do not collide.
+- Lease-scoped processes: `PluginServices.run_process(argv, cwd, env, stdin, timeout_seconds,
+  max_output_bytes, on_output)` runs one child of the plugin host in its own process group and
+  returns `ProcessResult{exit_code, stdout, stderr, duration_ms, truncated, timed_out, cancelled}`.
+  No byte of a child's output crosses the kernel protocol — the host owns the process, its capture
+  and its bounds — while the lease contributes stance through the new `lease_stance` reverse RPC:
+  read-only and hook leases are refused outright, because neither touches the machine. Each stream
+  is captured up to the caller's bound (its own default, hard ceiling 256 MiB) with the excess
+  dropped and `truncated` set, `stdin` is written without losing output, a timeout or a lease
+  cancellation SIGTERMs then SIGKILLs the whole group before returning, and every tracked group is
+  reaped when the host shuts down (its own hard exit included), so no child outlives its generation.
+- Supervised background processes: `PluginServices.spawn_process(argv, cwd, env, stdin, stdout_path,
+  stderr_path, process_id)` starts a process that outlives the invocation that started it, and
+  returns `ProcessHandle{process_id, pid, start_time, stdout_path, stderr_path, running, exit_code}`
+  — the identity the caller persists, where `start_time` is the kernel's own start stamp for that
+  pid, so a recycled pid can never impersonate a live process. `write_process` (only for a process
+  started with `stdin=True` in this host), `read_process_output(stream, offset, limit)` (bounded
+  pages with liveness at read time), `cancel_process` (SIGTERM group, then SIGKILL) and
+  `list_processes` complete the surface; logs are real files at paths the caller names (created and
+  appended, never truncated) or host spool files whose paths the handle carries. Supervised
+  processes are partitioned by the session that started them, so no session can read or stop
+  another's. Starting or stopping one requires a writable lease; reading does not. A start id that
+  is still running is refused rather than duplicated, and reusing it after exit appends to the same
+  log. A host swap keeps supervised processes running (the caller's persisted identity is what
+  re-attaches them), while the kernel's own shutdown stops every tracked process by group.
+
+### P4 kernel/SDK seams (S1-S3)
+- Provider selection is opaque: `KernelProviderEntry` carries only `api_key`/`base_url`, config
+  `providers.<name>` must be a provider name declared by an admitted plugin, and credentials are
+  injected per plugin for exactly the names it declares (no wire vocabulary or vendor branch in the
+  kernel). A model must name a configured provider. The provider turn request now carries
+  `metadata={"session_id","run_id"}` for session-scoped adapter headers, and tool declarations can
+  express `path_argument_keys`/`supports_parallel` (carried into the admitted definition).
+- `PluginServices.get_state_schema_version(scope)` reports the stored owner state's schema version
+  (`0` when nothing is stored); `InvocationFinishedFact` now carries the tool `owner` and the
+  declared `effects` the kernel governed under (from the invocation's own intent record).
+- Per-session run locks replace the workspace-wide lock: independent sessions (delegated children,
+  wakeups, a user turn beside a background run) execute concurrently in one workspace, and `close()`
+  drains them after cancelling.
+- Kernel-owned delegation: `spawn_child/join_child/cancel_child` services create durable child
+  sessions with lineage, depth ≤ 3, a durable spawn budget of 4 per root chain, mandatory narrowing
+  of the parent's tool scope, join without polling, and cancel for both running and approval-parked
+  children. `kernel.child_spawned`/`kernel.child_finished` are control facts on the parent.
+- Per-session tool visibility: a session's durable `tool_allowlist` bounds both the advertised tool
+  list and dispatch (out-of-scope calls are denied, never executed).
+- Typed messages: `ContextContribution.role` and `enqueue_continuation(..., role=...)` let an owner
+  declare a `user`-role message that the kernel renders verbatim (no system re-wrapping); role is
+  persisted with the continuation and accepted as a control fact.
+- Bounded reads and governed queries: `PluginServices.read_events(after_sequence, limit<=200,
+  include_payload)` returns session-scoped event views with a 64 KiB payload budget;
+  `PluginServices.model_query(prompt, model=None, max_output_tokens=None)` performs one tool-free,
+  history-free provider turn and records `kernel.model_query` with its truthful usage.
+- Durable wakeups: `schedule_wakeup(payload, due_at_ms, idempotency_key, role)` /
+  `cancel_wakeup` own a workspace-scoped table; `Kernel.tick()` claims ONE due wakeup and creates its
+  authentic running session in one transaction (no TTL or reaper), renders the payload with its
+  declared role, drives it under the session lock and settles the row terminally. A kernel ticker
+  runs alongside the activation driver when `auto_drain` is enabled.
+- Direct-user command authority: a command declaration can set `direct_user` and a declarative
+  `client_syntax`; both reach the catalog. The kernel itself attributes an authentic client
+  invocation of such a command to `actor="user"` (agents and plugins can never supply an actor),
+  and a read-only session does not block the user's own direct command, while every other command
+  keeps the ordinary policy. Clients route the declared syntax; the kernel never parses it.
+- Delegation bounds: the client prompt ingress guard stays 64 KiB, while a kernel-driven child
+  run uses the delegated-prompt guard (`CHILD_PROMPT_MAX_BYTES`, 256 KiB) — an owner still enforces
+  its own tighter product cap, and a payload in the 64-256 KiB band (a review diff) now runs
+  instead of failing after the child session was created.
+- Read-only stance and delegation: SPAWN is no longer treated as an external mutation for the
+  restrictive gate, so a restricted owner can delegate — but the kernel enforces that a restricted
+  owner may only spawn a child that stays restricted (`spawn_child(..., readonly=True)`), recorded
+  as a kernel-owned overlay on the child session that no plugin can clear. Holding a read-only
+  session (`plan`) can therefore run read-only reviews while still refusing every write.
+- Measured request window (C8): every `kernel.provider_intent` now carries `request_window` — the
+  exact per-segment character counts and digests of the literal messages handed to the provider,
+  the measured size of the kernel-side neutral tool encoding, and the advertised tool count
+  (`voidcode.sdk.hooks.RequestWindow` / `WindowSegment`, decodable from the event payload a client
+  already reads). Token facts remain provider-reported usage only: there is no characters-per-token
+  estimate anywhere in the kernel, so panels derive from measurement.
+- Verified window projection (declared, kernel-checked, used by assembly): a plugin calls
+  `services.project_window(covered_from_sequence=..., covered_to_sequence=..., replacement=...)`.
+  The kernel verifies the coverage is a committed prefix of that session covering whole native
+  batches, measures the accounting itself (covered bytes = encoded size of the replaced events,
+  dropped bytes = the remainder), refuses a projection that would not shrink the window, and
+  records it in `window_projections` (one row per session, owner-stamped). Assembly substitutes
+  the owner's summary for that prefix, so a long session stays bounded instead of hitting the
+  hard fail — with every historical event untouched. `services.window_projection()` /
+  `clear_window_projection()` read and drop it, a read-only lease cannot project, and a
+  deactivated owner's projection is removed in the same CAS switch as its overlays
+  (schema version 4).
+- Lifecycle hooks: `hooks: [{kind: "session_start"|"session_end"}]` with
+  `Plugin.session_start/session_end(lifecycle: RunLifecycle, context, services) -> str | None`.
+  `session_start` fires once per run immediately before that run's first provider dispatch and
+  `session_end` fires with the run's terminal commit (completed or failed), each on a `hook=True`
+  read-only lease; the owner's note (or its failure) is recorded in one durable
+  `kernel.hook_invoked` event per owner and run, and a second run fires the pair again for its own
+  run id. Firing is guarded by that same durable record, so a resume cannot duplicate it, and a
+  hook failure never changes what the run decided. Context injection deliberately stays with the
+  context contribution: lifecycle hooks are notifications with evidence, not context.
+- Pre-tool gate: a plugin declares `hooks: [{kind: "pre_tool", match: [...], mutating: bool}]` and
+  provides `Plugin.pre_tool(intent, context, services) -> str | None`. The kernel asks every
+  matching gate before the invocation is admitted (and again on the approval-resume path), on a
+  `hook=True` lease: a returned reason denies the call with that reason, and a gate that fails,
+  times out, or vanishes also denies — fail-closed, never read as permission. Denied calls leave no
+  intent and no effect. Hook leases are now read-only by construction: state/event staging,
+  continuations, wakeups, spawning, budgets and overlays are refused loudly instead of silently
+  dropped (a hook may only read state, events, usage and budget).
+- Post-tool hooks: a plugin declares `hooks: [{kind: "post_tool", match: [...], mutating: bool}]`
+  and provides `Plugin.post_tool(outcome, context, services) -> str | None`. The kernel runs them
+  INSIDE the governed invocation — after a successful result, before it becomes durable — and the
+  returned note is part of the result the model reads and the events record. Hooks run only for
+  settled successful results, a `mutating` hook is skipped under a restrictive stance (visible
+  `[hook ... skipped: read-only policy]` note), hook failure is recorded as a visible note rather
+  than lost, and hook leases cannot start nested governed work (continuations/wakeups refused
+  kernel-side). Declaring the hook without the callback (or vice versa) is refused at load.
+- Deactivating an owner now revokes its restrictive overlays in the same CAS switch, so a disabled
+  plugin can never leave a session permanently read-only; unrelated owners keep theirs.
+- Restrictive overlays (plan mode): owner-owned `session_overlays` rows (single`read-only` tier)
+  tighten a session durably; the effective restriction is the frozen kernel policy OR any overlay,
+  and it drives admission (before intent/effects), the provider's advertised tool list, and command
+  policy. An owner clears only its own row, the frozen policy is untouchable, overlays survive
+  capability reloads, and `set_overlay`/`clear_overlay` require authentic user authority
+  (`direct_user` commands) — model/agent/plugin paths are refused kernel-side. Host leases now carry
+  the authentic actor for this check.
+- Schema version 3: additive `sessions` lineage/tool-scope columns, `continuations.role`, the
+  `wakeups` table and `session_overlays`; a version-2 database is refused read-only before any write.
+
 ### Capability activation (P3)
 - Same-session hot update: a workspace runs one active capability generation, and a switch is a
   single SQLite transaction (`SqliteStore.commit_activation`) covering the immutable revision, the

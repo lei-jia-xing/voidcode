@@ -17,7 +17,7 @@ from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.kernel.bootstrap import open_kernel
 from voidcode.kernel.engine import Kernel
 from voidcode.kernel.host import HostUnavailable
-from voidcode.kernel.storage.store import SqliteStore
+from voidcode.kernel.storage.store import PluginStateRow, SqliteStore
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.tools import ToolDefinition
 
@@ -65,19 +65,20 @@ def _configure(
     *,
     plugin_id: str = PLUGIN_ID,
     enabled: bool = True,
-    model: str = "loopback/exact-model",
+    model: str = "endpoint/exact-model",
     approval_mode: str = "yolo",
     extra_plugins: dict[str, object] | None = None,
 ) -> dict[str, object]:
     workspace.mkdir(parents=True, exist_ok=True)
-    plugins: dict[str, object] = {plugin_id: {"path": str(plugin_path), "enabled": enabled}}
+    # Hermetic: the bundled file tools are irrelevant to admission/activation semantics.
+    plugins: dict[str, object] = {"files": {"enabled": False}, plugin_id: {"path": str(plugin_path), "enabled": enabled}}
     if extra_plugins:
         plugins.update(extra_plugins)
     config = {
         "schema_version": 1,
         "model": {"model": model},
         "policy": {"approval_mode": approval_mode, "read_only": False},
-        "providers": {"loopback": {"api_key": "loopback-secret-not-for-storage", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
+        "providers": {"endpoint": {"api_key": "loopback-secret-not-for-storage", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
         "plugins": plugins,
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
@@ -181,7 +182,7 @@ def test_same_session_reload_switches_generation_and_migrates_state(tmp_path: Pa
         assert kernel.run("probe the new revision", session_id=session.session_id).status == "completed"
         assert _tool_outputs(kernel, session.session_id)[2] == "probe=v2"
         with SqliteStore(tmp_path / "state" / "kernel-v1.sqlite3") as store:
-            row = store.plugin_state_rows("session", session.session_id)[0]
+            row = _owner_row(store, "session", session.session_id)
             assert row.payload == {"note": "v2", "migrated_to": 2}
 
 
@@ -224,9 +225,9 @@ def test_failed_candidate_keeps_the_old_generation(tmp_path: Path, defect: str) 
         assert second.revision_id == before
         assert _tool_outputs(kernel, session.session_id)[-1] == "probe=v1"
         with SqliteStore(tmp_path / "state" / "kernel-v1.sqlite3") as store:
-            rows = store.plugin_state_rows("session", session.session_id)
-            assert rows[0].schema_version == 1
-            assert rows[0].payload == {"note": "v1"}
+            row = _owner_row(store, "session", session.session_id)
+            assert row.schema_version == 1
+            assert row.payload == {"note": "v1"}
 
 
 def test_activation_is_blocked_by_a_waiting_session(tmp_path: Path) -> None:
@@ -291,7 +292,7 @@ def test_source_path_change_needs_explicit_trust(tmp_path: Path) -> None:
 
     # An explicit startup trust for the new path authorizes exactly that path.
     with _server([_turn(output="after trust")]) as server:
-        _configure(tmp_path / "workspace", server, other_root, model="loopback/exact-model")
+        _configure(tmp_path / "workspace", server, other_root, model="endpoint/exact-model")
         kernel = open_kernel(tmp_path / "workspace", state_dir=tmp_path / "state", trusted_plugins=frozenset({PLUGIN_ID}))
         _CREATED.append(kernel)
         session = kernel.create_session("sess-trust-2")
@@ -300,6 +301,13 @@ def test_source_path_change_needs_explicit_trust(tmp_path: Path) -> None:
         assert activated.data is not None
         assert activated.data["to_revision_id"] == kernel.revision_id
         assert activated.data["from_revision_id"] != activated.data["to_revision_id"]
+
+
+def _owner_row(store: SqliteStore, scope: str, scope_key: str) -> PluginStateRow:
+    """This plugin's own state row: the bundled plugins keep rows of their own in the same session."""
+    rows = [row for row in store.plugin_state_rows(scope, scope_key) if row.owner == PLUGIN_ID]
+    assert len(rows) == 1, [row.owner for row in store.plugin_state_rows(scope, scope_key)]
+    return rows[0]
 
 
 def test_disable_pauses_owner_state_and_reenable_migrates_the_paused_copy(tmp_path: Path) -> None:
@@ -330,7 +338,7 @@ def test_disable_pauses_owner_state_and_reenable_migrates_the_paused_copy(tmp_pa
         assert PROBE_TOOL not in disabled_tools and DEACTIVATE_TOOL not in disabled_tools
 
         with SqliteStore(tmp_path / "state" / "kernel-v1.sqlite3") as store:
-            row = store.plugin_state_rows("session", session.session_id)[0]
+            row = _owner_row(store, "session", session.session_id)
             assert row.payload == {"note": "v1", "paused": True, "tip": tip}
             assert row.schema_version == 1
 
@@ -343,7 +351,7 @@ def test_disable_pauses_owner_state_and_reenable_migrates_the_paused_copy(tmp_pa
         assert _owner_list(enabled.data, "migrated_owners") == [PLUGIN_ID]
         assert _owner_list(enabled.data, "deactivated_owners") == []
         with SqliteStore(tmp_path / "state" / "kernel-v1.sqlite3") as store:
-            row = store.plugin_state_rows("session", session.session_id)[0]
+            row = _owner_row(store, "session", session.session_id)
             assert row.schema_version == 2
             assert row.payload == {"note": "v1", "paused": True, "tip": tip, "migrated_to": 2}
             assert row.version >= 3
@@ -378,11 +386,11 @@ def test_restart_restores_the_persisted_generation_until_an_explicit_reload(tmp_
 
         # Changed source AND changed model: neither is admitted implicitly on restart.
         write_reload_plugin(source, tool_output="v2")
-        _configure(tmp_path / "workspace", server, source, model="loopback/other-model")
+        _configure(tmp_path / "workspace", server, source, model="endpoint/other-model")
         restarted = open_kernel(tmp_path / "workspace", state_dir=tmp_path / "state", trusted_plugins=frozenset())
         _CREATED.append(restarted)
         assert restarted.revision_id == persisted
-        assert restarted.config.model.model == "loopback/exact-model"
+        assert restarted.config.model.model == "endpoint/exact-model"
         resumed = restarted.run("still v1", session_id=session.session_id)
         assert resumed.status == "completed"
         assert resumed.revision_id == persisted
@@ -517,6 +525,29 @@ def test_failed_cold_start_adopts_nothing_and_retries_after_the_source_is_fixed(
         assert result.status == "completed"
         assert _tool_outputs(kernel, session.session_id)[0] == "probe=v1"
         assert kernel.store.workspace_current(str(tmp_path / "workspace")) == kernel.revision_id
+
+
+def test_provider_selection_must_be_a_registered_name(tmp_path: Path) -> None:
+    source = tmp_path / "plugin"
+    write_reload_plugin(source, tool_output="v1")
+    with _server([_turn(output="unused")]) as server:
+        _configure(tmp_path / "workspace", server, source)
+        config_path = tmp_path / "workspace" / "voidcode.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        assert "endpoint" in config["providers"]
+
+        # A configured provider nobody declares is refused at admission, not at dispatch time.
+        config["providers"]["ghost-adapter"] = {"base_url": "http://127.0.0.1:1/v1"}
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        with pytest.raises(ValueError, match="is not declared by any admitted plugin"):
+            _open(tmp_path)
+
+        # A model naming a provider that is not configured is refused too.
+        del config["providers"]["ghost-adapter"]
+        config["model"] = {"model": "ghost-adapter/whatever"}
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        with pytest.raises(ValueError, match="must name a configured provider/model"):
+            _open(tmp_path)
 
 
 def test_sdk_pin_and_expected_revision_contracts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

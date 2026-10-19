@@ -123,6 +123,10 @@ class CommandDescriptor:
     capabilities: tuple[str, ...] = ()
     busy_gate: bool = False
     client_capabilities: tuple[str, ...] = ()
+    #: Whether the command requires authentic user ingress (direct-user authority).
+    direct_user: bool = False
+    #: Declarative client syntax prefix, when the command declares one.
+    client_syntax: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "argument_schema", own_json_object(self.argument_schema))
@@ -137,6 +141,8 @@ class CommandDescriptor:
             "capabilities": list(self.capabilities),
             "busy_gate": self.busy_gate,
             "client_capabilities": list(self.client_capabilities),
+            "direct_user": self.direct_user,
+            "client_syntax": self.client_syntax,
         }
 
 
@@ -166,6 +172,10 @@ class CommandDefinition:
     capabilities: frozenset[str] | Sequence[str] = frozenset()
     busy_gate: bool = False
     client_capabilities: frozenset[str] | Sequence[str] = frozenset()
+    #: Requires authentic user ingress; an agent/plugin path can never claim this authority.
+    direct_user: bool = False
+    #: Declarative client syntax prefix (clients route it; the kernel never parses it).
+    client_syntax: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "argument_schema", own_json_object(self.argument_schema))

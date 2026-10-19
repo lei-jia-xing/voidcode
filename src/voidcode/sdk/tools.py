@@ -5,6 +5,7 @@ Self-contained: the only internal imports are sibling SDK modules.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -38,11 +39,20 @@ class ToolEffect(StrEnum):
 
 
 EXTERNAL_MUTATION_EFFECTS = frozenset({ToolEffect.WRITE, ToolEffect.EXECUTE, ToolEffect.SPAWN})
+#: Effects a restrictive (read-only) stance refuses. SPAWN is not here: delegation creates no
+#: privilege by itself because a restricted owner may only spawn a child that inherits the
+#: restriction (the kernel enforces the child's stance at the spawn service).
+RESTRICTED_DENIAL_EFFECTS = frozenset({ToolEffect.WRITE, ToolEffect.EXECUTE})
 _SESSION_COMMAND_EFFECTS = frozenset({ToolEffect.SESSION, ToolEffect.SPAWN})
 
 
 def has_external_mutations(effects: frozenset[ToolEffect]) -> bool:
     return not effects.isdisjoint(EXTERNAL_MUTATION_EFFECTS)
+
+
+def denied_under_restriction(effects: frozenset[ToolEffect]) -> bool:
+    """Whether a read-only stance refuses this declared effect set."""
+    return not effects.isdisjoint(RESTRICTED_DENIAL_EFFECTS)
 
 
 def is_read_tier(effects: frozenset[ToolEffect]) -> bool:
@@ -331,13 +341,76 @@ class UnconfirmedStop:
 
 type ExecutionObservation = ConfirmedStop | UnconfirmedStop
 
+_SHA256_TEXT = re.compile(r"^[0-9a-f]{64}$")
+
+
+@dataclass(frozen=True, slots=True)
+class ReadObservation:
+    """One file version a bounded tool result made visible to the model.
+
+    A read-shaped tool declares these on its own result, so the runtime can tell a later call
+    (a write, an edit, a structural rewrite) which exact bytes this session's model has already
+    seen — without the runtime knowing any product's read semantics. An observation is a claim
+    about *this* result: it grants coverage only while it is not clipped, and the runtime never
+    merges the lines of two different hashes of the same path.
+    """
+
+    path: str
+    content_hash: str
+    lines: tuple[int, ...] = ()
+    line_count: int = 0
+    #: The result showed the whole file version, not only a window of it.
+    whole_file: bool = False
+    #: Something in this observation was cut (a truncated line, a clipped read): it grants
+    #: nothing at all, rather than granting a partial truth a guard could rely on.
+    clipped: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.path, str) or not self.path:
+            raise ValueError("read observation path must be a non-empty string")
+        if not isinstance(self.content_hash, str) or _SHA256_TEXT.match(self.content_hash) is None:
+            raise ValueError("read observation content_hash must be a lowercase sha256 digest")
+        if not isinstance(self.lines, tuple):
+            object.__setattr__(self, "lines", tuple(self.lines))
+        seen: set[int] = set()
+        for line in self.lines:
+            if type(line) is not int or line < 1:
+                raise ValueError("read observation lines must be positive integers")
+            seen.add(line)
+        object.__setattr__(self, "lines", tuple(sorted(seen)))
+        if type(self.line_count) is not int or self.line_count < 0:
+            raise ValueError("read observation line_count must be a non-negative integer")
+        if type(self.whole_file) is not bool:
+            raise ValueError("read observation whole_file must be a boolean")
+        if type(self.clipped) is not bool:
+            raise ValueError("read observation clipped must be a boolean")
+        if any(line > self.line_count for line in self.lines):
+            raise ValueError("read observation lines must lie within the observed line count")
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "path": self.path,
+            "content_hash": self.content_hash,
+            "lines": list(self.lines),
+            "line_count": self.line_count,
+            "whole_file": self.whole_file,
+            "clipped": self.clipped,
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class ToolSuccess[Body: ToolBody]:
     tool_name: str
     output: ToolOutput = EmptyOutput()
     body: Body | None = None
+    #: File versions this success made visible; empty for a result that observed no file.
+    coverage: tuple[ReadObservation, ...] = ()
+
     status: ClassVar[Literal["ok"]] = "ok"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.coverage, tuple):
+            object.__setattr__(self, "coverage", tuple(self.coverage))
 
 
 @dataclass(frozen=True, slots=True)

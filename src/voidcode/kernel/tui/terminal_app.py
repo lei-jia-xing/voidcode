@@ -10,11 +10,11 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
-from ...tui.composer import Composer, ComposerAction
-from ...tui.keys import Key, KeyDecoder
-from ...tui.region import TuiFrame
-from ...tui.term import Terminal, escape_terminal_controls, visible_width
 from .client import KernelHttpClient
+from .composer import Composer, ComposerAction
+from .keys import Key, KeyDecoder
+from .region import TuiFrame
+from .term import Terminal, escape_terminal_controls, visible_width
 from .views import (
     InteractiveChoices,
     InteractiveConfirmation,
@@ -100,7 +100,7 @@ class KernelTuiApp:
         self.owns_terminal = terminal is None
         self.session_id = session_id or ""
         self.running = False
-        from ...tui.theme import resolve_theme
+        from .theme import resolve_theme
 
         self.composer = Composer(theme=resolve_theme(), width=self.terminal.width, placeholder="Type a message or /command...")
         self.key_decoder = KeyDecoder()

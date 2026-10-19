@@ -1,0 +1,143 @@
+{
+  "plugin_id": "compaction",
+  "version": "1.0.0",
+  "sdk_protocol": 1,
+  "schema_version": 1,
+  "entrypoint": "__init__:create_plugin",
+  "files": [
+    {
+      "path": "__init__.py",
+      "sha256": "b10b45ae62213bcba9c5414b900ccd32f7f32252f9a1031bde59005d90121ef4"
+    },
+    {
+      "path": "compaction_plugin.py",
+      "sha256": "1e5bef82694aafed546178575d7d88189acdd6ba4f9467ab45bb45f038ea34d8"
+    },
+    {
+      "path": "projection.py",
+      "sha256": "e9d234d4786a3b7870252f22a8a9f0c6962678587edf05b2114c41b5470cc52e"
+    }
+  ],
+  "tools": [],
+  "commands": [
+    {
+      "name": "compact",
+      "description": "Summarize the covered conversation prefix into one system message.",
+      "argument_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "effects": [
+        "session"
+      ],
+      "capabilities": [],
+      "busy_gate": true,
+      "client_capabilities": [],
+      "direct_user": false,
+      "client_syntax": "/compact"
+    }
+  ],
+  "capabilities": [],
+  "providers": [],
+  "depends": [],
+  "state_schema_version": 1,
+  "state_schema": {
+    "type": "object",
+    "required": [
+      "schema_version",
+      "cursor_sequence",
+      "last_projection"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "schema_version": {
+        "type": "integer",
+        "enum": [
+          1
+        ]
+      },
+      "cursor_sequence": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "last_projection": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "required": [
+          "covered_from_sequence",
+          "covered_to_sequence",
+          "covered_bytes",
+          "dropped_bytes",
+          "summary_kind"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "covered_from_sequence": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "covered_to_sequence": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "covered_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "dropped_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "summary_kind": {
+            "type": "string",
+            "enum": [
+              "deterministic",
+              "model"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean"
+      },
+      "threshold_tokens": {
+        "type": [
+          "integer",
+          "null"
+        ],
+        "minimum": 0
+      },
+      "reserve_tokens": {
+        "type": [
+          "integer",
+          "null"
+        ],
+        "minimum": 0
+      },
+      "keep_recent_tokens": {
+        "type": [
+          "integer",
+          "null"
+        ],
+        "minimum": 0
+      },
+      "summary_enabled": {
+        "type": "boolean"
+      }
+    }
+  },
+  "context": false,
+  "observed_facts": [
+    "usage",
+    "run_finished"
+  ]
+}

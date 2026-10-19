@@ -1,0 +1,153 @@
+{
+  "plugin_id": "skills",
+  "version": "1.0.0",
+  "sdk_protocol": 1,
+  "schema_version": 1,
+  "entrypoint": "__init__:create_plugin",
+  "files": [
+    {
+      "path": "__init__.py",
+      "sha256": "63058d71a82f85207f1acb2ed19f99aa936c19e9147c3e713f9dbd580ba2872e"
+    },
+    {
+      "path": "frontmatter.py",
+      "sha256": "d876d5e57f757725d0e0a6e6cf9d798ce0171d7f82c6d80d925c7dd67a2d1ff4"
+    },
+    {
+      "path": "rules.py",
+      "sha256": "e26b83624f21fda330e2f2e298f9b4aef6bab3fdbd68ab2f0ea43d45b1802f95"
+    },
+    {
+      "path": "skills_plugin.py",
+      "sha256": "85790271cdfbb624637faecac4011171ae04f9a5075321aa4178e13ca1332586"
+    }
+  ],
+  "tools": [
+    {
+      "name": "skill",
+      "description": "Load a runtime-discovered skill into the current conversation context.\n\nUsage:\n- Use this tool when the task matches a skill in the runtime skills catalog listed in the system prompt metadata.\n- The name argument is required and must match a catalog skill name.\n- The tool returns the resolved SKILL.md body and metadata so the agent can follow it in the current turn.\n- This tool does not create or edit skills; it only loads already-discovered local skills.\n- If the skill is unknown, the tool fails instead of guessing.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Skill name to load."
+          },
+          "user_message": {
+            "type": "string",
+            "description": "Optional command arguments or extra context for the skill."
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "effects": [
+        "read"
+      ],
+      "replay_policy": "safe",
+      "capabilities": [
+        "workspace.read"
+      ]
+    }
+  ],
+  "commands": [
+    {
+      "name": "skills",
+      "description": "List discovered workspace skills and whether each is enabled.",
+      "argument_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "effects": [
+        "read"
+      ],
+      "capabilities": [
+        "workspace.read"
+      ],
+      "busy_gate": false,
+      "client_capabilities": []
+    }
+  ],
+  "capabilities": [
+    {
+      "name": "workspace.read",
+      "reason": "Discover and read workspace SKILL.md files."
+    }
+  ],
+  "providers": [],
+  "depends": [],
+  "state_schema_version": 1,
+  "state_schema": {
+    "type": "object",
+    "required": [
+      "schema_version",
+      "cursor_sequence",
+      "touched_paths"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "schema_version": {
+        "type": "integer",
+        "enum": [
+          1
+        ]
+      },
+      "cursor_sequence": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "touched_paths": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "enabled": {
+        "type": "boolean"
+      },
+      "paths": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "config": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "enabled": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "additionalProperties": false
+  },
+  "context": true,
+  "observed_facts": [
+    "invocation_finished"
+  ]
+}
