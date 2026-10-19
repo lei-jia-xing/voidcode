@@ -2974,23 +2974,7 @@ def test_confirmed_owner_cancel_stops_claimed_run(tmp_path: Path) -> None:
         assert store.continuation_status("confirm-claim") == "cancelled"
 
 
-@pytest.mark.parametrize(
-    "policy",
-    [
-        # Known kernel defect, reported to the cutover owner and NOT fixed here (the kernel is
-        # frozen): `Kernel._invoke` passes the session stance as the host lease's `readonly`
-        # flag (kernel/engine.py:3655), and that flag refuses every `state_replace` from the
-        # lease (kernel/host.py:949-950) — so a read-only session cannot persist SESSION-effect
-        # plugin state, although docs/contracts/README.md documents SESSION as never refused.
-        # At d8ef18a0 the same call passed no `readonly` argument, so this parametrization is a
-        # P4 regression rather than an original contract.
-        pytest.param(
-            "read-only",
-            marks=pytest.mark.xfail(reason="kernel refuses plugin state writes from a read-only session lease", strict=False),
-        ),
-        "ask",
-    ],
-)
+@pytest.mark.parametrize("policy", ["read-only", "ask"])
 def test_internal_session_effects_need_no_read_only_waiver_or_approval(tmp_path: Path, policy: str) -> None:
     """Prove internal SESSION state operations are classified as non-external work:
     a real agentic goal flow (native create_goal/update_goal) reaches a completed

@@ -6,6 +6,14 @@ covered by executable tests.
 
 ## Unreleased
 
+### P4 corrections
+- Internal SESSION work survives a read-only stance: a lease whose tool declares `SESSION`
+  (`goal`, `todo`, `compaction`, `cron`) stages state, events, budget and continuations under
+  it, exactly as `docs/contracts/README.md` documents SESSION as never refused — window
+  projection and wakeup scheduling follow the same rule, since the stance forbids external
+  mutation only. Spawn authority is unchanged (a read-only lease still only spawns read-only
+  children), and `KernelHost.propose_turn` no longer carries a default provider name.
+
 ### P4 cutover: the kernel + plugin architecture is the product
 - Removed the legacy runtime stack: `VoidCodeRuntime`/`run_loop`, `core/`, `tools/`, `provider/`,
   `common/`, `command/`, `hook/`, `formatter/`, `agent/`, `skills/`, `mcp/`, `lsp/`, `acp/`,
@@ -142,9 +150,9 @@ covered by executable tests.
   records it in `window_projections` (one row per session, owner-stamped). Assembly substitutes
   the owner's summary for that prefix, so a long session stays bounded instead of hitting the
   hard fail — with every historical event untouched. `services.window_projection()` /
-  `clear_window_projection()` read and drop it, a read-only lease cannot project, and a
-  deactivated owner's projection is removed in the same CAS switch as its overlays
-  (schema version 4).
+  `clear_window_projection()` read and drop it, a lease that cannot stage internal work (a
+  read-tier tool, a hook, a view) cannot project, and a deactivated owner's projection is
+  removed in the same CAS switch as its overlays (schema version 4).
 - Lifecycle hooks: `hooks: [{kind: "session_start"|"session_end"}]` with
   `Plugin.session_start/session_end(lifecycle: RunLifecycle, context, services) -> str | None`.
   `session_start` fires once per run immediately before that run's first provider dispatch and

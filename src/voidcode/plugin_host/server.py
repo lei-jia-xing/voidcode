@@ -1731,7 +1731,7 @@ class PluginHostServer:
             try:
                 try:
                     request = decode_provider_request(params["request"])
-                    provider_name = str(params.get("provider", "openai-chat"))
+                    provider_name = str(params.get("provider", ""))
                 except Exception as dec_err:
                     self._send_response(
                         {

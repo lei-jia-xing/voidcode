@@ -106,6 +106,10 @@ class LeaseContext:
     actor: str = "model"
     #: Hook leases are observers of a settled invocation: they can never start nested work.
     hook: bool = False
+    #: The lease's tool declares SESSION (internal) work. ``readonly`` refuses external
+    #: authority, never internal session staging: read_only refuses exactly WRITE, EXECUTE,
+    #: and SPAWN (docs/contracts/README.md), so a goal update still persists under it.
+    internal_work: bool = False
     invocation_depth: int = 0
     staged_state: dict[tuple[str, str], tuple[Mapping[str, object], int, int]] = field(default_factory=dict)
     staged_events: list[EventDraft] = field(default_factory=list)
@@ -114,6 +118,15 @@ class LeaseContext:
     staged_budget: PluginBudget | None | Literal["clear"] = None
     revoked: bool = False
     op_counter: int = 0
+
+    @property
+    def internal_restricted(self) -> bool:
+        """Whether this lease refuses internal session work.
+
+        Internal work is state, events, budget, and continuations: kernel-owned session data,
+        never a filesystem or process mutation, so a read-only stance leaves it available.
+        """
+        return self.readonly and not self.internal_work
 
 
 @dataclass(frozen=True, slots=True)
@@ -756,7 +769,7 @@ class HostClient:
             elif method == "window_project":
                 if lease.hook:
                     raise PermissionError("hook leases cannot project a session window")
-                if lease.readonly:
+                if lease.internal_restricted:
                     raise PermissionError("Cannot project a session window from a read-only service lease")
                 if self._store is None:
                     raise RuntimeError("Store not attached to HostClient")
@@ -777,7 +790,7 @@ class HostClient:
             elif method == "window_projection_clear":
                 if lease.hook:
                     raise PermissionError("hook leases cannot clear a session window projection")
-                if lease.readonly:
+                if lease.internal_restricted:
                     raise PermissionError("Cannot clear a session window projection from a read-only service lease")
                 if self._store is None:
                     raise RuntimeError("Store not attached to HostClient")
@@ -801,7 +814,7 @@ class HostClient:
             elif method == "wakeup_schedule":
                 if lease.hook:
                     raise PermissionError("post-tool hooks cannot start nested governed work")
-                if lease.readonly:
+                if lease.internal_restricted:
                     raise PermissionError("Cannot schedule wakeups from a read-only service lease")
                 if self._store is None:
                     raise RuntimeError("Store not attached to HostClient")
@@ -831,7 +844,7 @@ class HostClient:
                 resp = {"wakeup_id": wakeup_id}
 
             elif method == "wakeup_cancel":
-                if lease.readonly:
+                if lease.internal_restricted:
                     raise PermissionError("Cannot cancel wakeups from a read-only service lease")
                 if self._store is None:
                     raise RuntimeError("Store not attached to HostClient")
@@ -946,7 +959,7 @@ class HostClient:
 
             elif method == "state_replace":
                 with self._lease_lock:
-                    if lease.readonly:
+                    if lease.internal_restricted:
                         raise PermissionError("Cannot modify state from a read-only service lease")
                     if lease.revoked:
                         raise PermissionError("Service lease was revoked")
@@ -974,7 +987,7 @@ class HostClient:
                 event_type = str(params["event_type"])
                 payload = own_json_object(params["payload"])
                 with self._lease_lock:
-                    if lease.readonly:
+                    if lease.internal_restricted:
                         raise PermissionError("Cannot stage events from a read-only service lease")
                     if lease.revoked:
                         raise PermissionError("Service lease was revoked")
@@ -997,7 +1010,7 @@ class HostClient:
                 raw_key = params.get("idempotency_key")
                 idempotency_key = str(raw_key) if raw_key is not None else None
                 with self._lease_lock:
-                    if lease.readonly:
+                    if lease.internal_restricted:
                         raise PermissionError("Cannot enqueue continuations from a read-only service lease")
                     if lease.revoked:
                         raise PermissionError("Service lease was revoked")
@@ -1047,7 +1060,7 @@ class HostClient:
             elif method == "continuations_cancel":
                 cid = params.get("continuation_id")
                 with self._lease_lock:
-                    if lease.readonly:
+                    if lease.internal_restricted:
                         raise PermissionError("Cannot cancel continuations from a read-only service lease")
                     if lease.revoked:
                         raise PermissionError("Service lease was revoked")
@@ -1094,7 +1107,7 @@ class HostClient:
                     max_elapsed_seconds=params.get("max_elapsed_seconds"),
                 )
                 with self._lease_lock:
-                    if lease.readonly:
+                    if lease.internal_restricted:
                         raise PermissionError("Cannot set budget from a read-only service lease")
                     if lease.revoked:
                         raise PermissionError("Service lease was revoked")
@@ -1103,7 +1116,7 @@ class HostClient:
 
             elif method == "clear_budget":
                 with self._lease_lock:
-                    if lease.readonly:
+                    if lease.internal_restricted:
                         raise PermissionError("Cannot clear budget from a read-only service lease")
                     if lease.revoked:
                         raise PermissionError("Service lease was revoked")
@@ -1405,8 +1418,9 @@ class HostClient:
 
         tool_owner = self.owner(call.tool_name)
         tool_desc = self._tool_map[call.tool_name]
-        # A tool lease is restricted when the session's effective stance is restrictive,
-        # even if the tool's own effects are read-tier or spawn-tier.
+        # A tool lease is restricted when the session's effective stance is restrictive, even if
+        # the tool's own effects are read-tier or spawn-tier. Internal SESSION staging stays
+        # available under a read-only stance: it mutates kernel-owned session data, not the world.
         is_ro = readonly or is_read_tier(tool_desc.effects)
         lease_token = uuid4().hex
         lease = LeaseContext(
@@ -1420,6 +1434,7 @@ class HostClient:
             grants=context.capabilities,
             readonly=is_ro,
             actor=context.actor,
+            internal_work=ToolEffect.SESSION in tool_desc.effects,
             invocation_depth=context.invocation_depth,
         )
         with self._lease_lock:
@@ -1504,7 +1519,7 @@ class HostClient:
         self,
         request: ProviderTurnRequest,
         *,
-        provider: str = "openai-chat",
+        provider: str,
         timeout_seconds: float = 120,
     ) -> ProviderTurnResult:
         """Request a model turn from a registered provider."""
