@@ -161,7 +161,7 @@ declares `read`+`execute` and flows through the existing approval/read-only gate
 
 ## Client Surfaces
 
-- **Kernel CLI** (`python -m voidcode.kernel`, also the `voidcode` console script): `run`, `resume`, `show`, `preflight`, `create-session`, `sessions`, `catalog`, `invoke`, `confirm`, `views`, `drain`, `usage`, `tui`, `serve`, `upgrade`. The operational commands execute inside the elected image; `show` is a config-free SQLite rescue reader; `serve` supervises one kernel child behind a stable endpoint and token; `tui` spawns a supervisor child by default and drives it as an HTTP client (or attaches to a remote one with `--server`); `upgrade` asks the running supervisor for a controlled kernel upgrade and `preflight` prints the read-only candidate check.
+- **Kernel CLI** (`python -m voidcode.kernel`, also the `voidcode` console script): `run`, `resume`, `show`, `preflight`, `create-session`, `sessions`, `catalog`, `invoke`, `confirm`, `views`, `drain`, `usage`, `serve`, `upgrade`, and the bare command. The operational commands execute inside the elected image; `show` is a config-free SQLite rescue reader; `serve` supervises one kernel child behind a stable endpoint and token; the bare command opens the TUI against a supervisor child by default and drives it as an HTTP client (or attaches to a remote one with `--server`); `upgrade` asks the running supervisor for a controlled kernel upgrade and `preflight` prints the read-only candidate check.
 - **TUI**: inline scrollback with a commit-once ledger; local controls (`/tui help|sessions|session|new|views|cancel|quit`) that never shadow an admitted command.
 - **HTTP/SSE**: the generic `/api` contract — see [`contracts/client-transport.md`](./contracts/client-transport.md).
 - **Web client** (`frontend/src/kernel/`): the React kernel app, served by the kernel at `/` when a bundle is built, rendering the same catalog, views, and event stream.
@@ -174,6 +174,6 @@ declares `read`+`execute` and flows through the existing approval/read-only gate
 - `artifacts/<identity>/` — the pinned copies of every admitted plugin;
 - `private/<revision>.json` — the 0600 configuration snapshot (credentials included), never referenced by events or revisions;
 - `kernel-images/<digest>/` — immutable installation snapshots; the elected image a revision pins resolves here;
-- `supervisor/` — the supervisor's control socket, journal, and scratch (observability only; SQLite stays canonical).
+- `supervisor/` — the supervisor's journal and scratch (observability only; SQLite stays canonical). The control socket is ephemeral under `/tmp/voidcode-<uid>/`, derived from the state directory.
 
 The state directory must not live inside the workspace; `--state-dir` overrides the derived location. Legacy state from the pre-kernel architecture is neither read nor migrated.

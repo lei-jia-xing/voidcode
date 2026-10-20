@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
+import socket
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -18,6 +21,66 @@ class KernelClientError(Exception):
         super().__init__(message)
         self.status_code = status_code
         self.code = code
+
+
+class StreamCancellation:
+    """Cancels one owned event-stream connection from another thread.
+
+    A follow stream deliberately opens with ``timeout=None`` because idle is normal. A blocked
+    ``readline`` on that response cannot be woken by closing an event or by the response object
+    from another thread, so the response's public file descriptor is duplicated once and
+    ``close`` shuts down the shared connection; the read then returns and the stream's own context
+    manager still closes its response. ``close`` is idempotent, and attaching after a close shuts
+    the connection down immediately (open/close race). Callers that stop the stream must call
+    ``close`` before joining its worker.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._closed = False
+        self._socket: socket.socket | None = None
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            duplicate, self._socket = self._socket, None
+        _shutdown_socket(duplicate)
+
+    def _attach(self, response: Any) -> None:
+        # Borrow the response's fd without taking ownership, duplicate it through the portable
+        # public Socket API, then release the borrowed object in all outcomes.
+        borrowed = socket.socket(fileno=response.fileno())
+        try:
+            duplicate = borrowed.dup()
+        finally:
+            borrowed.detach()
+        with self._lock:
+            if self._closed:
+                stale, duplicate = duplicate, None
+            else:
+                stale, self._socket = self._socket, duplicate
+                duplicate = None
+        _shutdown_socket(stale)
+
+    def _detach(self) -> None:
+        with self._lock:
+            duplicate, self._socket = self._socket, None
+        if duplicate is not None:
+            duplicate.close()
+
+
+def _shutdown_socket(duplicate: socket.socket | None) -> None:
+    if duplicate is None:
+        return
+    try:
+        duplicate.shutdown(socket.SHUT_RDWR)
+    except OSError as exc:
+        # A stream may already be gone when quit/close races the peer; that is the expected case.
+        expected = {errno.ENOTCONN, errno.EBADF, getattr(errno, "WSAENOTCONN", errno.ENOTCONN), getattr(errno, "WSAEBADF", errno.EBADF)}
+        if exc.errno not in expected:
+            raise
+    finally:
+        duplicate.close()
 
 
 class KernelHttpClient:
@@ -199,6 +262,7 @@ class KernelHttpClient:
         *,
         after_sequence: int = 0,
         follow: bool = True,
+        cancel: StreamCancellation | None = None,
     ) -> Iterator[dict[str, Any]]:
         query = {
             "after_sequence": after_sequence,
@@ -214,25 +278,31 @@ class KernelHttpClient:
 
         req = urllib.request.Request(url, headers=headers, method="GET")
         with urllib.request.urlopen(req, timeout=None) as resp:
-            buffer = ""
-            for raw_chunk in resp:
-                chunk = raw_chunk.decode("utf-8", "replace")
-                buffer += chunk
-                while "\n\n" in buffer:
-                    raw_event, buffer = buffer.split("\n\n", 1)
-                    raw_event = raw_event.strip()
-                    if not raw_event:
-                        continue
-                    for line in raw_event.splitlines():
-                        if line.startswith("data:"):
-                            data_str = line[5:].strip()
-                            if data_str:
-                                try:
-                                    yield json.loads(data_str)
-                                except json.JSONDecodeError as exc:
-                                    # A malformed frame fails the connection
-                                    # visibly: skipping fact N and applying N+1
-                                    # would advance the resume cursor past a
-                                    # missed fact. The worker reconnects from
-                                    # the own applied cursor.
-                                    raise KernelClientError(f"malformed SSE frame: {exc}") from exc
+            if cancel is not None:
+                cancel._attach(resp)
+            try:
+                buffer = ""
+                for raw_chunk in resp:
+                    chunk = raw_chunk.decode("utf-8", "replace")
+                    buffer += chunk
+                    while "\n\n" in buffer:
+                        raw_event, buffer = buffer.split("\n\n", 1)
+                        raw_event = raw_event.strip()
+                        if not raw_event:
+                            continue
+                        for line in raw_event.splitlines():
+                            if line.startswith("data:"):
+                                data_str = line[5:].strip()
+                                if data_str:
+                                    try:
+                                        yield json.loads(data_str)
+                                    except json.JSONDecodeError as exc:
+                                        # A malformed frame fails the connection
+                                        # visibly: skipping fact N and applying N+1
+                                        # would advance the resume cursor past a
+                                        # missed fact. The worker reconnects from
+                                        # the own applied cursor.
+                                        raise KernelClientError(f"malformed SSE frame: {exc}") from exc
+            finally:
+                if cancel is not None:
+                    cancel._detach()

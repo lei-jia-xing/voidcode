@@ -214,6 +214,13 @@ CHILD_PROMPT_MAX_BYTES = 256 * 1024
 DELEGATION_MAX_DEPTH = 3
 DELEGATION_SPAWN_BUDGET = 4
 
+#: One truthful, actionable message for a providerless kernel. Launch, commands, tools, and
+#: sessions stay available; only a model turn or governed query fails with this text.
+MODEL_CONFIGURATION_GUIDANCE = (
+    'no model configured: create a valid voidcode.json with model.model "<provider>/<model>" '
+    "and providers.<provider>.base_url, then run kernel.reload"
+)
+
 #: Reserved core command that activates the configured sources on explicit request.
 RELOAD_COMMAND_NAME = "kernel.reload"
 _RELOAD_COMMAND_SPEC: tuple[str, str, Mapping[str, object], tuple[ToolEffect, ...], bool] = (
@@ -1365,7 +1372,29 @@ class Kernel:
                 data = self.show(session_id, events=bool(arguments.get("events", False)))
                 return CommandResult(status="ok", data=data)
             if name == "status":
-                return CommandResult(status="ok", data=self.show(session_id, events=False))
+                data = self.show(session_id, events=False)
+                model = self.config.model.model
+                output = "\n".join(
+                    (
+                        f"session: {s.session_id}",
+                        f"status: {s.status}",
+                        f"workspace: {self.workspace}",
+                        f"revision: {s.active_revision_id}",
+                        f"model: {model}" if model is not None else "model: not configured",
+                        f"run: {s.run_id or 'none'}",
+                        f"turn: {s.turn}, last event: {s.last_event_sequence}",
+                    )
+                )
+                return CommandResult(status="ok", output=output, data=data)
+            if name == "help":
+                payload = dict(self.command_catalog().as_payload())
+                commands = payload.get("commands")
+                lines = ["Available commands:"]
+                if isinstance(commands, list):
+                    for command in commands:
+                        if isinstance(command, Mapping):
+                            lines.append(f"  /{command.get('name', '')} — {command.get('description', '')}")
+                return CommandResult(status="ok", output="\n".join(lines), data=payload)
             return CommandResult(status="ok", data=dict(self.command_catalog().as_payload()))
 
         # 2. Plugin command lookup
@@ -2331,7 +2360,7 @@ class Kernel:
         self.session(session_id)
         selected = model or self.config.model.model
         if selected is None:
-            raise ValueError("no model configured")
+            raise ValueError(MODEL_CONFIGURATION_GUIDANCE)
         provider_name, separator, model_name = selected.partition("/")
         if not separator or not model_name or provider_name not in self.config.providers:
             raise ValueError("model must name a configured provider/model")
@@ -3490,7 +3519,7 @@ class Kernel:
                             self._commit(execution, "running", "ready", *started)
                     model = snapshot.config.model.model
                     if model is None:
-                        return self._fail(execution, "no model configured")
+                        return self._fail(execution, MODEL_CONFIGURATION_GUIDANCE)
                     provider_name, separator, model_name = model.partition("/")
                     entry = snapshot.config.providers.get(provider_name)
                     if not separator or not model_name or entry is None:

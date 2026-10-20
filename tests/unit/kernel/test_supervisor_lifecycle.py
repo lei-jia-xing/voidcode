@@ -8,12 +8,14 @@ are the behavior a client observes rather than a description of the implementati
 from __future__ import annotations
 
 import json
+import os
 import socket
 from pathlib import Path
 
 import pytest
 
 from voidcode.kernel import supervisor as supervisor_module
+from voidcode.kernel.bootstrap import state_directory
 from voidcode.kernel.images import IMAGES_DIR_NAME, materialize, running_package_root
 from voidcode.kernel.storage.store import SqliteStore
 from voidcode.kernel.supervisor import (
@@ -21,6 +23,7 @@ from voidcode.kernel.supervisor import (
     _bind_listener,
     _endpoint_for,
     _Supervisor,
+    control_socket_path,
 )
 
 
@@ -43,6 +46,67 @@ def _pin_workspace(state_dir: Path, workspace: Path, digest: str) -> None:
     with SqliteStore(state_dir / "kernel-v1.sqlite3") as store:
         revision = store.put_revision({"image": {"digest": digest, "kernel_version": "0.0.0", "launch_protocol": 1}})
         store.record_workspace_revision(str(workspace), revision)
+
+
+def test_control_socket_path_fits_the_real_default_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The default durable state path is already longer than an AF_UNIX address can hold."""
+    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    default = state_directory(workspace)
+    assert default.is_relative_to(Path.home() / ".local" / "state" / "voidcode")
+    # The old location would not fit: that is the reported failure, not a synthetic one.
+    assert len(os.fsencode(default / "supervisor.sock")) > 104
+    path = control_socket_path(default)
+    assert path.parent != default
+    assert len(os.fsencode(path)) <= 104
+
+
+def test_control_socket_paths_are_distinct_and_bounded_for_long_unicode_states(tmp_path: Path) -> None:
+    base = tmp_path / ("long-" * 40)
+    first = control_socket_path(base / "工作区-one")
+    second = control_socket_path(base / "工作区-two")
+    assert first != second
+    assert first.parent == second.parent
+    assert len(os.fsencode(first)) <= 104
+
+
+def test_control_socket_path_canonicalizes_a_symlinked_state_directory(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    assert control_socket_path(link) == control_socket_path(real)
+
+
+def test_control_socket_path_ignores_ambient_runtime_directories(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A server and a later CLI must agree even when their TMPDIR/XDG_RUNTIME_DIR differ."""
+    state_dir = tmp_path / "state"
+    first = control_socket_path(state_dir)
+    monkeypatch.setenv("TMPDIR", str(tmp_path / ("x" * 80)))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / ("y" * 80)))
+    assert control_socket_path(state_dir) == first
+
+
+def test_control_directory_refuses_an_insecure_existing_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    directory = tmp_path / "voidcode-test"
+    directory.mkdir()
+    directory.chmod(0o755)
+    monkeypatch.setattr(supervisor_module, "_control_directory", lambda: directory)
+    with pytest.raises(SupervisorError) as refusal:
+        supervisor_module._ensure_control_directory()
+    assert refusal.value.reason == "control_dir_insecure"
+
+
+def test_control_directory_refuses_a_symlink(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = tmp_path / "elsewhere"
+    target.mkdir(mode=0o700)
+    link = tmp_path / "voidcode-test"
+    link.symlink_to(target, target_is_directory=True)
+    monkeypatch.setattr(supervisor_module, "_control_directory", lambda: link)
+    with pytest.raises(SupervisorError) as refusal:
+        supervisor_module._ensure_control_directory()
+    assert refusal.value.reason == "control_dir_insecure"
 
 
 def test_listener_binds_ephemeral_loopback_and_reports_its_own_address() -> None:
@@ -135,6 +199,8 @@ def test_socket_answers_status_and_rejects_malformed_frames(tmp_path: Path) -> N
     supervisor._serve_unix()
     try:
         assert supervisor._socket_path.stat().st_mode & 0o777 == 0o600
+        assert supervisor._socket_path.parent.stat().st_mode & 0o777 == 0o700
+        assert supervisor._socket_path.parent == control_socket_path(tmp_path / "state").parent
 
         [status] = _frame_exchange(supervisor, b'{"op":"status"}\n')
         assert status["status"] == "ok"
@@ -170,6 +236,28 @@ def test_stop_frame_stops_the_supervisor(tmp_path: Path) -> None:
         assert supervisor._stop.wait(5.0)
     finally:
         supervisor._shutdown()
+
+
+def test_a_stale_control_socket_is_replaced(tmp_path: Path) -> None:
+    """A socket file whose owner died is not a second supervisor; it is replaced on bind."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    supervisor = _supervisor(workspace, state_dir)
+    path = control_socket_path(state_dir)
+    path.parent.mkdir(mode=0o700, exist_ok=True)
+    stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    stale.bind(str(path))
+    stale.close()
+    assert path.exists()
+
+    supervisor._serve_unix()
+    try:
+        [status] = _frame_exchange(supervisor, b'{"op":"status"}\n')
+        assert status["status"] == "ok"
+    finally:
+        supervisor._shutdown()
+    assert not path.exists()
 
 
 def test_a_second_supervisor_refuses_the_same_state_directory(tmp_path: Path) -> None:

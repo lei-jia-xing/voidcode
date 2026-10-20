@@ -53,10 +53,14 @@ The kernel reads exactly one file, `voidcode.json`, from the workspace root. Wri
 voidcode run "Summarize this repository"
 
 # Interactive TUI with inline scrollback (supervised kernel child)
-voidcode tui
+voidcode
 
 # HTTP/SSE server plus the built web client at http://127.0.0.1:8000/
 voidcode serve --port 8000
+
+# Every command documents itself
+voidcode --help
+voidcode run --help
 ```
 
 In a source checkout without the console script installed, use `uv run python -m voidcode.kernel` with the same subcommands. Every command accepts `--workspace PATH` (default: current directory), `--state-dir PATH`, and `--trust-plugin PLUGIN_ID`.
@@ -78,8 +82,10 @@ In a source checkout without the console script installed, use `uv run python -m
 | `voidcode views <session_id>` | Render the current plugin views. |
 | `voidcode drain <session_id>` | Execute pending durable continuations. |
 | `voidcode usage <session_id>` | Report session token usage. |
-| `voidcode tui` | Start the inline TUI (supervisor child process, or `--server`/`--token` for a remote one). |
+| `voidcode` | Start the inline TUI (supervisor child process, or `--server`/`--token` for a remote one). |
 | `voidcode serve` | Start the HTTP/SSE server and serve the web client (`--open` launches a browser). |
+| `voidcode preflight` | Check this installation against the live state (read-only; exits 1 on a named refusal). |
+| `voidcode upgrade [run\|status]` | `run --candidate PATH` upgrades this workspace via the running supervisor (`--session-id`, `--timeout`); `status` reports it. |
 
 ### In-session commands
 
@@ -104,6 +110,8 @@ Every client dispatches commands from the admitted catalog — the kernel's rese
 | `user_shell` | `/shell` |
 
 The TUI also has client-local controls that are not admitted commands: `/tui help`, `/tui sessions`, `/tui session <id>`, `/tui new`, `/tui views`, `/tui cancel`, `/tui quit`.
+
+On connect, reconnect, and capability activation, the TUI refetches the catalog and views together for revision binding. Non-interactive views refresh into the transcript, but plugin forms/choices/view-confirmations open only through the explicit `/tui views` control; approval and confirmation gates remain event-projected. `/help` is the kernel's core command and `/tui help` lists terminal controls. Core read-only results and plugin command results share one multi-line formatter, and a completed command clears the transient `Dispatching...` status.
 
 ## Architecture
 

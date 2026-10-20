@@ -2,7 +2,7 @@
 
 ``run/resume`` drive work and ``show`` reads durable session state without a kernel;
 ``create-session/sessions/catalog/invoke/confirm/views/drain/usage`` are client surfaces,
-``tui`` attaches the terminal client, and ``serve`` serves the HTTP API and the built web
+bare ``voidcode`` attaches the terminal client, and ``serve`` serves the HTTP API and the built web
 client.
 """
 
@@ -65,11 +65,12 @@ _COMMANDS = frozenset(
         "views",
         "drain",
         "usage",
-        "tui",
         "serve",
     }
 )
 _ROOT_VALUE_OPTIONS = frozenset({"--workspace", "--state-dir", "--trust-plugin"})
+#: Every value option the command scan skips, so a session named e.g. ``run`` never reads as a subcommand.
+_COMMAND_SCAN_VALUE_OPTIONS = _ROOT_VALUE_OPTIONS | frozenset({"--server", "--token", "--session-id"})
 
 #: One-shot operational commands route into the elected image below (the supervisor owns its own
 #: launch, and the control/rescue surfaces each use a different context, so they stay local).
@@ -81,10 +82,23 @@ def _normalized_argv(argv: Sequence[str]) -> list[str]:
 
     ``argparse`` only knows the root options before the subcommand, but
     ``voidcode serve --workspace .`` is what a user types; the root pairs found
-    after the command are hoisted in front of it.
+    after the command are hoisted in front of it. The command scan skips the
+    separate value of every root value option, so a session named e.g. ``run``
+    never reads as a subcommand; only the durable root options are hoisted, never
+    a command's own ``--session-id``.
     """
     tokens = list(argv)
-    command_at = next((index for index, token in enumerate(tokens) if token in _COMMANDS), None)
+    command_at: int | None = None
+    scan = 0
+    while scan < len(tokens):
+        name, separator, _inline = tokens[scan].partition("=")
+        if name in _COMMAND_SCAN_VALUE_OPTIONS and not separator:
+            scan += 2  # the option and its separate value are never the command
+            continue
+        if tokens[scan] in _COMMANDS:
+            command_at = scan
+            break
+        scan += 1
     if command_at is None:
         return tokens
     head, rest = tokens[:command_at], tokens[command_at:]
@@ -105,65 +119,128 @@ def _normalized_argv(argv: Sequence[str]) -> list[str]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m voidcode.kernel")
-    parser.add_argument("--version", action="version", version=__version__)
-    parser.add_argument("--workspace", type=Path, default=Path.cwd())
-    parser.add_argument("--state-dir", type=Path)
-    parser.add_argument("--trust-plugin", action="append", default=[], metavar="PLUGIN_ID")
-    commands = parser.add_subparsers(dest="command", required=True)
-    run = commands.add_parser("run")
-    run.add_argument("prompt")
-    run.add_argument("--session-id")
-    run.add_argument("--max-steps", type=int, default=32)
-    resume = commands.add_parser("resume")
-    resume.add_argument("session_id")
-    resume.add_argument("--approval-request-id")
-    resume.add_argument("--decision", choices=("allow", "deny"))
-    resume.add_argument("--max-steps", type=int, default=32)
-    show = commands.add_parser("show")
-    show.add_argument("session_id")
-    show.add_argument("--events", action="store_true")
-    #: Read-only candidate preflight for a controlled kernel upgrade: prints one JSON object and
-    #: exits non-zero with a named reason instead of changing anything.
-    commands.add_parser("preflight")
-    create = commands.add_parser("create-session")
-    create.add_argument("--session-id")
-    sessions = commands.add_parser("sessions")
-    sessions.add_argument("--limit", type=int, default=100)
-    commands.add_parser("catalog")
-    invoke = commands.add_parser("invoke")
-    invoke.add_argument("session_id")
-    invoke.add_argument("name")
-    invoke.add_argument("--arguments", default="{}")
-    invoke.add_argument("--expected-revision", required=True, help="Capability revision the displayed catalog was captured under")
-    invoke.add_argument("--client-capabilities", default="")
-    confirm = commands.add_parser("confirm")
-    confirm.add_argument("session_id")
-    confirm.add_argument("request_id")
-    confirm.add_argument("--decision", choices=("allow", "deny"), required=True)
-    confirm.add_argument("--expected-revision", required=True, help="Capability revision the displayed catalog was captured under")
-    confirm.add_argument("--client-capabilities", default="")
-    views = commands.add_parser("views")
-    views.add_argument("session_id")
-    views.add_argument("--client-capabilities", default="")
-    drain = commands.add_parser("drain")
-    drain.add_argument("session_id")
-    drain.add_argument("--limit", type=int, default=10)
-    usage = commands.add_parser("usage")
-    usage.add_argument("session_id")
-    usage.add_argument("--since-sequence", type=int, default=0)
-    usage.add_argument("--until-sequence", type=int, default=None)
-    tui = commands.add_parser("tui")
-    tui.add_argument("--server", help="Remote or local kernel HTTP server base URL, e.g. http://127.0.0.1:8000")
-    tui.add_argument("--token", help="Bearer token for HTTP authentication")
-    tui.add_argument("--session-id", help="Session ID to attach or create")
-    serve = commands.add_parser("serve")
-    serve.add_argument("--host", default="127.0.0.1")
-    serve.add_argument("--port", type=int, default=8000)
-    serve.add_argument("--bearer-token")
+    parser = argparse.ArgumentParser(
+        prog="voidcode",
+        usage="voidcode [OPTIONS] [COMMAND]",
+        description="VoidCode: one CLI for every operation.\nRun without a command to open the terminal UI.",
+        epilog="Examples:\n"
+        "  voidcode\n"
+        "  voidcode --server http://127.0.0.1:8000 \\\n"
+        "      --token TOKEN --session-id ID\n"
+        '  voidcode run "read README.md"\n'
+        "  voidcode show SESSION --events\n"
+        "  voidcode serve --port 8000\n"
+        "  voidcode upgrade run --candidate PATH \\\n"
+        "      --session-id ID\n"
+        "  voidcode upgrade status",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        suggest_on_error=True,
+    )
+    client = parser.add_argument_group("terminal client (no command)")
+    client.add_argument("--server", metavar="URL", default=None, help="Attach to a running kernel instead of starting one")
+    client.add_argument("--token", metavar="TOKEN", default=None, help="Bearer token for --server")
+    #: The root `--session-id` keeps its own destination so it can never overwrite a command's own `--session-id`.
+    client.add_argument(
+        "--session-id", dest="tui_session_id", metavar="ID", default=None, help="Attach to an existing session (default: latest, or a new one)"
+    )
+    roots = parser.add_argument_group("workspace options")
+    roots.add_argument(
+        "--workspace", type=Path, default=Path.cwd(), metavar="PATH", help="Workspace directory holding voidcode.json (default: current directory)"
+    )
+    roots.add_argument("--state-dir", type=Path, default=None, metavar="PATH", help="State directory (default: derived from the workspace)")
+    roots.add_argument("--trust-plugin", action="append", default=[], metavar="PLUGIN_ID", help="Trust an external plugin source (repeatable)")
+    roots.add_argument("--version", action="version", version=__version__, help="Print the version and exit")
+    commands = parser.add_subparsers(prog="voidcode", dest="command", metavar="COMMAND", title="commands")
+    agents = commands.add_parser(
+        "run",
+        help="Run one prompt and print one JSON result",
+        description="Run one agent turn and print the result as JSON.",
+        epilog='Example:\n  voidcode run "read README.md" --session-id ID',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    agents.add_argument("prompt", metavar="PROMPT", help="Prompt to run")
+    agents.add_argument("--session-id", metavar="ID", default=None, help="Session to continue, or create when absent")
+    agents.add_argument("--max-steps", type=int, default=32, metavar="N", help="Maximum agent steps (default: 32)")
+    resume = commands.add_parser(
+        "resume",
+        help="Resume a session, optionally deciding a parked approval",
+        description="Resume a session, optionally deciding one parked native tool approval.",
+    )
+    resume.add_argument("session_id", metavar="SESSION", help="Session to resume")
+    resume.add_argument("--approval-request-id", metavar="ID", default=None, help="Parked approval to decide")
+    resume.add_argument("--decision", choices=("allow", "deny"), default=None, help="Decision for the parked approval")
+    resume.add_argument("--max-steps", type=int, default=32, metavar="N", help="Maximum agent steps (default: 32)")
+    create = commands.add_parser(
+        "create-session", help="Create a session and print it as JSON", description="Create an empty session and print it as JSON."
+    )
+    create.add_argument("--session-id", metavar="ID", default=None, help="Session id, generated when absent")
+    sessions = commands.add_parser("sessions", help="List sessions, newest first", description="List this workspace's sessions, newest first.")
+    sessions.add_argument("--limit", type=int, default=100, metavar="N", help="Maximum sessions to list (default: 100)")
+    show = commands.add_parser(
+        "show",
+        help="Read durable session history without starting a kernel",
+        description="Read durable session history straight from SQLite: no config, host, or revision checks.",
+    )
+    show.add_argument("session_id", metavar="SESSION", help="Session to read")
+    show.add_argument("--events", action="store_true", help="Include the persisted event history")
+    usage = commands.add_parser(
+        "usage", help="Print the session usage report as JSON", description="Print the truthful session token usage report as JSON."
+    )
+    usage.add_argument("session_id", metavar="SESSION", help="Session to report on")
+    usage.add_argument("--since-sequence", type=int, default=0, metavar="SEQ", help="First event sequence to include (default: 0)")
+    usage.add_argument("--until-sequence", type=int, default=None, metavar="SEQ", help="Last event sequence to include")
+    commands.add_parser(
+        "catalog", help="Print the admitted command catalog as JSON", description="Print the admitted command catalog and its revision as JSON."
+    )
+    invoke = commands.add_parser(
+        "invoke",
+        help="Invoke an admitted command and print one JSON result",
+        description="Invoke one admitted command and print the result\nas JSON.",
+        epilog="Example:\n  voidcode invoke SESSION status \\\n      --expected-revision ID",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    invoke.add_argument("session_id", metavar="SESSION", help="Session that owns the invocation")
+    invoke.add_argument("name", metavar="NAME", help="Command name from the catalog")
+    invoke.add_argument("--arguments", default="{}", metavar="JSON", help="Command arguments as a JSON object")
+    invoke.add_argument("--expected-revision", required=True, metavar="ID", help="Capability revision the displayed catalog was captured under")
+    invoke.add_argument("--client-capabilities", default="", metavar="LIST", help="Comma-separated client capabilities")
+    confirm = commands.add_parser(
+        "confirm",
+        help="Decide a pending confirmation and print one JSON result",
+        description="Decide one stored plugin confirmation and print the result as JSON.",
+    )
+    confirm.add_argument("session_id", metavar="SESSION", help="Session that owns the request")
+    confirm.add_argument("request_id", metavar="REQUEST", help="Pending request id")
+    confirm.add_argument("--decision", choices=("allow", "deny"), required=True, help="Decision for the pending request")
+    confirm.add_argument("--expected-revision", required=True, metavar="ID", help="Capability revision the displayed catalog was captured under")
+    confirm.add_argument("--client-capabilities", default="", metavar="LIST", help="Comma-separated client capabilities")
+    views = commands.add_parser(
+        "views", help="Print this session's plugin views as JSON", description="Print this session's rendered plugin views as JSON."
+    )
+    views.add_argument("session_id", metavar="SESSION", help="Session to inspect")
+    views.add_argument("--client-capabilities", default="", metavar="LIST", help="Comma-separated client capabilities")
+    drain = commands.add_parser(
+        "drain",
+        help="Execute pending continuations and print results as JSON",
+        description="Execute pending durable continuations and print their results as JSON.",
+    )
+    drain.add_argument("session_id", metavar="SESSION", help="Session to drain")
+    drain.add_argument("--limit", type=int, default=10, metavar="N", help="Maximum continuations (default: 10)")
+    serve = commands.add_parser(
+        "serve",
+        help="Run the supervisor: HTTP API plus the web client",
+        description="Run the supervisor: one loopback listener and\nbearer token across kernel replacements,\nserving /api plus the web client.",
+        epilog="Example:\n  voidcode serve --port 8000",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    serve.add_argument("--host", default="127.0.0.1", metavar="HOST", help="Loopback bind address (default: 127.0.0.1)")
+    serve.add_argument("--port", type=int, default=8000, metavar="PORT", help="Port, 0 for an ephemeral one (default: 8000)")
+    serve.add_argument("--bearer-token", default=None, metavar="TOKEN", help="API bearer token, generated when absent")
     #: The replaced `voidcode web` opened the browser; serving the bundle is now the same command.
     serve.add_argument("--open", dest="open_browser", action="store_true", help="Open the served web client in a browser")
-    serve.add_argument("--session-id", default=None, help="Acting session that owns a first-adoption transition, when the supervisor needs one")
+    serve.add_argument(
+        "--session-id", default=None, metavar="ID", help="Acting session that owns a first-adoption transition, when the supervisor needs one"
+    )
     #: Supervised-child mode: the supervisor passes the listener and the launch identity, never a user.
     serve.add_argument("--listen-fd", type=int, default=None, help=argparse.SUPPRESS)
     serve.add_argument("--fenced", action="store_true", help=argparse.SUPPRESS)
@@ -172,15 +249,47 @@ def main(argv: Sequence[str] | None = None) -> int:
     serve.add_argument("--upgrade-id", default=None, help=argparse.SUPPRESS)
     serve.add_argument("--supervisor-pid", type=int, default=None, help=argparse.SUPPRESS)
     serve.add_argument("--owner-pid", type=int, default=None, help=argparse.SUPPRESS)
-    upgrade = commands.add_parser("upgrade", help="Ask the running supervisor to upgrade this workspace's kernel")
-    upgrade.add_argument("what", nargs="?", default="run", choices=("run", "status"))
-    upgrade.add_argument("--candidate", default=None, help="Candidate installation directory (required unless status)")
-    upgrade.add_argument("--session-id", default=None, help="Acting session that owns the transition, when the workspace has sessions")
-    upgrade.add_argument("--timeout", type=float, default=300.0, help="Seconds to wait for the drain before refusing")
+    #: Read-only candidate preflight for a controlled kernel upgrade: prints one JSON object and
+    #: exits non-zero with a named reason instead of changing anything.
+    commands.add_parser(
+        "preflight",
+        help="Check this installation against the live state (read-only)",
+        description="Check this installation against the live state. Read-only: prints one JSON object, exits 1 on a named refusal.",
+    )
+    upgrade = commands.add_parser(
+        "upgrade",
+        help="Ask the running supervisor to upgrade this workspace's kernel",
+        description="Ask the running supervisor for its status, or\nto upgrade this workspace to a candidate\ninstallation.",
+        epilog="Examples:\n  voidcode upgrade status\n  voidcode upgrade run --candidate PATH \\\n      --session-id ID",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    upgrade.add_argument(
+        "what",
+        nargs="?",
+        default="run",
+        choices=("run", "status"),
+        metavar="{run,status}",
+        help="Upgrade to a candidate (run), or report status (default: run)",
+    )
+    upgrade.add_argument("--candidate", default=None, metavar="PATH", help="Candidate installation directory (required unless status)")
+    upgrade.add_argument("--session-id", default=None, metavar="ID", help="Acting session that owns the transition, when the workspace has sessions")
+    upgrade.add_argument(
+        "--timeout", type=float, default=300.0, metavar="SECONDS", help="Seconds to wait for the drain before refusing (default: 300)"
+    )
     normalized = _normalized_argv(argv if argv is not None else sys.argv[1:])
     args = parser.parse_args(normalized)
+    if args.command is not None and (args.server is not None or args.token is not None or args.tui_session_id is not None):
+        parser.error("--server/--token/--session-id are bare-client options and cannot be combined with a subcommand")
     try:
         workspace = args.workspace.resolve(strict=True)
+        if args.command is None:
+            from .bootstrap import state_directory
+            from .tui import run_tui
+
+            bare_directory = args.state_dir if args.state_dir is not None else state_directory(workspace)
+            if args.server is not None:
+                return run_tui(args.server, token=args.token, session_id=args.tui_session_id)
+            return _embedded_tui(workspace, bare_directory, trusted_plugins=frozenset(args.trust_plugin), session_id=args.tui_session_id)
         if args.command in {"show", "preflight"}:
             if args.state_dir is not None:
                 directory = args.state_dir
@@ -202,12 +311,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         directory = args.state_dir if args.state_dir is not None else state_directory(workspace)
         _maybe_reexec_in_elected_image(args.command, workspace, directory, normalized)
-        if args.command == "tui":
-            from .tui import run_tui
-
-            if args.server:
-                return run_tui(args.server, token=args.token, session_id=args.session_id)
-            return _embedded_tui(workspace, directory, trusted_plugins=frozenset(args.trust_plugin), session_id=args.session_id)
         if args.command == "upgrade":
             return _upgrade(directory, args)
         if args.command == "serve":
@@ -404,7 +507,7 @@ def _maybe_reexec_in_elected_image(command: str, workspace: Path, directory: Pat
 
     The working directory is inherited, the import root is replaced, and the probe that got us here
     is the same digest the elected image recomputes, so the re-executed process finds no second
-    election. ``serve``/``tui`` own their own supervised launch instead of this route.
+    election. ``serve`` owns its own supervised launch and the bare client never re-executes.
     """
     from .images import launch_argv, launch_environment
 
@@ -415,18 +518,13 @@ def _maybe_reexec_in_elected_image(command: str, workspace: Path, directory: Pat
     os.execvpe(child[0], child, launch_environment(elected))  # noqa: S606 - the elected image, verified by digest
 
 
-SUPERVISOR_SOCKET_NAME = "supervisor.sock"
-
-
-def _supervisor_socket(directory: Path) -> Path:
-    return directory / SUPERVISOR_SOCKET_NAME
-
-
 def _supervisor_request(directory: Path, payload: Mapping[str, object], *, timeout_seconds: float = 300.0) -> dict[str, object]:
     """One newline-JSON round trip with the supervisor that owns this state directory."""
     import socket
 
-    sock = directory / SUPERVISOR_SOCKET_NAME
+    from .supervisor import control_socket_path
+
+    sock = control_socket_path(directory)
     if not sock.exists():
         raise FileNotFoundError(f"no supervisor is running for this state directory ({directory})")
     body = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8") + b"\n"

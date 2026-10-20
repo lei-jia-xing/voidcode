@@ -1,38 +1,59 @@
-"""Root options are accepted on either side of the subcommand.
+"""CLI boundaries: root values are never commands, client-only flags stay bare.
 
-`argparse` only binds root options before the subcommand, but `voidcode serve --workspace .` is
-what a user types (and what the replaced CLI accepted), so the kernel CLI hoists them.
+The read-only `show` surface exercises the real `main` argv path against an owned
+SQLite fixture: no kernel, no config, no host, no provider.
 """
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
-from voidcode.kernel.__main__ import _normalized_argv
+from voidcode.kernel.__main__ import main
+from voidcode.kernel.storage.store import SqliteStore
 
 
-@pytest.mark.parametrize(
-    ("argv", "expected"),
-    [
-        # Already canonical: nothing moves.
-        (["--workspace", "/w", "serve", "--port", "8000"], ["--workspace", "/w", "serve", "--port", "8000"]),
-        # The root pair after the command is hoisted, the command's own flags stay.
-        (["serve", "--workspace", "/w", "--port", "8000"], ["--workspace", "/w", "serve", "--port", "8000"]),
-        # `--option=value` and repeated root options keep their shape and order.
-        (
-            ["run", "prompt", "--state-dir=/s", "--trust-plugin", "counter", "--trust-plugin", "extra"],
-            ["--state-dir=/s", "--trust-plugin", "counter", "--trust-plugin", "extra", "run", "prompt"],
-        ),
-        # No subcommand (e.g. --version): untouched.
-        (["--version"], ["--version"]),
-        (["--workspace", "/w", "sessions", "--limit", "5"], ["--workspace", "/w", "sessions", "--limit", "5"]),
-    ],
-)
-def test_root_options_are_accepted_on_either_side(argv: list[str], expected: list[str]) -> None:
-    assert _normalized_argv(argv) == expected
+def _show_fixture(workspace: Path, state_dir: Path, session_id: str) -> str:
+    workspace.mkdir(parents=True, exist_ok=True)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    with SqliteStore(state_dir / "kernel-v1.sqlite3") as store:
+        revision_id = store.put_revision({"marker": "cli-boundary"})
+        store.record_workspace_revision(str(workspace.resolve()), revision_id)
+        store.create_session(session_id, str(workspace.resolve()), revision_id)
+    return revision_id
 
 
-def test_normalized_argv_does_not_mutate_its_input() -> None:
-    argv = ["serve", "--workspace", "/w"]
-    _normalized_argv(argv)
-    assert argv == ["serve", "--workspace", "/w"]
+def test_show_accepts_root_options_after_the_command(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    workspace, state = tmp_path / "workspace", tmp_path / "state"
+    revision_id = _show_fixture(workspace, state, "boundary-session")
+    assert main(["show", "boundary-session", "--workspace", str(workspace.resolve()), "--state-dir", str(state)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["session_id"] == "boundary-session" and payload["revision_id"] == revision_id
+
+
+def test_root_value_named_like_a_command_is_never_the_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    revision_id = _show_fixture(tmp_path / "run", tmp_path / "state", "boundary-session")
+    assert main(["--workspace", "run", "show", "boundary-session", "--state-dir", str(tmp_path / "state")]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["session_id"] == "boundary-session" and payload["revision_id"] == revision_id
+
+
+def test_bare_client_flag_before_a_command_is_rejected(tmp_path: Path) -> None:
+    workspace, state = tmp_path / "workspace", tmp_path / "state"
+    _show_fixture(workspace, state, "other")
+    with pytest.raises(SystemExit) as refused:
+        main(["--session-id", "bare-client-session", "show", "other", "--workspace", str(workspace.resolve()), "--state-dir", str(state)])
+    assert refused.value.code == 2
+
+
+def test_removed_tui_command_is_rejected(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    with pytest.raises(SystemExit) as refused:
+        main(["tui", "--workspace", str(workspace.resolve())])
+    assert refused.value.code == 2

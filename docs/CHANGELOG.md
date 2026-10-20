@@ -4,12 +4,64 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Providerless first boot without `voidcode.json`
+- A truly fresh state directory (no database, no adopted revision, no legacy file) now opens with
+  empty in-memory defaults instead of failing `kernel configuration is required`: bundled plugins,
+  commands, tools, sessions, `/help`, and `/status` work, and no `voidcode.json` is created. The
+  human `/status` output reports `model: not configured`; model turns and governed model queries
+  fail with one actionable message naming `model.model` as `<provider>/<model>`, the root
+  `providers.<provider>.base_url`, and `kernel.reload` after a valid file is created. Only model
+  execution is unavailable; no provider, key, network call, or file is synthesized.
+- Every other start remains strict: an existing database (including one with no adopted workspace
+  revision), a foreign schema, a legacy `.voidcode.json`, a missing config on reload, a
+  trusted-plugin flag without a config, and malformed/unknown/oversized files keep their existing
+  refusals. Existing revisions restore from their private snapshot without reading the live file,
+  and reload after deleting the config fails without moving the active revision.
+
+### Supervisor control socket: bounded per-user address
+- Default startup no longer fails with `socket_bind_failed: ... AF_UNIX path too long` followed by
+  the embedded TUI's "supervisor did not report its endpoint": the old default control path,
+  `~/.local/state/voidcode/kernel-v1/<workspace-sha256>/supervisor.sock`, exceeds the fixed
+  `sun_path` limit. The socket now lives at
+  `/tmp/voidcode-<uid>/<sha256(canonical state dir)>.sock` in a private `0700` per-user runtime
+  directory (socket `0600`), so a supervisor and a separate CLI process derive the same bounded
+  address without stored metadata; live-owner refusal, stale-socket replacement, same-OS-user
+  permissions, and shutdown unlink are unchanged. The durable state path and workspace identity
+  are neither shortened nor moved.
+- Platforms without POSIX ownership/mode semantics refuse to host the supervisor
+  (`control_socket_unsupported`) instead of using a weaker, unbounded fallback.
+
+### TUI quit closes its owned event stream
+- Quitting the TUI no longer leaves an idle follow connection open while the embedded supervisor
+  stops the kernel child, which made the server wait out its graceful-shutdown timeout and log a
+  cancelled ASGI task. The TUI owns a cancellable handle to its SSE response, duplicates the
+  response's public file descriptor, and shuts that connection down before joining the stream
+  worker and before the embedded supervisor is stopped. Remote mode closes the same connection and
+  leaves its server serving. Idle streams still need no heartbeat, timeout, or reconnect change,
+  so an older kernel image without heartbeats keeps working.
+
+### Bare `voidcode` entry and user-facing help
+- `voidcode` and `python -m voidcode.kernel` with no command open the inline TUI; the `tui`
+  subcommand is removed (no alias), while `serve`, `run`, `resume`, `show`, `preflight`,
+  `upgrade`, and the client commands keep their grammar. Root client flags (`--server`, `--token`,
+  `--session-id`) work on the bare entry, durable root options are accepted before or after a
+  command, and bare-only flags combined with a command fail visibly.
+- Root help groups client and workspace options and orders the commands by use; each subcommand
+  explains its own scope and arguments, with copyable examples on the commands that need them, and
+  the supervisor's internal `serve` flags stay hidden. Help exits 0 without reading config, state,
+  or a host.
+
+### TUI views and command results
+- Connect, reconnect, and capability activation still refetch the catalog and views together for revision binding; non-interactive views refresh, but choices/forms/view-confirmations no longer take focus automatically. `/tui views` remains the explicit presentation path, and durable approval/confirmation gates are unchanged.
+- Core `help` and `status` now return human `CommandResult.output` (structured `data` unchanged). The TUI renders core read-only receipts and plugin `kernel.command_completed` results through one formatter: multi-line output is preserved (no literal `\x0a`), data-only receipts fall back to JSON without dropping `{}` or nested falsy values, and a real completion clears the stale `Dispatching...` status without overwriting a pending gate or fenced state. Plugin and run/resume results stay event-projected, so no row is rendered twice.
+- No SDK field, wire protocol, or plugin contract change.
+
 ### P5 controlled kernel upgrade: new builds install as new generations
 - Kernel images are content-addressed, immutable installation snapshots (`<state>/kernel-images/<digest>/root`, bundle included); children launch only from an image with a pinned, provenance-verified environment, and the elected image digest is pinned into every revision (`image: {digest, kernel_version, launch_protocol}`), retained across later plugin-only activations.
 - `voidcode upgrade run --candidate PATH [--session-id ID] [--timeout S]` asks the running supervisor for an upgrade and `upgrade status` reports it; `preflight` prints the read-only candidate check. Preflight verifies schema transition, SDK/launch protocols, recorded revision, pinned artifacts, plugin state versions, and the target generation diff, then executes admission, state migrations, and a real host load in a throwaway scratch tree — refusing unsupported generations before anything stops and without touching live state.
 - The supervisor owns one loopback listener and one bearer token across replacements, fences admission and wakeup claims, drains admitted work at committed batch boundaries (pausing active runs with a durable, exactly-once resume intent when asked), and elects the candidate only after health checks and one atomic adoption transaction move the schema, the revision pointer, every session and continuation ref, every resumable checkpoint, and every state copy. Parked approvals and stored confirmations block a revision-changing upgrade before downtime instead of being rebound; a failed drain leaves streams connected and the old kernel serving.
 - A hard-killed child is never silently replaced: the supervisor exits visibly, the next launch cold-starts the elected image, and an explicit `resume` reports each parked batch member as `kernel.tool_interrupted` before continuing from the durable cursor. Same session id, append-only events, and no replay of completed side effects across the handoff; `kernel.revision_adopted`, `kernel.upgrade_paused`, and the generalized `kernel.continuation_consumed` (with its real `activation`/`upgrade` cause) record the transition. `GET /api/health` reports fence, stage, revision, SDK/image pins, generation, and the active upgrade; a successful drain ends followed streams with `server_restart` plus the last delivered cursor, and fenced business writes answer `503 upgrade_pending`.
-- `serve` runs the supervisor (with `--session-id` attribution for a first adoption); `tui` without `--server` spawns a supervisor child and behaves like remote mode; ordinary one-shot commands execute inside the elected image. The single supported schema transition is 4 → 5 inside the adoption transaction; anything else refuses read-only, and `show` stays a config-free rescue read on either version.
+- `serve` runs the supervisor (with `--session-id` attribution for a first adoption); the bare command without `--server` spawns a supervisor child and behaves like remote mode; ordinary one-shot commands execute inside the elected image. The single supported schema transition is 4 → 5 inside the adoption transaction; anything else refuses read-only, and `show` stays a config-free rescue read on either version.
 
 ### Tool contracts: derived views, document guards, managed language servers
 - `read` serves its `voidcode://` views end to end: `voidcode://tool/<name>` renders the active
@@ -53,6 +105,9 @@ Notable changes to the VoidCode runtime, grouped by milestone.
   the runnable `examples/tally-counter/` plugin plus `docs/contracts/plugin-authoring.md` cover
   the author → pin → verify → reload loop. Provider plugin identity was regenerated by that
   canonical generator, never hand-edited.
+- The generator forgets a deleted non-Python resource only via explicit repeatable
+  `--drop-resource` (exactly one `--plugin-dir`); the unused `ast_grep.txt` was removed from the
+  `ast_grep` manifest that way, with its seven `.py` pins and tool declaration unchanged.
 
 ### P4 corrections
 - Internal SESSION work survives a read-only stance: a lease whose tool declares `SESSION`

@@ -66,12 +66,18 @@ def state_directory(workspace: Path) -> Path:
     return root / "voidcode" / "kernel-v1" / identity
 
 
-def load_config(workspace: Path) -> KernelConfig:
+def load_config(workspace: Path, *, allow_missing: bool = False) -> KernelConfig:
     path = workspace / CONFIG_FILE_NAME
-    if not path.is_file():
+    if not path.exists():
         if (workspace / ".voidcode.json").exists():
             raise ValueError("legacy .voidcode.json is not supported; create voidcode.json explicitly (no conversion is performed)")
+        if allow_missing:
+            # First boot of a truly fresh state: bundled plugins already have documented empty
+            # defaults, and model execution stays unavailable until a real file is written.
+            return KernelConfig()
         raise FileNotFoundError(f"kernel configuration is required: {path}")
+    if not path.is_file():
+        raise ValueError(f"kernel configuration is not a file: {path}")
     if path.stat().st_size > 256 * 1024:
         raise ValueError("kernel configuration exceeds 256 KiB")
     return parse_kernel_config(json.loads(path.read_text(encoding="utf-8")))
@@ -104,10 +110,20 @@ def open_kernel(
     # Read-only inspection first: a fresh state directory must not write anything (and an
     # existing one must not be created or migrated) before configuration is validated.
     current_revision, current_payload, recorded_schema = inspect_existing_workspace(database, str(workspace))
+    # Empty in-memory defaults are legal ONLY for a truly absent database with no adopted
+    # revision, no recorded schema, and no legacy file. Any existing DB (even without a
+    # workspace row), foreign schema, or legacy file keeps the strict required-file behavior.
+    fresh_first_adoption = (
+        current_revision is None
+        and current_payload is None
+        and recorded_schema is None
+        and not database.exists()
+        and not (workspace / ".voidcode.json").exists()
+    )
 
-    def admit_current(authorized: frozenset[str]) -> Admission:
+    def admit_current(authorized: frozenset[str], *, config: KernelConfig | None = None) -> Admission:
         """Re-admit the live configuration, trusting only pre-authorized canonical source paths."""
-        live = load_config(workspace)
+        live = load_config(workspace) if config is None else config
         private_providers, _public = _providers(live)
         admitted = admit_live(
             live,
@@ -124,9 +140,11 @@ def open_kernel(
         # First adoption: the live configuration becomes the active revision. Its private
         # snapshot is written before the pointer, so a crash leaves either the old state or
         # a recoverable snapshot, and the workspace is verified free before any write here.
-        config = load_config(workspace)
+        # A truly fresh state may start with in-memory empty defaults; the file is never
+        # created, and a later reload stays strict.
+        config = load_config(workspace, allow_missing=fresh_first_adoption)
         _assert_workspace_free(workspace)
-        admission = admit_current(frozenset())
+        admission = admit_current(frozenset(), config=config)
         write_private_snapshot(state_dir, admission.revision_id, admission.private_snapshot)
     else:
         # A restarted kernel restores the persisted revision and its private configuration

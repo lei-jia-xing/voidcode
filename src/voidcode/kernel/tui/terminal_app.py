@@ -10,7 +10,7 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
-from .client import KernelClientError, KernelHttpClient
+from .client import KernelClientError, KernelHttpClient, StreamCancellation
 from .composer import Composer, ComposerAction
 from .keys import Key, KeyDecoder
 from .region import TuiFrame
@@ -73,6 +73,48 @@ def _tool_output_text(result: dict[str, Any]) -> str:
             mime = _safe(output.get("mime") or "attachment")
             return f"[{mime}]"
     return ""
+
+
+def _command_result_text(result: Mapping[str, Any]) -> str:
+    """One command result's human text: error, then output, then pretty data.
+
+    ``CommandResult`` carries both human text (``output``) and machine data
+    (``data``). The TUI renders the human text when present and falls back to
+    JSON for data-only receipts (for example the core ``show`` command). The
+    fallback preserves an empty mapping and nested falsy values because it
+    serializes the value itself, never a truthiness test.
+    """
+    status = str(result.get("status", ""))
+    error = result.get("error")
+    output = result.get("output")
+    if status == "error" and isinstance(error, str) and error:
+        return error
+    if isinstance(output, str) and output:
+        return output
+    data = result.get("data")
+    if data is not None:
+        return json.dumps(json_safe(data), indent=2, ensure_ascii=False)
+    return ""
+
+
+def _command_result_rows(name: str, result: Mapping[str, Any]) -> list[str]:
+    """One visible command-result block shared by direct receipts and events.
+
+    A direct core read receipt and a durable plugin ``kernel.command_completed``
+    payload are the same ``CommandResult`` shape. Rendering both here keeps the
+    format, error precedence, and multi-line handling identical; no command
+    name needs a branch. Unknown statuses never render as success.
+    """
+    label = _safe(name or "command")
+    status = str(result.get("status", ""))
+    text = _command_result_text(result)
+    if status == "error":
+        return _prefixed_rows(f"✖ Command /{label} failed:", text, color="31")
+    if status == "pending_confirmation":
+        return [f"\x1b[33m⏳ Command /{label} awaits confirmation\x1b[0m"]
+    if status == "ok":
+        return _prefixed_rows(f"✔ Command /{label}:", text, color="32")
+    return _prefixed_rows(f"Command /{label} [{status or 'unknown'}]:", text, color="33")
 
 
 def _notice_row(text: object, tone: str) -> str:
@@ -142,6 +184,10 @@ class KernelTuiApp:
         self.status_line = "Connecting to kernel..."
         self._sse_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        #: Owns the current generation's SSE connection so quit can wake a blocked idle read
+        #: before joining. A replacement stream closes this handle and installs its own; workers
+        #: capture their handle locally so a late detach from an old generation cannot clear it.
+        self._stream_cancel: StreamCancellation | None = None
 
     def run(self) -> int:
         self.running = True
@@ -153,10 +199,18 @@ class KernelTuiApp:
         finally:
             self.running = False
             self._stop_event.set()
-            if self._sse_thread and self._sse_thread.is_alive():
-                self._sse_thread.join(timeout=1.0)
-            if self.owns_terminal:
-                self.terminal.close()
+            # Close our owned connection before joining the worker: an idle follow stream is
+            # blocked in read with no timeout, and only a socket shutdown wakes it. This also
+            # happens before an embedded parent is allowed to stop the supervisor. Terminal
+            # restore still runs if that close raises.
+            try:
+                if self._stream_cancel is not None:
+                    self._stream_cancel.close()
+            finally:
+                if self._sse_thread and self._sse_thread.is_alive():
+                    self._sse_thread.join(timeout=1.0)
+                if self.owns_terminal:
+                    self.terminal.close()
 
     def _init_session(self) -> None:
         if self.session_id:
@@ -198,6 +252,10 @@ class KernelTuiApp:
     def _start_sse_stream(self) -> None:
         generation = self._generation
         session_id = self.session_id
+        previous, self._stream_cancel = self._stream_cancel, StreamCancellation()
+        if previous is not None:
+            previous.close()
+        cancel = self._stream_cancel
 
         def stream_worker() -> None:
             first_connection = True
@@ -212,7 +270,7 @@ class KernelTuiApp:
                     self._stream_ready = False
                 first_connection = False
                 try:
-                    for frame in self.client.events_stream(session_id, after_sequence=after_seq, follow=True):
+                    for frame in self.client.events_stream(session_id, after_sequence=after_seq, follow=True, cancel=cancel):
                         if self._stop_event.is_set() or generation != self._generation:
                             return
                         tagged = dict(frame)
@@ -272,6 +330,19 @@ class KernelTuiApp:
                 self._handle_single_event(frame["event"], rows_to_commit)
             elif kind == "notice":
                 rows_to_commit.append(_notice_row(frame.get("text"), str(frame.get("tone", "info"))))
+            elif kind == "command_done":
+                raw_name = str(frame.get("name") or "command")
+                status = str(frame.get("status", ""))
+                # A real pending gate and a fenced kernel own the status line.
+                # Never replace "approval required"/"confirmation required"/
+                # "upgrade in progress" with a late completion notice.
+                fenced = isinstance(self.upgrade, dict) and self.upgrade.get("fenced") is True
+                gate_open = self.pending_approval is not None or isinstance(self.active_overlay, InteractiveConfirmation)
+                if status in ("ok", "error") and not fenced and not gate_open:
+                    self.status_line = f"/{_safe(raw_name)}: {status}"
+                receipt = frame.get("result")
+                if isinstance(receipt, Mapping):
+                    rows_to_commit.extend(_command_result_rows(raw_name, receipt))
             elif kind == "approval":
                 approval = frame.get("approval")
                 if isinstance(approval, dict):
@@ -392,7 +463,9 @@ class KernelTuiApp:
                     if isinstance(catalog, tuple) and len(catalog) == 2:
                         self.catalog_revision, self.catalog_cache = str(catalog[0]), list(catalog[1])
                     if isinstance(views, tuple) and len(views) == 2:
-                        self._render_reconciled_views(str(views[0]), list(views[1]))
+                        # Catalog and views refresh together under this revision;
+                        # only the explicit /tui views control may take focus.
+                        self._render_reconciled_views(str(views[0]), list(views[1]), present_interactive=False)
                     status = frame.get("session_status")
                     if isinstance(status, str) and status:
                         self.status_line = f"Run {status}" if status in ("running", "waiting") else self.status_line
@@ -463,18 +536,12 @@ class KernelTuiApp:
         elif etype in ("kernel.command_completed", "kernel.command_intent"):
             raw_command_result = payload.get("result")
             command_result: dict[str, Any] = raw_command_result if isinstance(raw_command_result, dict) else {}
-            name = _safe(payload.get("name") or "command")
+            raw_name = str(payload.get("name") or "command")
+            name = _safe(raw_name)
             if etype == "kernel.command_intent":
                 rows.append(f"\x1b[36m▷ Command /{name} started\x1b[0m")
             else:
-                status = str(command_result.get("status", ""))
-                detail = command_result.get("output") or command_result.get("error") or ""
-                if status == "error":
-                    rows.append(f"\x1b[31m✖ Command /{name} failed:\x1b[0m {_safe(detail)}")
-                elif status == "pending_confirmation":
-                    rows.append(f"\x1b[33m⏳ Command /{name} awaits confirmation\x1b[0m")
-                else:
-                    rows.append(f"\x1b[32m✔ Command /{name}:\x1b[0m {_safe(detail)}")
+                rows.extend(_command_result_rows(raw_name, command_result))
         elif etype in ("kernel.activation_committed", "kernel.revision_adopted"):
             # The displayed generation changed: the catalog and the views are
             # refetched together, and anything captured under the previous
@@ -490,7 +557,9 @@ class KernelTuiApp:
                 del self.queued_confirmations[queued_id]
             self.pending_approval = None
             self._load_catalog()
-            self._show_views()
+            # Activation is an automatic refresh: catalog and views move together,
+            # but it never steals focus with a declarative form/choices/confirmation.
+            self._show_views(present_interactive=False)
             self._present_queued_confirmation()
             suffix = " (stale action discarded)" if dropped else ""
             rows.append(f"\x1b[33m[Capability revision changed to {_safe(to_revision_id)}: catalog and views refreshed{suffix}]\x1b[0m")
@@ -774,9 +843,37 @@ class KernelTuiApp:
 
         threading.Thread(target=worker, daemon=True, name="KernelConfirm").start()
 
-    def _invoke_async(self, name: str, arguments: dict[str, Any], revision: str, *, submit_key: str | None = None) -> None:
-        "Run one command off the UI thread under the revision the user actually saw."
+    def _invoke_async(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        revision: str,
+        *,
+        submit_key: str | None = None,
+        surface_result: bool = False,
+    ) -> None:
+        """Run one command off the UI thread under the revision the user saw.
+
+        Only a core read-only receipt is surfaced directly. Plugin commands
+        project their result through the durable ``kernel.command_completed``
+        event, and run/resume project through run events; rendering those direct
+        answers too would duplicate settled rows. ``surface_result`` comes from
+        catalog metadata (owner plus effects), never a client command list.
+        """
         session_id, generation = self.session_id, self._generation
+
+        def finish(status: str, result: Mapping[str, Any] | None = None) -> None:
+            """Hand this command's captured completion to the UI thread once."""
+            self.event_queue.put(
+                {
+                    "kind": "command_done",
+                    "name": name,
+                    "status": status,
+                    "result": result,
+                    "session_id": session_id,
+                    "generation": generation,
+                }
+            )
 
         def worker() -> None:
             try:
@@ -791,11 +888,13 @@ class KernelTuiApp:
                     self._upgrade_pending_notice(f"/{name}", session_id=session_id, generation=generation)
                 else:
                     self._queue_notice(f"/{name} failed: {exc}", tone="error", session_id=session_id, generation=generation)
+                    finish("error")
                 if submit_key is not None:
                     self.event_queue.put({"kind": "decision_done", "request_id": submit_key, "session_id": session_id, "generation": generation})
                 return
             except Exception as exc:
                 self._queue_notice(f"/{name} failed: {exc}", tone="error", session_id=session_id, generation=generation)
+                finish("error")
                 if submit_key is not None:
                     self.event_queue.put({"kind": "decision_done", "request_id": submit_key, "session_id": session_id, "generation": generation})
                 return
@@ -819,6 +918,11 @@ class KernelTuiApp:
                     session_id=session_id,
                     generation=generation,
                 )
+            # An error notice already owns the failure text; a plugin/run result
+            # is already projected by its durable event. Only the core read
+            # receipt has no other display path.
+            receipt = res if surface_result and status == "ok" else None
+            finish(status, receipt)
             # Accepted (any non-exception outcome): the submitting overlay may
             # close now, but only if it is still the one that submitted.
             if submit_key is not None:
@@ -1122,16 +1226,18 @@ class KernelTuiApp:
 
     def _show_help(self) -> None:
         lines = [
-            "\x1b[1;34m=== VoidCode Kernel Commands ===\x1b[0m",
+            "\x1b[1;34m=== VoidCode Terminal Controls ===\x1b[0m",
             "  /tui help              Show this help (always available)",
             "  /tui sessions          List available sessions",
             "  /tui session <id>      Switch active session",
             "  /tui new               Create new session",
-            "  /tui views [name]      Show current plugin views",
+            "  /tui views [name]      Open plugin views/forms (for example goal)",
             "  /tui cancel            Cancel active session run",
             "  /tui quit              Exit TUI",
-            "  (bare /help, /views, ... work too when no plugin command owns the name)",
-            "\x1b[1;34m=== Admitted Plugin Commands ===\x1b[0m",
+            "  Ctrl+C                 Cancel a run, or close/deny a dialog",
+            "  Ctrl+D                 Quit",
+            "  (/views, /sessions, ... are local when no admitted command owns the name)",
+            "\x1b[1;34m=== Admitted Commands ===\x1b[0m",
         ]
         if not self.catalog_cache:
             self._load_catalog()
@@ -1155,16 +1261,31 @@ class KernelTuiApp:
         except Exception as exc:
             self.terminal.commit_rows([f"\x1b[31mFailed to list sessions: {exc}\x1b[0m"])
 
-    def _show_views(self, name_filter: str = "") -> None:
+    def _show_views(self, name_filter: str = "", *, present_interactive: bool = True) -> None:
         try:
             views_revision, v_list = self.client.views(self.session_id)
         except Exception as exc:
             self.terminal.commit_rows([f"\x1b[31mFailed to read views: {exc}\x1b[0m"])
             return
-        self._render_reconciled_views(views_revision, v_list, name_filter=name_filter)
+        self._render_reconciled_views(views_revision, v_list, name_filter=name_filter, present_interactive=present_interactive)
 
-    def _render_reconciled_views(self, views_revision: str, v_list: list[dict[str, Any]], *, name_filter: str = "") -> None:
-        """Render an already-fetched views envelope; never performs I/O itself."""
+    def _render_reconciled_views(
+        self,
+        views_revision: str,
+        v_list: list[dict[str, Any]],
+        *,
+        name_filter: str = "",
+        present_interactive: bool,
+    ) -> None:
+        """Render one views envelope; only an explicit request may take focus.
+
+        Non-interactive views always refresh into the transcript. Interactive
+        views (choices/form/confirmation) are snapshots, not pending durable
+        requests: an automatic connect/reconnect/activation refresh must never
+        mount one over the composer. The explicit ``/tui views`` control passes
+        ``present_interactive=True``; true approval and confirmation gates are
+        restored separately from their durable events.
+        """
         if name_filter:
             wanted = name_filter.strip().lower()
             v_list = [v for v in v_list if wanted in str(v.get("name", "")).lower() or wanted in str(v.get("title", "")).lower()]
@@ -1174,6 +1295,8 @@ class KernelTuiApp:
         for v in v_list:
             vtype = v.get("view_type")
             if vtype in ("choices", "form", "confirmation"):
+                if not present_interactive:
+                    continue
                 # The overlay carries the revision of this very envelope, so
                 # the action it dispatches can never be relabelled later.
                 if vtype == "choices":
@@ -1238,6 +1361,11 @@ class KernelTuiApp:
             return
         # The revision of the catalog this descriptor was read from.
         revision = self.catalog_revision
+        # Core read commands answer over HTTP only; plugin commands and run/resume
+        # already project through durable events. Classify by contract metadata,
+        # never by a client-side command name list.
+        effects = frozenset(str(effect) for effect in (cmd_desc.get("effects") or ()))
+        surface_result = str(cmd_desc.get("owner", "")) == "core" and effects <= {"read"}
 
         schema = cmd_desc.get("argument_schema") or {}
         properties = schema.get("properties") or {}
@@ -1271,7 +1399,7 @@ class KernelTuiApp:
                 arguments = parsed
 
         self.status_line = f"Dispatching /{cmd_name}..."
-        self._invoke_async(cmd_name, arguments, revision)
+        self._invoke_async(cmd_name, arguments, revision, surface_result=surface_result)
 
     def _render_frame(self) -> None:
         width = self.terminal.width

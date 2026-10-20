@@ -6,20 +6,23 @@ promote. Durable authority stays in SQLite — the revision's ``image`` pin deci
 so ``supervisor/state.json`` and ``supervisor/upgrades/*.json`` are observability only and never a
 fallback election.
 
-The CLI reaches this process over ``<state_dir>/supervisor.sock`` (``0600``, one newline-delimited
-JSON frame per connection). That boundary is *same-OS-user*: it stops a client bearer token, a
-remote HTTP caller, or a browser from driving an upgrade, not a trusted process running as the same
-user.
+The CLI reaches this process over a socket in a private per-user runtime directory (``0600``, one
+newline-delimited JSON frame per connection), named by a digest of the canonical state directory
+because an AF_UNIX address is too short to hold a durable state path. That boundary is
+*same-OS-user*: it stops a client bearer token, a remote HTTP caller, or a browser from driving an
+upgrade, not a trusted process running as the same user.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
 import signal
 import socket
 import sqlite3
+import stat
 import subprocess
 import sys
 import threading
@@ -43,15 +46,19 @@ from .images import (
 )
 from .storage.store import SCHEMA_VERSION, ForeignDatabaseError, inspect_existing_workspace, open_read_only
 
-__all__ = ["run_supervisor"]
+__all__ = ["control_socket_path", "run_supervisor"]
 
-#: The CLI socket next to the state directory's database.
-SOCKET_NAME = "supervisor.sock"
 #: Observability journal directory (never an election authority).
 SUPERVISOR_DIR_NAME = "supervisor"
 UPGRADES_DIR_NAME = "upgrades"
 #: The one kernel database file name; the store owns its schema, this module only locates it.
 DATABASE_NAME = "kernel-v1.sqlite3"
+
+#: Private per-user runtime directory holding control sockets. Its name never depends on TMPDIR or
+#: XDG_RUNTIME_DIR: those can be long (an AF_UNIX address is capped at ~108 bytes) and can differ
+#: between the supervisor and a client that must find the same socket later.
+CONTROL_DIR_PREFIX = "voidcode-"
+CONTROL_SOCKET_SUFFIX = ".sock"
 
 #: One frame is one small JSON object; anything larger is refused instead of buffered.
 MAX_FRAME_BYTES = 64 * 1024
@@ -113,20 +120,23 @@ def run_supervisor(
     try:
         resolved_workspace = Path(workspace).resolve(strict=True)
         resolved_state = Path(state_dir).resolve()
+        supervisor = _Supervisor(
+            workspace=resolved_workspace,
+            state_dir=resolved_state,
+            host=host,
+            port=port,
+            bearer_token=bearer_token,
+            trusted_plugins=trusted_plugins,
+            session_id=session_id,
+            open_browser=open_browser,
+            owner_pid=owner_pid,
+        )
     except OSError as exc:
         print(f"kernel supervisor: workspace: {exc}", file=sys.stderr, flush=True)
         return 1
-    supervisor = _Supervisor(
-        workspace=resolved_workspace,
-        state_dir=resolved_state,
-        host=host,
-        port=port,
-        bearer_token=bearer_token,
-        trusted_plugins=trusted_plugins,
-        session_id=session_id,
-        open_browser=open_browser,
-        owner_pid=owner_pid,
-    )
+    except SupervisorError as exc:
+        print(f"kernel supervisor: {exc.reason}: {exc.detail}", file=sys.stderr, flush=True)
+        return 1
     return supervisor.run()
 
 
@@ -160,6 +170,50 @@ def _bind_listener(host: str, port: int) -> socket.socket:
         listener.close()
         raise
     return listener
+
+
+def control_socket_path(state_dir: Path) -> Path:
+    """The control address for one state directory: deterministic and within ``sun_path`` limits.
+
+    The default durable state path plus its 64-hex workspace identity is longer than the fixed
+    AF_UNIX address limit, so the socket cannot live next to the database. Hashing the canonical
+    state directory keeps two states distinct while the private per-user runtime directory keeps
+    the name short. The address depends only on the state directory, so the server that binds it
+    and a separate CLI process that dials it derive the same path without any stored metadata.
+    """
+    canonical = os.path.realpath(Path(state_dir))
+    directory = _control_directory()
+    if directory.exists():
+        _require_private_control_directory(directory)
+    return directory / f"{hashlib.sha256(os.fsencode(canonical)).hexdigest()}{CONTROL_SOCKET_SUFFIX}"
+
+
+def _control_directory() -> Path:
+    # A fixed root, never tempfile.gettempdir(): TMPDIR can be long or differ between the
+    # supervisor and a client that must find the same address. The private per-user directory is
+    # a POSIX contract: ownership and mode are what make the same-UID boundary real, so an OS
+    # without them is refused rather than given a weaker location.
+    if os.name != "posix":
+        raise SupervisorError("control_socket_unsupported", "the supervisor control socket requires POSIX ownership and permission semantics")
+    return Path("/tmp") / f"{CONTROL_DIR_PREFIX}{os.getuid()}"
+
+
+def _require_private_control_directory(directory: Path) -> None:
+    """Refuse a runtime directory another user could write to: no symlink, right owner, ``0700``."""
+    try:
+        info = directory.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise SupervisorError("control_dir_insecure", f"control directory is not private to this user: {directory}")
+
+
+def _ensure_control_directory() -> Path:
+    """Create the private runtime directory on first use and verify an existing one."""
+    directory = _control_directory()
+    directory.mkdir(mode=0o700, exist_ok=True)
+    _require_private_control_directory(directory)
+    return directory
 
 
 def _decode(raw: bytes) -> Mapping[str, object]:
@@ -325,7 +379,7 @@ class _Supervisor:
         self._open_browser = open_browser
         self._images_dir = state_dir / IMAGES_DIR_NAME
         self._supervisor_dir = state_dir / SUPERVISOR_DIR_NAME
-        self._socket_path = state_dir / SOCKET_NAME
+        self._socket_path = control_socket_path(state_dir)
         self._database = state_dir / DATABASE_NAME
         self._lock = threading.Lock()
         self._transition = threading.Lock()
@@ -775,7 +829,11 @@ class _Supervisor:
     # -- CLI socket --------------------------------------------------------------------------
 
     def _serve_unix(self) -> None:
-        path = self._socket_path
+        try:
+            path = _ensure_control_directory() / self._socket_path.name
+        except OSError as exc:
+            raise SupervisorError("control_dir_failed", f"cannot prepare the control directory: {exc}") from exc
+        self._socket_path = path
         if path.exists():
             if _socket_alive(path):
                 raise SupervisorError("supervisor_running", f"another supervisor already listens on {path}")

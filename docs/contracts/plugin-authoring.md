@@ -57,7 +57,11 @@ is owned by the kernel's own workflow (pre-commit hook
 stale). A not-yet-pinned author manifest (`"files": []`) pins cleanly: the
 generator computes the final `files`, validates the whole manifest, then
 writes. The runnable example is Python-only; the helper discovers `*.py`
-automatically and repins already-declared non-Python resources.
+automatically and repins already-declared non-Python resources. Removing a
+declared non-Python resource is explicit and one plugin at a time: delete the
+asset, then `... --plugin-dir path/to/plugin --drop-resource name` (repeatable
+for several). A deleted-but-not-dropped resource still fails plain generation
+by default — the drop is what forgets it.
 
 > TODO(p6): new (not-yet-declared) non-Python resources have no discovery
 > path yet — adding one still needs a supported workflow, not a hand-edited

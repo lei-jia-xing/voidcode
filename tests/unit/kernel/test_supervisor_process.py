@@ -21,6 +21,9 @@ from pathlib import Path
 
 import pytest
 
+from voidcode.kernel.bootstrap import state_directory
+from voidcode.kernel.supervisor import control_socket_path
+
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 _READY_TIMEOUT = 120.0
 
@@ -47,13 +50,14 @@ sys.exit(
 class _Running:
     """One live supervisor subprocess plus the lines it printed before it served."""
 
-    def __init__(self, workspace: Path, state_dir: Path) -> None:
+    def __init__(self, workspace: Path, state_dir: Path, *, command: list[str] | None = None) -> None:
         (workspace / "voidcode.json").write_text(
             json.dumps({"schema_version": 1, "model": {"model": None}, "policy": {}, "providers": {}}),
             encoding="utf-8",
         )
+        argv = command or [sys.executable, "-X", "utf8", "-c", _BOOT, str(workspace), str(state_dir)]
         self.process = subprocess.Popen(
-            [sys.executable, "-X", "utf8", "-c", _BOOT, str(workspace), str(state_dir)],
+            argv,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -65,22 +69,27 @@ class _Running:
         self.endpoint = ""
         self.token = ""
         assert self.process.stdout is not None
-        deadline = time.monotonic() + _READY_TIMEOUT
-        while time.monotonic() < deadline:
-            line = self.process.stdout.readline()
-            if not line:
-                if self.process.poll() is not None:
-                    raise AssertionError(f"supervisor exited early: {self.process.stderr.read() if self.process.stderr else ''}")
-                continue
-            text = line.strip()
-            self.lines.append(text)
-            if text.startswith("kernel endpoint: "):
-                self.endpoint = text.partition(": ")[2].strip()
-            elif text.startswith("kernel bearer token: "):
-                self.token = text.partition(": ")[2].strip()
-            elif text.startswith("kernel ready: "):
-                return
-        raise AssertionError(f"supervisor did not become ready: {self.lines}")
+        try:
+            deadline = time.monotonic() + _READY_TIMEOUT
+            while time.monotonic() < deadline:
+                line = self.process.stdout.readline()
+                if not line:
+                    if self.process.poll() is not None:
+                        raise AssertionError(f"supervisor exited early: {self.process.stderr.read() if self.process.stderr else ''}")
+                    continue
+                text = line.strip()
+                self.lines.append(text)
+                if text.startswith("kernel endpoint: "):
+                    self.endpoint = text.partition(": ")[2].strip()
+                elif text.startswith("kernel bearer token: "):
+                    self.token = text.partition(": ")[2].strip()
+                elif text.startswith("kernel ready: "):
+                    return
+            raise AssertionError(f"supervisor did not become ready: {self.lines}")
+        except BaseException:
+            # A failed readiness probe must not leave the subprocess (or its pipes) behind.
+            self.close()
+            raise
 
     def health(self, *, token: str | None = None) -> tuple[int, dict[str, object]]:
         request = urllib.request.Request(f"{self.endpoint}/api/health")
@@ -105,7 +114,7 @@ class _Running:
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         client.settimeout(15.0)
         try:
-            client.connect(str(self.state_dir / "supervisor.sock"))
+            client.connect(str(control_socket_path(self.state_dir)))
             client.sendall(b'{"op":"status"}\n')
             buffer = b""
             while b"\n" not in buffer:
@@ -127,6 +136,9 @@ class _Running:
             self.process.send_signal(sig)
         try:
             return self.process.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            return self.process.wait(timeout=15)
         finally:
             if self.process.stdout is not None:
                 self.process.stdout.close()
@@ -192,6 +204,85 @@ def running(tmp_path: Path):
         instance.close()
 
 
+def test_default_state_dir_startup_and_separate_control_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The default launch scheme: no ``--state-dir``, ``$HOME/.local/state`` derivation.
+
+    ``XDG_STATE_HOME`` is unset so ``state_directory`` takes its real default branch, while
+    ``HOME`` points inside this test's own pytest tree: the durable state, the image copies, and
+    the socket cleanup all stay test-owned, and the old address is still longer than an AF_UNIX
+    address may be. Fast's separate PTY smoke covers the actual user HOME surface. Asserted here:
+    the default CLI starts, a *separate* CLI process derives the same control address and can
+    query it, and shutdown removes the socket.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    default_state = state_directory(workspace)
+    socket_path = control_socket_path(default_state)
+    assert default_state.is_relative_to(home / ".local" / "state" / "voidcode")
+    assert not default_state.exists(), "the test workspace's default state must be fresh"
+    assert len(os.fsencode(default_state / "supervisor.sock")) > 104
+    assert len(os.fsencode(socket_path)) <= 104
+
+    command = [sys.executable, "-X", "utf8", "-m", "voidcode.kernel", "serve", f"--workspace={workspace}", "--port=0"]
+    running: _Running | None = None
+    try:
+        running = _Running(workspace, default_state, command=command)
+        assert socket_path.stat().st_mode & 0o777 == 0o600
+        assert running.status()["status"] == "ok"
+
+        client = subprocess.run(
+            [
+                sys.executable,
+                "-X",
+                "utf8",
+                "-m",
+                "voidcode.kernel",
+                "--workspace",
+                str(workspace),
+                "upgrade",
+                "status",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        )
+        assert client.returncode == 0, client.stdout + client.stderr
+        answer = json.loads(client.stdout)
+        assert answer["status"] == "ok"
+        assert answer["pid"] == running.process.pid
+
+        explicit = subprocess.run(
+            [
+                sys.executable,
+                "-X",
+                "utf8",
+                "-m",
+                "voidcode.kernel",
+                "--workspace",
+                str(workspace),
+                "--state-dir",
+                str(default_state),
+                "upgrade",
+                "status",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        )
+        assert explicit.returncode == 0, explicit.stdout + explicit.stderr
+        assert json.loads(explicit.stdout)["status"] == "ok"
+    finally:
+        if running is not None:
+            running.close()
+            assert not socket_path.exists()
+
+
 def test_cold_start_prints_the_client_contract_and_serves_health(running: _Running) -> None:
     assert running.lines[0] == f"kernel endpoint: {running.endpoint}"
     assert running.lines[1] == f"kernel bearer token: {running.token}"
@@ -218,7 +309,7 @@ def test_cold_start_prints_the_client_contract_and_serves_health(running: _Runni
     assert snapshot["active_upgrade"] is None
     assert snapshot["active_image"] == body["image_digest"]
 
-    assert (running.state_dir / "supervisor.sock").stat().st_mode & 0o777 == 0o600
+    assert control_socket_path(running.state_dir).stat().st_mode & 0o777 == 0o600
 
 
 def test_api_bearer_has_no_control_authority(running: _Running) -> None:
@@ -240,15 +331,19 @@ def test_sigterm_stops_the_child_and_removes_the_socket(running: _Running) -> No
     child = running.child_pid()
     assert running.close(sig=signal.SIGTERM) == 0
     assert _dead(child, timeout=30.0)
-    assert not (running.state_dir / "supervisor.sock").exists()
+    assert not control_socket_path(running.state_dir).exists()
 
 
 def test_sigkill_of_the_supervisor_does_not_leave_an_orphan_child(running: _Running) -> None:
     child = running.child_pid()
-    running.close(sig=signal.SIGKILL)
-    # The child watches the supervisor pid it was launched with: it must exit on its own, never
-    # keep the workspace lock after its supervisor is gone.
-    assert _dead(child, timeout=30.0)
+    try:
+        running.close(sig=signal.SIGKILL)
+        # The child watches the supervisor pid it was launched with: it must exit on its own, never
+        # keep the workspace lock after its supervisor is gone.
+        assert _dead(child, timeout=30.0)
+    finally:
+        # SIGKILL runs no cleanup in the supervisor, so this test owns the stale socket it left.
+        control_socket_path(running.state_dir).unlink(missing_ok=True)
 
 
 def test_a_dash_leading_bearer_token_still_starts_the_child(tmp_path: Path) -> None:
@@ -393,7 +488,7 @@ def test_owner_death_stops_the_supervisor_and_its_child(tmp_path: Path) -> None:
                 client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 client.settimeout(5.0)
                 try:
-                    client.connect(str(state_dir / "supervisor.sock"))
+                    client.connect(str(control_socket_path(state_dir)))
                     client.sendall(b'{"op":"status"}\n')
                     buffer = b""
                     while b"\n" not in buffer:
@@ -416,12 +511,13 @@ def test_owner_death_stops_the_supervisor_and_its_child(tmp_path: Path) -> None:
         assert supervisor_pid is not None
         assert _dead(supervisor_pid, timeout=60.0)
         assert _dead(child_pid, timeout=30.0)
-        assert not (state_dir / "supervisor.sock").exists()
+        assert not control_socket_path(state_dir).exists()
     finally:
         if owner.poll() is None:
             owner.kill()
             owner.wait(timeout=10)
         if supervisor_pid is not None and not _dead(supervisor_pid, timeout=2.0):
             os.kill(supervisor_pid, signal.SIGKILL)
+            control_socket_path(state_dir).unlink(missing_ok=True)
         if owner.stderr is not None:
             owner.stderr.close()

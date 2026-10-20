@@ -140,6 +140,37 @@ def test_escaped_resource_is_rejected_and_manifest_is_not_rewritten(tmp_path: Pa
     assert manifest_path.read_bytes() == before
 
 
+def test_explicit_drop_forgets_deleted_resource_while_plain_generation_still_fails(tmp_path: Path) -> None:
+    plugin = _copy_example(tmp_path)
+    manifest_path = plugin / "voidcode-plugin.json"
+    pristine = manifest_path.read_bytes()
+    _generate("--drop-resource", "notes.txt", "--check", code=2)
+    baseline = {item["path"]: item["sha256"] for item in json.loads(pristine)["files"]}
+
+    (plugin / "notes.txt").write_text("author notes\n", encoding="utf-8")
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["files"].append({"path": "notes.txt", "sha256": "0" * 64})
+    manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    _generate("--plugin-dir", str(plugin))
+    pinned = {item["path"]: item["sha256"] for item in json.loads(manifest_path.read_text(encoding="utf-8"))["files"]}
+    assert set(pinned) == set(baseline) | {"notes.txt"}
+    assert all(pinned[path] == baseline[path] for path in baseline)
+
+    (plugin / "notes.txt").unlink()
+    before = manifest_path.read_bytes()
+    _generate("--plugin-dir", str(plugin), code=1)
+    assert manifest_path.read_bytes() == before
+    _generate("--plugin-dir", str(plugin), "--drop-resource", "tally_plugin.py", code=1)
+    assert manifest_path.read_bytes() == before
+    _generate("--plugin-dir", str(plugin), "--drop-resource", "nope.txt", code=1)
+    assert manifest_path.read_bytes() == before
+
+    _generate("--plugin-dir", str(plugin), "--drop-resource", "notes.txt")
+    dropped = {item["path"]: item["sha256"] for item in json.loads(manifest_path.read_text(encoding="utf-8"))["files"]}
+    assert dropped == baseline
+    _generate("--plugin-dir", str(plugin), "--check")
+
+
 def test_example_command_and_tool_share_durable_session_state(tmp_path: Path) -> None:
     plugin = _copy_example(tmp_path)
     workspace = tmp_path / "workspace"

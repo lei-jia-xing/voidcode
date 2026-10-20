@@ -82,5 +82,5 @@ uv run python -X utf8 -m pytest tests/unit/plugins/test_files.py
 ## Manual & Acceptance Verification
 
 - **CLI acceptance**: with a workspace that has a valid `voidcode.json` and a reachable provider, run `uv run python -m voidcode.kernel run "read README.md"`; then inspect with `... sessions` and `... show <session_id> --events`.
-- **TUI acceptance**: `uv run python -m voidcode.kernel tui` in a real terminal exercises the inline composer, overlays, and commit-once scrollback; the same binary with `--server http://127.0.0.1:<port> --token <token>` exercises the remote client path.
+- **TUI acceptance**: `uv run python -m voidcode.kernel` (bare) in a real terminal exercises the inline composer, overlays, and commit-once scrollback; the same binary with `--server http://127.0.0.1:<port> --token <token>` exercises the remote client path.
 - **Transport acceptance**: `uv run python -m voidcode.kernel serve --port 8000`, then `curl -H "Authorization: Bearer <token>" http://127.0.0.1:8000/api/commands` and open `http://127.0.0.1:8000/` for the served web client (when a frontend bundle is built).

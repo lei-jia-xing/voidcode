@@ -31,6 +31,7 @@ from tests.fixtures.reload_plugin import PROCESS_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.kernel.bootstrap import _bundled_sources
 from voidcode.kernel.images import running_package_root
+from voidcode.kernel.supervisor import control_socket_path
 
 PLUGIN_ID = "reload-fixture"
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -232,7 +233,7 @@ class _Supervisor:
         """One status round trip with the supervisor's own socket (the surface a launcher uses)."""
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
             client.settimeout(120)
-            client.connect(str(self.state_dir / "supervisor.sock"))
+            client.connect(str(control_socket_path(self.state_dir)))
             client.sendall(json.dumps({"op": "status"}).encode("utf-8") + b"\n")
             buffer = b""
             while b"\n" not in buffer:

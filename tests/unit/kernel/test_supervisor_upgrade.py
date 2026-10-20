@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+from voidcode.kernel.supervisor import control_socket_path
+
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 _READY_TIMEOUT = 180.0
 _UPGRADE_TIMEOUT = 300.0
@@ -121,7 +123,7 @@ class _Supervisor:
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         client.settimeout(15.0)
         try:
-            client.connect(str(self.state_dir / "supervisor.sock"))
+            client.connect(str(control_socket_path(self.state_dir)))
             client.sendall(b'{"op":"status"}\n')
             buffer = b""
             while b"\n" not in buffer:
@@ -138,7 +140,7 @@ class _Supervisor:
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         client.settimeout(_UPGRADE_TIMEOUT)
         try:
-            client.connect(str(self.state_dir / "supervisor.sock"))
+            client.connect(str(control_socket_path(self.state_dir)))
             client.sendall(payload)
             buffer = b""
             while b"\n" not in buffer:

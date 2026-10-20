@@ -2,13 +2,15 @@
 
 VoidCode is configured by exactly one file per workspace: `voidcode.json` at the workspace root, read by the kernel at startup. The kernel has no configuration CLI, no user-level configuration file, and no per-run override.
 
+The file is optional only for the very first boot of a truly fresh state directory: with no database, no adopted revision, and no legacy file, the kernel starts with empty in-memory defaults (bundled plugins enabled, no model or provider) and never creates `voidcode.json`. Commands, tools, sessions, `/status`, and `/help` work in that state; model turns and governed model queries fail with configuration guidance until a valid file exists and `kernel.reload` is run. Every other start requires the strict file rules below.
+
 Configuration is adopted as a *revision*: the first start of a workspace with an empty state directory adopts the live file, and a later restart restores that persisted revision (and its private snapshot) instead of silently re-reading the workspace. To apply an edited `voidcode.json`, run the reserved `kernel.reload` command on an idle session (`voidcode catalog` prints it; `voidcode invoke <session_id> kernel.reload --expected-revision <revision_id>`); it re-admits the live file and commits a new revision (refused while the session is busy, and refused entirely under `policy.read_only`). Pointing `--state-dir` at a new directory adopts the current file as a fresh first revision.
 
 Plugins may additionally read their own resources (for example agent profiles under `$XDG_CONFIG_HOME/voidcode/agents`), but that never overrides `voidcode.json`.
 
 ## Configuration File
 
-`voidcode.json` is required — the kernel refuses to start without it — and is validated strictly: the payload must be a JSON object, must not exceed 256 KiB, and any unknown field inside `voidcode.json`, `model`, or `policy` is an error rather than a silently ignored key.
+`voidcode.json` is required for every start except the providerless first boot described above, and is validated strictly whenever it exists: the payload must be a JSON object, must not exceed 256 KiB, and any unknown field inside `voidcode.json`, `model`, or `policy` is an error rather than a silently ignored key. A legacy `.voidcode.json` with no `voidcode.json` is always rejected explicitly, including on first boot.
 
 ```json
 {
@@ -59,7 +61,7 @@ No other top-level field is accepted.
 
 | Field | Type | Description |
 |---|---|---|
-| `model` | string | `provider/model`, where `provider` must be a key in the root `providers` section *and* a name some admitted plugin declares as a provider. A model that names an unconfigured or undeclared provider is refused at admission. |
+| `model` | string | `provider/model`, where `provider` must be a key in the root `providers` section *and* a name some admitted plugin declares as a provider. A model that names an unconfigured or undeclared provider is refused at admission. Optional only in the sense that the default is absent: the kernel then opens providerless and model turns fail with guidance until `model` and `providers` are configured and `kernel.reload` runs. |
 | `reasoning_effort` | string | One of `low`, `medium`, `high`, `none`. |
 
 ### `policy`

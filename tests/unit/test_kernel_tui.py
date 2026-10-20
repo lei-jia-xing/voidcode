@@ -323,9 +323,13 @@ class _StubTerminal:
 
     def __init__(self) -> None:
         self.committed: list[str] = []
+        self.frames: list[list[str]] = []
 
     def commit_rows(self, rows: list[str]) -> None:
         self.committed.extend(rows)
+
+    def paint_frame(self, frame: Any) -> None:
+        self.frames.append(list(frame.rows))
 
 
 class _StubClient:
@@ -359,7 +363,7 @@ class _StubClient:
     def get_session(self, session_id: str) -> dict[str, object]:
         return {"session_id": session_id, "status": "idle"}
 
-    def events_stream(self, session_id: str, *, after_sequence: int = 0, follow: bool = True):  # type: ignore[no-untyped-def]
+    def events_stream(self, session_id: str, *, after_sequence: int = 0, follow: bool = True, cancel: object = None):  # type: ignore[no-untyped-def]
         self._connections += 1
         if self._connections == 1:
             # Pre-restart connection: only the settled prefix exists yet.
@@ -396,8 +400,50 @@ class _FencedClient(_StubClient):
         raise self._refusal
 
 
+class _CommandClient(_StubClient):
+    """Catalog/views/invoke stub for the consumer-visible command-result flows."""
+
+    def __init__(
+        self,
+        *,
+        catalog: list[dict[str, object]] | None = None,
+        view_list: list[dict[str, object]] | None = None,
+        results: dict[str, dict[str, object]] | None = None,
+    ) -> None:
+        super().__init__()
+        self.catalog = list(catalog or [])
+        self.view_list = list(view_list or [])
+        self.results = dict(results or {})
+        self.invoked: list[tuple[str, str, dict[str, object], str]] = []
+
+    def command_catalog(self) -> tuple[str, list[dict[str, object]]]:
+        return "rev-1", list(self.catalog)
+
+    def views(self, session_id: str, *, client_capabilities: str = "") -> tuple[str, list[dict[str, object]]]:
+        return "rev-1", list(self.view_list)
+
+    def invoke_command(
+        self,
+        session_id: str,
+        name: str,
+        arguments: dict[str, object] | None = None,
+        *,
+        expected_revision: str,
+        client_capabilities: str = "",
+    ) -> dict[str, object]:
+        self.invoked.append((session_id, name, dict(arguments or {}), expected_revision))
+        return dict(self.results.get(name, {"status": "ok"}))
+
+
 def _event(sequence: int, event_type: str = "kernel.user_message", **payload: object) -> dict[str, object]:
     return {"sequence": sequence, "type": event_type, "revision_id": "rev-1", "payload": dict(payload)}
+
+
+class _RunClient(_CommandClient):
+    """Run returns the existing failed result; the durable event repeats the error."""
+
+    def run(self, session_id: str, prompt: str, *, max_steps: int = 32) -> dict[str, object]:
+        return {"status": "failed", "error": "boom"}
 
 
 def _drain_until(app: Any, terminal: Any, marker: str, *, timeout: float = 5.0) -> None:
@@ -411,6 +457,21 @@ def _drain_until(app: Any, terminal: Any, marker: str, *, timeout: float = 5.0) 
             return
         time.sleep(0.01)
     raise AssertionError(f"settled row never appeared: {marker!r} in {terminal.committed!r}")
+
+
+def _refresh_views(app: Any, *, timeout: float = 5.0) -> None:
+    """Run one real automatic reconnect refresh and wait for it to apply."""
+    import time
+
+    target = app._reconcile_serial + 1
+    app._reconcile_connection_async()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        app._drain_events()
+        if app._reconcile_applied >= target:
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"reconcile never applied: serial={target!r} applied={app._reconcile_applied!r}")
 
 
 def test_reconnect_replays_unseen_rows_despite_ahead_restart_watermark() -> None:
@@ -521,3 +582,285 @@ def test_real_503_handlers_keep_both_gates_then_decided_facts_close_each_once() 
     app._drain_events()
     assert app.active_overlay is None
     assert list(app.queued_confirmations) == []
+
+
+def test_automatic_view_refresh_renders_passive_views_without_mounting_form() -> None:
+    """A reconnect refreshes views together but only an explicit request takes focus."""
+    from voidcode.kernel.tui.terminal_app import KernelTuiApp
+    from voidcode.kernel.tui.views import InteractiveForm
+
+    status_view = {
+        "name": "goal",
+        "title": "Goal",
+        "view_type": "status",
+        "data": {"label": "Goal", "value": "No active goal"},
+    }
+    form_view = {
+        "name": "goal.form",
+        "title": "Set Goal",
+        "view_type": "form",
+        "data": {
+            "fields": [{"name": "objective", "label": "Objective", "field_type": "multiline", "required": True}],
+            "action": "goal.set",
+            "initial_values": {},
+        },
+    }
+    client = _CommandClient(view_list=[status_view, form_view])
+    terminal = _StubTerminal()
+    app = KernelTuiApp(client, session_id="s1", terminal=terminal)
+
+    _refresh_views(app)
+    app._render_frame()
+    assert app.active_overlay is None
+    assert any("No active goal" in row for row in terminal.committed)
+    assert not any("Objective" in row for row in terminal.frames[-1]), terminal.frames[-1]
+    app._handle_composer_key(Key("x", text="x"))
+    assert app.composer.value == "x"
+
+    app._show_views()
+    app._render_frame()
+    assert isinstance(app.active_overlay, InteractiveForm)
+    assert any("Objective" in row for row in terminal.frames[-1]), terminal.frames[-1]
+
+
+def test_activation_refresh_does_not_mount_a_form() -> None:
+    """Activation is automatic too: catalog+views refresh, but no form steals focus."""
+    from voidcode.kernel.tui.terminal_app import KernelTuiApp
+
+    form_view = {
+        "name": "goal.form",
+        "title": "Set Goal",
+        "view_type": "form",
+        "data": {
+            "fields": [{"name": "objective", "label": "Objective", "field_type": "multiline", "required": True}],
+            "action": "goal.set",
+            "initial_values": {},
+        },
+    }
+    client = _CommandClient(view_list=[form_view])
+    terminal = _StubTerminal()
+    app = KernelTuiApp(client, session_id="s1", terminal=terminal)
+
+    rows: list[str] = []
+    app._handle_single_event(_event(1, "kernel.activation_committed", to_revision_id="rev-2"), rows)
+    app._render_frame()
+    assert app.active_overlay is None
+    assert not any("Objective" in row for row in terminal.frames[-1]), terminal.frames[-1]
+
+
+def test_durable_gates_survive_automatic_view_refresh() -> None:
+    """Approval/confirmation gates come from durable facts, not views, and stay put."""
+    from voidcode.kernel.tui.terminal_app import KernelTuiApp
+    from voidcode.kernel.tui.views import InteractiveConfirmation
+
+    status_view = {
+        "name": "goal",
+        "title": "Goal",
+        "view_type": "status",
+        "data": {"label": "Goal", "value": "No active goal"},
+    }
+    client = _CommandClient(view_list=[status_view])
+    terminal = _StubTerminal()
+    app = KernelTuiApp(client, session_id="s1", terminal=terminal)
+    rows: list[str] = []
+
+    app._handle_single_event(
+        _event(1, "kernel.approval_requested", request_id="appr-1", call={"tool_name": "write", "arguments": {}}),
+        rows,
+    )
+    assert app.pending_approval is not None and app.pending_approval["request_id"] == "appr-1"
+    _refresh_views(app)
+    assert app.pending_approval is not None and app.pending_approval["request_id"] == "appr-1"
+    app._render_frame()
+    assert any("Tool approval required" in row for row in terminal.frames[-1]), terminal.frames[-1]
+
+    app.pending_approval = None
+    app._handle_single_event(
+        _event(
+            2,
+            "kernel.confirmation_requested",
+            request_id="conf-1",
+            owner="goal",
+            command_name="goal.set",
+            arguments={},
+            ui_type="confirmation",
+            ui_data={"request_id": "conf-1", "message": "Apply goal?"},
+        ),
+        rows,
+    )
+    assert isinstance(app.active_overlay, InteractiveConfirmation)
+    _refresh_views(app)
+    assert isinstance(app.active_overlay, InteractiveConfirmation)
+    app._render_frame()
+    assert any("Apply goal?" in row for row in terminal.frames[-1]), terminal.frames[-1]
+
+
+def test_core_help_receipt_renders_multiline_and_clears_dispatching() -> None:
+    """Bare /help is the core command; its direct receipt must become the visible list."""
+    from voidcode.kernel.tui.terminal_app import KernelTuiApp
+
+    catalog = [
+        {
+            "name": "help",
+            "owner": "core",
+            "description": "Show available commands and documentation",
+            "effects": ["read"],
+            "argument_schema": {"type": "object", "properties": {}},
+        }
+    ]
+    client = _CommandClient(
+        catalog=catalog,
+        results={
+            "help": {
+                "status": "ok",
+                "output": "Available commands:\n  /status — Show kernel and workspace status",
+                "data": {"commands": [{"name": "status"}]},
+            }
+        },
+    )
+    terminal = _StubTerminal()
+    app = KernelTuiApp(client, session_id="s1", terminal=terminal)
+
+    app._dispatch_slash_command("/help")
+    assert app.status_line == "Dispatching /help..."
+    _drain_until(app, terminal, "Available commands:")
+    assert any("/status" in row for row in terminal.committed), terminal.committed
+    assert all("\\x0a" not in row for row in terminal.committed), terminal.committed
+    assert app.status_line == "/help: ok"
+    assert [entry[1] for entry in client.invoked] == ["help"]
+
+
+def test_core_data_receipt_preserves_empty_mapping_and_falsy_values() -> None:
+    """A data-only core receipt falls back to JSON without truthiness loss."""
+    from voidcode.kernel.tui.terminal_app import KernelTuiApp
+
+    catalog = [
+        {
+            "name": "show",
+            "owner": "core",
+            "description": "Show session state",
+            "effects": ["read"],
+            "argument_schema": {"type": "object", "properties": {}},
+        }
+    ]
+    client = _CommandClient(
+        catalog=catalog,
+        results={"show": {"status": "ok", "data": {"empty": {}, "turn": 0, "ok": False, "none": None}}},
+    )
+    terminal = _StubTerminal()
+    app = KernelTuiApp(client, session_id="s1", terminal=terminal)
+
+    app._dispatch_slash_command("/show")
+    _drain_until(app, terminal, '"empty"')
+    text = "\n".join(terminal.committed)
+    for expected in ('"empty": {}', '"turn": 0', '"ok": false', '"none": null'):
+        assert expected in text, (expected, text)
+    assert app.status_line == "/show: ok"
+
+
+def test_plugin_command_event_renders_multiple_lines_with_error_precedence() -> None:
+    """Plugin results arrive as durable events; lines stay lines and error wins."""
+    from voidcode.kernel.tui.terminal_app import KernelTuiApp
+
+    terminal = _StubTerminal()
+    app = KernelTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
+    app._stream_ready = True
+
+    app.event_queue.put(
+        {
+            "kind": "event",
+            "event": _event(
+                1,
+                "kernel.command_completed",
+                name="usage",
+                result={"status": "ok", "output": "turns: 0\ninput tokens: 0"},
+            ),
+            "session_id": "s1",
+            "generation": 0,
+        }
+    )
+    app._drain_events()
+    assert any("turns: 0" in row for row in terminal.committed), terminal.committed
+    assert any("input tokens: 0" in row for row in terminal.committed), terminal.committed
+    assert all("\\x0a" not in row for row in terminal.committed), terminal.committed
+
+    app.event_queue.put(
+        {
+            "kind": "event",
+            "event": _event(
+                2,
+                "kernel.command_completed",
+                name="broken",
+                result={"status": "error", "error": "boom", "output": "partial"},
+            ),
+            "session_id": "s1",
+            "generation": 0,
+        }
+    )
+    app._drain_events()
+    assert any("boom" in row for row in terminal.committed), terminal.committed
+    assert not any("partial" in row for row in terminal.committed), terminal.committed
+
+
+def test_late_completion_does_not_overwrite_gate_or_fence_status() -> None:
+    """A command finishing late may clear Dispatching, never a live gate/fence."""
+    from voidcode.kernel.tui.terminal_app import KernelTuiApp
+
+    terminal = _StubTerminal()
+    app = KernelTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
+
+    app.pending_approval = {"request_id": "appr-1", "tool_name": "write", "arguments": {}}
+    app.status_line = "Tool approval required: write"
+    app.event_queue.put(
+        {
+            "kind": "command_done",
+            "name": "status",
+            "status": "ok",
+            "result": None,
+            "session_id": "s1",
+            "generation": 0,
+        }
+    )
+    app._drain_events()
+    assert app.status_line == "Tool approval required: write"
+
+    app.pending_approval = None
+    app.active_overlay = None
+    app.upgrade = {"fenced": True}
+    app.status_line = "Kernel upgrade in progress: dispatch paused"
+    app.event_queue.put(
+        {
+            "kind": "command_done",
+            "name": "status",
+            "status": "ok",
+            "result": None,
+            "session_id": "s1",
+            "generation": 0,
+        }
+    )
+    app._drain_events()
+    assert app.status_line == "Kernel upgrade in progress: dispatch paused"
+
+
+def test_run_failure_error_is_rendered_once_from_the_response_path() -> None:
+    """The run response owns the error text; the durable event must not repeat it."""
+    from voidcode.kernel.tui.terminal_app import KernelTuiApp
+
+    terminal = _StubTerminal()
+    app = KernelTuiApp(_RunClient(), session_id="s1", terminal=terminal)
+    app._stream_ready = True
+
+    app._dispatch_user_prompt("hello")
+    _drain_until(app, terminal, "boom")
+    assert sum("boom" in row for row in terminal.committed) == 1
+
+    app.event_queue.put(
+        {
+            "kind": "event",
+            "event": _event(1, "kernel.run_failed", error="boom", logical_turn="turn-1"),
+            "session_id": "s1",
+            "generation": 0,
+        }
+    )
+    app._drain_events()
+    assert sum("boom" in row for row in terminal.committed) == 1, terminal.committed

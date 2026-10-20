@@ -7,7 +7,7 @@ This document defines how clients (the kernel CLI, the inline TUI, and the web c
 | Surface | Entry | Transport |
 |---|---|---|
 | Kernel CLI | `python -m voidcode.kernel <subcommand>` (also the `voidcode` console script) | elected image for one-shot commands (re-executed when needed), or HTTP via the TUI's remote mode |
-| TUI | `python -m voidcode.kernel tui [--server URL --token TOKEN --session-id ID]` | HTTP/SSE against a supervisor child process by default (same behavior as `--server`), or a remote kernel |
+| TUI | `python -m voidcode.kernel [--server URL --token TOKEN --session-id ID]` (bare command) | HTTP/SSE against a supervisor child process by default (same behavior as `--server`), or a remote kernel |
 | Web | built React bundle served by the kernel at `/` | HTTP/SSE, same origin; `/api` requires the bearer token |
 | HTTP | `python -m voidcode.kernel serve [--host --port --bearer-token --session-id] [--open]` | supervised FastAPI app, loopback bind only; the listener and token survive kernel replacement |
 
@@ -28,7 +28,7 @@ The kernel binds `127.0.0.1`, `::1`, or `localhost` only. Every request under `/
 | `views <session_id> [--client-capabilities]` | Print the rendered plugin views envelope. | `0` |
 | `drain <session_id> [--limit]` | Execute pending durable continuations. | `0` |
 | `usage <session_id> [--since-sequence --until-sequence]` | Print the truthful session usage report. | `0` |
-| `tui [--server --token --session-id]` | Start the TUI (supervisor child process unless `--server` is given). | — |
+| *(bare command)* `[--server --token --session-id]` | Start the TUI (supervisor child process unless `--server` is given). | — |
 | `serve [--host --port --bearer-token --session-id] [--open]` | Run the supervisor: stable endpoint and token across kernel replacement (`--open` launches a browser; `--session-id` attributes a first-adoption transition). | — |
 | `upgrade [run\|status] --candidate PATH [--session-id ID] [--timeout S]` | Ask the running supervisor for its status, or upgrade this workspace to a candidate installation (one JSON object; exit `0` only on `upgraded`/`ok`). | `0` ok, `1` refused/blocked/failed |
 | `preflight` | Read-only candidate check for this installation against the live state (one JSON object; exit `1` on a named refusal). | `0` ok, `1` refused |
@@ -74,7 +74,7 @@ A command advertised by one capability generation is never executed by another:
 - **Restart frame** (after a successful upgrade drain only): `{"kind": "server_restart", "session_id": ..., "cursor": <last sequence this stream delivered>}`, following a flush of the final backlog. Clients reconnect with `after_sequence` set to their own applied cursor (never advancing it from the frame) and never resend a prompt; a failed drain leaves the stream connected with no frame.
 - **Stored event fields**: `session_id`, `sequence` (monotonic within the session), `type` (for example `kernel.user_message`, `kernel.model_turn`, `kernel.tool_completed`, `kernel.approval_requested`, `kernel.confirmation_requested`, `kernel.command_completed`), `run_id`, `revision_id`, `source`, `actor`, `payload`.
 
-`follow=false` (default) replays and closes. `follow=true` crosses run boundaries: `completed`, `failed`, and `interrupted` end a *run*, not the session, so the stream ends only when the client disconnects, a terminal error frame is sent, or a successful upgrade drain ends it with the restart frame above. While a kernel is fenced for an upgrade, business writes answer `503` with `code: "upgrade_pending"` and reads keep working; `cancel` stays allowed because it can only reduce work.
+`follow=false` (default) replays and closes. `follow=true` crosses run boundaries: `completed`, `failed`, and `interrupted` end a *run*, not the session, so the stream ends only when the client disconnects, a terminal error frame is sent, or a successful upgrade drain ends it with the restart frame above. While a kernel is fenced for an upgrade, business writes answer `503` with `code: "upgrade_pending"` and reads keep working; `cancel` stays allowed because it can only reduce work. The inline TUI owns a cancellable connection to this stream and shuts it down on quit before joining its reader and before an embedded supervisor stops the kernel; idle follow streams need no heartbeat and are woken by that socket shutdown.
 
 ## Declarative Views
 
@@ -104,7 +104,9 @@ A request id from one gate is never sent to the other endpoint. Both are project
 
 - Launched embedded (spawns a supervisor child process and talks to it over HTTP exactly like `--server` mode, so a kernel replacement never kills the UI) or remote with `--server`/`--token`.
 - Inline scrollback with a **commit-once ledger**: rows are committed to the native scrollback exactly once by the main loop, driven by a durable `last_sequence` cursor. Reconnects, follow polling, resizes, and session switches never replay or clear settled output; only the live region repaints.
-- Renders persisted SDK payloads only (`kernel.user_message`, `kernel.model_turn`, `kernel.tool_completed`, `kernel.command_intent`/`kernel.command_completed`), escaping terminal control bytes in every model- and plugin-provided string.
+- Renders durable event payloads (`kernel.user_message`, `kernel.model_turn`, `kernel.tool_completed`, `kernel.command_intent`/`kernel.command_completed`) plus the direct `CommandResult` of core read-only commands (`help`, `status`, `show`), which have no command event. Plugin and run/resume results remain event-projected; one shared formatter renders each result once, preserving multi-line output and falling back to JSON for data-only receipts. Every model- and plugin-provided string is escaped for terminal control bytes.
+- On connect, reconnect, and capability activation, the catalog and views are refetched together under one revision. Non-interactive views refresh into the transcript; choices, forms, and view-confirmations are presented only by the explicit `/tui views` control. The two decision gates above remain event-projected and are never closed or denied by a view refresh.
+- A real command completion updates the transient status line from its actual `status`; a pending approval/confirmation gate and a fenced upgrade keep their own status line.
 - Slash input resolves against the displayed catalog and echoes its revision; overlays capture the revision that rendered them. `Esc`/`Ctrl+C` on a confirmation overlay submit an explicit `deny`, never a local "cancelled".
 - Local controls that are not admitted commands: `/tui help|sessions|session <id>|new|views [name]|cancel|quit` (bare forms work when no admitted command owns the name). `/tui <control>` always reaches the client control, so a plugin cannot shadow navigation.
 - All HTTP work happens on worker threads; only the main loop writes rows.

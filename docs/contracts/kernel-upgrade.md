@@ -146,9 +146,13 @@ pause_intent}` (supervisor control credential only):
 - Control routes (`/api/kernel/drain|admit|adopt|promote`) require a separate unguessable control
   token generated per supervisor lifetime, passed only to the child, never printed or persisted;
   the API bearer gets `401 missing_control_credential` there. The supervisor's own CLI socket
-  (`<state>/supervisor.sock`, `0600`) is a same-OS-user boundary like `--trust-plugin`: it proves
-  no human typed, but no client credential, agent tool, plugin, or remote caller can name a
-  candidate or elect state. No agent-facing tool accepts an executable identity.
+  (`0600`) lives in a private per-user runtime directory (`0700`, `/tmp/voidcode-<uid>`), named by
+  a digest of the canonical state directory because the durable state path plus its workspace
+  identity is longer than the fixed AF_UNIX address limit; it is a same-OS-user boundary like
+  `--trust-plugin`: it proves no human typed, but no client credential, agent tool, plugin, or
+  remote caller can name a candidate or elect state. Platforms without POSIX ownership/mode
+  semantics refuse to host the supervisor instead of weakening this boundary. No agent-facing tool
+  accepts an executable identity.
 - The durable decision is SQLite, never a journal file: the revision pointer plus the revision's
   image pin, resolved to `<state>/kernel-images/<digest>/root`. Anything before the adoption
   commit restarts the old image; anything after restarts the candidate image; a missing elected
@@ -195,8 +199,8 @@ pause_intent}` (supervisor control credential only):
   (never an error frame) when a drain already succeeded; anything committed after the last fetch
   has a higher sequence and replays on reconnect. No prompt is ever resent.
 - CLI: `serve` runs the supervisor; `upgrade --candidate PATH [--session-id ID] [--timeout S]`
-  and `upgrade status` print one JSON object each; `preflight` prints the preflight report;
-  `tui` without `--server` spawns a supervisor child and behaves exactly like remote mode.
+  and `upgrade status` print one JSON object each; `preflight` prints the preflight report; the
+  bare command without `--server` spawns a supervisor child and behaves exactly like remote mode.
   Ordinary one-shot commands execute inside the elected image (re-executing into it when the
   invoking installation is not it, snapshotting first on a fresh state), so an old install never
   runs stale bytes and never needs a refusal the user must decode. `show` stays a config-free,
