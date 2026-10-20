@@ -532,6 +532,34 @@ class ServicesProbe:
             except Exception as exc:
                 return ToolSuccess(call.tool_name, TextOutput(json.dumps({{"error": f"{{type(exc).__name__}}: {{exc}}"}})))
             return ToolSuccess(call.tool_name, TextOutput(json.dumps({{"stopped": stopped}})))
+        if action == "svc_spawn":
+            try:
+                handle = services.spawn_service_process(
+                    [str(item) for item in (call.arguments.get("argv") or ())],
+                    process_id=call.arguments.get("process_id"),
+                )
+            except Exception as exc:
+                return ToolSuccess(call.tool_name, TextOutput(json.dumps({{"error": f"{{type(exc).__name__}}: {{exc}}"}})))
+            return ToolSuccess(call.tool_name, TextOutput(json.dumps({{"handle": handle.as_payload()}}, sort_keys=True, default=str)))
+        if action == "svc_wait":
+            # One bounded blocking-style wait with active-use binding: poll the service's log with
+            # the live lease while honoring the existing abort signal, then stop it on cancel.
+            process_id = str(call.arguments.get("process_id", ""))
+            deadline = __import__("time").monotonic() + float(call.arguments.get("timeout_seconds", 30))
+            offset = 0
+            while __import__("time").monotonic() < deadline:
+                signal = getattr(context, "abort_signal", None)
+                if signal is not None and getattr(signal, "cancelled", False):
+                    services.cancel_process(process_id, reason="fixture cancel")
+                    return ToolSuccess(call.tool_name, TextOutput(json.dumps({{"cancelled": True}})))
+                page = services.read_process_output(process_id, offset=offset, limit=65536)
+                offset += len(page.data)
+                if page.data:
+                    return ToolSuccess(call.tool_name, TextOutput(json.dumps({{"bytes": len(page.data)}})))
+                if not page.running:
+                    return ToolSuccess(call.tool_name, TextOutput(json.dumps({{"bytes": 0, "running": False}})))
+                __import__("time").sleep(0.05)
+            return ToolSuccess(call.tool_name, TextOutput(json.dumps({{"bytes": 0, "timed_out": True}})))
         if action == "spill_abandon":
             # One unterminated chunk: the lease must not leave its private temp file behind.
             import base64 as _b64

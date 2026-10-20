@@ -1,4 +1,4 @@
-"""Safe read-only file tool for the deterministic slice."""
+"""Safe read-only file tool for workspace files and bounded derived views."""
 
 from __future__ import annotations
 
@@ -10,15 +10,15 @@ import tarfile
 import time
 import zipfile
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol, cast, final, runtime_checkable
+from typing import Literal, cast, final
 
 from pydantic import BaseModel, StrictInt, field_validator
 
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
-from voidcode.sdk.services import PluginServices
+from voidcode.sdk.services import PluginServices, QueryUnavailable
 from voidcode.sdk.tools import (
     AttachmentOutput,
     OpaqueToolBody,
@@ -28,6 +28,7 @@ from voidcode.sdk.tools import (
     TextOutput,
     ToolCall,
     ToolDefinition,
+    ToolFailure,
     ToolResult,
     ToolSuccess,
     is_read_tier,
@@ -48,10 +49,10 @@ from .artifacts import (
 )
 from .read_formats import MAX_OUTPUTS, render_notebook, render_pdf_bytes, render_pdf_path, render_sqlite
 
-#: Internal URL scheme for on-demand tool documentation (essential/discoverable
-#: split): read(path="voidcode://tool/<name>") returns the tool's guidance
-#: text plus its JSON input schema, read from the same guidance files and the
-#: live tool registry used for execution.
+#: Internal URL scheme for on-demand tool documentation:
+#: read(path="voidcode://tool/<name>") renders the admitted definition's
+#: description plus its JSON input schema. The kernel answers from the active
+#: revision's dispatch snapshot with this session's visibility applied.
 VOIDCODE_TOOL_DOC_PREFIX = "voidcode://tool/"
 
 
@@ -64,53 +65,87 @@ VOIDCODE_ARTIFACT_PREFIX = "voidcode://artifact/"
 
 #: Internal URL scheme for lineage-guarded transcript reads:
 #: read(path="voidcode://transcript/<session_id>") returns a bounded,
-#: payload-stripped transcript of the caller's own session or of a child
-#: session the caller spawned, resolved through the runtime's session-validated
-#: transcript reader.
+#: payload-stripped transcript of the caller's own session or of one of its
+#: own descendants. Parents, siblings, unrelated roots, and foreign workspaces
+#: are refused by the kernel, not by this tool.
 VOIDCODE_TRANSCRIPT_PREFIX = "voidcode://transcript/"
 
-#: Internal URL scheme for workspace rule catalogs. Mirrors the kernel's rule
-#: URI prefix, which plugins cannot import (P4 seam S5).
+#: Internal URL scheme for workspace rule catalogs, shared verbatim with the
+#: skills plugin's catalog URIs: ``services.query("workspace.rule_page")`` asks
+#: the skills plugin, which owns the rulebook semantics.
 RULE_URI_PREFIX = "voidcode://rule/"
 
+#: Named query this tool asks the skills plugin whenever the caller reads a
+#: ``voidcode://rule/`` URI: the skills plugin owns the rulebook semantics, so
+#: this plugin never parses rule files itself.
+RULE_PAGE_QUERY = "workspace.rule_page"
 
-#: Kernel session services (transcript and rule readers) are reached through
-#: ``getattr(context, ...)`` and their result types have no SDK mirror yet, so
-#: this tool declares only the fields it reads and classifies results by shape
-#: (P4 seam S5). Artifacts go through the SDK service instead.
-@runtime_checkable
-class _TranscriptPage(Protocol):
-    entries: tuple[object, ...]
+#: Named query this module expects the LSP plugin to answer for document-state
+#: guards applied by ``apply_workspace_edit``.
+DOCUMENT_VERSION_QUERY = "workspace.document_version"
+
+
+#: One bounded transcript page, composed here from the kernel's event pages: per event only
+#: ``sequence``, ``event_type``, and ``source`` survive, raw tool output payloads never do.
+@dataclass(frozen=True, slots=True)
+class _TranscriptEntry:
+    sequence: int
+    event_type: str
+    source: str
+
+    def as_payload(self) -> dict[str, object]:
+        return {"sequence": self.sequence, "event_type": self.event_type, "source": self.source}
+
+
+@dataclass(frozen=True, slots=True)
+class _TranscriptPage:
+    session_id: str
+    entries: tuple[_TranscriptEntry, ...]
     truncated: bool
 
-    def as_payload(self) -> dict[str, object]: ...
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "session_id": self.session_id,
+            "entries": [entry.as_payload() for entry in self.entries],
+            "truncated": self.truncated,
+        }
 
 
-@runtime_checkable
-class _RulePage(Protocol):
+@dataclass(frozen=True, slots=True)
+class _RulePage:
     rule: str
     content_hash: str
     text: str
-    page: object
+    next_offset: int | None
     byte_truncated: bool
 
-    def as_payload(self) -> dict[str, object]: ...
+    @classmethod
+    def from_query(cls, value: Mapping[str, object]) -> _RulePage | None:
+        rule = value.get("rule")
+        content_hash = value.get("content_hash")
+        text = value.get("text")
+        next_offset = value.get("next_offset")
+        truncated = value.get("byte_truncated")
+        if not isinstance(rule, str) or not rule:
+            return None
+        if not isinstance(content_hash, str) or not content_hash:
+            return None
+        if not isinstance(text, str):
+            return None
+        if next_offset is not None and (not isinstance(next_offset, int) or isinstance(next_offset, bool) or next_offset < 1):
+            return None
+        if not isinstance(truncated, bool):
+            return None
+        return cls(rule=rule, content_hash=content_hash, text=text, next_offset=next_offset, byte_truncated=truncated)
 
-
-def _is_kernel_marker(result: object) -> bool:
-    """True for a kernel unavailability marker (`ArtifactMissing`, `TranscriptInaccessible`).
-
-    Those markers are dataclasses that declare no fields.
-    """
-
-    return is_dataclass(result) and not fields(result)
-
-
-def _page_position_offset(position: object) -> int | None:
-    """Offset carried by a kernel page position (`NextPage`), or None once the page is exhausted."""
-
-    offset = getattr(position, "offset", None)
-    return offset if isinstance(offset, int) else None
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "rule": self.rule,
+            "content_hash": self.content_hash,
+            "text": self.text,
+            "next_offset": self.next_offset,
+            "byte_truncated": self.byte_truncated,
+        }
 
 
 def _spill_artifact(
@@ -121,13 +156,11 @@ def _spill_artifact(
     mime: str,
     source: str,
 ) -> tuple[Mapping[str, object], str, str] | None:
-    """Spill a payload to the kernel artifact service; None keeps it inline.
+    """Spill a payload via ``PluginServices.spill_artifact``; None keeps it inline.
 
-    Returns ``(artifact, artifact_id, uri)`` or ``None`` when the kernel has no
-    artifact service (P4 seam S5): callers keep their bounded inline output and
-    omit the reference.
-
-    ponytail: kernel artifact service (seam S5).
+    Returns ``(artifact, artifact_id, uri)``, or ``None`` when the handler's
+    services object exposes no spill method: callers then keep their bounded
+    inline output and omit the reference.
     """
 
     artifact = create_artifact(services, kind=kind, content=content, mime=mime, source=source)
@@ -138,17 +171,20 @@ def _spill_artifact(
     return artifact, artifact_id, uri
 
 
-def _render_tool_documentation(path: str, *, context: ToolContext) -> _ReadOutcome:
+def _render_tool_documentation(
+    path: str, *, context: ToolContext, services: PluginServices, tool_name_label: str = "read"
+) -> _ReadOutcome | ToolFailure:
     tool_name = path[len(VOIDCODE_TOOL_DOC_PREFIX) :].strip()
     if not tool_name:
-        raise ValueError("voidcode://tool/<name> requires a tool name")
+        return _uri_failure(tool_name_label, "voidcode://tool/<name> requires a tool name")
     context.require_session_id()
-    catalog = getattr(context, "tool_catalog", None)
-    if catalog is None:
-        raise ValueError("read cannot resolve voidcode://tool URLs: tool documentation is unavailable without a runtime tool catalog")
-    definition = catalog.lookup(tool_name)
+    definition = services.tool_definition(tool_name)
     if definition is None:
-        raise ValueError(f"unknown tool in runtime registry: {tool_name}")
+        return _uri_failure(
+            tool_name_label,
+            f"no tool documentation for {tool_name}: the active revision admits no such tool, "
+            "or this session's profile scope/read-only stance hides it",
+        )
     # No sidecar guidance files in the plugin world: the tool's own admitted
     # definition is the guidance source.
     guidance = definition.description or ""
@@ -270,10 +306,10 @@ def _render_artifact(
     if media_type in RASTER_IMAGE_MIMES and view != "pdf":
         raw, total_bytes, content_hash = _full_bytes("Artifact")
         inline = len(raw) <= MAX_INLINE_ATTACHMENT_BYTES
-        # ponytail: kernel artifact service (seam S5): a payload above the
-        # inline bound re-spills its own (already stored) bytes so the body
-        # carries the same reference projection the workspace branch reports;
-        # without the service the artifact's own URI stands in for it.
+        # A payload above the inline bound re-spills its own (already stored)
+        # bytes so the body carries the same reference projection the workspace
+        # branch reports; when the spill method is absent the artifact's own URI
+        # stands in for it.
         spilled = None if inline else _spill_artifact(services, kind="content", content=raw, mime=media_type, source=path)
         artifact: Mapping[str, object] = (
             spilled[0] if spilled is not None else {"artifact_id": artifact_id, "sha256": content_hash, "byte_count": total_bytes, "uri": path}
@@ -331,9 +367,8 @@ def _render_artifact(
         text_reference: str | None = None
         output_artifact: Mapping[str, object] | None = None
         if len(full_text.encode("utf-8")) > MAX_BYTES:
-            # ponytail: kernel artifact service (seam S5): without it the
-            # extracted text beyond this page is dropped; the page's own
-            # truncation flags stay the honest signal.
+            # When the spill method is absent the extracted text beyond this page is
+            # dropped; the page's own truncation flags stay the honest signal.
             spilled = _spill_artifact(services, kind="pdf_text", content=full_text, mime="text/plain; charset=utf-8", source=path)
             if spilled is not None:
                 output_artifact, text_reference = spilled[0], spilled[2]
@@ -494,39 +529,41 @@ def _render_artifact(
     )
 
 
-def _render_transcript(path: str, *, context: ToolContext, limit: int) -> _ReadOutcome:
+def _render_transcript(
+    path: str, *, context: ToolContext, services: PluginServices, limit: int, tool_name_label: str = "read"
+) -> _ReadOutcome | ToolFailure:
     """Render a bounded, payload-stripped transcript of a session by URI.
 
-    The transcript is resolved through the runtime's lineage-guarded reader
-    (``ToolContext.transcript``): the caller may read its own
-    session or a direct child session, never an unrelated session. Per event
-    only ``sequence``, ``event_type``, and ``source`` are returned; raw tool
+    Composed from the session event services: the caller's own events, or — through the
+    kernel's true-descendant guard — the events of one of its own descendants. Parents,
+    siblings, unrelated roots, and foreign workspaces are refused by the kernel, not by this
+    tool. Per event only ``sequence``, ``event_type``, and ``source`` are returned; raw tool
     output payloads are not included.
     """
-
     session_id = path[len(VOIDCODE_TRANSCRIPT_PREFIX) :].strip()
     if not session_id:
-        raise ValueError("voidcode://transcript/<session_id> requires a session id")
+        return _uri_failure(tool_name_label, "voidcode://transcript/<session_id> requires a session id")
     if "/" in session_id:
-        raise ValueError("session_id must not contain '/'")
+        return _uri_failure(tool_name_label, "session_id must not contain '/'")
     caller_session_id = context.require_session_id()
-    facade = getattr(context, "transcript", None)
-    if facade is None:
-        raise ValueError("read cannot resolve voidcode://transcript URLs without a runtime transcript reader")
-    result = facade.read_transcript(caller_session_id=caller_session_id, session_id=session_id, limit=limit)
-    if _is_kernel_marker(result):
-        raise ValueError(f"transcript not accessible for session: {session_id}")
-    if not isinstance(result, _TranscriptPage):
-        raise ValueError(f"transcript read returned no events for session: {session_id}")
-    truncated = result.truncated
+    limit = max(1, min(limit, MAX_EVENT_PAGE))
+    try:
+        if session_id == caller_session_id:
+            views = services.read_events(after_sequence=0, limit=limit, include_payload=False)
+        else:
+            views = services.read_child_events(session_id, after_sequence=0, limit=limit, include_payload=False)
+    except Exception as exc:
+        return _uri_failure(tool_name_label, f"transcript not accessible for session {session_id}: {exc}")
+    entries = tuple(_TranscriptEntry(sequence=view.sequence, event_type=view.event_type, source=view.source) for view in views)
+    result = _TranscriptPage(session_id=session_id, entries=entries, truncated=len(entries) >= limit)
     body = result.as_payload()
     body.update({"path": path, "type": "transcript"})
     return _ReadOutcome(
         output=_text_output(
             f"Read {len(result.entries)} transcript event(s) from {path}"
-            + ("; transcript is truncated; raise the limit to see more." if truncated else "."),
-            truncated=truncated,
-            partial=truncated,
+            + ("; transcript is truncated; raise the limit to see more." if result.truncated else "."),
+            truncated=result.truncated,
+            partial=result.truncated,
         ),
         body=OpaqueToolBody(body),
     )
@@ -604,6 +641,8 @@ class ReadArgs(BaseModel):
 
 DEFAULT_READ_LIMIT = 2000
 DEFAULT_TRANSCRIPT_LIMIT = 20
+#: One transcript read never asks the kernel for more events than one event page carries.
+MAX_EVENT_PAGE = 200
 MAX_LINE_LENGTH = 2000
 MAX_BYTES = 50 * 1024
 MAX_ATTACHMENT_BYTES = 50 * 1024
@@ -744,6 +783,15 @@ class _ReadOutcome:
     coverage: tuple[ReadObservation, ...] = ()
 
 
+def _uri_failure(tool_name: str, message: str) -> ToolFailure:
+    """A model-visible URI failure: the host redacts raised errors, so URI branches return text.
+
+    Only the `voidcode://` derived views use this; workspace file errors keep the file's existing
+    raise-and-redact behavior, which is out of scope.
+    """
+    return ToolFailure(tool_name=tool_name, error=message, output=TextOutput(text=message))
+
+
 def _text_output(
     content: str,
     *,
@@ -837,9 +885,8 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
             raise ValueError(f"read attachment exceeds the maximum supported size ({MAX_ATTACHMENT_BYTES} bytes): {relative_path}")
         raw = candidate.read_bytes()
         content_hash = hashlib.sha256(raw).hexdigest()
-        # ponytail: kernel artifact service (seam S5): without it the attachment
-        # stays inline (bounded by MAX_INLINE_ATTACHMENT_BYTES) and the
-        # reference is omitted.
+        # When the spill method is absent the attachment stays inline (bounded
+        # by MAX_INLINE_ATTACHMENT_BYTES) and the reference is omitted.
         spilled = _spill_artifact(services, kind="content", content=raw, mime=mime, source=relative_path)
         artifact = None if spilled is None else spilled[0]
         artifact_id = None if spilled is None else spilled[1]
@@ -881,9 +928,8 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
         raw = candidate.read_bytes()
         effective_mime = mime or "application/octet-stream"
         content_hash = hashlib.sha256(raw).hexdigest()
-        # ponytail: kernel artifact service (seam S5): without it the bytes stay
-        # out of the response (they were never inlined) and the reference is
-        # omitted.
+        # When the spill method is absent the bytes stay out of the response
+        # (they were never inlined) and the reference is omitted.
         spilled = _spill_artifact(services, kind="content", content=raw, mime=effective_mime, source=relative_path)
         artifact = None if spilled is None else spilled[0]
         artifact_id = None if spilled is None else spilled[1]
@@ -1459,9 +1505,8 @@ def _render_format_view(
     artifacts: list[Mapping[str, object]] = []
     text_reference: str | None = None
     if isinstance(full_text, str) and len(full_text.encode("utf-8")) > MAX_BYTES:
-        # ponytail: kernel artifact service (seam S5): without it the extracted
-        # text beyond this view is dropped; the view's own truncation flags stay
-        # the honest signal.
+        # When the spill method is absent the extracted text beyond this view is
+        # dropped; the view's own truncation flags stay the honest signal.
         spilled = _spill_artifact(services, kind="pdf_text", content=full_text, mime="text/plain; charset=utf-8", source=label)
         if spilled is not None:
             text_reference = spilled[2]
@@ -1478,8 +1523,8 @@ def _render_format_view(
         image_bytes = image.pop("data", None)
         if not isinstance(image_bytes, bytes):
             raise ValueError("notebook image data is unavailable")
-        # ponytail: kernel artifact service (seam S5): without it the image
-        # record carries no reference and the bytes were never inlined.
+        # When the spill method is absent the image record carries no reference
+        # and the bytes were never inlined.
         spilled = _spill_artifact(
             services,
             kind="notebook_image",
@@ -1495,8 +1540,7 @@ def _render_format_view(
     if view == "pdf" or payload.get("truncated_text") is True or payload.get("raw_reference_required") is True:
         if not isinstance(source_bytes, bytes):
             raise ValueError(f"{view} source snapshot is unavailable")
-        # ponytail: kernel artifact service (seam S5): without it the source
-        # snapshot reference is omitted.
+        # When the spill method is absent the source snapshot reference is omitted.
         spilled = _spill_artifact(
             services,
             kind="pdf_source" if view == "pdf" else "notebook_source",
@@ -1515,8 +1559,8 @@ def _render_format_view(
     output_reference: str | None = None
     output_truncated = len(raw_content.encode("utf-8")) > MAX_BYTES
     if output_truncated:
-        # ponytail: kernel artifact service (seam S5): without it the cut view
-        # body is unreachable, so the truncation flags stand alone.
+        # When the spill method is absent the cut view body is unreachable, so
+        # the truncation flags stand alone.
         spilled = _spill_artifact(services, kind=f"{view}_view", content=raw_content, mime="application/json", source=label)
         if spilled is not None:
             output_reference = spilled[2]
@@ -1586,16 +1630,19 @@ class ReadTool:
             raise ValueError("byte_limit requires byte_offset")
 
         if args.path.startswith(RULE_URI_PREFIX):
-            reader = getattr(context, "read_rule", None)
-            if reader is None:
-                raise RuntimeError("read requires an explicit rule reader for voidcode://rule URLs")
-            page: _RulePage = reader(
-                args.path,
-                workspace=context.require_workspace(),
-                offset=args.offset or 1,
-                limit=args.limit or DEFAULT_READ_LIMIT,
-            )
-            next_offset = _page_position_offset(page.page)
+            try:
+                answered = services.query(
+                    RULE_PAGE_QUERY,
+                    {"uri": args.path, "offset": args.offset or 1, "limit": args.limit or DEFAULT_READ_LIMIT},
+                )
+            except QueryUnavailable:
+                return _uri_failure(self.definition.name, f"rule catalog is unavailable in this host generation: {args.path}")
+            if answered is None:
+                return _uri_failure(self.definition.name, f"unknown rule in this workspace: {args.path}")
+            page = _RulePage.from_query(answered)
+            if page is None:
+                return _uri_failure(self.definition.name, f"unreadable rule page for {args.path}: provider shape violated")
+            next_offset = page.next_offset
             truncated = page.byte_truncated or next_offset is not None
             body = page.as_payload()
             body.update(
@@ -1622,7 +1669,8 @@ class ReadTool:
             )
 
         if args.path.startswith(VOIDCODE_TOOL_DOC_PREFIX):
-            return _read_success(_render_tool_documentation(args.path, context=context))
+            outcome = _render_tool_documentation(args.path, context=context, services=services, tool_name_label=self.definition.name)
+            return outcome if isinstance(outcome, ToolFailure) else _read_success(outcome)
         if args.path.startswith(VOIDCODE_ARTIFACT_PREFIX):
             if args.view == "pdf":
                 if (
@@ -1664,13 +1712,14 @@ class ReadTool:
                 )
             )
         if args.path.startswith(VOIDCODE_TRANSCRIPT_PREFIX):
-            return _read_success(
-                _render_transcript(
-                    args.path,
-                    context=context,
-                    limit=args.limit or DEFAULT_TRANSCRIPT_LIMIT,
-                )
+            outcome = _render_transcript(
+                args.path,
+                context=context,
+                services=services,
+                limit=args.limit or DEFAULT_TRANSCRIPT_LIMIT,
+                tool_name_label=self.definition.name,
             )
+            return outcome if isinstance(outcome, ToolFailure) else _read_success(outcome)
 
         workspace = context.require_workspace()
         workspace_root = workspace.resolve()

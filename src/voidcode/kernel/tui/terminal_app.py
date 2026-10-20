@@ -10,7 +10,7 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
-from .client import KernelHttpClient
+from .client import KernelClientError, KernelHttpClient
 from .composer import Composer, ComposerAction
 from .keys import Key, KeyDecoder
 from .region import TuiFrame
@@ -31,7 +31,7 @@ _WRAP_WIDTH = 100
 
 #: A lone ESC byte is ambiguous (it may start a sequence) until no further input
 #: follows: the decoder buffers it, and the loop resolves it after this window.
-#: The legacy app resolves it after the same 50 ms.
+#: Matches the 50 ms window the pre-cutover client used.
 _ESCAPE_FLUSH_SECONDS = 0.05
 
 
@@ -81,12 +81,12 @@ def _notice_row(text: object, tone: str) -> str:
 
 
 def _fit(text: str, width: int) -> str:
-    """Trim a row to the current terminal width without cutting ANSI in half."""
+    """Trim a row to the current terminal width by characters once its visible width exceeds it."""
     return text if visible_width(text) <= width else text[:width]
 
 
 class KernelTuiApp:
-    """Full-featured HTTP-backed TUI running on pure Terminal and LiveRegion."""
+    """HTTP-backed inline TUI using Terminal and TuiFrame."""
 
     def __init__(
         self,
@@ -108,6 +108,22 @@ class KernelTuiApp:
         self.event_queue: queue.Queue[dict[str, Any]] = queue.Queue()
         self._session_cursors: dict[str, int] = {}
         self._generation = 0
+        #: Last known server identity/liveness from /api/health. The fence bit
+        #: pauses dispatch; the identity triple detects a replaced server.
+        self.upgrade: dict[str, Any] | None = None
+        #: False until the current generation's stream delivers its first frame;
+        #: the stream worker rearms it on every reconnect so each established
+        #: stream reconciles exactly once (announced restart or silent drop).
+        self._stream_ready = False
+        #: Monotonic serial: only the newest reconcile round may render, so two
+        #: overlapping health reads cannot reorder (generation alone is not enough).
+        self._reconcile_serial = 0
+        #: Highest reconcile serial already applied; older replies are dropped.
+        self._reconcile_applied = 0
+        #: Request ids with a worker in flight (approval/confirmation/invoke):
+        #: a held Enter/click while one is outstanding is ignored, never a
+        #: second thread. Cleared on response, decided fact, or error.
+        self._in_flight: set[str] = set()
         self.active_overlay: InteractiveChoices | InteractiveConfirmation | InteractiveForm | None = None
         # Native tool approval (core permission gate) is not a plugin Action
         # confirmation: it resumes the parked run with its own request id.
@@ -182,10 +198,19 @@ class KernelTuiApp:
     def _start_sse_stream(self) -> None:
         generation = self._generation
         session_id = self.session_id
-        after_seq = self._session_cursors.get(session_id, 0)
 
         def stream_worker() -> None:
+            first_connection = True
             while not self._stop_event.is_set() and generation == self._generation:
+                # The applied cursor is owned by event application
+                # (_handle_single_event): reconnect from the rows actually
+                # committed, never from a stale capture or a restart watermark.
+                after_seq = self._session_cursors.get(session_id, 0)
+                if not first_connection:
+                    # Rearm BEFORE opening the stream: the first frame of the
+                    # new connection reconciles, announced or silent.
+                    self._stream_ready = False
+                first_connection = False
                 try:
                     for frame in self.client.events_stream(session_id, after_sequence=after_seq, follow=True):
                         if self._stop_event.is_set() or generation != self._generation:
@@ -194,6 +219,12 @@ class KernelTuiApp:
                         tagged["generation"] = generation
                         tagged["session_id"] = session_id
                         self.event_queue.put(tagged)
+                        if frame.get("kind") == "server_restart":
+                            # The server replaced itself: break the inner
+                            # iterator so this loop reconnects from the live
+                            # applied cursor (duplicate fetch is fine; a missed
+                            # fact is not).
+                            break
                 except Exception as exc:
                     if self._stop_event.is_set() or generation != self._generation:
                         return
@@ -227,6 +258,13 @@ class KernelTuiApp:
                 continue  # a result for another session can never commit rows here
 
             kind = frame.get("kind")
+            if not self._stream_ready and ("events" in frame or kind in ("event", "server_restart", "error")):
+                # A frame on a not-ready stream means a (re)connection was just
+                # established: run the one reconciliation path. The worker
+                # rearms the flag on every reconnect, so announced restarts and
+                # silent drops share this code path — no per-frame re-trigger.
+                self._stream_ready = True
+                self._reconcile_connection_async()
             if "events" in frame and isinstance(frame["events"], list):
                 for ev in frame["events"]:
                     self._handle_single_event(ev, rows_to_commit)
@@ -239,6 +277,22 @@ class KernelTuiApp:
                 if isinstance(approval, dict):
                     self.pending_approval = approval
                     self.status_line = f"Tool approval required: {approval.get('tool_name', 'tool')}"
+            elif kind == "approval_accepted":
+                # The server accepted this exact request: close the gate it
+                # matches, or nothing when a newer request already replaced it.
+                accepted = str(frame.get("request_id", ""))
+                self._in_flight.discard(accepted)
+                current = self.pending_approval or {}
+                if accepted and str(current.get("request_id", "")) == accepted:
+                    self.pending_approval = None
+                    self._present_queued_confirmation()
+                decision = str(frame.get("decision", ""))
+                status = str(frame.get("status", ""))
+                self.status_line = f"Approval {decision}: {status}"
+            elif kind == "decision_done":
+                # A failed submission releases its in-flight marker so the user
+                # can retry; the gate/overlay itself stays mounted.
+                self._in_flight.discard(str(frame.get("request_id", "")))
             elif kind == "run_status":
                 status = str(frame.get("status", ""))
                 if status == "waiting":
@@ -257,6 +311,43 @@ class KernelTuiApp:
                         # Bound to the revision the client invoked under, never to
                         # whatever happens to be current when the user decides.
                         self._show_or_queue_confirmation(InteractiveConfirmation(ui_data, revision_id=str(frame.get("revision_id", ""))))
+            elif kind == "confirmation_accepted":
+                # The server accepted this exact request: close the overlay it
+                # matches, or nothing when a newer request already replaced it.
+                # A decided id never resurrects: the durable decided fact (or
+                # resolved_confirmations) already closed it permanently.
+                accepted = str(frame.get("request_id", ""))
+                self._in_flight.discard(accepted)
+                overlay = self.active_overlay
+                if (
+                    accepted
+                    and accepted not in self.resolved_confirmations
+                    and isinstance(overlay, InteractiveConfirmation)
+                    and overlay.request_id == accepted
+                ):
+                    self.active_overlay = None
+                    self._present_queued_confirmation()
+                decision = str(frame.get("decision", ""))
+                status = str(frame.get("status", ""))
+                self.status_line = f"Confirmation {decision}: {status}"
+            elif kind == "invoke_accepted":
+                # The server accepted the submitting overlay's action: close it,
+                # but only when it is still the overlay that submitted (same
+                # action + same displayed revision). A 503 never emits this, so
+                # the draft survives a fenced refusal untouched.
+                submit_key = str(frame.get("request_id", ""))
+                self._in_flight.discard(submit_key)
+                overlay = self.active_overlay
+                action = str(frame.get("action", ""))
+                revision = str(frame.get("revision_id", ""))
+                if (
+                    submit_key
+                    and isinstance(overlay, (InteractiveChoices, InteractiveForm))
+                    and submit_key == f"invoke:{action}@{revision}"
+                    and overlay.revision_id == revision
+                ):
+                    self.active_overlay = None
+                    self._present_queued_confirmation()
             elif kind == "form_load":
                 form = frame.get("form")
                 if isinstance(form, InteractiveForm) and form is self.active_overlay:
@@ -266,6 +357,56 @@ class KernelTuiApp:
                     error = frame.get("error")
                     if error:
                         form.load_error = str(error)
+            elif kind == "health":
+                snapshot = frame.get("health")
+                serial = frame.get("reconcile_serial")
+                # Latest serial wins: an older round is dropped even when a
+                # newer round has not applied yet (>= would let the older win
+                # the race). Health and reconciled are two envelopes of ONE
+                # round sharing its serial, so == matches both.
+                if isinstance(snapshot, dict) and isinstance(serial, int) and serial == self._reconcile_serial and serial > self._reconcile_applied:
+                    self._reconcile_applied = serial
+                    self.upgrade = {
+                        "fenced": snapshot.get("fenced") is True,
+                        "stage": str(snapshot.get("stage") or ""),
+                        "kernel_version": str(snapshot.get("kernel_version") or ""),
+                        "image_digest": str(snapshot.get("image_digest") or ""),
+                        "generation": snapshot.get("generation", -1),
+                        "active_upgrade": snapshot.get("active_upgrade"),
+                    }
+                    if self.upgrade["fenced"]:
+                        self.status_line = "Kernel upgrade in progress: dispatch paused"
+                    else:
+                        self.status_line = f"Attached session {self.session_id}"
+            elif kind == "reconciled":
+                serial = frame.get("reconcile_serial")
+                if isinstance(serial, int) and serial == self._reconcile_serial and serial >= self._reconcile_applied:
+                    # Catalog/views/status from the same round as the health
+                    # read above: applied together or not at all. Failures are
+                    # surfaced, never swallowed into None: unknown stays
+                    # visible while last-known state is preserved.
+                    self._reconcile_applied = serial
+                    catalog = frame.get("catalog")
+                    views = frame.get("views")
+                    failures = frame.get("failures")
+                    if isinstance(catalog, tuple) and len(catalog) == 2:
+                        self.catalog_revision, self.catalog_cache = str(catalog[0]), list(catalog[1])
+                    if isinstance(views, tuple) and len(views) == 2:
+                        self._render_reconciled_views(str(views[0]), list(views[1]))
+                    status = frame.get("session_status")
+                    if isinstance(status, str) and status:
+                        self.status_line = f"Run {status}" if status in ("running", "waiting") else self.status_line
+                    if isinstance(failures, list) and failures:
+                        rows_to_commit.append(f"\x1b[33m[Reconnect refresh incomplete: {', '.join(str(f) for f in failures)}]\x1b[0m")
+            elif kind == "server_restart":
+                # Watermark only (contract §8.2/§6): the worker already broke
+                # its iterator and is reconnecting from our applied cursor.
+                # Never set _session_cursors from the frame: queued but
+                # uncommitted events would be dropped. Reconciliation runs on
+                # the reconnected stream (first-frame trigger above), so an
+                # announced restart and a silent drop share one path — and no
+                # blocking request ever runs on this UI thread.
+                self.status_line = "Kernel restarting — reconnecting..."
             elif kind == "error":
                 rows_to_commit.append(f"\x1b[31m[Kernel stream error]\x1b[0m {_safe(frame.get('error'))}")
 
@@ -334,7 +475,7 @@ class KernelTuiApp:
                     rows.append(f"\x1b[33m⏳ Command /{name} awaits confirmation\x1b[0m")
                 else:
                     rows.append(f"\x1b[32m✔ Command /{name}:\x1b[0m {_safe(detail)}")
-        elif etype == "kernel.activation_committed":
+        elif etype in ("kernel.activation_committed", "kernel.revision_adopted"):
             # The displayed generation changed: the catalog and the views are
             # refetched together, and anything captured under the previous
             # revision is dropped — never relabelled, never retried.
@@ -386,10 +527,24 @@ class KernelTuiApp:
         elif etype == "kernel.approval_decided":
             decision = _safe(payload.get("decision"))
             rows.append(f"\x1b[33m[Approval {decision}]\x1b[0m")
+            # Durable reduction: the decided request closes whether the gate is
+            # local-pending or was decided by a remote client — but only the
+            # MATCHING id, so a newer parked request is never dropped.
+            decided_approval = _safe(payload.get("request_id"))
+            current = self.pending_approval or {}
+            if decided_approval and str(current.get("request_id", "")) == decided_approval:
+                self.pending_approval = None
+                self._present_queued_confirmation()
         elif etype == "kernel.run_interrupted":
             rows.append(f"\x1b[33m[Run interrupted: {_safe(payload.get('stop_cause'))}]\x1b[0m")
+            # An authentic terminal fact means nothing is parked any more; a
+            # stale gate must never outlive the run that asked for it.
+            self.pending_approval = None
+            self._present_queued_confirmation()
         elif etype == "kernel.run_failed":
             rows.append("\x1b[31m[Run failed]\x1b[0m")
+            self.pending_approval = None
+            self._present_queued_confirmation()
         elif etype == "kernel.observer_error":
             rows.append(f"\x1b[31m[Plugin observer error]\x1b[0m {_safe(payload.get('error'))}")
 
@@ -431,7 +586,7 @@ class KernelTuiApp:
         if chunk:
             # A lone ESC is ambiguous until no further bytes follow: the standard
             # disambiguation window resolves it as Esc (never as part of the next
-            # byte). The legacy app uses the same 50 ms.
+            # byte). The pre-cutover client used the same 50 ms.
             self._escape_flush_at = now + _ESCAPE_FLUSH_SECONDS
             keys = list(self.key_decoder.feed(chunk))
         elif self._escape_flush_at and now >= self._escape_flush_at:
@@ -497,26 +652,45 @@ class KernelTuiApp:
         if not approval:
             return
         request_id = str(approval.get("request_id", ""))
-        self.pending_approval = None
-        self._present_queued_confirmation()
         if not request_id:
             self.status_line = "No pending approval to resolve"
             return
+        if request_id in self._in_flight:
+            return  # a held key while the decision is outstanding: not a second thread
+        # The gate stays mounted until the server accepts or a durable decided
+        # fact closes it: clearing early would strand the approval, because
+        # applied-cursor dedup never replays the old request fact.
+        self._in_flight.add(request_id)
         session_id, generation = self.session_id, self._generation
         self.status_line = f"Submitting approval {decision}..."
 
         def worker() -> None:
             try:
                 res = self.client.resume(session_id, approval_request_id=request_id, decision=decision)
-                status = str(res.get("status", ""))
-                self._queue_notice(
-                    f"Approval {decision}: {status}",
-                    tone="ok" if status != "error" else "error",
-                    session_id=session_id,
-                    generation=generation,
-                )
+            except KernelClientError as exc:
+                if exc.code == "upgrade_pending":
+                    # Still armed with the same request id: no auto-resend, the
+                    # user re-decides after the restart.
+                    self._upgrade_pending_notice(f"approval {decision}", session_id=session_id, generation=generation)
+                else:
+                    self._queue_notice(f"Approval {decision} failed: {exc}", tone="error", session_id=session_id, generation=generation)
+                self.event_queue.put({"kind": "decision_done", "request_id": request_id, "session_id": session_id, "generation": generation})
+                return
             except Exception as exc:
                 self._queue_notice(f"Approval {decision} failed: {exc}", tone="error", session_id=session_id, generation=generation)
+                self.event_queue.put({"kind": "decision_done", "request_id": request_id, "session_id": session_id, "generation": generation})
+                return
+            status = str(res.get("status", ""))
+            self.event_queue.put(
+                {
+                    "kind": "approval_accepted",
+                    "request_id": request_id,
+                    "decision": decision,
+                    "status": status,
+                    "session_id": session_id,
+                    "generation": generation,
+                }
+            )
 
         threading.Thread(target=worker, daemon=True, name="KernelApproval").start()
 
@@ -538,22 +712,30 @@ class KernelTuiApp:
             action = str(outcome.get("action", ""))
             arguments = outcome.get("arguments", {})
             revision = self.active_overlay.revision_id
-            self.active_overlay = None
+            # The overlay (with its typed inputs) stays mounted until the
+            # server accepts: a late 503 must not lose the user's draft. The
+            # in-flight marker stops a held Enter from spawning a second call.
+            submit_key = f"invoke:{action}@{revision}"
+            if submit_key in self._in_flight:
+                return
+            self._in_flight.add(submit_key)
             self.status_line = f"Dispatching /{action}..."
-            self._present_queued_confirmation()
-            self._invoke_async(action, arguments if isinstance(arguments, dict) else {}, revision)
+            self._invoke_async(action, arguments if isinstance(arguments, dict) else {}, revision, submit_key=submit_key)
 
     def _resolve_confirmation(self, decision: str) -> None:
         """Submit the stored request id's decision; the overlay never lies about it."""
         request_id = getattr(self.active_overlay, "request_id", "")
-        # The revision of the envelope that displayed this confirmation, captured
-        # before the overlay is closed.
+        # The revision of the envelope that displayed this confirmation.
         revision = getattr(self.active_overlay, "revision_id", "")
-        self.active_overlay = None
-        self._present_queued_confirmation()
         if not request_id:
             self.status_line = "No pending confirmation to resolve"
             return
+        if request_id in self._in_flight:
+            return  # a held key while the decision is outstanding: not a second thread
+        # The overlay stays mounted until the server accepts or the durable
+        # decided fact closes it: closing early would strand the request,
+        # because applied-cursor dedup never replays the old requested fact.
+        self._in_flight.add(request_id)
         session_id, generation = self.session_id, self._generation
         self.status_line = f"Submitting confirmation {decision}..."
 
@@ -565,19 +747,34 @@ class KernelTuiApp:
                     decision,
                     expected_revision=revision,
                 )
-                status = str(res.get("status", ""))
-                self._queue_notice(
-                    f"Confirmation {decision}: {status}",
-                    tone="ok" if status != "error" else "error",
-                    session_id=session_id,
-                    generation=generation,
-                )
+            except KernelClientError as exc:
+                if exc.code == "upgrade_pending":
+                    # Still armed with the same request id and revision: no
+                    # auto-resend, the user re-decides after the restart.
+                    self._upgrade_pending_notice(f"confirmation {decision}", session_id=session_id, generation=generation)
+                else:
+                    self._queue_notice(f"Confirmation {decision} failed: {exc}", tone="error", session_id=session_id, generation=generation)
+                self.event_queue.put({"kind": "decision_done", "request_id": request_id, "session_id": session_id, "generation": generation})
+                return
             except Exception as exc:
                 self._queue_notice(f"Confirmation {decision} failed: {exc}", tone="error", session_id=session_id, generation=generation)
+                self.event_queue.put({"kind": "decision_done", "request_id": request_id, "session_id": session_id, "generation": generation})
+                return
+            status = str(res.get("status", ""))
+            self.event_queue.put(
+                {
+                    "kind": "confirmation_accepted",
+                    "request_id": request_id,
+                    "decision": decision,
+                    "status": status,
+                    "session_id": session_id,
+                    "generation": generation,
+                }
+            )
 
         threading.Thread(target=worker, daemon=True, name="KernelConfirm").start()
 
-    def _invoke_async(self, name: str, arguments: dict[str, Any], revision: str) -> None:
+    def _invoke_async(self, name: str, arguments: dict[str, Any], revision: str, *, submit_key: str | None = None) -> None:
         "Run one command off the UI thread under the revision the user actually saw."
         session_id, generation = self.session_id, self._generation
 
@@ -589,28 +786,52 @@ class KernelTuiApp:
                     arguments,
                     expected_revision=revision,
                 )
-                status = str(res.get("status", ""))
-                if status == "pending_confirmation":
-                    confirmation = res.get("confirmation")
-                    if isinstance(confirmation, dict):
-                        self.event_queue.put(
-                            {
-                                "kind": "confirmation",
-                                "confirmation": confirmation,
-                                "revision_id": revision,
-                                "session_id": session_id,
-                                "generation": generation,
-                            }
-                        )
-                elif status == "error":
-                    self._queue_notice(
-                        f"/{name} failed: {res.get('error') or 'error'}",
-                        tone="error",
-                        session_id=session_id,
-                        generation=generation,
-                    )
+            except KernelClientError as exc:
+                if exc.code == "upgrade_pending":
+                    self._upgrade_pending_notice(f"/{name}", session_id=session_id, generation=generation)
+                else:
+                    self._queue_notice(f"/{name} failed: {exc}", tone="error", session_id=session_id, generation=generation)
+                if submit_key is not None:
+                    self.event_queue.put({"kind": "decision_done", "request_id": submit_key, "session_id": session_id, "generation": generation})
+                return
             except Exception as exc:
                 self._queue_notice(f"/{name} failed: {exc}", tone="error", session_id=session_id, generation=generation)
+                if submit_key is not None:
+                    self.event_queue.put({"kind": "decision_done", "request_id": submit_key, "session_id": session_id, "generation": generation})
+                return
+            status = str(res.get("status", ""))
+            if status == "pending_confirmation":
+                confirmation = res.get("confirmation")
+                if isinstance(confirmation, dict):
+                    self.event_queue.put(
+                        {
+                            "kind": "confirmation",
+                            "confirmation": confirmation,
+                            "revision_id": revision,
+                            "session_id": session_id,
+                            "generation": generation,
+                        }
+                    )
+            elif status == "error":
+                self._queue_notice(
+                    f"/{name} failed: {res.get('error') or 'error'}",
+                    tone="error",
+                    session_id=session_id,
+                    generation=generation,
+                )
+            # Accepted (any non-exception outcome): the submitting overlay may
+            # close now, but only if it is still the one that submitted.
+            if submit_key is not None:
+                self.event_queue.put(
+                    {
+                        "kind": "invoke_accepted",
+                        "request_id": submit_key,
+                        "action": name,
+                        "revision_id": revision,
+                        "session_id": session_id,
+                        "generation": generation,
+                    }
+                )
 
         threading.Thread(target=worker, daemon=True, name="KernelInvoke").start()
 
@@ -633,6 +854,99 @@ class KernelTuiApp:
             }
         )
 
+    def _upgrade_pending_notice(self, action: str, *, session_id: str, generation: int) -> None:
+        """Name a fenced refusal and refresh identity so the status line shows the fence."""
+        self._refresh_health_async(session_id=session_id, generation=generation)
+        self._queue_notice(
+            f"Kernel is draining for an upgrade; {action} was not dispatched",
+            tone="warning",
+            session_id=session_id,
+            generation=generation,
+        )
+
+    def _refresh_health_async(self, *, session_id: str | None = None, generation: int | None = None) -> None:
+        """Refresh server identity/liveness off the UI thread; stale replies are dropped."""
+        self._reconcile_serial += 1
+        serial = self._reconcile_serial
+        bound_session = self.session_id if session_id is None else session_id
+        bound_generation = self._generation if generation is None else generation
+
+        def worker() -> None:
+            try:
+                snapshot = self.client.health()
+            except Exception:
+                return  # unreachable during a handoff gap is expected; keep last known
+            self.event_queue.put(
+                {
+                    "kind": "health",
+                    "health": snapshot,
+                    "reconcile_serial": serial,
+                    "session_id": bound_session,
+                    "generation": bound_generation,
+                }
+            )
+
+        threading.Thread(target=worker, daemon=True, name="KernelHealth").start()
+
+    def _reconcile_connection_async(self) -> None:
+        """ONE connection-established reconciliation path, entirely off the UI thread.
+
+        Runs on the first frame of every (re)connected stream — announced restart
+        or silent drop. Fetches health + catalog + views + durable session status
+        in one worker round, then hands the UI thread a single serial-tagged
+        envelope. Only the newest round renders (generation alone cannot order
+        overlapping replies). Never resends the prompt, never touches the
+        applied cursor.
+        """
+        self._reconcile_serial += 1
+        serial = self._reconcile_serial
+        session_id, generation = self.session_id, self._generation
+
+        def worker() -> None:
+            try:
+                health = self.client.health()
+            except Exception:
+                return  # handoff gap: keep last known identity, stay silent
+            failures: list[str] = []
+            try:
+                catalog = self.client.command_catalog()
+            except Exception as exc:
+                catalog = None
+                failures.append(f"catalog ({exc})")
+            try:
+                views = self.client.views(session_id)
+            except Exception as exc:
+                views = None
+                failures.append(f"views ({exc})")
+            try:
+                session_status = str(self.client.get_session(session_id).get("status", ""))
+            except Exception as exc:
+                session_status = ""
+                failures.append(f"session status ({exc})")
+            self.event_queue.put(
+                {
+                    "kind": "health",
+                    "health": health,
+                    "reconcile_serial": serial,
+                    "session_id": session_id,
+                    "generation": generation,
+                }
+            )
+            self.event_queue.put(
+                {
+                    "kind": "reconciled",
+                    "catalog": catalog,
+                    "views": views,
+                    "session_status": session_status,
+                    "failures": failures,
+                    "reconcile_serial": serial,
+                    "session_id": session_id,
+                    "generation": generation,
+                }
+            )
+
+        threading.Thread(target=worker, daemon=True, name="KernelReconcile").start()
+
     def _handle_composer_key(self, key: Any) -> None:
         outcome = self.composer.handle_key(key)
         if outcome.action == ComposerAction.SUBMIT and outcome.text is not None:
@@ -647,6 +961,15 @@ class KernelTuiApp:
     def _dispatch_user_prompt(self, prompt: str) -> None:
         # No optimistic commit: the durable kernel.user_message event is the one
         # and only source of the prompt row on screen.
+        if isinstance(self.upgrade, dict) and self.upgrade.get("fenced") is True:
+            # Never queue a prompt behind a fence: the user re-sends after
+            # reconnect. Composer._submit already cleared the draft, so restore
+            # the exact text — but never overwrite a newer draft the user typed
+            # while this key was being handled.
+            if not self.composer.value.strip():
+                self.composer.set_text(prompt)
+            self.status_line = "Kernel is draining for an upgrade; retry after it restarts"
+            return
         self.status_line = "Dispatching agent run..."
         session_id, generation = self.session_id, self._generation
 
@@ -671,6 +994,19 @@ class KernelTuiApp:
                             "session_id": session_id,
                             "generation": generation,
                             "session": record,
+                        }
+                    )
+            except KernelClientError as exc:
+                if exc.code == "upgrade_pending":
+                    self._upgrade_pending_notice("the prompt", session_id=session_id, generation=generation)
+                else:
+                    self.event_queue.put(
+                        {
+                            "kind": "run_status",
+                            "status": "failed",
+                            "error": str(exc),
+                            "session_id": session_id,
+                            "generation": generation,
                         }
                     )
             except Exception as exc:
@@ -769,6 +1105,8 @@ class KernelTuiApp:
         self.active_overlay = None
         self.queued_confirmations.clear()
         self.resolved_confirmations.clear()
+        # A new stream is about to start: its first frame reconciles.
+        self._stream_ready = False
         self.status_line = f"Session {session_id}"
         self._start_sse_stream()
 
@@ -820,36 +1158,41 @@ class KernelTuiApp:
     def _show_views(self, name_filter: str = "") -> None:
         try:
             views_revision, v_list = self.client.views(self.session_id)
-            if name_filter:
-                wanted = name_filter.strip().lower()
-                v_list = [v for v in v_list if wanted in str(v.get("name", "")).lower() or wanted in str(v.get("title", "")).lower()]
-            if not v_list:
-                self.terminal.commit_rows(["\x1b[33mNo plugin views available for this session.\x1b[0m"])
-                return
-            for v in v_list:
-                vtype = v.get("view_type")
-                if vtype in ("choices", "form", "confirmation"):
-                    # The overlay carries the revision of this very envelope, so
-                    # the action it dispatches can never be relabelled later.
-                    if vtype == "choices":
-                        self.active_overlay = InteractiveChoices(v.get("data", {}), revision_id=views_revision)
-                    elif vtype == "form":
-                        form_data = v.get("data", {})
-                        form = InteractiveForm(
-                            form_data,
-                            action_schema=self._action_schema(str(form_data.get("action", ""))),
-                            revision_id=views_revision,
-                        )
-                        self._maybe_load_form_data(form)
-                        self.active_overlay = form
-                    elif vtype == "confirmation":
-                        self.active_overlay = InteractiveConfirmation(v.get("data", {}), revision_id=views_revision)
-                    return
-                # Non-interactive view: render rows and commit
-                rows = render_plugin_view(v, self.terminal.width)
-                self.terminal.commit_rows(rows)
         except Exception as exc:
             self.terminal.commit_rows([f"\x1b[31mFailed to read views: {exc}\x1b[0m"])
+            return
+        self._render_reconciled_views(views_revision, v_list, name_filter=name_filter)
+
+    def _render_reconciled_views(self, views_revision: str, v_list: list[dict[str, Any]], *, name_filter: str = "") -> None:
+        """Render an already-fetched views envelope; never performs I/O itself."""
+        if name_filter:
+            wanted = name_filter.strip().lower()
+            v_list = [v for v in v_list if wanted in str(v.get("name", "")).lower() or wanted in str(v.get("title", "")).lower()]
+        if not v_list:
+            self.terminal.commit_rows(["\x1b[33mNo plugin views available for this session.\x1b[0m"])
+            return
+        for v in v_list:
+            vtype = v.get("view_type")
+            if vtype in ("choices", "form", "confirmation"):
+                # The overlay carries the revision of this very envelope, so
+                # the action it dispatches can never be relabelled later.
+                if vtype == "choices":
+                    self.active_overlay = InteractiveChoices(v.get("data", {}), revision_id=views_revision)
+                elif vtype == "form":
+                    form_data = v.get("data", {})
+                    form = InteractiveForm(
+                        form_data,
+                        action_schema=self._action_schema(str(form_data.get("action", ""))),
+                        revision_id=views_revision,
+                    )
+                    self._maybe_load_form_data(form)
+                    self.active_overlay = form
+                elif vtype == "confirmation":
+                    self.active_overlay = InteractiveConfirmation(v.get("data", {}), revision_id=views_revision)
+                return
+            # Non-interactive view: render rows and commit
+            rows = render_plugin_view(v, self.terminal.width)
+            self.terminal.commit_rows(rows)
 
     def _maybe_load_form_data(self, form: InteractiveForm) -> None:
         """Run the declared load_action off the UI thread, exactly when it is read-only."""

@@ -1,10 +1,58 @@
 # Changelog
 
-Notable changes to the VoidCode runtime. Entries are grouped by the milestone in
-`docs/runtime-kernel-and-self-bootstrap-plan.md` and only record behavior that is
-covered by executable tests.
+Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
+
+### P5 controlled kernel upgrade: new builds install as new generations
+- Kernel images are content-addressed, immutable installation snapshots (`<state>/kernel-images/<digest>/root`, bundle included); children launch only from an image with a pinned, provenance-verified environment, and the elected image digest is pinned into every revision (`image: {digest, kernel_version, launch_protocol}`), retained across later plugin-only activations.
+- `voidcode upgrade run --candidate PATH [--session-id ID] [--timeout S]` asks the running supervisor for an upgrade and `upgrade status` reports it; `preflight` prints the read-only candidate check. Preflight verifies schema transition, SDK/launch protocols, recorded revision, pinned artifacts, plugin state versions, and the target generation diff, then executes admission, state migrations, and a real host load in a throwaway scratch tree — refusing unsupported generations before anything stops and without touching live state.
+- The supervisor owns one loopback listener and one bearer token across replacements, fences admission and wakeup claims, drains admitted work at committed batch boundaries (pausing active runs with a durable, exactly-once resume intent when asked), and elects the candidate only after health checks and one atomic adoption transaction move the schema, the revision pointer, every session and continuation ref, every resumable checkpoint, and every state copy. Parked approvals and stored confirmations block a revision-changing upgrade before downtime instead of being rebound; a failed drain leaves streams connected and the old kernel serving.
+- A hard-killed child is never silently replaced: the supervisor exits visibly, the next launch cold-starts the elected image, and an explicit `resume` reports each parked batch member as `kernel.tool_interrupted` before continuing from the durable cursor. Same session id, append-only events, and no replay of completed side effects across the handoff; `kernel.revision_adopted`, `kernel.upgrade_paused`, and the generalized `kernel.continuation_consumed` (with its real `activation`/`upgrade` cause) record the transition. `GET /api/health` reports fence, stage, revision, SDK/image pins, generation, and the active upgrade; a successful drain ends followed streams with `server_restart` plus the last delivered cursor, and fenced business writes answer `503 upgrade_pending`.
+- `serve` runs the supervisor (with `--session-id` attribution for a first adoption); `tui` without `--server` spawns a supervisor child and behaves like remote mode; ordinary one-shot commands execute inside the elected image. The single supported schema transition is 4 → 5 inside the adoption transaction; anything else refuses read-only, and `show` stays a config-free rescue read on either version.
+
+### Tool contracts: derived views, document guards, managed language servers
+- `read` serves its `voidcode://` views end to end: `voidcode://tool/<name>` renders the active
+  revision's dispatch definition with this session's scope/stance applied (plugin and reserved
+  core tools, no second catalog); `voidcode://transcript/<session>` composes a bounded,
+  payload-stripped page for the caller's own session or its own descendants; `voidcode://rule/`
+  is answered by the skills plugin's rulebook semantics. URI failures return model-visible text.
+- `PluginServices` gains neutral `query`/`tool_definition`/`spawn_service_process` (plus typed
+  `QueryUnavailable`); `Plugin` gains host-local read-only `queries`. Child-event reads are
+  narrowed to true descendants (siblings, parents, unrelated roots, foreign workspaces refused).
+- `apply_workspace_edit` checks `expectedVersion` against the LSP plugin's opened-document
+  record, failing closed with a visible diagnostic when nothing is open; stale version/hash and
+  encoding mismatches return typed actionable diagnostics, and hash-only edits work with the LSP
+  plugin disabled.
+- Language servers run as supervised host-generation service processes (shared host group,
+  descendant-tree cancellation, foster-parent reaping, kernel group sweep on hard host death);
+  the `lsp` tool declares `read`+`execute`, so read-only policy refuses it and ask/write modes
+  approve it. SDK source hash changes by design (P5 controlled upgrade).
+
+### Docs and comment corrections (no behavior change)
+- Comments, docstrings, and guides no longer describe deleted pre-cutover trees or promise
+  unshipped work: the SDK-hash mismatch path is documented as it behaves today (activation
+  refuses a hot switch; changed SDK bytes are crossed only by the controlled 1→1 kernel
+  upgrade described in `docs/contracts/kernel-upgrade.md`), `read_only` is documented as
+  refusing `WRITE`/`EXECUTE` only (`SPAWN` stays available to a restricted owner because the
+  child inherits the restriction), the client diagrams state that the CLI drives the kernel
+  in-process while the TUI/web client use the HTTP/SSE transport, and the README no longer
+  claims session data never leaves the machine.
+- Removed the unused `configure_openai_provider` helper from `tests/provider_loopback.py` (it
+  wrote a pre-cutover `.voidcode.json`) and its now-unused `pathlib` import; the loopback
+  server and `openai_response` helpers are unchanged.
+
+### Provider reasoning replay and P6 authoring
+- Tool-call replay no longer hard-fails when a reasoning-locked provider (DeepSeek) returns a
+  genuine zero-reasoning tool turn: authentic `reasoning_content` is replayed verbatim when the
+  kernel persisted it, omitted (never synthesized) when the vendor produced none, and prior
+  reasoning on assistant turns without tool calls is preserved whenever the request carries
+  tools. The guard's old "must fail before HTTP" assumption contradicted the real wire (a
+  zero-reasoning tool turn is accepted upstream) and made the vendor's own turn unreplayable.
+- `scripts/generate_plugin_identities.py` accepts repeatable `--plugin-dir` with `--check`, and
+  the runnable `examples/tally-counter/` plugin plus `docs/contracts/plugin-authoring.md` cover
+  the author → pin → verify → reload loop. Provider plugin identity was regenerated by that
+  canonical generator, never hand-edited.
 
 ### P4 corrections
 - Internal SESSION work survives a read-only stance: a lease whose tool declares `SESSION`
@@ -42,7 +90,8 @@ covered by executable tests.
 - Session facts and child tails: `PluginServices.session_info()` reads status, run/revision,
   lineage, pending approval, owner budget and root-chain accounting in one SQL row. Bounded
   `read_child_events(child_session_id, after_sequence, limit)` pages are admitted by the kernel's
-  persisted same-root lineage, never by a plugin's claim about its children.
+  persisted own-descendant lineage (narrowed from same-root in the tool-contracts change),
+  never by a plugin's claim about its children.
 - Same-session tool requests: `services.invoke_tool(name, arguments, expected_revision=...)`
   returns a staged `ToolInvocationReceipt` immediately. The request commits with its caller's
   result, then runs after the callback through the ordinary scope, schema, stance, pre-tool,

@@ -161,7 +161,7 @@ def test_session_info_reports_one_running_session_and_its_chain_budget(tmp_path:
         assert child_facts["chain_budget"] != child_facts["root_session_id"]
 
 
-def test_child_event_reads_are_bounded_cursor_scoped_and_chain_checked(tmp_path: Path) -> None:
+def test_child_event_reads_are_bounded_cursor_scoped_and_descendant_checked(tmp_path: Path) -> None:
     source = write_s5_plugin(tmp_path / "plugin")
     big_prompt = "x" * 100_000
     replies: list[dict[str, object]] = []
@@ -171,11 +171,16 @@ def test_child_event_reads_are_bounded_cursor_scoped_and_chain_checked(tmp_path:
         kernel.create_session("sess")
         kernel.create_session("unrelated-root")
 
-        # This chain's child: naming its parent (a root, so never its child) is the kernel's refusal.
+        # This chain's child: naming its parent (a root, so never its descendant) is the kernel's refusal.
         replies.append(_turn(_call("child-read", PROBE_TOOL, action="child_events", child_session_id="sess")))
         replies.append(_turn(output="child done"))
         child = kernel.spawn_child("sess", big_prompt, tool_allowlist=(PROBE_TOOL,))
         assert kernel.join_child("sess", child, timeout_seconds=30).status == "completed"
+
+        # A grandchild: still the root's own descendant, and the root may read it.
+        replies.append(_turn(output="grandchild done"))
+        grandchild = kernel.spawn_child(child, "grandchild work", tool_allowlist=(PROBE_TOOL,))
+        assert kernel.join_child(child, grandchild, timeout_seconds=30).status == "completed"
 
         # Another chain's child: a real child of a real parent, and still not this session's to read.
         replies.append(_turn(output="other chain child done"))
@@ -188,6 +193,7 @@ def test_child_event_reads_are_bounded_cursor_scoped_and_chain_checked(tmp_path:
                 _call("read-page", PROBE_TOOL, action="child_events", child_session_id=child, after_sequence=0, limit=2, include_payload=False),
                 _call("read-bounded", PROBE_TOOL, action="child_events", child_session_id=child, after_sequence=0, limit=100),
                 _call("read-rest", PROBE_TOOL, action="child_events", child_session_id=child, after_sequence=2, limit=100),
+                _call("read-grandchild", PROBE_TOOL, action="child_events", child_session_id=grandchild, after_sequence=0, limit=100),
                 _call("read-self", PROBE_TOOL, action="child_events", child_session_id="sess"),
                 _call("read-root", PROBE_TOOL, action="child_events", child_session_id="unrelated-root"),
                 _call("read-stranger", PROBE_TOOL, action="child_events", child_session_id=stranger),
@@ -196,7 +202,7 @@ def test_child_event_reads_are_bounded_cursor_scoped_and_chain_checked(tmp_path:
         replies.append(_turn(output="parent read the child"))
         assert kernel.run("read the child's events", session_id="sess").status == "completed"
 
-        page, bounded, rest, self_read, root_read, stranger_read = [_body(kernel, "sess", PROBE_TOOL, index) for index in range(6)]
+        page, bounded, rest, grandchild_read, self_read, root_read, stranger_read = [_body(kernel, "sess", PROBE_TOOL, index) for index in range(7)]
 
         # One bounded page: the count is the caller's limit, and no payload is carried.
         assert page["child_session_id"] == child
@@ -215,24 +221,28 @@ def test_child_event_reads_are_bounded_cursor_scoped_and_chain_checked(tmp_path:
         assert history[0]["payload"]["truncated"] is True
         assert history[0]["payload"]["original_bytes"] > 65536
         assert not any(view["payload_truncated"] for view in history[1:])
-        assert any(view["event_type"] == "kernel.tool_completed" and "own root chain" in json.dumps(view["payload"]) for view in history), history
+        assert any(view["event_type"] == "kernel.tool_completed" and "own descendants" in json.dumps(view["payload"]) for view in history), history
 
         # The cursor continues exactly where the first page stopped.
         sequences = [view["sequence"] for view in rest["views"]]
         assert sequences == list(range(3, 3 + len(sequences)))
         assert sequences[-1] == kernel.session(child).last_event_sequence
 
-        # The child's own read of its parent (a root, so never its child) is the kernel's refusal.
+        # The child's own read of its parent (a root, so never its descendant) is the kernel's refusal.
         child_read = _body(kernel, child, PROBE_TOOL)
         assert "views" not in child_read
-        assert "own root chain" in child_read["refused"]
+        assert "own descendants" in child_read["refused"]
+
+        # The root reads its grandchild's own committed events.
+        assert grandchild_read["child_session_id"] == grandchild
+        assert grandchild_read["views"], grandchild_read
 
         # The kernel owns the lineage: this session, an unrelated root, and another chain's child.
         for refused in (self_read, root_read, stranger_read):
             assert "views" not in refused, refused
         assert "must name another session" in self_read["refused"]
-        assert "own root chain" in root_read["refused"]
-        assert "own root chain" in stranger_read["refused"]
+        assert "own descendants" in root_read["refused"]
+        assert "own descendants" in stranger_read["refused"]
 
 
 def test_tool_actions_carry_json_bodies_and_failures_stay_failures(tmp_path: Path) -> None:

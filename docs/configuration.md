@@ -67,14 +67,14 @@ No other top-level field is accepted.
 | Field | Type | Description |
 |---|---|---|
 | `approval_mode` | string | `ask` (default), `write`, or `yolo`. |
-| `read_only` | boolean | Default `false`. When true, externally mutating effects (`WRITE`, `EXECUTE`, `SPAWN`) are refused outright. |
+| `read_only` | boolean | Default `false`. When true, `WRITE` and `EXECUTE` effects are refused outright; `READ`, `SESSION`, and `SPAWN` are not refused by this setting alone (see below). |
 
 Policy semantics:
 
 - **`ask`** — externally mutating work (`WRITE`, `EXECUTE`, `SPAWN`) waits for an explicit approval; reads and internal session state changes proceed.
 - **`write`** — file mutations proceed; command execution and process spawning still wait.
 - **`yolo`** — mutating work proceeds without a gate.
-- **`read_only`** — checked before approval mode, so it is stronger than `yolo`: a mutating tool is refused rather than prompted. `READ` and `SESSION` effects are never refused.
+- **`read_only`** — checked before approval mode, so it is stronger than `yolo`: a tool that declares `WRITE` or `EXECUTE` is refused outright rather than prompted. It is not a blanket "no mutation" mode: `READ` and `SESSION` effects are never refused, and a `SPAWN`-only tool stays available because a restricted session may delegate only to a child that inherits the same restriction, which the kernel records on that child.
 
 There is no per-invocation override (no `--model`, `--approval-mode`, or in-session policy command): the active policy comes from `voidcode.json` for the workspace.
 
@@ -88,7 +88,7 @@ Each key is a provider name matching `[a-z][a-z0-9_-]*`, and it must be declared
 | `base_url` | string | Required for every configured provider. |
 | *any other field* | any JSON value | Passed to the declaring plugin verbatim and validated there against that plugin's own configuration schema. The kernel assigns no vendor meaning to them: for OpenAI-wire providers the plugin accepts `organization`, `project`, `timeout_seconds`, and `transient_retry`. `api_key` and `base_url` may not be repeated here. |
 
-Credentials never reach events, revisions, or the workspace: they are written only into the private 0600 snapshot inside the state directory, while revisions and events carry a digest.
+Credentials never reach events or revisions, which carry digests only: resolved credentials are written only into the private 0600 snapshot inside the state directory. The kernel never writes environment-resolved keys back to the workspace; an `api_key` written explicitly in `voidcode.json` stays where the user put it.
 
 ### `plugins`
 
@@ -117,7 +117,7 @@ Trust is a startup decision about a concrete source path, never something a runn
 - **`kernel.reload`** re-admits the live configuration, but only trusts source paths already authorized in the current generation. Adding a brand-new external plugin is therefore a restart with `--trust-plugin`, not a reload.
 - Trust is about source bytes, not sandboxing: an admitted plugin runs in its own host process with the capability set the kernel grants (`workspace.read`, `workspace.write`, `network`), and a manifest whose requests exceed that set is refused at admission.
 
-Changed plugin source, changed configuration, or a changed SDK is never admitted implicitly: an edited plugin file produces a new identity, and a restart against a revision whose SDK hash no longer matches fails with an explicit "controlled kernel upgrade" error instead of silently running new code under an old revision.
+Changed plugin source, changed configuration, a changed SDK, or a different kernel image is never admitted implicitly: an edited plugin file produces a new identity, and a restart against a revision whose SDK hash or image pin no longer matches fails with an explicit "controlled kernel upgrade" error instead of silently running new code under an old revision. The explicit path is `voidcode upgrade --candidate <install>` (preflight before downtime, fenced drain, one atomic adoption transaction, health-checked election), and a pre-P5 workspace is adopted on first start of the new build with `voidcode serve --session-id <id>`; see `docs/contracts/kernel-upgrade.md`.
 
 ## State Directory
 

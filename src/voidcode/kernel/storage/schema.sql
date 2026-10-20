@@ -1,12 +1,13 @@
--- Kernel schema v3. The store verifies an existing database's identity BEFORE
--- setting pragmas or executing this DDL; foreign/legacy files are never changed
--- and a v1 database is refused read-only instead of being migrated in place.
--- Future plugin-state/tasks/wakeups tables are added with their actual owners.
+-- Kernel schema v5. The store verifies an existing database's identity BEFORE
+-- setting pragmas or executing this DDL; foreign/legacy files are never changed.
+-- A version-4 database is adopted once, inside the explicit 4 -> 5 transition
+-- transaction; anything else that is not version 5 is refused read-only. This file is
+-- the whole schema: tables are added here together with the owner that uses them.
 
 CREATE TABLE kernel_identity (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     magic TEXT NOT NULL CHECK (magic = 'voidcode-kernel-v1'),
-    schema_version INTEGER NOT NULL CHECK (schema_version = 4)
+    schema_version INTEGER NOT NULL CHECK (schema_version = 5)
 ) STRICT;
 
 CREATE TABLE revisions (

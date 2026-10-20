@@ -76,6 +76,42 @@ class DrainRequest(KernelHttpModel):
     limit: int = Field(default=10, ge=1, le=100)
 
 
+class DrainControlRequest(KernelHttpModel):
+    """Supervisor drain order: fence admission, settle admitted work, optionally pause runs."""
+
+    timeout_seconds: float = Field(default=30.0, ge=0.0, le=600.0)
+    require_quiescent: bool = False
+    pause_at_batch_boundary: bool = False
+    pause_intent: str = Field(default="", max_length=128)
+
+
+class AdoptControlRequest(KernelHttpModel):
+    """Adoption attribution: the acting session that owns the transition, when one exists."""
+
+    session_id: str | None = Field(default=None, max_length=128)
+
+
+class HealthBody(KernelHttpModel):
+    """Kernel health and identity: the stable surface clients and the supervisor poll."""
+
+    status: str
+    fenced: bool
+    stage: str
+    pid: int
+    workspace: str
+    revision_id: str
+    sdk_sha256: str
+    sdk_protocol: int
+    launch_protocol: int
+    kernel_version: str
+    image_digest: str
+    sdk_path: str
+    web_bundle: str | None
+    supervisor_pid: int
+    generation: int
+    active_upgrade: dict[str, Any] | None
+
+
 class SessionsBody(KernelHttpModel):
     sessions: list[SessionRecord]
 

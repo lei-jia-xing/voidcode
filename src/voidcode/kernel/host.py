@@ -42,6 +42,7 @@ from voidcode.sdk.views import PluginViewDescriptor
 from .artifacts import SHA256_PATTERN, ArtifactStore, normalize_media_type
 from .storage.store import (
     EventDraft,
+    SessionRecord,
     SqliteStore,
     StagedCancellation,
     StagedContinuationDraft,
@@ -58,6 +59,9 @@ __all__ = [
     "ToolInvocationOutcome",
 ]
 MAX_FRAME_SIZE: int = 1024 * 1024  # 1 MiB
+#: An owner shutdown waits this long for the host to finish sweeping supervised background
+#: groups before `close()` may kill it mid-sweep (the supervisor's stop grace is the backstop).
+_STOP_BACKGROUND_TIMEOUT_SECONDS: float = 10.0
 
 
 def _require_int(value: object, field_name: str) -> int:
@@ -104,11 +108,12 @@ class LeaseContext:
     readonly: bool
     #: Authentic actor of the invocation that created this lease ("model", "user", "plugin").
     actor: str = "model"
-    #: Hook leases are observers of a settled invocation: they can never start nested work.
+    #: Hook leases cannot start nested work.
     hook: bool = False
     #: The lease's tool declares SESSION (internal) work. ``readonly`` refuses external
-    #: authority, never internal session staging: read_only refuses exactly WRITE, EXECUTE,
-    #: and SPAWN (docs/contracts/README.md), so a goal update still persists under it.
+    #: authority, never internal session staging: ``read_only`` denies WRITE and EXECUTE, and
+    #: permits SPAWN only when the child inherits the restriction, so a goal update still
+    #: persists under it.
     internal_work: bool = False
     invocation_depth: int = 0
     staged_state: dict[tuple[str, str], tuple[Mapping[str, object], int, int]] = field(default_factory=dict)
@@ -195,6 +200,7 @@ class HostClient:
         cancel_child_callback: Callable[[str, str, str], bool] | None = None,
         model_query_callback: Callable[[str, str, str | None, int | None], str] | None = None,
         progress_callback: Callable[[LeaseContext, Mapping[str, object]], None] | None = None,
+        tool_definition_callback: Callable[[str, str, str], tuple[Mapping[str, object] | None, str]] | None = None,
         artifacts_dir: Path | None = None,
         lease_fd: int | None = None,
     ) -> None:
@@ -213,6 +219,7 @@ class HostClient:
         self._cancel_child_callback = cancel_child_callback
         self._model_query_callback = model_query_callback
         self._progress_callback = progress_callback
+        self._tool_definition_callback = tool_definition_callback
         self._artifacts = None if artifacts_dir is None else ArtifactStore(artifacts_dir)
 
         self._context_owners: tuple[str, ...] = ()
@@ -307,6 +314,10 @@ class HostClient:
             raise HostUnavailable(f"Failed to spawn plugin host process: {exc}", execution_stopped=True) from exc
 
         self._pid = self._proc.pid
+        # The kernel owns this group id independently of host liveness: the host leader may die
+        # (even by external SIGKILL) while its service children stay in the group, so cleanup
+        # never derives the group from a dead pid and never early-returns on host.poll().
+        self._pgid = os.getpgid(self._pid)
         self._reader_thread = threading.Thread(
             target=self._reader_loop,
             daemon=True,
@@ -433,19 +444,56 @@ class HostClient:
             return f"{prefix}-{self._counter}"
 
     def _kill_group(self, sig: int = signal.SIGKILL) -> None:
-        """Signal the entire process group spawned for the host."""
+        """Signal the host's whole process group, whether or not its leader is still alive.
+
+        The tracked pgid survives the leader: service children share this group by design, while
+        detached user background jobs live in their own groups and are never touched here. A dead
+        leader plus live members is exactly the case this exists for, so a vanished pid entry is
+        retried from the tracked id instead of treated as "already clean".
+        """
         if self._proc is None:
             return
         pid = self._proc.pid
-        try:
-            pgid = os.getpgid(pid)
-            os.killpg(pgid, sig)
-        except ProcessLookupError, PermissionError:
-            pass
+        pgid: int | None = getattr(self, "_pgid", None)
+        if pgid is None:
+            try:
+                pgid = os.getpgid(pid)
+            except ProcessLookupError, PermissionError:
+                pgid = None
+        if pgid is not None:
+            try:
+                os.killpg(pgid, sig)
+            except ProcessLookupError, PermissionError:
+                pass
         try:
             self._proc.send_signal(sig)
         except ProcessLookupError, PermissionError:
             pass
+
+    def _stop_host_tree(self, *, term_timeout: float, kill_timeout: float) -> bool:
+        """SIGTERM the host group, escalate to SIGKILL, and report a fully reaped leader.
+
+        No branch may return early on ``host.poll()``: the leader dying first leaves its owned
+        group behind, and SIGTERM-ignoring descendants still need the escalation. Detached user
+        background jobs are outside this group by construction and survive by contract.
+        """
+        if self._proc is None:
+            return True
+        self._kill_group(signal.SIGTERM)
+        try:
+            self._proc.wait(timeout=term_timeout)
+        except subprocess.TimeoutExpired:
+            self._kill_group(signal.SIGKILL)
+            try:
+                self._proc.wait(timeout=kill_timeout)
+            except subprocess.TimeoutExpired:
+                pass
+        if self._proc.poll() is None:
+            return False
+        # The leader exited (its wait either returned here or the group kill reached a racing
+        # exit); sweep the owned group once more so SIGTERM-ignoring descendants cannot outlive it.
+        self._kill_group(signal.SIGKILL)
+        return True
 
     def _send_request(self, payload: dict[str, Any]) -> None:
         data = json.dumps(payload, allow_nan=False).encode("utf-8") + b"\n"
@@ -597,17 +645,7 @@ class HostClient:
             with self._lifecycle_lock:
                 if not self._closed:
                     self._closed = True
-                    if self._proc is not None and self._proc.poll() is None:
-                        self._kill_group(signal.SIGTERM)
-                        try:
-                            self._proc.wait(timeout=0.5)
-                        except subprocess.TimeoutExpired:
-                            self._kill_group(signal.SIGKILL)
-                            try:
-                                self._proc.wait(timeout=2.0)
-                            except subprocess.TimeoutExpired:
-                                pass
-                    is_stopped = self._proc.poll() is not None if self._proc else True
+                    is_stopped = self._stop_host_tree(term_timeout=0.5, kill_timeout=2.0)
                     self._reap_pending("Host process closed transport or sent malformed frame (EOF)", execution_stopped=is_stopped)
 
     def _reap_pending(self, reason: str, *, execution_stopped: bool) -> None:
@@ -621,17 +659,7 @@ class HostClient:
     def _kill_and_reap(self) -> bool:
         with self._lifecycle_lock:
             self._closed = True
-            if self._proc is not None and self._proc.poll() is None:
-                self._kill_group(signal.SIGTERM)
-                try:
-                    self._proc.wait(timeout=0.5)
-                except subprocess.TimeoutExpired:
-                    self._kill_group(signal.SIGKILL)
-                    try:
-                        self._proc.wait(timeout=2.0)
-                    except subprocess.TimeoutExpired:
-                        pass
-            is_stopped = self._proc.poll() is not None if self._proc else True
+            is_stopped = self._stop_host_tree(term_timeout=0.5, kill_timeout=2.0)
             self._reap_pending("Host process killed and reaped", execution_stopped=is_stopped)
             return is_stopped
 
@@ -648,6 +676,7 @@ class HostClient:
             "get_budget",
             "lease_stance",
             "artifact_read",
+            "tool_definition",
         }
     )
 
@@ -716,6 +745,17 @@ class HostClient:
                 # stance: a session can never read or stop another session's logs.
                 resp = {"hook": lease.hook, "readonly": lease.readonly, "session_id": lease.session_id}
 
+            elif method == "tool_definition":
+                # One definition from the active revision's dispatch snapshot, with this session's
+                # visibility applied exactly as dispatch sees it: unknown names, profile scopes, and
+                # read-only restrictions are distinguished, never blurred into a guess.
+                if self._tool_definition_callback is None:
+                    raise RuntimeError("tool definitions are unavailable")
+                raw_name = params.get("name")
+                if not isinstance(raw_name, str) or not raw_name.strip():
+                    raise ValueError("tool_definition requires a non-empty name")
+                definition, reason = self._tool_definition_callback(lease.session_id, raw_name.strip(), lease.revision_id)
+                resp = {"definition": None if definition is None else own_json_object(definition), "reason": reason}
             elif method == "state_get":
                 staged = lease.staged_state.get((scope, scope_key))
                 if staged is not None:
@@ -864,7 +904,8 @@ class HostClient:
 
             elif method == "child_events_read":
                 # The kernel owns lineage, so the caller never supplies the reason it may read:
-                # a child of the SAME root chain is the whole privilege.
+                # a DESCENDANT of the caller is the whole privilege — a sibling, a parent, an
+                # unrelated root, or a session from another workspace says nothing about this one.
                 if self._store is None:
                     raise RuntimeError("Store not attached to HostClient")
                 child_id = params.get("child_session_id")
@@ -876,8 +917,8 @@ class HostClient:
                     raise ValueError("after_sequence must be >= 0 and limit within 1..200")
                 caller = self._store.session(lease.session_id)
                 child = self._store.session(child_id)
-                if child.parent_session_id is None or child.root_session_id != caller.root_session_id:
-                    raise PermissionError("child events are readable only within the caller's own root chain")
+                if child.workspace != caller.workspace or not self._is_descendant(child, caller.session_id):
+                    raise PermissionError("child events are readable only for this session's own descendants")
                 include_payload = params.get("include_payload", True)
                 if type(include_payload) is not bool:
                     raise ValueError("include_payload must be a boolean")
@@ -1152,6 +1193,20 @@ class HostClient:
                 }
             )
 
+    def _is_descendant(self, child: SessionRecord, caller_id: str) -> bool:
+        """Whether the caller sits on the child's own parent chain (never a peer)."""
+        if self._store is None:
+            raise RuntimeError("Store not attached to HostClient")
+        current: SessionRecord | None = child
+        while current is not None and current.parent_session_id is not None:
+            if current.parent_session_id == caller_id:
+                return True
+            try:
+                current = self._store.session(current.parent_session_id)
+            except KeyError:
+                return False
+        return False
+
     def _event_views(self, session_id: str, after: int, limit: int, include_payload: bool) -> list[dict[str, object]]:
         """One bounded page of a session's events; the payload budget is shared by the page."""
         if self._store is None:
@@ -1421,7 +1476,10 @@ class HostClient:
         # A tool lease is restricted when the session's effective stance is restrictive, even if
         # the tool's own effects are read-tier or spawn-tier. Internal SESSION staging stays
         # available under a read-only stance: it mutates kernel-owned session data, not the world.
-        is_ro = readonly or is_read_tier(tool_desc.effects)
+        # A tool that declares EXECUTE always gets a writable lease (whatever READ scope it also
+        # carries): `is_read_tier` answers "read scope", which a read+execute tool legitimately
+        # has, while the lease answers "may touch the machine", which EXECUTE explicitly grants.
+        is_ro = readonly or (is_read_tier(tool_desc.effects) and ToolEffect.EXECUTE not in tool_desc.effects)
         lease_token = uuid4().hex
         lease = LeaseContext(
             token=lease_token,
@@ -2185,12 +2243,22 @@ class HostClient:
 
         A *host* swap is not an owner shutdown: a background process started by one generation keeps
         running across a reload, which is exactly why the caller persists its identity. Best effort:
-        a host that is already gone has nothing left to stop.
+        a host that is already gone has nothing left to stop. Waiting for the answer is load-bearing:
+        the owner closes (and may kill) this host right after, so a fire-and-forget request would
+        die mid-sweep and leak the TERM-ignoring group members the sweep escalates against.
         """
+        req_id = self._next_id("bgstop")
+        future: Future[dict[str, Any]] = Future()
+        with self._maps_lock:
+            self._pending[req_id] = future
         try:
-            self._send_request({"protocol_version": 1, "id": self._next_id("bgstop"), "method": "stop_background", "params": {}})
+            self._send_request({"protocol_version": 1, "id": req_id, "method": "stop_background", "params": {}})
+            future.result(timeout=_STOP_BACKGROUND_TIMEOUT_SECONDS)
         except Exception:
             pass
+        finally:
+            with self._maps_lock:
+                self._pending.pop(req_id, None)
 
     def close(self) -> None:
         """Close connection to host and reap child process group cleanly."""
@@ -2212,17 +2280,13 @@ class HostClient:
                         self._proc.wait(timeout=1.0)
                     except Exception:
                         pass
-                    if self._proc.poll() is None:
-                        self._kill_group(signal.SIGTERM)
-                        try:
-                            self._proc.wait(timeout=0.5)
-                        except subprocess.TimeoutExpired:
-                            self._kill_group(signal.SIGKILL)
-                            try:
-                                self._proc.wait(timeout=2.0)
-                            except subprocess.TimeoutExpired:
-                                pass
-            is_stopped = self._proc.poll() is not None if self._proc else True
+                    if not self._stop_host_tree(term_timeout=0.5, kill_timeout=2.0):
+                        is_stopped = False
+                    else:
+                        is_stopped = self._proc.poll() is not None if self._proc else True
+                        self._kill_group(signal.SIGKILL)
+            else:
+                is_stopped = self._proc.poll() is not None if self._proc else True
             self._reap_pending("HostClient closed", execution_stopped=is_stopped)
             if is_stopped and self._proc is not None and self._proc.stdin is not None:
                 with self._write_lock:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import secrets
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
@@ -25,19 +26,27 @@ from starlette.exceptions import HTTPException
 from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.types import Receive, Scope, Send
 
+from ... import __version__
 from ...sdk.commands import CommandCatalog, CommandResult
 from ...sdk.json_values import json_wire_object
+from ...sdk.manifest import SDK_PROTOCOL_VERSION
 from ...sdk.services import SessionUsageReport
 from ...sdk.views import ViewsSnapshot
-from ..bootstrap import open_kernel
-from ..engine import Kernel, KernelResult
-from ..storage.store import SessionRecord, StoredEvent
+from ..bootstrap import adopt_generation, open_kernel
+from ..engine import DrainRefused, Kernel, KernelResult
+from ..host import HostTimeout, HostUnavailable
+from ..images import Image, installed_identity, running_identity
+from ..preflight import LAUNCH_PROTOCOL_VERSION
+from ..storage.store import SessionRecord, StoreConflict, StoredEvent, inspect_existing_workspace
 from .models import (
+    AdoptControlRequest,
     CheckpointBody,
     ConfirmRequest,
     ContinuationsBody,
     CreateSessionRequest,
+    DrainControlRequest,
     DrainRequest,
+    HealthBody,
     InvokeRequest,
     ResumeRequest,
     RunRequest,
@@ -119,6 +128,8 @@ class EventStreamResponse(StreamingResponse):
 
 def _kernel_error(error: Exception) -> HttpError:
     message = str(error)
+    if isinstance(error, DrainRefused):
+        return HttpError(503, message, code="upgrade_pending")
     # A client acting on a stale or missing displayed revision is refused before
     # any dispatch: the refusal is visible and never retried automatically.
     if "is stale; refresh the catalog" in message:
@@ -171,10 +182,17 @@ class KernelTransportApp(FastAPI):
     def __init__(
         self,
         *,
-        kernel_factory: Callable[[], Kernel],
+        kernel_factory: Callable[[], Kernel | None],
         bearer_token: str | None = None,
         allow_origin: str | None = None,
         frontend_dist: Path | None = None,
+        fenced: bool = False,
+        control_token: str | None = None,
+        image: Image | None = None,
+        generation: int = 1,
+        upgrade_id: str | None = None,
+        workspace: Path | None = None,
+        state_dir: Path | None = None,
     ) -> None:
         super().__init__(
             title="VoidCode kernel API",
@@ -195,8 +213,26 @@ class KernelTransportApp(FastAPI):
         self._kernel: Kernel | None = None
         self._bearer_token = bearer_token
         self._allow_origin = allow_origin
+        self._fenced = fenced
+        self._control_token = control_token
+        # Health always reports an identity: the validated image the launcher passes, or the tree
+        # this process executes when it serves standalone.
+        self._image = image if image is not None else (running_identity() or installed_identity())
+        self._generation = generation
+        self._upgrade_id = upgrade_id
+        self._workspace = workspace
+        self._state_dir = state_dir
+        # An app born unfenced is already serving; a fenced child reports its validation
+        # stage until the supervisor promotes it.
+        self._stage = "serving" if not fenced else "validating"
+        # Live follow streams, for the drain to wait on: a successful drain returns only after
+        # every open stream ended with its restart frame, so no SIGTERM can race frame delivery.
+        self._follow_streams: set[asyncio.Event] = set()
+        # Two-phase drain: business writes fence the moment a drain arrives, but the SSE
+        # restart frame goes out only once a drain has actually succeeded.
+        self._restart_ready = False
         #: The static web bundle this process serves at "/", when one is built. The bundle is
-        #: public exactly like the legacy launcher's: only /api carries the bearer token.
+        #: public: only /api carries the bearer token.
         self._frontend_dist = frontend_dist.resolve() if frontend_dist is not None and frontend_dist.is_dir() else None
         self._register_routes()
 
@@ -204,16 +240,35 @@ class KernelTransportApp(FastAPI):
     async def _lifespan(self, _app: FastAPI) -> AsyncGenerator[None]:
         kernel = await asyncio.to_thread(self._kernel_factory)
         self._kernel = kernel
+        # The factory returning at all is the validation: a child whose generation cannot be
+        # served raises inside the factory instead, and uvicorn exits non-zero for the supervisor.
+        if self._fenced:
+            self._stage = "validated"
         try:
             yield
         finally:
             self._kernel = None
-            await asyncio.to_thread(kernel.close)
+            if kernel is not None:
+                await asyncio.to_thread(kernel.close)
 
     def _kernel_or_503(self) -> Kernel:
         if self._kernel is None:
+            if self._fenced:
+                raise HttpError(503, "kernel is draining for an upgrade; retry after it restarts", code="upgrade_pending")
             raise HttpError(503, "kernel is not started")
         return self._kernel
+
+    def _require_serving(self) -> None:
+        if self._fenced:
+            raise HttpError(503, "kernel is draining for an upgrade; retry after it restarts", code="upgrade_pending")
+
+    def _require_control(self, request: Request) -> None:
+        if self._control_token is None:
+            raise HttpError(403, "control channel is not enabled on this server")
+        presented = request.headers.get("authorization", "")
+        scheme, _, credential = presented.partition(" ")
+        if scheme.lower() != "bearer" or not credential or not secrets.compare_digest(credential, self._control_token):
+            raise HttpError(401, "missing or invalid control credential", code="missing_control_credential")
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("type") not in ("http", "lifespan"):
@@ -221,6 +276,7 @@ class KernelTransportApp(FastAPI):
         if scope.get("type") == "http":
             path = str(scope.get("path", ""))
             if path == "/api" or path.startswith("/api/"):
+                control_surface = path == "/api/kernel" or path.startswith("/api/kernel/")
                 raw_headers = scope.get("headers", [])
                 headers = {name.decode("latin-1").lower(): value.decode("latin-1") for name, value in raw_headers}
                 origin = headers.get("origin")
@@ -236,7 +292,7 @@ class KernelTransportApp(FastAPI):
                     )
                     await cors_resp(scope, receive, send)
                     return
-                challenge = self._auth_challenge(scope)
+                challenge = None if control_surface else self._auth_challenge(scope)
                 if challenge is not None:
                     await challenge(scope, receive, send)
                     return
@@ -384,6 +440,11 @@ class KernelTransportApp(FastAPI):
         )  # noqa: E501
         route("/api/sessions/{session_id}/cancel", self._handle_cancel, methods=["POST"], summary="Request cancellation for one session")
         route("/api/sessions/{session_id}/events", self._handle_events, methods=["GET"], summary="Replay session events", streaming_frame=ShowBody)
+        route("/api/health", self._handle_health, methods=["GET"], summary="Read kernel health and identity", response_model=HealthBody)
+        route("/api/kernel/drain", self._handle_kernel_drain, methods=["POST"], summary="Drain for an upgrade", in_schema=False)
+        route("/api/kernel/admit", self._handle_kernel_admit, methods=["POST"], summary="Resume admission", in_schema=False)
+        route("/api/kernel/adopt", self._handle_kernel_adopt, methods=["POST"], summary="Adopt a new generation", in_schema=False)
+        route("/api/kernel/promote", self._handle_kernel_promote, methods=["POST"], summary="Promote to serving", in_schema=False)
         if self._frontend_dist is not None:
             # The single-page client: an exact file when one exists, otherwise index.html, so a
             # client-side route survives a reload. Registered last so every /api route wins, and
@@ -426,6 +487,7 @@ class KernelTransportApp(FastAPI):
         return _ok({"sessions": [_session_payload(record) for record in records]})
 
     async def _handle_create_session(self, payload: CreateSessionRequest | None = None) -> Response:
+        self._require_serving()
         kernel = self._kernel_or_503()
         requested = payload.session_id if payload is not None else None
         if requested is not None:
@@ -456,6 +518,7 @@ class KernelTransportApp(FastAPI):
 
     async def _handle_run(self, session_id: str, payload: RunRequest) -> Response:
         _validated_session_id(session_id)
+        self._require_serving()
         kernel = self._kernel_or_503()
         if payload.session_id is not None and payload.session_id != session_id:
             raise HttpError(400, "session_id in the path and body must match")
@@ -467,6 +530,7 @@ class KernelTransportApp(FastAPI):
 
     async def _handle_resume(self, session_id: str, payload: ResumeRequest | None = None) -> Response:
         _validated_session_id(session_id)
+        self._require_serving()
         kernel = self._kernel_or_503()
         request = payload or ResumeRequest()
         try:
@@ -485,6 +549,7 @@ class KernelTransportApp(FastAPI):
         _validated_session_id(session_id)
         if not name or "/" in name or "\0" in name or len(name) > 128:
             raise HttpError(400, "command name must be a non-empty string without '/' or NUL within 128 characters")
+        self._require_serving()
         kernel = self._kernel_or_503()
         try:
             result = await asyncio.to_thread(
@@ -501,6 +566,7 @@ class KernelTransportApp(FastAPI):
 
     async def _handle_confirm(self, session_id: str, payload: ConfirmRequest) -> Response:
         _validated_session_id(session_id)
+        self._require_serving()
         kernel = self._kernel_or_503()
         try:
             result = await asyncio.to_thread(
@@ -527,6 +593,7 @@ class KernelTransportApp(FastAPI):
 
     async def _handle_drain(self, session_id: str, payload: DrainRequest | None = None) -> Response:
         _validated_session_id(session_id)
+        self._require_serving()
         kernel = self._kernel_or_503()
         request = payload or DrainRequest()
         try:
@@ -548,6 +615,137 @@ class KernelTransportApp(FastAPI):
         except Exception as exc:
             raise _kernel_error(exc) from None
         return _ok(report.as_payload())
+
+    async def _handle_health(self) -> Response:
+        kernel = self._kernel
+        revision_id = ""
+        sdk_sha256 = ""
+        sdk_protocol = SDK_PROTOCOL_VERSION
+        if kernel is not None:
+            revision_id = kernel.revision_id
+            recorded = kernel.admission.revision_payload if kernel.admission is not None else {}
+            sdk_sha256 = str(recorded.get("sdk_sha256", ""))
+            recorded_protocol = recorded.get("sdk_protocol")
+            if isinstance(recorded_protocol, int) and not isinstance(recorded_protocol, bool):
+                sdk_protocol = recorded_protocol
+        elif self._workspace is not None and self._state_dir is not None:
+            database = self._state_dir / "kernel-v1.sqlite3"
+            if database.is_file():
+                try:
+                    found_revision, found_payload, _ = await asyncio.to_thread(inspect_existing_workspace, database, str(self._workspace))
+                except Exception:
+                    found_revision, found_payload = None, None
+                if found_revision is not None and found_payload is not None:
+                    revision_id = found_revision
+                    sdk_sha256 = str(found_payload.get("sdk_sha256", ""))
+                    recorded_protocol = found_payload.get("sdk_protocol")
+                    if isinstance(recorded_protocol, int) and not isinstance(recorded_protocol, bool):
+                        sdk_protocol = recorded_protocol
+        image = self._image
+        return _ok(
+            {
+                "status": "ok",
+                "fenced": self._fenced,
+                "stage": self._stage,
+                "pid": os.getpid(),
+                "workspace": "" if self._workspace is None else str(self._workspace),
+                "revision_id": revision_id,
+                "sdk_sha256": sdk_sha256,
+                "sdk_protocol": sdk_protocol,
+                "launch_protocol": LAUNCH_PROTOCOL_VERSION,
+                "kernel_version": __version__,
+                "image_digest": "" if image is None else image.digest,
+                "sdk_path": "" if image is None else str(image.package_root / "sdk"),
+                "web_bundle": None if image is None else image.bundle,
+                "supervisor_pid": os.getppid(),
+                "generation": self._generation,
+                "active_upgrade": None if self._upgrade_id is None else {"upgrade_id": self._upgrade_id, "stage": self._stage},
+            }
+        )
+
+    async def _handle_kernel_drain(self, request: Request, payload: DrainControlRequest | None = None) -> Response:
+        self._require_control(request)
+        kernel = self._kernel_or_503()
+        body = payload or DrainControlRequest()
+        try:
+            result = await asyncio.to_thread(
+                kernel.begin_drain,
+                timeout_seconds=body.timeout_seconds,
+                require_quiescent=body.require_quiescent,
+                pause_at_batch_boundary=body.pause_at_batch_boundary,
+                pause_intent=body.pause_intent,
+            )
+        except Exception as exc:
+            raise _kernel_error(exc) from None
+        if not result.get("drained"):
+            return _ok(result, status=409)
+        self._restart_ready = True
+        await self._await_follow_streams(timeout_seconds=15.0)
+        return _ok(result)
+
+    async def _await_follow_streams(self, timeout_seconds: float = 15.0) -> None:
+        """Wait for the streams open right now to end with their restart frames.
+
+        Bounded: a stuck stream delays a drain by seconds at most, never wedges it.
+        """
+        snapshot = list(self._follow_streams)
+        if not snapshot:
+            return
+        try:
+            await asyncio.wait_for(asyncio.gather(*[event.wait() for event in snapshot]), timeout=timeout_seconds)
+        except TimeoutError:
+            logger.warning("drain giving up waiting for %d follow streams", len(snapshot))
+
+    async def _handle_kernel_admit(self, request: Request) -> Response:
+        self._require_control(request)
+        self._restart_ready = False
+        kernel = self._kernel
+        if kernel is None:
+            return _ok({"admitting": True})
+        try:
+            result = await asyncio.to_thread(kernel.admit)
+        except Exception as exc:
+            raise _kernel_error(exc) from None
+        return _ok(result)
+
+    async def _handle_kernel_adopt(self, request: Request, payload: AdoptControlRequest | None = None) -> Response:
+        self._require_control(request)
+        if self._kernel is not None:
+            return _ok({"adopted": False, "reason": "already_current"})
+        if self._workspace is None or self._state_dir is None:
+            raise HttpError(500, "adoption is unavailable on this server")
+        body = payload or AdoptControlRequest()
+        try:
+            report = await asyncio.to_thread(adopt_generation, workspace=self._workspace, state_dir=self._state_dir, session_id=body.session_id)
+        except StoreConflict as exc:
+            raise HttpError(409, str(exc), code="adoption_blocked") from None
+        except ValueError as exc:
+            raise HttpError(409, str(exc), code="adoption_refused") from None
+        except (HostUnavailable, HostTimeout) as exc:
+            raise HttpError(409, f"candidate generation does not load: {exc}", code="adoption_refused") from None
+        except Exception as exc:
+            raise _kernel_error(exc) from None
+        try:
+            kernel = await asyncio.to_thread(open_kernel, self._workspace, state_dir=self._state_dir)
+        except Exception as exc:
+            raise _kernel_error(exc) from None
+        self._kernel = kernel
+        self._stage = "adopted"
+        return _ok({"adopted": True, **report})
+
+    async def _handle_kernel_promote(self, request: Request) -> Response:
+        self._require_control(request)
+        kernel = self._kernel
+        if kernel is None:
+            raise HttpError(409, "adoption is owed but not committed", code="unsupported_state")
+        try:
+            result = await asyncio.to_thread(kernel.promote)
+        except Exception as exc:
+            raise _kernel_error(exc) from None
+        self._fenced = False
+        self._restart_ready = False
+        self._stage = "serving"
+        return _ok(result)
 
     async def _handle_cancel(self, session_id: str) -> Response:
         _validated_session_id(session_id)
@@ -592,26 +790,60 @@ class KernelTransportApp(FastAPI):
             yield sse_frame(head)
             if not follow:
                 return
-            # Follow crosses run boundaries: completed/failed/interrupted end a
-            # run, never the session. The stream ends only when the client
-            # disconnects or a backend failure yields a terminal error frame.
-            while True:
-                await asyncio.sleep(_FOLLOW_POLL_SECONDS)
-                while True:
-                    try:
-                        pending = await asyncio.to_thread(kernel.events_after, session_id, after_sequence=cursor, limit=_FOLLOW_TAIL_LIMIT)
-                    except Exception as exc:
-                        yield sse_frame({"kind": "error", "session_id": session_id, "error": f"{type(exc).__name__}: {exc}"})
-                        return
-                    if not pending:
-                        break
-                    for event in pending:
-                        cursor = event.sequence
-                        yield sse_frame({"kind": "event", "session_id": session_id, "event": _event_payload(session_id, event)})
-                    if len(pending) < _FOLLOW_TAIL_LIMIT:
-                        break
+            done = asyncio.Event()
+            self._follow_streams.add(done)
+            try:
+                async for frame in self._follow_frames(kernel, session_id, cursor):
+                    yield frame
+            finally:
+                self._follow_streams.discard(done)
+                done.set()
 
         return EventStreamResponse(frames())
+
+    async def _follow_frames(self, kernel: Kernel, session_id: str, cursor: int) -> AsyncGenerator[bytes]:
+        """Follow new events until the client disconnects, a backend failure ends the stream, or a
+        successful drain ends it with the restart frame carrying the last delivered sequence."""
+        # Follow crosses run boundaries: completed/failed/interrupted end a
+        # run, never the session.
+        while True:
+            await asyncio.sleep(_FOLLOW_POLL_SECONDS)
+            while True:
+                try:
+                    pending = await asyncio.to_thread(kernel.events_after, session_id, after_sequence=cursor, limit=_FOLLOW_TAIL_LIMIT)
+                except Exception as exc:
+                    # Lifespan shutdown closes the kernel under in-flight streams; when a
+                    # drain already succeeded, that is the restart, not an error, so the
+                    # stream still ends with the frame carrying what it delivered.
+                    if self._restart_ready:
+                        break
+                    yield sse_frame({"kind": "error", "session_id": session_id, "error": f"{type(exc).__name__}: {exc}"})
+                    return
+                if not pending:
+                    break
+                for event in pending:
+                    cursor = event.sequence
+                    yield sse_frame({"kind": "event", "session_id": session_id, "event": _event_payload(session_id, event)})
+                if len(pending) < _FOLLOW_TAIL_LIMIT:
+                    break
+            if self._restart_ready:
+                # A successful drain is the only path here: flush everything committed since
+                # the last fetch, then end the stream with the last sequence this stream
+                # actually delivered. Facts committed after that fetch have higher sequences,
+                # so the client's reconnect replays them instead of skipping them.
+                while True:
+                    try:
+                        tail = await asyncio.to_thread(kernel.events_after, session_id, after_sequence=cursor, limit=_FOLLOW_TAIL_LIMIT)
+                    except Exception:
+                        # The store is already closed: shorten the flush, never the invariant.
+                        break
+                    if not tail:
+                        break
+                    for event in tail:
+                        cursor = event.sequence
+                        yield sse_frame({"kind": "event", "session_id": session_id, "event": _event_payload(session_id, event)})
+                yield sse_frame({"kind": "server_restart", "session_id": session_id, "cursor": cursor})
+                return
 
 
 def _capability_list_query(value: str) -> list[str]:
@@ -649,21 +881,58 @@ def create_kernel_app(
     bearer_token: str | None = None,
     allow_origin: str | None = None,
     frontend_dist: Path | None = None,
+    fenced: bool = False,
+    control_token: str | None = None,
+    image: Image | None = None,
+    generation: int = 1,
+    upgrade_id: str | None = None,
 ) -> KernelTransportApp:
     resolved_workspace = workspace.resolve(strict=True)
+    resolved_state = None if state_dir is None else Path(state_dir)
 
-    def factory() -> Kernel:
-        return open_kernel(resolved_workspace, state_dir=state_dir, trusted_plugins=trusted_plugins)
+    def factory() -> Kernel | None:
+        return open_kernel(resolved_workspace, state_dir=resolved_state, trusted_plugins=trusted_plugins)
 
-    return KernelTransportApp(kernel_factory=factory, bearer_token=bearer_token, allow_origin=allow_origin, frontend_dist=frontend_dist)
+    return KernelTransportApp(
+        kernel_factory=factory,
+        bearer_token=bearer_token,
+        allow_origin=allow_origin,
+        frontend_dist=frontend_dist,
+        fenced=fenced,
+        control_token=control_token,
+        image=image,
+        generation=generation,
+        upgrade_id=upgrade_id,
+        workspace=resolved_workspace,
+        state_dir=resolved_state,
+    )
 
 
 def create_kernel_app_with_factory(
     *,
-    kernel_factory: Callable[[], Kernel],
+    kernel_factory: Callable[[], Kernel | None],
     bearer_token: str | None = None,
     allow_origin: str | None = None,
     frontend_dist: Path | None = None,
+    fenced: bool = False,
+    control_token: str | None = None,
+    image: Image | None = None,
+    generation: int = 1,
+    upgrade_id: str | None = None,
+    workspace: Path | None = None,
+    state_dir: Path | None = None,
 ) -> KernelTransportApp:
     """Build the app against an explicit factory (tests and OpenAPI generation)."""
-    return KernelTransportApp(kernel_factory=kernel_factory, bearer_token=bearer_token, allow_origin=allow_origin, frontend_dist=frontend_dist)
+    return KernelTransportApp(
+        kernel_factory=kernel_factory,
+        bearer_token=bearer_token,
+        allow_origin=allow_origin,
+        frontend_dist=frontend_dist,
+        fenced=fenced,
+        control_token=control_token,
+        image=image,
+        generation=generation,
+        upgrade_id=upgrade_id,
+        workspace=workspace,
+        state_dir=state_dir,
+    )

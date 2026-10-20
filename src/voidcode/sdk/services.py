@@ -5,15 +5,20 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 from .json_values import json_wire_object, own_json_object
+
+if TYPE_CHECKING:
+    from .tools import ToolDefinition
+
+
+class QueryUnavailable(ValueError):
+    """No admitted plugin in this host generation answers the named query."""
 
 
 @dataclass(frozen=True, slots=True)
 class ContinuationResult:
-    """Outcome of draining or claiming a durable continuation."""
-
     continuation_id: str
     owner: str
     session_id: str
@@ -462,8 +467,34 @@ class PluginServices(Protocol):
     ) -> tuple[EventView, ...]:
         """Read a child session's committed events, bounded in count and payload size.
 
-        Restricted to this session's own root chain: the kernel checks the lineage, so a plugin
-        can never read an unrelated session by naming it. Bounds are the same as `read_events`.
+        Restricted to this session's OWN descendants: the kernel walks the target's parent chain
+        back to the caller, so a sibling, a parent, an unrelated root, or another workspace's
+        session is refused — a descendant of a common root is not enough. Bounds are the same
+        as `read_events`.
+        """
+        ...
+
+    def tool_definition(self, name: str) -> ToolDefinition | None:
+        """The definition of ``name`` from the active revision's dispatch snapshot, with this
+        session's visibility applied.
+
+        Answered by the kernel, never copied: it is the same snapshot and the same predicate
+        dispatch advertises with, so the reserved core surface, the session's profile scope, and
+        the effective read-only stance are all honored without a second catalog. ``None`` covers
+        both an unknown name and a name this session may not see.
+        """
+        ...
+
+    def query(self, name: str, arguments: Mapping[str, object] | None = None) -> Mapping[str, object] | None:
+        """Ask the host for a named query another admitted plugin answers.
+
+        Queries are host-local, read-only conveniences between trusted plugins (see
+        ``PluginQuery``): the answering handler runs in this host process, receives the caller's
+        lease-provided session and workspace, and returns one bounded JSON object or ``None`` for
+        "no answer". No kernel governance is involved, so a query answers questions, never
+        performs work. A name nobody answers raises ``QueryUnavailable``; every other failure
+        (handler bug, malformed shape, oversized answer) raises visibly and is never confused
+        with "unavailable".
         """
         ...
 
@@ -527,6 +558,27 @@ class PluginServices(Protocol):
         limit: int = 65536,
     ) -> ArtifactPage:
         """Read one bounded page of an artifact; `eof` when the page reaches the end."""
+        ...
+
+    def spawn_service_process(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path | str | None = None,
+        env: Mapping[str, str] | None = None,
+        process_id: str | None = None,
+    ) -> ProcessHandle:
+        """Start a supervised *service* process: a helper this host generation owns end to end.
+
+        Same identity, stdin, log paging, and cancellation surface as `spawn_process` (`write_process`,
+        `read_process_output`, `cancel_process`, `list_processes` all address it by its id), with one
+        lifetime difference: a service process belongs to the host generation that started it. It is
+        stopped when that generation retires — a host swap/reload, owner shutdown, or a hard host kill
+        — because it joins the host's own process group, while a background process keeps its
+        documented "survives a host swap" contract. Service processes are the right shape for a
+        language server or another interactive helper: they are not a user job the caller persists,
+        and a stale one outliving its generation would hold the workspace.
+        """
         ...
 
     def spawn_process(

@@ -33,9 +33,10 @@ from .formatter_config import (
 )
 from .formatter_executor import FormatterExecutor, formatter_diagnostics
 
-#: Tools whose successful result may be formatted; matches the legacy post-write trigger sites.
+#: Tools whose successful result is offered to this hook. ``apply_patch`` names no admitted
+#: tool (patch runs inside ``edit``), so it matches nothing; kept for manifest parity only.
 FORMATTED_TOOL_NAMES: tuple[str, ...] = ("write", "edit", "apply_workspace_edit", "apply_patch", "ast_grep")
-#: Argument keys the legacy tools used for the written path.
+#: Argument keys the file tools use for the written path.
 _PATH_ARGUMENT_KEYS: tuple[str, ...] = ("path", "file_path", "target_path")
 _CWD_POLICIES: frozenset[str] = frozenset({"workspace", "file_directory", "nearest_root"})
 

@@ -18,7 +18,7 @@ from ...sdk.json_values import json_wire_object, own_json_object
 from ...sdk.services import PluginBudget, SessionInfo
 
 SCHEMA_MAGIC = "voidcode-kernel-v1"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class StorageError(RuntimeError):
@@ -250,6 +250,16 @@ class PluginStateRow:
         object.__setattr__(self, "payload", own_json_object(self.payload))
 
 
+@dataclass(frozen=True, slots=True)
+class DrainBlocker:
+    """One unit of work that must settle before an adoption commits, with a stable reason code."""
+
+    session_id: str
+    status: str
+    reason: str
+    detail: str = ""
+
+
 def revision_identity(payload: Mapping[str, object]) -> str:
     """Content address of a capability revision payload, computed without storing it."""
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
@@ -301,8 +311,15 @@ def _load_schema_sql() -> str:
     return files("voidcode.kernel.storage").joinpath("schema.sql").read_text(encoding="utf-8")
 
 
-def _verify_existing_file(path: Path) -> None:
-    """Preflight check on an existing file without altering a single byte."""
+def _verify_existing_file(path: Path, *, supported: frozenset[int] | None = None, enforce_version: bool = True) -> int:
+    """Preflight check on an existing file without altering a single byte.
+
+    Returns the recorded schema version. ``supported`` names every version this caller
+    understands (tables are checked after the version, so a recorded version that is not
+    supported refuses before a single table is read). Defaults to the current version only.
+    With ``enforce_version=False`` the magic and table matrix are still verified, but any
+    recorded version passes and the caller classifies it.
+    """
     if not path.is_file():
         raise ForeignDatabaseError(f"database path exists but is not a regular file: {path}")
     if path.stat().st_size == 0:
@@ -314,11 +331,13 @@ def _verify_existing_file(path: Path) -> None:
     except sqlite3.Error as exc:
         raise ForeignDatabaseError(f"unsupported database file: {path}") from exc
 
+    expected = frozenset({SCHEMA_VERSION}) if supported is None else supported
     try:
         cursor = probe.execute("SELECT magic, schema_version FROM kernel_identity WHERE id = 1")
         row = cursor.fetchone()
-        if row is None or row[0] != SCHEMA_MAGIC or row[1] != SCHEMA_VERSION:
-            raise ForeignDatabaseError(f"unsupported database identity in {path}: expected ({SCHEMA_MAGIC!r}, {SCHEMA_VERSION}), got {row!r}")
+        if row is None or row[0] != SCHEMA_MAGIC or (enforce_version and row[1] not in expected):
+            raise ForeignDatabaseError(f"unsupported database identity in {path}: expected ({SCHEMA_MAGIC!r}, {sorted(expected)}), got {row!r}")
+        recorded = int(row[1])
         cursor = probe.execute("SELECT name FROM sqlite_master WHERE type='table'")
         tables = {r[0] for r in cursor.fetchall()}
         required = {
@@ -414,39 +433,93 @@ def _verify_existing_file(path: Path) -> None:
         required_workspace_cols = {"workspace", "active_revision_id", "updated_at"}
         if not required_workspace_cols.issubset(workspace_cols):
             raise ForeignDatabaseError(f"unsupported workspace_state schema in {path}: missing {required_workspace_cols - workspace_cols}")
+        return recorded
     except sqlite3.Error as exc:
         raise ForeignDatabaseError(f"unsupported database file or missing identity: {path}") from exc
     finally:
         probe.close()
 
 
-def inspect_existing_workspace(database: Path, workspace: str) -> tuple[str | None, Mapping[str, object] | None]:
-    """Read one workspace's adopted revision without creating or changing anything.
+#: Database versions whose table matrix the current code can read. The first adoption of a P5
+#: build is the only writer that advances 4 to 5, inside the adoption transaction; everything
+#: else refuses anything that is not exactly the current version.
+READABLE_SCHEMA_VERSIONS = frozenset({4, 5})
 
-    Returns (None, None) when there is no database (or no adopted revision for this workspace),
-    (revision_id, payload) when there is, and raises for a file that is not a kernel database.
-    Never writes, never sets pragmas. One state directory may hold several workspaces.
+
+def read_recorded_schema(database: Path) -> int | None:
+    """The schema version a database file records, or ``None`` when there is no database.
+
+    Read-only. Raises :class:`ForeignDatabaseError` for a file that is not a kernel database,
+    including one whose recorded version no supported transition can read.
     """
     if not database.exists():
-        return (None, None)
-    _verify_existing_file(database)
-    uri = f"{database.resolve().as_uri()}?mode=ro"
-    probe = sqlite3.connect(uri, uri=True)
+        return None
+    return _verify_existing_file(database, supported=READABLE_SCHEMA_VERSIONS)
+
+
+def open_read_only(database: Path) -> sqlite3.Connection:
+    """Open one kernel database for inspection, with writes refused by the connection itself.
+
+    The single read-only reader behind preflight, supervisor probes, and the ``show`` rescue path:
+    a ``mode=ro`` URI plus ``PRAGMA query_only``, after the same identity check a writer runs.
+    Accepts any recorded version whose magic and table matrix verify; foreign files raise.
+    Callers that need version semantics (preflight plans, writers) classify the recorded
+    version themselves instead of relying on the open to refuse it.
+    """
+    _verify_existing_file(database, supported=READABLE_SCHEMA_VERSIONS, enforce_version=False)
+    connection = sqlite3.connect(f"{database.resolve().as_uri()}?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA query_only = ON")
+    return connection
+
+
+def inspect_existing_workspace(database: Path, workspace: str) -> tuple[str | None, Mapping[str, object] | None, int | None]:
+    """Read one workspace's adopted revision without creating or changing anything.
+
+    Returns ``(None, None, None)`` when there is no database, ``(None, None, recorded_schema)``
+    when the workspace has no adopted revision, ``(revision_id, payload, recorded_schema)`` when
+    it has one, and raises for a file that is not a kernel database. Never writes, never sets
+    write pragmas. Accepts every version the current code can read, so the caller can decide
+    between restore and transition.
+    """
+    if not database.exists():
+        return (None, None, None)
+    probe = open_read_only(database)
     try:
+        identity = probe.execute("SELECT schema_version FROM kernel_identity WHERE id = 1").fetchone()
+        schema = int(identity["schema_version"])
         cursor = probe.execute("SELECT active_revision_id FROM workspace_state WHERE workspace = ?", (workspace,))
         row = cursor.fetchone()
         if row is None:
-            return (None, None)
-        revision_id = str(row[0])
+            return (None, None, schema)
+        revision_id = str(row["active_revision_id"])
         payload_row = probe.execute("SELECT payload_json FROM revisions WHERE revision_id = ?", (revision_id,)).fetchone()
         if payload_row is None:
             raise ForeignDatabaseError(f"database {database} points at missing revision {revision_id}")
-        payload = json.loads(str(payload_row[0]))
+        payload = json.loads(str(payload_row["payload_json"]))
         if not isinstance(payload, dict):
             raise ForeignDatabaseError(f"database {database} stores a malformed revision payload")
-        return (revision_id, json_wire_object(payload))
+        return (revision_id, json_wire_object(payload), schema)
     finally:
         probe.close()
+
+
+#: The single supported schema transition: a version-4 database becomes a version-5 database by
+#: rebuilding only the identity table (the old CHECK is part of the table definition, so the row
+#: cannot be updated in place). Runs exclusively inside the adoption transaction; every statement
+#: executes at ``execute`` level, never via ``executescript``, so the whole adoption stays atomic.
+_SCHEMA_TRANSITION_4_TO_5 = (
+    """
+    CREATE TABLE kernel_identity_v5 (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        magic TEXT NOT NULL CHECK (magic = 'voidcode-kernel-v1'),
+        schema_version INTEGER NOT NULL CHECK (schema_version = 5)
+    ) STRICT
+    """,
+    "INSERT INTO kernel_identity_v5 (id, magic, schema_version) SELECT id, magic, 5 FROM kernel_identity",
+    "DROP TABLE kernel_identity",
+    "ALTER TABLE kernel_identity_v5 RENAME TO kernel_identity",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -466,7 +539,7 @@ class WindowProjectionRecord:
 class SqliteStore:
     """Concrete SQLite store for kernel sessions, revisions, events, and checkpoints."""
 
-    def __init__(self, path: Path | str) -> None:
+    def __init__(self, path: Path | str, *, allow_schema: frozenset[int] | None = None) -> None:
         self._lock = threading.RLock()
         # ponytail: single store RLock serializes connection access per instance; separate reader/writer connection pools if concurrency matters
         self._closed = False
@@ -477,6 +550,7 @@ class SqliteStore:
         is_memory = str(path) == ":memory:"
         is_new = False
         resolved_path: Path | None = None
+        recorded_schema = SCHEMA_VERSION
 
         if not is_memory:
             resolved_path = path.resolve()
@@ -484,13 +558,14 @@ class SqliteStore:
             try:
                 descriptor = os.open(resolved_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             except FileExistsError:
-                _verify_existing_file(resolved_path)
+                recorded_schema = _verify_existing_file(resolved_path, supported=allow_schema)
             else:
                 os.close(descriptor)
                 is_new = True
         else:
             is_new = True
 
+        self._recorded_schema = recorded_schema
         self._connection = sqlite3.connect(
             str(resolved_path) if resolved_path is not None else ":memory:",
             timeout=5.0,
@@ -514,6 +589,12 @@ class SqliteStore:
             if is_new and resolved_path is not None:
                 resolved_path.unlink(missing_ok=True)
             raise
+
+    @property
+    def recorded_schema(self) -> int:
+        """The schema version the opened file records (equal to the current one unless this store
+        was opened explicitly to perform a supported transition)."""
+        return self._recorded_schema
 
     @property
     def path(self) -> Path:
@@ -1863,6 +1944,292 @@ class SqliteStore:
                 if in_transaction:
                     self._connection.execute("ROLLBACK")
                 raise
+
+    def adopt_revision(
+        self,
+        *,
+        workspace: str,
+        session_id: str | None,
+        expected_sequence: int | None,
+        expected_run_id: str | None,
+        expected_revision_id: str,
+        target_revision_id: str,
+        target_payload: Mapping[str, object],
+        run_id: str,
+        status: str | None,
+        events: Sequence[EventDraft] = (),
+        checkpoint_kind: Literal["ready", "approval_wait", "terminal", "interrupted"] | None = None,
+        checkpoint_payload: Mapping[str, object] | None = None,
+        state_updates: Sequence[StagedStateUpdate] = (),
+        cancelled_owners: Sequence[str] = (),
+        cleared_budget_owners: Sequence[str] = (),
+        require_quiescent: bool,
+    ) -> str:
+        """One CAS transaction that adopts a new kernel generation for the workspace.
+
+        Covers, atomically: the supported schema rebuild (4 to 5) when the opened file still
+        records 4, the immutable revision row, the workspace pointer, EVERY session ref in the
+        workspace, every migrated/deactivated owner state copy, cancelled work for dropped owners,
+        retargeted queued work, and (when an acting session names the transition) that session's
+        CAS, events, and checkpoint. An adoption without an acting session is allowed only when
+        the workspace has no sessions at all.
+        """
+        target_text = canonical_json(target_payload)
+        computed_target = hashlib.sha256(target_text.encode("utf-8")).hexdigest()
+        if computed_target != target_revision_id:
+            raise ValueError("target revision payload does not match its declared identity")
+        if session_id is None:
+            if expected_sequence is not None or expected_run_id is not None:
+                raise ValueError("adoption without an acting session must not carry session expectations")
+        elif expected_sequence is None:
+            raise ValueError("adoption with an acting session needs its expected sequence")
+        with self._lock:
+            self._check_open()
+            in_transaction = False
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                in_transaction = True
+                now = int(time.time() * 1000)
+
+                identity_row = self._connection.execute("SELECT schema_version FROM kernel_identity WHERE id = 1").fetchone()
+                live_schema = int(identity_row[0])
+                if live_schema == 4:
+                    for statement in _SCHEMA_TRANSITION_4_TO_5:
+                        self._connection.execute(statement)
+                elif live_schema != SCHEMA_VERSION:
+                    raise StoreConflict(f"schema {live_schema} cannot be adopted by this kernel")
+
+                if session_id is None:
+                    count = self._connection.execute("SELECT COUNT(*) FROM sessions WHERE workspace = ?", (workspace,)).fetchone()
+                    if int(count[0]) != 0:
+                        raise StoreConflict("adoption without an acting session requires a workspace with no sessions")
+                else:
+                    assert expected_sequence is not None
+                    row = self._connection.execute(
+                        """
+                        SELECT workspace, status, active_revision_id, run_id, turn, last_event_sequence
+                        FROM sessions
+                        WHERE session_id = ?
+                        """,
+                        (session_id,),
+                    ).fetchone()
+                    if row is None:
+                        raise StoreConflict(f"session {session_id!r} does not exist")
+                    row_workspace, _, curr_revision_id, curr_run_id, _, curr_seq = row
+                    if row_workspace != workspace:
+                        raise StoreConflict(f"session {session_id!r} belongs to workspace {row_workspace!r}")
+                    if curr_seq != expected_sequence:
+                        raise StoreConflict(f"sequence mismatch for session {session_id!r}: expected {expected_sequence}, got {curr_seq}")
+                    if curr_run_id != expected_run_id:
+                        raise StoreConflict(f"run_id mismatch for session {session_id!r}: expected {expected_run_id!r}, got {curr_run_id!r}")
+                    if curr_revision_id != expected_revision_id:
+                        raise StoreConflict(
+                            f"active revision mismatch for session {session_id!r}: active is {curr_revision_id!r}, got {expected_revision_id!r}"
+                        )
+                    if target_revision_id == expected_revision_id:
+                        raise StoreConflict("the workspace already runs the target capability revision")
+
+                blockers = self._drain_blockers_locked(workspace, include_parked=require_quiescent)
+                if blockers:
+                    joined = "; ".join(f"{blocker.session_id} is blocked ({blocker.reason})" for blocker in blockers)
+                    raise StoreConflict(f"adoption blocked: {joined}")
+
+                self._connection.execute(
+                    """
+                    INSERT INTO revisions (revision_id, created_at, payload_json)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT (revision_id) DO NOTHING
+                    """,
+                    (target_revision_id, now, target_text),
+                )
+                self._connection.execute(
+                    """
+                    INSERT INTO workspace_state (workspace, active_revision_id, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT (workspace) DO UPDATE SET
+                        active_revision_id = excluded.active_revision_id,
+                        updated_at = excluded.updated_at
+                    """,
+                    (workspace, target_revision_id, now),
+                )
+                self._connection.execute(
+                    """
+                    UPDATE sessions
+                    SET active_revision_id = ?, updated_at = ?
+                    WHERE workspace = ?
+                    """,
+                    (target_revision_id, now, workspace),
+                )
+
+                self._apply_state_updates(state_updates, default_revision_id=target_revision_id, now=now)
+
+                for owner in cancelled_owners:
+                    self._connection.execute("DELETE FROM session_overlays WHERE owner = ?", (owner,))
+                    self._connection.execute("DELETE FROM window_projections WHERE owner = ?", (owner,))
+                    self._connection.execute(
+                        """
+                        UPDATE continuations
+                        SET status = 'cancelled', updated_at = ?
+                        WHERE status IN ('pending', 'claimed') AND owner = ?
+                          AND session_id IN (SELECT session_id FROM sessions WHERE workspace = ?)
+                        """,
+                        (now, owner, workspace),
+                    )
+                    self._connection.execute(
+                        """
+                        DELETE FROM session_budgets
+                        WHERE owner = ?
+                          AND session_id IN (SELECT session_id FROM sessions WHERE workspace = ?)
+                        """,
+                        (owner, workspace),
+                    )
+                for owner in set(cancelled_owners) | set(cleared_budget_owners):
+                    self._connection.execute(
+                        """
+                        DELETE FROM session_budgets
+                        WHERE owner = ?
+                          AND session_id IN (SELECT session_id FROM sessions WHERE workspace = ?)
+                        """,
+                        (owner, workspace),
+                    )
+                # Queued work that stays enabled keeps its provenance and shared root budget, but is
+                # rebound to the revision that will execute it - every session, not just the acting one.
+                self._connection.execute(
+                    """
+                    UPDATE continuations
+                    SET revision_id = ?, updated_at = ?
+                    WHERE status IN ('pending', 'claimed')
+                      AND session_id IN (SELECT session_id FROM sessions WHERE workspace = ?)
+                    """,
+                    (target_revision_id, now, workspace),
+                )
+                # Every resumable cursor moves with the generation: paused and parked checkpoints
+                # keep their payload and run identity, but a candidate that refused a stale
+                # checkpoint revision would strand them. Terminal history is never read again.
+                self._connection.execute(
+                    """
+                    UPDATE checkpoints
+                    SET revision_id = ?, updated_at = ?
+                    WHERE kind <> 'terminal'
+                      AND session_id IN (SELECT session_id FROM sessions WHERE workspace = ?)
+                    """,
+                    (target_revision_id, now, workspace),
+                )
+
+                if session_id is not None:
+                    assert status is not None
+                    current_seq = curr_seq
+                    for draft in events:
+                        current_seq += 1
+                        self._connection.execute(
+                            """
+                            INSERT INTO session_events (
+                                session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                session_id,
+                                current_seq,
+                                run_id,
+                                draft.event_type,
+                                draft.source,
+                                draft.actor,
+                                target_revision_id,
+                                canonical_json(draft.payload),
+                            ),
+                        )
+                    self._connection.execute(
+                        """
+                        UPDATE sessions
+                        SET status = ?, run_id = ?, updated_at = ?, last_event_sequence = ?
+                        WHERE session_id = ?
+                        """,
+                        (status, run_id, now, current_seq, session_id),
+                    )
+                    if checkpoint_kind is not None and checkpoint_payload is not None:
+                        self._connection.execute(
+                            """
+                            INSERT INTO checkpoints (
+                                session_id, kind, revision_id, run_id, last_event_sequence, payload_json, updated_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT (session_id) DO UPDATE SET
+                                kind = excluded.kind,
+                                revision_id = excluded.revision_id,
+                                run_id = excluded.run_id,
+                                last_event_sequence = excluded.last_event_sequence,
+                                payload_json = excluded.payload_json,
+                                updated_at = excluded.updated_at
+                            """,
+                            (session_id, checkpoint_kind, target_revision_id, run_id, current_seq, canonical_json(checkpoint_payload), now),
+                        )
+
+                self._connection.execute("COMMIT")
+                in_transaction = False
+                self._recorded_schema = SCHEMA_VERSION
+                return target_revision_id
+            except Exception:
+                if in_transaction:
+                    self._connection.execute("ROLLBACK")
+                raise
+
+    def _drain_blockers_locked(self, workspace: str, *, include_parked: bool) -> list[DrainBlocker]:
+        """Work that must settle before an adoption commits; callers hold the connection lock."""
+        blockers: list[DrainBlocker] = []
+        cursor = self._connection.execute(
+            """
+            SELECT session_id
+            FROM sessions
+            WHERE workspace = ? AND status = 'running'
+            ORDER BY session_id ASC
+            """,
+            (workspace,),
+        )
+        blockers.extend(DrainBlocker(session_id=str(row[0]), status="running", reason="running") for row in cursor.fetchall())
+        if include_parked:
+            cursor = self._connection.execute(
+                """
+                SELECT session_id
+                FROM sessions
+                WHERE workspace = ? AND status = 'waiting'
+                ORDER BY session_id ASC
+                """,
+                (workspace,),
+            )
+            blockers.extend(DrainBlocker(session_id=str(row[0]), status="waiting", reason="approval_wait") for row in cursor.fetchall())
+            cursor = self._connection.execute(
+                """
+                SELECT session_id, request_id
+                FROM action_confirmations
+                WHERE status = 'pending'
+                  AND session_id IN (SELECT session_id FROM sessions WHERE workspace = ?)
+                ORDER BY request_id ASC
+                """,
+                (workspace,),
+            )
+            blockers.extend(
+                DrainBlocker(session_id=str(row[0]), status="confirmation", reason="pending_confirmation", detail=str(row[1]))
+                for row in cursor.fetchall()
+            )
+        cursor = self._connection.execute(
+            """
+            SELECT session_id, continuation_id, owner
+            FROM continuations
+            WHERE status = 'claimed'
+              AND session_id IN (SELECT session_id FROM sessions WHERE workspace = ?)
+            ORDER BY continuation_id ASC
+            """,
+            (workspace,),
+        )
+        blockers.extend(
+            DrainBlocker(session_id=str(row[0]), status="claimed", reason="claimed_continuation", detail=str(row[1])) for row in cursor.fetchall()
+        )
+        return blockers
+
+    def drain_blockers(self, workspace: str, *, include_parked: bool) -> tuple[DrainBlocker, ...]:
+        """Read-only view of the work that must settle before an adoption commits."""
+        with self._lock:
+            self._check_open()
+            return tuple(self._drain_blockers_locked(workspace, include_parked=include_parked))
 
     def workspace_current(self, workspace: str) -> str | None:
         """The capability revision the workspace is currently running, or None before first adoption."""

@@ -1,11 +1,9 @@
 """Reasoning replay and reasoning-effort rules of the ``providers`` plugin.
 
 Every assertion here is a wire fact recorded by a real loopback HTTP server: a
-replayed tool batch either carries the provider's own persisted reasoning
-content verbatim, or the turn fails typed before a request exists. Which models
-require reasoning content, which effort levels they accept and how they spell
-"do not reason" are data (``thinking_rules.json``, ``model_catalog_data.json``);
-the consequences are what these tests pin.
+replayed tool batch carries the provider's own persisted reasoning content
+verbatim when that turn reasoned, and never fabricates the field when the
+vendor legitimately returned zero reasoning tokens.
 """
 
 from __future__ import annotations
@@ -112,21 +110,20 @@ def _assistant_message(server: OpenAILoopbackServer) -> Mapping[str, object]:
     return assistant
 
 
-def test_tool_call_replay_without_reasoning_fails_typed_before_http(loopback_server: OpenAILoopbackServer) -> None:
-    """DeepSeek requires the original reasoning content on a replayed tool turn."""
+def test_tool_call_replay_without_reasoning_sends_the_recorded_shape_without_synthesis(loopback_server: OpenAILoopbackServer) -> None:
+    """A genuine zero-reasoning tool turn replays without a fabricated field.
+
+    DeepSeek returns tool-call turns with ``reasoning_tokens: 0`` for some
+    requests even though thinking is enabled; the persisted absence is the
+    provider's own shape and must reach the wire as absence.
+    """
     provider = _provider(_entries(loopback_server))
+    loopback_server.replies.append(openai_response(message={"content": "done"}, finish="stop"))
 
-    with pytest.raises(ProviderExecutionError) as excinfo:
-        provider.propose_turn(_replayed_turn())
+    provider.propose_turn(_replayed_turn())
 
-    error = excinfo.value
-    assert error.kind == "stream_tool_feedback_shape"
-    assert error.retryable is False
-    assert error.fallback_allowed is False
-    assert error.message == "tool-call replay requires the original provider reasoning content"
-    assert error.details == {"source": "messages", "reason": "missing_reasoning_content", "tool_call_id": "call-1"}
-    # The refusal is pre-HTTP: nothing was sent and no transport call was recorded.
-    assert loopback_server.requests == []
+    assistant = _assistant_message(loopback_server)
+    assert "reasoning_content" not in assistant
 
 
 @pytest.mark.parametrize(
@@ -142,7 +139,7 @@ def test_tool_call_replay_without_reasoning_fails_typed_before_http(loopback_ser
         pytest.param(None, {"source": "replayed_conversation"}, id="replay marked as a replayed conversation"),
     ],
 )
-def test_cross_provider_replay_without_authentic_reasoning_fails_before_http(
+def test_cross_provider_replay_without_authentic_reasoning_never_synthesizes_a_field(
     loopback_server: OpenAILoopbackServer,
     reasoning: str | None,
     assistant_metadata: Mapping[str, object] | None,
@@ -151,54 +148,72 @@ def test_cross_provider_replay_without_authentic_reasoning_fails_before_http(
 
     Nothing else can stand in for it: an empty string is not reasoning content,
     and a ``reasoning_content`` field carried by the tool result's own data is
-    untrusted payload the model or transport could have written -- accepting it
-    would be fabricating the provider's own thinking. All of them fail typed,
-    before any request.
+    untrusted payload the model or transport could have written. The request
+    proceeds with the field absent rather than fabricating the provider's own
+    thinking.
     """
     provider = _provider(_entries(loopback_server))
+    loopback_server.replies.append(openai_response(message={"content": "done"}, finish="stop"))
 
-    with pytest.raises(ProviderExecutionError) as excinfo:
-        provider.propose_turn(_replayed_turn(reasoning=reasoning, assistant_metadata=assistant_metadata))
+    provider.propose_turn(_replayed_turn(reasoning=reasoning, assistant_metadata=assistant_metadata))
 
-    assert excinfo.value.kind == "stream_tool_feedback_shape"
-    assert excinfo.value.details is not None
-    assert excinfo.value.details["reason"] == "missing_reasoning_content"
-    assert loopback_server.requests == []
+    assert "reasoning_content" not in _assistant_message(loopback_server)
+
+
+def test_reasoning_on_an_assistant_turn_without_tool_calls_is_replayed_with_tools(loopback_server: OpenAILoopbackServer) -> None:
+    """DeepSeek's tools contract requires prior reasoning on every assistant turn.
+
+    The request carries tools, so an earlier assistant answer that reasoned but
+    called no tool must still carry its authentic reasoning_content.
+    """
+    provider = _provider(_entries(loopback_server))
+    loopback_server.replies.append(openai_response(message={"content": "done"}, finish="stop"))
+
+    provider.propose_turn(
+        _request(
+            ProviderMessage("user", "read a.txt"),
+            ProviderMessage("assistant", content="I will read it.", reasoning=_AUTHENTIC_REASONING),
+            ProviderMessage("user", "go ahead"),
+            available_tools=(_tool(),),
+            provider_name="deepseek",
+            model_name="deepseek-chat",
+            raw_model="deepseek/deepseek-chat",
+        )
+    )
+
+    assistant = _assistant_message(loopback_server)
+    assert assistant["reasoning_content"] == _AUTHENTIC_REASONING
 
 
 def test_authentic_reasoning_is_replayed_verbatim_and_tool_choice_is_omitted(loopback_server: OpenAILoopbackServer) -> None:
     provider = _provider(_entries(loopback_server))
     loopback_server.replies.append(openai_response(message={"content": "done"}, finish="stop"))
 
-    result = provider.propose_turn(_replayed_turn(reasoning=_AUTHENTIC_REASONING))
+    provider.propose_turn(_replayed_turn(reasoning=_AUTHENTIC_REASONING))
 
-    assert result.output == "done"
-    assert [message["role"] for message in _wire_requests(loopback_server)[0]["messages"]] == ["user", "assistant", "tool"]  # type: ignore[union-attr]
     assistant = _assistant_message(loopback_server)
     assert assistant["reasoning_content"] == _AUTHENTIC_REASONING
-    assert assistant["tool_calls"] == [{"id": "call-1", "type": "function", "function": {"name": "read", "arguments": '{"path": "a.txt"}'}}]
     # A model that requires reasoning content is never asked to choose a tool.
     assert "tool_choice" not in _wire_requests(loopback_server)[0]
-    assert _wire_requests(loopback_server)[0]["tools"][0]["function"]["name"] == "read"  # type: ignore[index]
 
 
-def test_a_model_map_alias_onto_a_reasoning_locked_model_still_requires_reasoning(loopback_server: OpenAILoopbackServer) -> None:
+def test_a_model_map_alias_onto_a_reasoning_locked_model_replays_without_synthesis(loopback_server: OpenAILoopbackServer) -> None:
     """The mapped name is what reaches the provider, so the mapped model's rule decides."""
     entries = _entries(loopback_server, model_map={"legacy-ds": "deepseek-v4-pro"})
     provider = _provider(entries)
+    loopback_server.replies.append(openai_response(message={"content": "done"}, finish="stop"))
 
-    with pytest.raises(ProviderExecutionError) as excinfo:
-        provider.propose_turn(_replayed_turn(model_name="legacy-ds"))
+    provider.propose_turn(_replayed_turn(model_name="legacy-ds"))
 
-    assert excinfo.value.kind == "stream_tool_feedback_shape"
-    assert loopback_server.requests == []
+    assert "reasoning_content" not in _assistant_message(loopback_server)
 
     loopback_server.replies.append(openai_response(message={"content": "done"}, finish="stop"))
     provider.propose_turn(_replayed_turn(reasoning=_AUTHENTIC_REASONING, model_name="legacy-ds"))
 
-    wire_request = _wire_requests(loopback_server)[0]
+    wire_request = _wire_requests(loopback_server)[1]
     assert wire_request["model"] == "deepseek-v4-pro"
-    assert _assistant_message(loopback_server)["reasoning_content"] == _AUTHENTIC_REASONING
+    assistant = next(message for message in wire_request["messages"] if message.get("role") == "assistant")
+    assert assistant["reasoning_content"] == _AUTHENTIC_REASONING
 
 
 def test_a_provider_without_the_reasoning_requirement_replays_without_it(loopback_server: OpenAILoopbackServer) -> None:

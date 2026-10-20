@@ -4,14 +4,14 @@ VoidCode is a local-first coding agent built as a small trusted **kernel**, a ve
 
 ## Core Design Principles
 
-1. **Trusted Kernel, Untrusted-Rooted Plugins**:
-   The kernel (`src/voidcode/kernel/`) owns governance, persistence, streaming, and admission. Plugins own behavior — tools, commands, providers, hooks, views, and session state — and reach the kernel only through the SDK and the host protocol. Nothing in the kernel imports a concrete plugin.
+1. **Trusted Kernel, Capability-Scoped Plugins**:
+   The kernel (`src/voidcode/kernel/`) owns governance, persistence, streaming, and admission. Plugins own behavior — tools, commands, providers, hooks, views, and session state — and reach the kernel only through the SDK and the host protocol. Nothing in the kernel imports a concrete plugin. This is an architecture boundary, not a sandbox: an admitted plugin is trusted Python running in its own host process with the capabilities the kernel grants it, so only source code the user explicitly trusted is ever admitted.
 
 2. **Contracts-Only SDK**:
    `src/voidcode/sdk/` is the single shared surface for the kernel, the plugin host, and every plugin, and it depends on nothing from the implementation layers (standard library, `pydantic`, and `jsonschema` only).
 
 3. **Pinned Identity, Never Implicit Change**:
-   An admitted plugin is copied into a content-addressed artifact directory named by its manifest hash, and every declared file's sha256 is verified. Editing plugin source produces a *new* identity; it never mutates the admitted one. The SDK source hash is pinned into the workspace revision, so a changed SDK refuses to restart against an old revision and requires a controlled upgrade.
+   An admitted plugin is copied into a content-addressed artifact directory named by its manifest hash, and every declared file's sha256 is verified. Editing plugin source produces a *new* identity; it never mutates the admitted one. The SDK source hash is pinned into the workspace revision, so a changed SDK refuses to restart against an old revision; the explicit path is the controlled kernel upgrade (`voidcode upgrade run --candidate`, see [`kernel-upgrade.md`](./contracts/kernel-upgrade.md)), and a hot reload never crosses an SDK or image change.
 
 4. **Append-Only Durability**:
    Session history is an immutable, monotonic event stream in SQLite. Views, transcripts, usage reports, and plugin-provided UI are projections of that stream. There is no fork, undo, revert, or checkout.
@@ -53,17 +53,17 @@ graph TD
 
     SDK["SDK contracts (src/voidcode/sdk/): manifest · plugin · tools · commands · services · provider · hooks · views · invocation"]
 
-    CLI --> Transport
+    CLI -->|elected image| Engine
     TUI --> Transport
     Web --> Transport
     Transport --> Engine
-    Engine --> Bootstrap
     Engine --> HostClient
     Engine --> Storage
     Bootstrap --> Activation
-    Artifacts --> Activation
+    Bootstrap --> Engine
     Coverage --> Storage
     HostClient --> Stdio
+    HostClient --> Artifacts
     Stdio --> Processes
     Stdio --> Plugins
     Kernel --> SDK
@@ -88,6 +88,7 @@ graph TD
 
 Plugin code does not run inside the kernel process. The host is a separate executable that:
 
+- is a process boundary for lifecycle and import isolation, not an OS sandbox: admitted plugin code is trusted Python running with the capabilities the kernel granted it,
 - verifies the admitted identities it was handed before importing anything,
 - serves invocations over stdio, with the kernel owning stance, approvals, and budgets,
 - owns child processes: lease-scoped processes (refused for read-only and hook leases, killed by process group on timeout or cancellation) and supervised background processes partitioned by the session that started them, whose identities survive a host swap.
@@ -127,6 +128,30 @@ Each plugin directory carries a `voidcode-plugin.json` manifest and is admitted 
 
 Which ids are admitted by default is decided in `kernel/bootstrap.py` (`_bundled_sources`); a bundled id is trusted by construction, and any additional id needs an explicit `plugins.<id>.path` and explicit trust.
 
+### Tool boundary
+
+Model tools are SDK contracts plus manifest-declared, owner-registered handlers:
+each `voidcode-plugin.json` declares tool names/schemas/effects, each plugin's
+`create_plugin` returns matching `Plugin.tools`, the host rejects drift, and the
+kernel admits, validates, approves, dispatches, and records every call. The
+engine-owned model tool `kernel_reload` is not plugin-declared; `kernel.reload`
+is the corresponding user command. Product tools belong in plugins, not in a
+legacy tools directory.
+`read` also serves bounded derived views: `voidcode://tool/<name>` renders the definition the
+kernel's active dispatch snapshot advertises to this session (plugin plus reserved core tools,
+with profile scope and read-only stance applied); `voidcode://transcript/<session>` composes a
+payload-stripped page from committed events for the caller's own session or one of its own
+descendants (parents, siblings, unrelated roots, and foreign workspaces are refused by the
+kernel's lineage guard); `voidcode://rule/<name>` asks the skills plugin's `workspace.rule_page`
+query, which owns the rulebook semantics; `voidcode://artifact/<id>` reads through
+`PluginServices.read_artifact`. `apply_workspace_edit` demands `expectedHash`, and version
+constraints are checked against the LSP plugin's `workspace.document_version` query — a pure
+read of documents this session already opened (never a server start) — failing closed with a
+visible diagnostic when nothing is open. Language servers run as supervised host-generation
+service processes (`spawn_service_process`, stdin piped, stdout/stderr spooled) so retirement,
+reload, cancellation, and hard host death all clean the owned tree; the `lsp` tool therefore
+declares `read`+`execute` and flows through the existing approval/read-only gates.
+
 ## Execution & Durability Model
 
 1. **One authority, append-only facts.** A run appends `kernel.*` events; the session view, transcript, usage report, pending confirmations, and plugin views are all derived from those rows. A client that reconnects replays the stream and commits each row at most once.
@@ -136,7 +161,7 @@ Which ids are admitted by default is decided in `kernel/bootstrap.py` (`_bundled
 
 ## Client Surfaces
 
-- **Kernel CLI** (`python -m voidcode.kernel`, also the `voidcode` console script): `run`, `resume`, `show`, `create-session`, `sessions`, `catalog`, `invoke`, `confirm`, `views`, `drain`, `usage`, `tui`, `serve`.
+- **Kernel CLI** (`python -m voidcode.kernel`, also the `voidcode` console script): `run`, `resume`, `show`, `preflight`, `create-session`, `sessions`, `catalog`, `invoke`, `confirm`, `views`, `drain`, `usage`, `tui`, `serve`, `upgrade`. The operational commands execute inside the elected image; `show` is a config-free SQLite rescue reader; `serve` supervises one kernel child behind a stable endpoint and token; `tui` spawns a supervisor child by default and drives it as an HTTP client (or attaches to a remote one with `--server`); `upgrade` asks the running supervisor for a controlled kernel upgrade and `preflight` prints the read-only candidate check.
 - **TUI**: inline scrollback with a commit-once ledger; local controls (`/tui help|sessions|session|new|views|cancel|quit`) that never shadow an admitted command.
 - **HTTP/SSE**: the generic `/api` contract — see [`contracts/client-transport.md`](./contracts/client-transport.md).
 - **Web client** (`frontend/src/kernel/`): the React kernel app, served by the kernel at `/` when a bundle is built, rendering the same catalog, views, and event stream.
@@ -147,6 +172,8 @@ Which ids are admitted by default is decided in `kernel/bootstrap.py` (`_bundled
 
 - `kernel-v1.sqlite3` — sessions, events, checkpoints, revisions, confirmations;
 - `artifacts/<identity>/` — the pinned copies of every admitted plugin;
-- `private/<revision>.json` — the 0600 configuration snapshot (credentials included), never referenced by events or revisions.
+- `private/<revision>.json` — the 0600 configuration snapshot (credentials included), never referenced by events or revisions;
+- `kernel-images/<digest>/` — immutable installation snapshots; the elected image a revision pins resolves here;
+- `supervisor/` — the supervisor's control socket, journal, and scratch (observability only; SQLite stays canonical).
 
 The state directory must not live inside the workspace; `--state-dir` overrides the derived location. Legacy state from the pre-kernel architecture is neither read nor migrated.

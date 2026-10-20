@@ -81,5 +81,11 @@
   "kernel.formTrue": "True",
   "kernel.formFalse": "False",
   "kernel.statusLoadingSession": "Loading session {{sessionId}}…",
+  "kernel.statusReconnecting": "Kernel restarting — reconnecting…",
+  "kernel.statusUpgradePending": "Kernel is draining for an upgrade; retry after it restarts",
+  "kernel.statusUpgradePendingAction": "Kernel is draining for an upgrade; /{{name}} was not dispatched",
+  "kernel.upgradeFenced": "Kernel upgrade in progress ({{stage}}): dispatch paused",
+  "kernel.upgradeActive": "Kernel upgrade: {{stage}}",
+  "kernel.revisionAdopted": "Kernel revision adopted: {{revision}} — catalog and views refreshed",
   "kernel.formTitle": "Form: {{action}}"
 }

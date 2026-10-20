@@ -11,7 +11,8 @@ admission, activation, trust, and continuation behavior added in P3.
   process can. Only code the user explicitly trusted is admitted.
 - One active generation per workspace. There is no long-lived mixed-version routing and no
   in-place module reloading; a candidate is a new host process over an immutable artifact.
-- A mutated SDK is a controlled kernel upgrade (P5), never a hot reload: activation refuses when
+- A mutated SDK is a controlled kernel upgrade (`voidcode upgrade run --candidate`, see
+  [`kernel-upgrade.md`](./kernel-upgrade.md)), never a hot reload: activation refuses when
   the installed SDK bytes differ from the revision's pinned `sdk_sha256`.
 
 ## Admission pins bytes; it never imports candidates

@@ -7,14 +7,14 @@ VoidCode uses Python and frontend tests to defend kernel contracts, plugin bound
 Python coverage is organized around the kernel and its plugin seam:
 
 - **Unit tests (`tests/unit/`)**:
-  - `tests/unit/kernel/`: kernel behavior — admission and pinned identities, storage schema and append semantics, host lifecycle, process leases, pre/post-tool gates, lifecycle hooks, read coverage, overlays, request windows, delegation bounds, nested tools, and bundled-source boot.
-  - `tests/unit/plugins/`: bundled plugin behavior asserted through each plugin's declared tools and commands — files, exec, web, providers (catalog, dispatch, reasoning/auth/streaming contracts, panels), session_info, todo, skills, agents, review, delegation, btw, cron, compaction, hooks, formatter, user_shell, effectiveness, and goal. `ast_grep`, `mcp`, and `lsp` have no dedicated new-world behavior suite yet; they are exercised only by the SDK contract and bundled-source boot tests.
+  - `tests/unit/kernel/`: kernel behavior — admission and pinned identities, storage schema and append semantics, host lifecycle, process leases, pre/post-tool gates, lifecycle hooks, read coverage, overlays, request windows, delegation bounds, nested tools, bundled-source boot, and the upgrade seams (`test_digests.py`, `test_upgrade_images.py`, `test_upgrade_preflight.py`, `test_upgrade_adoption.py`, `test_upgrade_drain.py`).
+  - `tests/unit/plugins/`: bundled plugin behavior asserted through each plugin's declared tools and commands — files, exec, web, providers (catalog, dispatch, reasoning/auth/streaming contracts, panels), session_info, todo, skills, agents, review, delegation, btw, cron, compaction, hooks, formatter, user_shell, effectiveness, and goal. `ast_grep` and `mcp` have no dedicated behavior suite yet; they are exercised only by the SDK contract and bundled-source boot tests. `lsp` is covered by `tests/unit/plugins/test_lsp_managed.py` and `tests/integration/test_lsp_managed_host.py`.
   - `tests/unit/sdk/`: the shared contracts — configuration parsing, manifest identities, command/tool/view models, and the import-direction guard that keeps the SDK free of implementation dependencies.
   - `tests/unit/plugin_host/`: the host process protocol: strict codec behavior and stdio server semantics.
-  - `tests/unit/test_kernel_tui.py`: the inline TUI client (catalog dispatch, ledger commit-once behavior, overlays).
+  - `tests/unit/test_kernel_tui.py`: the TUI's declarative view widgets — unsupported-view refusal, interactive choices navigation/selection, confirmation key handling, and form editing, submission, nullable/boolean handling, and validation — plus the commit-once ledger's settled-once reconnect regression (`test_reconnect_replays_unseen_rows_despite_ahead_restart_watermark`). The application loop and HTTP client have no automated suite; they are exercised by the manual TUI acceptance run below.
 - **Integration tests (`tests/integration/`)**: multi-component workflows over a real kernel and real storage:
-  - `tests/integration/test_kernel_activation.py`, `test_kernel_governance.py`, `test_kernel_transport.py`, `test_kernel_vertical.py`.
-  - `tests/integration/test_*_plugin.py`: one end-to-end suite per product plugin (agents, btw/effectiveness, compaction, cron, delegation, formatter, goal, hooks, plan, review).
+  - `tests/integration/test_kernel_activation.py`, `test_kernel_governance.py`, `test_kernel_transport.py`, `test_kernel_vertical.py`, `test_kernel_upgrade.py`, `test_kernel_upgrade_transport.py`.
+  - `tests/integration/test_*_plugin.py`: one end-to-end suite per product plugin (agents, btw/effectiveness, compaction, cron, delegation, formatter, goal, hooks, plan, review, skills, todo, user_shell).
 - **Frontend (`frontend/`)**: Vitest component tests for the kernel app and its eight view renderers (`frontend/src/kernel/views.test.tsx`). See `frontend/README.md` for the frontend workflow.
 
 ## Core Testing Principles

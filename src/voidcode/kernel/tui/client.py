@@ -78,6 +78,10 @@ class KernelHttpClient:
         except urllib.error.URLError as exc:
             raise KernelClientError(f"connection error: {exc.reason}") from exc
 
+    def health(self) -> dict[str, Any]:
+        """Liveness/identity read (contracted /api/health shape; backend-owned schema)."""
+        return self._request("GET", "/api/health")
+
     def command_catalog(self) -> tuple[str, list[dict[str, Any]]]:
         """The catalog and the capability revision it was captured under."""
         res = self._request("GET", "/api/commands")
@@ -225,5 +229,10 @@ class KernelHttpClient:
                             if data_str:
                                 try:
                                     yield json.loads(data_str)
-                                except Exception:
-                                    logger.warning("failed to decode SSE JSON payload: %r", data_str)
+                                except json.JSONDecodeError as exc:
+                                    # A malformed frame fails the connection
+                                    # visibly: skipping fact N and applying N+1
+                                    # would advance the resume cursor past a
+                                    # missed fact. The worker reconnects from
+                                    # the own applied cursor.
+                                    raise KernelClientError(f"malformed SSE frame: {exc}") from exc

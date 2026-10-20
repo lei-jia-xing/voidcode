@@ -7,7 +7,7 @@
   "files": [
     {
       "path": "__init__.py",
-      "sha256": "c4bac91881679514f34624144885ccc193236cefdb470918289aa4077aaa5579"
+      "sha256": "a11286729337d76352899c453829d6b03b6bf050ae1aaf17bc75dc71db5068eb"
     },
     {
       "path": "artifacts.py",
@@ -23,15 +23,15 @@
     },
     {
       "path": "lsp_manager.py",
-      "sha256": "f6434980dfbaaadbd056eead2a57ea7bed21b86846ec57b979935476cc722943"
+      "sha256": "ebea46134540254a7ac056289b73487aeecec9bb05bd9a51567958a44aa83ea5"
     },
     {
       "path": "lsp_tool.py",
-      "sha256": "78252cb43297d2b67c8c902dcec95a2957197e6e73c9aa5c423bc66280c9bfd2"
+      "sha256": "5dc61235e587e22e37bc027bb4eb39caf05eed4cec554db64c2bbd799b734afe"
     },
     {
       "path": "lsp_types.py",
-      "sha256": "728b734412788e6f2fcb3d3815674dfc8e0faefad859d6f8efa204af55284360"
+      "sha256": "7fc467c629a70568f3a08cae493fb2466f0c01a125f6e79c92041642beb8f445"
     },
     {
       "path": "presets.py",
@@ -139,7 +139,8 @@
         "additionalProperties": false
       },
       "effects": [
-        "read"
+        "read",
+        "execute"
       ],
       "capabilities": [
         "workspace.read"

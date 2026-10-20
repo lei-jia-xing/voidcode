@@ -55,7 +55,7 @@ def render_notice(data: Mapping[str, Any], width: int) -> list[str]:
 
 
 def render_markdown(data: Mapping[str, Any], width: int) -> list[str]:
-    """Render plugin markdown with the same primitive the transcript uses.
+    """Render plugin markdown.
 
     Control bytes are escaped first, so plugin text cannot emit terminal
     commands; rich's Markdown then owns headings, lists, tables and code.

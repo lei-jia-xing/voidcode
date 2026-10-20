@@ -8,6 +8,7 @@ export type Schemas = components["schemas"];
 
 export type CommandDescriptor = Schemas["CommandDescriptor"];
 export type CommandResult = Schemas["CommandResult"];
+export type HealthBody = Schemas["HealthBody"];
 export type SessionRecord = Schemas["SessionRecord"];
 export type KernelResult = Schemas["KernelResult"];
 export type SessionUsageReport = Schemas["SessionUsageReport"];
@@ -29,8 +30,13 @@ export type DiffViewData = Schemas["DiffViewData"];
 export type StatusViewData = Schemas["StatusViewData"];
 
 export interface SseEventFrame {
-  kind?: "event" | "error";
+  kind?: "event" | "error" | "server_restart";
   session_id?: string;
+  /**
+   * Restart watermark: the last sequence THAT stream delivered. Corroboration
+   * only — resume from the client's own applied cursor, never jump forward.
+   */
+  cursor?: number;
   event?: {
     session_id: string;
     sequence: number;

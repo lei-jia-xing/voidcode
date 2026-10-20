@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from typing import cast
 
 
@@ -104,19 +103,3 @@ def openai_response(
     elif usage is not None and usage is not False:
         reply["usage"] = usage
     return reply
-
-
-def configure_openai_provider(
-    workspace: Path,
-    base_url: str,
-    *,
-    provider: str = "deepseek",
-    model: str = "deepseek-v4-pro",
-) -> None:
-    config = {
-        "approval_mode": "ask",
-        "model": f"{provider}/{model}",
-        "providers": {provider: {"base_url": base_url, "timeout_seconds": 5}},
-        "mcp": {"enabled": False},
-    }
-    (workspace / ".voidcode.json").write_text(json.dumps(config), encoding="utf-8")

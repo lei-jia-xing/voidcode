@@ -1,20 +1,21 @@
 """Plugin-local LSP contracts shared by the tool and its manager.
 
-The kernel-owned counterparts (``voidcode.core.tool_context`` LSP protocols and
-the runtime LSP config section) are not importable from a plugin, so this module
-restates the small part the LSP plugin needs: the document-state record, the
-request-error base class, the request boundary the tool calls, and the plugin's
-LSP config carrying the runtime-wide ``enabled`` tri-state.
+There are no kernel-wide LSP contracts to import: this module defines the small
+part the LSP plugin needs: the document-state record, the request-error base
+class, the request boundary the tool calls, and the plugin's LSP config carrying
+the ``enabled`` tri-state.
 """
-
-from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from .contracts import LspServerConfigOverride
+
+if TYPE_CHECKING:
+    from voidcode.sdk.provider import ProviderAbortSignal
+    from voidcode.sdk.services import PluginServices
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,12 +48,15 @@ class LspRequester(Protocol):
         method: str,
         params: dict[str, object],
         workspace: Path,
+        services: PluginServices,
+        session_id: str,
+        abort_signal: ProviderAbortSignal | None,
     ) -> LspResponse: ...
 
 
 @dataclass(frozen=True, slots=True)
 class RuntimeLspConfig:
-    """The plugin's own LSP section, mirroring the runtime one on the fields it uses."""
+    """The plugin's own LSP section: ``enabled`` plus per-server overrides."""
 
     enabled: bool | None = None
     servers: Mapping[str, LspServerConfigOverride] | None = None

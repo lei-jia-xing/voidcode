@@ -5,6 +5,7 @@
 import type {
   CommandDescriptor,
   CommandResult,
+  HealthBody,
   KernelResult,
   PluginViewDescriptor,
   SessionRecord,
@@ -107,6 +108,10 @@ export class KernelClient {
     }
 
     return (await resp.json()) as T;
+  }
+
+  async health(): Promise<HealthBody> {
+    return await this.request<HealthBody>("GET", "/api/health");
   }
 
   async commandCatalog(): Promise<CommandCatalog> {
@@ -269,6 +274,12 @@ export class KernelClient {
   /**
    * Connect to the SSE event stream for a session.
    * Uses monotonic event cursors and automatically reconnects upon stream end/error.
+   * A `server_restart` frame ends the current connection: its cursor is a
+   * watermark of what THAT stream delivered, so the reconnect resumes from the
+   * client's own applied cursor and the frame is also delivered to `onFrame`.
+   * `onReconnect` fires once per (re)connection that yields its first frame,
+   * so the caller reconciles on every established stream — announced restart
+   * or silent drop — not just explicit restart frames.
    * Returns a cleanup cancellation function.
    */
   streamEvents(
@@ -276,6 +287,7 @@ export class KernelClient {
     afterSequence: number,
     onFrame: (frame: SseEventFrame) => void,
     onError?: (err: Error) => void,
+    onReconnect?: () => void,
   ): () => void {
     let cursor = afterSequence;
     const abortController = new AbortController();
@@ -291,12 +303,16 @@ export class KernelClient {
           if (this.token) {
             headers.Authorization = `Bearer ${this.token}`;
           }
-
           const resp = await fetch(url, {
             headers,
             signal: abortController.signal,
           });
 
+          if (resp.status === 503) {
+            // Fenced child or handoff gap: the supervisor answers once a child
+            // is elected; retry on the same applied cursor, never skip ahead.
+            throw new Error("kernel is draining for an upgrade; retrying");
+          }
           if (!resp.ok) {
             throw new Error(`SSE stream failed: HTTP ${resp.status}`);
           }
@@ -306,44 +322,73 @@ export class KernelClient {
             throw new Error("No readable stream available on SSE response");
           }
 
-          const decoder = new TextDecoder();
-          let buffer = "";
+          try {
+            const decoder = new TextDecoder();
+            let buffer = "";
+            let restartRequested = false;
+            let firstFrameSeen = false;
+            while (!isCancelled && !restartRequested) {
+              const { done, value } = await reader.read();
+              if (done) {
+                break;
+              }
+              buffer += decoder.decode(value, { stream: true });
+              const parts = buffer.split("\n\n");
+              buffer = parts.pop() || "";
 
-          while (!isCancelled) {
-            const { done, value } = await reader.read();
-            if (done) {
-              break;
-            }
-            buffer += decoder.decode(value, { stream: true });
-            const parts = buffer.split("\n\n");
-            buffer = parts.pop() || "";
-
-            for (const part of parts) {
-              const lines = part.trim().split("\n");
-              for (const line of lines) {
-                if (line.startsWith("data:")) {
+              for (const part of parts) {
+                const lines = part.trim().split("\n");
+                for (const line of lines) {
+                  if (!line.startsWith("data:")) continue;
                   const jsonStr = line.slice(5).trim();
-                  if (jsonStr) {
-                    try {
-                      const frame = JSON.parse(jsonStr) as SseEventFrame;
-                      if (frame.events && Array.isArray(frame.events)) {
-                        for (const ev of frame.events) {
-                          if (ev.sequence > cursor) {
-                            cursor = ev.sequence;
-                          }
-                        }
-                      } else if (frame.event?.sequence) {
-                        if (frame.event.sequence > cursor) {
-                          cursor = frame.event.sequence;
-                        }
+                  if (!jsonStr) continue;
+                  let frame: SseEventFrame;
+                  try {
+                    frame = JSON.parse(jsonStr) as SseEventFrame;
+                  } catch {
+                    // A malformed frame fails the connection visibly: skipping
+                    // fact N and applying N+1 would advance the resume cursor
+                    // past a missed fact. Reconnect from the own applied cursor.
+                    throw new Error("SSE stream carried a malformed frame");
+                  }
+                  if (!firstFrameSeen) {
+                    firstFrameSeen = true;
+                    if (onReconnect) onReconnect();
+                  }
+                  if (frame.kind === "server_restart") {
+                    // Watermark only: the loop below reconnects from the
+                    // client's own applied cursor, which never jumps over
+                    // a row this client did not apply.
+                    onFrame(frame);
+                    restartRequested = true;
+                    break;
+                  }
+                  onFrame(frame);
+                  // The resume cursor advances only after the frame was
+                  // applied: a callback failure below must not skip facts.
+                  if (frame.events && Array.isArray(frame.events)) {
+                    for (const ev of frame.events) {
+                      if (ev.sequence > cursor) {
+                        cursor = ev.sequence;
                       }
-                      onFrame(frame);
-                    } catch {
-                      // ignore parse errors
+                    }
+                  } else if (frame.event?.sequence) {
+                    if (frame.event.sequence > cursor) {
+                      cursor = frame.event.sequence;
                     }
                   }
                 }
+                if (restartRequested) break;
               }
+            }
+          } finally {
+            // Callback/parse/read failures all pass through here: the reader
+            // is always released, and cancel() is awaited so its rejection
+            // (already-closed stream) never escapes as an unhandled rejection.
+            try {
+              await reader.cancel();
+            } catch {
+              // already closed or errored; the reconnect below still runs
             }
           }
         } catch (err: unknown) {

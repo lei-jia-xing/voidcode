@@ -98,8 +98,8 @@ def _spill_artifact(
 ) -> dict[str, object] | None:
     """Spill a payload through the kernel artifact service; None keeps it inline.
 
-    ponytail: kernel artifact service (seam S5): until that service exists the
-    payload stays inline (bounded) and the transcript says truncation happened.
+    ``None`` only when the handler's services object exposes no spill method: the
+    payload stays inline (bounded) and the output says truncation happened.
     """
     artifact = create_artifact(services, kind=kind, content=content, mime=mime, source=source)
     uri = artifact_uri(artifact)
@@ -254,8 +254,8 @@ class McpTool:
             rendered.insert(0, f"Full MCP result JSON: {result_uri}")
             result_reference = OutputReference(result_uri, result_artifact)
         else:
-            # ponytail: kernel artifact service (seam S5): with no artifact store
-            # to reference, the full result JSON is inlined and bounded instead.
+            # With no spill method to reference a store, the full result JSON is
+            # inlined and bounded instead.
             inline_json, json_truncated = _bounded_inline_text(result_json, limit=MAX_ARTIFACT_PAGE_BYTES)
             suffix = " (truncated: no artifact storage for the full JSON)" if json_truncated else ""
             rendered.insert(0, f"Full MCP result JSON (inline){suffix}:\n{inline_json}")
@@ -415,8 +415,8 @@ def _media_item(
 
     spilled = _spill_artifact(services, kind=artifact_kind, content=data, mime=mime_type, source=source)
     if spilled is None:
-        # ponytail: kernel artifact service (seam S5): without a store the bytes
-        # cannot be referenced, so they stay out of the transcript.
+        # Without a spill method the bytes cannot be referenced, so they stay out
+        # of the transcript.
         return None, description + f"; {len(data)} embedded bytes omitted: no artifact storage]"
     ref = {**spilled, "kind": artifact_kind, "mime": mime_type, "byte_count": len(data)}
     return ref, description + f"; {len(data)} embedded bytes saved as output artifact]"

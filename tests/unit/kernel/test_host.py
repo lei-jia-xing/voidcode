@@ -768,3 +768,153 @@ def test_unexpected_exception_does_not_leak_config_secret(tmp_path: Path) -> Non
         assert "Tool invocation failed with RuntimeError" in res.error
         if isinstance(res.output, TextOutput):
             assert secret not in res.output.text
+
+
+def test_pid_only_host_sigkill_still_sweeps_the_owned_group(tmp_path: Path) -> None:
+    """Sharing the host pgid is not the guarantee: the kernel must sweep the tracked group.
+
+    A service child ignores SIGTERM and parents a grandchild in the host's group; killing only
+    the host leader with PID SIGKILL must still remove both via the EOF/failure group sweep,
+    while a detached background job in its own group survives.
+    """
+    import signal
+    import subprocess
+    import sys
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    leader_file = workspace / "svc-leader.pid"
+    grandchild_file = workspace / "svc-grandchild.pid"
+    detached_file = workspace / "detached.pid"
+
+    grandchild_script = (
+        "import os,pathlib,signal,time;"
+        f"pathlib.Path({str(grandchild_file)!r}).write_text(str(os.getpid()));"
+        "signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(120)"
+    )
+    leader_script = (
+        "import os,pathlib,signal,subprocess,sys,time;"
+        "signal.signal(signal.SIGTERM,signal.SIG_IGN);"
+        f"subprocess.Popen([sys.executable,'-c',{grandchild_script!r}]);"
+        f"pathlib.Path({str(leader_file)!r}).write_text(str(os.getpid()));time.sleep(120)"
+    )
+    detached_script = f"import os,pathlib,time;pathlib.Path({str(detached_file)!r}).write_text(str(os.getpid()));time.sleep(120)"
+    extra = f"""
+class SvcTool:
+    definition = ToolDefinition(
+        name="svc_tool",
+        description="Spawn a service and a detached job",
+        input_schema={{"type": "object"}},
+        effects=frozenset({{ToolEffect.EXECUTE}}),
+    )
+
+    def invoke(self, call, *, context, services):
+        import sys as _sys
+        leader = {leader_script!r}
+        detached_code = {detached_script!r}
+        svc = services.spawn_service_process([_sys.executable, "-c", leader])
+        detached = services.spawn_process(
+            [_sys.executable, "-c", detached_code],
+            stdout_path=services._server.background_spool / "detached.log",
+            stderr_path=services._server.background_spool / "detached.err",
+        )
+        return ToolSuccess(tool_name="svc_tool", output=TextOutput(text=f"{{svc.process_id}} {{detached.process_id}}"))
+"""
+    root, _ = make_scratch_plugin(tmp_path, tool_names=("svc_tool",), provider_names=(), extra_code=extra)
+    manifest = PluginManifest(
+        plugin_id="scratch-test",
+        version="1.0.0",
+        entrypoint="scratch_plugin:create_plugin",
+        files=(PluginFileIdentity(path="scratch_plugin.py", sha256=hashlib.sha256((root / "scratch_plugin.py").read_bytes()).hexdigest()),),
+        tools=(
+            PluginToolDeclaration(
+                name="svc_tool",
+                description="Spawn a service and a detached job",
+                input_schema={"type": "object"},
+                effects=(ToolEffect.EXECUTE,),
+                capabilities=("test.read",),
+            ),
+        ),
+        providers=(),
+        capabilities=(PluginCapabilityRequest(name="test.read", reason="read access"),),
+        config_schema={},
+    )
+    host_plugin = HostPlugin(root=root, manifest=manifest, config={}, capabilities=frozenset({"test.read"}))
+
+    def _make_client() -> HostClient:
+        return HostClient((host_plugin,), workspace=workspace, revision_id="rev-1")
+
+    code = (root / "scratch_plugin.py").read_text(encoding="utf-8")
+    code = code.replace("    providers = []", "    tools.append(SvcTool())\n\n    providers = []")
+    (root / "scratch_plugin.py").write_text(code, encoding="utf-8")
+    manifest = PluginManifest(
+        plugin_id="scratch-test",
+        version="1.0.0",
+        entrypoint="scratch_plugin:create_plugin",
+        files=(PluginFileIdentity(path="scratch_plugin.py", sha256=hashlib.sha256((root / "scratch_plugin.py").read_bytes()).hexdigest()),),
+        tools=manifest.tools,
+        providers=(),
+        capabilities=manifest.capabilities,
+        config_schema={},
+    )
+    host_plugin = HostPlugin(root=root, manifest=manifest, config={}, capabilities=frozenset({"test.read"}))
+
+    client = _make_client()
+    context = ToolContext(
+        workspace=workspace,
+        session_id="s",
+        run_id="r",
+        invocation_id="i",
+        revision_id="rev-1",
+        actor="model",
+        capabilities=frozenset({"test.read"}),
+    )
+    result = client.invoke(ToolCall(tool_name="svc_tool", arguments={}), context=context)
+    assert result.status == "ok", result
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline and not (leader_file.exists() and grandchild_file.exists() and detached_file.exists()):
+        time.sleep(0.05)
+    leader = int(leader_file.read_text(encoding="utf-8"))
+    grandchild = int(grandchild_file.read_text(encoding="utf-8"))
+    detached = int(detached_file.read_text(encoding="utf-8"))
+    assert os.getpgid(leader) == os.getpgid(client.pid)
+    assert os.getpgid(detached) != os.getpgid(client.pid)
+
+    try:
+        os.kill(client.pid, signal.SIGKILL)
+        assert _wait_pid_gone(leader, timeout=10.0), "owned service leader survived a PID-only host SIGKILL"
+        assert _wait_pid_gone(grandchild, timeout=10.0), "SIGTERM-ignoring owned grandchild survived a PID-only host SIGKILL"
+        assert _pid_alive(detached), "detached background job must survive the owned-group sweep"
+    finally:
+        client.close()
+        for pid in (leader, grandchild, detached):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        subprocess.run([sys.executable, "-c", "pass"], check=False)
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _wait_pid_gone(pid: int, *, timeout: float = 10.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        state = Path(f"/proc/{pid}/stat")
+        if not state.exists():
+            return True
+        try:
+            if state.read_text(encoding="utf-8").split()[2] == "Z":
+                return True
+        except OSError, IndexError:
+            return True
+        time.sleep(0.05)
+    return False

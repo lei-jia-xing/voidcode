@@ -7,7 +7,7 @@
   "files": [
     {
       "path": "__init__.py",
-      "sha256": "586729aaa5a4562c0663a76765986b586577f67dc25b48d8546972bca58c3768"
+      "sha256": "7c8ce1cc2200a5fa27899a4cde2586ac4e62781ca4245e442d57c4b7ada99d94"
     },
     {
       "path": "apply_patch.py",
@@ -15,7 +15,7 @@
     },
     {
       "path": "apply_workspace_edit.py",
-      "sha256": "33f1fdfe9d6fcd8c5ec9f200ecb8d421f604a05bfc1c4da6100059c9f452f601"
+      "sha256": "b5282bc3ef9d17a39a0ea03595986ce943f72e30d530011cbd6684ce5ded773f"
     },
     {
       "path": "args.py",
@@ -31,7 +31,7 @@
     },
     {
       "path": "edits_hooks.py",
-      "sha256": "e422666a5a2fd4a76a1fb97bd3bd4f8aab2e4ebb7e76893761bb556d93df7e0f"
+      "sha256": "b59422e3ba5dee2951c3bdf8ff98fc8988b037585b0708b46a71999dceec0f51"
     },
     {
       "path": "gitignore.py",
@@ -47,7 +47,7 @@
     },
     {
       "path": "guards.py",
-      "sha256": "4578b73908b9d265f50ff9d893e2a4ca16f95d81892b08fa29bb1c197f55c098"
+      "sha256": "93c49f8c5d90cb0cfa25ca622bc474534809daec77e1d74893c074f9c1781061"
     },
     {
       "path": "read_formats.py",
@@ -55,7 +55,7 @@
     },
     {
       "path": "read_tool.py",
-      "sha256": "b751016ed68876e1bc3e03c910da6583b315790d596361beea755aa94e3db91f"
+      "sha256": "0eb44cdb65a281c36bed68179fe085069b493d0f03decd33af7641a1c25c4632"
     },
     {
       "path": "repair.py",

@@ -11,6 +11,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from graphlib import TopologicalSorter
 from pathlib import Path
+from typing import Protocol
 
 import jsonschema
 
@@ -25,7 +26,8 @@ from ..sdk.json_values import json_wire_object, own_json_object
 from ..sdk.manifest import MANIFEST_FILE_NAME, PluginFileIdentity, PluginManifest, parse_plugin_manifest
 from ..sdk.plugin import HostPlugin
 from .storage.store import (
-    SqliteStore,
+    PluginStateRow,
+    SessionRecord,
     StagedStateUpdate,
     canonical_json,
     revision_identity,
@@ -183,11 +185,9 @@ class Admission:
 
 def sdk_source_hash(sdk_root: Path) -> str:
     """Pin the SDK source bytes a host process will import, so a mutation never hides behind a revision."""
-    digest = hashlib.sha256()
-    for path in sorted(sdk_root.rglob("*.py")):
-        digest.update(path.relative_to(sdk_root).as_posix().encode("utf-8") + b"\0")
-        digest.update(path.read_bytes())
-    return digest.hexdigest()
+    from .digests import python_tree_digest
+
+    return python_tree_digest(sdk_root)
 
 
 def canonical_source_path(path: Path) -> str:
@@ -423,9 +423,16 @@ class StateCopyPlan:
     deactivated_owners: tuple[str, ...]
 
 
+class StateCopySource(Protocol):
+    """The two store reads the state-copy planner needs."""
+
+    def plugin_state_rows(self, scope: str, scope_key: str) -> tuple[PluginStateRow, ...]: ...
+    def session(self, session_id: str) -> SessionRecord: ...
+
+
 def plan_state_copies(
     *,
-    store: SqliteStore,
+    store: StateCopySource,
     workspace: str,
     session_ids: Sequence[str],
     old_manifests: Mapping[str, PluginManifest],

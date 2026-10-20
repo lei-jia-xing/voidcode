@@ -23,7 +23,7 @@
     },
     {
       "path": "mcp_tool.py",
-      "sha256": "44f92ff794fb45888bc4ceef79d66a3d98522bd5e11d8013f16d6f26c3447cdf"
+      "sha256": "b3bf93d068cd86158b041778a5d5ed980b1b1942c80f24dc25233b905eba09f2"
     },
     {
       "path": "mcp_tool_cache.py",

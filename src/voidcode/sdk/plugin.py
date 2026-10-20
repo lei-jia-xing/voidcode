@@ -19,11 +19,37 @@ from .views import PluginView
 
 
 @dataclass(frozen=True, slots=True)
+class PluginQueryCaller:
+    """The lease facts the host injects into a query, so a provider never trusts caller claims."""
+
+    session_id: str
+    workspace: Path
+
+
+@dataclass(frozen=True, slots=True)
+class PluginQuery:
+    """One named, read-only question another plugin in this host may ask.
+
+    A query is a host-local convenience between trusted plugins, not a capability: it runs inside
+    the asking plugin's invocation, returns one bounded JSON object (or ``None`` for "nothing to
+    answer"), and gets no writable ``PluginServices`` authority. Read-only access to already
+    authorized data is allowed (a query may read the files its plugin could already read); state
+    mutations, filesystem writes, process starts, and any other external effects are forbidden.
+    This is a code-review contract, not an OS sandbox — and only some providers are purely
+    in-memory. It is not manifest-declared and carries no kernel authority.
+    """
+
+    name: str
+    handler: Callable[[Mapping[str, object], PluginQueryCaller], Mapping[str, object] | None]
+
+
+@dataclass(frozen=True, slots=True)
 class Plugin:
     tools: tuple[Tool, ...] = ()
     commands: tuple[Command, ...] = ()
     providers: tuple[TurnProvider, ...] = ()
     views: tuple[PluginView, ...] = ()
+    queries: tuple[PluginQuery, ...] = ()
     context: Callable[[ToolContext, PluginServices], ContextContribution | None] | None = None
     observer: Callable[[PluginFact, ToolContext, PluginServices], None] | None = None
     #: Lifecycle notifications: run once at the start and once at the end of each run.

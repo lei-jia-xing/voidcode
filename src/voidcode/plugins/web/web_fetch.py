@@ -34,9 +34,9 @@ from .artifacts import (
 MAX_RESPONSE_SIZE = 5 * 1024 * 1024
 DEFAULT_TIMEOUT = 30
 
-#: Inline text bound for one fetched document. The full response bytes are spilled to the
-#: session artifact when the kernel artifact service exists; this is what a single result
-#: carries inline without risking the host's frame limit.
+#: Inline text bound for one fetched document. The full response bytes are spilled via the
+#: service spill method when the handler exposes it; this is what a single result carries
+#: inline without risking the host's frame limit.
 MAX_INLINE_TEXT_BYTES = 50 * 1024
 
 logger = logging.getLogger(__name__)
@@ -296,8 +296,8 @@ class WebFetchTool:
                 source="web_fetch",
             )
         else:
-            # ponytail: kernel artifact service (seam S5): without it the raw response is not
-            # spilled, so the reference is omitted and the bounded inline text is the only copy.
+            # Without a spill method the raw response is not spilled, so the reference
+            # is omitted and the bounded inline text is the only copy.
             bounds = OutputBounds(source="web_fetch")
         raw_reference = reference_uri or "unavailable"
         body = WebFetchResultBody(

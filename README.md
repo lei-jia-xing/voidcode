@@ -10,11 +10,11 @@ VoidCode is an open-source, local-first coding agent built as a small trusted ke
 
 ## Key Features
 
-- **Local-first**: sessions, events, and checkpoints live in a per-workspace SQLite database under your XDG state directory. Sessions never leave the machine; network access happens only through the provider calls and network-capable tools (for example `web_fetch` and `web_search`) that you configure.
-- **Plugin architecture**: every product mechanism — tools, commands, providers, hooks, views, and session state — is a plugin using the same public SDK a third-party plugin gets. The kernel imports no concrete plugin.
+- **Local-first**: sessions, events, and checkpoints are stored in per-workspace SQLite under your XDG state directory. Configured model providers receive conversation context (prompts, tool results, and attachments); trusted plugins and tools may make network requests.
+- **Plugin architecture**: every product mechanism — tools, commands, providers, hooks, views, and session state — is a plugin using the same public SDK a third-party plugin gets, and the kernel imports no concrete plugin. The kernel keeps only its own reserved control surface (`/run`, `/resume`, `/show`, `/status`, `/help`, `/kernel.reload`, and the `kernel_reload` tool), which a plugin can neither declare nor shadow.
 - **Pinned, reviewable plugins**: an admitted plugin is a content-addressed copy verified by manifest hash. Editing plugin source produces a new identity; it never mutates an admitted generation in place.
 - **Append-only durability**: one immutable event stream per session. Views, transcripts, usage, and UI are projections; clients commit each fact exactly once and never rewind.
-- **Three client surfaces, one contract**: the kernel CLI, an inline terminal UI, and a React web client all drive the same command catalog, declarative views, and SSE event stream.
+- **Three client surfaces, one contract**: the kernel CLI executes inside the elected image, and the inline terminal UI and React web client speak the same HTTP/SSE contract — one command catalog, one set of declarative views, one event stream.
 - **Agent-facing delegation**: the primary agent delegates focused work through the `task`/`task_batch` tools; there is no separate human task console.
 
 ## Quickstart
@@ -52,7 +52,7 @@ The kernel reads exactly one file, `voidcode.json`, from the workspace root. Wri
 # One agent turn; prints the result as JSON
 voidcode run "Summarize this repository"
 
-# Interactive TUI with inline scrollback (embedded kernel)
+# Interactive TUI with inline scrollback (supervised kernel child)
 voidcode tui
 
 # HTTP/SSE server plus the built web client at http://127.0.0.1:8000/
@@ -78,7 +78,7 @@ In a source checkout without the console script installed, use `uv run python -m
 | `voidcode views <session_id>` | Render the current plugin views. |
 | `voidcode drain <session_id>` | Execute pending durable continuations. |
 | `voidcode usage <session_id>` | Report session token usage. |
-| `voidcode tui` | Start the inline TUI (embedded kernel, or `--server`/`--token` for a remote one). |
+| `voidcode tui` | Start the inline TUI (supervisor child process, or `--server`/`--token` for a remote one). |
 | `voidcode serve` | Start the HTTP/SSE server and serve the web client (`--open` launches a browser). |
 
 ### In-session commands
@@ -92,6 +92,7 @@ Every client dispatches commands from the admitted catalog — the kernel's rese
 | `todo` | `/todo`, `/todo.clear` |
 | `goal` | `/goal`, `/goal.set`, `/goal.edit`, `/goal.pause`, `/goal.resume`, `/goal.clear`, `/goal.load_objective` |
 | `skills` | `/skills` |
+| `providers` | `/model`, `/providers` |
 | `agents` | `/agents`, `/agents.show` |
 | `review` | `/review` |
 | `btw` | `/btw` |
@@ -108,8 +109,10 @@ The TUI also has client-local controls that are not admitted commands: `/tui hel
 
 ```mermaid
 graph TD
-    Clients["Kernel CLI · Inline TUI · Web client"] --> Transport["Kernel transport (HTTP/SSE, /api)"]
-    Transport --> Kernel["Kernel (governance, storage, activation, artifacts)"]
+    CLI["Kernel CLI (elected image)"] --> Kernel["Kernel (governance, storage, activation, artifacts)"]
+    TUI["Inline TUI (supervisor child, or --server)"] --> Transport["Kernel transport (HTTP/SSE, /api)"]
+    Web["Web client (served bundle)"] --> Transport
+    Transport --> Kernel
     Kernel --> Host["Plugin host process"]
     Host --> Plugins["Bundled plugins (tools, commands, providers, views)"]
     Kernel -.-> SDK["SDK contracts"]

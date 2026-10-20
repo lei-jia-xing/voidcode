@@ -115,7 +115,7 @@
     },
     {
       "path": "native/openai_native.py",
-      "sha256": "dea4be89eee3b5577291850e2eb5cc8f646c5c88ae789ffc4c909c2622a95e1d"
+      "sha256": "5cc909a6d7fe486c360b27b1731d7327274f47c4a3740e61cfa94c79612b591e"
     },
     {
       "path": "native/opencode.py",

@@ -1,9 +1,9 @@
 """Typed live-frame layout and append-only settled-row commit boundary.
 
-Only rows returned by the transcript's settle ledger may reach scrollback.
-Unsettled transcript rows and chrome remain in the bounded live viewport; a
-resize drops only older transcript rows and never promotes them to committed
-history.
+:class:`LiveRegion` keeps chrome and unsettled rows in a bounded live viewport
+and hands only explicit settled batches to its commit sink; a resize drops older
+live rows and never promotes them to committed history. :class:`TuiFrame` is the
+typed frame both the region and the application render from.
 """
 
 from __future__ import annotations

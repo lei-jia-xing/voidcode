@@ -1,0 +1,91 @@
+{
+  "plugin_id": "tally-counter",
+  "version": "1.0.0",
+  "sdk_protocol": 1,
+  "schema_version": 1,
+  "entrypoint": "tally_plugin:create_plugin",
+  "files": [
+    {
+      "path": "tally_plugin.py",
+      "sha256": "d18d4679d9d5363d0516cbb4b2c79a0fcc5f70c3db3f7c3ba49eafc24694a33d"
+    }
+  ],
+  "tools": [
+    {
+      "name": "tally_add",
+      "description": "Add a delta to this session's tally counter.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "delta": {
+            "type": "integer",
+            "description": "Amount to add (may be negative)."
+          }
+        },
+        "required": [
+          "delta"
+        ],
+        "additionalProperties": false
+      },
+      "effects": [
+        "session"
+      ],
+      "capabilities": []
+    }
+  ],
+  "commands": [
+    {
+      "name": "tally",
+      "description": "Add a delta to this session's tally counter.",
+      "argument_schema": {
+        "type": "object",
+        "properties": {
+          "delta": {
+            "type": "integer",
+            "description": "Amount to add (may be negative)."
+          }
+        },
+        "required": [
+          "delta"
+        ],
+        "additionalProperties": false
+      },
+      "effects": [
+        "session"
+      ],
+      "capabilities": [],
+      "busy_gate": false,
+      "client_capabilities": [],
+      "direct_user": false
+    }
+  ],
+  "capabilities": [],
+  "providers": [],
+  "depends": [],
+  "state_schema_version": 1,
+  "state_schema": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "const": 1
+      },
+      "total": {
+        "type": "integer"
+      },
+      "updates": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "required": [
+      "schema_version",
+      "total",
+      "updates"
+    ],
+    "additionalProperties": false
+  },
+  "config_schema": {
+    "type": "object"
+  },
+  "context": false
+}

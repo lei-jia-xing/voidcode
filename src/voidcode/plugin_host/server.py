@@ -22,7 +22,7 @@ from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, BinaryIO, Literal, cast
+from typing import Any, BinaryIO, Final, Literal, cast
 from uuid import uuid4
 
 import jsonschema
@@ -34,6 +34,7 @@ from voidcode.sdk.codec import (
     decode_session_info,
     decode_session_usage,
     decode_tool_call,
+    decode_tool_definition,
     encode_command_descriptor,
     encode_command_result,
     encode_provider_error,
@@ -66,7 +67,7 @@ from voidcode.sdk.manifest import (
     PluginManifest,
     parse_plugin_manifest,
 )
-from voidcode.sdk.plugin import Plugin, command_definition, tool_definition
+from voidcode.sdk.plugin import Plugin, PluginQueryCaller, command_definition, tool_definition
 from voidcode.sdk.provider import ProviderExecutionError, ProviderTokenUsage
 from voidcode.sdk.services import (
     ArtifactPage,
@@ -77,11 +78,12 @@ from voidcode.sdk.services import (
     ProcessHandle,
     ProcessOutput,
     ProcessResult,
+    QueryUnavailable,
     SessionInfo,
     SessionUsageReport,
     ToolInvocationReceipt,
 )
-from voidcode.sdk.tools import ConfirmedStop, TextOutput, ToolFailure
+from voidcode.sdk.tools import ConfirmedStop, TextOutput, ToolDefinition, ToolFailure
 
 from .processes import ProcessRegistry
 
@@ -171,6 +173,8 @@ RESERVED_COMMAND_NAMES: frozenset[str] = frozenset({"run", "resume", "show", "ca
 RESERVED_COMMAND_PREFIXES: tuple[str, ...] = ("core.", "kernel.", "voidcode.")
 #: Names the kernel itself registers, which a plugin can never shadow.
 RESERVED_TOOL_NAMES: frozenset[str] = frozenset({"kernel_reload"})
+#: One plugin query answer stays a small JSON object: it is a read convenience, never a transport.
+MAX_QUERY_RESULT_BYTES: Final[int] = 256 * 1024
 
 
 class HostAbortSignal:
@@ -267,10 +271,12 @@ class ServerPluginServices:
         lease_token: str,
         *,
         cancel_event: threading.Event | None = None,
+        request_id: str | None = None,
     ) -> None:
         self._server = server
         self._lease_token = lease_token
         self._cancel_event = cancel_event
+        self._request_id = request_id
         self._stance: Mapping[str, Any] | None = None
 
     def _lease_stance(self) -> Mapping[str, Any]:
@@ -403,9 +409,40 @@ class ServerPluginServices:
             process_id=identifier,
         )
 
+    def spawn_service_process(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path | str | None = None,
+        env: Mapping[str, str] | None = None,
+        process_id: str | None = None,
+    ) -> ProcessHandle:
+        self._require_writable_stance("start service processes")
+        identifier = process_id or f"svc-{uuid4().hex[:16]}"
+        spool = self._server.background_spool
+        resolved_cwd = self._server.workspace if cwd is None else Path(cwd)
+        if cwd is not None and not resolved_cwd.is_dir():
+            raise ValueError(f"spawn_service_process cwd is not a directory: {resolved_cwd}")
+        handle = self._server.processes.spawn(
+            argv,
+            session_id=self._session_id(),
+            cwd=resolved_cwd,
+            env=env,
+            stdin=True,
+            stdout_path=spool / f"{identifier}.stdout.log",
+            stderr_path=spool / f"{identifier}.stderr.log",
+            process_id=identifier,
+            service=True,
+        )
+        self._mark_active_process(handle.process_id)
+        return handle
+
     def write_process(self, process_id: str, data: bytes | str) -> int:
         self._require_writable_stance("write to background processes")
         payload = data.encode("utf-8") if isinstance(data, str) else bytes(data)
+        # Bind before the potentially blocking pipe write: a reused server that stops reading
+        # stdin must already be cancellable by this invocation, or the cancellation cannot reach it.
+        self._mark_active_process(str(process_id))
         return self._server.processes.write(str(process_id), payload, session_id=self._session_id())
 
     def read_process_output(
@@ -416,6 +453,9 @@ class ServerPluginServices:
         offset: int = 0,
         limit: int = 65536,
     ) -> ProcessOutput:
+        # Binding precedes the read: a second invocation reusing a service is already
+        # cancellable while it waits for that server's next bytes.
+        self._mark_active_process(str(process_id))
         data, total, eof, running = self._server.processes.read_output(
             str(process_id),
             stream=stream,
@@ -443,6 +483,49 @@ class ServerPluginServices:
 
     def _session_id(self) -> str:
         return str(self._lease_stance().get("session_id", ""))
+
+    def tool_definition(self, name: str) -> ToolDefinition | None:
+        """One definition from the active revision's dispatch snapshot, with this session's visibility.
+
+        Answered by the kernel, never from a host-local copy: only the kernel knows the reserved
+        core surface and the session's profile scope and read-only stance. ``None`` covers both an
+        unknown name and a name this session may not see — the kernel distinguishes the reasons
+        only in its refusal, never by handing out a hidden definition.
+        """
+        resp = self._server._send_reverse_rpc("tool_definition", {"lease_token": self._lease_token, "name": str(name)})
+        payload = resp.get("definition")
+        if payload is None:
+            return None
+        if not isinstance(payload, Mapping):
+            raise RuntimeError("tool definitions are unavailable")
+        return decode_tool_definition(payload)
+
+    def query(self, name: str, arguments: Mapping[str, object] | None = None) -> Mapping[str, object] | None:
+        return self._server.execute_query(
+            str(name),
+            own_json_object(dict(arguments or {})),
+            session_id=self._session_id(),
+            workspace=self._server.workspace,
+        )
+
+    def _mark_active_process(self, process_id: str) -> None:
+        """Bind one live *service* id to this invocation so cancellation stops its tree.
+
+        Service spawn/read/write call this automatically; ordinary background jobs are never
+        bound, so cancelling a log read cannot newly kill a user job. A consumer never retains
+        handles for cleanup: it polls ``context.abort_signal`` and cancels promptly itself, and
+        the binding dies with the invocation, so reuse in a later call re-marks with that live
+        lease. One request may touch several services, so claims accumulate in a per-request set.
+        """
+        if self._request_id is None:
+            return
+        session_id = self._session_id()
+        if self._server.processes.service_entry(str(process_id), session_id=session_id) is None:
+            return
+        with self._server._tasks_lock:
+            if self._request_id not in self._server._active_tasks:
+                return
+            self._server._claimed_tasks.setdefault(self._request_id, set()).add((str(process_id), session_id))
 
     def _require_writable_stance(self, action: str) -> None:
         """Starting or stopping a process is machine work: a restrictive lease may not do it."""
@@ -742,6 +825,7 @@ class PluginHostServer:
         self._write_lock = threading.Lock()
         self._executor = ThreadPoolExecutor(max_workers=16, thread_name_prefix="plugin-worker")
         self._active_tasks: dict[str, threading.Event] = {}
+        self._claimed_tasks: dict[str, set[tuple[str, str]]] = {}
         self._tasks_lock = threading.Lock()
         self._shutdown_event = threading.Event()
 
@@ -759,6 +843,7 @@ class PluginHostServer:
         self._observers: list[tuple[Callable[[PluginFact, ToolContext, ServerPluginServices], None], tuple[str, ...], str]] = []
         self._state_migrators: dict[str, Callable[[Mapping[str, Any], int, int], Mapping[str, Any]]] = {}
         self._state_deactivators: dict[str, Callable[[Mapping[str, Any], str, str, int | None], Mapping[str, Any]]] = {}
+        self._queries: dict[str, tuple[Callable[[Mapping[str, Any], PluginQueryCaller], Mapping[str, Any] | None], str]] = {}
         self._pending_rpc: dict[str, Future[dict[str, Any]]] = {}
         self._rpc_counter: int = 0
         self._rpc_lock = threading.Lock()
@@ -1401,6 +1486,12 @@ class PluginHostServer:
                         raise ValueError(f"Duplicate provider name registered across plugins: {name}")
                     self._providers[name] = (prov, manifest_provs_dict[name], manifest.plugin_id)
 
+                for query in plugin_instance.queries:
+                    if query.name in self._queries:
+                        raise ValueError(f"Duplicate query name registered across plugins: {query.name}")
+                    _check_arity(query.handler, 2, f"Plugin {manifest.plugin_id} query {query.name} handler")
+                    self._queries[query.name] = (query.handler, manifest.plugin_id)
+
                 self._plugins.append(plugin_instance)
 
             # Build catalog
@@ -1501,8 +1592,17 @@ class PluginHostServer:
         target_id = params.get("target_id")
         with self._tasks_lock:
             event = self._active_tasks.get(str(target_id))
+            claims = tuple(self._claimed_tasks.get(str(target_id), ()))
         if event is not None:
             event.set()
+        for process_id, session_id in claims:
+            # A live invocation's active services die with the cancellation: this is the same
+            # cancellation a prompt plugin performs itself, just owned by the host so a reused
+            # service cannot outlive the invocation that was using it.
+            try:
+                self.processes.cancel(process_id, session_id=session_id)
+            except ValueError:
+                pass
         self._send_response(
             {
                 "protocol_version": 1,
@@ -1534,6 +1634,29 @@ class PluginHostServer:
                 "result": {"stopped": True},
             }
         )
+
+    def execute_query(
+        self,
+        name: str,
+        arguments: Mapping[str, Any],
+        *,
+        session_id: str,
+        workspace: Path,
+    ) -> Mapping[str, Any] | None:
+        """Run one named plugin query in this host process; no kernel authority is involved."""
+        entry = self._queries.get(name)
+        if entry is None:
+            raise QueryUnavailable(f"no admitted plugin answers the query {name!r}")
+        handler, _owner = entry
+        result = handler(dict(arguments), PluginQueryCaller(session_id=session_id, workspace=workspace))
+        if result is None:
+            return None
+        if not isinstance(result, Mapping):
+            raise ValueError(f"query {name!r} must answer with a JSON object or None")
+        owned = own_json_object(result)
+        if len(json.dumps(json_wire_object(owned), allow_nan=False)) > MAX_QUERY_RESULT_BYTES:
+            raise ValueError(f"query {name!r} answer exceeded {MAX_QUERY_RESULT_BYTES} bytes")
+        return owned
 
     def _handle_invoke(self, req_id: str, params: dict[str, Any]) -> None:
         cancel_event = threading.Event()
@@ -1662,7 +1785,7 @@ class PluginHostServer:
                     abort_signal=abort_signal,
                     emit_tool_progress=lambda payload: self._send_progress(lease_token, payload),
                 )
-                services = ServerPluginServices(server=self, lease_token=lease_token, cancel_event=cancel_event)
+                services = ServerPluginServices(server=self, lease_token=lease_token, cancel_event=cancel_event, request_id=req_id)
                 tool_threw = False
                 try:
                     result = tool_instance.invoke(call, context=inv_context, services=services)
@@ -1709,6 +1832,7 @@ class PluginHostServer:
             finally:
                 with self._tasks_lock:
                     self._active_tasks.pop(req_id, None)
+                    self._claimed_tasks.pop(req_id, None)
 
         self._executor.submit(worker)
 
@@ -2498,8 +2622,11 @@ class PluginHostServer:
         for ev in events:
             ev.set()
 
-        # 2. Every child process this host started dies with the generation that started it.
+        # 2. Every child process this host started dies with the generation that started it:
+        #    one-shot children and service processes always, user background jobs only when the
+        #    owner asks (a host swap keeps them, which is why their identity is persisted).
         self.processes.reap_all()
+        self.processes.stop_services()
 
         # 3. Call plugin.close() with bounded timeout per plugin
         for plugin in self._plugins:

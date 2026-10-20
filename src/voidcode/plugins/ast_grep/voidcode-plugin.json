@@ -27,7 +27,7 @@
     },
     {
       "path": "edits_hooks.py",
-      "sha256": "e422666a5a2fd4a76a1fb97bd3bd4f8aab2e4ebb7e76893761bb556d93df7e0f"
+      "sha256": "b59422e3ba5dee2951c3bdf8ff98fc8988b037585b0708b46a71999dceec0f51"
     },
     {
       "path": "guards.py",

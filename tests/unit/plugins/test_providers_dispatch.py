@@ -93,24 +93,6 @@ def test_missing_provider_name_is_refused(loopback_server: OpenAILoopbackServer)
     assert loopback_server.requests == []
 
 
-def test_tool_call_replay_without_reasoning_fails_before_http(loopback_server: OpenAILoopbackServer) -> None:
-    """DeepSeek requires the original reasoning content on a replayed tool turn."""
-    provider = _provider({"deepseek": {"api_key": "key", "base_url": _base_url(loopback_server)}})
-    request = _request(
-        ProviderMessage("user", "read a"),
-        ProviderMessage("assistant", tool_calls=(ToolCall("read", {"path": "a"}, "call-1"),), metadata={}),
-        ProviderMessage("tool", content="ok", tool_call_id="call-1", tool_name="read"),
-        available_tools=(_tool(),),
-    )
-
-    with pytest.raises(ProviderExecutionError) as excinfo:
-        provider.propose_turn(request)
-
-    assert excinfo.value.kind == "stream_tool_feedback_shape"
-    assert "reasoning content" in excinfo.value.message
-    assert loopback_server.requests == []
-
-
 def test_tool_call_replay_sends_reasoning_and_omits_tool_choice(loopback_server: OpenAILoopbackServer) -> None:
     provider = _provider({"deepseek": {"api_key": "key", "base_url": _base_url(loopback_server)}})
     loopback_server.replies.append(openai_response(message={"content": "done"}, finish="stop"))

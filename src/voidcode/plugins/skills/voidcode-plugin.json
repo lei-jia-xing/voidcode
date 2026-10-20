@@ -15,11 +15,11 @@
     },
     {
       "path": "rules.py",
-      "sha256": "e26b83624f21fda330e2f2e298f9b4aef6bab3fdbd68ab2f0ea43d45b1802f95"
+      "sha256": "a3bfdc9c19a9822309a0660623d47a9b99d060108820f4b7bda0e385c108d1be"
     },
     {
       "path": "skills_plugin.py",
-      "sha256": "85790271cdfbb624637faecac4011171ae04f9a5075321aa4178e13ca1332586"
+      "sha256": "e34607415ced7d8369b616fd718dcca9321ebed8fb295c840ce438b19ffff60e"
     }
   ],
   "tools": [

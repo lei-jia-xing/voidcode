@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from voidcode.kernel.tui.keys import Key
@@ -312,3 +314,210 @@ def test_form_preserves_typed_text_verbatim() -> None:
     form.values["summary"] = "  keep my spacing  \n"
     outcome = form.handle_key(Key("ctrl+s"))
     assert outcome == {"action": "submit_form", "arguments": {"summary": "  keep my spacing  \n"}}
+
+
+class _StubTerminal:
+    """Commit sink only: records settled rows, never touches a real terminal."""
+
+    width = 100
+
+    def __init__(self) -> None:
+        self.committed: list[str] = []
+
+    def commit_rows(self, rows: list[str]) -> None:
+        self.committed.extend(rows)
+
+
+class _StubClient:
+    """A collaborator that behaves like the server surface the app consumes.
+
+    Connections are phased: the first exposes only the pre-restart prefix,
+    then closes with the restart watermark; later connections filter the FULL
+    durable log by `after_sequence` exactly like `kernel.events_after`. A
+    worker that adopted a lying watermark fetches past the unseen rows and
+    they never reach the commit sink — the loss is consumer-visible.
+    """
+
+    def __init__(self) -> None:
+        self.health_calls = 0
+        self.prefix_events: list[dict[str, object]] = []
+        self.full_events: list[dict[str, object]] = []
+        self.restart_cursor = 0
+        self._connections = 0
+        self._stop: Any = None
+
+    def health(self) -> dict[str, object]:
+        self.health_calls += 1
+        return {"fenced": False, "stage": "serving", "generation": 2, "kernel_version": "t", "image_digest": "d"}
+
+    def command_catalog(self) -> tuple[str, list[dict[str, object]]]:
+        return "rev-1", []
+
+    def views(self, session_id: str, *, client_capabilities: str = "") -> tuple[str, list[dict[str, object]]]:
+        return "rev-1", []
+
+    def get_session(self, session_id: str) -> dict[str, object]:
+        return {"session_id": session_id, "status": "idle"}
+
+    def events_stream(self, session_id: str, *, after_sequence: int = 0, follow: bool = True):  # type: ignore[no-untyped-def]
+        self._connections += 1
+        if self._connections == 1:
+            # Pre-restart connection: only the settled prefix exists yet.
+            backlog = [ev for ev in self.prefix_events if int(ev["sequence"]) > after_sequence]
+            if backlog:
+                yield {"events": backlog}
+            yield {"kind": "server_restart", "cursor": self.restart_cursor}
+            return
+        # Post-restart connections: the full log, filtered by the resume cursor.
+        backlog = [ev for ev in self.full_events if int(ev["sequence"]) > after_sequence]
+        if backlog:
+            yield {"events": backlog}
+        # Hold the connection open like a live follow stream until the test
+        # stops the worker (never hot-loop on instant EOF).
+        import time as _time
+
+        while self._stop is None or not self._stop.is_set():
+            _time.sleep(0.01)
+
+
+class _FencedClient(_StubClient):
+    """Every business mutation answers the contracted fenced refusal."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        from voidcode.kernel.tui.client import KernelClientError
+
+        self._refusal = KernelClientError("kernel is draining for an upgrade; retry after it restarts", status_code=503, code="upgrade_pending")
+
+    def resume(self, session_id: str, **kwargs: object) -> dict[str, object]:
+        raise self._refusal
+
+    def confirm(self, session_id: str, request_id: str, decision: str, **kwargs: object) -> dict[str, object]:
+        raise self._refusal
+
+
+def _event(sequence: int, event_type: str = "kernel.user_message", **payload: object) -> dict[str, object]:
+    return {"sequence": sequence, "type": event_type, "revision_id": "rev-1", "payload": dict(payload)}
+
+
+def _drain_until(app: Any, terminal: Any, marker: str, *, timeout: float = 5.0) -> None:
+    """Pump the UI-thread drain until a settled row appears (explicit sync)."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        app._drain_events()
+        if any(marker in row for row in terminal.committed):
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"settled row never appeared: {marker!r} in {terminal.committed!r}")
+
+
+def test_reconnect_replays_unseen_rows_despite_ahead_restart_watermark() -> None:
+    """Real reader-thread path: rows the first connection never exposed must
+    still settle after a restart frame with an ahead watermark.
+
+    Connection 1 exposes ONLY rows 1-2, then closes with watermark 99. Later
+    connections filter the full 1-4 log by the resume cursor. A worker that
+    adopted 99 would fetch after 99 and rows 3-4 would never settle — so the
+    commit sink alone proves the fix. Only settled visible rows are asserted.
+    """
+    from voidcode.kernel.tui.terminal_app import KernelTuiApp
+
+    client = _FencedClient()
+    client.prefix_events = [_event(1, content="one"), _event(2, content="two")]
+    client.full_events = [
+        _event(1, content="one"),
+        _event(2, content="two"),
+        _event(3, content="three"),
+        _event(4, content="four"),
+    ]
+    client.restart_cursor = 99
+    terminal = _StubTerminal()
+    app = KernelTuiApp(client, session_id="s1", terminal=terminal)  # type: ignore[arg-type]
+    client._stop = app._stop_event
+    # No reconcile thread in this cursor-specific test: stub the async refresh
+    # so the join below covers only the owned stream worker.
+    app._reconcile_connection_async = lambda: None  # type: ignore[method-assign]
+    app._start_sse_stream()
+    assert app._sse_thread is not None
+    try:
+        # Rows 1-2 settle from the first connection; the restart frame breaks
+        # the worker's iterator and it reconnects from the applied cursor.
+        _drain_until(app, terminal, "two")
+        # Rows 3-4 were never exposed before the restart: they settle from the
+        # reconnected fetch — only if the worker did not jump to 99.
+        _drain_until(app, terminal, "four")
+        for marker in ("one", "two", "three", "four"):
+            assert sum(marker in row for row in terminal.committed) == 1, (marker, terminal.committed)
+    finally:
+        app._stop_event.set()
+        app._sse_thread.join(timeout=5.0)
+        assert not app._sse_thread.is_alive()
+
+
+def test_real_503_handlers_keep_both_gates_then_decided_facts_close_each_once() -> None:
+    """Real app handlers + a 503 collaborator: the gates stay actionable with
+    the same ids/revision, then the canonical decided facts close each gate
+    exactly once. A late acceptance for an OLD id must not close a NEW gate.
+
+    This fails on the old early-clear implementation (gates are gone before the
+    worker answers) and passes now.
+    """
+    import time
+
+    from voidcode.kernel.tui.terminal_app import KernelTuiApp
+    from voidcode.kernel.tui.views import InteractiveConfirmation
+
+    client = _FencedClient()
+    terminal = _StubTerminal()
+    app = KernelTuiApp(client, session_id="s1", terminal=terminal)  # type: ignore[arg-type]
+    app._session_cursors["s1"] = 10
+    app.pending_approval = {"request_id": "appr-1", "tool_name": "write", "arguments": {}}
+    app.active_overlay = InteractiveConfirmation({"request_id": "conf-9", "title": "t", "detail": "d"}, revision_id="rev-1")
+    # Real handlers, real worker threads, real 503 answers. The barrier is the
+    # workers' own follow-up envelopes: each failed submission ends with a
+    # decision_done frame that clears its in-flight marker, so both markers
+    # clearing means both workers answered. No production thread registry, no
+    # global thread scans.
+    app._resolve_approval("allow")
+    app._resolve_confirmation("allow")
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        app._drain_events()
+        if "appr-1" not in app._in_flight and "conf-9" not in app._in_flight:
+            break
+        time.sleep(0.01)
+    assert "appr-1" not in app._in_flight and "conf-9" not in app._in_flight, "decision workers never answered"
+    app._drain_events()
+    # Same ids and revision remain actionable; nothing was auto-resent.
+    assert app.pending_approval is not None and app.pending_approval["request_id"] == "appr-1"
+    assert isinstance(app.active_overlay, InteractiveConfirmation) and app.active_overlay.request_id == "conf-9"
+    assert app.active_overlay.revision_id == "rev-1"
+    assert "appr-1" not in app._in_flight and "conf-9" not in app._in_flight
+    # A NEW approval parks while the old gate is still mounted; a late
+    # acceptance envelope for the OLD id must not close the new gate.
+    app.pending_approval = {"request_id": "appr-2", "tool_name": "write", "arguments": {}}
+    app.event_queue.put(
+        {"kind": "approval_accepted", "request_id": "appr-1", "decision": "allow", "status": "completed", "generation": 0, "session_id": "s1"}
+    )
+    app._drain_events()
+    assert app.pending_approval is not None and app.pending_approval["request_id"] == "appr-2"
+    # The canonical decided facts close each gate exactly once.
+    app.event_queue.put(
+        {"kind": "event", "event": _event(11, "kernel.approval_decided", decision="allow", request_id="appr-2"), "generation": 0, "session_id": "s1"}
+    )
+    app.event_queue.put(
+        {"kind": "event", "event": _event(12, "kernel.confirmation_decided", request_id="conf-9"), "generation": 0, "session_id": "s1"}
+    )
+    app._drain_events()
+    assert app.pending_approval is None
+    assert "conf-9" in app.resolved_confirmations
+    assert app.active_overlay is None
+    # Replayed decided facts never resurrect either gate.
+    app.event_queue.put(
+        {"kind": "event", "event": _event(12, "kernel.confirmation_decided", request_id="conf-9"), "generation": 0, "session_id": "s1"}
+    )
+    app._drain_events()
+    assert app.active_overlay is None
+    assert list(app.queued_confirmations) == []

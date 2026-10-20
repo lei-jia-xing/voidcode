@@ -21,6 +21,7 @@ from voidcode.plugins.skills.rules import (
     RuleCatalog,
     RuleCatalogEntry,
     build_rule_catalog,
+    read_rule_page,
     render_file_rule_context,
     render_file_rules,
     rulebook_prompt_context,
@@ -537,3 +538,35 @@ def test_context_contribution_keeps_rules_when_skills_are_disabled(tmp_path: Pat
     assert plugin.observer is skills_observer
     assert [tool.definition.name for tool in plugin.tools] == ["skill"]
     assert [command.definition.name for command in plugin.commands] == ["skills"]
+
+
+def test_rule_page_reads_the_same_catalog_the_prompt_publishes(tmp_path: Path) -> None:
+    root = tmp_path / ".voidcode" / "rules"
+    _write(root / "notes.md", _rule_document(name="notes", body="line one\nline two\nline three", application="discoverable"))
+
+    page = read_rule_page(tmp_path, "voidcode://rule/notes", offset=2, limit=1)
+    assert page is not None
+    assert (page.rule, page.text, page.next_offset, page.byte_truncated) == ("notes", "line two", 3, False)
+    assert page.content_hash == build_rule_catalog(tmp_path).entries[0].metadata.content_hash
+
+    assert read_rule_page(tmp_path, "voidcode://rule/missing") is None
+    assert read_rule_page(tmp_path, "voidcode://rule/Bad Name") is None
+
+
+def test_rule_page_query_validates_arguments_and_never_fabricates(tmp_path: Path) -> None:
+    from voidcode.sdk.plugin import PluginQueryCaller
+
+    root = tmp_path / ".voidcode" / "rules"
+    _write(root / "notes.md", _rule_document(name="notes", body="Read me", application="discoverable"))
+    caller = PluginQueryCaller(session_id="sess", workspace=tmp_path)
+    query = next(query for query in create_plugin(None).queries if query.name == "workspace.rule_page")
+
+    answered = query.handler({"uri": "voidcode://rule/notes", "offset": 1, "limit": 2000}, caller)
+    assert answered is not None and answered["text"] == "Read me" and answered["next_offset"] is None
+    assert query.handler({"uri": "voidcode://rule/missing", "offset": 1, "limit": 2000}, caller) is None
+    with pytest.raises(ValueError, match="requires a rule uri"):
+        query.handler({"uri": "  "}, caller)
+    with pytest.raises(ValueError, match="offset must be a positive integer"):
+        query.handler({"uri": "voidcode://rule/notes", "offset": 0}, caller)
+    with pytest.raises(ValueError, match="limit must be within"):
+        query.handler({"uri": "voidcode://rule/notes", "limit": 2001}, caller)

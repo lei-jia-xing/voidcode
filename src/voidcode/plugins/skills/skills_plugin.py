@@ -35,7 +35,7 @@ from typing import ClassVar, Literal, TypeIs
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
 from voidcode.sdk.hooks import ContextContribution, InvocationFinishedFact, PluginFact
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.plugin import Plugin
+from voidcode.sdk.plugin import Plugin, PluginQuery, PluginQueryCaller
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import (
     TextOutput,
@@ -48,7 +48,7 @@ from voidcode.sdk.tools import (
 )
 
 from .frontmatter import FrontmatterError, load_frontmatter_mapping, split_frontmatter
-from .rules import build_rule_catalog, render_file_rules, rulebook_prompt_context, runtime_file_rule_contexts
+from .rules import build_rule_catalog, read_rule_page, render_file_rules, rulebook_prompt_context, runtime_file_rule_contexts
 
 SKILL_ENTRY_FILE_NAME = "SKILL.md"
 DEFAULT_SKILL_SEARCH_PATHS: tuple[str, ...] = (".voidcode/skills",)
@@ -841,12 +841,28 @@ class SkillsContextProvider:
         return None if not parts else ContextContribution(content="\n\n".join(parts))
 
 
+def _rule_page_query(arguments: Mapping[str, object], caller: PluginQueryCaller) -> Mapping[str, object] | None:
+    """Answer ``workspace.rule_page``: one paged read of a workspace rulebook rule."""
+    uri = arguments.get("uri")
+    if not isinstance(uri, str) or not uri.strip():
+        raise ValueError("workspace.rule_page requires a rule uri")
+    offset = arguments.get("offset", 1)
+    limit = arguments.get("limit", 2000)
+    if not isinstance(offset, int) or isinstance(offset, bool) or offset < 1:
+        raise ValueError("workspace.rule_page offset must be a positive integer")
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1 or limit > 2000:
+        raise ValueError("workspace.rule_page limit must be within 1..2000")
+    page = read_rule_page(caller.workspace, uri.strip(), offset=offset, limit=limit)
+    return None if page is None else page.payload()
+
+
 def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
     """Plugin entrypoint registered in voidcode-plugin.json."""
     skills_config = parse_skills_config(config)
     return Plugin(
         tools=(SkillTool(skills_config),),
         commands=(SkillsCommand(skills_config),),
+        queries=(PluginQuery(name="workspace.rule_page", handler=_rule_page_query),),
         context=SkillsContextProvider(skills_config),
         observer=skills_observer,
     )

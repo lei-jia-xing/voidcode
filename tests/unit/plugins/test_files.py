@@ -16,7 +16,6 @@ import pytest
 import voidcode.plugins.files
 from voidcode.plugins.files import create_plugin as _orig_create_plugin
 from voidcode.plugins.files.read_tool import ReadResultBody
-from voidcode.plugins.files.repair import ToolDiagnosticError
 from voidcode.plugins.files.write_tool import WriteResultBody
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.manifest import parse_plugin_manifest
@@ -396,6 +395,54 @@ def test_edit_batch_after_reread_succeeds_with_ambiguous_read_hash(tmp_path: Pat
     assert target.read_text(encoding="utf-8") == "alpha\nbeta2\n"
 
 
+def test_single_edit_after_reread_binds_seen_lines_to_current_bytes(tmp_path: Path) -> None:
+    """The single oldString path follows the same cycle: the guard binds to bytes on disk.
+
+    Nothing passes ``current_hash`` here; the shared guard hashes the candidate itself, so the
+    kernel's ambiguous ``read_hash`` (None once two versions were observed) cannot refuse a
+    second edit whose current version the model just read.
+    """
+    plugin = create_plugin({})
+    edit_tool = next(t for t in plugin.tools if t.definition.name == "edit")
+    target = tmp_path / "single.txt"
+    target.write_text("alpha\nbeta\n", encoding="utf-8")
+    v1_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+    resolved = str(target.resolve())
+
+    first = edit_tool.invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={"path": "single.txt", "oldString": "beta", "newString": "BETA", "expectedHash": v1_hash},
+        ),
+        context=_context(
+            tmp_path,
+            read_paths=frozenset({resolved}),
+            read_lines={(resolved, v1_hash): frozenset({1, 2})},
+            read_whole_files=frozenset({(resolved, v1_hash)}),
+            read_hash=v1_hash,
+        ),
+    )
+    assert isinstance(first, ToolSuccess)
+
+    v2_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+    assert v2_hash != v1_hash
+    second = edit_tool.invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={"path": "single.txt", "oldString": "BETA", "newString": "beta2", "expectedHash": v2_hash},
+        ),
+        context=_context(
+            tmp_path,
+            read_paths=frozenset({resolved}),
+            read_lines={(resolved, v1_hash): frozenset({1, 2}), (resolved, v2_hash): frozenset({1, 2})},
+            read_whole_files=frozenset({(resolved, v1_hash), (resolved, v2_hash)}),
+            read_hash=None,
+        ),
+    )
+    assert isinstance(second, ToolSuccess)
+    assert target.read_text(encoding="utf-8") == "alpha\nbeta2\n"
+
+
 def test_edit_batch_with_stale_base_refuses_prior_version_lines(tmp_path: Path) -> None:
     """Stale-base coverage: lines of a prior version never authorize an edit."""
     plugin = create_plugin({})
@@ -417,19 +464,22 @@ def test_edit_batch_with_stale_base_refuses_prior_version_lines(tmp_path: Path) 
         read_whole_files=frozenset(),
         read_hash=None,
     )
-    with pytest.raises(ToolDiagnosticError, match="never revealed by read") as exc_info:
-        edit_tool.invoke(
-            ToolCall(
-                tool_name="edit",
-                arguments={
-                    "path": "stale.txt",
-                    "edits": [{"oldString": "GAMMA", "newString": "gamma2"}],
-                    "expectedHash": v2_hash,
-                },
-            ),
-            context=context,
-        )
-    assert exc_info.value.error_details["reason"] == "unseen_range"
+    result = edit_tool.invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={
+                "path": "stale.txt",
+                "edits": [{"oldString": "GAMMA", "newString": "gamma2"}],
+                "expectedHash": v2_hash,
+            },
+        ),
+        context=context,
+    )
+    assert isinstance(result, ToolFailure)
+    assert "never revealed by read" in result.error
+    assert result.diagnostics is not None
+    assert result.diagnostics.details["reason"] == "unseen_range"
+    assert result.diagnostics.guidance is not None and "Use read on the target path" in result.diagnostics.guidance
     assert target.read_text(encoding="utf-8") == v2
 
 
@@ -560,3 +610,388 @@ def test_write_tool_honors_cancellation_before_side_effects(tmp_path: Path) -> N
     assert "cancelled before side effect" in result.error
     assert isinstance(result.execution, ConfirmedStop)
     assert not target.exists()
+
+
+class _UriServices:
+    """The narrow service surface the `voidcode://` branches consume, scripted per test."""
+
+    def __init__(
+        self,
+        *,
+        definitions: dict | None = None,
+        events: tuple = (),
+        child_events: tuple = (),
+        refuse_child: Exception | None = None,
+        rule_answer: dict | None = None,
+        rule_unanswered: bool = False,
+    ) -> None:
+        from voidcode.sdk.services import QueryUnavailable
+
+        self._definitions = definitions or {}
+        self._events = events
+        self._child_events = child_events
+        self._refuse_child = refuse_child
+        self._rule_answer = rule_answer
+        self._rule_unanswered = rule_unanswered
+        self._missing = QueryUnavailable
+        self.child_session_ids: list = []
+
+    def tool_definition(self, name: str):  # type: ignore[no-untyped-def]
+        return self._definitions.get(name)
+
+    def read_events(self, *, after_sequence: int = 0, limit: int = 100, include_payload: bool = True):  # type: ignore[no-untyped-def]
+        assert include_payload is False
+        return self._events[:limit]
+
+    def read_child_events(self, child_session_id: str, *, after_sequence: int = 0, limit: int = 100, include_payload: bool = True):  # type: ignore[no-untyped-def]
+        assert include_payload is False
+        self.child_session_ids.append(child_session_id)
+        if self._refuse_child is not None:
+            raise self._refuse_child
+        return self._child_events[:limit]
+
+    def query(self, name: str, arguments: dict | None = None):  # type: ignore[no-untyped-def]
+        assert name == "workspace.rule_page"
+        if self._rule_unanswered:
+            raise self._missing(f"no admitted plugin answers the query {name!r}")
+        return self._rule_answer
+
+
+def test_read_tool_documentation_renders_visible_definition_and_refuses_hidden(tmp_path: Path) -> None:
+    from voidcode.sdk.tools import ToolDefinition, ToolEffect
+
+    plugin = create_plugin({})
+    read_tool = next(t for t in plugin.tools if t.definition.name == "read")
+    definition = ToolDefinition(
+        name="read",
+        description="Read a file.",
+        input_schema={"type": "object", "properties": {"path": {"type": "string"}}},
+        effects=frozenset({ToolEffect.READ}),
+    )
+    visible = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "voidcode://tool/read"}),
+        context=_context(tmp_path),
+        services=cast(Any, _UriServices(definitions={"read": definition})),
+    )
+    assert isinstance(visible, ToolSuccess)
+    assert "Read a file." in visible.output.text  # type: ignore[union-attr]
+    assert visible.body.as_payload()["tool_name"] == "read"  # type: ignore[union-attr]
+
+    hidden = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "voidcode://tool/write"}),
+        context=_context(tmp_path),
+        services=cast(Any, _UriServices(definitions={"read": definition})),
+    )
+    assert isinstance(hidden, ToolFailure)
+    assert "profile scope/read-only stance hides it" in hidden.error
+    assert hidden.output.text == hidden.error  # type: ignore[union-attr]
+
+
+def test_read_transcript_strips_payloads_and_reports_kernel_refusal(tmp_path: Path) -> None:
+    from voidcode.sdk.services import EventView
+
+    plugin = create_plugin({})
+    read_tool = next(t for t in plugin.tools if t.definition.name == "read")
+    views = (
+        EventView(sequence=1, event_type="kernel.user_message", run_id="r", revision_id="v", source="user", actor="user"),
+        EventView(sequence=2, event_type="kernel.tool_completed", run_id="r", revision_id="v", source="kernel", actor="model"),
+    )
+    own = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "voidcode://transcript/session-test"}),
+        context=_context(tmp_path),
+        services=cast(Any, _UriServices(events=views)),
+    )
+    assert isinstance(own, ToolSuccess)
+    assert own.body.as_payload()["entries"] == [  # type: ignore[union-attr]
+        {"sequence": 1, "event_type": "kernel.user_message", "source": "user"},
+        {"sequence": 2, "event_type": "kernel.tool_completed", "source": "kernel"},
+    ]
+    assert "payload" not in json.dumps(own.body.as_payload())  # type: ignore[union-attr]
+
+    sibling = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "voidcode://transcript/sibling"}),
+        context=_context(tmp_path),
+        services=cast(Any, _UriServices(refuse_child=PermissionError("child events are readable only for this session's own descendants"))),
+    )
+    assert isinstance(sibling, ToolFailure)
+    assert "transcript not accessible for session sibling" in sibling.error
+    assert "own descendants" in sibling.error
+
+
+def test_read_rule_reports_unavailable_unknown_and_malformed(tmp_path: Path) -> None:
+    plugin = create_plugin({})
+    read_tool = next(t for t in plugin.tools if t.definition.name == "read")
+
+    disabled = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "voidcode://rule/notes"}),
+        context=_context(tmp_path),
+        services=cast(Any, _UriServices(rule_unanswered=True)),
+    )
+    assert isinstance(disabled, ToolFailure)
+    assert "rule catalog is unavailable" in disabled.error
+
+    unknown = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "voidcode://rule/notes"}),
+        context=_context(tmp_path),
+        services=cast(Any, _UriServices(rule_answer=None)),
+    )
+    assert isinstance(unknown, ToolFailure)
+    assert "unknown rule in this workspace" in unknown.error
+
+    malformed = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "voidcode://rule/notes"}),
+        context=_context(tmp_path),
+        services=cast(Any, _UriServices(rule_answer={"rule": "notes"})),
+    )
+    assert isinstance(malformed, ToolFailure)
+    assert "provider shape violated" in malformed.error
+
+    page = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "voidcode://rule/notes"}),
+        context=_context(tmp_path),
+        services=cast(
+            Any,
+            _UriServices(rule_answer={"rule": "notes", "content_hash": "abc", "text": "Read me", "next_offset": None, "byte_truncated": False}),
+        ),
+    )
+    assert isinstance(page, ToolSuccess)
+    assert "Read me" in page.output.text  # type: ignore[union-attr]
+
+
+class _VersionServices:
+    """Scripted `workspace.document_version` answers for `apply_workspace_edit`."""
+
+    def __init__(self, answer: dict | None = None, *, unanswered: bool = False) -> None:
+        from voidcode.sdk.services import QueryUnavailable
+
+        self._answer = answer
+        self._unanswered = unanswered
+        self._missing = QueryUnavailable
+
+    def query(self, name: str, arguments: dict | None = None):  # type: ignore[no-untyped-def]
+        assert name == "workspace.document_version"
+        if self._unanswered:
+            raise self._missing(f"no admitted plugin answers the query {name!r}")
+        return self._answer
+
+
+def _apply_context(workspace: Path, target: Path, content_hash: str):  # type: ignore[no-untyped-def]
+    resolved = str(target.resolve())
+    return _context(
+        workspace,
+        read_paths=frozenset({resolved}),
+        read_lines={(resolved, content_hash): frozenset({1, 2})},
+        read_whole_files=frozenset({(resolved, content_hash)}),
+        read_hash=content_hash,
+    )
+
+
+def test_apply_explicit_utf8_coordinates_win_over_negotiated_utf16(tmp_path: Path) -> None:
+    """A caller may address a non-BMP line in UTF-8 units while LSP negotiated UTF-16.
+
+    "𝄞" is one UTF-32 char, two UTF-16 units, four UTF-8 bytes: replacing the note that
+    follows it needs character 6 in UTF-8 coordinates but character 4 in UTF-16 ones.
+    """
+    plugin = create_plugin({})
+    tool = next(t for t in plugin.tools if t.definition.name == "apply_workspace_edit")
+    target = tmp_path / "music.txt"
+    target.write_text("𝄞ab\ncd\n", encoding="utf-8")
+    content_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+    document = {
+        "path": str(target.resolve()),
+        "version": 3,
+        "content_hash": content_hash,
+        "position_encoding": "utf-16",
+    }
+    result = tool.invoke(
+        ToolCall(
+            tool_name="apply_workspace_edit",
+            arguments={
+                "positionEncoding": "utf-8",
+                "edits": [
+                    {
+                        "path": "music.txt",
+                        "startLine": 1,
+                        "startCharacter": 6,
+                        "endLine": 1,
+                        "endCharacter": 7,
+                        "newText": "B",
+                        "expectedHash": content_hash,
+                        "expectedVersion": 3,
+                    }
+                ],
+            },
+        ),
+        context=_apply_context(tmp_path, target, content_hash),
+        services=cast(Any, _VersionServices(document)),
+    )
+    assert isinstance(result, ToolSuccess), result
+    assert target.read_text(encoding="utf-8") == "𝄞aB\ncd\n"
+
+
+def test_apply_omitted_encoding_uses_negotiated_default(tmp_path: Path) -> None:
+    """Without `positionEncoding`, the opened document's negotiated encoding applies."""
+    plugin = create_plugin({})
+    tool = next(t for t in plugin.tools if t.definition.name == "apply_workspace_edit")
+    target = tmp_path / "music.txt"
+    target.write_text("𝄞ab\ncd\n", encoding="utf-8")
+    content_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+    document = {
+        "path": str(target.resolve()),
+        "version": 3,
+        "content_hash": content_hash,
+        "position_encoding": "utf-16",
+    }
+    result = tool.invoke(
+        ToolCall(
+            tool_name="apply_workspace_edit",
+            arguments={
+                "edits": [
+                    {
+                        "path": "music.txt",
+                        "startLine": 1,
+                        "startCharacter": 4,
+                        "endLine": 1,
+                        "endCharacter": 5,
+                        "newText": "B",
+                        "expectedHash": content_hash,
+                        "expectedVersion": 3,
+                    }
+                ],
+            },
+        ),
+        context=_apply_context(tmp_path, target, content_hash),
+        services=cast(Any, _VersionServices(document)),
+    )
+    assert isinstance(result, ToolSuccess), result
+    assert target.read_text(encoding="utf-8") == "𝄞aB\ncd\n"
+
+
+def test_apply_matched_version_and_hash_only_succeed_with_correct_bytes(tmp_path: Path) -> None:
+    plugin = create_plugin({})
+    tool = next(t for t in plugin.tools if t.definition.name == "apply_workspace_edit")
+    target = tmp_path / "target.txt"
+    target.write_text("alpha\nbeta\n", encoding="utf-8")
+    first_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+    document = {
+        "path": str(target.resolve()),
+        "version": 1,
+        "content_hash": first_hash,
+        "position_encoding": "utf-16",
+    }
+    matched = tool.invoke(
+        ToolCall(
+            tool_name="apply_workspace_edit",
+            arguments={
+                "edits": [
+                    {
+                        "path": "target.txt",
+                        "startLine": 1,
+                        "startCharacter": 1,
+                        "endLine": 1,
+                        "endCharacter": 6,
+                        "newText": "omega",
+                        "expectedHash": first_hash,
+                        "expectedVersion": 1,
+                    }
+                ],
+            },
+        ),
+        context=_apply_context(tmp_path, target, first_hash),
+        services=cast(Any, _VersionServices(document)),
+    )
+    assert isinstance(matched, ToolSuccess), matched
+    assert target.read_text(encoding="utf-8") == "omega\nbeta\n"
+
+    second_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+    hash_only = tool.invoke(
+        ToolCall(
+            tool_name="apply_workspace_edit",
+            arguments={
+                "edits": [
+                    {
+                        "path": "target.txt",
+                        "startLine": 2,
+                        "startCharacter": 1,
+                        "endLine": 2,
+                        "endCharacter": 5,
+                        "newText": "BETA",
+                        "expectedHash": second_hash,
+                    }
+                ],
+            },
+        ),
+        context=_apply_context(tmp_path, target, second_hash),
+        services=cast(Any, _VersionServices(unanswered=True)),
+    )
+    assert isinstance(hash_only, ToolSuccess), hash_only
+    assert target.read_text(encoding="utf-8") == "omega\nBETA\n"
+
+
+def test_apply_read_edit_read_edit_cycle_binds_to_current_version(tmp_path: Path) -> None:
+    """The second edit of a read→edit→read→edit cycle must not refuse on stale binding.
+
+    After two versions of the path were observed the kernel's `read_hash` is None; the
+    seen-lines guard binds to the verified expectedHash of this edit instead, so a fresh
+    full read of the current content authorizes the second write.
+    """
+    plugin = create_plugin({})
+    tool = next(t for t in plugin.tools if t.definition.name == "apply_workspace_edit")
+    target = tmp_path / "uni.py"
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    first_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+    resolved = str(target.resolve())
+
+    first = tool.invoke(
+        ToolCall(
+            tool_name="apply_workspace_edit",
+            arguments={
+                "edits": [
+                    {
+                        "path": "uni.py",
+                        "startLine": 1,
+                        "startCharacter": 1,
+                        "endLine": 1,
+                        "endCharacter": 10,
+                        "newText": "VALUE = 2\n",
+                        "expectedHash": first_hash,
+                    }
+                ],
+            },
+        ),
+        context=_apply_context(tmp_path, target, first_hash),
+        services=cast(Any, _VersionServices(unanswered=True)),
+    )
+    assert isinstance(first, ToolSuccess), first
+
+    second_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+    assert second_hash != first_hash
+    both_versions = _context(
+        tmp_path,
+        read_paths=frozenset({resolved}),
+        read_lines={(resolved, first_hash): frozenset({1}), (resolved, second_hash): frozenset({1})},
+        read_whole_files=frozenset({(resolved, first_hash), (resolved, second_hash)}),
+        read_hash=None,
+    )
+    second = tool.invoke(
+        ToolCall(
+            tool_name="apply_workspace_edit",
+            arguments={
+                "edits": [
+                    {
+                        "path": "uni.py",
+                        "startLine": 1,
+                        "startCharacter": 1,
+                        "endLine": 1,
+                        "endCharacter": 10,
+                        "newText": "VALUE = 3\n",
+                        "expectedHash": second_hash,
+                    }
+                ],
+            },
+        ),
+        context=both_versions,
+        services=cast(Any, _VersionServices(unanswered=True)),
+    )
+    assert isinstance(second, ToolSuccess), second
+    assert target.read_text(encoding="utf-8") == "VALUE = 3\n\n\n"

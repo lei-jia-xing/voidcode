@@ -13,6 +13,7 @@ from lsprotocol import converters as lsp_converters
 from lsprotocol import types as lsp_types
 
 from voidcode.sdk.invocation import ToolContext
+from voidcode.sdk.provider import ProviderAbortSignal
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import (
     OpaqueToolBody,
@@ -67,8 +68,27 @@ _LSP_OPERATIONS: dict[str, LspOperation] = {
 def _bound_requester(manager: LspManager) -> LspRequester:
     """The tool's only view of the plugin-owned manager."""
 
-    def request(*, server_name: str | None, method: str, params: dict[str, object], workspace: Path) -> LspResponse:
-        return manager.request(LspRequest(server_name=server_name, method=method, params=params, workspace=workspace))
+    def request(
+        *,
+        server_name: str | None,
+        method: str,
+        params: dict[str, object],
+        workspace: Path,
+        services: PluginServices,
+        session_id: str,
+        abort_signal: ProviderAbortSignal | None,
+    ) -> LspResponse:
+        return manager.request(
+            LspRequest(
+                server_name=server_name,
+                method=method,
+                params=params,
+                workspace=workspace,
+                session_id=session_id,
+                services=services,
+                abort_signal=abort_signal,
+            )
+        )
 
     return request
 
@@ -103,6 +123,9 @@ class LspTool:
         method: str,
         params: dict[str, object],
         workspace: Path,
+        services: PluginServices,
+        session_id: str,
+        abort_signal: ProviderAbortSignal | None,
     ) -> LspResponse:
         try:
             return requester(
@@ -110,6 +133,9 @@ class LspTool:
                 method=method,
                 params=params,
                 workspace=workspace,
+                services=services,
+                session_id=session_id,
+                abort_signal=abort_signal,
             )
         except LspRequestError as exc:
             raise ValueError(f"LSP protocol error: {exc}") from exc
@@ -260,6 +286,9 @@ class LspTool:
                         unstructure_as=lsp_types.TextDocumentPositionParams,
                     ),
                     workspace=workspace_root,
+                    services=services,
+                    session_id=context.require_session_id(),
+                    abort_signal=context.abort_signal,
                 )
             except ValueError as exc:
                 return self._request_failure(exc)
@@ -287,6 +316,9 @@ class LspTool:
                     method=operation.value,
                     params=params,
                     workspace=workspace_root,
+                    services=services,
+                    session_id=context.require_session_id(),
+                    abort_signal=context.abort_signal,
                 )
             except ValueError as exc:
                 return self._request_failure(exc)
@@ -315,6 +347,9 @@ class LspTool:
                 method=operation.value,
                 params=params,
                 workspace=workspace_root,
+                services=services,
+                session_id=context.require_session_id(),
+                abort_signal=context.abort_signal,
             )
         except ValueError as exc:
             return self._request_failure(exc)

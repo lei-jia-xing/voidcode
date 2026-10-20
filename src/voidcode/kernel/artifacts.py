@@ -27,7 +27,8 @@ MAX_ARTIFACT_BYTES: Final[int] = 256 * 1024 * 1024
 MAX_PAGE_BYTES: Final[int] = 256 * 1024
 
 _MODE: Final[int] = 0o600
-#: A media type is a bounded, printable claim; anything else is stored as "unknown".
+#: A media type is a bounded, printable claim; a claim that fails the bound is refused with
+#: :class:`ArtifactError` rather than stored as a guess.
 _MEDIA_TYPE_MAX: Final[int] = 128
 
 

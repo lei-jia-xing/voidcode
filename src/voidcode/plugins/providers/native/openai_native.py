@@ -514,24 +514,12 @@ class OpenAIChatCompletionsProvider:
         messages: list[dict[str, object]] = []
         for message in request.messages:
             if message.role == "assistant" and message.tool_calls:
-                if requires_reasoning_content and not message.reasoning:
-                    # The kernel persists the provider's own reasoning on the
-                    # assistant message; replaying the batch without it would
-                    # send a shape the model rejects, so the turn fails before
-                    # any request is made instead of synthesizing one.
-                    raise ProviderExecutionError(
-                        kind="stream_tool_feedback_shape",
-                        provider_name=request.provider_name or self.name,
-                        model_name=self._model_name(request),
-                        message="tool-call replay requires the original provider reasoning content",
-                        retryable=False,
-                        fallback_allowed=False,
-                        details={
-                            "source": "messages",
-                            "reason": "missing_reasoning_content",
-                            "tool_call_id": message.tool_calls[0].tool_call_id,
-                        },
-                    )
+                # A reasoning-locked provider still returns tool-call turns with
+                # zero reasoning tokens when its own effort ladder decides not
+                # to think (observed on the real DeepSeek wire); replaying that
+                # authentic shape must not fail. Carry the provider's own
+                # reasoning verbatim when it exists and never synthesize it when
+                # the vendor produced none.
                 tool_calls: list[dict[str, object]] = []
                 for call in message.tool_calls:
                     arguments = json.dumps(
@@ -556,9 +544,11 @@ class OpenAIChatCompletionsProvider:
                     {
                         "role": "assistant",
                         "content": message.content,
-                        # DeepSeek requires the prior reasoning_content on the
-                        # assistant tool-call message of a replayed turn.
-                        **({"reasoning_content": message.reasoning} if requires_reasoning_content else {}),
+                        # DeepSeek requires prior reasoning_content on every
+                        # assistant turn of a tools request, including turns
+                        # without tool calls; the kernel persists the provider's
+                        # own text, so replay it verbatim when it exists.
+                        **({"reasoning_content": message.reasoning} if requires_reasoning_content and message.reasoning else {}),
                         "tool_calls": tool_calls,
                     }
                 )
@@ -572,7 +562,12 @@ class OpenAIChatCompletionsProvider:
                     }
                 )
             else:
-                messages.append({"role": message.role, "content": message.content})
+                replayed: dict[str, object] = {"role": message.role, "content": message.content}
+                if message.role == "assistant" and requires_reasoning_content and message.reasoning:
+                    # DeepSeek's tools contract requires prior reasoning on all
+                    # assistant turns, not only turns that carried a tool call.
+                    replayed["reasoning_content"] = message.reasoning
+                messages.append(replayed)
         return messages
 
     def _tool_feedback_mode_for_request(self, request: ProviderTurnRequest) -> ToolFeedbackMode | None:

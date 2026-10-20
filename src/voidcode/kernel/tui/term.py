@@ -324,9 +324,9 @@ def wrap_row(
 ) -> list[str]:
     """Word-wrap a pre-styled row, preserving ANSI styling across the break.
 
-    Prose composed by the transcript is wrapped by rich itself (markdown, code
-    blocks); this helper exists for rows that are already styled, where the
-    wrapping must not slice an escape sequence in half.
+    Rows that already carry styling (escaped terminal output, plugin-provided
+    values) must not have an escape sequence sliced in half, so rich computes
+    the break instead of a plain character split.
     """
     if width <= 0:
         return []

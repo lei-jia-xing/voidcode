@@ -119,6 +119,10 @@ class Cancellation:
                 self._event.clear()
 
 
+class DrainRefused(ValueError):
+    """Fresh admission refused because the kernel is draining for an upgrade (retry after it restarts)."""
+
+
 def _wire_object(value: object, what: str) -> Mapping[str, object]:
     """Require a JSON object from a durable payload, failing visibly when malformed."""
     if not isinstance(value, Mapping):
@@ -201,12 +205,12 @@ _CORE_TOOL_SPECS: tuple[tuple[str, str, Mapping[str, object], tuple[ToolEffect, 
 )
 CORE_TOOL_NAMES = frozenset(name for name, _d, _s, _e in _CORE_TOOL_SPECS)
 
-#: Delegation limits inherited from the pre-cutover policy: a chain nests at most this deep
-#: and spawns at most this many children in total.
 #: Client ingress guard for a prompt typed by a client.
 CLIENT_PROMPT_MAX_BYTES = 64 * 1024
 #: Kernel guard for a delegated prompt; owners enforce their own tighter product caps.
 CHILD_PROMPT_MAX_BYTES = 256 * 1024
+#: Delegation limits: a chain nests at most this deep and spawns at most this many children in
+#: total. A child inherits the parent's policy unchanged, so delegation never widens it.
 DELEGATION_MAX_DEPTH = 3
 DELEGATION_SPAWN_BUDGET = 4
 
@@ -322,7 +326,7 @@ class _Cursor(BaseModel):
     stop_cause: StopCause | None = None
     action_budget_remaining: int | None = None
     root_id: str = ""
-    #: Activation request that owes this session one automatic continuation after a switch.
+    #: Staged continuation this session owes itself: an activation request id or an upgrade pause id.
     resume_intent: str = ""
 
 
@@ -396,6 +400,10 @@ class Kernel:
         self._session_locks_guard = Lock()
         self._session_aborts: dict[str, Cancellation] = {}
         self._aborts_lock = Lock()
+        # Upgrade drain: while set, no fresh work is admitted (runs, resumes, ticks, activations)
+        # and an active run pauses at its next committed batch boundary carrying the pause intent.
+        self._draining = False
+        self._pause_intent: str | None = None
         # One pointer per capability generation, plus short-critical-section call accounting.
         # The activation fence rejects new dispatches and reports foreign in-flight calls as
         # busy instead of blocking any run, and no lock is ever held across an RPC.
@@ -442,6 +450,7 @@ class Kernel:
                 cancel_child_callback=self.cancel_child,
                 model_query_callback=self.governed_model_query,
                 progress_callback=self._report_progress,
+                tool_definition_callback=self._visible_tool_definition,
                 artifacts_dir=self._state_dir / "artifacts",
                 lease_fd=lease,
             )
@@ -468,16 +477,24 @@ class Kernel:
             self._driver: threading.Thread | None = None
             self._ticker: threading.Thread | None = None
             if self.auto_drain:
-                # A crash between an activation commit and its automatic continuation leaves a
-                # durable resume intent; this driver is what actually finishes that work.
-                self._driver = threading.Thread(target=self._drive_pending_activations, name="KernelActivationDriver", daemon=True)
-                self._driver.start()
-                self._ticker = threading.Thread(target=self._wakeup_loop, name="KernelWakeupTicker", daemon=True)
-                self._ticker.start()
+                self._start_background_work()
             # Adopt the generation LAST: a failed cold start must leave the workspace unadopted, so
             # fixing the same authorized source and retrying works without deleting any database.
             self.store.record_workspace_revision(str(self.workspace), revision_id)
             self._resources = resources.pop_all()
+
+    def _start_background_work(self) -> None:
+        """Start the continuation driver and the wakeup ticker, exactly once."""
+        with self._session_locks_guard:
+            if self._closed or self._driver is not None:
+                return
+            # A crash between a commit and its automatic continuation leaves a
+            # durable resume intent; this driver is what actually finishes that work.
+            self._driver = threading.Thread(target=self._drive_pending_activations, name="KernelActivationDriver", daemon=True)
+            self._ticker = threading.Thread(target=self._wakeup_loop, name="KernelWakeupTicker", daemon=True)
+            driver, ticker = self._driver, self._ticker
+        driver.start()
+        ticker.start()
 
     @contextmanager
     def _session_lock(self, session_id: str) -> Iterator[None]:
@@ -658,6 +675,135 @@ class Kernel:
             for ab in self._session_aborts.values():
                 ab.set_cancelled(True, reason=reason, stop_cause=cause)
 
+    def _ensure_admitting(self) -> None:
+        """Refuse fresh work while the kernel is draining for an upgrade; admitted work finishes."""
+        with self._aborts_lock:
+            draining = self._draining
+        if draining:
+            raise DrainRefused("kernel is draining for an upgrade; retry after it restarts")
+
+    def begin_drain(
+        self,
+        *,
+        timeout_seconds: float = 30.0,
+        require_quiescent: bool = False,
+        pause_at_batch_boundary: bool = False,
+        pause_intent: str = "",
+    ) -> dict[str, object]:
+        """Fence fresh admission and wait for admitted work to reach a committed boundary.
+
+        Parked approvals and stored confirmations are durable boundaries when the generation does
+        not change; a revision-changing upgrade asks for ``require_quiescent`` instead, which
+        refuses them before anything stops so an approval is never rebound to new tool code. With
+        ``pause_at_batch_boundary`` an active run pauses at its next committed native batch and
+        leaves ``pause_intent`` for exactly-once resumption; otherwise the drain waits for runs to
+        finish on their own. Nothing is ever force-cancelled for an upgrade.
+        """
+        self._ensure_open()
+        if pause_at_batch_boundary and not pause_intent:
+            raise ValueError("pause_at_batch_boundary needs a pause_intent upgrade id")
+        with self._aborts_lock:
+            self._draining = True
+            self._pause_intent = pause_intent if pause_at_batch_boundary else None
+        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+        timed_out = False
+        while True:
+            with self._session_locks_guard:
+                held = list(self._session_locks.items())
+            for _, lock in held:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not lock.acquire(timeout=remaining):
+                    timed_out = True
+                    break
+                lock.release()
+            if timed_out:
+                break
+            with self._session_locks_guard:
+                if list(self._session_locks) == [session_id for session_id, _ in held]:
+                    break
+        with self._calls_lock:
+            while self._active_calls or self._activating_thread is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                self._calls_lock.wait(timeout=min(remaining, 0.05))
+            busy_calls = dict(self._active_calls)
+            activating = self._activating_thread is not None
+        blockers: list[dict[str, object]] = [
+            {"session_id": blocker.session_id, "status": blocker.status, "reason": blocker.reason, "detail": blocker.detail}
+            for blocker in self.store.drain_blockers(str(self.workspace), include_parked=require_quiescent)
+        ]
+        if busy_calls or activating:
+            blockers.insert(
+                0,
+                {
+                    "session_id": "",
+                    "status": "dispatch",
+                    "reason": "active_call",
+                    "detail": ", ".join(sorted(busy_calls.values())) if busy_calls else "activation in progress",
+                },
+            )
+        if require_quiescent:
+            blockers.extend(self._unanswered_activation_requests())
+        if timed_out and not blockers:
+            blockers.append({"session_id": "", "status": "drain", "reason": "timeout", "detail": "a run did not reach a boundary in time"})
+        if timed_out or blockers:
+            return {"drained": False, "blockers": blockers}
+        paused: list[str] = []
+        sessions: list[str] = []
+        if pause_at_batch_boundary:
+            for session in self.store.sessions(workspace=str(self.workspace)):
+                sessions.append(session.session_id)
+                checkpoint = self.store.checkpoint(session.session_id)
+                if checkpoint is not None and isinstance(checkpoint.payload, Mapping) and checkpoint.payload.get("resume_intent") == pause_intent:
+                    paused.append(session.session_id)
+        else:
+            sessions = [session.session_id for session in self.store.sessions(workspace=str(self.workspace))]
+        return {"drained": True, "active_calls": 0, "paused_sessions": paused, "sessions": sessions}
+
+    def _unanswered_activation_requests(self) -> list[dict[str, object]]:
+        """Staged capability switches no answer consumed yet; a revision change must not inherit them."""
+        blockers: list[dict[str, object]] = []
+        for session in self.store.sessions(workspace=str(self.workspace)):
+            requested: set[str] = set()
+            answered: set[str] = set()
+            for event in self.store.events(session.session_id):
+                request_id = event.payload.get("request_id")
+                if not isinstance(request_id, str) or not request_id:
+                    continue
+                if event.event_type == "kernel.activation_requested":
+                    requested.add(request_id)
+                elif event.event_type in {"kernel.activation_committed", "kernel.activation_failed", "kernel.activation_blocked"}:
+                    answered.add(request_id)
+            for request_id in sorted(requested - answered):
+                blockers.append({"session_id": session.session_id, "status": session.status, "reason": "pending_activation", "detail": request_id})
+        return blockers
+
+    def admit(self) -> dict[str, object]:
+        """Clear the drain fence and resume paused work exactly once, without waiting for it.
+
+        Resumption runs on the existing pending driver in the background: control rollback returns
+        promptly instead of blocking on a resumed provider turn, and the driver's CAS consumption
+        keeps concurrent passes safe.
+        """
+        self._ensure_open()
+        with self._aborts_lock:
+            self._draining = False
+            self._pause_intent = None
+        worker = threading.Thread(target=self._drive_pending_activations, name="KernelAdmitDriver", daemon=True)
+        worker.start()
+        return {"admitting": True}
+
+    def promote(self) -> dict[str, object]:
+        """Start background work and clear the fence: this generation now serves."""
+        self._ensure_open()
+        with self._aborts_lock:
+            self._draining = False
+            self._pause_intent = None
+        self._start_background_work()
+        return {"serving": True}
+
     def close(self) -> None:
         self.cancel("kernel shutdown", cause="shutdown")
         driver: threading.Thread | None = None
@@ -697,6 +843,7 @@ class Kernel:
         # a kernel-driven child run carries a delegated payload (e.g. a review diff).
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode("utf-8")) > prompt_max_bytes:
             raise ValueError(f"prompt must be nonempty UTF-8 text within {prompt_max_bytes // 1024} KiB")
+        self._ensure_admitting()
         self._validate_steps(max_steps)
         if session_id is not None and (not isinstance(session_id, str) or not session_id or len(session_id) > 128 or "\0" in session_id):
             raise ValueError("session_id must be nonempty text within 128 characters without NUL")
@@ -755,6 +902,7 @@ class Kernel:
         max_steps: int = 32,
     ) -> KernelResult:
         self._validate_steps(max_steps)
+        self._ensure_admitting()
         with self._session_lock(session_id):
             self._ensure_open()
             self._abort.set_cancelled(False)
@@ -1737,6 +1885,7 @@ class Kernel:
         durably on the session and the active revision stays untouched.
         """
         self._ensure_open()
+        self._ensure_admitting()
         snapshot = self._snapshot
         session = self.session(session_id)
         request_id = request_id or uuid4().hex
@@ -1884,8 +2033,9 @@ class Kernel:
             raise
 
     def _prepare_activation_locked(self, snapshot: _Snapshot, *, admission: Admission, source: str) -> _PreparedActivation:
-        # A candidate host must load the same SDK source the active revision pinned; a
-        # mutated SDK is a controlled kernel upgrade (P5), never a silent hot reload.
+        # A candidate host must load the same SDK source the active revision pinned. The controlled
+        # kernel upgrade that would carry an SDK change across revisions is P5 and is not
+        # implemented, so a mutated SDK refuses instead of silently reloading.
         if not snapshot.sdk_sha256:
             raise ValueError("the active revision does not pin an SDK source hash; refusing to load candidate code")
         installed_sdk = sdk_source_hash(self._sdk_root())
@@ -1912,6 +2062,7 @@ class Kernel:
                 cancel_child_callback=self.cancel_child,
                 model_query_callback=self.governed_model_query,
                 progress_callback=self._report_progress,
+                tool_definition_callback=self._visible_tool_definition,
                 artifacts_dir=self._state_dir / "artifacts",
                 lease_fd=self._lease_fd,
             )
@@ -2119,6 +2270,7 @@ class Kernel:
     def tick(self, now_ms: int | None = None) -> dict[str, object]:
         """Fire at most one due wakeup: claim it atomically with its run, then drive that run."""
         self._ensure_open()
+        self._ensure_admitting()
         now = int(time.time() * 1000) if now_ms is None else now_ms
         if type(now) is not int or now < 0:
             raise ValueError("now_ms must be a non-negative integer")
@@ -3197,6 +3349,28 @@ class Kernel:
             tools = tuple(tool for tool in tools if not denied_under_restriction(tool.effects))
         return tools
 
+    def _visible_tool_definition(self, session_id: str, name: str, revision_id: str) -> tuple[Mapping[str, object] | None, str]:
+        """One definition from the active revision's dispatch snapshot, with this session's filters.
+
+        The same source and the same predicate `_visible_tools` applies: the session's profile
+        scope first, then the effective read-only stance (frozen policy or owner overlays). It
+        answers `(None, reason)` instead of raising, so a documentation read reports the actual
+        visibility instead of guessing it.
+        """
+        snapshot = self._snapshot
+        if snapshot.revision_id != revision_id:
+            raise ValueError("the lease's revision is no longer the active capability revision")
+        definition = snapshot.definitions.get(name)
+        if definition is None:
+            return None, "unknown"
+        session = self.store.session(session_id)
+        scope = session.tool_allowlist
+        if scope is not None and name not in scope:
+            return None, "scope"
+        if self._session_read_only(session_id) and denied_under_restriction(definition.effects):
+            return None, "read_only"
+        return encode_tool_definition(definition), "visible"
+
     def _denial(self, call: ToolCall, definition: ToolDefinition, *, read_only: bool | None = None) -> str | None:
         try:
             self._validators[definition.name].validate(json_wire_object(call.arguments))
@@ -3262,23 +3436,33 @@ class Kernel:
             if cursor.batch_sequence is None and cursor.deferred_sequence is None:
                 # A staged activation applies only here: the whole previous native batch has been
                 # reported and committed, so no result can mix generations, and the request is
-                # consumed durably in the same transaction as the switch.
+                # consumed durably in the same transaction as the switch. A drain pauses at this
+                # same boundary instead of switching generations underneath the supervisor.
                 pending_request = self._pending_activation_request(execution)
                 if pending_request is not None:
-                    outcome = self.activate(
-                        session_id=execution.session.session_id,
-                        source="model",
-                        request_id=str(pending_request.get("request_id", "")),
-                        target_revision_id=str(pending_request.get("target_revision_id", "")),
-                    )
-                    if outcome["activated"]:
-                        # This run is the automatic continuation the activation implied; the
-                        # next commit persists the consumed intent.
-                        execution.cursor.resume_intent = ""
-                    execution.session = self.store.session(execution.session.session_id)
-                    execution.events = list(self.store.events(execution.session.session_id))
-                    cursor = execution.cursor
-                    snapshot = self._snapshot
+                    try:
+                        outcome = self.activate(
+                            session_id=execution.session.session_id,
+                            source="model",
+                            request_id=str(pending_request.get("request_id", "")),
+                            target_revision_id=str(pending_request.get("target_revision_id", "")),
+                        )
+                    except DrainRefused:
+                        # The drain fence won the race: the staged switch stays durable and the
+                        # run below either pauses or the drain reports it as still running.
+                        outcome = None
+                    if outcome is not None:
+                        if outcome["activated"]:
+                            # This run is the automatic continuation the activation implied; the
+                            # next commit persists the consumed intent.
+                            execution.cursor.resume_intent = ""
+                        execution.session = self.store.session(execution.session.session_id)
+                        execution.events = list(self.store.events(execution.session.session_id))
+                        cursor = execution.cursor
+                        snapshot = self._snapshot
+                paused = self._pause_at_boundary(execution)
+                if paused is not None:
+                    return paused
                 if cursor.deferred_only:
                     self._commit(
                         execution,
@@ -3558,6 +3742,32 @@ class Kernel:
             stopped = self._invoke(execution, call, definition)
             if stopped is not None:
                 return stopped
+
+    def _pause_at_boundary(self, execution: _Execution) -> KernelResult | None:
+        """Pause a draining run at its committed batch boundary, leaving a durable resume intent.
+
+        Only runs where a staged activation would apply (the whole native batch was reported and
+        committed), so nothing already executed can ever run twice. A run that already carries an
+        intent is left alone: its staged work belongs to whoever staged it.
+        """
+        with self._aborts_lock:
+            intent = self._pause_intent if self._draining else None
+        if intent is None or execution.cursor.resume_intent:
+            return None
+        execution.cursor.resume_intent = intent
+        execution.cursor.stop_cause = "shutdown"
+        self._commit(
+            execution,
+            "interrupted",
+            "interrupted",
+            EventDraft(
+                "kernel.upgrade_paused",
+                "kernel",
+                "kernel",
+                {"upgrade_id": intent, "run_id": execution.run_id, "logical_turn": execution.cursor.logical_turn},
+            ),
+        )
+        return self._result(execution, error=f"run paused for upgrade {intent}", stop_cause="shutdown")
 
     def _invoke(self, execution: _Execution, call: ToolCall, definition: ToolDefinition) -> KernelResult | None:
         with self._dispatch(f"tool:{call.tool_name}") as snapshot:
@@ -3914,7 +4124,10 @@ class Kernel:
         return tuple(messages)
 
     def _drive_pending_activations(self) -> None:
-        """Finish committed command-tool work and activation continuations left across restart."""
+        """Finish committed command-tool work and staged continuations left across restart."""
+        with self._aborts_lock:
+            if self._draining:
+                return
         try:
             for session in self.store.sessions(workspace=str(self.workspace)):
                 if self._closed:
@@ -3928,15 +4141,19 @@ class Kernel:
                 if not cursor.resume_intent:
                     continue
                 try:
-                    self._continue_after_activation(session.session_id)
+                    self._consume_resume_intent(session.session_id)
                 except Exception:
                     # The intent stays durable, so the next process retries it; never crash the kernel.
                     continue
         except Exception:
             return
 
-    def _continue_after_activation(self, session_id: str) -> None:
-        """Claim and drive one owed continuation, exactly once, on its own captured generation."""
+    def _consume_resume_intent(self, session_id: str) -> None:
+        """Claim and drive one owed continuation, exactly once, on its own captured generation.
+
+        The intent is either an activation request id or an upgrade pause id; the consumption event
+        names the real staged fact it came from, never a forged cause.
+        """
         with self._session_lock(session_id):
             self._ensure_open()
             with self._aborts_lock:
@@ -3955,12 +4172,23 @@ class Kernel:
             self._abort.set_cancelled(False)
             cursor.resume_intent = ""
             execution = _Execution(session, cursor, list(self.store.events(session_id)), session.run_id or intent)
+            cause = "activation"
+            for event in reversed(execution.events):
+                if event.event_type == "kernel.upgrade_paused" and event.payload.get("upgrade_id") == intent:
+                    cause = "upgrade"
+                    break
+                if event.event_type == "kernel.activation_requested" and event.payload.get("request_id") == intent:
+                    cause = "activation"
+                    break
+            consumed: dict[str, object] = {"intent": intent, "cause": cause}
+            if cause == "activation":
+                consumed["request_id"] = intent
             try:
                 self._commit(
                     execution,
                     "running",
                     "ready",
-                    EventDraft("kernel.activation_continued", "kernel", "kernel", {"request_id": intent}),
+                    EventDraft("kernel.continuation_consumed", "kernel", "kernel", consumed),
                 )
             except StoreConflict:
                 return

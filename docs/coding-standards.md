@@ -30,7 +30,7 @@ VoidCode enforces clean boundaries across its backend layers:
 
 - Built with Bun, Vite, and React 19 in `frontend/`.
 - Validate with `bun run lint` and `bun run typecheck`.
-- Kernel wire models are generated from the kernel transport's OpenAPI schema via `mise run frontend:kernel-api:generate`; do not hand-edit `src/lib/kernel/generated/api.d.ts`.
+- Kernel wire models are generated from the kernel transport's OpenAPI schema via `mise run frontend:api:generate`; do not hand-edit `frontend/src/lib/kernel/generated/api.d.ts`.
 - Preserve dual language support (English and zh-CN) when modifying UI copy.
 
 ## Commit Conventions
@@ -46,11 +46,11 @@ VoidCode follows [Conventional Commits 1.0.0](https://www.conventionalcommits.or
 ```
 
 - **Types**: `feat`, `fix`, `docs`, `refactor`, `test`, `build`, `ci`, `chore`, `perf`.
-- **Breaking Changes**: Indicated by a `!` before the colon (e.g., `feat(runtime)!: require explicit workspace`) or a `BREAKING CHANGE:` footer.
+- **Breaking Changes**: Indicated by a `!` before the colon (e.g., `feat(kernel)!: require explicit workspace`) or a `BREAKING CHANGE:` footer.
 - **Descriptions**: Concise, imperative, and focused on the observable change.
 
 Examples:
-- `feat(runtime): persist sessions in sqlite`
-- `fix(cli): handle unknown session ids`
+- `feat(kernel): persist sessions in sqlite`
+- `fix(kernel): handle unknown session ids`
 - `docs: add architecture overview guide`
-- `feat(api)!: require schema v2 in request body`
+- `feat(plugins)!: require schema v2 in plugin manifests`

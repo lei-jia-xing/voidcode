@@ -1,10 +1,11 @@
 """Post-edit boundaries for the workspace edit tools.
 
 The ported edit tools ran the legacy formatter executor, read hook config to
-decide formatting/skip rules, and attached post-edit LSP diagnostics. Those
-owners are not part of this plugin, so the boundary is explicit here: the result
-payload keeps its shape, and the formatter/diagnostic sections are empty until
-the owning plugins expose a governed service.
+decide formatting/skip rules, and attached post-edit LSP diagnostics.
+Formatting now runs as the formatter plugin's post-tool hook, outside this call;
+these probes look for optional context callbacks (``format_file``,
+``post_edit_diagnostics``) that the current ``ToolContext`` does not supply, so
+the inline formatter/diagnostic sections stay empty.
 
 ponytail: one swap point for formatter + post-edit LSP diagnostics wiring.
 """

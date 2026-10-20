@@ -81,5 +81,11 @@
   "kernel.formTrue": "真",
   "kernel.formFalse": "假",
   "kernel.statusLoadingSession": "正在加载会话 {{sessionId}}…",
+  "kernel.statusReconnecting": "内核正在重启——重新连接中…",
+  "kernel.statusUpgradePending": "内核正在为升级排空；请在重启后重试",
+  "kernel.statusUpgradePendingAction": "内核正在为升级排空；/{{name}} 未派发",
+  "kernel.upgradeFenced": "内核升级进行中（{{stage}}）：已暂停派发",
+  "kernel.upgradeActive": "内核升级：{{stage}}",
+  "kernel.revisionAdopted": "已采用内核修订 {{revision}}：目录与视图已刷新",
   "kernel.formTitle": "表单：{{action}}"
 }

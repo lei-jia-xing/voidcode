@@ -114,7 +114,7 @@ __all__ = [
     "resolve_theme",
 ]
 
-#: Every palette the registry knows. Frozen: another worker whitelists these.
+#: Every palette the registry knows: the pinned catalog below plus the VoidCode palettes.
 #: Exact upstream identities are loaded from the shipped pinned catalog.
 _RESOURCE_ROOT = files(__package__).joinpath("themes")
 _CATALOG = json.loads(_RESOURCE_ROOT.joinpath("index.json").read_text(encoding="utf-8"))
@@ -478,7 +478,7 @@ SPINNER_FRAMES: Final[Mapping[str, Mapping[str, tuple[str, ...]]]] = MappingProx
 
 #: Glyph kind -> omp ``SymbolKey`` for the tool identity icon
 #: (``theme/symbols.ts:264-288``; omp hard-codes the key at each tool's call
-#: site, this is the single table our transcript blocks share).
+#: site, this is the single shared table).
 TOOL_SYMBOLS: Final[Mapping[str, str]] = MappingProxyType(
     {
         "apply_workspace_edit": "tool.edit",

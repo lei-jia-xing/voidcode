@@ -31,6 +31,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read kernel health and identity */
+        get: operations["_handle_health_api_health_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions": {
         parameters: {
             query?: never;
@@ -400,10 +417,7 @@ export interface components {
             /** Request Id */
             request_id: string;
         };
-        /**
-         * ContinuationResult
-         * @description Outcome of draining or claiming a durable continuation.
-         */
+        /** ContinuationResult */
         ContinuationResult: {
             /** Continuation Id */
             continuation_id: string;
@@ -511,6 +525,46 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * HealthBody
+         * @description Kernel health and identity: the stable surface clients and the supervisor poll.
+         */
+        HealthBody: {
+            /** Active Upgrade */
+            active_upgrade: {
+                [key: string]: unknown;
+            } | null;
+            /** Fenced */
+            fenced: boolean;
+            /** Generation */
+            generation: number;
+            /** Image Digest */
+            image_digest: string;
+            /** Kernel Version */
+            kernel_version: string;
+            /** Launch Protocol */
+            launch_protocol: number;
+            /** Pid */
+            pid: number;
+            /** Revision Id */
+            revision_id: string;
+            /** Sdk Path */
+            sdk_path: string;
+            /** Sdk Protocol */
+            sdk_protocol: number;
+            /** Sdk Sha256 */
+            sdk_sha256: string;
+            /** Stage */
+            stage: string;
+            /** Status */
+            status: string;
+            /** Supervisor Pid */
+            supervisor_pid: number;
+            /** Web Bundle */
+            web_bundle: string | null;
+            /** Workspace */
+            workspace: string;
         };
         /** InvokeRequest */
         InvokeRequest: {
@@ -781,6 +835,61 @@ export interface operations {
                 };
                 content: {
                     "application/json; charset=utf-8": components["schemas"]["CommandCatalog"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    _handle_health_api_health_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["HealthBody"];
                 };
             };
             /** @description Invalid request */

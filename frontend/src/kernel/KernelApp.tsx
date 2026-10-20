@@ -7,9 +7,10 @@ import React, {
   useState,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { KernelClient } from "../lib/kernel/client";
+import { KernelClient, KernelApiError } from "../lib/kernel/client";
 import type { CommandCatalog } from "../lib/kernel/client";
 import type {
+  HealthBody,
   PluginViewDescriptor,
   SessionRecord,
   SseEventFrame,
@@ -97,7 +98,6 @@ export const KernelApp: React.FC<KernelAppProps> = ({
   // Every async result is bound to the (session, epoch) it was issued for: a
   // late A reply is invalid even after the user returns to A, because the epoch
   // advanced in between.
-  const streamReadyRef = useRef(false);
   const sessionRef = useRef<string>("");
   const epochRef = useRef<number>(0);
   // A client identity change (different server/token) invalidates every result
@@ -109,6 +109,7 @@ export const KernelApp: React.FC<KernelAppProps> = ({
   // issued after it.
   const catalogRequestRef = useRef<number>(0);
   const viewsRequestRef = useRef<number>(0);
+  const healthRequestRef = useRef<number>(0);
   // Render-time scope is state: refs stay exclusively for async guards.
   const [scope, setScope] = useState<{
     sessionId: string;
@@ -147,7 +148,35 @@ export const KernelApp: React.FC<KernelAppProps> = ({
     [],
   );
   const [isRunning, setIsRunning] = useState<boolean>(false);
-  // Native tool approval (a core permission gate) is distinct from a plugin
+  // The last health answer this scope accepted, mirrored in a ref so the
+  // identity compare reads a stable snapshot instead of calling setState
+  // inside another state updater (StrictMode may replay updaters).
+  const upgradeRef = useRef<{
+    fenced: boolean;
+    stage: string;
+    kernelVersion: string;
+    imageDigest: string;
+    generation: number;
+    activeUpgrade: { upgrade_id: string; stage: string } | null;
+  } | null>(null);
+  // Controlled-upgrade state: the last known server identity plus whether the
+  // kernel is fenced for an upgrade. Dispatch pauses while fenced; the banner
+  // renders from this, and identity compares detect a changed server.
+  const [upgrade, setUpgrade] = useState<{
+    fenced: boolean;
+    stage: string;
+    kernelVersion: string;
+    imageDigest: string;
+    generation: number;
+    activeUpgrade: { upgrade_id: string; stage: string } | null;
+  } | null>(null);
+  // Monotonic marker of the newest user-issued run activity: a stale `show`
+  // from an older reconcile round must never overwrite it.
+  const runActivityRef = useRef<number>(0);
+  // Request ids with a decision worker in flight: a held click while one is
+  // outstanding is ignored, never a second request. Cleared on response,
+  // decided fact, or error — never resurrecting a resolved id.
+  const inFlightRef = useRef<Set<string>>(new Set());
   // Action confirmation: it resumes with the approval request id, never /confirm.
   const [pendingApproval, setPendingApproval] = useState<{
     sessionId: string;
@@ -314,6 +343,148 @@ export const KernelApp: React.FC<KernelAppProps> = ({
         );
       });
   }, [client, t]);
+  // Read server identity/liveness. Only the newest reply for the current scope
+  // may render: a stale health answer must never overwrite a newer one or
+  // clear a fence the supervisor already raised.
+  const refreshHealth = useCallback(
+    (sessionId: string, epoch: number, clientKey: string) => {
+      const serial = ++healthRequestRef.current;
+      client
+        .health()
+        .then((snapshot: HealthBody) => {
+          if (healthRequestRef.current !== serial) return;
+          if (!isCurrent(sessionId, epoch, clientKey)) return;
+          setUpgrade({
+            fenced: snapshot.fenced === true,
+            stage: String(snapshot.stage ?? ""),
+            kernelVersion: String(snapshot.kernel_version ?? ""),
+            imageDigest: String(snapshot.image_digest ?? ""),
+            generation:
+              typeof snapshot.generation === "number"
+                ? snapshot.generation
+                : -1,
+            activeUpgrade:
+              snapshot.active_upgrade &&
+              typeof snapshot.active_upgrade === "object"
+                ? {
+                    upgrade_id: String(
+                      snapshot.active_upgrade.upgrade_id ?? "",
+                    ),
+                    stage: String(snapshot.active_upgrade.stage ?? ""),
+                  }
+                : null,
+          });
+        })
+        .catch((err) => {
+          // Health is best-effort corroboration: unreachable during a handoff
+          // gap is expected and must not clobber the last known identity.
+          if (!isCurrent(sessionId, epoch, clientKey)) return;
+          console.error("Failed to fetch kernel health", err);
+        });
+    },
+    [client, isCurrent],
+  );
+  /**
+   * ONE connection-established reconciliation path for the initial stream and
+   * every reconnect — announced restart or silent drop. Fetches identity,
+   * compares it against the last known server, refetches catalog+views, and
+   * reconciles the running indicator from durable `show`. Never resends the
+   * prompt and never touches the applied cursor. Scope-, serial-, and
+   * activity-guarded: a stale reply from a superseded scope, an older
+   * reconcile round, or an older run activity never renders.
+   */
+  const reconcileConnection = useCallback(
+    (sessionId: string, epoch: number, clientKey: string) => {
+      const round = ++healthRequestRef.current;
+      client
+        .health()
+        .then((snapshot: HealthBody) => {
+          if (healthRequestRef.current !== round) return;
+          if (!isCurrent(sessionId, epoch, clientKey)) return;
+          const next = {
+            fenced: snapshot.fenced === true,
+            stage: String(snapshot.stage ?? ""),
+            kernelVersion: String(snapshot.kernel_version ?? ""),
+            imageDigest: String(snapshot.image_digest ?? ""),
+            generation:
+              typeof snapshot.generation === "number"
+                ? snapshot.generation
+                : -1,
+            activeUpgrade:
+              snapshot.active_upgrade &&
+              typeof snapshot.active_upgrade === "object"
+                ? {
+                    upgrade_id: String(
+                      snapshot.active_upgrade.upgrade_id ?? "",
+                    ),
+                    stage: String(snapshot.active_upgrade.stage ?? ""),
+                  }
+                : null,
+          };
+          // Pure compare against the ref snapshot: no setState inside another
+          // updater, so a StrictMode replay cannot double-clear.
+          const prev = upgradeRef.current;
+          if (
+            prev &&
+            prev.generation !== -1 &&
+            next.generation !== -1 &&
+            (prev.generation !== next.generation ||
+              prev.imageDigest !== next.imageDigest ||
+              prev.kernelVersion !== next.kernelVersion)
+          ) {
+            // The server changed under us: nothing displayed stays
+            // actionable until catalog+views are refetched below.
+            setCatalog({ revisionId: "", commands: [] });
+            setViewScope((vs) =>
+              vs.sessionId === sessionId &&
+              vs.epoch === epoch &&
+              vs.clientKey === clientKey
+                ? { ...vs, revisionId: "", views: [] }
+                : vs,
+            );
+          }
+          upgradeRef.current = next;
+          setUpgrade(next);
+          setStatusMessage(
+            next.fenced
+              ? t("kernel.upgradeFenced", {
+                  stage: next.activeUpgrade?.stage ?? next.stage,
+                })
+              : t("kernel.statusConnected", { sessionId }),
+          );
+        })
+        .catch((err) => {
+          // Unreachable during a handoff gap is expected and must not clobber
+          // the last known identity.
+          if (!isCurrent(sessionId, epoch, clientKey)) return;
+          console.error("Failed to fetch kernel health", err);
+        });
+      refreshCatalog();
+      refreshViews(sessionId, epoch, clientKey);
+      const activityAtIssue = runActivityRef.current;
+      const cursorAtIssue = lastSequenceRef.current;
+      client
+        .show(sessionId)
+        .then((snapshot) => {
+          if (healthRequestRef.current !== round) return;
+          if (!isCurrent(sessionId, epoch, clientKey)) return;
+          // A newer user run started after this round was issued: its own
+          // lifecycle owns isRunning now, not this stale read.
+          if (runActivityRef.current !== activityAtIssue) return;
+          // Status only: the applied cursor stays owned by event
+          // application, never replaced by show.last_event_sequence. And any
+          // event applied after this round was issued (e.g. a terminal fact
+          // the stream just delivered) wins over this read.
+          if (lastSequenceRef.current !== cursorAtIssue) return;
+          setIsRunning(snapshot.status === "running");
+        })
+        .catch((err) => {
+          if (!isCurrent(sessionId, epoch, clientKey)) return;
+          console.error("Failed to reconcile session status", err);
+        });
+    },
+    [client, isCurrent, refreshCatalog, refreshViews, t],
+  );
 
   const handleCreateSession = useCallback(async () => {
     const epoch = epochRef.current;
@@ -384,6 +555,7 @@ export const KernelApp: React.FC<KernelAppProps> = ({
     // under the new one, and every read it issued is refused by its own serial.
     catalogRequestRef.current += 1;
     viewsRequestRef.current += 1;
+    healthRequestRef.current += 1;
     setCatalog({ revisionId: "", commands: [] });
     setSessions([]);
     setEvents([]);
@@ -391,7 +563,8 @@ export const KernelApp: React.FC<KernelAppProps> = ({
     resolvedConfirmationsRef.current.clear();
     setPendingConfirmations({});
     setIsRunning(false);
-    streamReadyRef.current = false;
+    upgradeRef.current = null;
+    setUpgrade(null);
   }, [renderedClientKey]);
 
   // Bootstrap fetches the catalog and the session list once per client object;
@@ -458,7 +631,6 @@ export const KernelApp: React.FC<KernelAppProps> = ({
     setPendingConfirmations({});
     setPendingApproval(null);
     setIsRunning(false);
-    streamReadyRef.current = false;
     setStatusMessage(
       t("kernel.statusLoadingSession", { sessionId: activeSessionId }),
     );
@@ -485,20 +657,22 @@ export const KernelApp: React.FC<KernelAppProps> = ({
         if (!isCurrent(boundSession, boundEpoch, boundClientKey)) {
           return; // a follower from a superseded session/epoch: never render it
         }
+        if (frame.kind === "server_restart") {
+          // The server replaced itself. The frame cursor is a watermark of
+          // what THAT stream delivered: the reconnect resumes from this
+          // client's own applied cursor (lastSequenceRef), so nothing applied
+          // is skipped and nothing unapplied is jumped over. Reconciliation
+          // itself runs on the reconnected stream (onReconnect below), so an
+          // announced restart and a silent drop share one code path.
+          setStatusMessage(t("kernel.statusReconnecting"));
+          return;
+        }
         if (frame.session && frame.session.session_id !== boundSession) {
           return;
         }
         const backlog =
           frame.events && Array.isArray(frame.events) ? frame.events : null;
         const live = frame.event ?? null;
-
-        if (!streamReadyRef.current) {
-          // The first frame is the head: the stream is genuinely live now.
-          streamReadyRef.current = true;
-          setStatusMessage(
-            t("kernel.statusConnected", { sessionId: boundSession }),
-          );
-        }
 
         if (backlog || live) {
           // Authenticated, ordered events are processed exactly once, outside any
@@ -530,12 +704,14 @@ export const KernelApp: React.FC<KernelAppProps> = ({
             projectEvent(ev, boundSession, boundEpoch, boundClientKey);
           }
 
-          // An activation commit invalidates the displayed generation: catalog and
-          // views are cleared immediately (nothing old stays actionable), then
-          // refetched together and anything captured under another revision is
-          // dropped — never relabelled and never re-sent automatically.
+          // An activation commit or an upgrade adoption invalidates the displayed
+          // generation: catalog and views are cleared immediately (nothing old
+          // stays actionable), then refetched together and anything captured
+          // under another revision is dropped — never relabelled, never re-sent.
           const commits = fresh.filter(
-            (e) => e.type === "kernel.activation_committed",
+            (e) =>
+              e.type === "kernel.activation_committed" ||
+              e.type === "kernel.revision_adopted",
           );
           if (commits.length > 0) {
             const committed = commits[commits.length - 1];
@@ -583,8 +759,17 @@ export const KernelApp: React.FC<KernelAppProps> = ({
         }
         setStatusMessage(t("kernel.streamError", { message: err.message }));
       },
+      () => {
+        // ONE establishment source: the transport fires this once per
+        // connection that yields its first frame — initial, announced
+        // restart, or silent-drop reconnect — so reconcile unconditionally
+        // after the scope guard. No head/ready-flag second path.
+        if (!isCurrent(boundSession, boundEpoch, boundClientKey)) {
+          return; // a superseded follower's reconnect must not touch this view
+        }
+        reconcileConnection(boundSession, boundEpoch, boundClientKey);
+      },
     );
-
     return () => {
       cleanup();
     };
@@ -596,7 +781,9 @@ export const KernelApp: React.FC<KernelAppProps> = ({
     scope.clientKey,
     scope.epoch,
     refreshCatalog,
+    refreshHealth,
     refreshViews,
+    reconcileConnection,
     isCurrent,
     projectEvent,
     t,
@@ -614,7 +801,12 @@ export const KernelApp: React.FC<KernelAppProps> = ({
       setPendingApproval(null);
       return;
     }
-    setPendingApproval(null);
+    // The gate stays mounted until the server accepts or a durable decided
+    // fact closes it: clearing early would strand the approval, because
+    // applied-cursor dedup never replays the old request fact.
+    if (inFlightRef.current.has(approval.requestId)) return;
+    inFlightRef.current.add(approval.requestId);
+    runActivityRef.current += 1;
     setIsRunning(true);
     try {
       // Native approvals resume the parked run with the exact request identity;
@@ -626,6 +818,7 @@ export const KernelApp: React.FC<KernelAppProps> = ({
       );
       if (!isCurrent(approval.sessionId, approval.epoch, approval.clientKey))
         return;
+      setPendingApproval(null);
       const reparked = (
         res as {
           pending_approval?: {
@@ -651,9 +844,17 @@ export const KernelApp: React.FC<KernelAppProps> = ({
     } catch (err: unknown) {
       if (!isCurrent(approval.sessionId, approval.epoch, approval.clientKey))
         return;
+      if (err instanceof KernelApiError && err.code === "upgrade_pending") {
+        // The gate stays armed with the same request id: no auto-resend, the
+        // user re-decides after the restart. Refresh health for the banner.
+        refreshHealth(approval.sessionId, approval.epoch, approval.clientKey);
+        setStatusMessage(t("kernel.statusUpgradePending"));
+        return;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       setStatusMessage(t("kernel.statusApprovalFailed", { message: msg }));
     } finally {
+      inFlightRef.current.delete(approval.requestId);
       if (isCurrent(approval.sessionId, approval.epoch, approval.clientKey)) {
         setIsRunning(false);
       }
@@ -669,14 +870,11 @@ export const KernelApp: React.FC<KernelAppProps> = ({
     const issueSession = activeSessionId;
     const epoch = epochRef.current;
     const clientKey = renderedClientKey;
-    setPendingConfirmations((prev) => {
-      // The click decides this exact request; the durable decided fact confirms
-      // it and can never leave a different pending request hidden.
-      if (!(requestId in prev)) return prev;
-      const next = { ...prev };
-      delete next[requestId];
-      return next;
-    });
+    // The entry stays mounted until the server accepts or the durable decided
+    // fact closes it: removing early would strand the request, because
+    // applied-cursor dedup never replays the old requested fact.
+    if (inFlightRef.current.has(requestId)) return;
+    inFlightRef.current.add(requestId);
     try {
       const res = await client.confirm(
         issueSession,
@@ -685,14 +883,28 @@ export const KernelApp: React.FC<KernelAppProps> = ({
         revisionId,
       );
       if (!isCurrent(issueSession, epoch, clientKey)) return;
+      // The server accepted the decision: the entry closes now, and the
+      // durable decided fact (or its replay) confirms it permanently.
+      setPendingConfirmations((prev) => {
+        if (!(requestId in prev)) return prev;
+        const next = { ...prev };
+        delete next[requestId];
+        return next;
+      });
       setStatusMessage(
         t("kernel.statusConfirm", { decision, status: res.status }),
       );
-      refreshViews(issueSession, epoch, clientKey);
     } catch (err: unknown) {
       if (!isCurrent(issueSession, epoch, clientKey)) return;
+      if (err instanceof KernelApiError && err.code === "upgrade_pending") {
+        refreshHealth(issueSession, epoch, clientKey);
+        setStatusMessage(t("kernel.statusUpgradePending"));
+        return;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       setStatusMessage(t("kernel.statusConfirmFailed", { message: msg }));
+    } finally {
+      inFlightRef.current.delete(requestId);
     }
   };
 
@@ -705,6 +917,7 @@ export const KernelApp: React.FC<KernelAppProps> = ({
     const issueSession = activeSessionId;
     const epoch = epochRef.current;
     const clientKey = renderedClientKey;
+    runActivityRef.current += 1;
     setIsRunning(true);
     setStatusMessage(t("kernel.statusInvoking", { name: actionName }));
     try {
@@ -750,6 +963,13 @@ export const KernelApp: React.FC<KernelAppProps> = ({
       refreshViews(issueSession, epoch, clientKey);
     } catch (err: unknown) {
       if (!isCurrent(issueSession, epoch, clientKey)) return;
+      if (err instanceof KernelApiError && err.code === "upgrade_pending") {
+        refreshHealth(issueSession, epoch, clientKey);
+        setStatusMessage(
+          t("kernel.statusUpgradePendingAction", { name: actionName }),
+        );
+        return;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       setStatusMessage(t("kernel.statusInvokeFailed", { message: msg }));
     } finally {
@@ -763,8 +983,12 @@ export const KernelApp: React.FC<KernelAppProps> = ({
     e.preventDefault();
     const text = promptInput.trim();
     if (!text || !activeSessionId || isRunning) return;
+    if (upgrade?.fenced) {
+      // Never queue a prompt behind a fence: the user re-sends after reconnect.
+      setStatusMessage(t("kernel.statusUpgradePending"));
+      return;
+    }
     setPromptInput("");
-
     if (text.startsWith("/")) {
       // Slash command dispatch
       const [cmd, ...restParts] = text.slice(1).split(" ");
@@ -828,6 +1052,7 @@ export const KernelApp: React.FC<KernelAppProps> = ({
       const issueSession = activeSessionId;
       const epoch = epochRef.current;
       const clientKey = renderedClientKey;
+      runActivityRef.current += 1;
       setIsRunning(true);
       setStatusMessage(t("kernel.statusDispatching"));
       try {
@@ -859,6 +1084,15 @@ export const KernelApp: React.FC<KernelAppProps> = ({
         refreshViews(issueSession, epoch, clientKey);
       } catch (err: unknown) {
         if (!isCurrent(issueSession, epoch, clientKey)) return;
+        if (err instanceof KernelApiError && err.code === "upgrade_pending") {
+          refreshHealth(issueSession, epoch, clientKey);
+          // Definite non-dispatch: restore the exact draft the user sent —
+          // but never overwrite a newer draft typed while it was in flight,
+          // and never auto-submit.
+          setPromptInput((current) => (current.trim() === "" ? text : current));
+          setStatusMessage(t("kernel.statusUpgradePending"));
+          return;
+        }
         const msg = err instanceof Error ? err.message : String(err);
         setStatusMessage(t("kernel.statusRunFailed", { message: msg }));
       } finally {
@@ -961,6 +1195,24 @@ export const KernelApp: React.FC<KernelAppProps> = ({
             </button>
           </div>
         </header>
+        {/* Controlled-upgrade banner: fence state and server identity */}
+        {upgrade && (upgrade.fenced || upgrade.activeUpgrade) && (
+          <div
+            data-testid="upgrade-banner"
+            className="px-4 py-1.5 bg-amber-950/60 border-b border-amber-800 text-[11px] text-amber-200 font-mono truncate"
+          >
+            {upgrade.fenced
+              ? t("kernel.upgradeFenced", {
+                  stage: upgrade.activeUpgrade?.stage ?? upgrade.stage,
+                })
+              : t("kernel.upgradeActive", {
+                  stage: upgrade.activeUpgrade?.stage ?? "",
+                })}{" "}
+            <span className="text-amber-400/70">
+              {upgrade.kernelVersion} · gen {upgrade.generation}
+            </span>
+          </div>
+        )}
 
         {/* Content area: Transcript + Plugin Views */}
         <div className="flex-1 flex overflow-hidden">
@@ -1131,6 +1383,30 @@ export const KernelApp: React.FC<KernelAppProps> = ({
                       cause: String(
                         ev.payload.stop_cause ?? t("kernel.unknownLabel"),
                       ),
+                    })}
+                  </div>
+                );
+              }
+              if (
+                ev.type === "kernel.activation_committed" ||
+                ev.type === "kernel.revision_adopted"
+              ) {
+                // Generation changes are user-visible transcript facts (the TUI
+                // renders the same row): an upgrade must be observable, not
+                // just a catalog swap behind the scenes.
+                const target =
+                  typeof ev.payload.to_revision_id === "string" &&
+                  ev.payload.to_revision_id
+                    ? ev.payload.to_revision_id
+                    : ev.revision_id;
+                return (
+                  <div
+                    key={ev.sequence}
+                    data-testid={`event-${ev.sequence}`}
+                    className="text-xs font-mono text-amber-300 bg-amber-950/20 px-3 py-1.5 rounded border border-amber-900/50 max-w-2xl"
+                  >
+                    {t("kernel.revisionAdopted", {
+                      revision: String(target).slice(0, 12),
                     })}
                   </div>
                 );

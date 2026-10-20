@@ -26,7 +26,7 @@ MAX_RULEBOOK_FILES = 64
 MAX_RULEBOOK_CONTENT_CHARS = 12_000
 MAX_RULEBOOK_METADATA_CHARS = 240
 MAX_RULEBOOK_PROMPT_CHARS = 12_000
-#: Rule URI prefix of the legacy runtime tool context (``core/tool_context.py``).
+#: Rule URI prefix, shared verbatim with the files plugin's ``voidcode://rule/`` reader.
 RULE_URI_PREFIX = "voidcode://rule/"
 _RULE_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 
@@ -386,3 +386,49 @@ def rulebook_prompt_context(catalog: RuleCatalog) -> str:
                 f"precedence={metadata.precedence}, hash={metadata.content_hash}, uri={RULE_URI_PREFIX}{metadata.name})"
             )
     return "\n".join(parts)[:MAX_RULEBOOK_PROMPT_CHARS]
+
+
+@dataclass(frozen=True, slots=True)
+class RulePage:
+    """One paged read of a rulebook rule: `text` is the requested line window."""
+
+    rule: str
+    content_hash: str
+    text: str
+    next_offset: int | None
+    byte_truncated: bool
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "rule": self.rule,
+            "content_hash": self.content_hash,
+            "text": self.text,
+            "next_offset": self.next_offset,
+            "byte_truncated": self.byte_truncated,
+        }
+
+
+def read_rule_page(workspace: Path | None, uri: str, *, offset: int = 1, limit: int = 2000) -> RulePage | None:
+    """Read one line page of the rulebook rule named by a ``voidcode://rule/<name>`` URI.
+
+    The same catalog the context hook publishes (`build_rule_catalog`), so a URI the model was
+    shown always resolves to the same text; ``None`` means no such rule exists in this workspace.
+    """
+    name = uri[len(RULE_URI_PREFIX) :] if uri.startswith(RULE_URI_PREFIX) else uri
+    if _RULE_NAME_PATTERN.fullmatch(name.strip()) is None:
+        return None
+    catalog = build_rule_catalog(workspace)
+    entry = next((item for item in catalog.entries if item.metadata.name == name.strip()), None)
+    if entry is None:
+        return None
+    lines = entry.content.splitlines()
+    start = max(1, offset) - 1
+    window = lines[start : start + max(1, limit)]
+    end = start + len(window)
+    return RulePage(
+        rule=entry.metadata.name,
+        content_hash=entry.metadata.content_hash,
+        text="\n".join(window),
+        next_offset=end + 1 if end < len(lines) else None,
+        byte_truncated=False,
+    )
