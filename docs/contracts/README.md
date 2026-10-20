@@ -5,6 +5,7 @@ This directory contains the authoritative technical contracts for the VoidCode k
 ## Contracts
 
 - [`client-transport.md`](./client-transport.md): Kernel HTTP/SSE API, kernel CLI, inline TUI, and the web client: catalog/revision binding, view descriptors, event streams, and the two decision gates.
+- [`agent-collaboration.md`](./agent-collaboration.md): Delegated agent collaboration: child facts, run-scoped join/steering, completion notices and atomic acknowledgement, restart publication recovery, and bounded transcript/history paging.
 - [`goal-plugin.md`](./goal-plugin.md): Official Goal plugin contracts, state schema, windowed accounting, 3-turn blocked audit, and declarative views.
 - [`hot-activation.md`](./hot-activation.md): Same-session capability activation: pinned admission, immutable generation snapshots, state migration/deactivation, the activation transaction, durable automatic continuation, trust and restart restore.
 - [`kernel-upgrade.md`](./kernel-upgrade.md): Controlled kernel upgrade: immutable images, read-only preflight, fenced drain and pause, the adoption transaction, reader election and recovery, health/restart/reconnect, and the upgrade CLI.

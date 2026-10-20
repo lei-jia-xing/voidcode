@@ -35,7 +35,12 @@ from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.plugin import HostPlugin
 from voidcode.sdk.provider import ProviderAbortSignal, ProviderExecutionError, ProviderTurnRequest, ProviderTurnResult
-from voidcode.sdk.services import PluginBudget, SessionUsageReport
+from voidcode.sdk.services import (
+    CHILD_MESSAGE_OWNER,
+    PluginBudget,
+    SessionUsageReport,
+    child_completion_notice_id,
+)
 from voidcode.sdk.tools import ToolCall, ToolDefinition, ToolEffect, ToolResult, is_read_tier
 from voidcode.sdk.views import PluginViewDescriptor
 
@@ -195,8 +200,9 @@ class HostClient:
         store: SqliteStore | None = None,
         usage_callback: Callable[[str, int, int | None], SessionUsageReport] | None = None,
         budget_callback: Callable[[str, str], PluginBudget | None] | None = None,
-        spawn_child_callback: Callable[[str, str, str, int, tuple[str, ...] | None, bool], str] | None = None,
+        spawn_child_callback: Callable[[str, str, str, int, tuple[str, ...] | None, bool, bool], str] | None = None,
         join_child_callback: Callable[[str, str, float], Mapping[str, object]] | None = None,
+        send_child_callback: Callable[[str, str, str, str, bool], Mapping[str, object]] | None = None,
         cancel_child_callback: Callable[[str, str, str], bool] | None = None,
         model_query_callback: Callable[[str, str, str | None, int | None], str] | None = None,
         progress_callback: Callable[[LeaseContext, Mapping[str, object]], None] | None = None,
@@ -216,6 +222,7 @@ class HostClient:
         self._budget_callback = budget_callback
         self._spawn_child_callback = spawn_child_callback
         self._join_child_callback = join_child_callback
+        self._send_child_callback = send_child_callback
         self._cancel_child_callback = cancel_child_callback
         self._model_query_callback = model_query_callback
         self._progress_callback = progress_callback
@@ -784,8 +791,70 @@ class HostClient:
                         _require_int(params.get("max_steps", 32), "max_steps"),
                         None if raw_scope is None else tuple(str(item) for item in raw_scope),
                         bool(params.get("readonly", False)) or lease.readonly,
+                        bool(params.get("notify_on_completion", False)),
                     )
                 }
+
+            elif method == "child_send":
+                if self._send_child_callback is None:
+                    raise RuntimeError("child messaging is unavailable")
+                if lease.hook:
+                    raise PermissionError("hook leases observe; they cannot steer a child session")
+                raw_child = params.get("child_session_id")
+                if not isinstance(raw_child, str) or not raw_child:
+                    raise ValueError("child_session_id must be a non-empty string")
+                prompt = params.get("prompt")
+                if not isinstance(prompt, str) or not prompt.strip():
+                    raise ValueError("child message prompt must be a non-empty string")
+                # A parent that is now read-only may not steer a child that is still writable:
+                # the child may have been spawned before plan mode/read-only intent existed.
+                if lease.readonly:
+                    if self._store is None:
+                        raise RuntimeError("Store not attached to HostClient")
+                    child_record = self._store.session(raw_child)
+                    if child_record.parent_session_id != lease.session_id:
+                        raise PermissionError("child session does not belong to this parent session")
+                    if "read-only" not in self._store.session_overlays(raw_child):
+                        raise PermissionError("a read-only parent cannot steer a child that is not durably read-only")
+                receipt = self._send_child_callback(
+                    lease.session_id,
+                    raw_child,
+                    prompt,
+                    str(params.get("label", "")),
+                    bool(params.get("notify_on_completion", True)),
+                )
+                resp = {"receipt": json_wire_object(receipt)}
+
+            elif method == "child_completion_ack":
+                # Consumption acknowledgement is staged on THIS invocation lease so it commits
+                # atomically with the successful tool result; a crash cannot lose the notice.
+                if lease.hook:
+                    raise PermissionError("hook leases cannot acknowledge child completions")
+                if self._store is None:
+                    raise RuntimeError("Store not attached to HostClient")
+                raw_child = params.get("child_session_id")
+                raw_run = params.get("run_id")
+                if not isinstance(raw_child, str) or not raw_child:
+                    raise ValueError("child_session_id must be a non-empty string")
+                if not isinstance(raw_run, str) or not raw_run:
+                    raise ValueError("run_id must be a non-empty string")
+                child_record = self._store.session(raw_child)
+                if child_record.parent_session_id != lease.session_id:
+                    raise PermissionError("child session does not belong to this parent session")
+                with self._lease_lock:
+                    if lease.internal_restricted:
+                        raise PermissionError("Cannot acknowledge child completions from a read-only service lease")
+                    if lease.revoked:
+                        raise PermissionError("Service lease was revoked")
+                    lease.op_counter += 1
+                    lease.staged_cancellations.append(
+                        StagedCancellation(
+                            owner=CHILD_MESSAGE_OWNER,
+                            continuation_id=child_completion_notice_id(lease.session_id, raw_child, raw_run),
+                            ordinal=lease.op_counter,
+                        )
+                    )
+                resp = {"ok": True}
 
             elif method == "child_join":
                 if self._join_child_callback is None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -86,22 +87,93 @@ class EventView:
 
 @dataclass(frozen=True, slots=True)
 class ChildOutcome:
-    """Outcome of a delegated child session, as observed by its parent."""
+    """Outcome of ONE delegated child run, as observed by its parent.
+
+    ``run_id`` identifies the logical turn this outcome belongs to; a follow-up run is a new
+    ``run_id`` in the same child session, so a caller can never mistake an older terminal fact
+    for the result of newer work. ``history_sha256`` names the immutable snapshot of the child's
+    readable history at that terminal point (``voidcode://artifact/<sha256>``); the live,
+    paged view stays ``voidcode://transcript/<child_session_id>``.
+    """
 
     child_session_id: str
     status: Literal["completed", "failed", "interrupted", "cancelled", "running", "waiting"]
     output: str | None = None
     error: str | None = None
     stop_cause: str | None = None
+    run_id: str | None = None
+    history_sha256: str | None = None
+    history_bytes: int | None = None
+    history_truncated: bool = False
+    #: Bounded preview when the terminal output was too large to cross the host boundary inline.
+    output_preview: str | None = None
+    #: Full output artifact, when the run produced more than the inline bound.
+    output_sha256: str | None = None
+    output_bytes: int | None = None
 
     def as_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "child_session_id": self.child_session_id,
             "status": self.status,
             "output": self.output,
             "error": self.error,
             "stop_cause": self.stop_cause,
         }
+        if self.run_id is not None:
+            payload["run_id"] = self.run_id
+        if self.history_sha256 is not None:
+            payload["history_sha256"] = self.history_sha256
+            payload["history_bytes"] = self.history_bytes
+            payload["history_truncated"] = self.history_truncated
+        if self.output_sha256 is not None:
+            payload["output_sha256"] = self.output_sha256
+            payload["output_bytes"] = self.output_bytes
+            payload["output_preview"] = self.output_preview
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class ChildSendReceipt:
+    """Receipt for one message to an owned child session.
+
+    A receipt reports only durable acceptance: ``started`` means a run identity was claimed and
+    the turn is part of that run before this method returned; ``queued`` means the message is a
+    pending continuation and a later safe boundary will claim it. Neither means the child
+    consumed the message or finished; read the outcome with ``join_child`` or the notice.
+    """
+
+    child_session_id: str
+    delivery: Literal["started", "queued"]
+    child_status: str
+    run_id: str | None = None
+    message_id: str | None = None
+
+    def as_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "child_session_id": self.child_session_id,
+            "delivery": self.delivery,
+            "child_status": self.child_status,
+        }
+        if self.run_id is not None:
+            payload["run_id"] = self.run_id
+        if self.message_id is not None:
+            payload["message_id"] = self.message_id
+        return payload
+
+
+#: Continuation owner for kernel child messages. Plugin ids match ``[a-z][a-z0-9_-]*``, so the
+#: leading ``@`` makes this value unforgeable by any admitted plugin: a plugin cannot own,
+#: claim, or cancel these rows through the generic continuation surface.
+CHILD_MESSAGE_OWNER = "@kernel/child"
+
+
+def child_completion_notice_id(parent_session_id: str, child_session_id: str, run_id: str) -> str:
+    """The durable identity of one run's completion notice.
+
+    Run-scoped on purpose: keying by the child alone would let an older completion mask a newer
+    follow-up run. The kernel publishes under this id and an acknowledgement cancels exactly it.
+    """
+    return hashlib.sha256("\0".join((CHILD_MESSAGE_OWNER, parent_session_id, child_session_id, run_id)).encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -369,6 +441,7 @@ class PluginServices(Protocol):
         tool_allowlist: tuple[str, ...] | None = None,
         max_steps: int = 32,
         readonly: bool = False,
+        notify_on_completion: bool = False,
     ) -> str:
         """Start a delegated child session of the bound session; returns its durable session id.
 
@@ -376,11 +449,49 @@ class PluginServices(Protocol):
         parent's tool scope, and the parent's restrictive stance all bound it. A read-only lease
         may therefore delegate read-only work, but never spawn a writable child; `readonly=True`
         records the child's stance durably on the child session (the kernel owns that record).
+
+        With `notify_on_completion` the kernel delivers one bounded completion notice to this
+        session when the child's run reaches a terminal state, even after this turn ends, and
+        the child's readable history is spilled to an immutable artifact. The notice is keyed by
+        the run, never by the child alone, so a follow-up run cannot be masked by an older one.
+        A synchronous join is the normal choice for immediate work and does not need a notice.
+        """
+        ...
+
+    def send_child(
+        self,
+        child_session_id: str,
+        prompt: str,
+        *,
+        label: str = "",
+        notify_on_completion: bool = True,
+    ) -> ChildSendReceipt:
+        """Send a follow-up message to ONE child this session spawned, in its own session.
+
+        This is a SESSION verb, not a filesystem write and not user authority: the child keeps its
+        tool scope, its read-only overlay, and the kernel's policy. Only the direct parent may
+        send (the kernel checks lineage); siblings, parents, and unrelated sessions are refused.
+        A running or approval-parked child queues the message durably and consumes it at its next
+        safe boundary; an open child starts a new turn immediately. The receipt says `started` or
+        `queued` and never claims consumption or completion.
         """
         ...
 
     def join_child(self, child_session_id: str, *, timeout_seconds: float = 300.0) -> ChildOutcome:
-        """Wait for a child this session spawned to reach a terminal state (no polling)."""
+        """Wait for the child's CURRENT run to reach a terminal state (no polling).
+
+        While the child is running or has a queued follow-up, this waits instead of returning an
+        older terminal fact. The result carries the run id it belongs to.
+        """
+        ...
+
+    def acknowledge_child_completion(self, child_session_id: str, run_id: str) -> None:
+        """Stage cancellation of this run's pending completion notice on the current invocation.
+
+        The cancellation commits atomically with the successful tool result that consumed the
+        outcome, so a crash cannot lose the notice and a concurrent join cannot steal delivery.
+        A notice already delivered or claimed is untouched; an unknown run is a no-op.
+        """
         ...
 
     def project_window(

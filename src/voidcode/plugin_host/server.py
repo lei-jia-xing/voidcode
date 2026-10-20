@@ -73,6 +73,7 @@ from voidcode.sdk.services import (
     ArtifactPage,
     ArtifactReference,
     ChildOutcome,
+    ChildSendReceipt,
     EventView,
     PluginBudget,
     ProcessHandle,
@@ -568,6 +569,7 @@ class ServerPluginServices:
         tool_allowlist: tuple[str, ...] | None = None,
         max_steps: int = 32,
         readonly: bool = False,
+        notify_on_completion: bool = False,
     ) -> str:
         resp = self._server._send_reverse_rpc(
             "child_spawn",
@@ -578,9 +580,48 @@ class ServerPluginServices:
                 "max_steps": max_steps,
                 "tool_allowlist": list(tool_allowlist) if tool_allowlist is not None else None,
                 "readonly": readonly,
+                "notify_on_completion": notify_on_completion,
             },
         )
         return str(resp.get("child_session_id", ""))
+
+    def send_child(
+        self,
+        child_session_id: str,
+        prompt: str,
+        *,
+        label: str = "",
+        notify_on_completion: bool = True,
+    ) -> ChildSendReceipt:
+        resp = self._server._send_reverse_rpc(
+            "child_send",
+            {
+                "lease_token": self._lease_token,
+                "child_session_id": child_session_id,
+                "prompt": prompt,
+                "label": label,
+                "notify_on_completion": notify_on_completion,
+            },
+        )
+        payload = resp.get("receipt")
+        if not isinstance(payload, Mapping):
+            raise RuntimeError("host returned a malformed child send receipt")
+        delivery = str(payload.get("delivery", "queued"))
+        if delivery not in ("started", "queued"):
+            raise RuntimeError(f"host returned an unknown child delivery: {delivery!r}")
+        return ChildSendReceipt(
+            child_session_id=str(payload.get("child_session_id", child_session_id)),
+            delivery=delivery,
+            child_status=str(payload.get("child_status", "unknown")),
+            run_id=None if payload.get("run_id") is None else str(payload["run_id"]),
+            message_id=None if payload.get("message_id") is None else str(payload["message_id"]),
+        )
+
+    def acknowledge_child_completion(self, child_session_id: str, run_id: str) -> None:
+        self._server._send_reverse_rpc(
+            "child_completion_ack",
+            {"lease_token": self._lease_token, "child_session_id": child_session_id, "run_id": run_id},
+        )
 
     def join_child(self, child_session_id: str, *, timeout_seconds: float = 300.0) -> ChildOutcome:
         resp = self._server._send_reverse_rpc(
@@ -600,6 +641,13 @@ class ServerPluginServices:
             output=None if payload.get("output") is None else str(payload["output"]),
             error=None if payload.get("error") is None else str(payload["error"]),
             stop_cause=None if payload.get("stop_cause") is None else str(payload["stop_cause"]),
+            run_id=None if payload.get("run_id") is None else str(payload["run_id"]),
+            history_sha256=None if payload.get("history_sha256") is None else str(payload["history_sha256"]),
+            history_bytes=payload.get("history_bytes") if isinstance(payload.get("history_bytes"), int) else None,
+            history_truncated=bool(payload.get("history_truncated", False)),
+            output_preview=None if payload.get("output_preview") is None else str(payload["output_preview"]),
+            output_sha256=None if payload.get("output_sha256") is None else str(payload["output_sha256"]),
+            output_bytes=payload.get("output_bytes") if isinstance(payload.get("output_bytes"), int) else None,
         )
 
     def project_window(

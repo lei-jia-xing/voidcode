@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Literal, Self, cast
 
 from ...sdk.json_values import json_wire_object, own_json_object
-from ...sdk.services import PluginBudget, SessionInfo
+from ...sdk.services import CHILD_MESSAGE_OWNER, PluginBudget, SessionInfo
 
 SCHEMA_MAGIC = "voidcode-kernel-v1"
 SCHEMA_VERSION = 5
@@ -2476,8 +2476,11 @@ class SqliteStore:
         idempotency_key: str | None = None,
         root_id: str | None = None,
         root_budget: int | None = None,
+        role: str = "system",
     ) -> str:
         """Directly enqueue a continuation in pending state, optionally opening its root budget."""
+        if role not in ("system", "user"):
+            raise ValueError("continuation role must be 'system' or 'user'")
         with self._lock:
             self._check_open()
             now = int(time.time() * 1000)
@@ -2507,8 +2510,8 @@ class SqliteStore:
                     """
                     INSERT INTO continuations (
                         continuation_id, owner, session_id, source, run_id, revision_id,
-                        idempotency_key, root_id, status, payload_json, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+                        idempotency_key, root_id, role, status, payload_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
                     """,
                     (
                         continuation_id,
@@ -2519,6 +2522,7 @@ class SqliteStore:
                         revision_id,
                         idempotency_key,
                         root_id,
+                        role,
                         canonical_json(payload),
                         now,
                         now,
@@ -2527,6 +2531,119 @@ class SqliteStore:
                 return continuation_id
             except sqlite3.IntegrityError as exc:
                 raise StoreConflict(f"continuation {continuation_id!r} already exists") from exc
+
+    def claim_child_messages(
+        self,
+        session_id: str,
+        run_id: str,
+        *,
+        revision_id: str,
+        limit: int = 8,
+    ) -> tuple[StoredEvent, ...]:
+        """Claim pending kernel child messages into the CURRENT running run.
+
+        This is the steering boundary: the caller has just committed the whole native batch and
+        is about to assemble the next provider request, so the message is appended to the same
+        run and rendered by the next context assembly. Eligibility is checked in the same
+        transaction as the claim: a session that is waiting, interrupted, terminal, on another
+        revision, or driven by another run cannot consume the message here.
+        """
+        with self._lock:
+            self._check_open()
+            in_transaction = False
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                in_transaction = True
+                row = self._connection.execute(
+                    """
+                    SELECT status, active_revision_id, run_id, last_event_sequence
+                    FROM sessions WHERE session_id = ?
+                    """,
+                    (session_id,),
+                ).fetchone()
+                if row is None:
+                    raise StoreConflict(f"session {session_id!r} does not exist")
+                status, current_revision, current_run, sequence = row
+                if status != "running" or current_run != run_id or current_revision != revision_id:
+                    self._connection.execute("COMMIT")
+                    in_transaction = False
+                    return ()
+                rows = self._connection.execute(
+                    """
+                    SELECT continuation_id, source, payload_json, role
+                    FROM continuations
+                    WHERE session_id = ? AND status = 'pending' AND owner = ?
+                      AND json_extract(payload_json, '$.kind') IN ('child_followup', 'child_finished')
+                    ORDER BY created_at ASC, rowid ASC
+                    LIMIT ?
+                    """,
+                    (session_id, CHILD_MESSAGE_OWNER, max(1, limit)),
+                ).fetchall()
+                if not rows:
+                    self._connection.execute("COMMIT")
+                    in_transaction = False
+                    return ()
+                now = int(time.time() * 1000)
+                claimed: list[StoredEvent] = []
+                for continuation_id, source, payload_json, role in rows:
+                    # The appended event IS the delivery: the message now belongs to this run's
+                    # committed prefix, so completing the row prevents any later drain from
+                    # starting it again. A crash before the next dispatch resumes from the
+                    # checkpoint with the event already in context.
+                    self._connection.execute(
+                        """
+                        UPDATE continuations
+                        SET status = 'completed', run_id = ?, updated_at = ?
+                        WHERE continuation_id = ? AND status = 'pending'
+                        """,
+                        (run_id, now, continuation_id),
+                    )
+                    sequence += 1
+                    payload = own_json_object(json.loads(payload_json))
+                    self._connection.execute(
+                        """
+                        INSERT INTO session_events (
+                            session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json
+                        ) VALUES (?, ?, ?, 'kernel.continuation_started', ?, 'plugin', ?, ?)
+                        """,
+                        (
+                            session_id,
+                            sequence,
+                            run_id,
+                            source,
+                            revision_id,
+                            canonical_json({"continuation_id": continuation_id, "payload": payload, "role": str(role)}),
+                        ),
+                    )
+                    claimed.append(
+                        StoredEvent(
+                            session_id=session_id,
+                            sequence=sequence,
+                            run_id=run_id,
+                            event_type="kernel.continuation_started",
+                            source=source,
+                            actor="plugin",
+                            revision_id=revision_id,
+                            payload={"continuation_id": continuation_id, "payload": payload, "role": str(role)},
+                        )
+                    )
+                self._connection.execute(
+                    "UPDATE sessions SET last_event_sequence = ?, updated_at = ? WHERE session_id = ?",
+                    (sequence, now, session_id),
+                )
+                # The appended messages are part of the resumable prefix: a crash before the next
+                # provider request must render them, not reject them as intervening events.
+                self._connection.execute(
+                    "UPDATE checkpoints SET last_event_sequence = ?, updated_at = ? WHERE session_id = ?",
+                    (sequence, now, session_id),
+                )
+                self._connection.execute("COMMIT")
+                in_transaction = False
+                return tuple(claimed)
+            except Exception:
+                if in_transaction:
+                    self._connection.execute("ROLLBACK")
+                raise
 
     def ensure_root_budget(self, root_id: str, budget: int) -> None:
         """Open a root action budget; an existing root keeps its original limit."""
@@ -2754,8 +2871,13 @@ class SqliteStore:
         revision_id: str,
         chain_step: int = 0,
         action_budget_remaining: int = 32,
+        continuation_id: str | None = None,
     ) -> tuple[ContinuationRecord, SessionRecord]:
-        """Atomically claim ONE pending continuation, emit continuation_started, advance session, and commit ready CP."""
+        """Atomically claim ONE continuation, emit continuation_started, advance session, and commit ready CP.
+
+        With `continuation_id`, only that exact row is eligible: a caller that reserved an
+        identity before enqueuing never starts somebody else's older message.
+        """
         with self._lock:
             self._check_open()
             in_transaction = False
@@ -2787,10 +2909,11 @@ class SqliteStore:
                            idempotency_key, root_id, status, payload_json, created_at, updated_at, role
                     FROM continuations
                     WHERE session_id = ? AND status = 'pending'
+                      AND (? IS NULL OR continuation_id = ?)
                     ORDER BY created_at ASC
                     LIMIT 1
                     """,
-                    (session_id,),
+                    (session_id, continuation_id, continuation_id),
                 )
                 cont_row = c_cursor.fetchone()
                 if cont_row is None:
@@ -2800,10 +2923,11 @@ class SqliteStore:
                                idempotency_key, root_id, status, payload_json, created_at, updated_at, role
                         FROM continuations
                         WHERE session_id = ? AND status = 'claimed'
+                          AND (? IS NULL OR continuation_id = ?)
                         ORDER BY created_at ASC
                         LIMIT 1
                         """,
-                        (session_id,),
+                        (session_id, continuation_id, continuation_id),
                     )
                     claimed_row = c_cursor2.fetchone()
                     if claimed_row is None:

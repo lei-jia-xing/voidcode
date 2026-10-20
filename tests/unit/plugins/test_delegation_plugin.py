@@ -29,8 +29,16 @@ from voidcode.plugins.delegation.presets import (
     ChildPreset,
 )
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.services import ChildOutcome, PluginBudget, PluginServices, SessionUsageReport
-from voidcode.sdk.tools import ToolCall, ToolFailure, ToolResult, ToolSuccess
+from voidcode.sdk.services import (
+    ArtifactPage,
+    ChildOutcome,
+    ChildSendReceipt,
+    EventView,
+    PluginBudget,
+    PluginServices,
+    SessionUsageReport,
+)
+from voidcode.sdk.tools import TextOutput, ToolCall, ToolFailure, ToolResult, ToolSuccess
 
 
 class MockServices(PluginServices):
@@ -42,10 +50,15 @@ class MockServices(PluginServices):
         self.spawn_calls: list[dict[str, object]] = []
         self.join_calls: list[tuple[str, float]] = []
         self.cancel_calls: list[tuple[str, str]] = []
+        self.send_calls: list[dict[str, object]] = []
+        self.acks: list[tuple[str, str]] = []
         self.roster: dict[str, ChildOutcome] = {}
         #: 1-based spawn call numbers the kernel refuses, with its refusal message or exception.
         self.spawn_failures: dict[int, str | Exception] = {}
         self.cancel_result = True
+        self.send_result = ChildSendReceipt(child_session_id="child-1", delivery="queued", child_status="running")
+        self.child_events: dict[str, tuple[EventView, ...]] = {}
+        self.artifacts: dict[str, bytes] = {}
 
     def get_state(self, scope: Literal["session", "workspace"] = "session") -> tuple[Mapping[str, object] | None, int]:
         return self.state.get(scope, (None, 0))
@@ -81,15 +94,75 @@ class MockServices(PluginServices):
         tool_allowlist: tuple[str, ...] | None = None,
         max_steps: int = 32,
         readonly: bool = False,
+        notify_on_completion: bool = False,
     ) -> str:
         call_number = len(self.spawn_calls) + 1
-        self.spawn_calls.append({"prompt": prompt, "label": label, "tool_allowlist": tool_allowlist, "max_steps": max_steps, "readonly": readonly})
+        self.spawn_calls.append(
+            {
+                "prompt": prompt,
+                "label": label,
+                "tool_allowlist": tool_allowlist,
+                "max_steps": max_steps,
+                "readonly": readonly,
+                "notify_on_completion": notify_on_completion,
+            }
+        )
         refusal = self.spawn_failures.get(call_number)
         if refusal is not None:
             raise refusal if isinstance(refusal, Exception) else ValueError(refusal)
         child_id = f"child-{len(self.roster) + 1}"
-        self.roster[child_id] = ChildOutcome(child_session_id=child_id, status="completed", output=f"result of {prompt}")
+        self.roster[child_id] = ChildOutcome(child_session_id=child_id, status="completed", output=f"result of {prompt}", run_id=f"run-{child_id}")
         return child_id
+
+    def send_child(
+        self,
+        child_session_id: str,
+        prompt: str,
+        *,
+        label: str = "",
+        notify_on_completion: bool = True,
+    ) -> ChildSendReceipt:
+        self.send_calls.append(
+            {
+                "child_session_id": child_session_id,
+                "prompt": prompt,
+                "label": label,
+                "notify_on_completion": notify_on_completion,
+            }
+        )
+        return ChildSendReceipt(
+            child_session_id=child_session_id,
+            delivery=self.send_result.delivery,
+            child_status=self.send_result.child_status,
+            run_id=self.send_result.run_id,
+            message_id=self.send_result.message_id,
+        )
+
+    def acknowledge_child_completion(self, child_session_id: str, run_id: str) -> None:
+        self.acks.append((child_session_id, run_id))
+
+    def read_child_events(
+        self,
+        child_session_id: str,
+        *,
+        after_sequence: int = 0,
+        limit: int = 100,
+        include_payload: bool = True,
+    ) -> tuple[EventView, ...]:
+        return tuple(event for event in self.child_events.get(child_session_id, ()) if event.sequence > after_sequence)[:limit]
+
+    def read_artifact(self, reference: object, *, offset: int = 0, limit: int = 65536) -> ArtifactPage:
+        sha = str(getattr(reference, "sha256", reference))
+        data = self.artifacts[sha]
+        page = data[offset : offset + limit]
+        return ArtifactPage(
+            sha256=sha,
+            offset=offset,
+            total_bytes=len(data),
+            data=page,
+            eof=offset + len(page) >= len(data),
+            media_type="text/plain; charset=utf-8",
+        )
 
     def join_child(self, child_session_id: str, *, timeout_seconds: float = 300.0) -> ChildOutcome:
         self.join_calls.append((child_session_id, timeout_seconds))
@@ -231,10 +304,16 @@ def test_spawn_passes_arguments_through_and_records_roster_event(tmp_path: Path)
             "tool_allowlist": ("read", "glob"),
             "max_steps": 5,
             "readonly": False,
+            "notify_on_completion": True,
         }
     ]
     assert services.join_calls == []
-    assert _payload(res) == {"operation": "spawn", "task_id": "child-1", "label": "explore"}
+    assert _payload(res) == {
+        "operation": "spawn",
+        "task_id": "child-1",
+        "label": "explore",
+        "history_uri": "voidcode://transcript/child-1",
+    }
     assert "child-1" in res.output.text
     assert "background" in res.output.text
 
@@ -278,9 +357,16 @@ def test_preset_spawn_materializes_the_profile_and_applies_its_scope(tmp_path: P
             "tool_allowlist": ("read", "glob", "grep", "ast_grep", "lsp"),
             "max_steps": 32,
             "readonly": True,
+            "notify_on_completion": True,
         }
     ]
-    assert _payload(res) == {"operation": "spawn", "task_id": "child-1", "label": "explore", "subagent_type": "explore"}
+    assert _payload(res) == {
+        "operation": "spawn",
+        "task_id": "child-1",
+        "label": "explore",
+        "subagent_type": "explore",
+        "history_uri": "voidcode://transcript/child-1",
+    }
     assert "preset=explore" in res.output.text
     assert _stored(services).children == {"child-1": ChildRecord(label="explore", subagent_type="explore")}
 
@@ -419,7 +505,13 @@ def test_output_joins_with_the_requested_timeout_and_surfaces_running(tmp_path: 
     assert isinstance(res, ToolSuccess)
     assert services.join_calls == [("child-1", 5.0)]
     payload = _payload(res)
-    assert payload == {"operation": "output", "task_id": "child-1", "label": "long", "status": "running"}
+    assert payload == {
+        "operation": "output",
+        "task_id": "child-1",
+        "label": "long",
+        "status": "running",
+        "history_uri": "voidcode://transcript/child-1",
+    }
     assert "status=running" in res.output.text
     assert 'task(operation="output"' in res.output.text
 
@@ -438,6 +530,101 @@ def test_output_reports_the_terminal_child_outcome(tmp_path: Path) -> None:
     assert payload["error"] == "child blew up"
     assert payload["stop_cause"] == "error"
     assert "child blew up" in res.output.text
+
+
+def test_send_maps_the_receipt_without_claiming_consumption(tmp_path: Path) -> None:
+    services = MockServices()
+    _task(services, tmp_path, {"prompt": "work", "label": "sender"})
+    services.send_result = ChildSendReceipt(
+        child_session_id="child-1",
+        delivery="started",
+        child_status="running",
+        run_id="run-2",
+        message_id="msg-1",
+    )
+    res = _task(services, tmp_path, {"operation": "send", "task_id": "child-1", "prompt": "check the north entrance"})
+    assert isinstance(res, ToolSuccess)
+    assert services.send_calls == [
+        {"child_session_id": "child-1", "prompt": "check the north entrance", "label": "sender", "notify_on_completion": True}
+    ]
+    payload = _payload(res)
+    assert payload["operation"] == "send"
+    assert payload["delivery"] == "started"
+    assert payload["child_status"] == "running"
+    assert payload["run_id"] == "run-2"
+    assert payload["message_id"] == "msg-1"
+    assert payload["history_uri"] == "voidcode://transcript/child-1"
+    assert isinstance(res.output, TextOutput)
+    assert "started in the same session" in res.output.text
+
+    services.send_result = ChildSendReceipt(child_session_id="child-1", delivery="queued", child_status="running")
+    queued = _task(services, tmp_path, {"operation": "send", "task_id": "child-1", "prompt": "later"})
+    assert _payload(queued)["delivery"] == "queued"
+    assert isinstance(queued.output, TextOutput)
+    assert "queued behind the child's current work" in queued.output.text
+    assert "does not mean the child read or finished it" in queued.output.text
+
+
+def test_history_pages_through_the_cursor_without_loss(tmp_path: Path) -> None:
+    services = MockServices()
+    _task(services, tmp_path, {"prompt": "work", "label": "hist"})
+    filler = "x" * (20 * 1024)
+    services.child_events["child-1"] = tuple(
+        EventView(
+            sequence=index + 1,
+            event_type="kernel.user_message",
+            run_id="run-1",
+            revision_id="rev-1",
+            source="user",
+            actor="user",
+            payload={"content": f"E{index + 1}-START{filler}E{index + 1}-END"},
+        )
+        for index in range(3)
+    ) + (
+        EventView(
+            sequence=4,
+            event_type="kernel.user_message",
+            run_id="run-1",
+            revision_id="rev-1",
+            source="user",
+            actor="user",
+            payload={"content": f"E4-START{'y' * (50 * 1024)}E4-END"},
+        ),
+    )
+
+    pages: list[str] = []
+    cursors: list[tuple[int, int]] = []
+    split_offsets: list[int] = []
+    after, offset = 0, 0
+    for _ in range(8):
+        res = _task(
+            services,
+            tmp_path,
+            {"operation": "history", "task_id": "child-1", "after_sequence": after, "history_offset": offset},
+        )
+        assert isinstance(res, ToolSuccess)
+        payload = _payload(res)
+        cursors.append((after, offset))
+        assert isinstance(res.output, TextOutput)
+        pages.append(res.output.text)
+        if not payload["truncated"]:
+            break
+        next_after = payload["next_after_sequence"]
+        next_offset = payload["next_event_offset"]
+        assert isinstance(next_after, int) and isinstance(next_offset, int)
+        after, offset = next_after, next_offset
+        split_offsets.append(offset)
+    else:
+        raise AssertionError("history did not reach its end within 8 pages")
+
+    assert len(pages) >= 3, "the transcript must span multiple bounded pages"
+    assert any(offset > 0 for offset in split_offsets), "a block larger than one page is split, not clipped"
+    assert len(set(cursors)) == len(cursors)
+    text = "\n\n".join(pages)
+    for index in range(1, 5):
+        assert text.count(f"E{index}-START") == 1
+        assert text.count(f"E{index}-END") == 1
+    assert text.count("y" * (20 * 1024)) >= 1, "the oversized block keeps its content across the split"
 
 
 def test_unknown_task_ids_fail_without_touching_the_kernel(tmp_path: Path) -> None:
@@ -474,10 +661,10 @@ def test_cancel_reports_acceptance(tmp_path: Path) -> None:
         ({"prompt": "x", "operation": "cancel"}, "one mode per call"),
         ({"operation": "output"}, "requires a task_id"),
         ({"operation": "cancel"}, "requires a task_id"),
-        ({"task_id": "child-1"}, "requires operation=output or operation=cancel"),
+        ({"task_id": "child-1"}, "one mode per call"),
         ({}, "requires a prompt"),
         ({"prompt": "   "}, "must be non-empty"),
-        ({"operation": "ps"}, "operation must be one of output, cancel"),
+        ({"operation": "ps"}, "operation must be one of output, cancel, send, history"),
         ({"prompt": "x", "max_steps": 0}, "max_steps must be a positive integer"),
         ({"prompt": "x", "timeout": -1}, "timeout must be a non-negative integer"),
         ({"prompt": "x", "tool_allowlist": []}, "tool_allowlist must be a non-empty array"),
@@ -559,8 +746,8 @@ def test_batch_spawns_the_whole_group_and_records_it(tmp_path: Path) -> None:
     assert len(group_id) == 32
     assert payload == {"operation": "spawn", "parallel_group_id": group_id, "task_ids": ["child-1", "child-2"], "partial": False}
     assert services.spawn_calls == [
-        {"prompt": "one", "label": "a", "tool_allowlist": None, "max_steps": 32, "readonly": False},
-        {"prompt": "two", "label": "", "tool_allowlist": None, "max_steps": 7, "readonly": False},
+        {"prompt": "one", "label": "a", "tool_allowlist": None, "max_steps": 32, "readonly": False, "notify_on_completion": True},
+        {"prompt": "two", "label": "", "tool_allowlist": None, "max_steps": 7, "readonly": False, "notify_on_completion": True},
     ]
     assert services.join_calls == []
     assert services.staged_events == [("task_batch_spawned", {"parallel_group_id": group_id, "task_ids": ["child-1", "child-2"]})]
@@ -630,8 +817,14 @@ def test_batch_group_read_returns_bounded_per_child_statuses(tmp_path: Path) -> 
         "operation": "output",
         "parallel_group_id": group_id,
         "children": [
-            {"task_id": "child-1", "status": "running"},
-            {"task_id": "child-2", "status": "failed", "stop_cause": "error", "error": "child blew up"},
+            {"task_id": "child-1", "status": "running", "history_uri": "voidcode://transcript/child-1"},
+            {
+                "task_id": "child-2",
+                "status": "failed",
+                "stop_cause": "error",
+                "error": "child blew up",
+                "history_uri": "voidcode://transcript/child-2",
+            },
         ],
     }
     assert services.join_calls == [("child-1", DEFAULT_JOIN_TIMEOUT_SECONDS), ("child-2", DEFAULT_JOIN_TIMEOUT_SECONDS)]
@@ -667,8 +860,9 @@ def test_batch_items_select_their_own_presets(tmp_path: Path) -> None:
             "tool_allowlist": ("web_search", "web_fetch"),
             "max_steps": 32,
             "readonly": True,
+            "notify_on_completion": True,
         },
-        {"prompt": "plain", "label": "", "tool_allowlist": None, "max_steps": 32, "readonly": False},
+        {"prompt": "plain", "label": "", "tool_allowlist": None, "max_steps": 32, "readonly": False, "notify_on_completion": True},
     ]
     assert _stored(services).children == {
         "child-1": ChildRecord(group_id=group_id, subagent_type="research"),
@@ -708,8 +902,13 @@ def test_batch_group_read_reports_each_child_preset(tmp_path: Path) -> None:
     res = _batch(services, tmp_path, {"operation": "output", "parallel_group_id": group_id})
 
     assert _payload(res)["children"] == [
-        {"task_id": "child-1", "status": "running", "subagent_type": "explore"},
-        {"task_id": "child-2", "status": "completed"},
+        {
+            "task_id": "child-1",
+            "status": "running",
+            "subagent_type": "explore",
+            "history_uri": "voidcode://transcript/child-1",
+        },
+        {"task_id": "child-2", "status": "completed", "history_uri": "voidcode://transcript/child-2"},
     ]
     assert "preset=explore" in res.output.text
 

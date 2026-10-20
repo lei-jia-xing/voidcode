@@ -4,6 +4,28 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Agent collaboration: steering, notices, and readable transcripts
+- Delegated children are kernel-owned. `kernel.child_spawned` now persists
+  `notify_on_completion`, so a restart rebuilds a queued completion request from durable facts
+  instead of a child thread's local argument. `kernel.child_finished` carries the run id, status,
+  stop cause, inline-or-spilled output (bounded preview plus `output_sha256`), and the immutable
+  history snapshot, exactly once per `(child, run)`.
+- `task(operation="send")` adds an attributed follow-up in the same child session (queued behind
+  running or parked work, consumed at a committed batch boundary) and `task(operation="history")`
+  pages the readable transcript through an `(after_sequence, history_offset)` cursor. Joins are
+  run-scoped: a follow-up can never be satisfied by an older terminal fact. Only the direct
+  parent may steer, and a read-only parent cannot steer a child that is not durably read-only.
+- Completion notices are staged atomically with the child fact and keyed per run.
+  `acknowledge_child_completion` stages consumption on the invocation lease, so it commits with
+  the tool result that carried the outcome (a crash cannot lose or duplicate the notice). Startup
+  recovery republishes a terminal child run whose parent fact a crash never committed, without
+  rerunning the child, and delivers its notice.
+- `voidcode://transcript/<child>` and `task(operation="history")` render readable payloads
+  (user, assistant with tool calls, tool results, child facts, progress, plugin events) instead of
+  a payload-stripped skeleton. Pages are bounded by 40 KiB, split oversized blocks on UTF-8
+  boundaries without clipping, and stay under the kernel's 256 KiB context bound; output pages
+  remain reachable through the saved artifact. Contract: `docs/contracts/agent-collaboration.md`.
+
 ### Providerless first boot without `voidcode.json`
 - A truly fresh state directory (no database, no adopted revision, no legacy file) now opens with
   empty in-memory defaults instead of failing `kernel configuration is required`: bundled plugins,

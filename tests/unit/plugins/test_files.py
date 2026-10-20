@@ -640,11 +640,11 @@ class _UriServices:
         return self._definitions.get(name)
 
     def read_events(self, *, after_sequence: int = 0, limit: int = 100, include_payload: bool = True):  # type: ignore[no-untyped-def]
-        assert include_payload is False
-        return self._events[:limit]
+        assert include_payload is True
+        return tuple(event for event in self._events if event.sequence > after_sequence)[:limit]
 
     def read_child_events(self, child_session_id: str, *, after_sequence: int = 0, limit: int = 100, include_payload: bool = True):  # type: ignore[no-untyped-def]
-        assert include_payload is False
+        assert include_payload is True
         self.child_session_ids.append(child_session_id)
         if self._refuse_child is not None:
             raise self._refuse_child
@@ -687,14 +687,31 @@ def test_read_tool_documentation_renders_visible_definition_and_refuses_hidden(t
     assert hidden.output.text == hidden.error  # type: ignore[union-attr]
 
 
-def test_read_transcript_strips_payloads_and_reports_kernel_refusal(tmp_path: Path) -> None:
+def test_read_transcript_returns_readable_pages_with_a_cursor_and_reports_kernel_refusal(tmp_path: Path) -> None:
     from voidcode.sdk.services import EventView
 
     plugin = create_plugin({})
     read_tool = next(t for t in plugin.tools if t.definition.name == "read")
+    prompt = "PROMPT-START " + "x" * 50_000 + " PROMPT-END"
     views = (
-        EventView(sequence=1, event_type="kernel.user_message", run_id="r", revision_id="v", source="user", actor="user"),
-        EventView(sequence=2, event_type="kernel.tool_completed", run_id="r", revision_id="v", source="kernel", actor="model"),
+        EventView(
+            sequence=1,
+            event_type="kernel.user_message",
+            run_id="r",
+            revision_id="v",
+            source="user",
+            actor="user",
+            payload={"content": prompt},
+        ),
+        EventView(
+            sequence=2,
+            event_type="plugin.todo.changed",
+            run_id="r",
+            revision_id="v",
+            source="plugin.todo",
+            actor="plugin",
+            payload={"op": "view", "note": "TOOL-PAYLOAD"},
+        ),
     )
     own = read_tool.invoke(
         ToolCall(tool_name="read", arguments={"path": "voidcode://transcript/session-test"}),
@@ -702,11 +719,44 @@ def test_read_transcript_strips_payloads_and_reports_kernel_refusal(tmp_path: Pa
         services=cast(Any, _UriServices(events=views)),
     )
     assert isinstance(own, ToolSuccess)
-    assert own.body.as_payload()["entries"] == [  # type: ignore[union-attr]
-        {"sequence": 1, "event_type": "kernel.user_message", "source": "user"},
-        {"sequence": 2, "event_type": "kernel.tool_completed", "source": "kernel"},
-    ]
-    assert "payload" not in json.dumps(own.body.as_payload())  # type: ignore[union-attr]
+    first = own.body.as_payload()  # type: ignore[union-attr]
+    assert first["type"] == "transcript" and first["session_id"] == "session-test"
+    assert first["truncated"] is True and first["next_offset"] > 0
+    assert "PROMPT-START" in own.output.text  # type: ignore[union-attr]
+    assert "PROMPT-END" not in own.output.text  # type: ignore[union-attr]
+    assert "More history: read(path=" in own.output.text  # type: ignore[union-attr]
+
+    next_uri = f"voidcode://transcript/session-test?after_sequence={first['next_after_sequence']}&offset={first['next_offset']}"
+    rest = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": next_uri}),
+        context=_context(tmp_path),
+        services=cast(Any, _UriServices(events=views)),
+    )
+    assert isinstance(rest, ToolSuccess)
+    assert "PROMPT-END" in rest.output.text  # type: ignore[union-attr]
+    assert "TOOL-PAYLOAD" in rest.output.text  # type: ignore[union-attr]
+    assert rest.body.as_payload()["truncated"] is False  # type: ignore[union-attr]
+
+    child_views = (
+        EventView(
+            sequence=1,
+            event_type="kernel.user_message",
+            run_id="r",
+            revision_id="v",
+            source="user",
+            actor="user",
+            payload={"content": "CHILD-PROMPT"},
+        ),
+    )
+    child_services = _UriServices(child_events=child_views)
+    child = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "voidcode://transcript/child-test"}),
+        context=_context(tmp_path),
+        services=cast(Any, child_services),
+    )
+    assert isinstance(child, ToolSuccess)
+    assert "CHILD-PROMPT" in child.output.text  # type: ignore[union-attr]
+    assert child_services.child_session_ids == ["child-test"]
 
     sibling = read_tool.invoke(
         ToolCall(tool_name="read", arguments={"path": "voidcode://transcript/sibling"}),
@@ -714,8 +764,8 @@ def test_read_transcript_strips_payloads_and_reports_kernel_refusal(tmp_path: Pa
         services=cast(Any, _UriServices(refuse_child=PermissionError("child events are readable only for this session's own descendants"))),
     )
     assert isinstance(sibling, ToolFailure)
-    assert "transcript not accessible for session sibling" in sibling.error
-    assert "own descendants" in sibling.error
+    assert "transcript not accessible for session sibling" in json.dumps(sibling.error)
+    assert "own descendants" in json.dumps(sibling.error)
 
 
 def test_read_rule_reports_unavailable_unknown_and_malformed(tmp_path: Path) -> None:

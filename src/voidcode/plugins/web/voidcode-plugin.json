@@ -19,7 +19,7 @@
     },
     {
       "path": "web_fetch.py",
-      "sha256": "90278f5d7b91f9f96f4c3bc64b9884f7e88a734c42a7b7d425dbe98452650dd6"
+      "sha256": "e57a11182f5bf9438788bd633dfd92ec3db4ee8b40a7083c8118f6f9c12ed4bc"
     },
     {
       "path": "web_search.py",
@@ -29,13 +29,13 @@
   "tools": [
     {
       "name": "web_fetch",
-      "description": "Fetch content from a URL. Supports text, markdown, and HTML formats.",
+      "description": "Fetch one URL as text, markdown, or HTML. When a textual result is truncated it returns content_ref and next_byte_offset; call again with exactly those two fields to read the next page from this session's artifact store, without fetching the network again.",
       "input_schema": {
         "type": "object",
         "properties": {
           "url": {
             "type": "string",
-            "description": "The URL to fetch content from"
+            "description": "Initial call: the URL to fetch content from"
           },
           "format": {
             "type": "string",
@@ -44,15 +44,65 @@
               "markdown",
               "html"
             ],
-            "description": "Output format: text, markdown, or html"
+            "description": "Initial call: output format (default: markdown)"
           },
           "timeout": {
             "type": "integer",
-            "description": "Timeout in seconds (max 120)"
+            "description": "Initial call: timeout in seconds (max 120)"
+          },
+          "content_ref": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Continuation call: the content_ref from a truncated web_fetch result"
+          },
+          "byte_offset": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Continuation call: the next_byte_offset from the previous page"
           }
         },
-        "required": [
-          "url"
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string"
+              },
+              "format": {
+                "type": "string",
+                "enum": [
+                  "text",
+                  "markdown",
+                  "html"
+                ]
+              },
+              "timeout": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "url"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "content_ref": {
+                "type": "string",
+                "minLength": 1
+              },
+              "byte_offset": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "content_ref",
+              "byte_offset"
+            ],
+            "additionalProperties": false
+          }
         ],
         "additionalProperties": false
       },

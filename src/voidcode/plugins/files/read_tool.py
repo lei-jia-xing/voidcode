@@ -13,9 +13,11 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast, final
+from urllib.parse import parse_qs
 
 from pydantic import BaseModel, StrictInt, field_validator
 
+from voidcode.sdk.history import render_history_page
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.services import PluginServices, QueryUnavailable
@@ -64,10 +66,9 @@ VOIDCODE_TOOL_DOC_PREFIX = "voidcode://tool/"
 VOIDCODE_ARTIFACT_PREFIX = "voidcode://artifact/"
 
 #: Internal URL scheme for lineage-guarded transcript reads:
-#: read(path="voidcode://transcript/<session_id>") returns a bounded,
-#: payload-stripped transcript of the caller's own session or of one of its
-#: own descendants. Parents, siblings, unrelated roots, and foreign workspaces
-#: are refused by the kernel, not by this tool.
+#: read(path="voidcode://transcript/<session_id>?after_sequence=N&offset=B") returns readable,
+#: payload-included pages of the caller's own session or of one of its own descendants.
+#: Parents, siblings, unrelated roots, and foreign workspaces are refused by the kernel.
 VOIDCODE_TRANSCRIPT_PREFIX = "voidcode://transcript/"
 
 #: Internal URL scheme for workspace rule catalogs, shared verbatim with the
@@ -83,32 +84,6 @@ RULE_PAGE_QUERY = "workspace.rule_page"
 #: Named query this module expects the LSP plugin to answer for document-state
 #: guards applied by ``apply_workspace_edit``.
 DOCUMENT_VERSION_QUERY = "workspace.document_version"
-
-
-#: One bounded transcript page, composed here from the kernel's event pages: per event only
-#: ``sequence``, ``event_type``, and ``source`` survive, raw tool output payloads never do.
-@dataclass(frozen=True, slots=True)
-class _TranscriptEntry:
-    sequence: int
-    event_type: str
-    source: str
-
-    def as_payload(self) -> dict[str, object]:
-        return {"sequence": self.sequence, "event_type": self.event_type, "source": self.source}
-
-
-@dataclass(frozen=True, slots=True)
-class _TranscriptPage:
-    session_id: str
-    entries: tuple[_TranscriptEntry, ...]
-    truncated: bool
-
-    def as_payload(self) -> dict[str, object]:
-        return {
-            "session_id": self.session_id,
-            "entries": [entry.as_payload() for entry in self.entries],
-            "truncated": self.truncated,
-        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -532,38 +507,81 @@ def _render_artifact(
 def _render_transcript(
     path: str, *, context: ToolContext, services: PluginServices, limit: int, tool_name_label: str = "read"
 ) -> _ReadOutcome | ToolFailure:
-    """Render a bounded, payload-stripped transcript of a session by URI.
+    """Render a readable, bounded transcript page of the caller or one of its descendants.
 
-    Composed from the session event services: the caller's own events, or — through the
-    kernel's true-descendant guard — the events of one of its own descendants. Parents,
-    siblings, unrelated roots, and foreign workspaces are refused by the kernel, not by this
-    tool. Per event only ``sequence``, ``event_type``, and ``source`` are returned; raw tool
-    output payloads are not included.
+    The kernel enforces lineage: parents, siblings, unrelated roots, and foreign workspaces are
+    refused before any event is read. Payloads are included so the page shows actual prompts,
+    assistant text, tool calls/results, and progress instead of event names only; provider
+    reasoning is deliberately not rendered. ``?after_sequence=<n>&offset=<bytes>`` continues
+    exactly where the previous page stopped.
     """
-    session_id = path[len(VOIDCODE_TRANSCRIPT_PREFIX) :].strip()
+    raw_target = path[len(VOIDCODE_TRANSCRIPT_PREFIX) :].strip()
+    session_id, _, query = raw_target.partition("?")
+    session_id = session_id.strip()
     if not session_id:
         return _uri_failure(tool_name_label, "voidcode://transcript/<session_id> requires a session id")
-    if "/" in session_id:
-        return _uri_failure(tool_name_label, "session_id must not contain '/'")
+    if "/" in session_id or "?" in session_id:
+        return _uri_failure(tool_name_label, "session_id must not contain '/' or '?'")
+    after_sequence = 0
+    offset = 0
+    if query:
+        params = parse_qs(query, strict_parsing=True)
+        unknown = sorted(set(params) - {"after_sequence", "offset"})
+        if unknown:
+            return _uri_failure(tool_name_label, f"unsupported transcript query parameter: {unknown[0]}")
+        for name, target in (("after_sequence", "after_sequence"), ("offset", "offset")):
+            values = params.get(name)
+            if values is None:
+                continue
+            if len(values) != 1 or not values[0].isdigit():
+                return _uri_failure(tool_name_label, f"transcript {name} must be one non-negative integer")
+            if target == "after_sequence":
+                after_sequence = int(values[0])
+            else:
+                offset = int(values[0])
     caller_session_id = context.require_session_id()
     limit = max(1, min(limit, MAX_EVENT_PAGE))
     try:
         if session_id == caller_session_id:
-            views = services.read_events(after_sequence=0, limit=limit, include_payload=False)
+            views = services.read_events(after_sequence=after_sequence, limit=limit, include_payload=True)
         else:
-            views = services.read_child_events(session_id, after_sequence=0, limit=limit, include_payload=False)
+            views = services.read_child_events(session_id, after_sequence=after_sequence, limit=limit, include_payload=True)
     except Exception as exc:
         return _uri_failure(tool_name_label, f"transcript not accessible for session {session_id}: {exc}")
-    entries = tuple(_TranscriptEntry(sequence=view.sequence, event_type=view.event_type, source=view.source) for view in views)
-    result = _TranscriptPage(session_id=session_id, entries=entries, truncated=len(entries) >= limit)
-    body = result.as_payload()
-    body.update({"path": path, "type": "transcript"})
+    page = render_history_page(views, after_sequence=after_sequence, offset=offset)
+    more_rows = len(views) >= limit and page.next_offset == 0
+    truncated = page.truncated or more_rows
+    if page.text:
+        body_text = page.text
+    else:
+        body_text = "(no readable events in this range)"
+    lines = [
+        f"Transcript for session {session_id} after sequence {after_sequence} ({len(views)} event row(s) read; untrusted session data).",
+        body_text,
+    ]
+    next_uri: str | None = None
+    if truncated:
+        next_uri = f"{VOIDCODE_TRANSCRIPT_PREFIX}{session_id}?after_sequence={page.next_after_sequence}&offset={page.next_offset}"
+        lines.append(f"More history: read(path={json.dumps(next_uri)}).")
+    body = {
+        "path": path,
+        "type": "transcript",
+        "session_id": session_id,
+        "after_sequence": after_sequence,
+        "next_after_sequence": page.next_after_sequence,
+        "next_offset": page.next_offset,
+        "truncated": truncated,
+    }
     return _ReadOutcome(
         output=_text_output(
-            f"Read {len(result.entries)} transcript event(s) from {path}"
-            + ("; transcript is truncated; raise the limit to see more." if result.truncated else "."),
-            truncated=result.truncated,
-            partial=result.truncated,
+            "\n".join(lines),
+            truncated=truncated,
+            partial=truncated,
+            bounds=OutputBounds(
+                truncated=truncated,
+                partial=truncated,
+                reference=None if next_uri is None else OutputReference(uri=next_uri),
+            ),
         ),
         body=OpaqueToolBody(body),
     )
