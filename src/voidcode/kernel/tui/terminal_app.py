@@ -52,7 +52,10 @@ def json_safe(value: object) -> object:
 
 
 def _prefixed_rows(prefix: str, text: str, *, color: str) -> list[str]:
-    """Wrap sanitized multi-line text under a colored prefix, one row per line."""
+    """Prefix sanitized multiline text, one row per explicit line.
+
+    Terminal owns physical width wrapping, so this helper never clips content.
+    """
     label = f"\x1b[1;{color}m{prefix}\x1b[0m "
     clean = escape_terminal_controls(text, preserve_newlines=True, preserve_tabs=True)
     rows: list[str] = []
@@ -220,7 +223,6 @@ class KernelTuiApp:
             if not actual_id:
                 raise RuntimeError(f"Server returned invalid session record for {self.session_id!r}")
             self.session_id = actual_id
-            self.status_line = f"Attached session {self.session_id}"
         else:
             # No session requested: list sessions; if none exist, create one
             sessions = self.client.list_sessions(limit=1)
@@ -229,14 +231,14 @@ class KernelTuiApp:
                 if not actual_id:
                     raise RuntimeError("Server returned session without session_id")
                 self.session_id = actual_id
-                self.status_line = f"Attached session {self.session_id}"
             else:
                 new_session = self.client.create_session()
                 actual_id = str(new_session.get("session_id") or "")
                 if not actual_id:
                     raise RuntimeError("Server created session without session_id")
                 self.session_id = actual_id
-                self.status_line = f"Created session {self.session_id}"
+        # Routine attachment is quiet: ids are diagnostics, not idle chrome.
+        self.status_line = ""
 
     def _load_catalog(self) -> None:
         try:
@@ -448,24 +450,21 @@ class KernelTuiApp:
                     if self.upgrade["fenced"]:
                         self.status_line = "Kernel upgrade in progress: dispatch paused"
                     else:
-                        self.status_line = f"Attached session {self.session_id}"
+                        self.status_line = ""
             elif kind == "reconciled":
                 serial = frame.get("reconcile_serial")
                 if isinstance(serial, int) and serial == self._reconcile_serial and serial >= self._reconcile_applied:
-                    # Catalog/views/status from the same round as the health
-                    # read above: applied together or not at all. Failures are
+                    # Catalog and session status from the same round as the
+                    # health read above: applied together or not at all.
+                    # Optional views are not part of this round; only the
+                    # explicit /tui views control fetches them. Failures are
                     # surfaced, never swallowed into None: unknown stays
                     # visible while last-known state is preserved.
                     self._reconcile_applied = serial
                     catalog = frame.get("catalog")
-                    views = frame.get("views")
                     failures = frame.get("failures")
                     if isinstance(catalog, tuple) and len(catalog) == 2:
                         self.catalog_revision, self.catalog_cache = str(catalog[0]), list(catalog[1])
-                    if isinstance(views, tuple) and len(views) == 2:
-                        # Catalog and views refresh together under this revision;
-                        # only the explicit /tui views control may take focus.
-                        self._render_reconciled_views(str(views[0]), list(views[1]), present_interactive=False)
                     status = frame.get("session_status")
                     if isinstance(status, str) and status:
                         self.status_line = f"Run {status}" if status in ("running", "waiting") else self.status_line
@@ -543,9 +542,10 @@ class KernelTuiApp:
             else:
                 rows.extend(_command_result_rows(raw_name, command_result))
         elif etype in ("kernel.activation_committed", "kernel.revision_adopted"):
-            # The displayed generation changed: the catalog and the views are
-            # refetched together, and anything captured under the previous
-            # revision is dropped — never relabelled, never retried.
+            # The displayed generation changed: the command catalog is
+            # refetched and anything captured under the previous revision is
+            # dropped — never relabelled, never retried. Optional views are
+            # explicit-only, so activation never fetches or renders them.
             to_revision_id = str(payload.get("to_revision_id") or "")
             overlay = self.active_overlay
             dropped = overlay is not None and getattr(overlay, "revision_id", "") != to_revision_id
@@ -557,12 +557,9 @@ class KernelTuiApp:
                 del self.queued_confirmations[queued_id]
             self.pending_approval = None
             self._load_catalog()
-            # Activation is an automatic refresh: catalog and views move together,
-            # but it never steals focus with a declarative form/choices/confirmation.
-            self._show_views(present_interactive=False)
             self._present_queued_confirmation()
             suffix = " (stale action discarded)" if dropped else ""
-            rows.append(f"\x1b[33m[Capability revision changed to {_safe(to_revision_id)}: catalog and views refreshed{suffix}]\x1b[0m")
+            rows.append(f"\x1b[33m[Capabilities changed: command catalog refreshed{suffix}]\x1b[0m")
         elif etype == "kernel.confirmation_requested":
             # Durable pending fact: restores the modal after a reload, bound to
             # the revision that created the request (never the current one).
@@ -632,7 +629,7 @@ class KernelTuiApp:
             return
         if self.active_overlay is None and self.pending_approval is None:
             self.active_overlay = overlay
-            self.status_line = f"Confirmation required: {request_id}"
+            self.status_line = "Confirmation required"
             return
         self.queued_confirmations.setdefault(request_id, overlay)
 
@@ -646,7 +643,7 @@ class KernelTuiApp:
             if request_id in self.resolved_confirmations:
                 continue
             self.active_overlay = overlay
-            self.status_line = f"Confirmation required: {request_id}"
+            self.status_line = "Confirmation required"
             return
 
     def _process_input(self) -> None:
@@ -996,10 +993,11 @@ class KernelTuiApp:
         """ONE connection-established reconciliation path, entirely off the UI thread.
 
         Runs on the first frame of every (re)connected stream — announced restart
-        or silent drop. Fetches health + catalog + views + durable session status
-        in one worker round, then hands the UI thread a single serial-tagged
-        envelope. Only the newest round renders (generation alone cannot order
-        overlapping replies). Never resends the prompt, never touches the
+        or silent drop. Fetches health + catalog + durable session status in one
+        worker round, then hands the UI thread a single serial-tagged envelope.
+        Optional views are never fetched here: only explicit ``/tui views``
+        presents them. Only the newest round renders (generation alone cannot
+        order overlapping replies). Never resends the prompt, never touches the
         applied cursor.
         """
         self._reconcile_serial += 1
@@ -1018,11 +1016,6 @@ class KernelTuiApp:
                 catalog = None
                 failures.append(f"catalog ({exc})")
             try:
-                views = self.client.views(session_id)
-            except Exception as exc:
-                views = None
-                failures.append(f"views ({exc})")
-            try:
                 session_status = str(self.client.get_session(session_id).get("status", ""))
             except Exception as exc:
                 session_status = ""
@@ -1040,7 +1033,6 @@ class KernelTuiApp:
                 {
                     "kind": "reconciled",
                     "catalog": catalog,
-                    "views": views,
                     "session_status": session_status,
                     "failures": failures,
                     "reconcile_serial": serial,
@@ -1211,7 +1203,7 @@ class KernelTuiApp:
         self.resolved_confirmations.clear()
         # A new stream is about to start: its first frame reconciles.
         self._stream_ready = False
-        self.status_line = f"Session {session_id}"
+        self.status_line = ""
         self._start_sse_stream()
 
     def _create_session(self) -> None:
@@ -1261,31 +1253,19 @@ class KernelTuiApp:
         except Exception as exc:
             self.terminal.commit_rows([f"\x1b[31mFailed to list sessions: {exc}\x1b[0m"])
 
-    def _show_views(self, name_filter: str = "", *, present_interactive: bool = True) -> None:
+    def _show_views(self, name_filter: str = "") -> None:
+        """Render plugin views only when explicitly requested.
+
+        Passive views are committed inline. Interactive choices/forms/view-
+        confirmations are snapshots, not pending durable requests, so this is
+        the one path allowed to mount one; true approval and confirmation gates
+        are restored separately from their durable events.
+        """
         try:
             views_revision, v_list = self.client.views(self.session_id)
         except Exception as exc:
             self.terminal.commit_rows([f"\x1b[31mFailed to read views: {exc}\x1b[0m"])
             return
-        self._render_reconciled_views(views_revision, v_list, name_filter=name_filter, present_interactive=present_interactive)
-
-    def _render_reconciled_views(
-        self,
-        views_revision: str,
-        v_list: list[dict[str, Any]],
-        *,
-        name_filter: str = "",
-        present_interactive: bool,
-    ) -> None:
-        """Render one views envelope; only an explicit request may take focus.
-
-        Non-interactive views always refresh into the transcript. Interactive
-        views (choices/form/confirmation) are snapshots, not pending durable
-        requests: an automatic connect/reconnect/activation refresh must never
-        mount one over the composer. The explicit ``/tui views`` control passes
-        ``present_interactive=True``; true approval and confirmation gates are
-        restored separately from their durable events.
-        """
         if name_filter:
             wanted = name_filter.strip().lower()
             v_list = [v for v in v_list if wanted in str(v.get("name", "")).lower() or wanted in str(v.get("title", "")).lower()]
@@ -1295,8 +1275,6 @@ class KernelTuiApp:
         for v in v_list:
             vtype = v.get("view_type")
             if vtype in ("choices", "form", "confirmation"):
-                if not present_interactive:
-                    continue
                 # The overlay carries the revision of this very envelope, so
                 # the action it dispatches can never be relabelled later.
                 if vtype == "choices":
@@ -1403,6 +1381,10 @@ class KernelTuiApp:
 
     def _render_frame(self) -> None:
         width = self.terminal.width
+        # One status row for every branch, styled only when it has real text:
+        # an empty reverse-video row would paint a blank band, not a quiet idle.
+        status_text = f"\x1b[7m{self.status_line}\x1b[0m" if self.status_line else ""
+        status_rows = (status_text,) if status_text else ()
         if self.pending_approval is not None:
             approval = self.pending_approval
             arguments = json.dumps(json_safe(approval.get("arguments")), ensure_ascii=False, allow_nan=False)
@@ -1412,18 +1394,15 @@ class KernelTuiApp:
                 f"  args: {_safe(arguments)[:_WRAP_WIDTH]}",
                 "  [a] allow once    [d] deny",
             ]
-            status_row = f"\x1b[7m[{self.session_id}] {self.status_line}\x1b[0m"
-            frame = TuiFrame(transcript_rows=(), chrome_rows=(*rows, status_row), cursor=None)
+            frame = TuiFrame(transcript_rows=(), chrome_rows=(*rows, *status_rows), cursor=None)
             self.terminal.paint_frame(frame)
         elif self.active_overlay is not None:
             overlay_rows = self.active_overlay.render_rows(width)
-            status_row = f"\x1b[7m[{self.session_id}] {self.status_line}\x1b[0m"
-            frame = TuiFrame(transcript_rows=(), chrome_rows=(*overlay_rows, status_row), cursor=None)
+            frame = TuiFrame(transcript_rows=(), chrome_rows=(*overlay_rows, *status_rows), cursor=None)
             self.terminal.paint_frame(frame)
         else:
             self.composer.set_width(width)
-            status_row = f"\x1b[7m[{self.session_id}] {self.status_line}\x1b[0m"
-            composer_rows = self.composer.render(status=status_row)
+            composer_rows = self.composer.render(status=status_text)
             cursor = self.composer.cursor_position
             frame = TuiFrame(transcript_rows=(), chrome_rows=tuple(composer_rows), cursor=cursor)
             self.terminal.paint_frame(frame)

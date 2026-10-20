@@ -51,8 +51,11 @@ Notable changes to the VoidCode runtime, grouped by milestone.
   the supervisor's internal `serve` flags stay hidden. Help exits 0 without reading config, state,
   or a host.
 
+### TUI quiet startup: no automatic views, no idle hashes
+- Startup, connect, reconnect, session switch, and activation never fetch or display optional plugin views. `/tui views [name]` (for example `/tui views goal.details`) fetches one revision-bound envelope: passive content renders inline and borderless, a form/choices/confirmation renders as a framed dialog.
+- Idle chrome carries no session/revision/request hashes and no Attached/Created banners; explicit `/status`, `/show`, `/session_status`, and `/tui sessions` keep diagnostics and ids. Committed text wraps to terminal cell width without dropping long output; live input/dialog geometry remains bounded. Passive field values wrap rather than ellipsize (deliberate plugin-level previews/limits unchanged). No SDK, protocol, or plugin change.
+
 ### TUI views and command results
-- Connect, reconnect, and capability activation still refetch the catalog and views together for revision binding; non-interactive views refresh, but choices/forms/view-confirmations no longer take focus automatically. `/tui views` remains the explicit presentation path, and durable approval/confirmation gates are unchanged.
 - Core `help` and `status` now return human `CommandResult.output` (structured `data` unchanged). The TUI renders core read-only receipts and plugin `kernel.command_completed` results through one formatter: multi-line output is preserved (no literal `\x0a`), data-only receipts fall back to JSON without dropping `{}` or nested falsy values, and a real completion clears the stale `Dispatching...` status without overwriting a pending gate or fenced state. Plugin and run/resume results stay event-projected, so no row is rendered twice.
 - No SDK field, wire protocol, or plugin contract change.
 

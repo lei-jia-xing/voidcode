@@ -111,7 +111,7 @@ Every client dispatches commands from the admitted catalog — the kernel's rese
 
 The TUI also has client-local controls that are not admitted commands: `/tui help`, `/tui sessions`, `/tui session <id>`, `/tui new`, `/tui views`, `/tui cancel`, `/tui quit`.
 
-On connect, reconnect, and capability activation, the TUI refetches the catalog and views together for revision binding. Non-interactive views refresh into the transcript, but plugin forms/choices/view-confirmations open only through the explicit `/tui views` control; approval and confirmation gates remain event-projected. `/help` is the kernel's core command and `/tui help` lists terminal controls. Core read-only results and plugin command results share one multi-line formatter, and a completed command clears the transient `Dispatching...` status.
+The TUI opens on a quiet composer: no plugin views load until requested. Goal, provider, and model details stay behind their on-demand commands (`/goal`, `/providers`, `/model`), and `/tui views [name]` (for example `/tui views goal.details`) renders passive views inline while a form, choices, or confirmation opens as a framed dialog. The status line shows meaningful progress, errors, and gates — never session hashes — and explicit `/status`, `/show`, `/session_status`, and `/tui sessions` keep diagnostics.
 
 ## Architecture
 

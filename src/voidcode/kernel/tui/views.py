@@ -50,8 +50,7 @@ def render_notice(data: Mapping[str, Any], width: int) -> list[str]:
     }
     color, prefix = style_map.get(level, ("blue", "ℹ Notice"))
     content = Text.assemble((f"{prefix}: ", f"bold {color}"), (message, ""))
-    panel = Panel(content, border_style=color, expand=True)
-    return render_lines(panel, width)
+    return render_lines(content, width)
 
 
 def render_markdown(data: Mapping[str, Any], width: int) -> list[str]:
@@ -62,22 +61,26 @@ def render_markdown(data: Mapping[str, Any], width: int) -> list[str]:
     """
     content = escape_terminal_controls(str(data.get("content", "")), preserve_newlines=True, preserve_tabs=True)
     document = Markdown(content)
-    panel = Panel(document, border_style="dim", expand=True)
-    return render_lines(panel, width)
+    return render_lines(document, width)
 
 
 def render_fields(data: Mapping[str, Any], width: int) -> list[str]:
     rows = data.get("rows", [])
-    table = Table(show_header=False, box=None, padding=(0, 2), expand=True)
+    table = Table(show_header=False, box=None, padding=(0, 2), expand=False)
     table.add_column("Key", style="bold cyan", no_wrap=True)
-    table.add_column("Value", style="white")
+    table.add_column("Value", style="white", overflow="fold")
     for row in rows:
         if isinstance(row, dict):
-            table.add_row(str(row.get("label", "")), str(row.get("value", "")))
+            label, value = row.get("label", ""), row.get("value", "")
         elif hasattr(row, "label") and hasattr(row, "value"):
-            table.add_row(str(row.label), str(row.value))
-    panel = Panel(table, title="Fields", border_style="dim", expand=True)
-    return render_lines(panel, width)
+            label, value = row.label, row.value
+        else:
+            continue
+        table.add_row(
+            str(label),
+            str(value),
+        )
+    return render_lines(table, width)
 
 
 def render_diff(data: Mapping[str, Any], width: int) -> list[str]:
@@ -94,26 +97,26 @@ def render_diff(data: Mapping[str, Any], width: int) -> list[str]:
         )
     )
     diff_text = Text()
+    heading = f"Diff: {escape_terminal_controls(str(path))}" if path else "Diff"
+    diff_text.append(heading, style="bold")
     for line in diff_lines:
+        diff_text.append("\n")
         if line.startswith("+") and not line.startswith("+++"):
-            diff_text.append(line + "\n", style="green")
+            diff_text.append(line, style="green")
         elif line.startswith("-") and not line.startswith("---"):
-            diff_text.append(line + "\n", style="red")
+            diff_text.append(line, style="red")
         elif line.startswith("@@"):
-            diff_text.append(line + "\n", style="cyan")
+            diff_text.append(line, style="cyan")
         else:
-            diff_text.append(line + "\n", style="dim")
-    title = f"Diff: {path}" if path else "Diff"
-    panel = Panel(diff_text, title=title, border_style="dim", expand=True)
-    return render_lines(panel, width)
+            diff_text.append(line, style="dim")
+    return render_lines(diff_text, width)
 
 
 def render_status(data: Mapping[str, Any], width: int) -> list[str]:
     label = str(data.get("label", "Status"))
     value = str(data.get("value", ""))
     text = Text.assemble(("● ", "bold green"), (f"{label}: ", "bold"), (value, "white"))
-    panel = Panel(text, border_style="green", expand=True)
-    return render_lines(panel, width)
+    return render_lines(text, width)
 
 
 class InteractiveChoices:

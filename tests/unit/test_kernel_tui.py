@@ -22,6 +22,21 @@ def test_unsupported_view_raises_error() -> None:
         render_plugin_view({"view_type": "invalid_magic_type", "data": {}}, 80)
 
 
+def test_fields_view_folds_long_cjk_value_without_clipping() -> None:
+    """A long unbroken CJK value survives the fields table at 48 columns."""
+    import re
+
+    from voidcode.kernel.tui.term import visible_width
+
+    value = "将遗留的导入器逐步迁移到新的" + "迁移" * 30 + "终尾"
+    rows = render_plugin_view({"view_type": "fields", "data": {"rows": [{"label": "Objective", "value": value}]}}, 48)
+    plain = [re.sub(r"\x1b\[[0-9;]*m", "", row) for row in rows]
+    assert all(visible_width(row) <= 48 for row in plain), [visible_width(row) for row in plain]
+    compact = "".join(char for row in plain for char in row if not char.isspace())
+    assert value in compact
+    assert "…" not in compact
+
+
 def test_interactive_choices_navigation_and_selection() -> None:
     choices = InteractiveChoices(
         {
@@ -419,6 +434,9 @@ class _CommandClient(_StubClient):
     def command_catalog(self) -> tuple[str, list[dict[str, object]]]:
         return "rev-1", list(self.catalog)
 
+    def list_sessions(self, limit: int = 20) -> list[dict[str, object]]:
+        return [{"session_id": "s1", "status": "idle", "turn": 0}]
+
     def views(self, session_id: str, *, client_capabilities: str = "") -> tuple[str, list[dict[str, object]]]:
         return "rev-1", list(self.view_list)
 
@@ -459,7 +477,7 @@ def _drain_until(app: Any, terminal: Any, marker: str, *, timeout: float = 5.0) 
     raise AssertionError(f"settled row never appeared: {marker!r} in {terminal.committed!r}")
 
 
-def _refresh_views(app: Any, *, timeout: float = 5.0) -> None:
+def _refresh_connection(app: Any, *, timeout: float = 5.0) -> None:
     """Run one real automatic reconnect refresh and wait for it to apply."""
     import time
 
@@ -584,8 +602,8 @@ def test_real_503_handlers_keep_both_gates_then_decided_facts_close_each_once() 
     assert list(app.queued_confirmations) == []
 
 
-def test_automatic_view_refresh_renders_passive_views_without_mounting_form() -> None:
-    """A reconnect refreshes views together but only an explicit request takes focus."""
+def test_automatic_refresh_is_silent_until_views_are_explicitly_requested() -> None:
+    """Reconnect refreshes only the catalog/status; optional views stay on demand."""
     from voidcode.kernel.tui.terminal_app import KernelTuiApp
     from voidcode.kernel.tui.views import InteractiveForm
 
@@ -609,24 +627,30 @@ def test_automatic_view_refresh_renders_passive_views_without_mounting_form() ->
     terminal = _StubTerminal()
     app = KernelTuiApp(client, session_id="s1", terminal=terminal)
 
-    _refresh_views(app)
+    _refresh_connection(app)
     app._render_frame()
     assert app.active_overlay is None
-    assert any("No active goal" in row for row in terminal.committed)
-    assert not any("Objective" in row for row in terminal.frames[-1]), terminal.frames[-1]
+    assert not any("No active goal" in row for row in terminal.committed)
     app._handle_composer_key(Key("x", text="x"))
     assert app.composer.value == "x"
 
     app._show_views()
     app._render_frame()
     assert isinstance(app.active_overlay, InteractiveForm)
+    assert any("No active goal" in row for row in terminal.committed)
     assert any("Objective" in row for row in terminal.frames[-1]), terminal.frames[-1]
 
 
-def test_activation_refresh_does_not_mount_a_form() -> None:
-    """Activation is automatic too: catalog+views refresh, but no form steals focus."""
+def test_activation_refresh_is_silent_for_optional_views() -> None:
+    """Activation refreshes the catalog only: no passive row, no form, no revision id."""
     from voidcode.kernel.tui.terminal_app import KernelTuiApp
 
+    status_view = {
+        "name": "goal",
+        "title": "Goal",
+        "view_type": "status",
+        "data": {"label": "Goal", "value": "No active goal"},
+    }
     form_view = {
         "name": "goal.form",
         "title": "Set Goal",
@@ -637,7 +661,7 @@ def test_activation_refresh_does_not_mount_a_form() -> None:
             "initial_values": {},
         },
     }
-    client = _CommandClient(view_list=[form_view])
+    client = _CommandClient(view_list=[status_view, form_view])
     terminal = _StubTerminal()
     app = KernelTuiApp(client, session_id="s1", terminal=terminal)
 
@@ -645,7 +669,29 @@ def test_activation_refresh_does_not_mount_a_form() -> None:
     app._handle_single_event(_event(1, "kernel.activation_committed", to_revision_id="rev-2"), rows)
     app._render_frame()
     assert app.active_overlay is None
+    assert not any("No active goal" in row for row in rows)
+    assert not any("rev-2" in row for row in rows), rows
     assert not any("Objective" in row for row in terminal.frames[-1]), terminal.frames[-1]
+
+
+def test_idle_chrome_omits_session_hash_but_explicit_sessions_keep_it() -> None:
+    """Routine attach passes a truly empty status; ids stay in explicit diagnostics."""
+    from voidcode.kernel.tui.terminal_app import KernelTuiApp
+
+    client = _CommandClient()
+    terminal = _StubTerminal()
+    app = KernelTuiApp(client, terminal=terminal)
+
+    app._init_session()
+    assert app.session_id == "s1"
+    assert app.status_line == ""
+    app._render_frame()
+    frame_text = "\n".join(terminal.frames[-1])
+    assert "s1" not in frame_text
+    assert "\x1b[7m\x1b[0m" not in frame_text
+
+    app._show_sessions()
+    assert any("s1" in row for row in terminal.committed), terminal.committed
 
 
 def test_durable_gates_survive_automatic_view_refresh() -> None:
@@ -669,7 +715,7 @@ def test_durable_gates_survive_automatic_view_refresh() -> None:
         rows,
     )
     assert app.pending_approval is not None and app.pending_approval["request_id"] == "appr-1"
-    _refresh_views(app)
+    _refresh_connection(app)
     assert app.pending_approval is not None and app.pending_approval["request_id"] == "appr-1"
     app._render_frame()
     assert any("Tool approval required" in row for row in terminal.frames[-1]), terminal.frames[-1]
@@ -689,7 +735,7 @@ def test_durable_gates_survive_automatic_view_refresh() -> None:
         rows,
     )
     assert isinstance(app.active_overlay, InteractiveConfirmation)
-    _refresh_views(app)
+    _refresh_connection(app)
     assert isinstance(app.active_overlay, InteractiveConfirmation)
     app._render_frame()
     assert any("Apply goal?" in row for row in terminal.frames[-1]), terminal.frames[-1]
@@ -756,6 +802,39 @@ def test_core_data_receipt_preserves_empty_mapping_and_falsy_values() -> None:
     for expected in ('"empty": {}', '"turn": 0', '"ok": false', '"none": null'):
         assert expected in text, (expected, text)
     assert app.status_line == "/show: ok"
+
+
+def test_long_settled_command_result_wraps_without_losing_content() -> None:
+    """A long ANSI/CJK/newline command result reaches scrollback whole at 48 columns."""
+    import re
+    import tempfile
+
+    from voidcode.kernel.tui.term import Terminal, visible_width
+    from voidcode.kernel.tui.terminal_app import KernelTuiApp
+
+    payload = "长" * 60 + "\nTAIL-END"
+    with tempfile.TemporaryFile() as capture:
+        terminal = Terminal(output_fd=capture.fileno(), is_tty=False, size=(48, 30), color_system=None)
+        app = KernelTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
+        app._stream_ready = True
+        app.event_queue.put(
+            {
+                "kind": "event",
+                "event": _event(1, "kernel.command_completed", name="providers", result={"status": "ok", "output": payload}),
+                "session_id": "s1",
+                "generation": 0,
+            }
+        )
+        app._drain_events()
+        terminal.close()
+        capture.seek(0)
+        raw = capture.read().decode("utf-8")
+
+    plain_rows = [re.sub(r"\x1b\[[0-9;]*m", "", row) for row in raw.splitlines()]
+    assert all(visible_width(row) <= 48 for row in plain_rows), [visible_width(row) for row in plain_rows]
+    settled = "".join(row.rstrip() for row in plain_rows)
+    assert settled.count("长") == 60
+    assert "TAIL-END" in settled
 
 
 def test_plugin_command_event_renders_multiple_lines_with_error_precedence() -> None:

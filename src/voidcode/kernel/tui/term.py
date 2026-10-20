@@ -782,9 +782,10 @@ class Terminal:
     def commit_rows(self, rows: Sequence[str]) -> None:
         """Write finalized rows into the native scrollback, exactly once.
 
-        Rows are clamped to the terminal width, written top-down, and never
-        rewritten. The live region is erased first so the scroll a full screen
-        triggers can only push committed rows.
+        Long rows are ANSI-aware wrapped to the terminal width before writing,
+        so a settled command/model/error line can never lose its tail. Rows are
+        written top-down and never rewritten. The live region is erased first so
+        the scroll a full screen triggers can only push committed rows.
         """
         if self._closed:
             return
@@ -792,11 +793,14 @@ class Terminal:
         if not rows:
             return
         if not self._is_tty:
-            self._emit("".join(row + "\n" for row in (clamp_row(row, self.width) for row in rows)))
+            row_width = max(1, self.width)
+            rows = [part for row in rows for part in wrap_row(row, row_width)]
+            self._emit("".join(row + "\n" for row in (clamp_row(row, row_width) for row in rows)))
             return
         if self._geometry_stale():
             self._reset_live()
         row_width = self._frame_row_width()
+        rows = [part for row in rows for part in wrap_row(row, row_width)]
         parts = [self._paint_begin(), self._cursor_to_live_origin()]
         if self._painted:
             parts.append(ERASE_BELOW)
