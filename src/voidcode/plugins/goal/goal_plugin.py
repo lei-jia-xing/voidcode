@@ -1798,13 +1798,13 @@ def prepare_goal_deactivation(
 ) -> Mapping[str, object]:
     """Pure deactivation transform: close the live window at the authentic tip and pause the goal.
 
-    The kernel runs this in the runtime that still holds this schema, before the owner's
+    The core runs this in the runtime that still holds this schema, before the owner's
     registrations are dropped, so there is no service, lease, store or clock to consult: the
     paused copy is derived from the state alone and keeps the identity, objective, lifetime
     counters, budgets and `updated_at` a disable must not rewrite. Closing the window at the
     supplied tip stops usage attribution, and pausing keeps the goal out of context and out of
     budget re-arming; only an explicit `goal.resume` re-opens a window and re-arms the
-    allowance with the kernel budget staged in the same commit.
+    allowance with the core budget staged in the same commit.
 
     The scope and tip contract is enforced before anything is decoded: session scope needs the
     owning session's non-negative integer tip, workspace scope needs none. A tip that would

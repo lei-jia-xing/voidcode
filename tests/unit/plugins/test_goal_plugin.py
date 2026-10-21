@@ -364,7 +364,7 @@ def test_update_goal_tool_complete(tmp_path: Path) -> None:
     updated, _ = services.get_state("session")
     assert updated is not None
     assert updated["status"] == "complete"
-    # Completion releases the kernel budget constraint for this owner.
+    # Completion releases the core budget constraint for this owner.
     assert services.budget is None
 
 

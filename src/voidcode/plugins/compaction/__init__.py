@@ -1,4 +1,4 @@
-"""Compaction plugin package: window projection over the kernel's verified seam."""
+"""Compaction plugin package: window projection over the core's verified seam."""
 
 from .compaction_plugin import (
     CONTEXT_COMPACTED_EVENT,

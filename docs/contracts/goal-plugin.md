@@ -2,14 +2,14 @@
 
 Authoritative specification for the official VoidCode Goal Plugin (`src/voidcode/plugins/goal/`).
 
-The Goal Plugin implements autonomous pursuit of user objectives, windowed token accounting, hard kernel budget enforcement, 3-turn blocked-audit discipline, durable continuations, and declarative UI presentations exclusively through the public VoidCode SDK.
+The Goal Plugin implements autonomous pursuit of user objectives, windowed token accounting, hard core budget enforcement, 3-turn blocked-audit discipline, durable continuations, and declarative UI presentations exclusively through the public VoidCode SDK.
 
 ---
 
 ## 1. Boundary & Governance
 
-- **Zero Privileged Coupling**: The plugin interacts with the runtime solely through `PluginServices`, `ToolContext`, `CommandInvocation`, and typed fact observers. It makes zero imports from `kernel/`, `runtime/`, `core/`, or `storage/` and owns no internal SQLite tables.
-- **State Partitioning**: Durable state is governed by the kernel under namespace `goal`, scope `session`, and `schema_version = 1`. All state updates are atomic CAS operations via `services.replace_state(expected_version)`.
+- **Zero Privileged Coupling**: The plugin interacts with the runtime solely through `PluginServices`, `ToolContext`, `CommandInvocation`, and typed fact observers. It makes zero imports from `core/`, `runtime/`, or `storage/` and owns no internal SQLite tables.
+- **State Partitioning**: Durable state is governed by the core under namespace `goal`, scope `session`, and `schema_version = 1`. All state updates are atomic CAS operations via `services.replace_state(expected_version)`.
 - **Registration**: the `Plugin` returned by `create_plugin` declares tools/commands/views plus `observed_facts=("usage", "invocation_finished", "run_finished")`; definitions live next to the handlers in `goal_plugin.py`.
 
 ---
@@ -29,7 +29,7 @@ GoalState:
     token_budget: int | None          # Explicit positive integer budget or None (unbounded)
     tokens_used: int | None           # Lifetime cumulative tokens consumed (nullable when unreported)
     window_tokens_used: int | None    # Current allowance-window spend (None when unreported in this window)
-    window_allowance: int | None      # Kernel-enforced allowance for the current window (None when unbounded)
+    window_allowance: int | None      # Core-enforced allowance for the current window (None when unbounded)
     input_tokens: int | None          # Cumulative input tokens (nullable)
     output_tokens: int | None         # Cumulative output tokens (nullable)
     cache_read_tokens: int | None     # Cumulative cache read tokens (nullable)
@@ -59,8 +59,8 @@ Usage is tracked by discrete sequence intervals: `(start_sequence, end_sequence]
 - Dispatches issued before goal creation or during a pause are strictly excluded.
 - In-flight dispatches arriving after a pause are attributed to the closed window in which they were dispatched.
 
-### Hard Kernel Budget Constraint
-- When active and budgeted, the plugin stages a kernel constraint:
+### Hard Core Budget Constraint
+- When active and budgeted, the plugin stages a core constraint:
   `services.set_budget(since_sequence=window_start, max_total_tokens=window_allowance)`
 - Only **create** and **resume** open a new window. An explicit budget edit on a live goal
   keeps the current open window and its baseline, and re-stages the constraint for that same
@@ -73,13 +73,13 @@ Usage is tracked by discrete sequence intervals: `(start_sequence, end_sequence]
   while `tokens_used` remains the lifetime cumulative:
   - When window usage reaches the allowance → `budget-limited`.
   - When the window's billable metric is unreported (`window_tokens_used is None`) → `usage-limited`.
-  - In both cases the plugin cancels **its own** automatic queue and **retains** the kernel
+  - In both cases the plugin cancels **its own** automatic queue and **retains** the core
     budget constraint; it never uncaps an in-flight user budget.
   - Late bills for a **closed** window: while the goal is active they tighten the current
     allowance against the unchanged baseline; while paused they update lifetime counters
     only (no re-arm, no global block).
 - Pause policy (`goal.pause`, and `user_stop` from a run) closes the open window at the
-  actual stop sequence, clears the owner's kernel constraint and cancels its queue.
+  actual stop sequence, clears the owner's core constraint and cancels its queue.
   `goal.pause` is a valid escape from `active`, `blocked`, `usage-limited` and
   `budget-limited`; an unbudgeted `goal.resume` also clears any stale constraint.
 - Truthful metric accounting:
@@ -147,7 +147,7 @@ The model-facing text is the legacy goal prompt, migrated verbatim from `runtime
   are the legacy `tools/goal.py` text, declared once in `goal_plugin.py`.
 - Delivery role: the prompt is contributed in the **legacy user role** —
   `ContextContribution(content=..., role="user")` — so the provider receives the exact text as a
-  user message and the kernel never re-wraps it as `[goal context]` system prose. That matches
+  user message and the core never re-wraps it as `[goal context]` system prose. That matches
   the legacy delivery, where the TUI submitted `continuation_prompt` as the user's prompt and
   the runtime merged `budget_limit_prompt` into the request prompt as steering. The durable
   `pursue_goal` continuation stays an internal system trigger; the text itself always travels
@@ -182,8 +182,8 @@ The model-facing text is the legacy goal prompt, migrated verbatim from `runtime
 
 ## 6b. Owner deactivation (disable / re-enable)
 
-Disabling the plugin is a capability activation (`kernel.reload` with the owner disabled in the
-workspace config). The kernel runs the plugin's pure `Plugin.prepare_deactivate` transform in the
+Disabling the plugin is a capability activation (`core.reload` with the owner disabled in the
+workspace config). The core runs the plugin's pure `Plugin.prepare_deactivate` transform in the
 **old** runtime — the one that still holds this schema — and writes the returned copy in the same
 transaction that cancels the owner's queued claims and clears its session budgets. The transform
 gets no service, lease, store or clock, so every field in the copy is derived from the payload.
@@ -207,10 +207,11 @@ gets no service, lease, store or clock, so every field in the copy is derived fr
 - Declares no `state_schema_version` bump and no `migrate_state`: the paused copy is the same
   version's shape, so a disable/re-enable cycle needs no identity migration.
 
-Consequences after re-enable: a `paused` goal contributes no context (`goal_context` returns
-`None`), the observer neither re-arms attribution nor stages a budget for a paused goal, and the
-kernel never replays cancelled continuations. Only the explicit `goal.resume` re-opens a window
-and stages the kernel constraint for it in the same commit, so no unbilled window exists after a
+Consequences after re-enable: a `paused` goal contributes no context
+(`goal_context` returns `None`), the observer neither re-arms attribution nor
+stages a budget for a paused goal, and the core never replays cancelled
+continuations. Only the explicit `goal.resume` re-opens a window and stages the
+core constraint for it in the same commit, so no unbilled window exists after a
 re-enable. Identity, creation time, lifetime usage and budget survive the whole cycle.
 
 ## 6c. Verified evidence
@@ -239,14 +240,14 @@ Exercised on the current tree (`goal_plugin.py a1c98c41…`, unit tests
     `last_event_sequence`, leaves the durable row untouched, contacts no provider, and refuses a
     workspace-scope tip, a missing session tip and a tip behind the window start without writing
     anything.
-  - `test_same_session_disable_and_reenable_keeps_paused_goal`: a real `kernel.reload` with the
+  - `test_same_session_disable_and_reenable_keeps_paused_goal`: a real `core.reload` with the
     owner disabled on the SAME session reports `deactivated_owners == ('goal',)`, and the durable
     row is the paused copy with the window closed at the session's own event tip, identity,
     `created_at`, `updated_at`, budget and counters preserved, and the owner budget cleared.
     Disabled, the goal command is unknown and ordinary chat completes with exactly one billed
     turn carrying no goal context and charging the goal nothing. Re-enabled, the row is still
     paused and nothing dispatches until `goal.resume`, which arms the cap in its own commit.
-    The loopback provider reads the kernel's durable owner budget while each request is still in
+    counters charge that new window only (25, never the ordinary 18), identity, `created_at` and
     flight, before any byte of the reply is written, and observes none for the ordinary turn
     (disabled owner) and exactly the resume-armed cap for the first resumed dispatch
     (`since_sequence` = the new window baseline, `max_total_tokens` = 10). That dispatch bills 25
@@ -256,15 +257,15 @@ Exercised on the current tree (`goal_plugin.py a1c98c41…`, unit tests
     the concluding provider turn an uncapped run would take.
 - `ruff check` and `ty check` pass.
 
-P2 records, made against the P2 frozen stack (`goal_plugin.py 4ee8a848…`,
-with `kernel/engine.py 95e72163…`,
-`kernel/storage/store.py 8947131f…`, SDK directory input `b15172ef…`):
+P2 records, made against the P2 frozen stack (`goal_plugin.py 4ee8a848…`, with
+`core/engine.py 95e72163…`, `core/storage/store.py 8947131f…`, SDK directory
+input `b15172ef…`):
 
 - 27 behaviour cases passed (19 unit + 8 integration).
 - Live `deepseek/deepseek-flash` idle `goal.set` run (no user prompt, no manual drain): the
   goal context drove read `17 25` → write `42` → read back → explicit complete; goal
   `complete`, tokens 7331, measured elapsed 6.356 s, `cost_usd` remained `None`; a fresh
-  kernel over the same state showed the identical complete goal with no further dispatch.
+  core over the same state showed the identical complete goal with no further dispatch.
 - Startup acceptance: with the plugin config-disabled, ordinary base chat completed and the
   provider request carried no goal context; restoring the exact config reopened the original
   session with the goal intact, no unintended provider work and no pending continuation.

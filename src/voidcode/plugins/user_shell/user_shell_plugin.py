@@ -2,9 +2,9 @@
 
 Ports the legacy ``user_shell`` escape (``src/voidcode/runtime/user_shell.py``: one-bang parse,
 login-shell execution, 3600 s timeout, middle-truncated 10k output, the
-``<user_shell_command>`` record) onto the kernel's command contract:
+``<user_shell_command>`` record) onto the core's command contract:
 
-- the command declares the client syntax ``!``; the kernel itself never parses
+- the command declares the client syntax ``!``; the core itself never parses
   the prefix, clients route it from the command catalog;
 - it follows the same effects/read-only rules as every command: EXECUTE is
   denied under a read-only session or plan overlay, and works otherwise;

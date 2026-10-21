@@ -14,7 +14,7 @@ from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess
 
 from .apply_patch import execute_patch
-from .edits_hooks import format_after_write, post_edit_diagnostics
+from .edits_hooks import post_edit_diagnostics
 from .guards import CharProvenanceTracker, enforce_read_before_write, enforce_seen_lines
 from .repair import (
     ToolDiagnosticError,
@@ -33,15 +33,12 @@ class EditResultBody:
     deletions: int
     match_count: int
     diff: str
-    formatter: Mapping[str, object] | None = None
     diagnostics: tuple[Mapping[str, object], ...] = ()
     applied: int | None = None
     edits: tuple[tuple[int, EditResultBody], ...] | None = None
     content_hash: str | None = None
 
     def __post_init__(self) -> None:
-        if self.formatter is not None:
-            object.__setattr__(self, "formatter", own_json_object(self.formatter))
         object.__setattr__(self, "diagnostics", tuple(own_json_object(item) for item in self.diagnostics))
 
     def as_payload(self) -> dict[str, object]:
@@ -58,8 +55,6 @@ class EditResultBody:
             payload["edits"] = [{"index": idx, "result": res.as_payload()} for idx, res in self.edits]
         if self.content_hash is not None:
             payload["content_hash"] = self.content_hash
-        if self.formatter is not None:
-            payload["formatter"] = json_wire_object(self.formatter)
         if self.diagnostics:
             payload["diagnostics"] = [json_wire_object(item) for item in self.diagnostics]
         return payload
@@ -390,8 +385,8 @@ class EditTool:
         path_argument_keys=("path",),
     )
 
-    def __init__(self, *, hooks_config: object | None = None) -> None:
-        self._hooks_config = hooks_config
+    def __init__(self) -> None:
+        pass
 
     def invoke(
         self,
@@ -421,7 +416,6 @@ class EditTool:
             return execute_patch(
                 call.arguments,
                 context=context,
-                hooks_config=self._hooks_config,
                 tool_name=self.definition.name,
             )
 
@@ -575,16 +569,6 @@ class EditTool:
         # All preflight edits passed in memory! Now write once to disk.
         final_text = _convert_line_endings(tracker.content, ending)
         candidate.write_bytes(final_text.encode("utf-8"))
-
-        formatter: Mapping[str, object] | None = None
-        diagnostics: tuple[Mapping[str, object], ...] = ()
-        if self._hooks_config is not None:
-            formatter, diagnostics = format_after_write(
-                context=context,
-                path=candidate,
-                previous=content_before,
-                content=final_text,
-            )
         final_disk_bytes = candidate.read_bytes()
         final_disk_hash = hashlib.sha256(final_disk_bytes).hexdigest()
         final_content = read_utf8_text(candidate)
@@ -595,8 +579,6 @@ class EditTool:
         )
 
         content = f"Applied {applied} edits to {display_path}"
-        if diagnostics:
-            content += f" Formatter warning: {diagnostics[0]['message']}"
 
         lsp_diagnostic = post_edit_diagnostics(
             context=context,
@@ -613,8 +595,7 @@ class EditTool:
                 deletions=deletions,
                 match_count=applied,
                 diff=diff,
-                formatter=formatter,
-                diagnostics=tuple([*diagnostics, *lsp_diagnostics]),
+                diagnostics=tuple(lsp_diagnostics),
                 applied=applied,
                 edits=tuple(details),
                 content_hash=final_disk_hash,
@@ -710,15 +691,6 @@ class EditTool:
         new_content = _convert_line_endings(new_content, ending)
 
         candidate.write_bytes(new_content.encode("utf-8"))
-        formatter: Mapping[str, object] | None = None
-        diagnostics: tuple[Mapping[str, object], ...] = ()
-        if self._hooks_config is not None:
-            formatter, diagnostics = format_after_write(
-                context=context,
-                path=candidate,
-                previous=content_old,
-                content=new_content,
-            )
         final_disk_bytes = candidate.read_bytes()
         final_disk_hash = hashlib.sha256(final_disk_bytes).hexdigest()
         final_content = read_utf8_text(candidate)
@@ -731,8 +703,6 @@ class EditTool:
         output = "Edit applied successfully."
         if match_count > 1:
             output += f" ({match_count} occurrences replaced)"
-        if diagnostics:
-            output += f" Formatter warning: {diagnostics[0]['message']}"
 
         lsp_diagnostic = post_edit_diagnostics(
             context=context,
@@ -749,8 +719,7 @@ class EditTool:
                 deletions=deletions,
                 match_count=match_count,
                 diff=diff,
-                formatter=formatter,
-                diagnostics=tuple([*diagnostics, *lsp_diagnostics]),
+                diagnostics=tuple(lsp_diagnostics),
                 content_hash=final_disk_hash,
             ),
         )

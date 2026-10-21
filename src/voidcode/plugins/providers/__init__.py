@@ -2,7 +2,7 @@
 
 Owns the provider table, thinking/pricing/API-routing rules, model catalog
 datasets, tokenizer routing, the native wire adapters, provider dispatch, and the
-read-only ``providers``/``model`` information panels. The kernel selects a
+read-only ``providers``/``model`` information panels. The core selects a
 registered provider name and never learns which vendor policy answered it.
 """
 

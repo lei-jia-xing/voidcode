@@ -36,14 +36,14 @@ _EVENTS: tuple[EventView, ...] = (
         event_type="kernel.tool_completed",
         run_id="run",
         revision_id="rev",
-        source="kernel",
-        actor="kernel",
+        source="core",
+        actor="core",
         payload={
             "call": encode_tool_call(ToolCall("read", {"path": "a"}, "call-1")),
             "result": encode_tool_result(ToolSuccess("read", output=TextOutput("contents of a"))),
         },
     ),
-    EventView(sequence=4, event_type="kernel.run_completed", run_id="run", revision_id="rev", source="kernel", actor="kernel", payload={}),
+    EventView(sequence=4, event_type="kernel.run_completed", run_id="run", revision_id="rev", source="core", actor="core", payload={}),
 )
 
 _WINDOW_EVENT = EventView(
@@ -51,8 +51,8 @@ _WINDOW_EVENT = EventView(
     event_type="kernel.provider_intent",
     run_id="run",
     revision_id="rev",
-    source="kernel",
-    actor="kernel",
+    source="core",
+    actor="core",
     payload={
         "request_window": RequestWindow(
             message_characters=42,

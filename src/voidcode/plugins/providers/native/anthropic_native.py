@@ -346,7 +346,7 @@ class AnthropicMessagesProvider:
         Integration point for the assembly layer: attachments ride on
         ``ProviderMessage.metadata["attachments"]`` as mappings carrying ``mime``
         and a base64 ``data_uri`` (``AttachmentOutput`` in ``voidcode.sdk.tools``).
-        Nothing in the kernel sets that key yet, so this yields nothing until the
+        Nothing in the core sets that key yet, so this yields nothing until the
         assembly layer publishes them; the Messages API takes the base64 payload
         and the media type as separate fields, so the data URI is split here.
         """

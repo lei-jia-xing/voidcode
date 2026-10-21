@@ -113,7 +113,7 @@ def _verify_installed_server(wheel_path: Path) -> None:
         workspace.mkdir()
         state_dir = root / "state"
         state_dir.mkdir()
-        # The kernel requires an explicit workspace configuration; this probe only needs the
+        # The core requires an explicit workspace configuration; this probe only needs the
         # transport to boot and serve the packaged web bundle.
         (workspace / "voidcode.json").write_text('{"schema_version": 1}', encoding="utf-8")
         venv.EnvBuilder(with_pip=True).create(venv_dir)

@@ -331,7 +331,7 @@ def test_read_tool_uri_read_grants_no_coverage(tmp_path: Path) -> None:
 def test_edit_batch_after_reread_succeeds_with_ambiguous_read_hash(tmp_path: Path) -> None:
     """Fresh-base coverage: read/edit/read-new/edit works when read_hash is None.
 
-    The kernel sets read_hash=None once two versions of the path were observed,
+    The core sets read_hash=None once two versions of the path were observed,
     so the batch guard binds coverage to the SHA-256 of its own verified base
     content instead of the ambiguous context field.
     """
@@ -394,7 +394,7 @@ def test_single_edit_after_reread_binds_seen_lines_to_current_bytes(tmp_path: Pa
     """The single oldString path follows the same cycle: the guard binds to bytes on disk.
 
     Nothing passes ``current_hash`` here; the shared guard hashes the candidate itself, so the
-    kernel's ambiguous ``read_hash`` (None once two versions were observed) cannot refuse a
+    core's ambiguous ``read_hash`` (None once two versions were observed) cannot refuse a
     second edit whose current version the model just read.
     """
     plugin = create_plugin({})
@@ -669,7 +669,7 @@ def test_read_tool_documentation_renders_visible_definition_and_refuses_hidden(t
     assert hidden.output.text == hidden.error  # type: ignore[union-attr]
 
 
-def test_read_transcript_returns_readable_pages_with_a_cursor_and_reports_kernel_refusal(tmp_path: Path) -> None:
+def test_read_transcript_returns_readable_pages_with_a_cursor_and_reports_core_refusal(tmp_path: Path) -> None:
     from voidcode.sdk.services import EventView
 
     plugin = create_plugin({})
@@ -963,7 +963,7 @@ def test_apply_matched_version_and_hash_only_succeed_with_correct_bytes(tmp_path
 def test_apply_read_edit_read_edit_cycle_binds_to_current_version(tmp_path: Path) -> None:
     """The second edit of a read→edit→read→edit cycle must not refuse on stale binding.
 
-    After two versions of the path were observed the kernel's `read_hash` is None; the
+    After two versions of the path were observed the core's `read_hash` is None; the
     seen-lines guard binds to the verified expectedHash of this edit instead, so a fresh
     full read of the current content authorizes the second write.
     """

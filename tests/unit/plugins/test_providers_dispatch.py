@@ -61,8 +61,8 @@ def _request(*messages: ProviderMessage, **overrides: object) -> ProviderTurnReq
     return ProviderTurnRequest(**fields)  # type: ignore[arg-type]
 
 
-def test_flat_kernel_entries_are_mapped_into_vendor_shapes() -> None:
-    """google/copilot nest their credential under ``auth``; the kernel sends it flat."""
+def test_flat_core_entries_are_mapped_into_vendor_shapes() -> None:
+    """google/copilot nest their credential under ``auth``; the core sends it flat."""
     entries: dict[str, object] = {
         "google": {"api_key": "k", "base_url": "https://example.invalid"},
         "github-copilot": {"api_key": "t", "base_url": "https://example.invalid"},

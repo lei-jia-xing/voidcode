@@ -1,4 +1,4 @@
-"""Tool contracts shared by kernel, runtime, and plugins.
+"""Tool contracts shared by core, runtime, and plugins.
 
 Self-contained: the only internal imports are sibling SDK modules.
 """
@@ -41,7 +41,7 @@ class ToolEffect(StrEnum):
 EXTERNAL_MUTATION_EFFECTS = frozenset({ToolEffect.WRITE, ToolEffect.EXECUTE, ToolEffect.SPAWN})
 #: Effects a restrictive (read-only) stance refuses. SPAWN is not here: delegation creates no
 #: privilege by itself because a restricted owner may only spawn a child that inherits the
-#: restriction (the kernel enforces the child's stance at the spawn service).
+#: restriction (the core enforces the child's stance at the spawn service).
 RESTRICTED_DENIAL_EFFECTS = frozenset({ToolEffect.WRITE, ToolEffect.EXECUTE})
 _SESSION_COMMAND_EFFECTS = frozenset({ToolEffect.SESSION, ToolEffect.SPAWN})
 

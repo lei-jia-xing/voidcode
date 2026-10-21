@@ -1,7 +1,7 @@
 """Hooks plugin: argv pre-tool gate, post-tool note and session lifecycle hooks.
 
 The legacy ``hooks.pre_tool`` / ``hooks.post_tool`` / ``hooks.on_session_start`` /
-``hooks.on_session_end`` argv hooks, re-homed onto the kernel's gate and note contracts:
+``hooks.on_session_end`` argv hooks, re-homed onto the core's gate and note contracts:
 
 - ``pre_tool`` can only refuse: a ``cancel`` action, a non-zero exit, malformed
   stdout or a timeout denies the call, and the hook's own diagnostic is what the
@@ -20,7 +20,7 @@ Which tools a surface applies to is config-driven (``pre_tool_match`` /
 
 The remaining legacy surfaces (``session_idle``, ``turn_progress``,
 ``tool_batch_repeated``, ``approval_requested``, ``question_asked``,
-``before_compact`` and the ``background_task_*`` family) have no kernel channel
+``before_compact`` and the ``background_task_*`` family) have no core channel
 today, so no config field and no registration exists for them.
 """
 
@@ -49,7 +49,7 @@ from .hook_executor import (
 RECURSION_ENV_VAR = "VOIDCODE_RUNNING_TOOL_HOOK"
 #: Default per-command timeout, matching the legacy ``hooks.timeout_seconds`` default.
 DEFAULT_TIMEOUT_SECONDS = 30.0
-#: Bound on hook text handed back to the kernel.
+#: Bound on hook text handed back to the core.
 MAX_NOTE_CHARACTERS = 2000
 _TRUNCATION_SUFFIX = "[truncated]"
 _CONFIG_KEYS: frozenset[str] = frozenset(
@@ -62,7 +62,7 @@ _CONFIG_KEYS: frozenset[str] = frozenset(
         "post_tool_match",
         "session_start",
         "session_end",
-        # The kernel injects the resolved providers map every factory receives; it is not ours.
+        # The core injects the resolved providers map every factory receives; it is not ours.
         "providers",
     }
 )

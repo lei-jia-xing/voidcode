@@ -1,13 +1,13 @@
-"""End-to-end tests for the compaction plugin on the real kernel stack.
+"""End-to-end tests for the compaction plugin on the real core stack.
 
-Drives the real kernel, plugin runtime, loopback provider and durable storage:
+Drives the real core, plugin runtime, loopback provider and durable storage:
 
 - a run whose dispatch reports enough prompt tokens makes the plugin declare a window
-  projection; the kernel verifies the boundary and measures the covered/dropped bytes itself
+  projection; the core verifies the boundary and measures the covered/dropped bytes itself
 - the next dispatch substitutes one ``[window summary by compaction; ...]`` system message for
   the covered prefix, and the covered prompt text is gone from the request
 - history is never rewritten: every committed event is still readable, in order
-- the manual ``/compact`` command projects on demand, reports the same accounting the kernel
+- the manual ``/compact`` command projects on demand, reports the same accounting the core
   holds, and a second call with nothing new to cover is a no-op
 
 The probe plugin below exists only to give the session real native tool batches (a write and a
@@ -28,8 +28,8 @@ import jsonschema
 import pytest
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.kernel.bootstrap import open_kernel
-from voidcode.kernel.engine import Kernel
+from voidcode.core.bootstrap import open_core
+from voidcode.core.engine import Core
 from voidcode.sdk.json_values import json_wire_object
 
 _COMPACTION_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "compaction"
@@ -39,7 +39,7 @@ _READ_TOOL = "probe_read"
 #: Enough text that covering it always shrinks the window, whatever the previews keep.
 _NOTES_TEXT = "".join(f"line {index}: the parser keeps allocation-free tokens\n" for index in range(60))
 _SECRET_MARKER = "SECOND-PROMPT-COVERED-SECRET"
-#: The kernel's own substitution label, exactly as the assembly seam renders it.
+#: The core's own substitution label, exactly as the assembly seam renders it.
 _SUMMARY_LABEL = re.compile(r"\[window summary by compaction; (\d+) covered events \((\d+) bytes -> (\d+) dropped\)\]\n(.*)", re.DOTALL)
 
 _PROBE_PLUGIN_SOURCE = '''"""Test-only probe plugin: one write tool and one read tool over workspace files."""
@@ -125,17 +125,17 @@ def _loopback_server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbac
         server.server_close()
 
 
-_CREATED_KERNELS: list[Kernel] = []
+_CREATED_CORES: list[Core] = []
 
 
 @pytest.fixture(autouse=True)
-def _close_created_kernels() -> Iterator[None]:
+def _close_created_cores() -> Iterator[None]:
     yield
-    while _CREATED_KERNELS:
-        _CREATED_KERNELS.pop().close()
+    while _CREATED_CORES:
+        _CREATED_CORES.pop().close()
 
 
-def _kernel(tmp_path: Path, server: OpenAILoopbackServer, *, threshold_tokens: int = 1_000) -> Kernel:
+def _core(tmp_path: Path, server: OpenAILoopbackServer, *, threshold_tokens: int = 1_000) -> Core:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     state_dir = tmp_path / "state"
@@ -170,9 +170,9 @@ def _kernel(tmp_path: Path, server: OpenAILoopbackServer, *, threshold_tokens: i
         },
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-    kernel = open_kernel(workspace, state_dir=state_dir)
-    _CREATED_KERNELS.append(kernel)
-    return kernel
+    core = open_core(workspace, state_dir=state_dir)
+    _CREATED_CORES.append(core)
+    return core
 
 
 def _tool_call(identity: str, name: str, arguments: dict[str, object]) -> dict[str, object]:
@@ -205,8 +205,8 @@ def _request_text(request: Mapping[str, object]) -> str:
     return json.dumps([dict(message) for message in _messages(request)], default=str)
 
 
-def _command(kernel: Kernel, session_id: str, name: str, arguments: dict[str, object]):
-    return kernel.invoke_command(session_id, name, arguments, expected_revision=kernel.command_catalog().revision_id)
+def _command(core: Core, session_id: str, name: str, arguments: dict[str, object]):
+    return core.invoke_command(session_id, name, arguments, expected_revision=core.command_catalog().revision_id)
 
 
 def test_a_crossed_threshold_projects_the_window_and_keeps_history(tmp_path: Path) -> None:
@@ -218,23 +218,23 @@ def test_a_crossed_threshold_projects_the_window_and_keeps_history(tmp_path: Pat
         _turn(output="third answer"),
     ]
     with _loopback_server(replies) as server:
-        kernel = _kernel(tmp_path, server)
-        session_id = kernel.create_session("sess-compaction").session_id
+        core = _core(tmp_path, server)
+        session_id = core.create_session("sess-compaction").session_id
         first_prompt = "first prompt: start the probe"
         second_prompt = f"second prompt: read the notes back {_SECRET_MARKER}"
 
-        assert kernel.run(first_prompt, session_id=session_id).status == "completed"
-        first_sequences = [event.sequence for event in kernel.events_after(session_id)]
+        assert core.run(first_prompt, session_id=session_id).status == "completed"
+        first_sequences = [event.sequence for event in core.events_after(session_id)]
 
         # The first dispatch had no projection to substitute, so nothing was summarised yet.
         assert _summary_messages(server.requests[0]) == []
         # From the second dispatch on, the plugin's projection is in force.
         assert len(_summary_messages(server.requests[1])) == 1
 
-        assert kernel.run(second_prompt, session_id=session_id).status == "completed"
+        assert core.run(second_prompt, session_id=session_id).status == "completed"
 
-        # (a) The kernel holds the projection and its measured accounting.
-        projection = kernel.store.window_projection(session_id)
+        # (a) The core holds the projection and its measured accounting.
+        projection = core.store.window_projection(session_id)
         assert projection is not None
         assert projection.owner == "compaction"
         assert projection.covered_from_sequence == first_sequences[0]
@@ -244,7 +244,7 @@ def test_a_crossed_threshold_projects_the_window_and_keeps_history(tmp_path: Pat
         assert projection.replacement.startswith("Runtime context projection:")
 
         # (b) The dispatch that followed the projection carries the substituted summary, and
-        # the covered prompt text is gone from it. The numbers are the kernel's own: the label
+        # the covered prompt text is gone from it. The numbers are the core's own: the label
         # and the replacement agree on the bytes the projection measured.
         sent = server.requests[-1]
         summaries = _summary_messages(sent)
@@ -263,7 +263,7 @@ def test_a_crossed_threshold_projects_the_window_and_keeps_history(tmp_path: Pat
         assert _NOTES_TEXT not in _request_text(sent)
 
         # (c) History is complete and ordered: the projection rewrote nothing.
-        events = kernel.events_after(session_id)
+        events = core.events_after(session_id)
         sequences = [event.sequence for event in events]
         assert sequences == list(range(sequences[0], sequences[0] + len(sequences)))
         assert sequences[: len(first_sequences)] == first_sequences
@@ -275,24 +275,24 @@ def test_a_crossed_threshold_projects_the_window_and_keeps_history(tmp_path: Pat
         assert _NOTES_TEXT.splitlines()[-1] in stored
         assert any(event.event_type == "plugin.compaction.context_compacted" for event in events)
 
-        # (d) The manual command reports the accounting the kernel holds, and no-ops after that.
-        first = _command(kernel, session_id, "compact", {})
+        # (d) The manual command reports the accounting the core holds, and no-ops after that.
+        first = _command(core, session_id, "compact", {})
         assert first.status == "ok"
         assert first.data is not None
         assert first.data["covered_bytes"] == projection.covered_bytes
         assert first.data["dropped_bytes"] == projection.dropped_bytes
-        second = _command(kernel, session_id, "compact", {})
+        second = _command(core, session_id, "compact", {})
         assert second.status == "ok"
         assert second.data is not None
         assert second.data["noop"] is True
-        assert second.data["covered_bytes"] == kernel.store.window_projection(session_id).covered_bytes
-        assert second.data["dropped_bytes"] == kernel.store.window_projection(session_id).dropped_bytes
+        assert second.data["covered_bytes"] == core.store.window_projection(session_id).covered_bytes
+        assert second.data["dropped_bytes"] == core.store.window_projection(session_id).dropped_bytes
         assert "Nothing new to compact" in (second.output or "")
-        assert kernel.store.window_projection(session_id).covered_to_sequence == projection.covered_to_sequence
+        assert core.store.window_projection(session_id).covered_to_sequence == projection.covered_to_sequence
 
         # The substitution is exact: the next dispatch renders the projection row verbatim.
-        in_force = kernel.store.window_projection(session_id)
-        assert kernel.run("third prompt: keep going", session_id=session_id).status == "completed"
+        in_force = core.store.window_projection(session_id)
+        assert core.run("third prompt: keep going", session_id=session_id).status == "completed"
         last = _summary_messages(server.requests[-1])
         assert last == [
             f"[window summary by compaction; {in_force.covered_to_sequence} covered events "
@@ -308,27 +308,27 @@ def test_manual_compact_projects_on_demand_then_noops(tmp_path: Path) -> None:
         _turn(output="second answer", prompt_tokens=10),
     ]
     with _loopback_server(replies) as server:
-        kernel = _kernel(tmp_path, server)
-        session_id = kernel.create_session("sess-manual").session_id
+        core = _core(tmp_path, server)
+        session_id = core.create_session("sess-manual").session_id
         first_prompt = "first prompt: start the probe manually"
-        assert kernel.run(first_prompt, session_id=session_id).status == "completed"
+        assert core.run(first_prompt, session_id=session_id).status == "completed"
         # Below the trigger: the automatic lane never projected anything.
-        assert kernel.store.window_projection(session_id) is None
+        assert core.store.window_projection(session_id) is None
         assert _summary_messages(server.requests[-1]) == []
 
-        projected = _command(kernel, session_id, "compact", {})
+        projected = _command(core, session_id, "compact", {})
         assert projected.status == "ok"
         assert projected.data is not None
         assert projected.data["noop"] is False
         assert projected.data["summary_kind"] == "deterministic"
-        row = kernel.store.window_projection(session_id)
+        row = core.store.window_projection(session_id)
         assert row is not None
         assert row.owner == "compaction"
         assert projected.data["covered_bytes"] == row.covered_bytes
         assert projected.data["dropped_bytes"] == row.dropped_bytes
         assert projected.data["covered_from_sequence"] == row.covered_from_sequence
 
-        noop = _command(kernel, session_id, "compact", {})
+        noop = _command(core, session_id, "compact", {})
         assert noop.status == "ok"
         assert noop.data is not None
         assert noop.data["noop"] is True
@@ -336,15 +336,15 @@ def test_manual_compact_projects_on_demand_then_noops(tmp_path: Path) -> None:
         assert noop.data["dropped_bytes"] == row.dropped_bytes
 
         # The durable state is this plugin's own bookkeeping, and it satisfies the schema the
-        # registration declares (the kernel validates owner state against exactly that contract).
-        stored, version = kernel.store.plugin_state("compaction", "session", session_id)
+        # registration declares (the core validates owner state against exactly that contract).
+        stored, version = core.store.plugin_state("compaction", "session", session_id)
         assert version >= 1
         assert isinstance(stored, Mapping)
         from voidcode.plugins.compaction.compaction_plugin import create_plugin as create_compaction_plugin
 
         state_schema = create_compaction_plugin(None).state.schema
         assert state_schema is not None
-        # Exactly how the kernel validates an owner's state copy against the declaration.
+        # Exactly how the core validates an owner's state copy against the declaration.
         jsonschema.Draft202012Validator(json_wire_object(state_schema)).validate(json_wire_object(stored))
         assert stored["schema_version"] == 1
         assert stored["cursor_sequence"] >= row.covered_to_sequence
@@ -353,10 +353,10 @@ def test_manual_compact_projects_on_demand_then_noops(tmp_path: Path) -> None:
         assert stored["last_projection"]["summary_kind"] == "deterministic"
 
         # The declared projection is what the next dispatch actually sees.
-        assert kernel.run("second prompt: ask again", session_id=session_id).status == "completed"
+        assert core.run("second prompt: ask again", session_id=session_id).status == "completed"
         summaries = _summary_messages(server.requests[-1])
         assert len(summaries) == 1
         assert f"({row.covered_bytes} bytes -> {row.dropped_bytes} dropped)]" in summaries[0]
         assert first_prompt not in [str(message.get("content", "")) for message in _messages(server.requests[-1]) if message.get("role") == "user"]
-        events = kernel.events_after(session_id)
+        events = core.events_after(session_id)
         assert any(str(event.payload.get("content", "")) == first_prompt for event in events if event.event_type == "kernel.user_message")

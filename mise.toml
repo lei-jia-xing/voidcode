@@ -46,11 +46,11 @@ dir = "frontend"
 depends = ["frontend:lint", "frontend:typecheck", "frontend:test"]
 
 [tasks."frontend:api:generate"]
-description = "Generate frontend/src/lib/kernel/generated/api.d.ts from the kernel transport's OpenAPI document"
+description = "Generate frontend/src/lib/core/generated/api.d.ts from the core transport's OpenAPI document"
 run = "uv run python -X utf8 scripts/generate_frontend_api_types.py"
 
 [tasks."frontend:api:check"]
-description = "Fail when the committed generated kernel API types no longer match the backend schema"
+description = "Fail when the committed generated core API types no longer match the backend schema"
 run = "uv run python -X utf8 scripts/generate_frontend_api_types.py --check"
 
 [tasks."frontend:check:e2e"]

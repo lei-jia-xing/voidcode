@@ -66,8 +66,8 @@ def _event(sequence: int, event_type: str, payload: Mapping[str, object] | None)
         event_type=event_type,
         run_id=RUN_ID,
         revision_id=REVISION_ID,
-        source="kernel",
-        actor="kernel",
+        source="core",
+        actor="core",
         payload=payload,
     )
 
@@ -149,7 +149,7 @@ def _plan(events: tuple[EventView, ...] = (), **overrides: object):
 
 
 class MockServices(PluginServices):
-    """The plugin-facing services this suite drives, with the kernel's own ruler for coverage."""
+    """The plugin-facing services this suite drives, with the core's own ruler for coverage."""
 
     def __init__(
         self,
@@ -198,11 +198,11 @@ class MockServices(PluginServices):
 
     def project_window(self, *, covered_from_sequence: int, covered_to_sequence: int, replacement: str) -> None:
         if self.refuse:
-            raise ValueError("kernel refused the projection")
+            raise ValueError("core refused the projection")
         covered = tuple(event for event in self.events if event.sequence <= covered_to_sequence)
         covered_bytes = sum(event_payload_bytes(event) for event in covered)
         replacement_bytes = len(replacement.encode("utf-8"))
-        assert replacement_bytes < covered_bytes, "the fake kernel measures what the real one does"
+        assert replacement_bytes < covered_bytes, "the fake core measures what the real one does"
         self.projections.append(
             {
                 "covered_from_sequence": covered_from_sequence,
@@ -407,8 +407,8 @@ def test_a_truncated_payload_ends_the_covered_prefix() -> None:
         event_type="kernel.model_turn",
         run_id=RUN_ID,
         revision_id=REVISION_ID,
-        source="kernel",
-        actor="kernel",
+        source="core",
+        actor="core",
         payload={"truncated": True, "original_bytes": 4_096},
         payload_truncated=True,
     )
@@ -482,10 +482,10 @@ def test_apply_projection_is_a_noop_when_nothing_is_coverable() -> None:
     assert services.state is None
 
 
-# --- Applying a projection: kernel-measured accounting, state, staged event ---
+# --- Applying a projection: core-measured accounting, state, staged event ---
 
 
-def test_apply_projection_reports_the_kernel_measured_accounting() -> None:
+def test_apply_projection_reports_the_core_measured_accounting() -> None:
     events = _session_events()
     services = MockServices(events)
     outcome = apply_projection(
@@ -744,7 +744,7 @@ def test_compact_command_reports_accounting_and_noops_on_a_second_call() -> None
     assert second.data is not None
     assert second.data["noop"] is True
     assert second.data["reason"] == "nothing_new_to_cover"
-    # The same accounting the kernel holds, not a re-measurement.
+    # The same accounting the core holds, not a re-measurement.
     assert second.data["covered_bytes"] == services.row["covered_bytes"]
     assert second.data["dropped_bytes"] == services.row["dropped_bytes"]
     assert "Nothing new to compact" in (second.output or "")

@@ -1,6 +1,6 @@
 # Agent Collaboration Contract
 
-Delegated agent work is kernel-owned: a parent session starts child sessions, steers them, and reads their durable outcomes through SDK services. The bundled `task`/`task_batch` tools (Delegation plugin) are the model-facing surface; `voidcode://transcript/<child>` and `read` expose the readable transcript. No plugin owns child lifecycle state, and no caller can widen scope, stance, or budget.
+Delegated agent work is core-owned: a parent session starts child sessions, steers them, and reads their durable outcomes through SDK services. The bundled `task`/`task_batch` tools (Delegation plugin) are the model-facing surface; `voidcode://transcript/<child>` and `read` expose the readable transcript. No plugin owns child lifecycle state, and no caller can widen scope, stance, or budget.
 
 ## Durable facts
 
@@ -23,14 +23,14 @@ Delegated agent work is kernel-owned: a parent session starts child sessions, st
 
 ## Transcript and history paging
 
-- The readable renderer emits user messages, assistant turns with their tool calls, tool results, child facts, progress, and plugin events; kernel bookkeeping is omitted. Child payloads are included (`include_payload=True`) so a transcript is readable, never a payload-stripped skeleton.
+- The readable renderer emits user messages, assistant turns with their tool calls, tool results, child facts, progress, and plugin events; core bookkeeping is omitted. Child payloads are included (`include_payload=True`) so a transcript is readable, never a payload-stripped skeleton.
 - Live history paging uses a byte cursor: request `after_sequence` plus `history_offset`, then continue from `next_after_sequence` and `next_event_offset`. One page is bounded by `PAGE_BYTES` (40 KiB); a single block larger than a page is split on a UTF-8 boundary, never clipped. Output paging uses `output_sha256` plus `output_offset` (default 8 KiB pages) and does not depend on the child still running.
-- Pages are sized to stay well under the kernel's 256 KiB context hard bound; a consumer pages instead of requesting the whole transcript.
+- Pages are sized to stay well under the core's 256 KiB context hard bound; a consumer pages instead of requesting the whole transcript.
 
 ## Concurrency and recovery invariants
 
-These are the kernel/store invariants enforced by the implementation, exercised by deterministic
-real-kernel schedules and the collaboration regression suite. They are not a claim of exhaustive
+These are the core/store invariants enforced by the implementation, exercised by deterministic
+real-core schedules and the collaboration regression suite. They are not a claim of exhaustive
 scheduling coverage.
 
 - **Execution prefix.** `execution.events` is always one unique contiguous committed prefix whose

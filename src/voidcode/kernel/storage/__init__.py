@@ -1,1 +1,0 @@
-"""Kernel SQLite persistence."""

@@ -1,6 +1,6 @@
-"""Runnable-example consumer behavior: the tally package over a live kernel.
+"""Runnable-example consumer behavior: the tally package over a live core.
 
-Covers the tally example's real tool/command/state behavior over a live kernel
+Covers the tally example's real tool/command/state behavior over a live core
 with the loopback provider.
 """
 
@@ -14,8 +14,8 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.kernel.bootstrap import open_kernel
-from voidcode.kernel.storage.store import SqliteStore
+from voidcode.core.bootstrap import open_core
+from voidcode.core.storage.store import SqliteStore
 
 _EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "tally-counter"
 
@@ -45,7 +45,6 @@ def _configure(workspace: Path, server: OpenAILoopbackServer, plugin: Path) -> N
             "effectiveness",
             "exec",
             "files",
-            "formatter",
             "goal",
             "hooks",
             "lsp",
@@ -107,19 +106,19 @@ def test_example_command_and_tool_share_durable_session_state(tmp_path: Path) ->
     ]
     with _provider(replies) as server:
         _configure(workspace, server, plugin)
-        with closing(open_kernel(workspace, state_dir=state)) as kernel:
-            kernel.create_session("tally-session")
-            revision = kernel.command_catalog().revision_id
+        with closing(open_core(workspace, state_dir=state)) as core:
+            core.create_session("tally-session")
+            revision = core.command_catalog().revision_id
 
             # JSON Schema `integer` also accepts integral floats on the wire;
             # the committed state must still be a true integer the next
             # invocation can read back.
-            first = kernel.invoke_command("tally-session", "tally", {"delta": 3.0}, expected_revision=revision)
+            first = core.invoke_command("tally-session", "tally", {"delta": 3.0}, expected_revision=revision)
             assert first.status == "ok", first.as_payload()
             assert first.data == {"total": 3, "updates": 1}
             assert type(first.data["total"]) is int
 
-            run = kernel.run("add five to the tally", session_id="tally-session")
+            run = core.run("add five to the tally", session_id="tally-session")
             assert run.status == "completed", run.as_payload()
             assert len(server.requests) == 2, server.requests
 

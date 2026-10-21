@@ -97,7 +97,7 @@ def _spill_artifact(
     mime: str,
     source: str,
 ) -> dict[str, object] | None:
-    """Spill a payload through the kernel artifact service; None keeps it inline.
+    """Spill a payload through the core artifact service; None keeps it inline.
 
     ``None`` only when the handler's services object exposes no spill method: the
     payload stays inline (bounded) and the output says truncation happened.

@@ -11,8 +11,8 @@ from threading import Thread
 import pytest
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.kernel.bootstrap import open_kernel
-from voidcode.kernel.engine import Kernel
+from voidcode.core.bootstrap import open_core
+from voidcode.core.engine import Core
 
 _PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins"
 _NOTES_PLUGIN_SOURCE = '''"""Test-only plugin exposing one observable tool."""
@@ -54,14 +54,14 @@ _NOTES_PLUGIN_SOURCE = _NOTES_PLUGIN_SOURCE.replace(
     "from voidcode.sdk.tools import TextOutput, ToolDefinition, ToolEffect, ToolSuccess",
     "from voidcode.sdk.tools import TextOutput, ToolDefinition, ToolEffect, ToolFailure, ToolSuccess",
 )
-_CREATED_KERNELS: list[Kernel] = []
+_CREATED_CORES: list[Core] = []
 
 
 @pytest.fixture(autouse=True)
-def _close_created_kernels() -> Iterator[None]:
+def _close_created_cores() -> Iterator[None]:
     yield
-    while _CREATED_KERNELS:
-        _CREATED_KERNELS.pop().close()
+    while _CREATED_CORES:
+        _CREATED_CORES.pop().close()
 
 
 @contextmanager
@@ -84,7 +84,7 @@ def _notes_plugin(workspace: Path) -> Path:
     return root
 
 
-def _kernel(tmp_path: Path, server: OpenAILoopbackServer, *plugin_ids: str) -> Kernel:
+def _core(tmp_path: Path, server: OpenAILoopbackServer, *plugin_ids: str) -> Core:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     state_dir = tmp_path / "state"
@@ -109,13 +109,13 @@ def _kernel(tmp_path: Path, server: OpenAILoopbackServer, *plugin_ids: str) -> K
         "plugins": plugins,
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-    kernel = open_kernel(workspace, state_dir=state_dir)
-    _CREATED_KERNELS.append(kernel)
-    return kernel
+    core = open_core(workspace, state_dir=state_dir)
+    _CREATED_CORES.append(core)
+    return core
 
 
-def _invoke(kernel: Kernel, session_id: str, name: str, arguments: dict[str, object]):
-    return kernel.invoke_command(session_id, name, arguments, expected_revision=kernel.command_catalog().revision_id)
+def _invoke(core: Core, session_id: str, name: str, arguments: dict[str, object]):
+    return core.invoke_command(session_id, name, arguments, expected_revision=core.command_catalog().revision_id)
 
 
 def _messages(request: dict[str, object]) -> list[dict[str, object]]:
@@ -137,11 +137,11 @@ def test_btw_answers_without_polluting_history(tmp_path: Path) -> None:
         ),
     ]
     with _loopback_server(replies) as server:
-        kernel = _kernel(tmp_path, server, "btw")
-        session_id = kernel.create_session().session_id
-        assert kernel.run("main question", session_id=session_id).status == "completed"
+        core = _core(tmp_path, server, "btw")
+        session_id = core.create_session().session_id
+        assert core.run("main question", session_id=session_id).status == "completed"
 
-        result = _invoke(kernel, session_id, "btw", {"question": "what is 2+2?"})
+        result = _invoke(core, session_id, "btw", {"question": "what is 2+2?"})
         assert result.status == "ok"
         assert result.output == "side answer"
 
@@ -155,12 +155,12 @@ def test_btw_answers_without_polluting_history(tmp_path: Path) -> None:
         assert "main question" not in prompt
         assert server.requests[1].get("tools") in (None, [])
 
-        # The kernel records the canonical diagnostic fact; the plugin stages nothing.
-        event_types = [event.event_type for event in kernel.events_after(session_id)]
+        # The core records the canonical diagnostic fact; the plugin stages nothing.
+        event_types = [event.event_type for event in core.events_after(session_id)]
         assert "kernel.model_query" in event_types
         assert not [event for event in event_types if event.startswith("plugin.btw.")]
 
-        empty = _invoke(kernel, session_id, "btw", {"question": "   "})
+        empty = _invoke(core, session_id, "btw", {"question": "   "})
         assert empty.status == "error"
         assert empty.error == "side question must not be empty"
 
@@ -204,11 +204,11 @@ def test_effectiveness_projects_real_session_events(tmp_path: Path) -> None:
         ),
     ]
     with _loopback_server(replies) as server:
-        kernel = _kernel(tmp_path, server, "effectiveness")
-        session_id = kernel.create_session().session_id
-        assert kernel.run("write two notes", session_id=session_id).status == "completed"
+        core = _core(tmp_path, server, "effectiveness")
+        session_id = core.create_session().session_id
+        assert core.run("write two notes", session_id=session_id).status == "completed"
 
-        result = _invoke(kernel, session_id, "effectiveness", {})
+        result = _invoke(core, session_id, "effectiveness", {})
         assert result.status == "ok"
         assert result.data is not None
         rows = {row["tool"]: row for row in result.data["tools"]}
@@ -221,7 +221,7 @@ def test_effectiveness_projects_real_session_events(tmp_path: Path) -> None:
         assert result.data["privacy"]["stores_source_content"] is False
         assert "notes_write" in str(result.output)
 
-        empty = _invoke(kernel, kernel.create_session().session_id, "effectiveness", {})
+        empty = _invoke(core, core.create_session().session_id, "effectiveness", {})
         assert empty.status == "ok"
         assert empty.data is not None
         assert tuple(empty.data["tools"]) == ()

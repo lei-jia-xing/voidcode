@@ -6,7 +6,7 @@ copies of the agents plugin's ``profiles/<id>.txt`` text, embedded here as modul
 plugins cannot import each other, so this plugin reads no other plugin's resources and duplicates
 no loader.
 
-``model_preference`` exists per preset but is never applied: the kernel has no per-child model seam
+``model_preference`` exists per preset but is never applied: the core has no per-child model seam
 (a child session carries no model of its own and runs the workspace model), so a non-null
 preference is surfaced as a result note instead of being silently faked.
 """

@@ -12,13 +12,13 @@ Ported from the legacy runtime mechanism without behavior changes:
 Persistence moves from the legacy session-metadata back door to the plugin's own session-scope
 state document with CAS versioning, and events become plugin-namespaced facts.
 
-Reminders are wired to the kernel's typed-message seam: both kinds are durable *user-role*
+Reminders are wired to the core's typed-message seam: both kinds are durable *user-role*
 continuations carrying the verbatim legacy text under ``payload["text"]``, so a reminder is never
 restated as a system message. The mid-run nudge fires on the invocation that crosses the mutation
 threshold and the completion reminder fires when a run finishes with open todos; per-cycle
 budgets, watermarks and the cycle identity (the newest genuine user prompt, read from the
 session's own committed events) reproduce the legacy accounting. Legacy suppression inputs the
-new kernel does not expose to a plugin - "delegated child", "runtime waits for user", "pending
+new core does not expose to a plugin - "delegated child", "runtime waits for user", "pending
 background task", "todo tool advertised" - are documented instead of faked: a parked run emits no
 run-finished fact (so waiting is silent), and the remaining three are listed as unavailable.
 """
@@ -132,7 +132,7 @@ class TodoMidRunState:
 class ReminderSuppression:
     """Reasons a reminder is withheld, shared by both reminder kinds.
 
-    Legacy fed four inputs here. The new kernel exposes none of them to a plugin handler, so
+    Legacy fed four inputs here. The new core exposes none of them to a plugin handler, so
     every field keeps its default (nothing blocks) and the unavailable reasons are documented in
     the module docstring instead of being guessed: a parked run emits no run-finished fact, so
     "waits for user" is silent by construction.
@@ -796,7 +796,7 @@ def todo_mid_run_nudge_text(*, mutation_count: int, incomplete_count: int, attem
 def todo_mutation_count(facts: Sequence[InvocationFinishedFact], *, own_tool_names: frozenset[str]) -> int:
     """Successful mutation invocations since the last successful todo call.
 
-    The declared effects the kernel reports with each finished invocation decide read tier,
+    The declared effects the core reports with each finished invocation decide read tier,
     exactly like the legacy ``is_read_tier`` filter, so a new tool cannot be mis-tiered by a
     handwritten name list.
     """
@@ -878,7 +878,7 @@ def todo_reminder_text(
     return "\n".join(lines)
 
 
-# --- Reminder wiring (typed user-role continuations over the kernel's durable seams) ---
+# --- Reminder wiring (typed user-role continuations over the core's durable seams) ---
 
 
 @dataclass(frozen=True, slots=True)
@@ -924,7 +924,7 @@ def parse_todo_config(config: Mapping[str, object] | None) -> TodoRemindersConfi
 def _sync_cycle(state: TodoState, services: PluginServices, run_id: str) -> tuple[TodoState, str | None]:
     """Consume newly committed events; a genuine user prompt starts a fresh reminder cycle.
 
-    The legacy cycle identity was the session's current user-prompt run. The new kernel gives a
+    The legacy cycle identity was the session's current user-prompt run. The new core gives a
     continuation its own run, so the cycle is derived from the session's own facts: the newest
     ``kernel.user_message`` run id, read incrementally from the stored cursor.
     """
@@ -1016,7 +1016,7 @@ def todo_observer(
     *,
     config: TodoRemindersConfig = _DEFAULT_REMINDERS_CONFIG,
 ) -> None:
-    """Account reminders and hand each injection to the kernel as a user-role continuation."""
+    """Account reminders and hand each injection to the core as a user-role continuation."""
     _ = context
     if not config.enabled:
         return

@@ -1,6 +1,6 @@
 """End-to-end integration tests for the Plan plugin's restrictive overlay.
 
-Proves on the real kernel stack that entering plan mode hides and denies write-tier tools,
+Proves on the real core stack that entering plan mode hides and denies write-tier tools,
 contributes the verbatim plan instruction, survives a restart, and that leaving plan mode
 restores writes while a user-frozen read-only policy stays in force.
 """
@@ -16,8 +16,8 @@ from threading import Thread
 import pytest
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.kernel.bootstrap import open_kernel
-from voidcode.kernel.engine import Kernel
+from voidcode.core.bootstrap import open_core
+from voidcode.core.engine import Core
 from voidcode.plugins.plan.plan_plugin import PLAN_MODE_INSTRUCTION
 
 _PLAN_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "plan"
@@ -45,14 +45,14 @@ class NotesWriteTool:
 def create_plugin(config):
     return Plugin(tools=(NotesWriteTool(),))
 '''
-_CREATED_KERNELS: list[Kernel] = []
+_CREATED_CORES: list[Core] = []
 
 
 @pytest.fixture(autouse=True)
-def _close_created_kernels() -> Iterator[None]:
+def _close_created_cores() -> Iterator[None]:
     yield
-    while _CREATED_KERNELS:
-        _CREATED_KERNELS.pop().close()
+    while _CREATED_CORES:
+        _CREATED_CORES.pop().close()
 
 
 @contextmanager
@@ -75,13 +75,13 @@ def _write_tool_plugin(workspace: Path) -> Path:
     return root
 
 
-def _kernel(
+def _core(
     tmp_path: Path,
     server: OpenAILoopbackServer,
     *,
     read_only: bool = False,
     state_dir: Path | None = None,
-) -> Kernel:
+) -> Core:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     resolved_state = state_dir if state_dir is not None else tmp_path / "state"
@@ -104,13 +104,13 @@ def _kernel(
         },
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-    kernel = open_kernel(workspace, state_dir=resolved_state)
-    _CREATED_KERNELS.append(kernel)
-    return kernel
+    core = open_core(workspace, state_dir=resolved_state)
+    _CREATED_CORES.append(core)
+    return core
 
 
-def _invoke(kernel: Kernel, session_id: str, name: str, arguments: dict[str, object]):
-    return kernel.invoke_command(session_id, name, arguments, expected_revision=kernel.command_catalog().revision_id)
+def _invoke(core: Core, session_id: str, name: str, arguments: dict[str, object]):
+    return core.invoke_command(session_id, name, arguments, expected_revision=core.command_catalog().revision_id)
 
 
 def _tool_names(request: dict[str, object]) -> list[str]:
@@ -147,28 +147,28 @@ def test_plan_mode_hides_and_denies_write_tools_until_plan_off(tmp_path: Path) -
         ),
     ]
     with _loopback_server(replies) as server:
-        kernel = _kernel(tmp_path, server)
-        session_id = kernel.create_session().session_id
+        core = _core(tmp_path, server)
+        session_id = core.create_session().session_id
 
         # Baseline: the write-tier tool is advertised and the plan instruction is absent.
-        assert kernel.run("hi", session_id=session_id).status == "completed"
+        assert core.run("hi", session_id=session_id).status == "completed"
         assert "notes_write" in _tool_names(server.requests[0])
         assert PLAN_MODE_INSTRUCTION not in _text(server.requests[0])
 
         # Enter plan mode: the overlay hides the write tool and contributes the instruction.
-        entered = _invoke(kernel, session_id, "plan", {})
+        entered = _invoke(core, session_id, "plan", {})
         assert entered.status == "ok"
         assert entered.data == {"active": True, "changed": True}
-        assert _invoke(kernel, session_id, "plan.status", {}).output == "Mode: plan"
+        assert _invoke(core, session_id, "plan.status", {}).output == "Mode: plan"
 
-        assert kernel.run("plan it", session_id=session_id).status == "completed"
+        assert core.run("plan it", session_id=session_id).status == "completed"
         assert "notes_write" not in _tool_names(server.requests[1])
         assert PLAN_MODE_INSTRUCTION in _text(server.requests[1])
 
         # The overlay survives a restart: still hidden, still instructed.
-        kernel.close()
-        _CREATED_KERNELS.remove(kernel)
-        reopened = _kernel(tmp_path, server, state_dir=tmp_path / "state")
+        core.close()
+        _CREATED_CORES.remove(core)
+        reopened = _core(tmp_path, server, state_dir=tmp_path / "state")
         assert _invoke(reopened, session_id, "plan.status", {}).output == "Mode: plan"
         assert reopened.run("still planning", session_id=session_id).status == "completed"
         assert "notes_write" not in _tool_names(server.requests[2])
@@ -204,9 +204,9 @@ def test_plan_off_never_lifts_a_user_frozen_read_only(tmp_path: Path) -> None:
         )
     ]
     with _loopback_server(replies) as server:
-        kernel = _kernel(tmp_path, server, read_only=True)
-        session_id = kernel.create_session().session_id
-        assert _invoke(kernel, session_id, "plan", {}).status == "ok"
-        assert _invoke(kernel, session_id, "plan.off", {}).status == "ok"
-        assert kernel.run("still frozen", session_id=session_id).status == "completed"
+        core = _core(tmp_path, server, read_only=True)
+        session_id = core.create_session().session_id
+        assert _invoke(core, session_id, "plan", {}).status == "ok"
+        assert _invoke(core, session_id, "plan.off", {}).status == "ok"
+        assert core.run("still frozen", session_id=session_id).status == "completed"
         assert "notes_write" not in _tool_names(server.requests[0]), "the frozen policy outlives the plan overlay"

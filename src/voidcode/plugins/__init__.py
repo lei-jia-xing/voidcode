@@ -1,1 +1,1 @@
-"""First-party kernel plugins."""
+"""First-party core plugins."""

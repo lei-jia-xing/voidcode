@@ -1,4 +1,4 @@
-"""Invocation context shared by kernel, runtime, and plugins.
+"""Invocation context shared by core, runtime, and plugins.
 
 Neutral execution identity and cancellation handle handed to tools and commands.
 """

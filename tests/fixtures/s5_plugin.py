@@ -1,4 +1,4 @@
-"""Fixture plugin source for the P4 S5 kernel/SDK seams.
+"""Fixture plugin source for the P4 S5 core/SDK seams.
 
 `s5_probe` (READ) and `s5_write` (WRITE) share one generic action surface, so the same seam can
 be driven under either lease stance: this session's own durable facts (`session_info`), one
@@ -16,7 +16,7 @@ PLUGIN_ID = "s5-fixture"
 PROBE_TOOL = "s5_probe"
 WRITE_TOOL = "s5_write"
 COMMAND_NAME = "s5_command"
-#: Diagnostic a hook writes when the kernel refuses its nested invocation attempt.
+#: Diagnostic a hook writes when the core refuses its nested invocation attempt.
 HOOK_DIAGNOSTIC = "hook_refusal.txt"
 
 
@@ -60,7 +60,7 @@ def _session_info(services):
 
 
 def _child_events(services, call):
-    """One bounded child read; a refusal is the kernel's, so the fixture reports it verbatim."""
+    """One bounded child read; a refusal is the core's, so the fixture reports it verbatim."""
     child_session_id = str(call.arguments.get("child_session_id", ""))
     after_sequence = int(call.arguments.get("after_sequence", 0))
     limit = int(call.arguments.get("limit", 100))
@@ -86,7 +86,7 @@ def _child_events(services, call):
 
 
 def _invoke(services, context, name, arguments, expected_revision=None):
-    """One nested invocation; the kernel's receipt is the whole answer the caller gets here."""
+    """One nested invocation; the core's receipt is the whole answer the caller gets here."""
     revision = context.revision_id if expected_revision is None else expected_revision
     return services.invoke_tool(name, arguments, expected_revision=revision).as_payload()
 
@@ -105,13 +105,13 @@ def _invoke_tool(services, context, arguments):
         return body
     if arguments.get("raise_after_stage"):
         # A callback that dies after asking for nested work: the request is already staged, so
-        # what the kernel does with it is exactly what this action has to show.
+        # what the core does with it is exactly what this action has to show.
         raise RuntimeError("fixture failed after staging")
     return body
 
 
 def _recurse(services, context, call):
-    """Ask for one more of ourselves: the kernel owns the depth and chain-action bounds."""
+    """Ask for one more of ourselves: the core owns the depth and chain-action bounds."""
     body = {"invocation_depth": context.invocation_depth}
     try:
         body["receipt"] = _invoke(services, context, PROBE_TOOL, {"action": "recurse"})
@@ -191,7 +191,7 @@ def _observe(context, call):
 
 
 def _coverage_context(context):
-    """Every fact the kernel handed this invocation, as the plugin sees it."""
+    """Every fact the core handed this invocation, as the plugin sees it."""
     return {
         "workspace": str(context.workspace),
         "session_id": context.session_id,
@@ -285,7 +285,7 @@ class InvokeCommand:
 
     definition = CommandDefinition(
         name=COMMAND_NAME,
-        description="Ask the kernel for one nested tool invocation (the command-side seam).",
+        description="Ask the core for one nested tool invocation (the command-side seam).",
         argument_schema={"type": "object", "additionalProperties": True},
     )
 
@@ -301,7 +301,7 @@ def _pre_tool(intent, context, services):
     """A gate answers "may this run?"; it denies only a caller that asked it to.
 
     A hook lease observes the call it gates and may start no nested governed work; when the call
-    asks for that attempt the fixture records what the kernel answered, in its own file.
+    asks for that attempt the fixture records what the core answered, in its own file.
     """
     if intent.arguments.get("gate_denied"):
         return f"{intent.tool_name} refused by the s5 fixture gate"

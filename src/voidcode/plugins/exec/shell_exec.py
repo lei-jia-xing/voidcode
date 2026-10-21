@@ -1,4 +1,4 @@
-"""The `shell_exec` tool: one workspace command run under the kernel's process lease.
+"""The `shell_exec` tool: one workspace command run under the core's process lease.
 
 The lease owns the machine — it spawns the process group, bounds each stream's capture, stops the
 group on timeout or lease cancellation, and hands back the decoded text. This tool owns the
@@ -233,7 +233,7 @@ class ShellExecTool:
 
         run_process = getattr(services, "run_process", None)
         if not callable(run_process):
-            raise ValueError("shell_exec requires the kernel process lease")
+            raise ValueError("shell_exec requires the core process lease")
 
         result = run_process(
             _shell_argv(command_text),

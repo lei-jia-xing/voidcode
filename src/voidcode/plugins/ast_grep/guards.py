@@ -12,7 +12,7 @@ from .repair import raise_tool_diagnostic
 
 
 def _coverage(context: ToolContext) -> tuple[frozenset[str], Mapping[tuple[str, str], frozenset[int]], frozenset[tuple[str, str]], str | None]:
-    """Coverage the kernel observed for this session; always present, possibly empty."""
+    """Coverage the core observed for this session; always present, possibly empty."""
     return (context.read_paths, context.read_lines, context.read_whole_files, context.read_hash)
 
 

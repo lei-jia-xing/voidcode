@@ -5,7 +5,7 @@ child this session started, and dispatching bounded independent work as one back
 model-facing text keeps the legacy ``task.txt``/``task_batch.txt`` intent for the operations that
 exist here.
 
-Legacy features are deliberately absent because the kernel owns no primitive for them yet, and
+Legacy features are deliberately absent because the core owns no primitive for them yet, and
 nothing here fakes them: parent roster listing (``operation=ps``), steering (``operation=steer``),
 keep-alive tasks, polling/sleep loops, automatic retry, whole-group cancellation, completion
 reminders, ``outputSchema``/``schemaMode`` structured-output validation, ``load_skills``,
@@ -14,14 +14,14 @@ reminders, ``outputSchema``/``schemaMode`` structured-output validation, ``load_
 
 ``subagent_type`` selects one of the builtin child presets in ``presets.py``: the child's prompt is
 the preset's ``prompt_body`` followed by this call's prompt, its tools are the preset's allowlist,
-and its stance is the preset's ``readonly``. The kernel has no per-child system prompt seam -- a
+and its stance is the preset's ``readonly``. The core has no per-child system prompt seam -- a
 child receives exactly one user prompt -- so the profile text is materialized into that prompt
 rather than sent as a separate system message. An allowlist the active revision does not admit (its
 owning plugin can be disabled in a workspace) falls back once to the parent tool scope, with the
 downgrade visible in the result; a preset model preference is reported as a note because children
 always run the workspace model.
 
-Child runs, depth, the chain's spawn budget, tool scope and termination stay kernel-owned; this
+Child runs, depth, the chain's spawn budget, tool scope and termination stay core-owned; this
 plugin only records which children its own session started, under which label and group.
 """
 
@@ -54,7 +54,7 @@ DEFAULT_JOIN_TIMEOUT_MS = 300_000
 DEFAULT_JOIN_TIMEOUT_SECONDS = DEFAULT_JOIN_TIMEOUT_MS / 1000.0
 MAX_BATCH_SIZE = 100
 CANCEL_REASON = "parent cancellation via task tool"
-#: One output page keeps the result body + text well under the kernel's 50 KiB projection.
+#: One output page keeps the result body + text well under the core's 50 KiB projection.
 OUTPUT_PAGE_BYTES = 8 * 1024
 MAX_OUTPUT_PAGE_BYTES = 16 * 1024
 #: Live history is read in event pages; the renderer bounds the rendered page independently.
@@ -182,7 +182,7 @@ def _with_children(state: DelegationState, created: Sequence[tuple[str, ChildRec
     return DelegationState(children=children, groups=groups)
 
 
-# --- Argument parsing (the kernel schema stays the first gate; these are second-line messages) ---
+# --- Argument parsing (the core schema stays the first gate; these are second-line messages) ---
 
 
 @dataclass(frozen=True, slots=True)
@@ -555,7 +555,7 @@ def _with_notes(text: str, notes: Sequence[str]) -> str:
 
 
 def _preset_notes(preset: ChildPreset | None) -> tuple[str, ...]:
-    """The visible caveats a preset adds: a model preference the kernel cannot honor."""
+    """The visible caveats a preset adds: a model preference the core cannot honor."""
     if preset is None or preset.model_preference is None:
         return ()
     return (
@@ -575,13 +575,13 @@ def _spawn_child(
 ) -> tuple[str, tuple[str, ...]]:
     """Spawn one child, reporting the caveats that shaped how it runs.
 
-    A preset materializes the child prompt as its profile text plus this call's prompt (the kernel
+    A preset materializes the child prompt as its profile text plus this call's prompt (the core
     has no per-child system prompt seam: a child receives exactly one user prompt) and passes the
     preset's allowlist and stance. An allowlist the active revision does not admit falls back once
     to the parent tool scope, with the downgrade visible in the result, so a disabled owning plugin
     degrades the child instead of failing the spawn.
 
-    The kernel validates the requested scope before it creates anything, and its refusal reaches
+    The core validates the requested scope before it creates anything, and its refusal reaches
     this process as a ``ValueError`` locally or as the host transport's wrapping ``RuntimeError``:
     both mean the same thing here, and a rejected spawn leaves no child behind to retry onto.
     """

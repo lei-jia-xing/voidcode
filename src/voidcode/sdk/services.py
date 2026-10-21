@@ -161,17 +161,17 @@ class ChildSendReceipt:
         return payload
 
 
-#: Continuation owner for kernel child messages. Plugin ids match ``[a-z][a-z0-9_-]*``, so the
+#: Continuation owner for core child messages. Plugin ids match ``[a-z][a-z0-9_-]*``, so the
 #: leading ``@`` makes this value unforgeable by any admitted plugin: a plugin cannot own,
 #: claim, or cancel these rows through the generic continuation surface.
-CHILD_MESSAGE_OWNER = "@kernel/child"
+CHILD_MESSAGE_OWNER = "@core/child"
 
 
 def child_completion_notice_id(parent_session_id: str, child_session_id: str, run_id: str) -> str:
     """The durable identity of one run's completion notice.
 
     Run-scoped on purpose: keying by the child alone would let an older completion mask a newer
-    follow-up run. The kernel publishes under this id and an acknowledgement cancels exactly it.
+    follow-up run. The core publishes under this id and an acknowledgement cancels exactly it.
     """
     return hashlib.sha256("\0".join((CHILD_MESSAGE_OWNER, parent_session_id, child_session_id, run_id)).encode("utf-8")).hexdigest()
 
@@ -202,7 +202,7 @@ class PluginBudget:
 
 @dataclass(frozen=True, slots=True)
 class ArtifactReference:
-    """Identity of one immutable, content-addressed artifact in the kernel's store."""
+    """Identity of one immutable, content-addressed artifact in the core's store."""
 
     sha256: str
     bytes: int
@@ -234,7 +234,7 @@ class ArtifactPage:
 class ProcessHandle:
     """Identity of one supervised background process, as the caller persists it.
 
-    `pid` alone is not an identity: `start_time` is the kernel's own start stamp for that pid, so a
+    `pid` alone is not an identity: `start_time` is the core's own start stamp for that pid, so a
     later reuse of the number can never be mistaken for this process.
     """
 
@@ -300,7 +300,7 @@ class SessionInfo:
     """Neutral facts about one session, read as one row (never a scan).
 
     `pending_approval` is the parked approval request this session is waiting on, if any, in the
-    same shape the kernel reports to a client. `chain_budget`/`chain_reserved` are the caller's
+    same shape the core reports to a client. `chain_budget`/`chain_reserved` are the caller's
     root action chain's total and spent actions; nested requests consume this same budget.
     """
 
@@ -348,7 +348,7 @@ class SessionInfo:
 class ToolInvocationReceipt:
     """A same-session request staged with the caller's result, never executed inside its callback.
 
-    The kernel runs it after the callback returns, through ordinary admission and approval.
+    The core runs it after the callback returns, through ordinary admission and approval.
     Its committed result is available in this session's events under `request_id`.
     """
 
@@ -429,7 +429,7 @@ class PluginServices(Protocol):
         """Enqueue a durable continuation that the session renders as a message of `role`.
 
         A `user`-role continuation with a string `text` field is rendered verbatim as a user
-        message; any other payload is rendered as its JSON under the kernel's attribution line.
+        message; any other payload is rendered as its JSON under the core's attribution line.
         """
         ...
 
@@ -448,9 +448,9 @@ class PluginServices(Protocol):
         The child can only be narrower than its parent: depth, the chain's spawn budget, the
         parent's tool scope, and the parent's restrictive stance all bound it. A read-only lease
         may therefore delegate read-only work, but never spawn a writable child; `readonly=True`
-        records the child's stance durably on the child session (the kernel owns that record).
+        records the child's stance durably on the child session (the core owns that record).
 
-        With `notify_on_completion` the kernel delivers one bounded completion notice to this
+        With `notify_on_completion` the core delivers one bounded completion notice to this
         session when the child's run reaches a terminal state, even after this turn ends, and
         the child's readable history is spilled to an immutable artifact. The notice is keyed by
         the run, never by the child alone, so a follow-up run cannot be masked by an older one.
@@ -469,8 +469,8 @@ class PluginServices(Protocol):
         """Send a follow-up message to ONE child this session spawned, in its own session.
 
         This is a SESSION verb, not a filesystem write and not user authority: the child keeps its
-        tool scope, its read-only overlay, and the kernel's policy. Only the direct parent may
-        send (the kernel checks lineage); siblings, parents, and unrelated sessions are refused.
+        tool scope, its read-only overlay, and the core's policy. Only the direct parent may
+        send (the core checks lineage); siblings, parents, and unrelated sessions are refused.
         A running or approval-parked child queues the message durably and consumes it at its next
         safe boundary; an open child starts a new turn immediately. The receipt says `started` or
         `queued` and never claims consumption or completion.
@@ -503,7 +503,7 @@ class PluginServices(Protocol):
     ) -> None:
         """Declare the projection that replaces a committed prefix of this session's window.
 
-        The kernel verifies the boundary (it must end a completed native batch) and measures the
+        The core verifies the boundary (it must end a completed native batch) and measures the
         accounting itself: the covered bytes are the encoded size of the replaced events, and the
         dropped bytes are what the replacement does not carry. A projection that would grow the
         window is refused. Events are never rewritten; only assembly substitutes the replacement.
@@ -521,7 +521,7 @@ class PluginServices(Protocol):
     def set_overlay(self, tier: Literal["read-only"] = "read-only") -> None:
         """Tighten the bound session with an owner-owned restrictive overlay.
 
-        Overlays can only restrict; an owner revokes exactly its own row, and the kernel's
+        Overlays can only restrict; an owner revokes exactly its own row, and the core's
         frozen policy is never affected.
         """
         ...
@@ -538,7 +538,7 @@ class PluginServices(Protocol):
         idempotency_key: str | None = None,
         role: Literal["system", "user"] = "system",
     ) -> str:
-        """Schedule a future turn of the bound session; the kernel claims it atomically.
+        """Schedule a future turn of the bound session; the core claims it atomically.
 
         With an idempotency key the identity is deterministic, so re-scheduling the same future
         point never creates a second wakeup.
@@ -577,7 +577,7 @@ class PluginServices(Protocol):
     ) -> tuple[EventView, ...]:
         """Read a child session's committed events, bounded in count and payload size.
 
-        Restricted to this session's OWN descendants: the kernel walks the target's parent chain
+        Restricted to this session's OWN descendants: the core walks the target's parent chain
         back to the caller, so a sibling, a parent, an unrelated root, or another workspace's
         session is refused — a descendant of a common root is not enough. Bounds are the same
         as `read_events`.
@@ -588,7 +588,7 @@ class PluginServices(Protocol):
         """The definition of ``name`` from the active revision's dispatch snapshot, with this
         session's visibility applied.
 
-        Answered by the kernel, never copied: it is the same snapshot and the same predicate
+        Answered by the core, never copied: it is the same snapshot and the same predicate
         dispatch advertises with, so the reserved core surface, the session's profile scope, and
         the effective read-only stance are all honored without a second catalog. ``None`` covers
         both an unknown name and a name this session may not see.
@@ -601,7 +601,7 @@ class PluginServices(Protocol):
         Queries are runtime-local, read-only conveniences between trusted plugins (see
         ``PluginQuery``): the answering handler runs in this runtime process, receives the caller's
         lease-provided session and workspace, and returns one bounded JSON object or ``None`` for
-        "no answer". No kernel governance is involved, so a query answers questions, never
+        "no answer". No core governance is involved, so a query answers questions, never
         performs work. A name nobody answers raises ``QueryUnavailable``; every other failure
         (handler bug, malformed shape, oversized answer) raises visibly and is never confused
         with "unavailable".
@@ -617,13 +617,13 @@ class PluginServices(Protocol):
     ) -> ToolInvocationReceipt:
         """Invoke another tool through this session's ordinary admission path.
 
-        The kernel resolves the target in the active revision the caller displayed
+        The core resolves the target in the active revision the caller displayed
         (`expected_revision`), applies the session's tool scope, read-only stance, pre-tool gates,
         and declared-effect approval policy exactly as it does for a model-requested call.
         Requests are staged atomically with the caller's result and execute
         only after its callback returns; this receipt never waits on execution or human consent.
         Approvable targets go through the ordinary approval boundary, never a rejection for
-        needing approval. Recursion consumes the chain's action budget and carries kernel-counted
+        needing approval. Recursion consumes the chain's action budget and carries core-counted
         depth. Hook leases cannot invoke.
         """
         ...
@@ -642,7 +642,7 @@ class PluginServices(Protocol):
         """Run one child process of this runtime, in its own process group under this lease.
 
         The runtime owns the process, the bytes, and the bounds, and the
-        kernel's own governance already decided whether the calling tool may execute at all. What
+        core's own governance already decided whether the calling tool may execute at all. What
         the lease adds is stance: a read-only lease and a hook lease are refused outright, because
         neither may touch the machine. `env` overrides the inherited environment; `cwd` defaults to
         the workspace. Each stream is captured up to `max_output_bytes` and the excess is dropped
@@ -654,7 +654,7 @@ class PluginServices(Protocol):
         """Store bytes under their own content address and return the reference to them.
 
         The artifact exists (immutably) before any fact that references it commits, so a result
-        carrying a reference can never point at missing bytes. Spilling touches only the kernel's
+        carrying a reference can never point at missing bytes. Spilling touches only the core's
         own store: a read-only lease may spill output it could not otherwise carry, a hook lease
         (an observer) may not.
         """
@@ -719,7 +719,7 @@ class PluginServices(Protocol):
         """Write to a supervised process's stdin; returns the bytes accepted.
 
         Only for processes started with `stdin=True` in this runtime: a process that survived a
-        kernel restart keeps running but its pipe did not, so that write is refused rather than lost.
+        core restart keeps running but its pipe did not, so that write is refused rather than lost.
         """
         ...
 

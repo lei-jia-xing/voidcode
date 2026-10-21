@@ -16,7 +16,7 @@ from voidcode.sdk.services import PluginServices, QueryUnavailable
 from voidcode.sdk.tools import TextOutput, ToolCall, ToolDefinition, ToolDiagnostics, ToolEffect, ToolFailure, ToolResult, ToolSuccess
 
 from .args import parse_tool_args
-from .edits_hooks import format_after_write, post_edit_diagnostics
+from .edits_hooks import post_edit_diagnostics
 from .guards import enforce_seen_lines
 
 _SHA256_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{64}$")
@@ -221,8 +221,8 @@ class ApplyWorkspaceEditTool:
         path_argument_keys=("edits[].path",),
     )
 
-    def __init__(self, *, hooks_config: object | None = None) -> None:
-        self._hooks_config = hooks_config
+    def __init__(self) -> None:
+        pass
 
     def invoke(
         self,
@@ -429,15 +429,6 @@ class ApplyWorkspaceEditTool:
         diagnostics: list[Mapping[str, object]] = []
         file_results: list[Mapping[str, object]] = []
         for path in staged:
-            formatter: Mapping[str, object] | None = None
-            if self._hooks_config is not None:
-                formatter, formatter_feedback = format_after_write(
-                    context=context,
-                    path=path,
-                    previous=originals[path],
-                    content=staged[path],
-                )
-                diagnostics.extend(formatter_feedback)
             final_bytes = path.read_bytes()
             final_content = final_bytes.decode("utf-8")
             display_path = display_by_path[path]
@@ -454,8 +445,6 @@ class ApplyWorkspaceEditTool:
                     )
                 ),
             }
-            if formatter:
-                file_result["formatter"] = formatter
             file_results.append(file_result)
 
         display_paths = list(display_by_path.values())

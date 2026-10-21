@@ -1,6 +1,6 @@
 """Session artifact boundary for workspace tools.
 
-The kernel owns the content-addressed artifact store (``PluginServices.spill_artifact``
+The core owns the content-addressed artifact store (``PluginServices.spill_artifact``
 / ``read_artifact``); these helpers keep one plugin-local projection of that
 store so tool call sites never speak the service protocol directly. A plugin
 handler without the service keeps its inline output and reports truncation
@@ -28,7 +28,7 @@ def create_artifact(
     mime: str,
     source: str | None = None,
 ) -> Mapping[str, object] | None:
-    """Store bytes in the kernel artifact store and project their reference.
+    """Store bytes in the core artifact store and project their reference.
 
     Returns ``None`` when the handler has no artifact service; callers then keep
     bounded inline output and report truncation instead of a reference.

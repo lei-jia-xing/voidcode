@@ -1,23 +1,23 @@
 # Client Transport Contract
 
-This document defines how clients (the kernel CLI, the inline TUI, and the web client) talk to a VoidCode kernel. There is exactly one contract: the generic kernel API plus the command catalog, declarative views, and append-only event stream. No client surface has product-specific routes.
+This document defines how clients (the core CLI, the inline TUI, and the web client) talk to a VoidCode core. There is exactly one contract: the generic core API plus the command catalog, declarative views, and append-only event stream. No client surface has product-specific routes.
 
 ## Surfaces
 
 | Surface | Entry | Transport |
 |---|---|---|
-| Kernel CLI | `python -m voidcode.kernel <subcommand>` (also the `voidcode` console script) | elected image for one-shot commands (re-executed when needed), or HTTP via the TUI's remote mode |
-| TUI | `python -m voidcode.kernel [--server URL --token TOKEN --session-id ID]` (bare command) | HTTP/SSE against a supervisor child process by default (same behavior as `--server`), or a remote kernel |
-| Web | built React bundle served by the kernel at `/` | HTTP/SSE, same origin; `/api` requires the bearer token |
-| HTTP | `python -m voidcode.kernel serve [--host --port --bearer-token --session-id] [--open]` | supervised FastAPI app, loopback bind only; the listener and token survive kernel replacement |
+| Core CLI | `python -m voidcode.core <subcommand>` (also the `voidcode` console script) | elected image for one-shot commands (re-executed when needed), or HTTP via the TUI's remote mode |
+| TUI | `python -m voidcode.core [--server URL --token TOKEN --session-id ID]` (bare command) | HTTP/SSE against a supervisor child process by default (same behavior as `--server`), or a remote core |
+| Web | built React bundle served by the core at `/` | HTTP/SSE, same origin; `/api` requires the bearer token |
+| HTTP | `python -m voidcode.core serve [--host --port --bearer-token --session-id] [--open]` | supervised FastAPI app, loopback bind only; the listener and token survive core replacement |
 
-The kernel binds `127.0.0.1`, `::1`, or `localhost` only. Every request under `/api` requires `Authorization: Bearer <token>`; the supervisor generates the token once per `serve` lifetime unless `--bearer-token` supplies one, and it is printed to stdout at startup and nowhere else. Static files outside `/api` are unauthenticated (they are the client bundle), and a request path under `/api` can never be served as a static file. Errors use one envelope: `{"error": "<message>", "code": "<code>"}`.
+The core binds `127.0.0.1`, `::1`, or `localhost` only. Every request under `/api` requires `Authorization: Bearer <token>`; the supervisor generates the token once per `serve` lifetime unless `--bearer-token` supplies one, and it is printed to stdout at startup and nowhere else. Static files outside `/api` are unauthenticated (they are the client bundle), and a request path under `/api` can never be served as a static file. Errors use one envelope: `{"error": "<message>", "code": "<code>"}`.
 
-## Kernel CLI
+## Core CLI
 
 | Subcommand | Purpose | Exit code |
 |---|---|---|
-| `run "<prompt>" [--session-id] [--max-steps]` | Execute one agent turn; prints the `KernelResult` JSON. | `0` ok, `1` failed, `130` interrupted |
+| `run "<prompt>" [--session-id] [--max-steps]` | Execute one agent turn; prints the `CoreResult` JSON. | `0` ok, `1` failed, `130` interrupted |
 | `resume <session_id> [--approval-request-id --decision allow\|deny] [--max-steps]` | Continue a session, optionally resolving one native tool approval. | same as `run` |
 | `create-session [--session-id]` | Create an empty session. | `0` |
 | `sessions [--limit]` | List this workspace's sessions. | `0` |
@@ -29,7 +29,7 @@ The kernel binds `127.0.0.1`, `::1`, or `localhost` only. Every request under `/
 | `drain <session_id> [--limit]` | Execute pending durable continuations. | `0` |
 | `usage <session_id> [--since-sequence --until-sequence]` | Print the truthful session usage report. | `0` |
 | *(bare command)* `[--server --token --session-id]` | Start the TUI (supervisor child process unless `--server` is given). | — |
-| `serve [--host --port --bearer-token --session-id] [--open]` | Run the supervisor: stable endpoint and token across kernel replacement (`--open` launches a browser; `--session-id` attributes a first-adoption transition). | — |
+| `serve [--host --port --bearer-token --session-id] [--open]` | Run the supervisor: stable endpoint and token across core replacement (`--open` launches a browser; `--session-id` attributes a first-adoption transition). | — |
 | `upgrade [run\|status] --candidate PATH [--session-id ID] [--timeout S]` | Ask the running supervisor for its status, or upgrade this workspace to a candidate installation (one JSON object; exit `0` only on `upgraded`/`ok`). | `0` ok, `1` refused/blocked/failed |
 | `preflight` | Read-only candidate check for this installation against the live state (one JSON object; exit `1` on a named refusal). | `0` ok, `1` refused |
 
@@ -54,7 +54,7 @@ Root options: `--workspace PATH` (default: current directory), `--state-dir PATH
 | `GET` | `/api/sessions/{session_id}/usage?since_sequence=&until_sequence=` | Truthful token usage for the session. |
 | `POST` | `/api/sessions/{session_id}/cancel` | Request cancellation for one session. |
 | `GET` | `/api/sessions/{session_id}/events?after_sequence=&follow=` | Replay (and optionally follow) the session event stream over SSE. |
-| `GET` | `/api/health` | Kernel health and identity: fence, stage, revision, SDK/image pins, generation, active upgrade. |
+| `GET` | `/api/health` | Core health and identity: fence, stage, revision, SDK/image pins, generation, active upgrade. |
 
 ## Revision Binding
 
@@ -63,7 +63,7 @@ A command advertised by one capability generation is never executed by another:
 - `GET /api/commands` and `GET /api/sessions/{id}/views` each return their descriptors together with the `revision_id` they were captured from; the two are separate envelopes.
 - `POST /invoke/{name}` and `POST /confirm` require `expected_revision`. A missing or empty value fails ingress validation (`400`, `code: "invalid_params"`); a value that is not the active revision is refused before any lookup or dispatch with `409`, `code: "stale_revision"`. There is no "use whatever is current" default and no automatic retry: the client refreshes and the user retries.
 - Every rendered form, choice, command, and read-only `load_action` dispatches with the revision of the envelope that rendered it; a pending confirmation keeps the revision it was displayed under.
-- `kernel.reload` (a reserved core command) activates the configured sources on explicit user request and emits `kernel.activation_committed` with `{request_id, source, from_revision_id, to_revision_id, migrated_owners, deactivated_owners}`. Clients drop anything captured under another revision. The web client refetches the catalog and the views together; the TUI refetches the catalog without fetching views it does not display (an explicit `/tui views` envelope binds its own revision). `kernel.activation_requested`, `kernel.activation_failed` (nothing changed), and `kernel.activation_blocked` (with `blockers`) complete the family.
+- `core.reload` (a reserved core command) activates the configured sources on explicit user request and emits `kernel.activation_committed` with `{request_id, source, from_revision_id, to_revision_id, migrated_owners, deactivated_owners}`. Clients drop anything captured under another revision. The web client refetches the catalog and the views together; the TUI refetches the catalog without fetching views it does not display (an explicit `/tui views` envelope binds its own revision). `kernel.activation_requested`, `kernel.activation_failed` (nothing changed), and `kernel.activation_blocked` (with `blockers`) complete the family.
 
 ## Event Stream (SSE)
 
@@ -74,7 +74,7 @@ A command advertised by one capability generation is never executed by another:
 - **Restart frame** (after a successful upgrade drain only): `{"kind": "server_restart", "session_id": ..., "cursor": <last sequence this stream delivered>}`, following a flush of the final backlog. Clients reconnect with `after_sequence` set to their own applied cursor (never advancing it from the frame) and never resend a prompt; a failed drain leaves the stream connected with no frame.
 - **Stored event fields**: `session_id`, `sequence` (monotonic within the session), `type` (for example `kernel.user_message`, `kernel.model_turn`, `kernel.tool_completed`, `kernel.approval_requested`, `kernel.confirmation_requested`, `kernel.command_completed`), `run_id`, `revision_id`, `source`, `actor`, `payload`.
 
-`follow=false` (default) replays and closes. `follow=true` crosses run boundaries: `completed`, `failed`, and `interrupted` end a *run*, not the session, so the stream ends only when the client disconnects, a terminal error frame is sent, or a successful upgrade drain ends it with the restart frame above. While a kernel is fenced for an upgrade, business writes answer `503` with `code: "upgrade_pending"` and reads keep working; `cancel` stays allowed because it can only reduce work. The inline TUI owns a cancellable connection to this stream and shuts it down on quit before joining its reader and before an embedded supervisor stops the kernel; idle follow streams need no heartbeat and are woken by that socket shutdown.
+`follow=false` (default) replays and closes. `follow=true` crosses run boundaries: `completed`, `failed`, and `interrupted` end a *run*, not the session, so the stream ends only when the client disconnects, a terminal error frame is sent, or a successful upgrade drain ends it with the restart frame above. While a core is fenced for an upgrade, business writes answer `503` with `code: "upgrade_pending"` and reads keep working; `cancel` stays allowed because it can only reduce work. The inline TUI owns a cancellable connection to this stream and shuts it down on quit before joining its reader and before an embedded supervisor stops the core; idle follow streams need no heartbeat and are woken by that socket shutdown.
 
 ## Declarative Views
 
@@ -102,7 +102,7 @@ A request id from one gate is never sent to the other endpoint. Both are project
 
 ## TUI Client
 
-- Launched embedded (spawns a supervisor child process and talks to it over HTTP exactly like `--server` mode, so a kernel replacement never kills the UI) or remote with `--server`/`--token`.
+- Launched embedded (spawns a supervisor child process and talks to it over HTTP exactly like `--server` mode, so a core replacement never kills the UI) or remote with `--server`/`--token`.
 - Inline scrollback with a **commit-once ledger**: rows are committed to the native scrollback exactly once by the main loop, driven by a durable `last_sequence` cursor. Committed text wraps to terminal cell width without dropping long output; live input/dialog geometry remains bounded. Reconnects, follow polling, resizes, and session switches never replay or clear settled output; only the live region repaints.
 - Renders durable event payloads (`kernel.user_message`, `kernel.model_turn`, `kernel.tool_completed`, `kernel.command_intent`/`kernel.command_completed`) plus the direct `CommandResult` of core read-only commands (`help`, `status`, `show`), which have no command event. Plugin and run/resume results remain event-projected; one shared formatter renders each result once, preserving multi-line output and falling back to JSON for data-only receipts. Every model- and plugin-provided string is escaped for terminal control bytes.
 - Startup, connect, reconnect, session switch, and capability activation never fetch or display optional plugin views: the TUI reconciles health, the catalog, durable session state, and the event-projected decision gates only. `/tui views [name]` explicitly fetches a revision-bound views envelope and displays passive content inline and borderless — passive field values wrap rather than ellipsize (deliberate plugin-level previews/limits still apply) — or an interactive form/choices/confirmation as a framed dialog. The two decision gates above remain event-projected and are never closed or denied by a refresh.
@@ -113,15 +113,15 @@ A request id from one gate is never sent to the other endpoint. Both are project
 
 ## Web Client
 
-The built bundle is served by the kernel at `/` (an exact file when present, otherwise `index.html`, so client-side routes survive a reload). During frontend development, Vite serves the app on `127.0.0.1:5173` and proxies `/api` to the kernel (`VITE_BACKEND_URL`, default `http://127.0.0.1:8765`).
+The built bundle is served by the core at `/` (an exact file when present, otherwise `index.html`, so client-side routes survive a reload). During frontend development, Vite serves the app on `127.0.0.1:5173` and proxies `/api` to the core (`VITE_BACKEND_URL`, default `http://127.0.0.1:8765`).
 
-The kernel app (`frontend/src/kernel/`) renders the same catalog and views with pure components in `frontend/src/kernel/views/`; markdown goes through `react-markdown` + `remark-gfm` and never evaluates raw HTML. Every response, view render, form draft, and SSE frame is bound to the session that issued it, and revision binding follows the HTTP rules above.
+The core app (`frontend/src/core/`) renders the same catalog and views with pure components in `frontend/src/core/views/`; markdown goes through `react-markdown` + `remark-gfm` and never evaluates raw HTML. Every response, view render, form draft, and SSE frame is bound to the session that issued it, and revision binding follows the HTTP rules above.
 
-TypeScript types are generated from the kernel transport's OpenAPI document:
+TypeScript types are generated from the core transport's OpenAPI document:
 
 ```bash
 mise run frontend:api:generate
 mise run frontend:api:check
 ```
 
-Do not hand-edit `frontend/src/lib/kernel/generated/api.d.ts`.
+Do not hand-edit `frontend/src/lib/core/generated/api.d.ts`.

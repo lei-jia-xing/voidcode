@@ -1,6 +1,6 @@
 """Immutable JSON snapshot and wire-projection helpers.
 
-Plugin-facing contract shared by kernel, runtime, and plugins: take one
+Plugin-facing contract shared by core, runtime, and plugins: take one
 immutable snapshot at trust boundaries, project to plain containers only when
 serializing.
 """

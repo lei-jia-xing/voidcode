@@ -9,8 +9,8 @@ of the code.
 - Tool/command/services/views contracts: `src/voidcode/sdk/tools.py`,
   `src/voidcode/sdk/commands.py`, `src/voidcode/sdk/services.py`,
   `src/voidcode/sdk/views.py`, `src/voidcode/sdk/invocation.py`
-- Admission/activation: `src/voidcode/kernel/activation.py`,
-  `src/voidcode/kernel/bootstrap.py`, `docs/contracts/hot-activation.md`
+- Admission/activation: `src/voidcode/core/activation.py`,
+  `src/voidcode/core/bootstrap.py`, `docs/contracts/hot-activation.md`
 - Runnable reference: `examples/tally-counter/` (one model tool + one user
   command + one view over shared session state)
 
@@ -28,7 +28,7 @@ tools, commands, providers, views, queries, context, observer (plus
 lists), state schema, migration/deactivation transforms, and `close`.
 
 The runtime refuses duplicate or missing tool/command/provider names, reserved
-names (`kernel_reload`, the core command names, `core.*`/`kernel.*`/
+names (`core_reload`, the core command names, `core.*`/
 `voidcode.*` command prefixes), and cross-plugin name collisions. Define
 `ToolDefinition`/`CommandDefinition` values in the same module as their
 handlers, so drift is impossible by construction.
@@ -36,23 +36,22 @@ handlers, so drift is impossible by construction.
 ## 2. Entry point and SDK-only rule
 
 `create_plugin(config)` returns a `Plugin`. `config` is the plugin's own
-configuration mapping plus one reserved key, `providers`: the kernel injects
+configuration mapping plus one reserved key, `providers`: the core injects
 the same resolved providers map (credentials, base URLs, extras) into every
 factory. A plugin must accept and ignore `providers` unless it is one that
 registers providers; it must never copy that map into state, events, views,
 error strings, or digests. Plugins import only the SDK plus their own
-third-party dependencies; anything kernel-shaped goes through
-`PluginServices`. No private kernel import exists — bundled plugins use the
+third-party dependencies; anything core-shaped goes through
+`PluginServices`. No private core import exists — bundled plugins use the
 same public seam, so an author hits no ceiling they do not also hit.
 
 ## 3. Tools: effects, approval, read-only, schema, errors
 
 Each tool declares `effects` (`read`, `write`, `execute`, `network`,
 `spawn`, `session`), an `input_schema`, `replay_policy`,
-`path_argument_keys`, and `supports_parallel`. The kernel validates the
-model's arguments against the registered schema before dispatch; a schema
-failure is `"tool arguments failed the admitted JSON schema"`, never a
-handler call.
+`path_argument_keys`, and `supports_parallel`. The core validates the model's
+arguments against the registered schema before dispatch; a schema failure is
+`"tool arguments failed the admitted JSON schema"`, never a handler call.
 
 - **Approval**: `READ` and `SESSION` never need approval in any mode.
   `WRITE`/`EXECUTE`/`SPAWN` wait under `ask`; `write` auto-allows
@@ -109,7 +108,7 @@ Conventions that keep state debuggable:
   Missing state (`None`) is the legitimate first-run case — construct a
   default, never fabricate a version.
 - Declare `state=StateSchema(version, schema)` (default version 1, no
-  schema) when the shape matters. The kernel validates migrated AND
+  schema) when the shape matters. The core validates migrated AND
   unchanged-version copies against it at activation; a row above the
   declared version is a downgrade and refuses.
 - Migration is pure: `migrate_state(payload, from_version, to_version)`
@@ -139,29 +138,28 @@ Conventions that keep state debuggable:
   configuration.
 - Activation re-admits the live configuration and commits one new revision
   transactionally; clients refetch catalog + views on
-  `kernel.activation_committed`. Two paths
-  (`docs/contracts/hot-activation.md`): the user command `kernel.reload`
-  (idle sessions only, refused under `read_only` and while busy, no
-  automatic continuation) and the native model tool `kernel_reload`
-  (stages the request mid-run; the switch commits at the native-batch
-  boundary and the same session continues automatically with no prompt
-  resend).
-- To remove a plugin, disable it via `kernel.reload` on the old running
-  kernel first so its real `prepare_deactivate` runs, then upgrade; a
+  `kernel.activation_committed`. Two paths (`docs/contracts/hot-activation.md`):
+  the user command `core.reload` (idle sessions only, refused under `read_only`
+  and while busy, no automatic continuation) and the native model tool
+  `core_reload` (stages the request mid-run; the switch commits at the
+  native-batch boundary and the same session continues automatically with no
+  prompt resend).
+- To remove a plugin, disable it via `core.reload` on the old running
+  core first so its real `prepare_deactivate` runs, then upgrade; a
   disabled owner's historic state rows may remain.
 
 ## 7. SDK service scopes and contracts
 
 Loaded plugin Python runs with the application's full authority — not a sandbox.
-`PluginServices` is the scoped API surface the kernel passes into each callback:
+`PluginServices` is the scoped API surface the core passes into each callback:
 state, events, continuations, wakeups, delegation (`spawn_child`/`join_child`),
 window projection, scoped restrictive overlays, reads,
 budgets, usage, `model_query` (one tool-free turn), processes, and
 artifacts. Callbacks receive lease-scoped services only — never arbitrary
-kernel access, never a sibling plugin's state, never an unrestricted store
-scan. Own state stays owner/scope-bound; event reads cover the bound
-session plus true descendants via explicit `read_child_events` (parent,
-sibling, and unrelated sessions are refused).
+core access, never a sibling plugin's state, never an unrestricted store
+scan. Own state stays owner/scope-bound; event reads cover the bound session
+plus true descendants via explicit `read_child_events` (parent, sibling, and
+unrelated sessions are refused).
 - Neutral cross-plugin reads: `services.tool_definition(name)` answers from
   the active revision's dispatch snapshot with the caller's scope and stance
   applied (`None` covers unknown/hidden equally; the runtime keeps no copy),
@@ -174,7 +172,7 @@ sibling, and unrelated sessions are refused).
   (code-review contract, not an OS sandbox).
 - Managed service processes (`spawn_service_process` + `write_process` /
   `read_process_output` / `cancel_process` / `list_processes`) run in their own
-  foster-owned session group (never the kernel's group) and stop at runtime
+  foster-owned session group (never the core's group) and stop at runtime
   retirement/swap or owner shutdown —
   the shape for a language server or other interactive helper. Detached
   `spawn_process` jobs keep their own groups and survive a runtime swap.
@@ -191,7 +189,7 @@ Run these in order; each step's failure names the layer at fault.
 1. **Factory smoke** — import the package and call
    `create_plugin({"providers": {}})` directly: leftover imports,
    definition errors, and strict parsers rejecting the reserved key all
-   surface here with no kernel. Observer/`observed_facts` wiring is
+   surface here with no core. Observer/`observed_facts` wiring is
    validated when the runtime loads the registration catalog.
 2. **Catalog** — `voidcode catalog` (plus `--workspace`/`--state-dir` as
    needed). Admission failures print the exact refusal: missing source,

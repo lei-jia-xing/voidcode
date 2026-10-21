@@ -5,11 +5,6 @@ per-surface argv command lists, timeout/failure policy and the
 ``hook_tool_matches`` tool-name glob seam) and from ``src/voidcode/hook/plan.py``
 (``HookPlanBinding`` / ``ResolvedHookPlan`` / ``materialize_hook_plan``, the
 frozen declaration snapshot whose declaration order fixes execution ordering).
-
-The legacy config also carried a formatter slice (``format_on_write`` /
-``formatter_presets`` / ``resolve_formatter``); that slice has its own home in
-``plugins/formatter/formatter_config.py`` (``FormatterRuntimeConfig``) and is not
-duplicated here.
 """
 
 from __future__ import annotations

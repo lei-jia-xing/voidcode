@@ -1,6 +1,6 @@
-"""End-to-end integration test for the Review plugin on the real kernel stack.
+"""End-to-end integration test for the Review plugin on the real core stack.
 
-Drives the real kernel, plugin runtime, loopback provider, git workspace and durable storage: the
+Drives the real core, plugin runtime, loopback provider, git workspace and durable storage: the
 ``review`` command resolves the workspace diff from a real repository, spawns a real child session
 whose provider request carries the legacy review instructions plus that diff, and returns the
 child's answer as the command result.
@@ -24,21 +24,21 @@ from threading import Thread
 import pytest
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.kernel.bootstrap import open_kernel
-from voidcode.kernel.engine import Kernel
+from voidcode.core.bootstrap import open_core
+from voidcode.core.engine import Core
 from voidcode.plugins.review.review_plugin import REVIEW_TOOL_ALLOWLIST
 
 _REVIEW_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "review"
 _PROFILE_TOOL_NAMES = REVIEW_TOOL_ALLOWLIST
 
-_CREATED_KERNELS: list[Kernel] = []
+_CREATED_CORES: list[Core] = []
 
 
 @pytest.fixture(autouse=True)
-def _close_created_kernels() -> Iterator[None]:
+def _close_created_cores() -> Iterator[None]:
     yield
-    while _CREATED_KERNELS:
-        _CREATED_KERNELS.pop().close()
+    while _CREATED_CORES:
+        _CREATED_CORES.pop().close()
 
 
 @contextmanager
@@ -112,7 +112,7 @@ def _admitted_profile_tools_source(tmp_path: Path, names: tuple[str, ...]) -> Pa
     return source
 
 
-def _kernel(tmp_path: Path, server: OpenAILoopbackServer) -> Kernel:
+def _core(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
     workspace = tmp_path / "workspace"
     _dirty_repo(workspace)
     state_dir = tmp_path / "state"
@@ -140,13 +140,13 @@ def _kernel(tmp_path: Path, server: OpenAILoopbackServer) -> Kernel:
         },
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-    kernel = open_kernel(workspace, state_dir=state_dir)
-    _CREATED_KERNELS.append(kernel)
-    return kernel
+    core = open_core(workspace, state_dir=state_dir)
+    _CREATED_CORES.append(core)
+    return core
 
 
-def _invoke_review(kernel: Kernel, session_id: str, arguments: Mapping[str, object]):
-    return kernel.invoke_command(session_id, "review", arguments, expected_revision=kernel.command_catalog().revision_id)
+def _invoke_review(core: Core, session_id: str, arguments: Mapping[str, object]):
+    return core.invoke_command(session_id, "review", arguments, expected_revision=core.command_catalog().revision_id)
 
 
 def _messages(request: dict[str, object]) -> list[dict[str, object]]:
@@ -171,10 +171,10 @@ def test_review_command_spawns_a_real_child_that_receives_the_git_diff(tmp_path:
         ),
     ]
     with _loopback_server(replies) as server:
-        kernel = _kernel(tmp_path, server)
-        parent_id = kernel.create_session("parent").session_id
+        core = _core(tmp_path, server)
+        parent_id = core.create_session("parent").session_id
 
-        result = _invoke_review(kernel, parent_id, {})
+        result = _invoke_review(core, parent_id, {})
 
         assert result.status == "ok"
         assert result.output == "review: the dirty line needs a test"
@@ -185,7 +185,7 @@ def test_review_command_spawns_a_real_child_that_receives_the_git_diff(tmp_path:
         assert result.data["output"] == "review: the dirty line needs a test"
 
         # The review ran as a real delegated child session holding the review profile's scope.
-        child = kernel.session(child_id)
+        child = core.session(child_id)
         assert child.parent_session_id == parent_id
         assert child.status == "completed"
         assert child.tool_allowlist is not None
@@ -202,8 +202,8 @@ def test_review_command_spawns_a_real_child_that_receives_the_git_diff(tmp_path:
         assert "+dirty review target" in prompt
         assert prompt.endswith("Return the final review findings in your final answer.")
 
-        # The command recorded the bounded review fact and the kernel its child lifecycle facts.
-        events = kernel.events_after(parent_id)
+        # The command recorded the bounded review fact and the core its child lifecycle facts.
+        events = core.events_after(parent_id)
         started = [event for event in events if event.event_type == "plugin.review.review_started"]
         assert len(started) == 1
         assert started[0].payload == {
@@ -227,10 +227,10 @@ def test_review_command_carries_a_custom_focus_into_the_child_prompt(tmp_path: P
         openai_response(message={"role": "assistant", "content": "focus answered"}, finish="stop"),
     ]
     with _loopback_server(replies) as server:
-        kernel = _kernel(tmp_path, server)
-        parent_id = kernel.create_session("parent").session_id
+        core = _core(tmp_path, server)
+        parent_id = core.create_session("parent").session_id
 
-        result = _invoke_review(kernel, parent_id, {"focus": "only the parser edge cases"})
+        result = _invoke_review(core, parent_id, {"focus": "only the parser edge cases"})
 
         assert result.status == "ok"
         assert result.output == "focus answered"
@@ -245,27 +245,27 @@ def test_review_command_carries_a_custom_focus_into_the_child_prompt(tmp_path: P
 def test_review_command_refuses_an_unknown_target_without_touching_the_provider(tmp_path: Path) -> None:
     replies: list[dict[str, object]] = [openai_response(message={"role": "assistant", "content": "unreachable"}, finish="stop")]
     with _loopback_server(replies) as server:
-        kernel = _kernel(tmp_path, server)
-        parent_id = kernel.create_session("parent").session_id
+        core = _core(tmp_path, server)
+        parent_id = core.create_session("parent").session_id
 
-        result = _invoke_review(kernel, parent_id, {"target": "nonsense"})
+        result = _invoke_review(core, parent_id, {"target": "nonsense"})
 
         assert result.status == "error"
         assert result.error == "unknown review target type 'nonsense'"
         assert server.requests == []
-        assert kernel.events_after(parent_id)  # the refusal is committed, nothing spawned
-        assert not [event for event in kernel.events_after(parent_id) if event.event_type == "kernel.child_spawned"]
+        assert core.events_after(parent_id)  # the refusal is committed, nothing spawned
+        assert not [event for event in core.events_after(parent_id) if event.event_type == "kernel.child_spawned"]
 
 
 def test_review_command_reviews_a_commit_sha(tmp_path: Path) -> None:
     replies: list[dict[str, object]] = [openai_response(message={"role": "assistant", "content": "commit reviewed"}, finish="stop")]
     with _loopback_server(replies) as server:
-        kernel = _kernel(tmp_path, server)
-        parent_id = kernel.create_session("parent").session_id
+        core = _core(tmp_path, server)
+        parent_id = core.create_session("parent").session_id
         _git(tmp_path / "workspace", "commit", "--quiet", "-am", "dirty commit")
         sha = _git(tmp_path / "workspace", "rev-parse", "HEAD").strip()
 
-        result = _invoke_review(kernel, parent_id, {"target": "commit", "sha": sha})
+        result = _invoke_review(core, parent_id, {"target": "commit", "sha": sha})
 
         assert result.status == "ok"
         assert result.output == "commit reviewed"
@@ -278,7 +278,7 @@ def test_review_command_reviews_a_commit_sha(tmp_path: Path) -> None:
 
 
 def test_review_reaches_the_child_for_a_diff_in_the_64kib_256kib_band(tmp_path: Path) -> None:
-    """The kernel's delegated-prompt bound is 256 KiB, so the whole legacy band reaches the child."""
+    """The core's delegated-prompt bound is 256 KiB, so the whole legacy band reaches the child."""
     replies: list[dict[str, object]] = [
         openai_response(
             message={"role": "assistant", "content": "reviewed the large diff"},
@@ -287,18 +287,18 @@ def test_review_reaches_the_child_for_a_diff_in_the_64kib_256kib_band(tmp_path: 
         )
     ]
     with _loopback_server(replies) as server:
-        kernel = _kernel(tmp_path, server)
-        parent_id = kernel.create_session("parent").session_id
+        core = _core(tmp_path, server)
+        parent_id = core.create_session("parent").session_id
         (tmp_path / "workspace" / "big.txt").write_text("".join(f"line {index} {'x' * 80}\n" for index in range(1500)), encoding="utf-8")
 
-        result = _invoke_review(kernel, parent_id, {})
+        result = _invoke_review(core, parent_id, {})
 
         assert result.status == "ok", result.error
         assert result.output == "reviewed the large diff"
         assert len(server.requests) == 1
         diff_text = json.dumps(server.requests[0].get("messages"), ensure_ascii=False)
         assert "diff --git a/big.txt b/big.txt" in diff_text
-        events = kernel.events_after(parent_id)
+        events = core.events_after(parent_id)
         assert [event for event in events if event.event_type == "kernel.child_spawned"]
         assert [event for event in events if event.event_type == "plugin.review.review_started"]
 
@@ -307,15 +307,15 @@ def test_review_refuses_a_diff_over_its_legacy_256kib_budget_without_spawning(tm
     """Above the legacy product budget the plugin refuses visibly and never truncates."""
     replies: list[dict[str, object]] = [openai_response(message={"role": "assistant", "content": "unreachable"}, finish="stop")]
     with _loopback_server(replies) as server:
-        kernel = _kernel(tmp_path, server)
-        parent_id = kernel.create_session("parent").session_id
+        core = _core(tmp_path, server)
+        parent_id = core.create_session("parent").session_id
         (tmp_path / "workspace" / "huge.txt").write_text("".join(f"line {index} {'x' * 120}\n" for index in range(3000)), encoding="utf-8")
 
-        result = _invoke_review(kernel, parent_id, {})
+        result = _invoke_review(core, parent_id, {})
 
         assert result.status == "error"
         assert result.error is not None and "too large" in result.error
         assert server.requests == []
-        events = kernel.events_after(parent_id)
+        events = core.events_after(parent_id)
         assert not [event for event in events if event.event_type == "kernel.child_spawned"]
         assert not [event for event in events if event.event_type == "plugin.review.review_started"]

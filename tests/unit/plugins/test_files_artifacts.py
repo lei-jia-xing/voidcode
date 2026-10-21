@@ -1,4 +1,4 @@
-"""Unit tests for artifact URL reads wired to the kernel artifact store."""
+"""Unit tests for artifact URL reads wired to the core artifact store."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from voidcode.sdk.tools import AttachmentOutput, OpaqueToolBody, TextOutput, Too
 
 
 class FakeArtifactStore:
-    """Minimal stand-in for the kernel store: content-addressed bytes, bounded pages."""
+    """Minimal stand-in for the core store: content-addressed bytes, bounded pages."""
 
     def __init__(self) -> None:
         self.blobs: dict[str, bytes] = {}
@@ -131,7 +131,7 @@ def test_artifact_byte_page_honors_byte_window(tmp_path: Path) -> None:
 
 def test_unknown_artifact_id_is_refused(tmp_path: Path) -> None:
     store = FakeArtifactStore()
-    with pytest.raises(ValueError, match="without a kernel artifact service"):
+    with pytest.raises(ValueError, match="without a core artifact service"):
         _read_body(store, tmp_path, path=f"voidcode://artifact/{'0' * 64}")
 
 

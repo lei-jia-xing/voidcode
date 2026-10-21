@@ -1,8 +1,8 @@
 import pytest
 
-from voidcode.kernel.tui.composer import Composer
-from voidcode.kernel.tui.term import visible_width
-from voidcode.kernel.tui.theme import resolve_theme
+from voidcode.core.tui.composer import Composer
+from voidcode.core.tui.term import visible_width
+from voidcode.core.tui.theme import resolve_theme
 
 
 @pytest.mark.parametrize("style", ["box", "band", "claude", "pi", "borderless", "rule", "field", "rail"])

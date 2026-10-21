@@ -14,7 +14,7 @@ from typing import Any, cast
 import httpx
 import pytest
 
-from voidcode.kernel.coverage import model_result_text
+from voidcode.core.coverage import model_result_text
 from voidcode.plugins.web import create_plugin
 from voidcode.plugins.web.web_fetch import (
     CONTENT_REF_PREFIX,
@@ -35,11 +35,11 @@ PUBLIC_URL = "https://93.184.216.34/docs"
 
 
 class _DummyServices:
-    """Kernel service bag stand-in: no artifact service, so output stays inline."""
+    """Core service bag stand-in: no artifact service, so output stays inline."""
 
 
 class _MemoryServices:
-    """Content-addressed artifact double matching the kernel's spill/read semantics."""
+    """Content-addressed artifact double matching the core's spill/read semantics."""
 
     def __init__(self) -> None:
         self.artifacts: dict[str, bytes] = {}

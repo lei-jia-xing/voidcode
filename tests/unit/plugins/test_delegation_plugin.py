@@ -53,7 +53,7 @@ class MockServices(PluginServices):
         self.send_calls: list[dict[str, object]] = []
         self.acks: list[tuple[str, str]] = []
         self.roster: dict[str, ChildOutcome] = {}
-        #: 1-based spawn call numbers the kernel refuses, with its refusal message or exception.
+        #: 1-based spawn call numbers the core refuses, with its refusal message or exception.
         self.spawn_failures: dict[int, str | Exception] = {}
         self.cancel_result = True
         self.send_result = ChildSendReceipt(child_session_id="child-1", delivery="queued", child_status="running")
@@ -429,7 +429,7 @@ def test_unavailable_preset_scope_falls_back_to_the_parent_scope(tmp_path: Path)
 
 
 def test_host_wrapped_scope_rejection_also_falls_back(tmp_path: Path) -> None:
-    """A kernel refusal reaches the plugin as the host transport's wrapping ``RuntimeError``."""
+    """A core refusal reaches the plugin as the host transport's wrapping ``RuntimeError``."""
     services = MockServices()
     services.spawn_failures = {
         1: RuntimeError("Service call rejected: ValueError: tool_allowlist names an unknown tool: lsp"),
@@ -627,7 +627,7 @@ def test_history_pages_through_the_cursor_without_loss(tmp_path: Path) -> None:
     assert text.count("y" * (20 * 1024)) >= 1, "the oversized block keeps its content across the split"
 
 
-def test_unknown_task_ids_fail_without_touching_the_kernel(tmp_path: Path) -> None:
+def test_unknown_task_ids_fail_without_touching_the_core(tmp_path: Path) -> None:
     services = MockServices()
     _task(services, tmp_path, {"prompt": "work"})
     for operation in ("output", "cancel"):
@@ -682,7 +682,7 @@ def test_task_argument_conflicts_fail_without_spawning(tmp_path: Path, arguments
     assert services.get_state("session") == (None, 0)
 
 
-def test_kernel_spawn_refusal_is_reported_as_a_failure(tmp_path: Path) -> None:
+def test_core_spawn_refusal_is_reported_as_a_failure(tmp_path: Path) -> None:
     services = MockServices()
     services.spawn_failures = {1: "tool_allowlist names an unknown tool: nope"}
     res = _task(services, tmp_path, {"prompt": "work", "tool_allowlist": ["nope"]})

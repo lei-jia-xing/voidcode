@@ -1,6 +1,6 @@
 """Readable, complete rendering of a session's committed events.
 
-One shared projection, used by the kernel's immutable child-history snapshot and by the
+One shared projection, used by the core's immutable child-history snapshot and by the
 delegation plugin's paged ``task history`` operation, so both consumers agree on what a
 transcript looks like. It knows durable event shapes, never a provider or plugin module:
 user messages, assistant output and tool calls, tool results, progress reports, and child
@@ -21,7 +21,7 @@ from .codec import decode_provider_result, decode_tool_result, encode_tool_call
 from .json_values import json_wire_object
 from .tools import TextOutput
 
-#: One live history page stays well below the kernel's 50 KiB model projection, leaving room
+#: One live history page stays well below the core's 50 KiB model projection, leaving room
 #: for the result body and markers.
 PAGE_BYTES = 40 * 1024
 
@@ -87,7 +87,7 @@ def _as_mapping(value: object) -> Mapping[str, object] | None:
 
 
 def render_event_block(event: HistoryEvent) -> str | None:
-    """One complete readable block for a meaningful event; ``None`` for kernel bookkeeping."""
+    """One complete readable block for a meaningful event; ``None`` for core bookkeeping."""
     event_type = event.event_type
     payload = event.payload or {}
     header = f"## {event_type} [{event.sequence}]"
@@ -144,7 +144,7 @@ def iter_event_blocks(events: Iterable[HistoryEvent]) -> Iterator[str]:
         if block is None:
             continue
         if getattr(event, "payload_truncated", False):
-            block += "\n[payload truncated by the kernel's event bound]"
+            block += "\n[payload truncated by the core's event bound]"
         yield block
 
 
@@ -188,7 +188,7 @@ def render_history_page(
             cursor_sequence = event.sequence
             continue
         if getattr(event, "payload_truncated", False):
-            block += "\n[payload truncated by the kernel's event bound]"
+            block += "\n[payload truncated by the core's event bound]"
         block_offset = pending_offset
         raw = block.encode("utf-8")[block_offset:]
         pending_offset = 0

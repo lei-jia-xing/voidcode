@@ -1,6 +1,6 @@
 """The ``providers`` and ``model`` information panels.
 
-Both panels report facts this plugin already owns: the provider entries the kernel injects
+Both panels report facts this plugin already owns: the provider entries the core injects
 into :func:`create_plugin`, the shipped provider table, the shipped model catalog, and the
 provider/model pairs the calling session actually dispatched with (its committed
 ``kernel.provider_intent`` events). Model *selection* is configuration plus hot reload by
@@ -23,10 +23,10 @@ from .native.model_catalog import static_catalog_model_ids
 from .native.naming import canonical_provider_id, provider_label
 from .native.provider_table import PROVIDER_TABLE, PROVIDER_TABLE_BY_ID, ProviderTableRow
 
-#: The kernel fact one dispatch commits before it reaches the wire: its provider and model.
+#: The core fact one dispatch commits before it reaches the wire: its provider and model.
 DISPATCH_EVENT = "kernel.provider_intent"
 
-#: The largest page the kernel serves per event read (``services.read_events`` bound).
+#: The largest page the core serves per event read (``services.read_events`` bound).
 READ_PAGE = 200
 
 
@@ -37,7 +37,7 @@ class ConfiguredProvider:
     name: str
     label: str
     wire: str | None
-    #: Presence only: the credential value never leaves the kernel injection.
+    #: Presence only: the credential value never leaves the core injection.
     credential: bool
     models: int
 
@@ -60,7 +60,7 @@ class ProviderFacts:
 
     @classmethod
     def from_config(cls, config: Mapping[str, object] | None) -> ProviderFacts:
-        """Read the kernel-injected ``providers`` section: configured names plus their table rows."""
+        """Read the core-injected ``providers`` section: configured names plus their table rows."""
         raw = (config or {}).get("providers")
         entries = raw if isinstance(raw, Mapping) else {}
         configured = tuple(sorted((_configured_provider(str(name), entry) for name, entry in entries.items()), key=lambda item: item.name))

@@ -1,7 +1,7 @@
 """The `background_process` tool: workspace processes supervised by the plugin host.
 
 Ported from the runtime-owned process command (``voidcode.runtime.execution.process``) onto the
-kernel's background-process service. The host owns the live process, its group, and the log
+core's background-process service. The host owns the live process, its group, and the log
 files — this tool never spawns a child itself. What it owns is the contract around them: the shell
 wrapper, the legacy log layout, the ready-pattern wait, line paged logs, stdin writes, and the
 identity it persists in workspace state (pid + start time + log paths). That persisted identity is
@@ -9,7 +9,7 @@ what lets a later host report a process it no longer supervises as externally ma
 guessing from a pid.
 
 P4 boundary (accepted): every start mints a fresh id; legacy reuse-by-exact-command-match is
-dropped deliberately, and the kernel's 'already running' refusal for a repeated id propagates.
+dropped deliberately, and the core's 'already running' refusal for a repeated id propagates.
 """
 
 from __future__ import annotations
@@ -313,10 +313,10 @@ class _StreamScan:
 
 
 def _require_process_service(services: object) -> None:
-    """Refuse a handler without the kernel's background-process service (never spawn locally)."""
+    """Refuse a handler without the core's background-process service (never spawn locally)."""
     for name in _PROCESS_SERVICES:
         if not callable(getattr(services, name, None)):
-            raise ValueError("background_process requires the kernel background process service")
+            raise ValueError("background_process requires the core background process service")
 
 
 def _now() -> str:

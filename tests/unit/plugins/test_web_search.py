@@ -17,7 +17,7 @@ from voidcode.sdk.tools import ToolCall, ToolResult
 
 
 class _DummyServices:
-    """Kernel service bag stand-in: web_search never touches kernel services."""
+    """Core service bag stand-in: web_search never touches core services."""
 
 
 _SERVICES = cast(Any, _DummyServices())

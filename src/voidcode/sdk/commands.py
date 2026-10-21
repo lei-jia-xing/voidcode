@@ -166,7 +166,7 @@ class CommandDefinition:
     effects: frozenset[ToolEffect] | Sequence[ToolEffect] = frozenset()
     busy_gate: bool = False
     client_capabilities: frozenset[str] | Sequence[str] = frozenset()
-    #: Declarative client syntax prefix (clients route it; the kernel never parses it).
+    #: Declarative client syntax prefix (clients route it; the core never parses it).
     client_syntax: str | None = None
 
     def __post_init__(self) -> None:
@@ -179,7 +179,7 @@ class CommandDefinition:
 
 @runtime_checkable
 class Command(Protocol):
-    """A registered plugin command executable via kernel."""
+    """A registered plugin command executable via core."""
 
     @property
     def definition(self) -> CommandDefinition: ...

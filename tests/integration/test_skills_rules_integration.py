@@ -1,4 +1,4 @@
-"""Integration test for the skills plugin's rule context on the real kernel stack.
+"""Integration test for the skills plugin's rule context on the real core stack.
 
 Proves the workspace ``AGENTS.md`` hierarchy and the ``.voidcode/rules`` rulebook reach the
 provider prompt per dispatch, that a tool touching a nested path adds that directory's rule
@@ -16,8 +16,8 @@ from threading import Thread
 import pytest
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.kernel.bootstrap import open_kernel
-from voidcode.kernel.engine import Kernel
+from voidcode.core.bootstrap import open_core
+from voidcode.core.engine import Core
 
 _SKILLS_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "skills"
 _TOUCH_PLUGIN_ID = "rule-touch"
@@ -74,14 +74,14 @@ def _loopback_server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbac
         server.server_close()
 
 
-_CREATED_KERNELS: list[Kernel] = []
+_CREATED_CORES: list[Core] = []
 
 
 @pytest.fixture(autouse=True)
-def _close_created_kernels() -> Iterator[None]:
+def _close_created_cores() -> Iterator[None]:
     yield
-    while _CREATED_KERNELS:
-        _CREATED_KERNELS.pop().close()
+    while _CREATED_CORES:
+        _CREATED_CORES.pop().close()
 
 
 def _write_touch_plugin(root: Path) -> Path:
@@ -90,7 +90,7 @@ def _write_touch_plugin(root: Path) -> Path:
     return root
 
 
-def _kernel(tmp_path: Path, server: OpenAILoopbackServer, *, skills_enabled: bool) -> Kernel:
+def _core(tmp_path: Path, server: OpenAILoopbackServer, *, skills_enabled: bool) -> Core:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     state_dir = tmp_path / "state"
@@ -117,9 +117,9 @@ def _kernel(tmp_path: Path, server: OpenAILoopbackServer, *, skills_enabled: boo
         },
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-    kernel = open_kernel(workspace, state_dir=state_dir)
-    _CREATED_KERNELS.append(kernel)
-    return kernel
+    core = open_core(workspace, state_dir=state_dir)
+    _CREATED_CORES.append(core)
+    return core
 
 
 def _turn(*calls: dict[str, object], output: str | None = None) -> dict[str, object]:
@@ -154,12 +154,12 @@ def _write_workspace_rules(workspace: Path) -> None:
 
 def test_first_dispatch_carries_the_agents_hierarchy_and_rulebook(tmp_path: Path) -> None:
     with _loopback_server([_turn(output="plain answer")]) as server:
-        kernel = _kernel(tmp_path, server, skills_enabled=False)
+        core = _core(tmp_path, server, skills_enabled=False)
         workspace = tmp_path / "workspace"
         _write_workspace_rules(workspace)
-        session_id = kernel.create_session().session_id
+        session_id = core.create_session().session_id
 
-        assert kernel.run("hello", session_id=session_id).status == "completed"
+        assert core.run("hello", session_id=session_id).status == "completed"
 
         prompt = _prompt_text(server.requests[0])
         assert "Runtime file rules are active for touched workspace paths." in prompt
@@ -178,12 +178,12 @@ def test_touched_path_brings_its_rule_file_into_the_next_dispatch(tmp_path: Path
         _turn(output="touched the file"),
     ]
     with _loopback_server(replies) as server:
-        kernel = _kernel(tmp_path, server, skills_enabled=False)
+        core = _core(tmp_path, server, skills_enabled=False)
         workspace = tmp_path / "workspace"
         _write_workspace_rules(workspace)
-        session_id = kernel.create_session().session_id
+        session_id = core.create_session().session_id
 
-        result = kernel.run("touch sub/file.txt", session_id=session_id)
+        result = core.run("touch sub/file.txt", session_id=session_id)
         assert result.status == "completed"
         assert result.output == "touched the file"
         assert len(server.requests) == 2
@@ -194,7 +194,7 @@ def test_touched_path_brings_its_rule_file_into_the_next_dispatch(tmp_path: Path
         assert "Rule file: sub/AGENTS.md\nsub-rule-marker" in second
         assert "Rule file: AGENTS.md\nroot-rule-marker" in second
 
-        stored, version = kernel.store.plugin_state("skills", "session", session_id)
+        stored, version = core.store.plugin_state("skills", "session", session_id)
         assert stored is not None
         assert version == 1
         assert stored["schema_version"] == 1
@@ -204,15 +204,15 @@ def test_touched_path_brings_its_rule_file_into_the_next_dispatch(tmp_path: Path
 
 def test_skill_catalog_precedes_the_rule_context_when_skills_are_enabled(tmp_path: Path) -> None:
     with _loopback_server([_turn(output="plain answer")]) as server:
-        kernel = _kernel(tmp_path, server, skills_enabled=True)
+        core = _core(tmp_path, server, skills_enabled=True)
         workspace = tmp_path / "workspace"
         _write_workspace_rules(workspace)
         skill = workspace / ".voidcode" / "skills" / "release"
         skill.mkdir(parents=True, exist_ok=True)
         (skill / "SKILL.md").write_text("---\nname: release\ndescription: Cut a release\n---\n\nsteps\n", encoding="utf-8")
-        session_id = kernel.create_session().session_id
+        session_id = core.create_session().session_id
 
-        assert kernel.run("hello", session_id=session_id).status == "completed"
+        assert core.run("hello", session_id=session_id).status == "completed"
 
         prompt = _prompt_text(server.requests[0])
         assert "<name>release</name>" in prompt

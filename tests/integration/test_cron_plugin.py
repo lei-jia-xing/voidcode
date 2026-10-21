@@ -1,18 +1,18 @@
-"""End-to-end tests for the cron plugin on the real kernel stack.
+"""End-to-end tests for the cron plugin on the real core stack.
 
-Drives the real kernel, plugin runtime, loopback provider and durable storage:
-- A model tool call creates a durable session schedule armed with exactly one kernel wakeup
-- The kernel ticker (driven explicitly here) fires that wakeup, and the fired run reaches the
+Drives the real core, plugin runtime, loopback provider and durable storage:
+- A model tool call creates a durable session schedule armed with exactly one core wakeup
+- The core ticker (driven explicitly here) fires that wakeup, and the fired run reaches the
   provider with the scheduled prompt as a verbatim USER message
 - The terminal reschedule arms exactly one successor instant — no duplicates, no replay
 - The `/loop` command creates a recurring schedule and fires it immediately
 
 Timing: the plugin recomputes the next fire from the wall clock (legacy parity), so a tick is
 only issued once its instant has genuinely passed — fabricating a future instant would settle a
-fire against a clock that is still behind it. The kernel's own ticker is pinned for the same
+fire against a clock that is still behind it. The core's own ticker is pinned for the same
 reason: with a 1s cadence it would otherwise fire whenever the real clock crossed a due instant
 and race every assertion below. Only *when* a tick happens is controlled; what a tick does
-(claim one due wakeup, create its authentic run, drive it) is the real kernel path.
+(claim one due wakeup, create its authentic run, drive it) is the real core path.
 
 The plugin under test is the real bundled source, referenced by path so the host
 imports the current code.
@@ -30,9 +30,9 @@ from threading import Thread
 import pytest
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.kernel.bootstrap import open_kernel
-from voidcode.kernel.engine import Kernel
-from voidcode.kernel.storage.store import StoredEvent, WakeupRecord
+from voidcode.core.bootstrap import open_core
+from voidcode.core.engine import Core
+from voidcode.core.storage.store import StoredEvent, WakeupRecord
 from voidcode.plugins.cron.loop_command import USAGE_MESSAGE
 
 _CRON_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "cron"
@@ -57,17 +57,17 @@ def _loopback_server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbac
         server.server_close()
 
 
-_CREATED_KERNELS: list[Kernel] = []
+_CREATED_CORES: list[Core] = []
 
 
 @pytest.fixture(autouse=True)
-def _close_created_kernels() -> Iterator[None]:
+def _close_created_cores() -> Iterator[None]:
     yield
-    while _CREATED_KERNELS:
-        _CREATED_KERNELS.pop().close()
+    while _CREATED_CORES:
+        _CREATED_CORES.pop().close()
 
 
-def _kernel(tmp_path: Path, server: OpenAILoopbackServer) -> Kernel:
+def _core(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     state_dir = tmp_path / "state"
@@ -89,25 +89,25 @@ def _kernel(tmp_path: Path, server: OpenAILoopbackServer) -> Kernel:
         },
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-    kernel = open_kernel(workspace, state_dir=state_dir)
-    _CREATED_KERNELS.append(kernel)
-    return kernel
+    core = open_core(workspace, state_dir=state_dir)
+    _CREATED_CORES.append(core)
+    return core
 
 
-def _explicit_ticker(kernel: Kernel) -> Callable[[int | None], dict[str, object]]:
-    """Pin the kernel's wall-clock ticker so fire instants are driven by the test."""
-    real_tick = kernel.tick
+def _explicit_ticker(core: Core) -> Callable[[int | None], dict[str, object]]:
+    """Pin the core's wall-clock ticker so fire instants are driven by the test."""
+    real_tick = core.tick
 
     def _idle(now_ms: int | None = None) -> dict[str, object]:
         _ = now_ms
         return {"fired": None}
 
-    kernel.tick = _idle  # type: ignore[method-assign]
+    core.tick = _idle  # type: ignore[method-assign]
     return real_tick
 
 
 def _await_instant(due_ms: int, *, timeout_seconds: float = 10.0) -> None:
-    """Wait until an instant has genuinely arrived, then let the kernel claim it."""
+    """Wait until an instant has genuinely arrived, then let the core claim it."""
     deadline = time.monotonic() + timeout_seconds
     while int(time.time() * 1000) < due_ms:
         if time.monotonic() > deadline:
@@ -143,17 +143,17 @@ def _user_texts(request: dict[str, object]) -> list[str]:
     return [str(message["content"]) for message in _messages(request) if message.get("role") == "user"]
 
 
-def _fires(kernel: Kernel, session_id: str) -> list[StoredEvent]:
-    return [event for event in kernel.events_after(session_id) if event.event_type == "kernel.wakeup_fired"]
+def _fires(core: Core, session_id: str) -> list[StoredEvent]:
+    return [event for event in core.events_after(session_id) if event.event_type == "kernel.wakeup_fired"]
 
 
-def _plugin_events(kernel: Kernel, session_id: str, event_type: str) -> list[StoredEvent]:
-    return [event for event in kernel.events_after(session_id) if event.event_type == f"plugin.cron.{event_type}"]
+def _plugin_events(core: Core, session_id: str, event_type: str) -> list[StoredEvent]:
+    return [event for event in core.events_after(session_id) if event.event_type == f"plugin.cron.{event_type}"]
 
 
-def _schedules(kernel: Kernel, session_id: str) -> dict[str, object]:
+def _schedules(core: Core, session_id: str) -> dict[str, object]:
     """The session's stored schedules, or an empty mapping when this plugin wrote no state yet."""
-    payload, _version = kernel.store.plugin_state("cron", "session", session_id)
+    payload, _version = core.store.plugin_state("cron", "session", session_id)
     if not isinstance(payload, Mapping):
         return {}
     schedules = payload["schedules"]
@@ -161,8 +161,8 @@ def _schedules(kernel: Kernel, session_id: str) -> dict[str, object]:
     return dict(schedules)
 
 
-def _pending(kernel: Kernel) -> list[WakeupRecord]:
-    return list(kernel.store.pending_wakeups(str(kernel.workspace)))
+def _pending(core: Core) -> list[WakeupRecord]:
+    return list(core.store.pending_wakeups(str(core.workspace)))
 
 
 def test_a_fired_schedule_reaches_the_provider_and_rearms_once(tmp_path: Path) -> None:
@@ -180,17 +180,17 @@ def test_a_fired_schedule_reaches_the_provider_and_rearms_once(tmp_path: Path) -
         openai_response(message={"role": "assistant", "content": "second tick"}, finish="stop"),
     ]
     with _loopback_server(replies) as server:
-        kernel = _kernel(tmp_path, server)
-        tick = _explicit_ticker(kernel)
-        session_id = kernel.create_session().session_id
+        core = _core(tmp_path, server)
+        tick = _explicit_ticker(core)
+        session_id = core.create_session().session_id
 
-        result = kernel.run("schedule a tick", session_id=session_id)
+        result = core.run("schedule a tick", session_id=session_id)
         assert result.status == "completed"
         assert result.output == "scheduled"
         assert "cron_create" in _tool_names(server.requests[0])
 
         # The tool call really created one durable schedule armed with exactly one wakeup.
-        schedules = _schedules(kernel, session_id)
+        schedules = _schedules(core, session_id)
         assert len(schedules) == 1
         schedule_id, entry = next(iter(schedules.items()))
         assert isinstance(entry, Mapping)
@@ -199,7 +199,7 @@ def test_a_fired_schedule_reaches_the_provider_and_rearms_once(tmp_path: Path) -
         assert entry["enabled"] is True
         assert entry["expires_at"] == entry["created_at"] + 7 * 86400 * 1000
 
-        armed = _pending(kernel)
+        armed = _pending(core)
         assert [wakeup.wakeup_id for wakeup in armed] == [entry["wakeup_id"]]
         first = armed[0]
         assert first.session_id == session_id
@@ -208,17 +208,17 @@ def test_a_fired_schedule_reaches_the_provider_and_rearms_once(tmp_path: Path) -
         assert first.payload == {"kind": "cron", "text": "tick tock", "schedule_id": schedule_id}
         # A 1s cadence fires on the first second boundary after creation.
         assert first.due_at == (int(entry["created_at"]) // 1000 + 1) * 1000
-        assert _fires(kernel, session_id) == []
+        assert _fires(core, session_id) == []
 
         # Nothing fires before its instant.
         assert tick(now_ms=int(first.due_at) - 1) == {"fired": None}
-        assert _fires(kernel, session_id) == []
+        assert _fires(core, session_id) == []
 
         _await_instant(int(first.due_at))
         assert tick(now_ms=int(first.due_at))["fired"] == first.wakeup_id
 
         # Exactly one firing, committed on the owning session under this plugin's attribution.
-        fires = _fires(kernel, session_id)
+        fires = _fires(core, session_id)
         assert len(fires) == 1
         assert fires[0].source == "plugin.cron"
         assert fires[0].payload["role"] == "user"
@@ -231,15 +231,15 @@ def test_a_fired_schedule_reaches_the_provider_and_rearms_once(tmp_path: Path) -
         assert "tick tock" in json.dumps(_messages(fired_request), ensure_ascii=False)
 
         # The terminal reschedule armed exactly one successor for the same schedule.
-        rearmed = _pending(kernel)
+        rearmed = _pending(core)
         assert len(rearmed) == 1
         assert rearmed[0].wakeup_id != first.wakeup_id
         assert rearmed[0].payload == {"kind": "cron", "text": "tick tock", "schedule_id": schedule_id}
         assert rearmed[0].due_at > first.due_at
         # Recomputed from completion time: a long run delays the next fire, missed slots never replay.
         assert rearmed[0].due_at <= int(time.time() * 1000) + 1000
-        assert _schedules(kernel, session_id)[schedule_id]["wakeup_id"] == rearmed[0].wakeup_id
-        settled = _plugin_events(kernel, session_id, "schedule_fired")
+        assert _schedules(core, session_id)[schedule_id]["wakeup_id"] == rearmed[0].wakeup_id
+        settled = _plugin_events(core, session_id, "schedule_fired")
         assert [event.payload for event in settled] == [
             {"id": schedule_id, "outcome": "rearmed", "run_status": "completed", "next_fire_at": rearmed[0].due_at}
         ]
@@ -248,15 +248,15 @@ def test_a_fired_schedule_reaches_the_provider_and_rearms_once(tmp_path: Path) -
         second = rearmed[0]
         _await_instant(int(second.due_at))
         assert tick(now_ms=int(second.due_at))["fired"] == second.wakeup_id
-        assert len(_fires(kernel, session_id)) == 2
+        assert len(_fires(core, session_id)) == 2
         assert len(server.requests) == 4
         assert _user_texts(server.requests[3])[-1] == "tick tock"
 
-        successors = _pending(kernel)
+        successors = _pending(core)
         assert len(successors) == 1
         assert successors[0].due_at > second.due_at
         assert successors[0].wakeup_id not in {first.wakeup_id, second.wakeup_id}
-        assert len({event.payload["wakeup_id"] for event in _fires(kernel, session_id)}) == 2
+        assert len({event.payload["wakeup_id"] for event in _fires(core, session_id)}) == 2
 
 
 def test_loop_command_creates_a_schedule_and_fires_it_immediately(tmp_path: Path) -> None:
@@ -265,15 +265,15 @@ def test_loop_command_creates_a_schedule_and_fires_it_immediately(tmp_path: Path
         openai_response(message={"role": "assistant", "content": "loop ran again"}, finish="stop"),
     ]
     with _loopback_server(replies) as server:
-        kernel = _kernel(tmp_path, server)
-        tick = _explicit_ticker(kernel)
-        session_id = kernel.create_session().session_id
+        core = _core(tmp_path, server)
+        tick = _explicit_ticker(core)
+        session_id = core.create_session().session_id
 
-        result = kernel.invoke_command(
+        result = core.invoke_command(
             session_id,
             "loop",
             {"input": "1s check the deploy"},
-            expected_revision=kernel.command_catalog().revision_id,
+            expected_revision=core.command_catalog().revision_id,
         )
 
         assert result.status == "ok"
@@ -285,24 +285,24 @@ def test_loop_command_creates_a_schedule_and_fires_it_immediately(tmp_path: Path
         )
 
         # Immediate arm: the wakeup is already due when the command returns.
-        armed = _pending(kernel)
+        armed = _pending(core)
         assert len(armed) == 1
         assert armed[0].payload == {"kind": "cron", "text": "check the deploy", "schedule_id": schedule_id}
         assert armed[0].due_at <= int(time.time() * 1000)
 
-        entry = _schedules(kernel, session_id)[schedule_id]
+        entry = _schedules(core, session_id)[schedule_id]
         assert isinstance(entry, Mapping)
         assert entry["kind"] == "every"
         assert entry["schedule_text"] == "every 1s"
         assert entry["expires_at"] == entry["created_at"] + 7 * 86400 * 1000
 
         assert tick(now_ms=int(armed[0].due_at))["fired"] == armed[0].wakeup_id
-        assert len(_fires(kernel, session_id)) == 1
+        assert len(_fires(core, session_id)) == 1
         assert _user_texts(server.requests[0])[-1] == "check the deploy"
 
         # The successor continues the `every 1s` cadence from the completion instant: strictly
         # after the fire that just settled, so the immediate iteration can never repeat itself.
-        successors = _pending(kernel)
+        successors = _pending(core)
         assert len(successors) == 1
         assert successors[0].wakeup_id != armed[0].wakeup_id
         assert successors[0].due_at > armed[0].due_at
@@ -310,17 +310,17 @@ def test_loop_command_creates_a_schedule_and_fires_it_immediately(tmp_path: Path
 
 def test_loop_command_returns_usage_without_side_effects(tmp_path: Path) -> None:
     with _loopback_server([]) as server:
-        kernel = _kernel(tmp_path, server)
-        session_id = kernel.create_session().session_id
+        core = _core(tmp_path, server)
+        session_id = core.create_session().session_id
 
-        result = kernel.invoke_command(
+        result = core.invoke_command(
             session_id,
             "loop",
             {"input": "   "},
-            expected_revision=kernel.command_catalog().revision_id,
+            expected_revision=core.command_catalog().revision_id,
         )
 
         assert result.status == "ok"
         assert result.output == USAGE_MESSAGE
-        assert kernel.store.pending_wakeups(str(kernel.workspace)) == ()
-        assert _schedules(kernel, session_id) == {}
+        assert core.store.pending_wakeups(str(core.workspace)) == ()
+        assert _schedules(core, session_id) == {}

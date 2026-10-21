@@ -546,7 +546,7 @@ class OpenAIChatCompletionsProvider:
                         "content": message.content,
                         # DeepSeek requires prior reasoning_content on every
                         # assistant turn of a tools request, including turns
-                        # without tool calls; the kernel persists the provider's
+                        # without tool calls; the core persists the provider's
                         # own text, so replay it verbatim when it exists.
                         **({"reasoning_content": message.reasoning} if requires_reasoning_content and message.reasoning else {}),
                         "tool_calls": tool_calls,
@@ -618,7 +618,7 @@ class OpenAIChatCompletionsProvider:
                 "tool_name": original_to_provider.get(message.tool_name or "", message.tool_name),
                 "arguments": self._visible_arguments(message.tool_name, dict(arguments) if isinstance(arguments, Mapping) else {}),
                 # The neutral message keeps the result's error-ness, and the
-                # kernel renders status/error/bounds into ``content`` already;
+                # core renders status/error/bounds into ``content`` already;
                 # the structured fields survive only when the caller attached
                 # them to the message metadata.
                 "status": "error" if message.is_error else "ok",

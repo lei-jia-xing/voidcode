@@ -58,7 +58,7 @@ def _load(services: PluginServices) -> tuple[TallyState, int]:
 
 
 def _delta(arguments: Mapping[str, object]) -> int:
-    # The kernel already enforced the admitted schema (an integer-typed delta)
+    # The core already enforced the admitted schema (an integer-typed delta)
     # before dispatch; JSON Schema's `integer` also accepts integral floats
     # (3.0), which JSON cannot distinguish from 3 on the wire. Normalize that
     # representation here so committed state stays a true integer.

@@ -6,15 +6,15 @@
 
 # VoidCode
 
-VoidCode is an open-source, local-first coding agent built as a small trusted kernel with a Python plugin SDK and a bundled official plugin set. It lets a model inspect workspaces, edit files, run commands, search the web, coordinate delegated work, and manage long-running goals — under configurable approval policy, with every turn and tool call persisted locally in append-only SQLite.
+VoidCode is an open-source, local-first coding agent built as a small trusted core with a Python plugin SDK and a bundled official plugin set. It lets a model inspect workspaces, edit files, run commands, search the web, coordinate delegated work, and manage long-running goals — under configurable approval policy, with every turn and tool call persisted locally in append-only SQLite.
 
 ## Key Features
 
 - **Local-first**: sessions, events, and checkpoints are stored in per-workspace SQLite under your XDG state directory. Configured model providers receive conversation context (prompts, tool results, and attachments); trusted plugins and tools may make network requests.
-- **Plugin architecture**: every product mechanism — tools, commands, providers, hooks, views, and session state — is a plugin using the same public SDK a third-party plugin gets, and the kernel imports no concrete plugin. The kernel keeps only its own reserved control surface (`/run`, `/resume`, `/show`, `/status`, `/help`, `/kernel.reload`, and the `kernel_reload` tool), which a plugin can neither declare nor shadow.
+- **Plugin architecture**: every product mechanism — tools, commands, providers, hooks, views, and session state — is a plugin using the same public SDK a third-party plugin gets, and the core imports no concrete plugin. The core keeps only its own reserved control surface (`/run`, `/resume`, `/show`, `/status`, `/help`, `/core.reload`, and the `core_reload` tool), which a plugin can neither declare nor shadow.
 - **Trusted plugins, no ceremony**: a plugin is a Python package whose `create_plugin` returns its registration — tools, commands, hooks, views, and state schema in one place. Plugins are trusted code equal to the application; revisions identify configuration and composition, never code bytes.
 - **Append-only durability**: one immutable event stream per session. Views, transcripts, usage, and UI are projections; clients commit each fact exactly once and never rewind.
-- **Three client surfaces, one contract**: the kernel CLI executes inside the elected image, and the inline terminal UI and React web client speak the same HTTP/SSE contract — one command catalog, one set of declarative views, one event stream.
+- **Three client surfaces, one contract**: the core CLI executes inside the elected image, and the inline terminal UI and React web client speak the same HTTP/SSE contract — one command catalog, one set of declarative views, one event stream.
 - **Agent-facing delegation**: the primary agent delegates focused work through the `task`/`task_batch` tools; there is no separate human task console.
 
 ## Quickstart
@@ -31,7 +31,7 @@ mise run frontend:install   # web client only
 
 ### Configure a workspace
 
-The kernel reads exactly one file, `voidcode.json`, from the workspace root. Write it yourself — there is no configuration CLI:
+The core reads exactly one file, `voidcode.json`, from the workspace root. Write it yourself — there is no configuration CLI:
 
 ```json
 {
@@ -52,7 +52,7 @@ The kernel reads exactly one file, `voidcode.json`, from the workspace root. Wri
 # One agent turn; prints the result as JSON
 voidcode run "Summarize this repository"
 
-# Interactive TUI with inline scrollback (supervised kernel child)
+# Interactive TUI with inline scrollback (supervised core child)
 voidcode
 
 # HTTP/SSE server plus the built web client at http://127.0.0.1:8000/
@@ -63,11 +63,11 @@ voidcode --help
 voidcode run --help
 ```
 
-In a source checkout without the console script installed, use `uv run python -m voidcode.kernel` with the same subcommands. Every command accepts `--workspace PATH` (default: current directory) and `--state-dir PATH`.
+In a source checkout without the console script installed, use `uv run python -m voidcode.core` with the same subcommands. Every command accepts `--workspace PATH` (default: current directory) and `--state-dir PATH`.
 
 ## Command Reference
 
-### Kernel subcommands
+### Core subcommands
 
 | Command | Purpose |
 |---|---|
@@ -89,7 +89,7 @@ In a source checkout without the console script installed, use `uv run python -m
 
 ### In-session commands
 
-Every client dispatches commands from the admitted catalog — the kernel's reserved commands (`/run`, `/resume`, `/show`, `/status`, `/help`, `/kernel.reload`) plus the plugin-declared commands below. Use `/name` in the TUI or web composer, or `voidcode invoke` from the CLI:
+Every client dispatches commands from the admitted catalog — the core's reserved commands (`/run`, `/resume`, `/show`, `/status`, `/help`, `/core.reload`) plus the plugin-declared commands below. Use `/name` in the TUI or web composer, or `voidcode invoke` from the CLI:
 
 | Plugin | Commands |
 |---|---|
@@ -117,12 +117,12 @@ The TUI opens on a quiet composer: no plugin views load until requested. Goal, p
 
 ```mermaid
 graph TD
-    CLI["Kernel CLI (elected image)"] --> Kernel["Kernel (governance, storage, activation, artifacts)"]
-    TUI["Inline TUI (supervisor child, or --server)"] --> Transport["Kernel transport (HTTP/SSE, /api)"]
+    CLI["Core CLI (elected image)"] --> Core["Core (governance, storage, activation, artifacts)"]
+    TUI["Inline TUI (supervisor child, or --server)"] --> Transport["Core transport (HTTP/SSE, /api)"]
     Web["Web client (served bundle)"] --> Transport
-    Transport --> Kernel
-    Kernel --> Plugins["Bundled plugins (tools, commands, providers, views)"]
-    Kernel -.-> SDK["SDK contracts"]
+    Transport --> Core
+    Core --> Plugins["Bundled plugins (tools, commands, providers, views)"]
+    Core -.-> SDK["SDK contracts"]
     Plugins -.-> SDK
 ```
 
@@ -146,11 +146,11 @@ mise run frontend:test    # Vitest component tests
 
 ## Documentation
 
-- [Architecture Overview](./docs/architecture.md): kernel, plugin runtime, SDK, and the bundled plugin set.
+- [Architecture Overview](./docs/architecture.md): core, plugin runtime, SDK, and the bundled plugin set.
 - [Configuration Guide](./docs/configuration.md): `voidcode.json` fields and state directory.
 - [Coding Standards](./docs/coding-standards.md): conventions and commit formats.
 - [Testing Policy](./docs/testing.md): test tiers, loopback providers, and offline guards.
-- [Kernel & Plugin Contracts](./docs/contracts/README.md): durability, activation, goal, and client transport contracts.
+- [Core & Plugin Contracts](./docs/contracts/README.md): durability, activation, goal, and client transport contracts.
 - [Contributing](./CONTRIBUTING.md): development environment and pull request workflow.
 
 ## License

@@ -1,4 +1,4 @@
-"""End-to-end integration test for the Skills plugin on the real kernel stack.
+"""End-to-end integration test for the Skills plugin on the real core stack.
 
 Proves the discovery -> catalog context -> skill tool path with a real provider request:
 the catalog is contributed to the model, the model loads a body by name, and disabling the
@@ -16,8 +16,8 @@ from threading import Thread
 import pytest
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.kernel.bootstrap import open_kernel
-from voidcode.kernel.engine import Kernel
+from voidcode.core.bootstrap import open_core
+from voidcode.core.engine import Core
 
 _SKILLS_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "skills"
 
@@ -35,23 +35,23 @@ def _loopback_server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbac
         server.server_close()
 
 
-_CREATED_KERNELS: list[Kernel] = []
+_CREATED_CORES: list[Core] = []
 
 
 @pytest.fixture(autouse=True)
-def _close_created_kernels() -> Iterator[None]:
+def _close_created_cores() -> Iterator[None]:
     yield
-    while _CREATED_KERNELS:
-        _CREATED_KERNELS.pop().close()
+    while _CREATED_CORES:
+        _CREATED_CORES.pop().close()
 
 
-def _kernel(
+def _core(
     tmp_path: Path,
     server: OpenAILoopbackServer,
     *,
     skill_plugin_enabled: bool,
     skills_enabled: bool,
-) -> Kernel:
+) -> Core:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     state_dir = tmp_path / "state"
@@ -77,9 +77,9 @@ def _kernel(
         },
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-    kernel = open_kernel(workspace, state_dir=state_dir)
-    _CREATED_KERNELS.append(kernel)
-    return kernel
+    core = open_core(workspace, state_dir=state_dir)
+    _CREATED_CORES.append(core)
+    return core
 
 
 def _write_skill(workspace: Path, *, name: str, description: str, body: str) -> Path:
@@ -130,16 +130,16 @@ def test_skill_catalog_context_and_on_demand_body_on_the_real_stack(tmp_path: Pa
         ),
     ]
     with _loopback_server(replies) as server:
-        kernel = _kernel(tmp_path, server, skill_plugin_enabled=True, skills_enabled=True)
+        core = _core(tmp_path, server, skill_plugin_enabled=True, skills_enabled=True)
         entry = _write_skill(
             tmp_path / "workspace",
             name="release",
             description="Cut a release",
             body="# Steps\n\n1. bump the version",
         )
-        session_id = kernel.create_session().session_id
+        session_id = core.create_session().session_id
 
-        result = kernel.run("cut a release", session_id=session_id)
+        result = core.run("cut a release", session_id=session_id)
         assert result.status == "completed"
         assert result.output == "Followed the release skill."
 
@@ -158,7 +158,7 @@ def test_skill_catalog_context_and_on_demand_body_on_the_real_stack(tmp_path: Pa
         assert f"## Skill: release\n**Description**: Cut a release\nsourcePath: {entry}\nbaseDirectory: {entry.parent}" in body
         assert "# Steps\n\n1. bump the version" in body
 
-        listed = kernel.invoke_command(session_id, "skills", {}, expected_revision=kernel.command_catalog().revision_id)
+        listed = core.invoke_command(session_id, "skills", {}, expected_revision=core.command_catalog().revision_id)
         assert listed.status == "ok"
         assert listed.output is not None
         assert "[enabled] release — Cut a release" in listed.output
@@ -173,14 +173,14 @@ def test_disabled_skills_plugin_contributes_nothing(tmp_path: Path) -> None:
         )
     ]
     with _loopback_server(replies) as server:
-        kernel = _kernel(tmp_path, server, skill_plugin_enabled=False, skills_enabled=True)
+        core = _core(tmp_path, server, skill_plugin_enabled=False, skills_enabled=True)
         _write_skill(tmp_path / "workspace", name="release", description="Cut a release", body="body")
-        session_id = kernel.create_session().session_id
-        assert kernel.run("hello", session_id=session_id).status == "completed"
+        session_id = core.create_session().session_id
+        assert core.run("hello", session_id=session_id).status == "completed"
         assert "skill" not in _tool_names(server.requests[0])
         request_text = json.dumps(_messages(server.requests[0]), ensure_ascii=False)
         assert "<available_skills>" not in request_text
-        names = [descriptor.name for descriptor in kernel.command_catalog().commands]
+        names = [descriptor.name for descriptor in core.command_catalog().commands]
         assert "skills" not in names
 
 
@@ -193,13 +193,13 @@ def test_plugin_enabled_but_skills_disabled_in_config(tmp_path: Path) -> None:
         )
     ]
     with _loopback_server(replies) as server:
-        kernel = _kernel(tmp_path, server, skill_plugin_enabled=True, skills_enabled=False)
+        core = _core(tmp_path, server, skill_plugin_enabled=True, skills_enabled=False)
         _write_skill(tmp_path / "workspace", name="release", description="Cut a release", body="body")
-        session_id = kernel.create_session().session_id
-        assert kernel.run("hello", session_id=session_id).status == "completed"
+        session_id = core.create_session().session_id
+        assert core.run("hello", session_id=session_id).status == "completed"
         # The tool stays advertised (discovery is per call), but no catalog context is contributed.
         assert "skill" in _tool_names(server.requests[0])
         request_text = json.dumps(_messages(server.requests[0]), ensure_ascii=False)
         assert "<available_skills>" not in request_text
-        listed = kernel.invoke_command(session_id, "skills", {}, expected_revision=kernel.command_catalog().revision_id)
+        listed = core.invoke_command(session_id, "skills", {}, expected_revision=core.command_catalog().revision_id)
         assert listed.output == "Skills are disabled."

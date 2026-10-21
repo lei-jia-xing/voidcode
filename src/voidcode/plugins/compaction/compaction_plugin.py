@@ -1,9 +1,9 @@
-"""Compaction plugin: the session window projection over the kernel's verified seam.
+"""Compaction plugin: the session window projection over the core's verified seam.
 
-The plugin decides *what* a projection covers and writes the replacement text; the kernel
+The plugin decides *what* a projection covers and writes the replacement text; the core
 decides whether that projection is admissible and measures its accounting itself. So a
 projection is declared through ``services.project_window`` and read back through
-``services.window_projection`` -- the numbers reported here are the kernel's, never this
+``services.window_projection`` -- the numbers reported here are the core's, never this
 plugin's own estimate.
 
 Trigger (``enabled`` + ``threshold_tokens``/``reserve_tokens``): the provider-reported prompt
@@ -17,7 +17,7 @@ Manual ``/compact`` runs the same projection on demand -- the user is the gate t
 already in force.
 
 State is this plugin's own bookkeeping only (the observation cursor and the last projection's
-accounting); the projection row itself belongs to the kernel.
+accounting); the projection row itself belongs to the core.
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ from .projection import (
 )
 
 SCHEMA_VERSION = 1
-#: Event that records one applied projection (kernel-measured bytes, never estimates).
+#: Event that records one applied projection (core-measured bytes, never estimates).
 CONTEXT_COMPACTED_EVENT = "context_compacted"
 #: How many event pages one observation may consume; the prefix is what matters, not the tail.
 _MAX_EVENT_PAGES = 3
@@ -67,7 +67,7 @@ ProjectionReason = Literal["threshold", "manual"]
 
 @dataclass(frozen=True, slots=True)
 class LastProjection:
-    """The kernel-measured accounting of the projection this plugin most recently declared."""
+    """The core-measured accounting of the projection this plugin most recently declared."""
 
     covered_from_sequence: int
     covered_to_sequence: int
@@ -201,7 +201,7 @@ def parse_compaction_config(config: Mapping[str, object] | None) -> CompactionCo
 
 @dataclass(frozen=True, slots=True)
 class ProjectionOutcome:
-    """Result of one projection attempt, reported in the kernel's own terms."""
+    """Result of one projection attempt, reported in the core's own terms."""
 
     status: Literal["projected", "noop", "refused"]
     reason: str
@@ -258,7 +258,7 @@ def _replacement_text(
         return deterministic, "deterministic"
     try:
         # The legacy 60s bound is the seam's own here: ``services.model_query`` carries no
-        # timeout argument, so the kernel's RPC timeout is the only bound available.
+        # timeout argument, so the core's RPC timeout is the only bound available.
         answer = clip_summary_text(services.model_query(summary_prompt(plan)))
     except Exception:  # noqa: BLE001 - a failed summary degrades, it never fails the observation
         return deterministic, "deterministic"
@@ -271,10 +271,10 @@ def _replacement_text(
 
 
 def _measured_projection(services: PluginServices) -> tuple[int, int]:
-    """Read back the projection the kernel just verified and take its measured accounting."""
+    """Read back the projection the core just verified and take its measured accounting."""
     row = services.window_projection()
     if not isinstance(row, Mapping):
-        raise ValueError("the kernel recorded no window projection for this session")
+        raise ValueError("the core recorded no window projection for this session")
     covered_bytes = row.get("covered_bytes")
     dropped_bytes = row.get("dropped_bytes")
     if not isinstance(covered_bytes, int) or not isinstance(dropped_bytes, int):
@@ -296,7 +296,7 @@ def apply_projection(
     """Plan, guard, declare and record one projection.
 
     The size guard runs *before* ``project_window`` so an unshrinkable prefix is refused
-    visibly instead of being sent for the kernel to reject, and the kernel's measured numbers
+    visibly instead of being sent for the core to reject, and the core's measured numbers
     -- not this plugin's plan -- are what the staged event and the state record.
     """
     plan = plan_projection(
@@ -308,7 +308,7 @@ def apply_projection(
     if plan is None:
         return ProjectionOutcome(status="noop", reason="nothing_new_to_cover", measured_input_tokens=measured_input_tokens)
     # The guard runs before any model call: an unshrinkable prefix is refused without spending
-    # a provider turn on a summary the kernel would reject anyway.
+    # a provider turn on a summary the core would reject anyway.
     deterministic = render_deterministic_replacement(plan)
     if len(deterministic.encode("utf-8")) >= plan.covered_bytes:
         return ProjectionOutcome(
@@ -375,7 +375,7 @@ def compaction_observer(
 
     ``usage`` is the per-dispatch measurement and the timely trigger; ``run_finished`` catches
     the end of a run, where the newest dispatch in the window supplies the same measurement.
-    A projection this plugin refuses raises, so the kernel records an owned
+    A projection this plugin refuses raises, so the core records an owned
     ``kernel.observer_error`` instead of the observation silently doing nothing.
     """
     _ = context
@@ -430,7 +430,7 @@ def _row_accounting(row: Mapping[str, object] | None) -> dict[str, object]:
 
 
 class CompactCommand:
-    """``/compact``: project the covered prefix on demand and report the kernel's accounting."""
+    """``/compact``: project the covered prefix on demand and report the core's accounting."""
 
     def __init__(self, config: CompactionConfig) -> None:
         self._config = config
@@ -439,7 +439,7 @@ class CompactCommand:
         name="compact",
         description="Summarize the covered conversation prefix into one system message.",
         argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
-        # The projection is session state the kernel owns; the command declares it as such.
+        # The projection is session state the core owns; the command declares it as such.
         effects=frozenset({ToolEffect.SESSION}),
         busy_gate=True,
         client_syntax="/compact",

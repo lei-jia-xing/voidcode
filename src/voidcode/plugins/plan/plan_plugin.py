@@ -2,17 +2,17 @@
 
 Ports the legacy plan-mode mechanism (``collaboration_mode`` in
 ``src/voidcode/runtime/permissions/policy.py`` plus ``PLAN_MODE_INSTRUCTION`` from
-``src/voidcode/runtime/context/window.py``) onto the kernel's owner-scoped overlay primitive:
+``src/voidcode/runtime/context/window.py``) onto the core's owner-scoped overlay primitive:
 - ``plan`` tightens the session with a read-only overlay, records the mode in
   this plugin's own session state and contributes the verbatim plan instruction
   to the provider context.
 - ``plan.off`` revokes exactly this owner's overlay and stops the contribution. A read-only
-  policy frozen by the user (kernel config or another owner) is never affected: overlays can
+  policy frozen by the user (core config or another owner) is never affected: overlays can
   only tighten.
 - ``plan.status`` reports the plugin's view of the mode.
 
 The overlay row is owned by this plugin, so while the plugin is active plan mode survives
-restarts (the state and the overlay are both durable). Deactivation is the kernel's business:
+restarts (the state and the overlay are both durable). Deactivation is the core's business:
 this plugin can only return its state untouched, and it must not silently claim that a disable
 cleared the overlay.
 """

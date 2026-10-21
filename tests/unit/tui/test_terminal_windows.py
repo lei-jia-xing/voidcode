@@ -5,7 +5,7 @@ from ctypes import wintypes
 
 import pytest
 
-from voidcode.kernel.tui.term import Terminal
+from voidcode.core.tui.term import Terminal
 
 
 def test_windows_console_modes_are_restored() -> None:

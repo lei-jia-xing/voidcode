@@ -1,7 +1,7 @@
 """Effectiveness plugin: aggregate-only tool-outcome projection for one session.
 
 Ports the aggregate projection of legacy ``runtime/effectiveness.py`` plus
-``runtime/storage/effectiveness.py`` onto kernel seams: the projection reads this
+``runtime/storage/effectiveness.py`` onto core seams: the projection reads this
 session's committed events (``services.read_events``, paged) and its truthful usage
 report (``services.get_usage``), and reports counts only.
 
@@ -32,7 +32,7 @@ SCHEMA_VERSION = 1
 #: Events per ``read_events`` page; paging stops when a page comes back short.
 EVENT_PAGE_SIZE = 200
 
-#: Kernel facts this projection aggregates.
+#: Core facts this projection aggregates.
 MODEL_TURN_EVENT = "kernel.model_turn"
 #: One tool outcome: completed normally, or interrupted with an unsettled effect.
 TOOL_OUTCOME_EVENTS: frozenset[str] = frozenset({"kernel.tool_completed", "kernel.tool_interrupted"})

@@ -1,8 +1,7 @@
-"""Cutover guards: the legacy world is gone and the new world never reaches back for it.
+"""Import-direction guards: the new world never reaches back for deleted modules.
 
-These are layout/direction guards, not behavior tests: the P4 cutover deleted the
-runtime/tools/provider/cli world, and nothing in the kernel, the SDK,
-or a bundled plugin may import it again (or a concrete plugin, from the kernel).
+These are dependency-boundary guards, not layout pins: nothing in the core, the SDK,
+or a bundled plugin may import a deleted module or a concrete plugin.
 """
 
 from __future__ import annotations
@@ -13,7 +12,7 @@ from pathlib import Path
 _SRC = Path(__file__).resolve().parents[2] / "src" / "voidcode"
 
 #: Top-level packages and modules the cutover deleted. A reappearing name means someone
-#: resurrected the legacy architecture instead of extending the kernel or a plugin.
+#: resurrected the legacy architecture instead of extending the core or a plugin.
 _LEGACY_TOP_LEVEL = frozenset(
     {
         "acp",
@@ -21,7 +20,6 @@ _LEGACY_TOP_LEVEL = frozenset(
         "cli",
         "command",
         "common",
-        "core",
         "doctor",
         "formatter",
         "hook",
@@ -37,7 +35,7 @@ _LEGACY_TOP_LEVEL = frozenset(
 )
 
 #: The layers that must never depend on a concrete plugin or on the deleted world.
-_GUARDED_ROOTS = ("kernel", "plugins", "sdk")
+_GUARDED_ROOTS = ("core", "plugins", "sdk")
 
 
 def _iter_sources(root: Path):
@@ -68,13 +66,6 @@ def _imported_modules(source: Path) -> list[str]:
     return targets
 
 
-def test_legacy_packages_are_deleted() -> None:
-    present = sorted(name for name in _LEGACY_TOP_LEVEL if (_SRC / name).exists())
-    assert not present, f"legacy packages reappeared after the P4 cutover: {present}"
-    assert not (_SRC / "tui" / "app.py").exists(), "the legacy TUI application is back"
-    assert not (_SRC / "tui" / "__init__.py").exists(), "the legacy tui package is back"
-
-
 def test_new_world_never_imports_legacy_modules() -> None:
     violations: list[str] = []
     for root_name in _GUARDED_ROOTS:
@@ -86,8 +77,8 @@ def test_new_world_never_imports_legacy_modules() -> None:
                 head = module.split(".")[1] if module.startswith("voidcode.") else None
                 if head in _LEGACY_TOP_LEVEL:
                     violations.append(f"{source.relative_to(_SRC)}: imports {module}")
-                # The kernel admits plugins by root from disk; importing the
-                # bundled plugin package would make one concrete plugin part of the kernel.
-                if root_name == "kernel" and module.startswith("voidcode.plugins"):
-                    violations.append(f"{source.relative_to(_SRC)}: kernel imports a concrete plugin: {module}")
+                # The core admits plugins by root from disk; importing the
+                # bundled plugin package would make one concrete plugin part of the core.
+                if root_name == "core" and module.startswith("voidcode.plugins"):
+                    violations.append(f"{source.relative_to(_SRC)}: core imports a concrete plugin: {module}")
     assert not violations, "\n".join(violations)

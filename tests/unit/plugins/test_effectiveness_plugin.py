@@ -33,7 +33,7 @@ WORKSPACE = Path("/tmp/workspace")
 SESSION_ID = "session-1"
 
 
-# --- Synthetic event streams (kernel-committed payload shapes) ----------------
+# --- Synthetic event streams (core-committed payload shapes) ----------------
 
 
 def _model_turn(sequence: int, model: str) -> EventView:
@@ -184,7 +184,7 @@ def _session_events() -> list[EventView]:
             run_id="run-1",
             revision_id="rev-1",
             source="runtime",
-            actor="kernel",
+            actor="core",
             payload={"tokens_before": 900},
         ),
         EventView(
@@ -192,7 +192,7 @@ def _session_events() -> list[EventView]:
             event_type="kernel.approval_requested",
             run_id="run-1",
             revision_id="rev-1",
-            source="kernel",
+            source="core",
             actor="model",
             payload={"request_id": "r1"},
         ),
@@ -201,7 +201,7 @@ def _session_events() -> list[EventView]:
             event_type="kernel.approval_requested",
             run_id="run-1",
             revision_id="rev-1",
-            source="kernel",
+            source="core",
             actor="model",
             payload={"request_id": "r2", "hook_status": "approved"},
         ),
@@ -228,7 +228,7 @@ def _session_events() -> list[EventView]:
             event_type="kernel.model_query",
             run_id="run-2",
             revision_id="rev-1",
-            source="kernel",
+            source="core",
             actor="plugin",
             payload={"provider": "openai", "model": "gpt-y"},
         ),
@@ -237,8 +237,8 @@ def _session_events() -> list[EventView]:
             event_type="kernel.wakeup_fired",
             run_id="run-2",
             revision_id="rev-1",
-            source="kernel",
-            actor="kernel",
+            source="core",
+            actor="core",
             payload={"owner": "cron"},
         ),
     ]
@@ -355,7 +355,7 @@ def test_unknown_usage_keeps_sums_none_and_sets_has_unknown() -> None:
     assert mixed_block["has_unknown"] is True
 
 
-def test_unknown_usage_flag_from_the_kernel_is_preserved() -> None:
+def test_unknown_usage_flag_from_the_core_is_preserved() -> None:
     block = _project(
         [], _usage(input_tokens=5, output_tokens=5, cache_read_tokens=0, uncached_input_tokens=0, total_cost_usd=0.0, has_unknown_usage=True)
     )["provider_usage"]

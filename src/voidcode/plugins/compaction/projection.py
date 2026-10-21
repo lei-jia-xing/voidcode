@@ -2,13 +2,13 @@
 
 Ported from legacy ``runtime/context/window.py`` (the continuity projection, the
 threshold/reserve resolution and the summary lane's constants) so this plugin stands on
-its own once the legacy tree is deleted. This module only *plans*: the kernel re-verifies
+its own once the legacy tree is deleted. This module only *plans*: the core re-verifies
 the boundary and measures the accounting of every declared projection
 (``services.project_window``), so nothing here is trusted about coverage.
 
 Rulers: a token number is either provider-reported (a dispatch's usage record, a usage
 fact) or a legacy constant. Sizes this module compares against each other are measured on
-the kernel's own ruler -- the canonical JSON bytes of a committed event payload -- never a
+the core's own ruler -- the canonical JSON bytes of a committed event payload -- never a
 UTF-8-bytes/4 token estimate, which the plugin has no way to make truthful.
 """
 
@@ -57,7 +57,7 @@ _CONTINUITY_SUMMARY_RESULT_CHARS = 4_000
 _CONTINUITY_SUMMARY_INPUT_CHARS = 60_000
 #: Chars kept from the answer: longer than this is not a summary.
 CONTINUITY_SUMMARY_OUTPUT_CHARS = 8_000
-#: ``services.model_query`` accepts one prompt of at most 64 KiB (kernel-enforced).
+#: ``services.model_query`` accepts one prompt of at most 64 KiB (core-enforced).
 MODEL_QUERY_MAX_BYTES = 64 * 1024
 
 #: Facts from committed events: one dispatch, one provider turn, one tool batch member.
@@ -66,7 +66,7 @@ PROVIDER_INTENT_EVENT = "kernel.provider_intent"
 PROVIDER_INTERRUPTED_EVENT = "kernel.provider_interrupted"
 USER_MESSAGE_EVENT = "kernel.user_message"
 TOOL_RESULT_EVENTS: frozenset[str] = frozenset({"kernel.tool_completed", "kernel.tool_interrupted"})
-#: Events the kernel renders into the provider window (``engine._messages``). Only these make a
+#: Events the core renders into the provider window (``engine._messages``). Only these make a
 #: prefix worth covering, so this plugin's own bookkeeping can never justify another projection.
 PROVIDER_VISIBLE_EVENTS: frozenset[str] = frozenset(
     {USER_MESSAGE_EVENT, "kernel.continuation_started", "kernel.wakeup_fired", MODEL_TURN_EVENT} | TOOL_RESULT_EVENTS
@@ -203,11 +203,11 @@ def should_compact(measured_tokens: int | None, budget: CompactionBudget) -> boo
     return measured_tokens > budget.trigger_tokens
 
 
-# --- Measurement: the kernel's own ruler over committed events ---
+# --- Measurement: the core's own ruler over committed events ---
 
 
 def event_payload_bytes(event: EventView) -> int:
-    """Canonical JSON bytes of one event payload, the ruler the kernel covers in."""
+    """Canonical JSON bytes of one event payload, the ruler the core covers in."""
     payload = event.payload
     if not isinstance(payload, Mapping):
         return 0
@@ -256,7 +256,7 @@ def measured_dispatch_input_tokens(events: Sequence[EventView]) -> int | None:
 
 
 def _request_window_characters(events: Sequence[EventView], dispatch_sequence: int | None) -> int | None:
-    """Measured characters of the request one dispatch sent (kernel ``request_window``)."""
+    """Measured characters of the request one dispatch sent (core ``request_window``)."""
     if dispatch_sequence is None:
         return None
     for event in events:
@@ -473,9 +473,9 @@ class ProjectionPlan:
 def _balanced_boundaries(events: Sequence[EventView]) -> tuple[int, ...]:
     """Sequences where the prefix up to them holds no half-finished native tool batch.
 
-    The kernel verifies exactly this on the real payloads (an assistant tool call and its
+    The core verifies exactly this on the real payloads (an assistant tool call and its
     report are covered together or not at all), so the plugin walks the same rule and stops
-    only on a boundary the kernel will accept.
+    only on a boundary the core will accept.
     """
     boundaries: list[int] = []
     calls = 0
@@ -501,7 +501,7 @@ def _balanced_boundaries(events: Sequence[EventView]) -> tuple[int, ...]:
 def _readable_prefix(events: Sequence[EventView]) -> tuple[EventView, ...]:
     """Events up to the first whose payload ``read_events`` truncated.
 
-    A truncated payload is an event this plugin cannot certify: the kernel would count tool
+    A truncated payload is an event this plugin cannot certify: the core would count tool
     calls from the full payload, so covering blind is exactly how a boundary stops being one.
     """
     readable: list[EventView] = []
@@ -620,7 +620,7 @@ def plan_projection(
 ) -> ProjectionPlan | None:
     """Plan the prefix a projection would cover, or ``None`` when there is nothing new to cover.
 
-    Coverage starts at the session's first event (the kernel refuses anything else) and ends
+    Coverage starts at the session's first event (the core refuses anything else) and ends
     at the last batch-closing boundary at or before the retention cut. The cut leaves the
     newest ``keep_recent_tokens`` worth of content raw, converted through this session's own
     measured characters-per-token rate; with no usable rate the cut is the newest boundary,
@@ -782,7 +782,7 @@ def summary_prompt(plan: ProjectionPlan) -> str:
     """The one-shot summary request: the legacy instruction, then the bounded covered material.
 
     ``services.model_query`` carries a single prompt (no separate system role), so the legacy
-    system instruction opens it. The whole prompt stays inside the kernel's 64 KiB bound.
+    system instruction opens it. The whole prompt stays inside the core's 64 KiB bound.
     """
     head = f"{CONTINUITY_SUMMARY_SYSTEM_PROMPT}\n\n"
     material = "\n\n".join(plan.summary_material)[:_CONTINUITY_SUMMARY_INPUT_CHARS]

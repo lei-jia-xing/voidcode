@@ -1,6 +1,6 @@
 """Plugin-local LSP contracts shared by the tool and its manager.
 
-There are no kernel-wide LSP contracts to import: this module defines the small
+There are no core-wide LSP contracts to import: this module defines the small
 part the LSP plugin needs: the document-state record, the request-error base
 class, the request boundary the tool calls, and the plugin's LSP config carrying
 the ``enabled`` tri-state.

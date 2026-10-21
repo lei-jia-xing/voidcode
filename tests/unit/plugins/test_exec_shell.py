@@ -1,4 +1,4 @@
-"""Behavior tests for the exec plugin's shell tool on the kernel process lease.
+"""Behavior tests for the exec plugin's shell tool on the core process lease.
 
 The lease owns the machine, so these tests drive a fake lease: it records the call the tool made
 and returns the scripted `ProcessResult` the host would have produced. What is under test is the
@@ -218,7 +218,7 @@ def test_shell_exec_requires_a_command(tmp_path: Path) -> None:
 
 
 def test_shell_exec_without_a_lease_fails_visibly(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="shell_exec requires the kernel process lease"):
+    with pytest.raises(ValueError, match="shell_exec requires the core process lease"):
         _shell_tool().invoke(ToolCall("shell_exec", {"command": "echo hi"}), context=_context(tmp_path), services=None)  # type: ignore[arg-type]
 
 

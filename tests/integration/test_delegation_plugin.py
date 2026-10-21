@@ -1,6 +1,6 @@
-"""End-to-end integration test for the Delegation plugin on the real kernel stack.
+"""End-to-end integration test for the Delegation plugin on the real core stack.
 
-Drives the real kernel, plugin runtime, loopback provider and durable storage: a parent run whose
+Drives the real core, plugin runtime, loopback provider and durable storage: a parent run whose
 model calls ``task(prompt=..., run_in_background=false)`` spawns a real child session, the child's
 run completes against the same provider, and its outcome comes back inside the parent's tool
 result with ``kernel.child_spawned``/``kernel.child_finished`` facts on the parent session.
@@ -17,8 +17,8 @@ from threading import Thread
 import pytest
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.kernel.bootstrap import open_kernel
-from voidcode.kernel.engine import Kernel
+from voidcode.core.bootstrap import open_core
+from voidcode.core.engine import Core
 from voidcode.plugins.delegation.presets import EXPLORE_PROMPT_BODY
 
 _DELEGATION_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "delegation"
@@ -38,14 +38,14 @@ def _loopback_server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbac
         server.server_close()
 
 
-_CREATED_KERNELS: list[Kernel] = []
+_CREATED_CORES: list[Core] = []
 
 
 @pytest.fixture(autouse=True)
-def _close_created_kernels() -> Iterator[None]:
+def _close_created_cores() -> Iterator[None]:
     yield
-    while _CREATED_KERNELS:
-        _CREATED_KERNELS.pop().close()
+    while _CREATED_CORES:
+        _CREATED_CORES.pop().close()
 
 
 def _admitted_source(tmp_path: Path) -> Path:
@@ -54,7 +54,7 @@ def _admitted_source(tmp_path: Path) -> Path:
     return _DELEGATION_PLUGIN_ROOT
 
 
-def _kernel(tmp_path: Path, server: OpenAILoopbackServer) -> Kernel:
+def _core(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     state_dir = tmp_path / "state"
@@ -80,9 +80,9 @@ def _kernel(tmp_path: Path, server: OpenAILoopbackServer) -> Kernel:
         },
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-    kernel = open_kernel(workspace, state_dir=state_dir)
-    _CREATED_KERNELS.append(kernel)
-    return kernel
+    core = open_core(workspace, state_dir=state_dir)
+    _CREATED_CORES.append(core)
+    return core
 
 
 def _task_call(call_id: str, arguments: dict[str, object]) -> dict[str, object]:
@@ -131,9 +131,9 @@ def test_parent_spawns_a_real_child_and_receives_its_output(tmp_path: Path) -> N
         ),
     ]
     with _loopback_server(replies) as server:
-        kernel = _kernel(tmp_path, server)
-        parent_id = kernel.create_session("parent").session_id
-        result = kernel.run("count the doors", session_id=parent_id)
+        core = _core(tmp_path, server)
+        parent_id = core.create_session("parent").session_id
+        result = core.run("count the doors", session_id=parent_id)
         assert result.status == "completed"
         assert result.output == "delegation complete"
 
@@ -157,11 +157,11 @@ def test_parent_spawns_a_real_child_and_receives_its_output(tmp_path: Path) -> N
         child_id = str(body["task_id"])
 
         # A real child session is linked to the parent, and its run left a durable terminal fact.
-        child = kernel.session(child_id)
+        child = core.session(child_id)
         assert child.parent_session_id == parent_id
         assert child.status == "completed"
 
-        parent_events = kernel.events_after(parent_id)
+        parent_events = core.events_after(parent_id)
         spawned = [event for event in parent_events if event.event_type == "kernel.child_spawned"]
         finished = [event for event in parent_events if event.event_type == "kernel.child_finished"]
         assert len(spawned) == 1
@@ -174,7 +174,7 @@ def test_parent_spawns_a_real_child_and_receives_its_output(tmp_path: Path) -> N
         assert finished[0].payload["output"] == "child answer: 12 doors"
 
         # The plugin's own session state records the child it started.
-        stored = kernel.store.plugin_state("delegation", "session", parent_id)
+        stored = core.store.plugin_state("delegation", "session", parent_id)
         assert stored is not None
         payload, version = stored
         assert payload is not None
@@ -210,9 +210,9 @@ def test_preset_child_gets_the_profile_prompt_and_a_visible_scope_downgrade(tmp_
         openai_response(message={"role": "assistant", "content": "preset delegation complete"}, finish="stop"),
     ]
     with _loopback_server(replies) as server:
-        kernel = _kernel(tmp_path, server)
-        parent_id = kernel.create_session("parent").session_id
-        result = kernel.run("explore the visitor guide", session_id=parent_id)
+        core = _core(tmp_path, server)
+        parent_id = core.create_session("parent").session_id
+        result = core.run("explore the visitor guide", session_id=parent_id)
 
         assert result.status == "completed", result.error
         assert len(server.requests) == 3
@@ -233,12 +233,12 @@ def test_preset_child_gets_the_profile_prompt_and_a_visible_scope_downgrade(tmp_
         assert f"note: {notes[0]}" in tool_text
 
         child_id = str(body["task_id"])
-        child = kernel.session(child_id)
+        child = core.session(child_id)
         assert child.parent_session_id == parent_id
         assert child.tool_allowlist is None, "the fallback runs the child on the parent's scope"
-        assert kernel.store.session_overlays(child_id) == ("read-only",), "a read-only preset keeps its stance"
+        assert core.store.session_overlays(child_id) == ("read-only",), "a read-only preset keeps its stance"
 
-        stored = kernel.store.plugin_state("delegation", "session", parent_id)
+        stored = core.store.plugin_state("delegation", "session", parent_id)
         assert stored is not None
         payload, _version = stored
         children = payload["children"]

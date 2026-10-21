@@ -4,6 +4,28 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Product rename: kernel → core; formatter hook deleted (BREAKING)
+- The runtime package is `src/voidcode/core/` (`Core`, `open_core`, `CoreResult`, `CoreConfig`,
+  `create_core_app*`, `python -m voidcode.core`, console script `voidcode.core.__main__:main`); the
+  web client is `frontend/src/core/` (`CoreApp`, `CoreClient`, `CoreApiError`, `core.*` i18n keys,
+  `core-app` testid) with `e2e/core.spec.ts`; docs and scripts follow (`core-upgrade.md`,
+  `feat(core):` scope). The reserved names are `core.reload`/`core_reload`, health reports
+  `core_version`, new revision pins record `core_version`, stdout reads
+  `core endpoint:`/`core bearer token:`/`core ready:`, and the 503 drain message is `core is
+  draining…`. No aliases or compatibility importer: old names are refused visibly, never mapped.
+- Deliberately unchanged so sessions survive: `kernel.*` event types, the `kernel`
+  `source`/`actor`/`owner` values, `/api/kernel/*` control routes, `kernel-v1/`,
+  `kernel-v1.sqlite3`, `kernel-images/`, the schema magic, `launch_protocol`, and old stored
+  pins. Children launch through the root facade (`-m voidcode`), so a new supervisor serves
+  the elected old image; an old supervisor cannot launch a new image and fails preflight
+  visibly — stop it first, restart under the new build, then `upgrade run` (procedure and the
+  formatter-config recovery in `docs/contracts/core-upgrade.md`).
+- The `formatter` bundled plugin (post-write formatting hook only — never a tool, command, view,
+  or state owner) is deleted with its `format_on_write`/`languages` configuration; writes, edits,
+  and patches now commit exactly the bytes the tool produced. Run the project's own formatters
+  (`mise run format`, Ruff, frontend Prettier) explicitly. A workspace that still configures
+  `plugins.formatter` is refused with guidance until the entry is removed or disabled.
+
 ### Trusted in-process plugins without manifests, pins, or host RPC (BREAKING)
 - A plugin is now a Python package directory whose `__init__.py` exports
   `create_plugin(config) -> Plugin`. `voidcode-plugin.json` is gone, and with
@@ -20,37 +42,37 @@ Notable changes to the VoidCode runtime, grouped by milestone.
   `ToolContext.capabilities`, `CommandDefinition.capabilities`, and the codec
   `capabilities` field are gone, as is the `direct_user` command trust
   classification: all commands follow the same effects/read-only rules with no per-command exemption.
-- The out-of-process plugin host is gone with the RPC: `kernel/host.py` and
+- The out-of-process plugin host is gone with the RPC: `core/host.py` and
   the whole `plugin_host` package are deleted, with the host-only wire codecs
   (`encode/decode_context`, provider-error/command/view codecs) and the
-  `sdk_protocol` health field. `kernel/plugins.py:PluginRuntime` loads each
+  `sdk_protocol` health field. `core/plugins.py:PluginRuntime` loads each
   plugin package in-process under a unique namespace per generation (bytecode
   caches bypassed, so reloads never read stale `.pyc`) and dispatches every
   call by direct synchronous invocation: cancellation is cooperative, and the
   engine error surface is plain `ValueError`/`RuntimeError` instead of
-  `HostUnavailable`/`HostTimeout`. `Kernel.plugin_runtime` replaces
-  `Kernel.host`. There is no generic outer runtime-timeout API
+  `HostUnavailable`/`HostTimeout`. `Core.plugin_runtime` replaces
+  `Core.host`. There is no generic outer runtime-timeout API
   (`RuntimeToolTimeoutError`, `RuntimeTimeoutAwareTool`,
   `invoke_with_runtime_timeout` are deleted with the retired execution
   backend): a non-cooperative callback that never returns blocks its dispatch
-  until the kernel restarts. Native child-process, provider-IO, MCP/LSP
+  until the core restarts. Native child-process, provider-IO, MCP/LSP
   request, child-join, and supervisor/drain timeouts keep their real consumers.
-- The kernel injects the resolved providers map into every factory as the
+- The core injects the resolved providers map into every factory as the
   reserved `config["providers"]` key, which plugin-owned config must never
   use. A restart imports the current source with the recorded configuration;
   a revision is an opaque UUID naming the recorded config/composition, with
   the private snapshot digest remaining for config integrity. A plain start
   against a schema-changed source refuses instead of reinterpreting stored
-  state; a dead kernel's orphan `running` session is interrupted only inside
+  state; a dead core's orphan `running` session is interrupted only inside
   the controlled adoption holding the exclusive workspace lease
   (`kernel.run_interrupted` at the last committed boundary, cursor kept, still
   explicitly resumable, never replayed). Kept: lifecycle/cancellation,
-  `kernel.reload`, state migration/deactivation, stale-revision checks, durable
-  events, private credentials, and the kernel-image upgrade path. Runnable
+  `core.reload`, state migration/deactivation, stale-revision checks, durable
+  events, private credentials, and the core-image upgrade path. Runnable
   reference: `examples/tally-counter/` (now a package).
 
 ### Agent collaboration: steering, notices, and readable transcripts
-- Delegated children are kernel-owned. `kernel.child_spawned` now persists
+- Delegated children are core-owned. `kernel.child_spawned` now persists
   `notify_on_completion`, so a restart rebuilds a queued completion request from durable facts
   instead of a child thread's local argument. `kernel.child_finished` carries the run id, status,
   stop cause, inline-or-spilled output (bounded preview plus `output_sha256`), and the immutable
@@ -68,16 +90,16 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 - `voidcode://transcript/<child>` and `task(operation="history")` render readable payloads
   (user, assistant with tool calls, tool results, child facts, progress, plugin events) instead of
   a payload-stripped skeleton. Pages are bounded by 40 KiB, split oversized blocks on UTF-8
-  boundaries without clipping, and stay under the kernel's 256 KiB context bound; output pages
+  boundaries without clipping, and stay under the core's 256 KiB context bound; output pages
   remain reachable through the saved artifact. Contract: `docs/contracts/agent-collaboration.md`.
 
 ### Providerless first boot without `voidcode.json`
 - A truly fresh state directory (no database, no adopted revision, no legacy file) now opens with
-  empty in-memory defaults instead of failing `kernel configuration is required`: bundled plugins,
+  empty in-memory defaults instead of failing `core configuration is required`: bundled plugins,
   commands, tools, sessions, `/help`, and `/status` work, and no `voidcode.json` is created. The
   human `/status` output reports `model: not configured`; model turns and governed model queries
   fail with one actionable message naming `model.model` as `<provider>/<model>`, the root
-  `providers.<provider>.base_url`, and `kernel.reload` after a valid file is created. Only model
+  `providers.<provider>.base_url`, and `core.reload` after a valid file is created. Only model
   execution is unavailable; no provider, key, network call, or file is synthesized.
 - Every other start remains strict: an existing database (including one with no adopted workspace
   revision), a foreign schema, a legacy `.voidcode.json`, a missing config on reload, a
@@ -100,15 +122,15 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ### TUI quit closes its owned event stream
 - Quitting the TUI no longer leaves an idle follow connection open while the embedded supervisor
-  stops the kernel child, which made the server wait out its graceful-shutdown timeout and log a
+  stops the core child, which made the server wait out its graceful-shutdown timeout and log a
   cancelled ASGI task. The TUI owns a cancellable handle to its SSE response, duplicates the
   response's public file descriptor, and shuts that connection down before joining the stream
   worker and before the embedded supervisor is stopped. Remote mode closes the same connection and
   leaves its server serving. Idle streams still need no heartbeat, timeout, or reconnect change,
-  so an older kernel image without heartbeats keeps working.
+  so an older core image without heartbeats keeps working.
 
 ### Bare `voidcode` entry and user-facing help
-- `voidcode` and `python -m voidcode.kernel` with no command open the inline TUI; the `tui`
+- `voidcode` and `python -m voidcode.core` with no command open the inline TUI; the `tui`
   subcommand is removed (no alias), while `serve`, `run`, `resume`, `show`, `preflight`,
   `upgrade`, and the client commands keep their grammar. Root client flags (`--server`, `--token`,
   `--session-id`) work on the bare entry, durable root options are accepted before or after a
@@ -147,17 +169,17 @@ Notable changes to the VoidCode runtime, grouped by milestone.
   encoding mismatches return typed actionable diagnostics, and hash-only edits work with the LSP
   plugin disabled.
 - Language servers run as supervised host-generation service processes (shared host group,
-  descendant-tree cancellation, foster-parent reaping, kernel group sweep on hard host death);
+  descendant-tree cancellation, foster-parent reaping, core group sweep on hard host death);
   the `lsp` tool declares `read`+`execute`, so read-only policy refuses it and ask/write modes
   approve it. SDK source hash changes by design (P5 controlled upgrade).
 
 ### Docs and comment corrections (no behavior change)
 - Comments, docstrings, and guides no longer describe deleted pre-cutover trees or promise
   unshipped work: the SDK-hash mismatch path is documented as it behaves today (activation
-  refuses a hot switch; changed SDK bytes are crossed only by the controlled 1→1 kernel
-  upgrade described in `docs/contracts/kernel-upgrade.md`), `read_only` is documented as
+  refuses a hot switch; changed SDK bytes are crossed only by the controlled 1→1 core
+  upgrade described in `docs/contracts/core-upgrade.md`), `read_only` is documented as
   refusing `WRITE`/`EXECUTE` only (`SPAWN` stays available to a restricted owner because the
-  child inherits the restriction), the client diagrams state that the CLI drives the kernel
+  child inherits the restriction), the client diagrams state that the CLI drives the core
   in-process while the TUI/web client use the HTTP/SSE transport, and the README no longer
   claims session data never leaves the machine.
 - Removed the unused `configure_openai_provider` helper from `tests/provider_loopback.py` (it
@@ -167,7 +189,7 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 ### Provider reasoning replay and P6 authoring
 - Tool-call replay no longer hard-fails when a reasoning-locked provider (DeepSeek) returns a
   genuine zero-reasoning tool turn: authentic `reasoning_content` is replayed verbatim when the
-  kernel persisted it, omitted (never synthesized) when the vendor produced none, and prior
+  core persisted it, omitted (never synthesized) when the vendor produced none, and prior
   reasoning on assistant turns without tool calls is preserved whenever the request carries
   tools. The guard's old "must fail before HTTP" assumption contradicted the real wire (a
   zero-reasoning tool turn is accepted upstream) and made the vendor's own turn unreplayable.

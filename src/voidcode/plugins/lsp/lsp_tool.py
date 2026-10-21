@@ -511,7 +511,7 @@ def _spill_response_artifact(
     mime: str,
     source: str,
 ) -> Mapping[str, object] | None:
-    """Spill the full JSON-RPC response through the kernel artifact store.
+    """Spill the full JSON-RPC response through the core artifact store.
 
     Returns ``None`` when the handler has no artifact service: the bounded page
     stays the tool's only output and no reference is reported.

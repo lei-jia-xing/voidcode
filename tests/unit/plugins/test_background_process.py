@@ -1,4 +1,4 @@
-"""Behavior tests for the exec plugin's background process tool on the kernel process service.
+"""Behavior tests for the exec plugin's background process tool on the core process service.
 
 The host owns the machine, so these tests drive a scripted service: it records every call the tool
 made and returns the handles, log pages, and refusals the host would have produced. What is under
@@ -39,7 +39,7 @@ _EXTERNAL = "externally managed"
 
 
 class _FakeServices:
-    """A scripted kernel service: records every call, returns what the test scripted."""
+    """A scripted core service: records every call, returns what the test scripted."""
 
     def __init__(
         self,
@@ -215,7 +215,7 @@ def _tool():
 
 
 class _AbortSignal:
-    """The kernel's cancel state as the host swaps it into a live invocation."""
+    """The core's cancel state as the host swaps it into a live invocation."""
 
     def __init__(self, *, cancelled: bool = False) -> None:
         self.cancelled = cancelled
@@ -248,7 +248,7 @@ def test_the_plugin_registers_both_tools() -> None:
     assert set(definitions) == {"shell_exec", "background_process"}
     definition = definitions["background_process"]
     assert definition.effects == frozenset({ToolEffect.EXECUTE, ToolEffect.SPAWN})
-    # The kernel validates the schema at admission and again on every call.
+    # The core validates the schema at admission and again on every call.
     jsonschema.Draft202012Validator.check_schema(json_wire_object(definition.input_schema))
 
 
@@ -406,7 +406,7 @@ def test_start_of_a_cancelled_call_launches_nothing(tmp_path: Path) -> None:
     assert services.state == {}
 
 
-def test_start_propagates_the_kernel_duplicate_refusal(tmp_path: Path) -> None:
+def test_start_propagates_the_core_duplicate_refusal(tmp_path: Path) -> None:
     services = _FakeServices(spawn_error=ValueError("background process proc-abc is already running"))
 
     with pytest.raises(ValueError, match="already running"):
@@ -703,7 +703,7 @@ def test_invalid_arguments_fail_with_the_legacy_message(tmp_path: Path, argument
 
 
 def test_a_handler_without_the_process_service_fails_visibly(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="background_process requires the kernel background process service"):
+    with pytest.raises(ValueError, match="background_process requires the core background process service"):
         _tool().invoke(ToolCall("background_process", {"op": "ps"}), context=_context(tmp_path), services=None)  # type: ignore[arg-type]
 
     class _StateOnly:
@@ -713,5 +713,5 @@ def test_a_handler_without_the_process_service_fails_visibly(tmp_path: Path) -> 
         def replace_state(self, state: Mapping[str, object], expected_version: int, scope: str = "session") -> int:
             return expected_version + 1
 
-    with pytest.raises(ValueError, match="background_process requires the kernel background process service"):
+    with pytest.raises(ValueError, match="background_process requires the core background process service"):
         _tool().invoke(ToolCall("background_process", {"op": "start", "command": "serve"}), context=_context(tmp_path), services=_StateOnly())  # type: ignore[arg-type]

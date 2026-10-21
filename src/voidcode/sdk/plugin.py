@@ -78,7 +78,7 @@ class PluginQuery:
     is allowed (a query may read the files its plugin could already read); state
     mutations, filesystem writes, process starts, and any other external effects are forbidden.
     This is a code-review contract, not an OS sandbox — and only some providers are purely
-    in-memory. It carries no kernel authority.
+    in-memory. It carries no core authority.
     """
 
     name: str

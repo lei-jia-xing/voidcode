@@ -11,7 +11,7 @@ import pty
 import struct
 import termios
 
-from voidcode.kernel.tui.term import Terminal
+from voidcode.core.tui.term import Terminal
 
 
 def test_terminal_restores_real_pty_termios(monkeypatch) -> None:

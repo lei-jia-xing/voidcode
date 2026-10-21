@@ -116,7 +116,7 @@ class MockServices(PluginServices):
         if idempotency_key is None:
             wakeup_id = f"wakeup-{len(self.wakeups)}"
         else:
-            # Same deterministic identity the kernel derives: re-scheduling a future point is idempotent.
+            # Same deterministic identity the core derives: re-scheduling a future point is idempotent.
             wakeup_id = hashlib.sha256("\0".join((SESSION_ID, OWNER, "wakeup", idempotency_key)).encode()).hexdigest()
         self.wakeups.setdefault(
             wakeup_id,

@@ -1,4 +1,4 @@
-from voidcode.kernel.tui.region import LiveRegion, TuiFrame
+from voidcode.core.tui.region import LiveRegion, TuiFrame
 
 
 def test_resize_trims_only_live_transcript_and_preserves_chrome() -> None:

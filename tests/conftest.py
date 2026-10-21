@@ -42,7 +42,7 @@ def _isolated_xdg_runtime_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
 # fails immediately instead. Loopback stays open: transport and loopback-provider
 # tests run real local servers. A test whose subject *is* the live network opts
 # out with ``allow_live_network``. Plugin code runs in the out-of-process plugin
-# host, so this guard covers the test and kernel processes only; a plugin's own
+# host, so this guard covers the test and core processes only; a plugin's own
 # network use is the plugin's declared capability, exercised with loopback
 # endpoints in tests.
 # ---------------------------------------------------------------------------

@@ -12,7 +12,7 @@ ObservedFactKind = Literal["usage", "invocation_finished", "run_finished"]
 
 #: Canonical run status reported to observers.
 RunStatus = Literal["completed", "failed", "interrupted"]
-#: Canonical neutral stop cause shared by kernel and SDK.
+#: Canonical neutral stop cause shared by core and SDK.
 StopCause = Literal["completed", "error", "user_stop", "owner_cancel", "limit_reached", "shutdown"]
 
 
@@ -24,7 +24,7 @@ class ContextContribution:
     """Governed prompt context contribution produced by a plugin.
 
     The role is declarative: a `user` contribution is rendered verbatim as a user message
-    (e.g. a reminder block), never re-wrapped into kernel system prose.
+    (e.g. a reminder block), never re-wrapped into core system prose.
     """
 
     content: str
@@ -69,7 +69,7 @@ class InvocationFinishedFact:
     error: str | None = None
     #: Owner plugin of the invoked tool, as declared at admission.
     owner: str = ""
-    #: Declared effects the kernel governed this invocation under.
+    #: Declared effects the core governed this invocation under.
     effects: tuple[str, ...] = ()
 
 
@@ -164,14 +164,14 @@ class WindowSegment:
 
 @dataclass(frozen=True, slots=True)
 class RequestWindow:
-    """Measured inventory of one dispatched provider request (kernel truth, no estimates).
+    """Measured inventory of one dispatched provider request (core truth, no estimates).
 
     Token counts are deliberately absent: only the provider's own reported usage is a token
     fact, and it lives on the dispatch's usage record. Message segments are exact character
-    counts and digests of the literal strings the kernel handed to the provider, so a client
+    counts and digests of the literal strings the core handed to the provider, so a client
     panel derives its view from measurements instead of a characters-per-token heuristic.
-    `tool_schema_characters` measures the kernel-side neutral encoding of the tools this
-    dispatch advertised (the provider adapter owns the wire encoding, which the kernel does
+    `tool_schema_characters` measures the core-side neutral encoding of the tools this
+    dispatch advertised (the provider adapter owns the wire encoding, which the core does
     not claim to measure).
     """
 
@@ -204,7 +204,7 @@ class RequestWindow:
     @staticmethod
     def from_payload(payload: Mapping[str, object]) -> RequestWindow:
         raw_segments = payload.get("segments")
-        # Kernel-side payloads keep arrays as tuples (own_json_object), while a payload that
+        # Core-side payloads keep arrays as tuples (own_json_object), while a payload that
         # crossed the wire arrives as a list; both are the same decoded array.
         segments = tuple(
             WindowSegment.from_payload(segment)
@@ -221,10 +221,10 @@ class RequestWindow:
 
 @dataclass(frozen=True, slots=True)
 class ToolIntent:
-    """One tool call the kernel is about to execute, offered to a pre-tool gate.
+    """One tool call the core is about to execute, offered to a pre-tool gate.
 
     A gate answers "may this run?". It observes the call only: it cannot rewrite the
-    arguments, the tool, or the verdict the kernel records.
+    arguments, the tool, or the verdict the core records.
     """
 
     tool_name: str
@@ -240,7 +240,7 @@ class ToolIntent:
 class RunLifecycle:
     """One lifecycle point of a governed run, offered to a session_start/session_end hook.
 
-    Lifecycle hooks are notifications with evidence: the kernel records what each one reported
+    Lifecycle hooks are notifications with evidence: the core records what each one reported
     (or how it failed) as a durable event. They cannot inject context — context travels through
     the context contribution — and their return value is a note, never a decision.
     """

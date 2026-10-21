@@ -12,7 +12,7 @@ from .repair import raise_tool_diagnostic
 
 
 def _coverage(context: ToolContext) -> tuple[frozenset[str], Mapping[tuple[str, str], frozenset[int]], frozenset[tuple[str, str]], str | None]:
-    """Coverage the kernel observed for this session; always present, possibly empty."""
+    """Coverage the core observed for this session; always present, possibly empty."""
     return (context.read_paths, context.read_lines, context.read_whole_files, context.read_hash)
 
 
@@ -68,7 +68,7 @@ def enforce_seen_lines(
     Coverage is always bound to the bytes currently on disk: a prior version's lines never
     authorize the current file. ``current_hash`` lets a caller that already verified those bytes
     skip the hashing; it is never used to override them. Without it the guard hashes the
-    candidate itself, so the kernel's ambiguous ``read_hash`` (None once two versions of the
+    candidate itself, so the core's ambiguous ``read_hash`` (None once two versions of the
     path were observed) can no longer refuse a read→edit→read→edit cycle whose second read
     revealed the current content.
     """

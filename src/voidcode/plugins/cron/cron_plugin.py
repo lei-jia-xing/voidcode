@@ -1,6 +1,6 @@
-"""Cron plugin: scheduled prompts as workspace-product policy over kernel wakeups.
+"""Cron plugin: scheduled prompts as workspace-product policy over core wakeups.
 
-Ported from the legacy scheduler without behavior changes, but rebased on the kernel's durable
+Ported from the legacy scheduler without behavior changes, but rebased on the core's durable
 wakeup seam instead of a runtime scheduler thread plus a workspace ``scheduled_tasks`` table:
 
 - Grammar, next-fire search and human formatting: ``schedule_expr`` (verbatim legacy copy).
@@ -14,7 +14,7 @@ Scope moves from a workspace table to this plugin's session-scope state document
 that created a schedule owns it, so the same workspace can hold independent schedules per
 session, and every schedule keeps exactly ONE armed wakeup — a claimed wakeup means a run is in
 flight, which is what makes overlap impossible without a lock. The plugin never sleeps or polls:
-the kernel ticker owns time, and the plugin only computes fire instants and re-arms when it
+the core ticker owns time, and the plugin only computes fire instants and re-arms when it
 observes the completion of a run whose wakeup it armed.
 
 Re-arming is the whole point of the terminal reschedule: a long run delays the next fire, and
@@ -23,7 +23,7 @@ slots missed while a run was in flight are never replayed.
 Divergences from the legacy product, stated rather than faked:
 
 - ``cron_list`` reports each enabled schedule's next fire as recomputed from its expression at
-  list time; the armed wakeup remains the truth (a plugin cannot read kernel wakeup rows). The
+  list time; the armed wakeup remains the truth (a plugin cannot read core wakeup rows). The
   two agree exactly for ``at`` and ``once`` schedules and are within one tick for the rest.
 - The legacy "5s scheduler tick" and the expired-sweep pass are gone: expiry is enforced by the
   same wakeup claim (``expires_at`` is checked when a run finishes), so an expired schedule can
@@ -83,7 +83,7 @@ ScheduleKind = Literal["every", "at", "cron", "once"]
 
 
 def _clock_ms() -> int:
-    """The wall clock the schedule math runs on, in the kernel's due-time unit.
+    """The wall clock the schedule math runs on, in the core's due-time unit.
 
     The legacy scheduler took this as an injectable ``clock``; it stays a module-level seam so a
     test can pin the instant a fire is computed for.

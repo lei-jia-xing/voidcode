@@ -27,8 +27,8 @@ import termios
 import time
 from pathlib import Path
 
-from voidcode.kernel.tui.region import TuiFrame
-from voidcode.kernel.tui.term import Terminal
+from voidcode.core.tui.region import TuiFrame
+from voidcode.core.tui.term import Terminal
 
 result_path = Path(os.environ["NATIVE_RESULT"])
 done_path = Path(os.environ["NATIVE_DONE"])

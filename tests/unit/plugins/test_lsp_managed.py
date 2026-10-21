@@ -3,7 +3,7 @@
 Behavior boundaries, not wiring: a real stdio fixture server is driven through
 the live PluginServices surface (fake lease, real protocol bytes), the version
 query answers strict shapes from real didOpen/didChange tracking, and the
-second-use cancel kills the actual server plus its descendant. Kernel/host
+second-use cancel kills the actual server plus its descendant. Core/host
 smoke (read_only/approval, reload/close cleanup, hard-death group sweep) runs
 in the coordinated P5 window, not here.
 """

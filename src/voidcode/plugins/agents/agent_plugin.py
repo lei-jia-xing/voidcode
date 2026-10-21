@@ -7,7 +7,7 @@ from the legacy ``voidcode.agent`` package (see ``models.py``/``registry.py``/``
 This plugin exposes the owned user surface: the profile registry (list) and one profile's
 rendered prompt plus its declared tool allowlist (show). Selecting a profile for a run and
 spawning a profile-scoped child stays with the delegation tools, because a plugin cannot call
-another plugin's private code: the profile -> child-run composition needs either a kernel
+another plugin's private code: the profile -> child-run composition needs either a core
 profile seam or the delegation plugin owning the same profile registry. Nothing here fakes that
 selection, and no policy is silently applied to a run.
 """

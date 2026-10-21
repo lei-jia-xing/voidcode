@@ -3,7 +3,7 @@
 Ported from ``voidcode.hook``: builtin hook presets (``presets``), the surface
 table (``hook_surfaces``), argv hook configuration plus the frozen hook plan
 (``hook_config``) and the argv hook executor (``hook_executor``). The plugin
-itself (``hooks_plugin``) exposes the surfaces the kernel offers: the pre-tool
+itself (``hooks_plugin``) exposes the surfaces the core offers: the pre-tool
 gate, the post-tool note, and the session start/end lifecycle hooks.
 """
 

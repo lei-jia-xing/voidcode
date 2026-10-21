@@ -135,7 +135,7 @@ def _plugin_code(
         "refuse": 'raise ValueError("candidate refuses to migrate this state")',
         "crash": "import os\nos._exit(9)",
         "invalid": "return {'migrated_to': 'not-an-int' if True else 0, 'note': [1, 2]}",
-        # Blocks (bounded) inside the candidate runtime so a test can kill the kernel at a
+        # Blocks (bounded) inside the candidate runtime so a test can kill the core at a
         # deterministic point before the activation transaction commits.
         "hang": hang_body,
     }[migration]
@@ -502,7 +502,7 @@ class Delegate:
 
 
 class Block:
-    """Hold this session's run inside a tool until the kernel cancels it."""
+    """Hold this session's run inside a tool until the core cancels it."""
 
     definition = ToolDefinition(
         name="{BLOCK_TOOL}",

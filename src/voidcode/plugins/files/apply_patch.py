@@ -14,7 +14,7 @@ from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.tools import TextOutput, ToolSuccess
 
-from .edits_hooks import format_after_write, post_edit_diagnostics
+from .edits_hooks import post_edit_diagnostics
 from .guards import enforce_read_before_write, enforce_seen_lines, enforce_seen_whole_file
 from .repair import format_text_repair_hints, raise_tool_diagnostic
 
@@ -61,11 +61,9 @@ class PatchChange:
 class ApplyPatchResultBody:
     changes: tuple[PatchChange, ...]
     count: int
-    formatters: tuple[Mapping[str, object], ...] = ()
     diagnostics: tuple[Mapping[str, object], ...] = ()
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "formatters", tuple(own_json_object(item) for item in self.formatters))
         object.__setattr__(self, "diagnostics", tuple(own_json_object(item) for item in self.diagnostics))
 
     def as_payload(self) -> dict[str, object]:
@@ -73,8 +71,6 @@ class ApplyPatchResultBody:
             "changes": [change.as_payload() for change in self.changes],
             "count": self.count,
         }
-        if self.formatters:
-            payload["formatters"] = [json_wire_object(item) for item in self.formatters]
         if self.diagnostics:
             payload["diagnostics"] = [json_wire_object(item) for item in self.diagnostics]
         return payload
@@ -843,62 +839,15 @@ def _text_at_path(workspace: Path, path_value: str) -> str:
         return ""
 
 
-def _formatter_feedback_for_changes(
-    changes: list[dict[str, object]],
-    *,
-    context: ToolContext,
-    workspace: Path,
-    hooks_config: object | None,
-) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
-    if hooks_config is None:
-        return [], []
-
-    formatter_results: list[dict[str, object]] = []
-    diagnostics: list[dict[str, object]] = []
-    for change in changes:
-        if change.get("status") not in {"A", "M", "R"}:
-            continue
-        path_value = change.get("path")
-        if not isinstance(path_value, str):
-            continue
-        workspace_root = workspace.resolve()
-        requested_path = Path(path_value)
-        candidate = (requested_path if requested_path.is_absolute() else workspace_root / requested_path).resolve()
-        if not candidate.is_file():
-            continue
-        payload, change_diagnostics = format_after_write(
-            context=context,
-            path=candidate,
-            previous=None,
-            content=_text_at_path(workspace_root, path_value),
-        )
-        if payload:
-            payload["path"] = path_value
-            formatter_results.append(payload)
-        for diagnostic in change_diagnostics:
-            diagnostic_payload = dict(diagnostic)
-            diagnostic_payload["path"] = path_value
-            diagnostics.append(diagnostic_payload)
-    return formatter_results, diagnostics
-
-
-def _with_formatter_feedback(
+def _with_post_edit_diagnostics(
     result: ToolSuccess[ApplyPatchResultBody],
     *,
     context: ToolContext,
     workspace: Path,
-    hooks_config: object | None,
 ) -> ToolSuccess[ApplyPatchResultBody]:
     body = result.body
     if not isinstance(body, ApplyPatchResultBody):
         raise TypeError("edit returned no typed patch result body")
-    changes = [change.as_payload() for change in body.changes]
-    formatter_results, diagnostics = _formatter_feedback_for_changes(
-        changes,
-        context=context,
-        workspace=workspace,
-        hooks_config=hooks_config,
-    )
     lsp_diagnostics: list[dict[str, object]] = []
     for change in body.changes:
         requested_path = Path(change.path)
@@ -910,21 +859,17 @@ def _with_formatter_feedback(
         )
         if lsp_diagnostic is not None:
             lsp_diagnostics.append(dict(lsp_diagnostic))
-    if not formatter_results and not diagnostics and not lsp_diagnostics:
+    if not lsp_diagnostics:
         return result
     if not isinstance(result.output, TextOutput):
         raise TypeError("edit returned no text output for patch application")
-    content = result.output.text
-    if diagnostics:
-        content += f"\nFormatter warning: {diagnostics[0]['message']}"
     return ToolSuccess(
         result.tool_name,
-        output=TextOutput(content),
+        output=result.output,
         body=ApplyPatchResultBody(
             changes=body.changes,
             count=body.count,
-            formatters=(*body.formatters, *formatter_results),
-            diagnostics=(*body.diagnostics, *diagnostics, *lsp_diagnostics),
+            diagnostics=(*body.diagnostics, *lsp_diagnostics),
         ),
     )
 
@@ -1214,7 +1159,6 @@ def execute_patch(
     arguments: Mapping[str, object],
     *,
     context: ToolContext,
-    hooks_config: object | None = None,
     tool_name: str = "edit",
 ) -> ToolSuccess[ApplyPatchResultBody]:
     workspace = context.require_workspace()
@@ -1247,7 +1191,7 @@ def execute_patch(
 
     if _looks_like_marker_patch(patch_text):
         result = _apply_marker_patch(patch_text, workspace=workspace, expected_hashes=expected_hashes, context=context, tool_name=tool_name)
-        return _with_formatter_feedback(result, workspace=workspace.resolve(), hooks_config=hooks_config, context=context)
+        return _with_post_edit_diagnostics(result, workspace=workspace.resolve(), context=context)
 
     normalized_patch = _normalize_patch_text(patch_text)
     changes = _changes_from_patch(patch_text)
@@ -1340,7 +1284,7 @@ def execute_patch(
                 count=len(changes),
             ),
         )
-        return _with_formatter_feedback(result, workspace=workspace.resolve(), hooks_config=hooks_config, context=context)
+        return _with_post_edit_diagnostics(result, workspace=workspace.resolve(), context=context)
     finally:
         try:
             patch_path.unlink(missing_ok=True)

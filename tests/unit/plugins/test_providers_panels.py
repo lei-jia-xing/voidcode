@@ -1,6 +1,6 @@
 """Behavior tests for the providers plugin's ``providers`` and ``model`` information panels.
 
-Both panels are read-only reports over facts the kernel and the plugin already own, so the
+Both panels are read-only reports over facts the core and the plugin already own, so the
 stub services here serve a fed event history and fail loudly on any write path.
 """
 
@@ -37,7 +37,7 @@ class StubServices(PluginServices):
     def read_events(self, *, after_sequence: int = 0, limit: int = 100, include_payload: bool = True) -> tuple[EventView, ...]:
         self.reads.append((after_sequence, limit, include_payload))
         page = [event for event in self.events if event.sequence > after_sequence][:limit]
-        # A payload-free read serves no payload, exactly as the kernel's own event read does.
+        # A payload-free read serves no payload, exactly as the core's own event read does.
         return tuple(event if include_payload else replace(event, payload=None) for event in page)
 
     def replace_state(self, state: Mapping[str, object], expected_version: int, scope: Literal["session", "workspace"] = "session") -> int:
@@ -96,12 +96,12 @@ def _services(events: Sequence[EventView] = ()) -> StubServices:
     return StubServices(events)
 
 
-def _event(sequence: int, event_type: str, payload: Mapping[str, object], *, source: str = "kernel", actor: str = "kernel") -> EventView:
+def _event(sequence: int, event_type: str, payload: Mapping[str, object], *, source: str = "core", actor: str = "core") -> EventView:
     return EventView(sequence=sequence, event_type=event_type, run_id="run-1", revision_id="rev-1", source=source, actor=actor, payload=payload)
 
 
 def _dispatch(sequence: int, provider: str, model: str) -> tuple[EventView, ...]:
-    """One real dispatch: the kernel intent that names it, then its completed model turn."""
+    """One real dispatch: the core intent that names it, then its completed model turn."""
     dispatch_id = f"dispatch-{sequence}"
     return (
         _event(sequence, DISPATCH_EVENT, {"provider": provider, "model": model, "dispatch_id": dispatch_id}),

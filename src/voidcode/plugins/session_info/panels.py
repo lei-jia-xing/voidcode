@@ -207,7 +207,7 @@ def _context(events: tuple[EventView, ...], usage: SessionUsageReport, truncated
     )
     lines.append(
         f"last dispatch {sequence}: messages {measured.message_characters} chars in {len(measured.segments)} segment(s), "
-        f"tool schema {measured.tool_schema_characters} chars (kernel-side neutral encoding) for {measured.tool_count} tool(s)"
+        f"tool schema {measured.tool_schema_characters} chars (core-side neutral encoding) for {measured.tool_count} tool(s)"
     )
     for index, segment in enumerate(measured.segments):
         detail = f"  [{index}] {segment.role}"

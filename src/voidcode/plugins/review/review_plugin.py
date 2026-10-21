@@ -5,18 +5,18 @@ resolution (dict aliases included), the per-target prompt parts, the reviewer-fo
 256 KiB inline-diff budget with its refusal messages, and the review child itself.
 
 Where the legacy runtime ran the review through its internal ``run`` with ``read_only`` metadata,
-this plugin uses the kernel's delegation seam: ``spawn_child(prompt, label="review",
+this plugin uses the core's delegation seam: ``spawn_child(prompt, label="review",
 tool_allowlist=..., max_steps=32, readonly=True)`` followed by ``join_child``, and the child's
 answer is the command's answer. The git surface the prompt needs lives in ``workspace_review.py``.
 
 Read-only enforcement is two layers, neither of them faked here: the review profile's tool
 allowlist (read/glob/grep/ast_grep/lsp), copied as a literal because plugins cannot import
-each other's manifests, plus the kernel-owned read-only stance declared at spawn. The kernel
+each other's manifests, plus the core-owned read-only stance declared at spawn. The core
 forces that stance whenever the calling lease is already restrictive, so a plan-mode or frozen
 read-only session can still delegate a review, and the child stays read-only for its whole life.
 
 The legacy 256 KiB inline budget is kept unchanged, so a larger diff is refused with the legacy
-message and never truncated. The kernel's delegated-prompt bound is 256 KiB as well, so the whole
+message and never truncated. The core's delegated-prompt bound is 256 KiB as well, so the whole
 legacy band fits; a refusal never leaves a partially prompted child behind.
 instead of being cut down here.
 """
@@ -192,7 +192,7 @@ def build_review_request(*, workspace: Path, target: ReviewTarget, focus: str | 
     )
 
 
-# --- Command arguments (the kernel schema stays the first gate; these are second-line messages) ---
+# --- Command arguments (the core schema stays the first gate; these are second-line messages) ---
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,7 +294,7 @@ class ReviewCommand:
                 tool_allowlist=REVIEW_TOOL_ALLOWLIST,
                 max_steps=REVIEW_CHILD_MAX_STEPS,
                 # A review child never mutates: declaring the stance is what lets a read-only or
-                # plan-mode session delegate it at all, and the kernel forces it anyway whenever
+                # plan-mode session delegate it at all, and the core forces it anyway whenever
                 # the calling lease is restrictive.
                 readonly=True,
             )

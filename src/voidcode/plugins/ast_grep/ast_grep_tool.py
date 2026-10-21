@@ -27,7 +27,7 @@ from voidcode.sdk.tools import (
 
 from .args import parse_tool_args, validate_non_empty
 from .artifacts import artifact_uri, create_artifact
-from .edits_hooks import format_after_write, post_edit_diagnostics
+from .edits_hooks import post_edit_diagnostics
 from .guards import _coverage, enforce_read_before_write, enforce_seen_lines
 from .repair import raise_tool_diagnostic
 
@@ -388,10 +388,8 @@ class AstGrepTool:
         replay_policy="never",
     )
 
-    def __init__(self, *, hooks_config: object | None = None) -> None:
-        # ponytail: formatter/diagnostic wiring belongs to the owning plugin; None keeps the
-        # port's declared behavior until the host hands this tool a hooks config.
-        self._hooks_config = hooks_config
+    def __init__(self) -> None:
+        pass
 
     def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:
         workspace = context.require_workspace()
@@ -583,16 +581,6 @@ class AstGrepTool:
         diagnostics: list[Mapping[str, object]] = []
         final_contents: dict[Path, str] = {}
         for target in ordered_targets:
-            applied_content = target.read_bytes().decode("utf-8")
-            formatter: Mapping[str, object] = {}
-            formatter_warnings: tuple[Mapping[str, object], ...] = ()
-            if self._hooks_config is not None:
-                formatter, formatter_warnings = format_after_write(
-                    context=context,
-                    path=target,
-                    previous=original_bytes[target].decode("utf-8"),
-                    content=applied_content,
-                )
             final_bytes = target.read_bytes()
             final_content = final_bytes.decode("utf-8")
             final_contents[target] = final_content
@@ -612,9 +600,6 @@ class AstGrepTool:
                 "content_hash": hashlib.sha256(final_bytes).hexdigest(),
                 "diff": diff,
             }
-            if formatter:
-                file_result["formatter"] = formatter
-            diagnostics.extend(formatter_warnings)
             file_results.append(file_result)
 
         diagnostics.extend(
@@ -654,8 +639,6 @@ class AstGrepTool:
             result_body["source_hash"] = file_results[0]["source_hash"]
             result_body["final_hash"] = file_results[0]["content_hash"]
             result_body["diff"] = file_results[0]["diff"]
-            if "formatter" in file_results[0]:
-                result_body["formatter"] = file_results[0]["formatter"]
         elif file_results:
             result_body["files"] = file_results
         _add_match_artifact(result_body, artifact)

@@ -54,14 +54,14 @@ from .read_formats import MAX_OUTPUTS, render_notebook, render_pdf_bytes, render
 
 #: Internal URL scheme for on-demand tool documentation:
 #: read(path="voidcode://tool/<name>") renders the admitted definition's
-#: description plus its JSON input schema. The kernel answers from the active
+#: description plus its JSON input schema. The core answers from the active
 #: revision's dispatch snapshot with this session's visibility applied.
 VOIDCODE_TOOL_DOC_PREFIX = "voidcode://tool/"
 
 
 #: Internal URL scheme for session-scoped artifact reads:
 #: read(path="voidcode://artifact/<id>") returns a bounded slice of a
-#: spilled tool-output artifact, resolved through the kernel artifact store
+#: spilled tool-output artifact, resolved through the core artifact store
 #: (``services.read_artifact``) — never through the external-directory
 #: permission path.
 VOIDCODE_ARTIFACT_PREFIX = "voidcode://artifact/"
@@ -69,7 +69,7 @@ VOIDCODE_ARTIFACT_PREFIX = "voidcode://artifact/"
 #: Internal URL scheme for lineage-guarded transcript reads:
 #: read(path="voidcode://transcript/<session_id>?after_sequence=N&offset=B") returns readable,
 #: payload-included pages of the caller's own session or of one of its own descendants.
-#: Parents, siblings, unrelated roots, and foreign workspaces are refused by the kernel.
+#: Parents, siblings, unrelated roots, and foreign workspaces are refused by the core.
 VOIDCODE_TRANSCRIPT_PREFIX = "voidcode://transcript/"
 
 #: Internal URL scheme for workspace rule catalogs, shared verbatim with the
@@ -239,7 +239,7 @@ def _render_artifact(
     def _window(byte_start: int, byte_length: int = MAX_ARTIFACT_PAGE_BYTES) -> Mapping[str, object]:
         window = read_artifact_page(services, artifact_id, byte_offset=byte_start, byte_limit=byte_length)
         if window is None:
-            raise ValueError("read cannot resolve voidcode://artifact URLs without a kernel artifact service")
+            raise ValueError("read cannot resolve voidcode://artifact URLs without a core artifact service")
         return window
 
     head: Mapping[str, object] | None = None
@@ -510,7 +510,7 @@ def _render_transcript(
 ) -> _ReadOutcome | ToolFailure:
     """Render a readable, bounded transcript page of the caller or one of its descendants.
 
-    The kernel enforces lineage: parents, siblings, unrelated roots, and foreign workspaces are
+    The core enforces lineage: parents, siblings, unrelated roots, and foreign workspaces are
     refused before any event is read. Payloads are included so the page shows actual prompts,
     assistant text, tool calls/results, and progress instead of event names only; provider
     reasoning is deliberately not rendered. ``?after_sequence=<n>&offset=<bytes>`` continues
@@ -660,7 +660,7 @@ class ReadArgs(BaseModel):
 
 DEFAULT_READ_LIMIT = 2000
 DEFAULT_TRANSCRIPT_LIMIT = 20
-#: One transcript read never asks the kernel for more events than one event page carries.
+#: One transcript read never asks the core for more events than one event page carries.
 MAX_EVENT_PAGE = 200
 MAX_LINE_LENGTH = 2000
 MAX_BYTES = 50 * 1024

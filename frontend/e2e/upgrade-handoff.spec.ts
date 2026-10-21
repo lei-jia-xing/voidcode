@@ -22,7 +22,7 @@ const rootDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../..",
 );
-const token = "kernel-handoff-token";
+const token = "core-handoff-token";
 
 let proc: ChildProcess | undefined;
 let baseUrl = "";
@@ -84,7 +84,7 @@ async function waitForServing(): Promise<number> {
     }
     await delay(250);
   }
-  throw new Error(`supervised kernel never served at ${baseUrl}\n${bootLog}`);
+  throw new Error(`supervised core never served at ${baseUrl}\n${bootLog}`);
 }
 
 test.beforeAll(async () => {
@@ -111,7 +111,7 @@ test.beforeAll(async () => {
       "-X",
       "utf8",
       "-m",
-      "voidcode.kernel",
+      "voidcode.core",
       "--workspace",
       workspace,
       "--state-dir",
@@ -148,7 +148,7 @@ test("a live upgrade keeps endpoint/token/session with exact resume", async ({
   const errors: string[] = [];
   page.on("pageerror", (err) => errors.push(String(err)));
   await page.goto(`${baseUrl}/?token=${token}`);
-  await expect(page.getByTestId("kernel-app")).toBeVisible();
+  await expect(page.getByTestId("core-app")).toBeVisible();
 
   // Bootstrap creates the first session; record its id for the upgrade below.
   const tabs = page.locator('[data-testid^="session-tab-"]');
@@ -182,7 +182,7 @@ test("a live upgrade keeps endpoint/token/session with exact resume", async ({
     },
   );
   writeFileSync(
-    path.join(candidate, "src", "voidcode", "kernel", "transport", "models.py"),
+    path.join(candidate, "src", "voidcode", "core", "transport", "models.py"),
     "\n# handoff-e2e candidate marker\n",
     { flag: "a" },
   );
@@ -196,7 +196,7 @@ test("a live upgrade keeps endpoint/token/session with exact resume", async ({
         "-X",
         "utf8",
         "-m",
-        "voidcode.kernel",
+        "voidcode.core",
         "--workspace",
         workspace,
         "--state-dir",

@@ -1,6 +1,6 @@
 """End-to-end integration test for the hooks plugin's gate and note surfaces.
 
-A real kernel admits the bundled ``hooks`` plugin next to an inline test plugin whose
+A real core admits the bundled ``hooks`` plugin next to an inline test plugin whose
 ``write`` tool really writes a file, so every assertion is about observable effects:
 the file on disk, the events, and the text the model's next request carries.
 """
@@ -17,8 +17,8 @@ from threading import Thread
 import pytest
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.kernel.bootstrap import open_kernel
-from voidcode.kernel.engine import Kernel
+from voidcode.core.bootstrap import open_core
+from voidcode.core.engine import Core
 
 _HOOKS_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "hooks"
 _NOTES_SOURCE = '''"""Test-only note writer."""
@@ -77,14 +77,14 @@ def create_plugin(config):
     return Plugin(tools=(WriteTool(), ReadTool()))
 '''
 _EMIT_ARGV = "import json, sys; print(json.dumps(json.loads(sys.argv[1])))"
-_CREATED_KERNELS: list[Kernel] = []
+_CREATED_CORES: list[Core] = []
 
 
 @pytest.fixture(autouse=True)
-def _close_created_kernels() -> Iterator[None]:
+def _close_created_cores() -> Iterator[None]:
     yield
-    while _CREATED_KERNELS:
-        _CREATED_KERNELS.pop().close()
+    while _CREATED_CORES:
+        _CREATED_CORES.pop().close()
 
 
 @contextmanager
@@ -111,13 +111,13 @@ def _notes_root(workspace: Path) -> Path:
     return root
 
 
-def _kernel(
+def _core(
     tmp_path: Path,
     server: OpenAILoopbackServer,
     hooks_config: Mapping[str, object],
     *,
     read_only: bool = False,
-) -> Kernel:
+) -> Core:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     state_dir = tmp_path / "state"
@@ -134,9 +134,9 @@ def _kernel(
         },
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-    kernel = open_kernel(workspace, state_dir=state_dir)
-    _CREATED_KERNELS.append(kernel)
-    return kernel
+    core = open_core(workspace, state_dir=state_dir)
+    _CREATED_CORES.append(core)
+    return core
 
 
 def _write_replies() -> list[dict[str, object]]:
@@ -208,15 +208,15 @@ def _model_messages(server: OpenAILoopbackServer) -> list[str]:
 def test_pre_tool_hook_denies_the_write_before_it_runs(tmp_path: Path) -> None:
     diagnostic = "hooks-rule: this workspace is frozen"
     with _loopback_server(_write_replies()) as server:
-        kernel = _kernel(tmp_path, server, {"pre_tool": [_action_command({"action": "cancel", "diagnostic": diagnostic})]})
-        session_id = kernel.create_session().session_id
-        assert kernel.run("write a note", session_id=session_id).status == "completed"
+        core = _core(tmp_path, server, {"pre_tool": [_action_command({"action": "cancel", "diagnostic": diagnostic})]})
+        session_id = core.create_session().session_id
+        assert core.run("write a note", session_id=session_id).status == "completed"
 
         # The hook's diagnostic is what the model reads instead of a result.
         assert any(diagnostic in text for text in _model_messages(server)), _model_messages(server)
 
         # Denied before effects: no intent was recorded, the call never completed ok, and no file exists.
-        events = list(kernel.events_after(session_id))
+        events = list(core.events_after(session_id))
         assert not [event for event in events if event.event_type == "kernel.tool_intent"]
         results = [dict(event.payload)["result"] for event in events if event.event_type == "kernel.tool_completed"]
         assert [result["status"] for result in results] == ["error"]  # type: ignore[index]
@@ -227,13 +227,13 @@ def test_pre_tool_hook_denies_the_write_before_it_runs(tmp_path: Path) -> None:
 def test_post_tool_hook_appends_its_guidance_to_the_successful_result(tmp_path: Path) -> None:
     guidance = "hooks-note: run the formatter next"
     with _loopback_server(_write_replies()) as server:
-        kernel = _kernel(
+        core = _core(
             tmp_path,
             server,
             {"post_tool": [_action_command({"action": "continue", "guidance": guidance})], "post_tool_match": ["write"]},
         )
-        session_id = kernel.create_session().session_id
-        assert kernel.run("write a note", session_id=session_id).status == "completed"
+        session_id = core.create_session().session_id
+        assert core.run("write a note", session_id=session_id).status == "completed"
 
         assert (tmp_path / "workspace" / "note.txt").read_text(encoding="utf-8") == "hello"
         texts = [text for text in _model_messages(server) if "wrote note" in text]
@@ -245,7 +245,7 @@ def test_disabled_hooks_config_leaves_both_paths_normal(tmp_path: Path) -> None:
     diagnostic = "hooks-rule: this workspace is frozen"
     guidance = "hooks-note: run the formatter next"
     with _loopback_server(_write_replies()) as server:
-        kernel = _kernel(
+        core = _core(
             tmp_path,
             server,
             {
@@ -254,8 +254,8 @@ def test_disabled_hooks_config_leaves_both_paths_normal(tmp_path: Path) -> None:
                 "post_tool": [_action_command({"action": "continue", "guidance": guidance})],
             },
         )
-        session_id = kernel.create_session().session_id
-        assert kernel.run("write a note", session_id=session_id).status == "completed"
+        session_id = core.create_session().session_id
+        assert core.run("write a note", session_id=session_id).status == "completed"
 
         assert (tmp_path / "workspace" / "note.txt").read_text(encoding="utf-8") == "hello"
         texts = _model_messages(server)
@@ -266,9 +266,9 @@ def test_disabled_hooks_config_leaves_both_paths_normal(tmp_path: Path) -> None:
 
 def test_no_commands_configured_is_a_transparent_no_op(tmp_path: Path) -> None:
     with _loopback_server(_write_replies()) as server:
-        kernel = _kernel(tmp_path, server, {"timeout_seconds": 5})
-        session_id = kernel.create_session().session_id
-        assert kernel.run("write a note", session_id=session_id).status == "completed"
+        core = _core(tmp_path, server, {"timeout_seconds": 5})
+        session_id = core.create_session().session_id
+        assert core.run("write a note", session_id=session_id).status == "completed"
         assert (tmp_path / "workspace" / "note.txt").read_text(encoding="utf-8") == "hello"
         texts = [text for text in _model_messages(server) if "wrote note" in text]
         assert texts == ["wrote note"]
@@ -278,7 +278,7 @@ def test_session_lifecycle_hooks_run_for_their_side_effects(tmp_path: Path) -> N
     start_marker = tmp_path / "start-ran.txt"
     end_marker = tmp_path / "end-ran.txt"
     with _loopback_server(_write_replies()) as server:
-        kernel = _kernel(
+        core = _core(
             tmp_path,
             server,
             {
@@ -286,15 +286,15 @@ def test_session_lifecycle_hooks_run_for_their_side_effects(tmp_path: Path) -> N
                 "session_end": [_marker_command(end_marker), _action_command({"guidance": "session finished"})],
             },
         )
-        session_id = kernel.create_session().session_id
-        assert kernel.run("write a note", session_id=session_id).status == "completed"
+        session_id = core.create_session().session_id
+        assert core.run("write a note", session_id=session_id).status == "completed"
 
         # Both surfaces ran their argv commands for real.
         assert start_marker.read_text(encoding="utf-8") == "ran"
         assert end_marker.read_text(encoding="utf-8") == "ran"
 
         # Each fired exactly once and left its note as the durable record (never prompt context).
-        invoked = [dict(event.payload) for event in kernel.events_after(session_id) if event.event_type == "kernel.hook_invoked"]
+        invoked = [dict(event.payload) for event in core.events_after(session_id) if event.event_type == "kernel.hook_invoked"]
         assert [payload["hook_kind"] for payload in invoked] == ["session_start", "session_end"]
         assert {payload["owner"] for payload in invoked} == {"hooks"}
         assert invoked[1]["note"] == "session finished"
@@ -303,16 +303,16 @@ def test_session_lifecycle_hooks_run_for_their_side_effects(tmp_path: Path) -> N
 def test_read_only_policy_skips_the_gate_and_notes_it_on_the_result(tmp_path: Path) -> None:
     marker = tmp_path / "gate-ran.txt"
     with _loopback_server(_read_replies()) as server:
-        kernel = _kernel(tmp_path, server, {"pre_tool": [_marker_command(marker)]}, read_only=True)
+        core = _core(tmp_path, server, {"pre_tool": [_marker_command(marker)]}, read_only=True)
         (tmp_path / "workspace" / "note.txt").write_text("note contents", encoding="utf-8")
-        session_id = kernel.create_session().session_id
-        assert kernel.run("read the note", session_id=session_id).status == "completed"
+        session_id = core.create_session().session_id
+        assert core.run("read the note", session_id=session_id).status == "completed"
 
-        # The read-tier call ran normally, and its result carries the kernel's skip clause.
+        # The read-tier call ran normally, and its result carries the core's skip clause.
         texts = [text for text in _model_messages(server) if "note contents" in text]
         assert texts, _model_messages(server)
         assert texts[-1].endswith("[hook hooks skipped: read-only policy]"), texts[-1]
 
         # The configured hook command never ran: a mutating argv hook is skipped under read-only.
         assert not marker.exists()
-        assert [event.event_type for event in kernel.events_after(session_id)].count("kernel.tool_completed") == 1
+        assert [event.event_type for event in core.events_after(session_id)].count("kernel.tool_completed") == 1

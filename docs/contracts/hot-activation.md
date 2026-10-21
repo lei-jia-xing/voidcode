@@ -1,6 +1,6 @@
 # Capability Activation
 
-Same-session hot update for the kernel: one workspace runs exactly one active
+Same-session hot update for the core: one workspace runs exactly one active
 generation, and a switch is a single SQLite transaction that either commits once or
 leaves the previous generation untouched. This document is the authoritative contract for
 admission, activation, and continuation behavior.
@@ -11,14 +11,14 @@ admission, activation, and continuation behavior.
   application: the enabled bundled defaults plus configured external packages.
 - One active generation per workspace. There is no long-lived mixed-version routing and no
   in-place module reloading; a candidate is a new runtime over the current source.
-- A changed SDK or image is a controlled kernel upgrade
-  (`voidcode upgrade run --candidate`, see [`kernel-upgrade.md`](./kernel-upgrade.md)),
+- A changed SDK or image is a controlled core upgrade
+  (`voidcode upgrade run --candidate`, see [`core-upgrade.md`](./core-upgrade.md)),
   never a hot reload: activation refuses when the installed image pin
   differs from the revision's.
 
 ## Admission loads packages; it never copies code
 
-`kernel/activation.py:admit_live` resolves each configured plugin id to its source
+`core/activation.py:admit_live` resolves each configured plugin id to its source
 directory, validates the configuration, injects the resolved providers map, and hands the
 runtime `{id, root, config}` specs. Nothing is copied, hashed, or pinned: the runtime imports
 the current source, and the returned `Plugin` registration is the single truth the runtime
@@ -31,23 +31,23 @@ revision identity without publishing a secret.
 
 ## One immutable snapshot per generation
 
-`Kernel` holds exactly one `_Snapshot` pointer: revision id, the effective
-`KernelConfig` (model, providers, policy, plugin entries), the admission, the plugin runtime, the tool
-definitions/validators, the command catalog, and the kernel-owned tools. Every read of
-`Kernel.plugin_runtime`, `Kernel.config`, `Kernel.revision_id`, `Kernel.command_catalog()` and
-`Kernel.plugin_views()` comes from that one pointer, so configuration, catalog, tool schema,
+`Core` holds exactly one `_Snapshot` pointer: revision id, the effective
+`CoreConfig` (model, providers, policy, plugin entries), the admission, the plugin runtime, the tool
+definitions/validators, the command catalog, and the core-owned tools. Every read of
+`Core.plugin_runtime`, `Core.config`, `Core.revision_id`, `Core.command_catalog()` and
+`Core.plugin_views()` comes from that one pointer, so configuration, catalog, tool schema,
 context and dispatch always describe the same generation. Publication is a single assignment.
 
 ### Dispatch units
 
 Each runtime dispatch (provider turn, tool call, command, view render, observer notification, context
-contribution) runs inside `Kernel._dispatch(...)`: under a short lock it checks the fence, captures
+contribution) runs inside `Core._dispatch(...)`: under a short lock it checks the fence, captures
 the current snapshot and registers an active call; the call stays registered until the callback's
 result is committed. No lock and no SQLite transaction is ever held across a plugin call.
 
 ### Activation fence
 
-`Kernel.activate` refuses when another activation is already running, and refuses (reports busy with
+`Core.activate` refuses when another activation is already running, and refuses (reports busy with
 the in-flight identities) while any foreign dispatch is active. New dispatches during a final
 switch are rejected with a visible "activation is in progress" error instead of blocking a run.
 Non-gated mid-run commands and confirmations keep working because the fence is only set during an
@@ -55,7 +55,7 @@ actual activation attempt.
 
 ## Safe boundary
 
-`kernel/engine.py:_drive` consumes a staged activation only at the loop top when
+`core/engine.py:_drive` consumes a staged activation only at the loop top when
 `cursor.batch_sequence is None`, i.e. after the whole native batch was reported and committed.
 The model's request is therefore durable while the old code finishes every member of the batch it
 started, and the next provider dispatch observes the new generation. Nothing about the acting
@@ -63,14 +63,14 @@ run's own tool stack waits for or triggers the switch.
 
 ## The two control surfaces
 
-- Reserved tool `kernel_reload` (kernel-owned, `EXECUTE` effect, so `ask` mode parks it for user
+- Reserved tool `core_reload` (core-owned, `EXECUTE` effect, so `ask` mode parks it for user
   approval): it only records `kernel.activation_requested` with the prepared target and returns. It
   never waits, never imports, and never switches anything inside the tool call.
-- Reserved command `kernel.reload` (client-initiated, same activation service): refused in
+- Reserved command `core.reload` (client-initiated, same activation service): refused in
   `read_only` mode and for busy sessions, and it owes no automatic continuation.
 
 When an approval is required, the target revision is prepared *before* the user is asked
-(`Kernel._prepare_target`): the approval payload carries `target_revision_id`, and after `allow`
+(`Core._prepare_target`): the approval payload carries `target_revision_id`, and after `allow`
 the activation adopts that exact recorded config/composition and its private configuration from
 the durable records. The approval covers config/composition only: source on disk can change
 before the runtime loads it.
@@ -90,7 +90,7 @@ before the runtime loads it.
   durable state claiming to be active. An enabled owner whose source is missing refuses instead —
   it never runs a deactivation transform. Session-scope rows receive that row's own session event
   tip; workspace-scope rows receive `None`; any other combination is refused. To remove a plugin,
-  disable it via `kernel.reload` on the old running kernel first so its real transform runs.
+  disable it via `core.reload` on the old running core first so its real transform runs.
 - Every `(scope, scope_key, owner)` row is transformed at most once per activation, with its own
   optimistic-concurrency version; an owner admitted unchanged with the same schema version is only
   validated, never rewritten.
@@ -130,17 +130,17 @@ every handle and lease of the old generation and can never respawn.
 A model-requested switch records `resume_intent = <activation request id>` in the acting session's
 checkpoint. The in-process run that requested the switch *is* the automatic continuation: it clears
 the intent before its next dispatch, and the next commit persists that. A crash between the commit
-and that dispatch leaves the intent durable, and `Kernel._drive_pending_activations` (the kernel's
+and that dispatch leaves the intent durable, and `Core._drive_pending_activations` (the core's
 startup driver, gated by `auto_drain`) claims it exactly once — one CAS commit clears the intent
 before any provider call — and drives the session on the committed generation with the root action
 budget the chain already owns. No client resume, prompt, or drain is involved, and a user-issued
-`kernel.reload` records no intent, so an idle reload never bills a turn.
+`core.reload` records no intent, so an idle reload never bills a turn.
 
 ## Restart restore
 
-`open_kernel` inspects the state read-only first. If no revision was ever adopted, the live
+`open_core` inspects the state read-only first. If no revision was ever adopted, the live
 configuration is admitted (validated before anything is written, and only after the workspace is
-verified to be free) and its private snapshot is written before the pointer. Otherwise the kernel
+verified to be free) and its private snapshot is written before the pointer. Otherwise the core
 restores the *persisted* revision: the revision payload from the database plus the current source
 at the recorded locations, with the credential-bearing snapshot from
 `<state>/private/<revision_id>.json` immutable, mode 0600. Changed configuration is never admitted
@@ -174,11 +174,10 @@ never be papered over); during ordinary replay it surfaces visibly and stays pen
   session refs, owner state and queued work are unchanged, and the durable activation request
   stays pending. This is an ordinary run crash under the existing contract: the session requires
   an explicit resume, and that resume re-activates the prepared target, consumes the request
-  exactly once and executes the new tool only after that resume. The kernel never spends provider
+  exactly once and executes the new tool only after that resume. The core never spends provider
   tokens on a switch that did not commit, and it never auto-retries the request on cold boot.
 - After the commit, before publication: the database is the single truth. A restart restores the
   committed target, performs no second migration, and the startup driver claims the durable resume
   intent once and finishes the continuation in the same session with no client resume, prompt or
   drain; the new tool executes in the fresh process.
-- Rollback is only ever "activate a revision whose state schema version can read the stored rows".
-  The kernel never restores an old state snapshot over newer facts.
+  The core never restores an old state snapshot over newer facts.

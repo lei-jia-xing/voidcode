@@ -7,7 +7,7 @@ tree cannot import ``voidcode.runtime``), and ``git_status_snapshot`` is the leg
 coordinator's ``_git_status_snapshot`` producer, so ``state``/``root``/``error`` keep the legacy
 values (``git_ready`` / ``not_git_repo`` / ``git_error``).
 
-No kernel, plugin-host or product code is involved: this module only runs ``git`` and reads the
+No core, plugin-host or product code is involved: this module only runs ``git`` and reads the
 workspace, which is why the review command can refuse or accept a target before any child exists.
 """
 
@@ -579,7 +579,7 @@ class WorkspaceReviewService:
     @staticmethod
     def _run_git(root: Path, *args: str) -> GitCommandResult:
         result = subprocess.run(
-            ["git", "-c", "core.quotePath=false", "-C", str(root), *args],
+            ["git", "-c", "kernel.Path=false", "-C", str(root), *args],
             capture_output=True,
             text=True,
             check=False,

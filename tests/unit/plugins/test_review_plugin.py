@@ -35,7 +35,7 @@ class MockServices(PluginServices):
         self.spawn_calls: list[dict[str, object]] = []
         self.join_calls: list[tuple[str, float]] = []
         self.staged_events: list[tuple[str, Mapping[str, object]]] = []
-        #: Outcome the kernel's join returns for the spawned child.
+        #: Outcome the core's join returns for the spawned child.
         self.join_status: Literal["completed", "failed", "interrupted", "cancelled", "running", "waiting"] = "completed"
         self.join_output: str | None = "review findings: 3 issues"
         self.join_error: str | None = None

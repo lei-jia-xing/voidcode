@@ -1,6 +1,6 @@
 """Price provider-reported usage once, from the shipped catalog.
 
-Cost is attached at report time and never repriced: the kernel persists the
+Cost is attached at report time and never repriced: the core persists the
 value it receives. An unknown count or rate stays ``None`` rather than becoming
 a guessed zero.
 """

@@ -416,7 +416,7 @@ def _intent_event(sequence: int, arguments: Mapping[str, object]) -> EventView:
         event_type="kernel.tool_intent",
         run_id="run-1",
         revision_id="rev-1",
-        source="kernel",
+        source="core",
         actor="model",
         payload={
             "invocation_id": f"inv-{sequence}",
@@ -428,11 +428,11 @@ def _intent_event(sequence: int, arguments: Mapping[str, object]) -> EventView:
 def test_observer_records_workspace_relative_paths_once_per_event(tmp_path: Path) -> None:
     services = FakeServices(
         events=(
-            EventView(sequence=1, event_type="kernel.user_message", run_id="run-1", revision_id="rev-1", source="kernel", actor="user"),
+            EventView(sequence=1, event_type="kernel.user_message", run_id="run-1", revision_id="rev-1", source="core", actor="user"),
             _intent_event(2, {"path": "sub/file.txt"}),
             _intent_event(3, {"path": str(tmp_path / "absolute.txt")}),
             _intent_event(4, {"path": "../outside.txt"}),
-            EventView(sequence=5, event_type="kernel.tool_completed", run_id="run-1", revision_id="rev-1", source="kernel", actor="model"),
+            EventView(sequence=5, event_type="kernel.tool_completed", run_id="run-1", revision_id="rev-1", source="core", actor="model"),
         )
     )
     skills_observer(_invocation_fact(event_sequence=5), _context(tmp_path), services)  # type: ignore[arg-type]

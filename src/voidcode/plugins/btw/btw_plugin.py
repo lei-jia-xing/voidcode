@@ -2,7 +2,7 @@
 
 Ported from legacy ``RuntimeService.ask_side_question`` (native ``/btw``): the answer
 comes from one tool-free, history-free provider turn, so the session transcript is never
-touched — no history pollution, no tools, and no follow-up turn. The kernel records the
+touched — no history pollution, no tools, and no follow-up turn. The core records the
 canonical ``kernel.model_query`` diagnostic fact for the call, so this plugin stages no
 state and no events of its own.
 """

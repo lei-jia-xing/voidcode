@@ -1,6 +1,6 @@
 """Registered provider entry points for the ``providers`` plugin.
 
-The kernel selects one registered provider name and hands it a turn request.
+The core selects one registered provider name and hands it a turn request.
 This module owns the policy behind that name: which native adapter serves the
 configured provider, with which endpoint and credential, the gateway's own
 per-model wire routing, and the catalog cost of the reported usage.
@@ -47,12 +47,12 @@ from .pricing import price_event, price_result
 
 #: Provider names this plugin registers with the plugin host: every built-in
 #: provider the shipped table declares. The configured name is the selection and
-#: the kernel never learns which vendor policy answers it.
+#: the core never learns which vendor policy answers it.
 DECLARED_PROVIDER_NAMES: tuple[str, ...] = tuple(sorted(row.id for row in PROVIDER_TABLE))
 
 _SELECTION_KEYS = frozenset({"wire"})
 
-#: Vendors whose configuration nests its credential under ``auth``. The kernel's
+#: Vendors whose configuration nests its credential under ``auth``. The core's
 #: provider entry carries a flat credential + endpoint, so the plugin maps that
 #: pair into the vendor's own shape before the shape parser validates it.
 _NESTED_CREDENTIAL_PROVIDERS = frozenset({"google", "github-copilot"})
@@ -74,9 +74,9 @@ def _entry_payload(provider_name: str, entry: Mapping[str, object]) -> dict[str,
 
 
 def provider_configs(config: Mapping[str, object]) -> ProviderConfigs:
-    """Build the typed provider configuration from the kernel-injected section.
+    """Build the typed provider configuration from the core-injected section.
 
-    The kernel's provider entries select a registered provider name through
+    The core's provider entries select a registered provider name through
     ``wire``; every remaining field is the vendor's own configuration, parsed by
     the same shape rules a configuration file used. An id the product does not
     declare resolves as a custom endpoint.
@@ -153,7 +153,7 @@ def _endpoint_of(provider_name: str, configuration: object | None) -> ProviderEn
 
 
 class RegisteredProvider:
-    """One provider name the kernel can select; requests route by their own provider id."""
+    """One provider name the core can select; requests route by their own provider id."""
 
     def __init__(self, name: str, configs: ProviderConfigs) -> None:
         self._name = name

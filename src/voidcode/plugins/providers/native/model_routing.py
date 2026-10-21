@@ -79,7 +79,7 @@ def _routed_model(model_map: Mapping[str, str], model_name: str) -> str:
 def _catalog_api(provider: str, model: str, metadata: ProviderModelMetadata | None) -> str | None:
     """The model's wire: carried metadata when given, else the shipped row.
 
-    Request-carried metadata is not a kernel service (the SDK request has no
+    Request-carried metadata is not a core service (the SDK request has no
     model_metadata field); the shipped static catalog is the source. Callers
     pass None; the metadata parameter stays for direct callers with a row.
     """
