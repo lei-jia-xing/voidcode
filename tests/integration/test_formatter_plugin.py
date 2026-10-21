@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sys
 from collections.abc import Iterator
@@ -15,8 +14,6 @@ import pytest
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.kernel.bootstrap import open_kernel
 from voidcode.kernel.engine import Kernel
-from voidcode.sdk.manifest import PluginFileIdentity, PluginManifest, PluginToolDeclaration
-from voidcode.sdk.tools import ToolEffect
 
 _FORMATTER_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "formatter"
 _NOTES_SOURCE = '''"""Test-only note writer."""
@@ -80,29 +77,7 @@ def _loopback_server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbac
 def _notes_root(workspace: Path) -> Path:
     root = workspace / ".test-plugins" / "notes"
     root.mkdir(parents=True, exist_ok=True)
-    source = root / "notes_plugin.py"
-    source.write_text(_NOTES_SOURCE, encoding="utf-8")
-    manifest = PluginManifest(
-        plugin_id="notes",
-        version="1.0.0",
-        entrypoint="notes_plugin:create_plugin",
-        files=(PluginFileIdentity(path="notes_plugin.py", sha256=hashlib.sha256(source.read_bytes()).hexdigest()),),
-        tools=(
-            PluginToolDeclaration(
-                name="write",
-                description="Write a small note file.",
-                input_schema={
-                    "type": "object",
-                    "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
-                    "required": ["path", "content"],
-                    "additionalProperties": False,
-                },
-                effects=(ToolEffect.WRITE,),
-                replay_policy="never",
-            ),
-        ),
-    )
-    (root / "voidcode-plugin.json").write_text(json.dumps(manifest.as_payload()), encoding="utf-8")
+    (root / "__init__.py").write_text(_NOTES_SOURCE, encoding="utf-8")
     return root
 
 
@@ -134,7 +109,7 @@ def _kernel(tmp_path: Path, server: OpenAILoopbackServer, *, format_on_write: bo
         },
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-    kernel = open_kernel(workspace, state_dir=state_dir, trusted_plugins=frozenset({"notes", "formatter"}))
+    kernel = open_kernel(workspace, state_dir=state_dir)
     _CREATED_KERNELS.append(kernel)
     return kernel
 

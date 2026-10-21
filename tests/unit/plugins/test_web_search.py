@@ -58,7 +58,6 @@ def tool_context(tmp_path: Path) -> ToolContext:
         invocation_id="i",
         revision_id="rev",
         actor="model",
-        capabilities=frozenset({"workspace.read", "network"}),
     )
 
 
@@ -531,7 +530,7 @@ def test_websearch_tool_supports_internal_provider_override(
     _mock_transport(monkeypatch, handle)
     tool = _web_search_tool()
     call = ToolCall(tool_name="web_search", arguments={"query": "test"})
-    result = tool._invoke(call, runtime_timeout_seconds=None, provider="tavily")
+    result = tool.invoke(call, context=tool_context, services=_SERVICES, provider="tavily")
 
     assert result.status == "ok"
     assert result.body is not None and result.body.source == "tavily"
@@ -540,7 +539,7 @@ def test_websearch_tool_supports_internal_provider_override(
 def test_websearch_tool_rejects_unknown_provider_override(tool_context: ToolContext) -> None:
     tool = _web_search_tool()
     call = ToolCall(tool_name="web_search", arguments={"query": "test"})
-    result = tool._invoke(call, runtime_timeout_seconds=None, provider="nonexistent")
+    result = tool.invoke(call, context=tool_context, services=_SERVICES, provider="nonexistent")
 
     assert result.status == "error"
     assert result.body is not None and result.body.source == "none"

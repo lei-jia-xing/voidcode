@@ -1,4 +1,4 @@
-"""Shared truncation bounds used by kernel, host, and plugins."""
+"""Shared truncation bounds used by kernel, runtime, and plugins."""
 
 from __future__ import annotations
 

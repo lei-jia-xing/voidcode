@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import fcntl
-import hashlib
 import json
 import os
 import signal
@@ -17,8 +16,6 @@ import pytest
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.kernel.storage.store import SqliteStore
-from voidcode.sdk.manifest import PluginCapabilityRequest, PluginFileIdentity, PluginManifest, PluginToolDeclaration
-from voidcode.sdk.tools import ToolEffect
 
 
 def _call(identity: str, name: str, **arguments: object) -> dict[str, object]:
@@ -59,7 +56,7 @@ def _configure(workspace: Path, server: OpenAILoopbackServer, **policy: object) 
     return config
 
 
-def _command(workspace: Path, state: Path, *arguments: str, trust: bool = False) -> list[str]:
+def _command(workspace: Path, state: Path, *arguments: str) -> list[str]:
     return [
         sys.executable,
         "-m",
@@ -68,13 +65,12 @@ def _command(workspace: Path, state: Path, *arguments: str, trust: bool = False)
         str(workspace),
         "--state-dir",
         str(state),
-        *(["--trust-plugin", "counter"] if trust else []),
         *arguments,
     ]
 
 
-def _cli(workspace: Path, state: Path, *arguments: str, trust: bool = False, code: int = 0) -> dict:
-    result = subprocess.run(_command(workspace, state, *arguments, trust=trust), capture_output=True, text=True, timeout=30, check=False)
+def _cli(workspace: Path, state: Path, *arguments: str, code: int = 0) -> dict:
+    result = subprocess.run(_command(workspace, state, *arguments), capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == code, result.stdout + result.stderr
     return json.loads(result.stdout)
 
@@ -183,17 +179,21 @@ def test_unknown_tool_argument_typo_is_rejected_without_side_effect(tmp_path: Pa
 
 def _counter_plugin(source: Path, *, safe: bool = False) -> None:
     source.mkdir()
+    effects = "READ" if safe else "WRITE"
     code = f"""from pathlib import Path
-import json
 import os
 import time
-from voidcode.sdk.plugin import Plugin, tool_definition
-from voidcode.sdk.manifest import parse_plugin_manifest
-from voidcode.sdk.tools import ToolFailure, ToolSuccess, TextOutput
+from voidcode.sdk.plugin import Plugin
+from voidcode.sdk.tools import ToolDefinition, ToolEffect, ToolFailure, ToolSuccess, TextOutput
 
 class Counter:
-    def __init__(self, definition):
-        self.definition = definition
+    definition = ToolDefinition(
+        name="counter",
+        description="gated read" if {safe!r} else "write once then wait for cancellation",
+        input_schema={{"type": "object", "properties": {{"path": {{"type": "string"}}}}, "required": ["path"], "additionalProperties": False}},
+        effects=frozenset({{ToolEffect.{effects}}}),
+        replay_policy="safe" if {safe!r} else "never",
+    )
     def invoke(self, call, *, context, services):
         target = context.workspace / call.arguments["path"]
         if {safe!r}:
@@ -209,39 +209,19 @@ class Counter:
             stream.write("effect\\n")
             stream.flush()
             os.fsync(stream.fileno())
-        (context.workspace / "host.pid").write_text(str(os.getpid()))
+        (context.workspace / "tool.started").touch()
         while not context.abort_signal.cancelled:
             time.sleep(0.01)
         return ToolFailure(call.tool_name, "cooperatively stopped after the effect")
 
 def create_plugin(config):
-    manifest = parse_plugin_manifest(json.loads(Path(__file__).with_name("voidcode-plugin.json").read_text()))
-    return Plugin(tools=(Counter(tool_definition(manifest.tools[0])),))
+    return Plugin(tools=(Counter(),))
 """
-    path = source / "counter_plugin.py"
-    path.write_text(code, encoding="utf-8")
-    manifest = PluginManifest(
-        plugin_id="counter",
-        version="1.0.0",
-        entrypoint="counter_plugin:create_plugin",
-        files=(PluginFileIdentity(path="counter_plugin.py", sha256=hashlib.sha256(path.read_bytes()).hexdigest()),),
-        capabilities=(PluginCapabilityRequest(name="workspace.read" if safe else "workspace.write", reason="exercise a real invocation"),),
-        tools=(
-            PluginToolDeclaration(
-                name="counter",
-                description="gated read" if safe else "write once then wait for cancellation",
-                input_schema={"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"], "additionalProperties": False},
-                effects=(ToolEffect.READ if safe else ToolEffect.WRITE,),
-                replay_policy="safe" if safe else "never",
-                capabilities=("workspace.read" if safe else "workspace.write",),
-            ),
-        ),
-    )
-    (source / "voidcode-plugin.json").write_text(json.dumps(manifest.as_payload()), encoding="utf-8")
+    (source / "__init__.py").write_text(code, encoding="utf-8")
 
 
 #: Cold start is not just the kernel: the subprocess admits the whole bundled plugin set and
-#: spawns the plugin host before its first tool call can write a marker, and these tests run
+#: loads the plugin runtime before its first tool call can write a marker, and these tests run
 #: under parallel xdist workers. The old 15 s cutoff failed here while the durable database
 #: proved the process was still making progress, so the wait is generous and the failure
 #: message now carries how long it actually waited.
@@ -271,13 +251,13 @@ def _await_lease_release(workspace: Path) -> None:
                 return
             except BlockingIOError:
                 if time.monotonic() >= deadline:
-                    pytest.fail("orphan plugin host retained the workspace lease")
+                    pytest.fail("orphan kernel process retained the workspace lease")
                 time.sleep(0.02)
     finally:
         os.close(descriptor)
 
 
-@pytest.mark.parametrize("stop", ["kill", "signal", "host"])
+@pytest.mark.parametrize("stop", ["kill", "signal"])
 def test_interrupted_mutation_is_not_replayed(tmp_path: Path, stop: str) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -296,49 +276,37 @@ def test_interrupted_mutation_is_not_replayed(tmp_path: Path, stop: str) -> None
         config = _configure(workspace, server, approval_mode="yolo")
         config["plugins"] = {"counter": {"path": str(source)}}
         (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-        untrusted = _cli(workspace, state, "run", "do not import untrusted code", code=1)
-        assert "trust" in untrusted["error"]
-        assert not (workspace / "counter.txt").exists()
         process = subprocess.Popen(
-            _command(workspace, state, "run", "exercise real effects", "--session-id", "crash-session", trust=True),
+            _command(workspace, state, "run", "exercise real effects", "--session-id", "crash-session"),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
         )
         try:
-            _await_marker(workspace / "host.pid", process)
-            if stop == "host":
-                host_pid = int((workspace / "host.pid").read_text(encoding="utf-8").strip())
-                os.kill(host_pid, signal.SIGKILL)
-                stdout, stderr = process.communicate(timeout=_STARTUP_DEADLINE_SECONDS)
-                assert process.returncode == 130, stdout + stderr
-                assert json.loads(stdout)["status"] == "interrupted"
+            _await_marker(workspace / "tool.started", process)
+            if stop == "kill":
+                process.kill()
             else:
-                if stop == "kill":
-                    process.kill()
-                else:
-                    process.send_signal(signal.SIGINT)
-                # A signaled run must drain its plugin host and settle; the shared startup
-                # bound covers a loaded machine's slow shutdown.
-                stdout, stderr = process.communicate(timeout=_STARTUP_DEADLINE_SECONDS)
-                assert process.returncode == (-signal.SIGKILL if stop == "kill" else 130), stdout + stderr
-                if stop == "signal":
-                    assert json.loads(stdout)["status"] == "interrupted"
+                process.send_signal(signal.SIGINT)
+            # A signaled run must settle; the shared startup bound covers a loaded machine's slow shutdown.
+            stdout, stderr = process.communicate(timeout=_STARTUP_DEADLINE_SECONDS)
+            assert process.returncode == (-signal.SIGKILL if stop == "kill" else 130), stdout + stderr
+            if stop == "signal":
+                assert json.loads(stdout)["status"] == "interrupted"
             _await_lease_release(workspace)
             (workspace / "input.txt").write_text("changed after crash\n", encoding="utf-8")
             if stop == "signal":
                 # A deliberate user stop is terminal for that run: the session admits a NEW
                 # user action directly and never replays the abandoned batch.
-                recovered = _cli(workspace, state, "run", "continue after user stop", "--session-id", "crash-session", trust=True)
+                recovered = _cli(workspace, state, "run", "continue after user stop", "--session-id", "crash-session")
             else:
-                recovered = _cli(workspace, state, "resume", "crash-session", trust=True)
+                recovered = _cli(workspace, state, "resume", "crash-session")
             assert recovered["status"] == "completed"
             assert (workspace / "counter.txt").read_text(encoding="utf-8") == "effect\n"
             assert not (workspace / "tail.txt").exists()
             reports = [message for message in server.requests[1]["messages"] if message["role"] == "tool"]
             assert [report["tool_call_id"] for report in reports] == ["prefix", "effect", "tail"]
             assert "completed prefix" in reports[0]["content"]
-            assert "external effects are unknown" in reports[1]["content"]
             assert "not executed" in reports[2]["content"]
         finally:
             if process.poll() is None:
@@ -358,7 +326,7 @@ def test_safe_read_recovery_reuses_the_durable_invocation_identity(tmp_path: Pat
         config["plugins"] = {"counter": {"path": str(source)}}
         (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
         process = subprocess.Popen(
-            _command(workspace, state, "run", "read input", "--session-id", "safe-session", trust=True),
+            _command(workspace, state, "run", "read input", "--session-id", "safe-session"),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -370,7 +338,7 @@ def test_safe_read_recovery_reuses_the_durable_invocation_identity(tmp_path: Pat
             _await_lease_release(workspace)
             (workspace / "input.txt").write_text("fresh recovery observation\n", encoding="utf-8")
             (workspace / "release").touch()
-            recovered = _cli(workspace, state, "resume", "safe-session", trust=True)
+            recovered = _cli(workspace, state, "resume", "safe-session")
             assert recovered["status"] == "completed"
             identities = (workspace / "read.invocations").read_text().splitlines()
             assert len(identities) == 2 and identities[0] == identities[1]

@@ -74,7 +74,7 @@ def test_a_blocked_session_does_not_serialize_another_session(tmp_path: Path) ->
         workspace = tmp_path / "workspace"
         workspace.mkdir(parents=True, exist_ok=True)
         (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-        kernel = open_kernel(workspace, state_dir=tmp_path / "state", trusted_plugins=frozenset({PLUGIN_ID}))
+        kernel = open_kernel(workspace, state_dir=tmp_path / "state")
         _CREATED.append(kernel)
         blocked_session = kernel.create_session("sess-blocked")
         other_session = kernel.create_session("sess-other")

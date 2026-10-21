@@ -24,7 +24,7 @@ import pytest
 import uvicorn
 
 from tests.fixtures.reload_plugin import write_reload_plugin
-from voidcode.kernel.bootstrap import _bundled_sources
+from voidcode.kernel.activation import bundled_sources
 from voidcode.kernel.transport.http import create_kernel_app, create_kernel_app_with_factory
 
 PLUGIN_ID = "reload-fixture"
@@ -34,7 +34,7 @@ CONTROL_TOKEN = "control-token-for-upgrade-transport-tests"
 
 def _configure(workspace: Path, source: Path) -> None:
     workspace.mkdir(parents=True, exist_ok=True)
-    plugins: dict[str, object] = {name: {"enabled": False} for name in _bundled_sources() if name != "providers"}
+    plugins: dict[str, object] = {name: {"enabled": False} for name in bundled_sources() if name != "providers"}
     plugins[PLUGIN_ID] = {"path": str(source), "enabled": True}
     (workspace / "voidcode.json").write_text(
         json.dumps(
@@ -153,7 +153,7 @@ def _read_frames(base: str, path: str, token: str, sink: queue.Queue[object], *,
 
 def test_health_reports_identity_and_stage(_world: tuple[Path, Path]) -> None:
     workspace, state = _world
-    app = create_kernel_app(workspace=workspace, state_dir=state, trusted_plugins=frozenset({PLUGIN_ID}), bearer_token=API_TOKEN)
+    app = create_kernel_app(workspace=workspace, state_dir=state, bearer_token=API_TOKEN)
     with _serving(app) as base:
         status, body = _request(base, "GET", "/api/health", token=API_TOKEN)
         assert status == 200
@@ -162,9 +162,9 @@ def test_health_reports_identity_and_stage(_world: tuple[Path, Path]) -> None:
         assert health["fenced"] is False and health["stage"] == "serving"
         assert isinstance(health["pid"], int) and health["pid"] > 0
         assert health["workspace"] == str(workspace)
-        assert health["revision_id"] and health["sdk_sha256"]
-        assert health["sdk_protocol"] == 1 and health["launch_protocol"] == 1
-        assert health["kernel_version"] and health["image_digest"] and health["sdk_path"]
+        assert health["revision_id"]
+        assert health["launch_protocol"] == 1
+        assert health["kernel_version"] and health["image_digest"]
         assert health["supervisor_pid"] == __import__("os").getppid()
         assert health["generation"] == 1 and health["active_upgrade"] is None
         assert "web_bundle" in health
@@ -178,7 +178,6 @@ def test_fenced_app_refuses_writes_serves_reads_and_promotes(_world: tuple[Path,
     app = create_kernel_app(
         workspace=workspace,
         state_dir=state,
-        trusted_plugins=frozenset({PLUGIN_ID}),
         bearer_token=API_TOKEN,
         fenced=True,
         control_token=CONTROL_TOKEN,
@@ -213,7 +212,6 @@ def test_control_routes_reject_the_api_bearer(_world: tuple[Path, Path]) -> None
     app = create_kernel_app(
         workspace=workspace,
         state_dir=state,
-        trusted_plugins=frozenset({PLUGIN_ID}),
         bearer_token=API_TOKEN,
         fenced=True,
         control_token=CONTROL_TOKEN,
@@ -237,7 +235,6 @@ def test_adopt_on_a_current_generation_is_a_noop(_world: tuple[Path, Path]) -> N
     app = create_kernel_app(
         workspace=workspace,
         state_dir=state,
-        trusted_plugins=frozenset({PLUGIN_ID}),
         bearer_token=API_TOKEN,
         fenced=True,
         control_token=CONTROL_TOKEN,
@@ -275,7 +272,6 @@ def test_follow_stream_ends_with_the_last_delivered_cursor(_world: tuple[Path, P
     app = create_kernel_app(
         workspace=workspace,
         state_dir=state,
-        trusted_plugins=frozenset({PLUGIN_ID}),
         bearer_token=API_TOKEN,
         fenced=True,
         control_token=CONTROL_TOKEN,

@@ -40,7 +40,6 @@ sys.exit(
         host="127.0.0.1",
         port=0,
         bearer_token=None,
-        trusted_plugins=frozenset(),
         session_id=(sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] != "-" else None),
         open_browser=False,
     )

@@ -7,6 +7,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar
 
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices
@@ -15,6 +16,7 @@ from voidcode.sdk.tools import (
     TextOutput,
     ToolCall,
     ToolDefinition,
+    ToolEffect,
     ToolFailure,
     ToolResult,
     ToolSuccess,
@@ -47,8 +49,23 @@ def _hash_file(path: Path) -> str:
 
 # ponytail: atomic tempfile + replace per file; directory locks / transactional edits migrate in P3
 class WriteTool:
-    def __init__(self, definition: ToolDefinition) -> None:
-        self.definition = definition
+    definition: ClassVar[ToolDefinition] = ToolDefinition(
+        name="write",
+        description="Write a UTF-8 text file inside the current workspace.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Path relative to the workspace."},
+                "content": {"type": "string", "maxLength": 65536, "description": "Complete UTF-8 file contents (max 64 KiB)."},
+                "expectedHash": {"type": "string", "description": "Required when target file exists: SHA-256 hash of current file content."},
+            },
+            "required": ["path", "content"],
+            "additionalProperties": False,
+        },
+        effects=frozenset({ToolEffect.WRITE}),
+        path_argument_keys=("path",),
+        replay_policy="never",
+    )
 
     def invoke(
         self,
@@ -57,9 +74,6 @@ class WriteTool:
         context: ToolContext,
         services: PluginServices,  # noqa: ARG002 - required by the frozen Tool ABI
     ) -> ToolResult:
-        if not context.has_capability("workspace.write"):
-            return ToolFailure(self.definition.name, error="Missing required capability: workspace.write")
-
         if context.abort_signal is not None and context.abort_signal.cancelled:
             return ToolFailure(
                 self.definition.name,

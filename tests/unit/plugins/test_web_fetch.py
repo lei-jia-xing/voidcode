@@ -105,7 +105,6 @@ def tool_context(tmp_path: Path) -> ToolContext:
         invocation_id="i",
         revision_id="rev",
         actor="model",
-        capabilities=frozenset({"workspace.read", "network"}),
     )
 
 

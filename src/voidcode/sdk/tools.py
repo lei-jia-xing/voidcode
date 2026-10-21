@@ -1,4 +1,4 @@
-"""Tool contracts shared by kernel, plugin host, and plugins.
+"""Tool contracts shared by kernel, runtime, and plugins.
 
 Self-contained: the only internal imports are sibling SDK modules.
 """
@@ -148,54 +148,6 @@ class ToolDiagnostics:
             raise ValueError("diagnostics details must be an object")
         values = {name: payload.get(name) for name in ("kind", "summary", "guidance")}
         return cls(details=details, **values)
-
-
-class RuntimeToolTimeoutError(TimeoutError):
-    """Raised when the runtime-owned outer tool timeout wins.
-
-    A timeout only says the runtime stopped waiting for the call; it never
-    promises that the call stopped. The execution facts below carry what the
-    runtime could actually verify, so every surface that reports the timeout
-    (tool result, event payload, session state) can state the side-effect state
-    instead of implying that nothing further will happen.
-    """
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        partial_result: object | None = None,
-        cancellation_signalled: bool = False,
-        execution_stopped: bool = True,
-    ) -> None:
-        super().__init__(message)
-        self.partial_result = partial_result
-        #: The runtime cancelled the invocation before it stopped waiting.
-        self.cancellation_signalled = cancellation_signalled
-        #: The runtime confirmed the execution stopped before it returned. The
-        #: executor finalizes this once it has reaped (or failed to reap) the
-        #: worker; tools that time themselves out are stopped by definition.
-        self.execution_stopped = execution_stopped
-
-    @property
-    def side_effect_state(self) -> ToolSideEffectState:
-        """``settled`` only when the runtime confirmed the execution stopped."""
-        return "settled" if self.execution_stopped else "unknown"
-
-    @property
-    def error_message(self) -> str:
-        """Runtime-facing message that states the verified side-effect state."""
-        if self.execution_stopped:
-            return str(self)
-        return f"{self}; {UNCONFIRMED_STOP_CLAUSE}"
-
-    def execution_facts(self) -> dict[str, object]:
-        """Additive execution facts shared by every timeout surface."""
-        return {
-            "cancellation_signalled": self.cancellation_signalled,
-            "execution_stopped": self.execution_stopped,
-            "side_effect_state": self.side_effect_state,
-        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -441,18 +393,6 @@ class DynamicTool(Protocol):
     def definition(self) -> ToolDefinition: ...
 
     def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult: ...
-
-
-@runtime_checkable
-class RuntimeTimeoutAwareTool(Protocol):
-    def invoke_with_runtime_timeout(
-        self,
-        call: ToolCall,
-        *,
-        context: ToolContext,
-        services: PluginServices,
-        timeout_seconds: int,
-    ) -> ToolResult: ...
 
 
 type Tool = StaticTool | DynamicTool

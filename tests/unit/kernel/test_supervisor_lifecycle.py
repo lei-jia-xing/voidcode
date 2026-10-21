@@ -35,7 +35,6 @@ def _supervisor(workspace: Path, state_dir: Path) -> _Supervisor:
         host="127.0.0.1",
         port=0,
         bearer_token=None,
-        trusted_plugins=frozenset(),
         session_id=None,
         open_browser=False,
     )

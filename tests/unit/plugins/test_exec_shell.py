@@ -19,7 +19,7 @@ from voidcode.plugins.exec import create_plugin
 from voidcode.plugins.exec.shell_exec import ShellExecResultBody
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import ProcessResult
-from voidcode.sdk.tools import RuntimeToolTimeoutError, TextOutput, ToolCall, ToolFailure, ToolSuccess
+from voidcode.sdk.tools import TextOutput, ToolCall, ToolFailure, ToolSuccess
 
 _PREVIEW_BYTES = 25 * 1024
 _SHELL_WRAPPER = ["cmd.exe", "/c"] if os.name == "nt" else ["/bin/sh", "-c"]
@@ -113,7 +113,6 @@ def _context_with_progress(workspace: Path, chunks: list[dict[str, object]]) -> 
         invocation_id="invocation-test",
         revision_id="rev-test",
         actor="model",
-        capabilities=frozenset({"workspace.write"}),
         emit_tool_progress=chunks.append,
     )
 
@@ -130,7 +129,6 @@ def _context(workspace: Path, abort_signal: object | None = None) -> ToolContext
         invocation_id="invocation-test",
         revision_id="rev-test",
         actor="model",
-        capabilities=frozenset({"workspace.write"}),
         abort_signal=abort_signal,  # type: ignore[arg-type]
     )
 
@@ -282,26 +280,18 @@ def test_shell_exec_clamps_the_timeout_to_the_maximum(tmp_path: Path) -> None:
     assert lease.calls[0]["timeout_seconds"] == 600.0
 
 
-def test_shell_exec_uses_the_smaller_runtime_timeout(tmp_path: Path) -> None:
+def test_shell_exec_reports_the_tool_timeout_with_partial_output(tmp_path: Path) -> None:
     lease = _FakeLease(ProcessResult(exit_code=None, stdout="partial\n", stderr="", duration_ms=30, timed_out=True))
 
-    with pytest.raises(RuntimeToolTimeoutError) as exc:
-        _shell_tool().invoke_with_runtime_timeout(
-            ToolCall("shell_exec", {"command": "sleep 30"}),
-            context=_context(tmp_path),
-            services=lease,  # type: ignore[arg-type]
-            timeout_seconds=3,
-        )
+    result = _invoke("sleep 30", tmp_path, lease, timeout=3)
 
-    assert exc.value.execution_stopped is True
-    partial = exc.value.partial_result
-    assert isinstance(partial, ToolFailure)
-    assert isinstance(partial.body, ShellExecResultBody)
-    assert partial.body.timed_out is True
-    assert partial.body.stop_confirmed is True
-    assert partial.body.timeout == 3
-    assert partial.body.stdout == "partial\n"
-    assert partial.error == "tool 'shell_exec' exceeded runtime timeout of 3s"
+    assert isinstance(result, ToolFailure)
+    assert isinstance(result.body, ShellExecResultBody)
+    assert result.body.timed_out is True
+    assert result.body.stop_confirmed is True
+    assert result.body.timeout == 3
+    assert result.body.stdout == "partial\n"
+    assert result.error == "shell_exec command timed out after 3s"
     assert lease.calls[0]["timeout_seconds"] == 3.0
 
 

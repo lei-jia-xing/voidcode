@@ -13,7 +13,7 @@ ObservedFactKind = Literal["usage", "invocation_finished", "run_finished"]
 #: Canonical run status reported to observers.
 RunStatus = Literal["completed", "failed", "interrupted"]
 #: Canonical neutral stop cause shared by kernel and SDK.
-StopCause = Literal["completed", "error", "user_stop", "owner_cancel", "limit_reached", "shutdown", "host_loss"]
+StopCause = Literal["completed", "error", "user_stop", "owner_cancel", "limit_reached", "shutdown"]
 
 
 ContributionRole = Literal["system", "user"]

@@ -43,7 +43,7 @@ Plugins may additionally read their own resources (for example agent profiles un
 }
 ```
 
-The `my-linter` entry illustrates an external plugin: the directory must exist, and starting the kernel against it needs `--trust-plugin my-linter`.
+The `my-linter` entry illustrates an external plugin: the directory must exist and export `create_plugin` from its `__init__.py`.
 
 ### Top-Level Fields
 
@@ -100,26 +100,25 @@ Each key is a plugin id matching `[a-z][a-z0-9_-]*`.
 |---|---|---|
 | `enabled` | boolean | Default `true`. A disabled plugin is not admitted; its tools, commands, and views disappear from the catalog. |
 | `path` | string | Optional. A source directory resolved relative to the workspace, for plugins that do not ship with the kernel. A non-bundled id without a `path` is refused. |
-| `config` | object | Plugin-owned configuration, validated against the plugin manifest's `config_schema`. Provider credentials belong in the root `providers` section; a plugin `config` that repeats a `providers` key is refused. |
+| `config` | object | Plugin-owned configuration, validated by the plugin itself. Provider credentials belong in the root `providers` section; the kernel injects those into every factory under the reserved `providers` key, which plugin-owned config must never use. |
 
 Bundled plugin ids (those shipped in `src/voidcode/plugins/`) need no entry at all: they are enabled with an empty configuration by default, and an entry only exists to disable one, configure it, or point it at a different source.
 
-## Plugin Trust
+## Plugins are trusted code
 
-Trust is a startup decision about a concrete source path, never something a running session can grant itself:
+There is no trust flag, no manifest, and no sandbox: configuring a plugin id
+means loading that source as code equal to the application, in the kernel process
+process. A restart imports the *current* source with the *recorded*
+configuration; `kernel.reload` re-admits the *live* configuration as a new
+generation in-session.
 
-- **Bundled ids** are trusted by construction — they ship with the kernel, so trusting them says nothing about user code.
-- **External sources** (`plugins.<id>.path`) require `--trust-plugin <id>` on the command line that starts the kernel:
-
-  ```bash
-  uv run python -m voidcode.kernel run "summarize the workspace" --trust-plugin my-linter
-  ```
-
-  The flag authorizes the *canonical path the configuration resolves to for that id*, and that authorization is recorded in the revision's private snapshot. A restart of that revision restores the pinned artifact from the snapshot without needing the flag again; pointing the id at a different directory is a different path and needs a new explicit trust decision (and, because the persisted revision is restored on restart, a reload or a fresh state directory to take effect).
-- **`kernel.reload`** re-admits the live configuration, but only trusts source paths already authorized in the current generation. Adding a brand-new external plugin is therefore a restart with `--trust-plugin`, not a reload.
-- Trust is about source bytes, not sandboxing: an admitted plugin runs in its own host process with the capability set the kernel grants (`workspace.read`, `workspace.write`, `network`), and a manifest whose requests exceed that set is refused at admission.
-
-Changed plugin source, changed configuration, a changed SDK, or a different kernel image is never admitted implicitly: an edited plugin file produces a new identity, and a restart against a revision whose SDK hash or image pin no longer matches fails with an explicit "controlled kernel upgrade" error instead of silently running new code under an old revision. The explicit path is `voidcode upgrade --candidate <install>` (preflight before downtime, fenced drain, one atomic adoption transaction, health-checked election), and a pre-P5 workspace is adopted on first start of the new build with `voidcode serve --session-id <id>`; see `docs/contracts/kernel-upgrade.md`.
+Changed configuration, a changed SDK, or a different kernel image is never
+admitted implicitly: a restart against a revision whose SDK protocol or image
+pin no longer matches fails with an explicit "controlled kernel upgrade"
+error instead of silently running new code under an old revision. The
+explicit path is `voidcode upgrade --candidate <install>` (preflight before
+downtime, fenced drain, one atomic adoption transaction, health-checked
+election); see `docs/contracts/kernel-upgrade.md`.
 
 ## State Directory
 
@@ -131,8 +130,7 @@ $XDG_STATE_HOME/voidcode/kernel-v1/<sha256-of-the-workspace-path>/
 
 (default `$XDG_STATE_HOME` is `~/.local/state`). It contains:
 
-- `kernel-v1.sqlite3` — sessions, append-only events, checkpoints, capability revisions, and confirmation records;
-- `artifacts/<identity>/` — the pinned copies of admitted plugin sources;
+- `kernel-v1.sqlite3` — sessions, append-only events, checkpoints, revisions, and confirmation records;
 - `private/<revision>.json` — the 0600 configuration snapshot for one revision, the only place provider credentials are stored.
 
 `--state-dir PATH` overrides the derived directory. The state directory must not be inside the workspace: the kernel refuses a state directory that the workspace's file tools could write to.

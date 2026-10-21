@@ -80,19 +80,11 @@ run = "uv build"
 description = "Regenerate src/voidcode/plugins/providers/native/model_catalog_data.json from the upstream catalog mirror"
 run = "uv run python -X utf8 scripts/generate_model_catalog.py"
 
-[tasks."plugins:identities:generate"]
-description = "Pin bundled plugin source files after edits and formatting"
-run = "uv run python scripts/generate_plugin_identities.py"
-
-[tasks."plugins:identities:check"]
-description = "Reject bundled plugin source/manifest identity drift"
-run = "uv run python scripts/generate_plugin_identities.py --check"
-
 [tasks.check]
-depends = ["lint", "typecheck", "plugins:identities:check", "test", "frontend:api:check", "frontend:check"]
+depends = ["lint", "typecheck", "test", "frontend:api:check", "frontend:check"]
 
 [tasks.ci]
-depends = ["lint", "typecheck", "test:coverage", "plugins:identities:check", "build", "frontend:api:check", "frontend:check", "frontend:build"]
+depends = ["lint", "typecheck", "test:coverage", "build", "frontend:api:check", "frontend:check", "frontend:build"]
 
 [tasks.pre-commit]
 run = "uv run pre-commit run --all-files"

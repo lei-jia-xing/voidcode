@@ -1,6 +1,6 @@
 """End-to-end integration tests for the Goal plugin.
 
-Drives real kernel, plugin host, loopback provider, and durable storage boundaries:
+Drives real kernel, plugin runtime, loopback provider, and durable storage boundaries:
 - Goal creation, update, and get via tool invocations
 - Autonomous execution and verification of multi-step task
 - Process restart preserving goal state and active windows
@@ -13,7 +13,6 @@ Drives real kernel, plugin host, loopback provider, and durable storage boundari
 
 from __future__ import annotations
 
-import hashlib
 import json
 import threading
 import time
@@ -31,13 +30,7 @@ from voidcode.kernel.engine import Kernel
 from voidcode.kernel.storage.store import EventDraft, SessionRecord
 from voidcode.sdk.codec import encode_provider_result
 from voidcode.sdk.commands import CommandResult
-from voidcode.sdk.manifest import (
-    PluginCommandDeclaration,
-    PluginFileIdentity,
-    PluginManifest,
-)
 from voidcode.sdk.provider import ProviderTokenUsage, ProviderTurnResult
-from voidcode.sdk.tools import ToolEffect
 
 _GOAL_PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent / "src" / "voidcode" / "plugins" / "goal"
 
@@ -45,7 +38,6 @@ _GOAL_PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent / "src" / "voi
 def _second_plugin(root: Path) -> dict[str, object]:
     """Second plugin fixture to verify namespace and budget isolation."""
     root.mkdir(parents=True, exist_ok=True)
-    plugin_file = root / "second_plugin.py"
     code = """from voidcode.sdk.plugin import Plugin
 from voidcode.sdk.commands import CommandDefinition, CommandResult
 from voidcode.sdk.tools import ToolEffect
@@ -64,23 +56,7 @@ class SecondCommand:
 def create_plugin(config):
     return Plugin(commands=(SecondCommand(),))
 """
-    plugin_file.write_text(code, encoding="utf-8")
-    digest = hashlib.sha256(plugin_file.read_bytes()).hexdigest()
-    manifest = PluginManifest(
-        plugin_id="second-plugin",
-        version="1.0.0",
-        entrypoint="second_plugin:create_plugin",
-        files=(PluginFileIdentity(path="second_plugin.py", sha256=digest),),
-        commands=(
-            PluginCommandDeclaration(
-                name="second_cmd",
-                description="Second plugin command",
-                argument_schema={"type": "object"},
-                effects=(ToolEffect.SESSION,),
-            ),
-        ),
-    )
-    (root / "voidcode-plugin.json").write_text(json.dumps(manifest.as_payload()), encoding="utf-8")
+    (root / "__init__.py").write_text(code, encoding="utf-8")
     return {"second-plugin": {"path": str(root)}}
 
 
@@ -166,8 +142,7 @@ def _kernel_with_loopback(
         "plugins": plugins_cfg,
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-    trusted = frozenset(plugins_cfg.keys())
-    kernel = open_kernel(workspace, state_dir=state_dir, trusted_plugins=trusted)
+    kernel = open_kernel(workspace, state_dir=state_dir)
     _CREATED_KERNELS.append(kernel)
     return kernel
 
@@ -619,7 +594,7 @@ def _append_seeded_events(kernel: Kernel, session_id: str, drafts: tuple[EventDr
         expected_run_id=session.run_id,
         run_id=session.run_id or uuid4().hex,
         revision_id=kernel.revision_id,
-        events=drafts,
+        events=kernel._stamp_fact_owners(drafts),
         status=session.status,
     )
 
@@ -719,7 +694,7 @@ def test_late_closed_window_unknown_hard_blocks_same_baseline_and_uncap_frees_ch
     Auto-drain is disabled so `goal.resume` rotates the window without immediately running a
     provider turn; the rotation itself is the subject. The old dispatch is SEEDED as durable
     source rows (intent + known-zero model turn) and later corrected by a SEEDED late
-    `provider_interrupted` row; core derives both facts from stored rows and the real host
+    `provider_interrupted` row; core derives both facts from stored rows and the real runtime
     observer applies them (no service mocks, no invented metadata, no paid dispatch).
     """
     replies = [
@@ -805,8 +780,8 @@ def test_late_closed_window_unknown_hard_blocks_same_baseline_and_uncap_frees_ch
         assert len(restart_server.requests) == 0
 
 
-def test_deactivation_pure_rpc_pauses_live_goal_in_the_real_host(tmp_path: Path) -> None:
-    """The real plugin host runs the goal's pure deactivation transform over its RPC boundary.
+def test_deactivation_pure_transform_pauses_live_goal_in_the_runtime(tmp_path: Path) -> None:
+    """The runtime runs the goal's pure deactivation transform by direct call.
 
     This is the transform the kernel calls when the owner is disabled: state in, paused copy
     out, with no service, lease, clock or provider traffic. Auto-drain is off so the objective is
@@ -825,7 +800,7 @@ def test_deactivation_pure_rpc_pauses_live_goal_in_the_real_host(tmp_path: Path)
         assert open_window["end_sequence"] is None
         tip = kernel.store.session(session_id).last_event_sequence
 
-        prepared = kernel.host.prepare_deactivate_owner_state(
+        prepared = kernel.plugin_runtime.prepare_deactivate_owner_state(
             "goal",
             stored,
             scope="session",
@@ -850,7 +825,7 @@ def test_deactivation_pure_rpc_pauses_live_goal_in_the_real_host(tmp_path: Path)
 
         # An open window without the owning session's tip is refused at the boundary, never guessed.
         with pytest.raises(RuntimeError, match="event tip"):
-            kernel.host.prepare_deactivate_owner_state(
+            kernel.plugin_runtime.prepare_deactivate_owner_state(
                 "goal",
                 stored,
                 scope="workspace",
@@ -860,11 +835,11 @@ def test_deactivation_pure_rpc_pauses_live_goal_in_the_real_host(tmp_path: Path)
 
         # The scope/tip contract and a stale tip are refused before any copy can be written.
         with pytest.raises(RuntimeError, match="tip"):
-            kernel.host.prepare_deactivate_owner_state("goal", stored, scope="session", scope_key=session_id, tip_sequence=None)
+            kernel.plugin_runtime.prepare_deactivate_owner_state("goal", stored, scope="session", scope_key=session_id, tip_sequence=None)
         with pytest.raises(RuntimeError, match="tip"):
-            kernel.host.prepare_deactivate_owner_state("goal", stored, scope="workspace", scope_key=str(kernel.workspace), tip_sequence=4)
+            kernel.plugin_runtime.prepare_deactivate_owner_state("goal", stored, scope="workspace", scope_key=str(kernel.workspace), tip_sequence=4)
         with pytest.raises(RuntimeError, match="earlier point"):
-            kernel.host.prepare_deactivate_owner_state("goal", stored, scope="session", scope_key=session_id, tip_sequence=0)
+            kernel.plugin_runtime.prepare_deactivate_owner_state("goal", stored, scope="session", scope_key=session_id, tip_sequence=0)
         still_stored, still_version = kernel.store.plugin_state("goal", "session", session_id)
         assert still_version == version
         assert still_stored == stored  # a refused deactivation changes nothing

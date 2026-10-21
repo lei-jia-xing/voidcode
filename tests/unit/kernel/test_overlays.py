@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.fixtures.reload_plugin import OVERLAY_COMMAND, PROBE_TOOL, SERVICES_TOOL, write_reload_plugin
+from tests.fixtures.reload_plugin import OVERLAY_COMMAND, PROBE_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.kernel.bootstrap import open_kernel
 from voidcode.kernel.engine import Kernel
@@ -65,7 +65,7 @@ def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path, *, r
 
 
 def _open(tmp_path: Path) -> Kernel:
-    kernel = open_kernel(tmp_path / "workspace", state_dir=tmp_path / "state", trusted_plugins=frozenset({PLUGIN_ID}))
+    kernel = open_kernel(tmp_path / "workspace", state_dir=tmp_path / "state")
     _CREATED.append(kernel)
     return kernel
 
@@ -132,7 +132,7 @@ def test_overlay_clear_restores_mutation_but_never_clears_a_frozen_policy(tmp_pa
     with _server([_turn(_call("probe-2", PROBE_TOOL)), _turn(output="denied")]) as frozen_server:
         frozen = tmp_path / "frozen"
         _configure(frozen / "workspace", frozen_server, source, read_only=True)
-        kernel = open_kernel(frozen / "workspace", state_dir=frozen / "state", trusted_plugins=frozenset({PLUGIN_ID}))
+        kernel = open_kernel(frozen / "workspace", state_dir=frozen / "state")
         _CREATED.append(kernel)
         kernel.create_session("sess-frozen")
         assert kernel.invoke_command("sess-frozen", OVERLAY_COMMAND, {"action": "on"}, expected_revision=kernel.revision_id).status == "ok"
@@ -142,21 +142,6 @@ def test_overlay_clear_restores_mutation_but_never_clears_a_frozen_policy(tmp_pa
         assert kernel.run("write anyway", session_id="sess-frozen").status == "completed"
         denied = [item for item in _results(kernel, "sess-frozen") if item.get("status") == "error"]
         assert denied and "read-only policy" in str(denied[-1].get("error"))
-
-
-def test_model_path_cannot_set_or_clear_the_overlay(tmp_path: Path) -> None:
-    source = tmp_path / "plugin"
-    write_reload_plugin(source, tool_output="v1", services_probe=True)
-    replies = [_turn(_call("overlay-1", SERVICES_TOOL, action="overlay")), _turn(output="done")]
-    with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source)
-        kernel = _open(tmp_path)
-        kernel.create_session("sess-model")
-        assert kernel.run("set the overlay from a tool", session_id="sess-model").status == "completed"
-        failed = [item for item in _results(kernel, "sess-model") if item.get("status") == "error"]
-        assert failed, "the model-driven overlay call must be rejected"
-        # The kernel guarantee: no overlay exists, whatever the plugin-side error text is.
-        assert kernel.store.session_overlays("sess-model") == ()
 
 
 def test_overlay_survives_a_capability_reload(tmp_path: Path) -> None:
@@ -200,3 +185,138 @@ def test_deactivating_the_owner_revokes_its_overlay_in_the_switch(tmp_path: Path
         assert kernel.store.session_overlays("sess-disable") == ("read-only",)
         kernel.store.clear_session_overlay("sess-disable", "other-owner")
         assert kernel.store.session_overlays("sess-disable") == ()
+
+
+_SESSION_PROBE = """
+from __future__ import annotations
+
+from collections.abc import Mapping
+from uuid import uuid4
+
+from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult, ConfirmationRequest
+from voidcode.sdk.plugin import Plugin
+from voidcode.sdk.services import PluginServices
+from voidcode.sdk.tools import ToolEffect
+
+
+class SessionProbe:
+    definition = CommandDefinition(
+        name="session_probe",
+        description="Stage session state, then attempt a real child process.",
+        argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        effects=frozenset({ToolEffect.SESSION}),
+    )
+
+    def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
+        state, version = services.get_state("session")
+        services.replace_state({"probed": True}, expected_version=version, scope="session")
+        try:
+            services.run_process(["touch", "ro-probe-marker.txt"], cwd=invocation.context.workspace)
+        except PermissionError as exc:
+            return CommandResult(status="ok", output=f"staged; machine refused: {exc}")
+        return CommandResult(status="ok", output="staged; machine ran")
+
+
+class ConfirmProbe:
+    definition = CommandDefinition(
+        name="confirm_probe",
+        description="Ask first; on explicit confirm, stage state then attempt a real child process.",
+        argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        effects=frozenset({ToolEffect.SESSION}),
+    )
+
+    def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
+        if invocation.context.actor != "user":
+            request_id = uuid4().hex
+            return CommandResult(
+                status="pending_confirmation",
+                confirmation=ConfirmationRequest(
+                    request_id=request_id,
+                    owner="probe",
+                    command_name=self.definition.name,
+                    arguments={},
+                    ui_type="confirmation",
+                    ui_data={"request_id": request_id, "message": "probe?", "actions": ["allow", "deny"]},
+                ),
+            )
+        state, version = services.get_state("session")
+        services.replace_state({"confirmed": True}, expected_version=version, scope="session")
+        try:
+            services.run_process(["touch", "ro-probe-confirm-marker.txt"], cwd=invocation.context.workspace)
+        except PermissionError as exc:
+            return CommandResult(status="ok", output=f"staged; machine refused: {exc}")
+        return CommandResult(status="ok", output="staged; machine ran")
+
+
+def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
+    return Plugin(commands=(SessionProbe(), ConfirmProbe()))
+"""
+
+
+def test_confirmed_session_command_under_read_only_stages_state_but_cannot_touch_the_machine(tmp_path: Path) -> None:
+    """The confirm callpoint carries no RO exemption: same SESSION staging + machine refusal."""
+    source = tmp_path / "probe"
+    source.mkdir()
+    (source / "__init__.py").write_text(_SESSION_PROBE, encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "voidcode.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "policy": {"approval_mode": "yolo", "read_only": True},
+                "plugins": {"probe": {"path": "../probe"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    kernel = open_kernel(workspace, state_dir=tmp_path / "state", auto_drain=False)
+    _CREATED.append(kernel)
+    try:
+        kernel.create_session("sess-ro-confirm")
+        revision = kernel.revision_id
+        pending = kernel.invoke_command("sess-ro-confirm", "confirm_probe", {}, expected_revision=revision)
+        assert pending.status == "pending_confirmation", pending.as_payload()
+        assert pending.confirmation is not None
+        decided = kernel.confirm_action("sess-ro-confirm", pending.confirmation.request_id, "allow", expected_revision=revision)
+        assert decided.status == "ok", decided.as_payload()
+        assert "machine refused" in (decided.output or ""), decided.as_payload()
+        stored, _ = kernel.store.plugin_state("probe", "session", "sess-ro-confirm")
+        assert stored is not None and stored.get("confirmed") is True, stored
+        assert not (workspace / "ro-probe-confirm-marker.txt").exists()
+    finally:
+        kernel.close()
+        _CREATED.remove(kernel)
+
+
+def test_session_command_under_read_only_stages_state_but_cannot_touch_the_machine(tmp_path: Path) -> None:
+    source = tmp_path / "probe"
+    source.mkdir()
+    (source / "__init__.py").write_text(_SESSION_PROBE, encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "voidcode.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "policy": {"approval_mode": "yolo", "read_only": True},
+                "plugins": {"probe": {"path": "../probe"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    kernel = open_kernel(workspace, state_dir=tmp_path / "state", auto_drain=False)
+    _CREATED.append(kernel)
+    try:
+        kernel.create_session("sess-ro-probe")
+        result = kernel.invoke_command("sess-ro-probe", "session_probe", {}, expected_revision=kernel.revision_id)
+        assert result.status == "ok", result.error
+        assert "machine refused" in (result.output or "")
+        # The SESSION staging half kept working: state committed.
+        stored, _ = kernel.store.plugin_state("probe", "session", "sess-ro-probe")
+        assert stored is not None and stored.get("probed") is True
+        # The machine half was refused: no external marker exists.
+        assert not (workspace / "ro-probe-marker.txt").exists()
+    finally:
+        kernel.close()
+        _CREATED.remove(kernel)

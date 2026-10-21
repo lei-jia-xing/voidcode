@@ -4,6 +4,51 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Trusted in-process plugins without manifests, pins, or host RPC (BREAKING)
+- A plugin is now a Python package directory whose `__init__.py` exports
+  `create_plugin(config) -> Plugin`. `voidcode-plugin.json` is gone, and with
+  it the identity generator (`scripts/generate_plugin_identities.py`, the
+  `plugins:identities:*` tasks, and the pre-commit hook), `--trust-plugin`,
+  `capabilities` grants, hash pinning, artifact copies, and declaration-drift
+  checks. Plugins are trusted code equal to the application; there is no
+  replacement sandbox or marketplace. No compatibility importer: old pinned
+  state is refused with guidance, never silently converted.
+- `Plugin` carries the runtime metadata directly: `observed_facts`,
+  `pre_tool_match`/`pre_tool_mutating`, `post_tool_match`/`post_tool_mutating`,
+  and `state=StateSchema(version, schema)`. `sdk/manifest.py` and the
+  `tool_definition`/`command_definition` helpers are deleted;
+  `ToolContext.capabilities`, `CommandDefinition.capabilities`, and the codec
+  `capabilities` field are gone, as is the `direct_user` command trust
+  classification: all commands follow the same effects/read-only rules with no per-command exemption.
+- The out-of-process plugin host is gone with the RPC: `kernel/host.py` and
+  the whole `plugin_host` package are deleted, with the host-only wire codecs
+  (`encode/decode_context`, provider-error/command/view codecs) and the
+  `sdk_protocol` health field. `kernel/plugins.py:PluginRuntime` loads each
+  plugin package in-process under a unique namespace per generation (bytecode
+  caches bypassed, so reloads never read stale `.pyc`) and dispatches every
+  call by direct synchronous invocation: cancellation is cooperative, and the
+  engine error surface is plain `ValueError`/`RuntimeError` instead of
+  `HostUnavailable`/`HostTimeout`. `Kernel.plugin_runtime` replaces
+  `Kernel.host`. There is no generic outer runtime-timeout API
+  (`RuntimeToolTimeoutError`, `RuntimeTimeoutAwareTool`,
+  `invoke_with_runtime_timeout` are deleted with the retired execution
+  backend): a non-cooperative callback that never returns blocks its dispatch
+  until the kernel restarts. Native child-process, provider-IO, MCP/LSP
+  request, child-join, and supervisor/drain timeouts keep their real consumers.
+- The kernel injects the resolved providers map into every factory as the
+  reserved `config["providers"]` key, which plugin-owned config must never
+  use. A restart imports the current source with the recorded configuration;
+  a revision is an opaque UUID naming the recorded config/composition, with
+  the private snapshot digest remaining for config integrity. A plain start
+  against a schema-changed source refuses instead of reinterpreting stored
+  state; a dead kernel's orphan `running` session is interrupted only inside
+  the controlled adoption holding the exclusive workspace lease
+  (`kernel.run_interrupted` at the last committed boundary, cursor kept, still
+  explicitly resumable, never replayed). Kept: lifecycle/cancellation,
+  `kernel.reload`, state migration/deactivation, stale-revision checks, durable
+  events, private credentials, and the kernel-image upgrade path. Runnable
+  reference: `examples/tally-counter/` (now a package).
+
 ### Agent collaboration: steering, notices, and readable transcripts
 - Delegated children are kernel-owned. `kernel.child_spawned` now persists
   `notify_on_completion`, so a restart rebuilds a queued completion request from durable facts

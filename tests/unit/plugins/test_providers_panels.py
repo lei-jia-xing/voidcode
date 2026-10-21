@@ -18,13 +18,10 @@ from voidcode.plugins.providers.native.provider_table import PROVIDER_TABLE
 from voidcode.plugins.providers.panels import DISPATCH_EVENT
 from voidcode.sdk.commands import Command, CommandInvocation, CommandResult
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.manifest import parse_plugin_manifest
-from voidcode.sdk.plugin import Plugin, command_definition
+from voidcode.sdk.plugin import Plugin
 from voidcode.sdk.services import EventView, PluginServices, ToolInvocationReceipt
 from voidcode.sdk.tools import ToolEffect
 from voidcode.sdk.views import PluginViewDescriptor
-
-PROVIDER_PLUGIN_ROOT = Path(providers_plugin.__file__).resolve().parent
 
 DEEPSEEK_KEY = "deepseek-secret-credential-value"
 GOOGLE_KEY = "google-secret-credential-value"
@@ -84,7 +81,6 @@ def _invocation(name: str, arguments: Mapping[str, object]) -> CommandInvocation
             invocation_id="inv-1",
             revision_id="rev-1",
             actor="client",
-            capabilities=frozenset({"workspace.read"}),
             logical_turn="turn-1",
         ),
         name=name,
@@ -229,19 +225,15 @@ def test_model_rejects_a_blank_provider() -> None:
 # --- declarations and views ---
 
 
-def test_manifest_declares_exactly_the_registered_commands() -> None:
-    manifest = parse_plugin_manifest(json.loads((PROVIDER_PLUGIN_ROOT / "voidcode-plugin.json").read_text(encoding="utf-8")))
+def test_registration_declares_exactly_the_registered_commands() -> None:
     plugin = _plugin()
 
-    assert [command.definition for command in plugin.commands] == [command_definition(declaration) for declaration in manifest.commands]
     definitions = {command.definition.name: command.definition for command in plugin.commands}
     assert set(definitions) == {"providers", "model"}
     for definition in definitions.values():
         assert definition.effects == frozenset({ToolEffect.READ})
-        assert definition.capabilities == frozenset()
         assert definition.busy_gate is False
         assert definition.client_capabilities == frozenset()
-        assert definition.direct_user is False
     assert definitions["providers"].argument_schema == {"type": "object", "properties": {}, "additionalProperties": False}
     model_schema = definitions["model"].argument_schema
     assert model_schema["additionalProperties"] is False

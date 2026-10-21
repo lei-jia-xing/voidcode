@@ -124,13 +124,6 @@ def test_legacy_file_still_rejected_and_trust_still_needs_a_real_config(tmp_path
     assert not (state / "kernel-v1.sqlite3").exists()
 
 
-def test_trust_without_config_stays_strict(tmp_path: Path) -> None:
-    workspace, state = _fresh_workspace(tmp_path)
-    with pytest.raises(FileNotFoundError, match="kernel configuration is required"):
-        open_kernel(workspace, state_dir=state, trusted_plugins=frozenset({"counter"}))
-    assert not (workspace / "voidcode.json").exists()
-
-
 def test_unknown_config_field_stays_strict(tmp_path: Path) -> None:
     workspace, state = _fresh_workspace(tmp_path)
     (workspace / "voidcode.json").write_text(json.dumps({"schema_version": 1, "unknown": True}), encoding="utf-8")

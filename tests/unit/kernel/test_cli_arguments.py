@@ -1,7 +1,7 @@
 """CLI boundaries: root values are never commands, client-only flags stay bare.
 
 The read-only `show` surface exercises the real `main` argv path against an owned
-SQLite fixture: no kernel, no config, no host, no provider.
+SQLite fixture: no kernel, no config, no runtime, no provider.
 """
 
 from __future__ import annotations

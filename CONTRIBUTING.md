@@ -63,7 +63,7 @@ mise run pre-commit      # Run all pre-commit hooks
 
 ## Contribution Guidelines
 
-- **Architecture & Design**: Before making structural changes, read the [Architecture Overview](./docs/architecture.md) to understand ownership boundaries between the kernel, the SDK, the plugin host, and the bundled plugins.
+- **Architecture & Design**: Before making structural changes, read the [Architecture Overview](./docs/architecture.md) to understand ownership boundaries between the kernel, the SDK, the plugin runtime, and the bundled plugins.
 - **Coding Standards**: See [Coding Standards](./docs/coding-standards.md) for detailed style rules, typing expectations, and error handling principles.
 - **Testing**: Review the [Testing Policy](./docs/testing.md). Add or update tests for any observable behavior changes.
 - **Commit Messages**: Follow the [Conventional Commits](./docs/coding-standards.md#commit-conventions) specification (`feat(kernel): ...`, `fix(plugins): ...`).

@@ -7,7 +7,7 @@ import re
 import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal, cast, final
+from typing import ClassVar, Literal, cast, final
 
 import httpx
 from bs4 import BeautifulSoup, Tag
@@ -24,6 +24,7 @@ from voidcode.sdk.tools import (
     TextOutput,
     ToolCall,
     ToolDefinition,
+    ToolEffect,
     ToolFailure,
     ToolResult,
     ToolSuccess,
@@ -248,35 +249,53 @@ def _html_to_markdown_or_text(html: str, *, url: str) -> str:
 
 @final
 class WebFetchTool:
-    def __init__(self, definition: ToolDefinition) -> None:
-        self.definition = definition
+    definition: ClassVar[ToolDefinition] = ToolDefinition(
+        name="web_fetch",
+        description=(
+            "Fetch one URL as text, markdown, or HTML. When a textual result is truncated it returns content_ref and next_byte_offset; "
+            "call again with exactly those two fields to read the next page from this session's artifact store, without fetching the network again."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "Initial call: the URL to fetch content from"},
+                "format": {"type": "string", "enum": ["text", "markdown", "html"], "description": "Initial call: output format (default: markdown)"},
+                "timeout": {"type": "integer", "description": "Initial call: timeout in seconds (max 120)"},
+                "content_ref": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Continuation call: the content_ref from a truncated web_fetch result",
+                },
+                "byte_offset": {"type": "integer", "minimum": 0, "description": "Continuation call: the next_byte_offset from the previous page"},
+            },
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string"},
+                        "format": {"type": "string", "enum": ["text", "markdown", "html"]},
+                        "timeout": {"type": "integer"},
+                    },
+                    "required": ["url"],
+                    "additionalProperties": False,
+                },
+                {
+                    "type": "object",
+                    "properties": {"content_ref": {"type": "string", "minLength": 1}, "byte_offset": {"type": "integer", "minimum": 0}},
+                    "required": ["content_ref", "byte_offset"],
+                    "additionalProperties": False,
+                },
+            ],
+            "additionalProperties": False,
+        },
+        effects=frozenset({ToolEffect.READ, ToolEffect.NETWORK}),
+    )
 
-    def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:
-        _ = context
-        return self._invoke(call, runtime_timeout_seconds=None, services=services)
-
-    def invoke_with_runtime_timeout(
-        self,
-        call: ToolCall,
-        *,
-        context: ToolContext,
-        services: PluginServices,
-        timeout_seconds: int,
-    ) -> ToolResult:
-        _ = context
-        return self._invoke(call, runtime_timeout_seconds=timeout_seconds, services=services)
-
-    def _invoke(
-        self,
-        call: ToolCall,
-        *,
-        runtime_timeout_seconds: int | None,
-        services: PluginServices,
-    ) -> ToolResult:
+    def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:  # noqa: ARG002 - required by the frozen Tool ABI
         arguments = call.arguments
         try:
-            # Branch on raw keys before any model validation: the host gate enforces the
-            # manifest oneOf, and this is the same split for direct plugin invocation.
+            # Branch on raw keys before any model validation: the runtime schema gate
+            # enforces the oneOf, and this is the same split for direct invocation.
             if "content_ref" in arguments or "byte_offset" in arguments:
                 return _continuation_result(
                     self.definition,
@@ -286,13 +305,12 @@ class WebFetchTool:
             return _initial_result(
                 self.definition,
                 parse_tool_args(WebFetchArgs, arguments, tool_name=self.definition.name),
-                runtime_timeout_seconds=runtime_timeout_seconds,
                 services=services,
             )
         except _FetchFailure as failure:
             return ToolFailure(tool_name=self.definition.name, error=str(failure))
 
-        raise AssertionError("unreachable: _invoke dispatches to _initial_result or _continuation_result")
+        raise AssertionError("unreachable: invoke dispatches to _initial_result or _continuation_result")
 
 
 @dataclass(frozen=True, slots=True)
@@ -565,13 +583,9 @@ def _initial_result(
     definition: ToolDefinition,
     args: WebFetchArgs,
     *,
-    runtime_timeout_seconds: int | None,
     services: PluginServices,
 ) -> ToolResult:
-    timeout = min(args.timeout, 120)
-    if runtime_timeout_seconds is not None:
-        timeout = min(timeout, runtime_timeout_seconds)
-    timeout = max(timeout, 1)
+    timeout = max(min(args.timeout, 120), 1)
 
     fetched = _perform_fetch(original_url=args.url, format_value=args.format, timeout=timeout)
     source_artifact = create_artifact(

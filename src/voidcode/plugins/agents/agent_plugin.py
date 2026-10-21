@@ -51,7 +51,6 @@ class AgentsCommand:
         description="List agent profiles (builtin and workspace/user discovered).",
         argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
         effects=frozenset({ToolEffect.READ}),
-        capabilities=("workspace.read",),
         busy_gate=False,
     )
 
@@ -82,7 +81,6 @@ class AgentShowCommand:
             "additionalProperties": False,
         },
         effects=frozenset({ToolEffect.READ}),
-        capabilities=("workspace.read",),
         busy_gate=False,
     )
 
@@ -114,5 +112,4 @@ class AgentShowCommand:
 
 
 def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
-    """Plugin entrypoint registered in voidcode-plugin.json."""
     return Plugin(commands=(AgentsCommand(), AgentShowCommand()))

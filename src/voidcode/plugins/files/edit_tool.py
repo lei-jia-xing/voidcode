@@ -6,11 +6,12 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar
 
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.services import PluginServices
-from voidcode.sdk.tools import TextOutput, ToolCall, ToolDefinition, ToolResult, ToolSuccess
+from voidcode.sdk.tools import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess
 
 from .apply_patch import execute_patch
 from .edits_hooks import format_after_write, post_edit_diagnostics
@@ -320,13 +321,76 @@ def _replace(
 
 
 class EditTool:
-    def __init__(
-        self,
-        *,
-        definition: ToolDefinition,
-        hooks_config: object | None = None,
-    ) -> None:
-        self.definition = definition
+    definition: ClassVar[ToolDefinition] = ToolDefinition(
+        name="edit",
+        description=(
+            "Edit files by replacing text (single replacement or ordered batch) or applying a patch. "
+            "OldString replacements require exact current file text; advisory near-match suggestions are never applied. "
+            "When constructing oldString from read output, omit any leading line-number prefix such as '42: ' and pass only the file's actual text."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Workspace-relative or absolute path to the file to edit."},
+                "oldString": {"type": "string", "description": "The exact text to replace (single replacement mode)."},
+                "newString": {"type": "string", "description": "The replacement text (single replacement mode)."},
+                "replaceAll": {"type": "boolean", "description": "Replace all occurrences of oldString (default: false)."},
+                "expectedHash": {
+                    "type": "string",
+                    "description": (
+                        "Required SHA-256 hash of the target file content from prior read output. "
+                        "Rejects stale edits when the file changed since that read."
+                    ),
+                },
+                "edits": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": "Ordered replacements; each oldString must match the current file state at that step.",
+                    "items": {
+                        "type": "object",
+                        "required": ["oldString", "newString"],
+                        "properties": {
+                            "oldString": {"type": "string", "description": "Exact text to replace."},
+                            "newString": {"type": "string", "description": "Replacement text."},
+                            "replaceAll": {"type": "boolean", "description": "Replace every match; defaults to false."},
+                        },
+                    },
+                },
+                "patch": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Patch text using unified diff or marker patch format (*** Begin Patch / *** End Patch).",
+                },
+                "expectedHashes": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                    "description": (
+                        "Map of relative file paths to their SHA-256 content hashes from prior read output. "
+                        "Required for existing files modified or deleted by the patch."
+                    ),
+                },
+            },
+            "oneOf": [
+                {
+                    "required": ["path", "oldString", "newString", "expectedHash"],
+                    "not": {"anyOf": [{"required": ["edits"]}, {"required": ["patch"]}]},
+                },
+                {
+                    "required": ["path", "edits", "expectedHash"],
+                    "not": {"anyOf": [{"required": ["oldString"]}, {"required": ["newString"]}, {"required": ["patch"]}]},
+                },
+                {
+                    "required": ["patch"],
+                    "not": {"anyOf": [{"required": ["path"]}, {"required": ["oldString"]}, {"required": ["newString"]}, {"required": ["edits"]}]},
+                },
+            ],
+            "additionalProperties": False,
+        },
+        effects=frozenset({ToolEffect.WRITE}),
+        path_argument_keys=("path",),
+    )
+
+    def __init__(self, *, hooks_config: object | None = None) -> None:
         self._hooks_config = hooks_config
 
     def invoke(

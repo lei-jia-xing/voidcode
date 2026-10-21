@@ -1,8 +1,7 @@
-"""Read coverage: codec roundtrip, model projection bound, and reducer grants."""
+"""Read coverage: model projection bound and reducer grants."""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import cast
 
@@ -16,8 +15,7 @@ from voidcode.kernel.coverage import (
     read_coverage,
 )
 from voidcode.kernel.storage.store import StoredEvent
-from voidcode.sdk.codec import decode_context, decode_tool_result, encode_context, encode_tool_result
-from voidcode.sdk.invocation import ToolContext
+from voidcode.sdk.codec import decode_tool_result, encode_tool_result
 from voidcode.sdk.limits import TOOL_OUTPUT_BYTES
 from voidcode.sdk.tools import OpaqueToolBody, OutputBounds, ReadObservation, TextOutput, ToolFailure, ToolResult, ToolSuccess
 
@@ -62,51 +60,6 @@ def _event(
 
 def _resolved(workspace: Path, name: str) -> str:
     return str((workspace / name).resolve())
-
-
-# --- context codec -------------------------------------------------------------------------
-
-
-def test_context_codec_roundtrips_every_field_json_safely() -> None:
-    context = ToolContext(
-        workspace=Path("/workspace"),
-        session_id="session-1",
-        run_id="run-1",
-        invocation_id="invocation-1",
-        revision_id="revision-1",
-        actor="agent",
-        capabilities=frozenset({"read", "write"}),
-        logical_turn="turn-2",
-        invocation_depth=2,
-        read_paths=frozenset({"/workspace/a.txt"}),
-        read_lines={("/workspace/a.txt", DIGEST_A): frozenset({1, 3})},
-        read_whole_files=frozenset({("/workspace/b.txt", DIGEST_B)}),
-        read_hash=DIGEST_A,
-        emit_tool_progress=lambda payload: None,
-    )
-    encoded = encode_context(context)
-    assert json.loads(json.dumps(encoded)) == encoded
-    assert "emit_tool_progress" not in encoded
-    decoded = decode_context(json.loads(json.dumps(encoded)))
-    assert decoded == context
-    assert decoded.emit_tool_progress is None
-    assert decoded.read_lines == {("/workspace/a.txt", DIGEST_A): frozenset({1, 3})}
-    assert decoded.read_whole_files == frozenset({("/workspace/b.txt", DIGEST_B)})
-
-
-def test_context_codec_refuses_unknown_keys_and_missing_identity() -> None:
-    context = ToolContext(workspace=Path("/workspace"), session_id="s", run_id="r", invocation_id="i", revision_id="rev", actor="a")
-    encoded = encode_context(context)
-    assert encoded["invocation_depth"] == 0
-    assert encoded["read_lines"] == []
-    assert encoded["read_hash"] is None
-    with pytest.raises(ValueError):
-        decode_context({**encoded, "read_mode": "product-specific"})
-    with pytest.raises(ValueError):
-        decode_context({key: value for key, value in encoded.items() if key != "workspace"})
-
-
-# --- result codec --------------------------------------------------------------------------
 
 
 def test_tool_result_coverage_roundtrips_and_rejects_invalid_claims() -> None:

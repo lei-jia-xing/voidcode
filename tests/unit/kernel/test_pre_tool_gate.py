@@ -79,7 +79,7 @@ def _run_with_gate(tmp_path: Path, gate: str) -> tuple[Kernel, list[Mapping[str,
         encoding="utf-8",
     )
     try:
-        kernel = open_kernel(workspace, state_dir=tmp_path / "state", trusted_plugins=frozenset({PLUGIN_ID}))
+        kernel = open_kernel(workspace, state_dir=tmp_path / "state")
         _CREATED.append(kernel)
         kernel.create_session("sess-gate")
         assert kernel.run("call the probe", session_id="sess-gate").status == "completed"

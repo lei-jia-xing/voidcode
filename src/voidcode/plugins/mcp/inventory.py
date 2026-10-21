@@ -7,7 +7,7 @@ display-only.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
 from voidcode.sdk.hooks import ContextContribution
@@ -25,8 +25,13 @@ MAX_CONTEXT_BYTES = 4000
 class McpInventoryCommand:
     """List configured MCP servers and their known tools without connecting."""
 
-    def __init__(self, definition: CommandDefinition, manager: Any) -> None:
-        self.definition = definition
+    definition: ClassVar[CommandDefinition] = CommandDefinition(
+        name="mcp",
+        description="List configured MCP servers and their known tools.",
+        argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
+    )
+
+    def __init__(self, manager: Any) -> None:
         self._manager = manager
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:

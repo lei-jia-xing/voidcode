@@ -44,7 +44,7 @@ from uuid import uuid4
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
 from voidcode.sdk.hooks import PluginFact, RunFinishedFact
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.plugin import Plugin
+from voidcode.sdk.plugin import Plugin, StateSchema
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import (
     TextOutput,
@@ -613,11 +613,40 @@ def cron_observer(fact: PluginFact, context: ToolContext, services: PluginServic
 
 
 def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
-    """Plugin entrypoint registered in voidcode-plugin.json."""
     # The schedule policy is the ported legacy policy; there is no configuration surface.
     _ = config
     return Plugin(
         tools=(CronCreateTool(), CronDeleteTool(), CronListTool()),
         commands=(CronLoopCommand(),),
         observer=cron_observer,
+        observed_facts=("run_finished",),
+        state=StateSchema(
+            version=SCHEMA_VERSION,
+            schema={
+                "type": "object",
+                "required": ["schema_version", "schedules", "cursor_sequence"],
+                "additionalProperties": False,
+                "properties": {
+                    "schema_version": {"type": "integer", "enum": [SCHEMA_VERSION]},
+                    "cursor_sequence": {"type": "integer", "minimum": 0},
+                    "schedules": {
+                        "type": "object",
+                        "additionalProperties": {
+                            "type": "object",
+                            "required": ["schedule_text", "kind", "prompt", "enabled", "expires_at", "wakeup_id", "created_at"],
+                            "additionalProperties": False,
+                            "properties": {
+                                "schedule_text": {"type": "string"},
+                                "kind": {"type": "string", "enum": ["every", "at", "cron", "once"]},
+                                "prompt": {"type": "string"},
+                                "enabled": {"type": "boolean"},
+                                "expires_at": {"type": ["integer", "null"]},
+                                "wakeup_id": {"type": ["string", "null"]},
+                                "created_at": {"type": "integer", "minimum": 0},
+                            },
+                        },
+                    },
+                },
+            },
+        ),
     )

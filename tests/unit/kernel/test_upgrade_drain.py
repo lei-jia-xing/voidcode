@@ -21,7 +21,8 @@ import pytest
 
 from tests.fixtures.reload_plugin import BLOCK_TOOL, PROBE_TOOL, write_reload_plugin
 from tests.provider_loopback import openai_response
-from voidcode.kernel.bootstrap import _bundled_sources, open_kernel
+from voidcode.kernel.activation import bundled_sources
+from voidcode.kernel.bootstrap import open_kernel
 from voidcode.kernel.engine import DrainRefused, Kernel
 
 PLUGIN_ID = "reload-fixture"
@@ -101,7 +102,7 @@ def _configure(workspace: Path, server: _DelayedLoopbackServer, source: Path, *,
     workspace.mkdir(parents=True, exist_ok=True)
     # Only the provider dispatcher stays enabled: model turns need a declared provider, and every
     # other bundled plugin is irrelevant to drain semantics (and immune to their source drift).
-    plugins: dict[str, object] = {name: {"enabled": False} for name in _bundled_sources() if name != "providers"}
+    plugins: dict[str, object] = {name: {"enabled": False} for name in bundled_sources() if name != "providers"}
     plugins[PLUGIN_ID] = {"path": str(source), "enabled": True}
     (workspace / "voidcode.json").write_text(
         json.dumps(
@@ -128,7 +129,7 @@ def _open(workspace: Path, state_dir: Path, *, auto_drain: bool = True) -> Kerne
     original = bootstrap.Kernel
     assert original is Kernel
 
-    kernel = open_kernel(workspace, state_dir=state_dir, trusted_plugins=frozenset({PLUGIN_ID}))
+    kernel = open_kernel(workspace, state_dir=state_dir)
     kernel.auto_drain = auto_drain
     _CREATED.append(kernel)
     return kernel
@@ -313,7 +314,7 @@ def test_promote_consumes_a_durable_intent_exactly_once(tmp_path: Path) -> None:
         workspace, state_dir = tmp_path / "workspace", tmp_path / "state"
         source = write_reload_plugin(tmp_path / "plugin")
         _configure(workspace, server, source)
-        kernel = open_kernel(workspace, state_dir=state_dir, trusted_plugins=frozenset({PLUGIN_ID}), auto_drain=False)
+        kernel = open_kernel(workspace, state_dir=state_dir, auto_drain=False)
         _CREATED.append(kernel)
         session = kernel.create_session("drain-promote")
         record = kernel.session(session.session_id)

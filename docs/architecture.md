@@ -1,17 +1,17 @@
 # Architecture Overview
 
-VoidCode is a local-first coding agent built as a small trusted **kernel**, a versioned **plugin SDK**, an out-of-process **plugin host**, and a bundled plugin set that owns every product mechanism. Execution is durable and append-only, capabilities are pinned by identity, and clients talk to the kernel through one generic command/view/event contract rather than product-specific routes.
+VoidCode is a local-first coding agent built as a small trusted **kernel**, a **plugin SDK**, and a bundled plugin set that owns every product mechanism. Execution is durable and append-only, revisions identify configuration and composition, and clients talk to the kernel through one generic command/view/event contract rather than product-specific routes.
 
 ## Core Design Principles
 
-1. **Trusted Kernel, Capability-Scoped Plugins**:
-   The kernel (`src/voidcode/kernel/`) owns governance, persistence, streaming, and admission. Plugins own behavior — tools, commands, providers, hooks, views, and session state — and reach the kernel only through the SDK and the host protocol. Nothing in the kernel imports a concrete plugin. This is an architecture boundary, not a sandbox: an admitted plugin is trusted Python running in its own host process with the capabilities the kernel grants it, so only source code the user explicitly trusted is ever admitted.
+1. **Trusted Kernel, Trusted Plugins**:
+   The kernel (`src/voidcode/kernel/`) owns governance, persistence, streaming, and admission. Plugins own behavior — tools, commands, providers, hooks, views, and session state — and reach the kernel only through the SDK's scoped services. Nothing in the kernel imports a concrete plugin. Plugins are trusted code equal to the application: an admitted plugin is trusted Python running in the kernel's process, and only source code the user configured is ever loaded. This is an architecture boundary, not a sandbox.
 
 2. **Contracts-Only SDK**:
-   `src/voidcode/sdk/` is the single shared surface for the kernel, the plugin host, and every plugin, and it depends on nothing from the implementation layers (standard library, `pydantic`, and `jsonschema` only).
+   `src/voidcode/sdk/` is the single shared surface for the kernel and every plugin, and it depends on nothing from the implementation layers (standard library, `pydantic`, and `jsonschema` only).
 
-3. **Pinned Identity, Never Implicit Change**:
-   An admitted plugin is copied into a content-addressed artifact directory named by its manifest hash, and every declared file's sha256 is verified. Editing plugin source produces a *new* identity; it never mutates the admitted one. The SDK source hash is pinned into the workspace revision, so a changed SDK refuses to restart against an old revision; the explicit path is the controlled kernel upgrade (`voidcode upgrade run --candidate`, see [`kernel-upgrade.md`](./contracts/kernel-upgrade.md)), and a hot reload never crosses an SDK or image change.
+3. **Revisions, Never Implicit Change**:
+   A restart imports the current plugin source with the recorded configuration; changed configuration, a changed SDK, or a different image is never admitted implicitly. It refuses to restart against an old revision; the explicit path is the controlled kernel upgrade (`voidcode upgrade run --candidate`, see [`kernel-upgrade.md`](./contracts/kernel-upgrade.md)), and a hot reload never crosses an SDK or image change.
 
 4. **Append-Only Durability**:
    Session history is an immutable, monotonic event stream in SQLite. Views, transcripts, usage reports, and plugin-provided UI are projections of that stream. There is no fork, undo, revert, or checkout.
@@ -31,18 +31,15 @@ graph TD
 
     subgraph Kernel["Kernel (src/voidcode/kernel/)"]
         Engine["engine.py — governed turns, approvals, budgets, continuations"]
-        Bootstrap["bootstrap.py — config, trust, state dir, revision restore"]
-        Activation["activation.py — admission, artifacts, hot activation"]
-        HostClient["host.py — host processes, invocation lifecycles"]
+        Bootstrap["bootstrap.py — config, state dir, revision restore"]
+        Activation["activation.py — admission, hot activation"]
+        Runtime["plugins.py — in-process plugin runtime"]
+        Services["services.py — invocation leases"]
+        Processes["processes.py — child and supervised processes"]
         Storage["storage/ — append-only SQLite store"]
         Transport["transport/ — HTTP + SSE, served web bundle"]
         Artifacts["artifacts.py — content-addressed kernel artifacts"]
         Coverage["coverage.py — committed read coverage"]
-    end
-
-    subgraph HostProcess["Plugin host process (src/voidcode/plugin_host/)"]
-        Stdio["server.py — stdio host, identity verification"]
-        Processes["processes.py — lease-scoped and supervised processes"]
     end
 
     subgraph Plugins["Bundled plugins (src/voidcode/plugins/)"]
@@ -51,23 +48,22 @@ graph TD
         Product["goal · plan · todo · skills · agents · review · delegation · btw · cron · compaction · hooks · formatter · user_shell · effectiveness · mcp · lsp · web"]
     end
 
-    SDK["SDK contracts (src/voidcode/sdk/): manifest · plugin · tools · commands · services · provider · hooks · views · invocation"]
+    SDK["SDK contracts (src/voidcode/sdk/): plugin · tools · commands · services · provider · hooks · views · invocation"]
 
     CLI -->|elected image| Engine
     TUI --> Transport
     Web --> Transport
     Transport --> Engine
-    Engine --> HostClient
+    Engine --> Runtime
     Engine --> Storage
     Bootstrap --> Activation
     Bootstrap --> Engine
     Coverage --> Storage
-    HostClient --> Stdio
-    HostClient --> Artifacts
-    Stdio --> Processes
-    Stdio --> Plugins
+    Runtime --> Services
+    Runtime --> Processes
+    Runtime --> Artifacts
+    Runtime --> Plugins
     Kernel --> SDK
-    HostProcess --> SDK
     Plugins --> SDK
 ```
 
@@ -76,30 +72,23 @@ graph TD
 ### Kernel (`src/voidcode/kernel/`)
 
 - **`engine.py` (`Kernel`)** — the authority for a run: it plans against admitted tools, classifies tool effects (`READ`, `WRITE`, `EXECUTE`, `SPAWN`, `SESSION`), applies policy (`policy.approval_mode` ∈ `ask` / `write` / `yolo` plus `policy.read_only`), gates externally mutating work, appends durable events and checkpoints, drives durable continuations, and settles cancellations and budget exhaustion. Reserved core commands such as `kernel.reload` are dispatched through the same typed command contract plugins use.
-- **`bootstrap.py`** — product wiring: reads `voidcode.json`, resolves `--trust-plugin` into canonical source paths, computes the per-workspace state directory, adopts a first revision or restores the persisted one (refusing when the installed SDK no longer matches the active revision), and verifies the workspace is not owned by another kernel before writing.
-- **`activation.py`** — admission and revision management: source resolution, the trust decision bound to canonical paths, artifact pinning, dependency closure ordering, private configuration snapshots, and state migration/deactivation plans for capability switches.
-- **`host.py` (`HostClient`)** — starts and manages plugin host processes per generation, routes invocations, collects results, and tears hosts down when their generation is replaced.
+- **`bootstrap.py`** — product wiring: reads `voidcode.json`, computes the per-workspace state directory, adopts a first revision or restores the persisted one (refusing when the installed SDK no longer matches the active revision), and verifies the workspace is not owned by another kernel before writing.
+- **`activation.py`** — admission and revision management: source resolution, private configuration snapshots, and state migration/deactivation plans for capability switches.
+- **`plugins.py` (`PluginRuntime`)** — the in-process plugin runtime: loads each configured plugin package (`__init__.py:create_plugin`) under a unique namespace per generation, and dispatches tool, command, provider, hook, view, observer, and migration calls by direct synchronous call. Cancellation is cooperative: a hung plugin blocks its dispatch until the kernel restarts.
+- **`services.py` (`RuntimeServices`)** — scoped services bound to one invocation lease: state staging, events, child sessions, governed tool requests, process spawning, usage. Read-only and hook leases are refused mutating work here, never in plugins.
+- **`processes.py` (`ProcessRegistry`)** — kernel-owned child processes: one-shot runs (killed by process group on timeout or cancellation), supervised background jobs partitioned by the session that started them (which survive a reload), and generation-owned service processes (which a reload stops).
 - **`storage/` (`store.py`, `schema.sql`)** — the append-only SQLite store: sessions, events, checkpoints, revisions, confirmations, claims, and sessions facts.
 - **`transport/`** — `http.py` serves the kernel API (`/api/...`), `models.py` holds its wire models, `server.py` binds loopback with a bearer token printed at launch, `static.py` locates the built web bundle served at `/`.
 - **`tui/`** — the inline terminal client (`catalog → invoke → events → views`) with a commit-once ledger: settled rows are never replayed.
 - **`artifacts.py` / `coverage.py`** — content-addressed artifacts the kernel owns under its state directory, and the derived record of what a session's model has genuinely been shown (whole-file and line-precise reads only).
 
-### Plugin host (`src/voidcode/plugin_host/`)
-
-Plugin code does not run inside the kernel process. The host is a separate executable that:
-
-- is a process boundary for lifecycle and import isolation, not an OS sandbox: admitted plugin code is trusted Python running with the capabilities the kernel granted it,
-- verifies the admitted identities it was handed before importing anything,
-- serves invocations over stdio, with the kernel owning stance, approvals, and budgets,
-- owns child processes: lease-scoped processes (refused for read-only and hook leases, killed by process group on timeout or cancellation) and supervised background processes partitioned by the session that started them, whose identities survive a host swap.
-
 ### SDK (`src/voidcode/sdk/`)
 
-The shared vocabulary: `manifest.py` (declaration + file identities), `plugin.py` (`Plugin` registration: tools, commands, providers, views, context, observers, lifecycle, pre/post tool, migration, close), `tools.py`, `commands.py` (command descriptors, results, confirmations, catalog), `invocation.py` (`ToolContext`), `services.py` (`PluginServices`: state, events, child sessions, governed tool requests, process spawning, usage), `provider.py` (wire-agnostic turn providers), `hooks.py` (context contributions, facts, lifecycle), `views.py` (the eight bounded UI kinds), `config.py` (`voidcode.json` schema), `codec.py` / `json_values.py` / `limits.py` (strict JSON boundary and shared bounds).
+The shared vocabulary: `plugin.py` (`Plugin` registration: tools, commands, providers, views, context, observers, lifecycle, pre/post tool, state schema, migration, close), `tools.py`, `commands.py` (command descriptors, results, confirmations, catalog), `invocation.py` (`ToolContext`), `services.py` (`PluginServices`: state, events, child sessions, governed tool requests, process spawning, usage), `provider.py` (wire-agnostic turn providers), `hooks.py` (context contributions, facts, lifecycle), `views.py` (the eight bounded UI kinds), `config.py` (`voidcode.json` schema), `codec.py` / `json_values.py` / `limits.py` (strict JSON boundary and shared bounds).
 
 ### Bundled plugins (`src/voidcode/plugins/`)
 
-Each plugin directory carries a `voidcode-plugin.json` manifest and is admitted by the same rules as a third-party plugin. The bundled set provides:
+Each plugin directory is a Python package admitted by the same rules as a third-party plugin. The bundled set provides:
 
 | Plugin | Contributes |
 |---|---|
@@ -126,13 +115,13 @@ Each plugin directory carries a `voidcode-plugin.json` manifest and is admitted 
 | `effectiveness` | `/effectiveness` session-scoped metrics |
 | `goal` | thread goal tools and `/goal*` commands |
 
-Which ids are admitted by default is decided in `kernel/bootstrap.py` (`_bundled_sources`); a bundled id is trusted by construction, and any additional id needs an explicit `plugins.<id>.path` and explicit trust.
+Which ids are admitted by default is decided in `kernel/bootstrap.py` (`_bundled_sources`); any additional id needs an explicit `plugins.<id>.path`.
 
 ### Tool boundary
 
-Model tools are SDK contracts plus manifest-declared, owner-registered handlers:
-each `voidcode-plugin.json` declares tool names/schemas/effects, each plugin's
-`create_plugin` returns matching `Plugin.tools`, the host rejects drift, and the
+Model tools are SDK contracts plus owner-registered handlers: each plugin's
+`create_plugin` returns `Plugin.tools` with definitions next to the handlers,
+the runtime serves them as the init catalog, and the
 kernel admits, validates, approves, dispatches, and records every call. The
 engine-owned model tool `kernel_reload` is not plugin-declared; `kernel.reload`
 is the corresponding user command. Product tools belong in plugins, not in a
@@ -147,9 +136,9 @@ query, which owns the rulebook semantics; `voidcode://artifact/<id>` reads throu
 `PluginServices.read_artifact`. `apply_workspace_edit` demands `expectedHash`, and version
 constraints are checked against the LSP plugin's `workspace.document_version` query — a pure
 read of documents this session already opened (never a server start) — failing closed with a
-visible diagnostic when nothing is open. Language servers run as supervised host-generation
+visible diagnostic when nothing is open. Language servers run as supervised runtime-generation
 service processes (`spawn_service_process`, stdin piped, stdout/stderr spooled) so retirement,
-reload, cancellation, and hard host death all clean the owned tree; the `lsp` tool therefore
+reload, cancellation, and hard kernel death all clean the owned tree; the `lsp` tool therefore
 declares `read`+`execute` and flows through the existing approval/read-only gates.
 
 ## Execution & Durability Model
@@ -171,7 +160,6 @@ declares `read`+`execute` and flows through the existing approval/read-only gate
 `$XDG_STATE_HOME/voidcode/kernel-v1/<sha256-of-workspace-path>/` (default `~/.local/state/...`) holds:
 
 - `kernel-v1.sqlite3` — sessions, events, checkpoints, revisions, confirmations;
-- `artifacts/<identity>/` — the pinned copies of every admitted plugin;
 - `private/<revision>.json` — the 0600 configuration snapshot (credentials included), never referenced by events or revisions;
 - `kernel-images/<digest>/` — immutable installation snapshots; the elected image a revision pins resolves here;
 - `supervisor/` — the supervisor's journal and scratch (observability only; SQLite stays canonical). The control socket is ephemeral under `/tmp/voidcode-<uid>/`, derived from the state directory.

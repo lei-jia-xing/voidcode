@@ -10,85 +10,25 @@ its own dispatch. Every action answers with a real `ToolSuccess` whose `OpaqueTo
 the action's JSON, which is also its model-visible `TextOutput` text.
 """
 
-from __future__ import annotations
-
-import hashlib
-import json
 from pathlib import Path
 
-from voidcode.sdk.manifest import (
-    PluginCommandDeclaration,
-    PluginFileIdentity,
-    PluginHookDeclaration,
-    PluginManifest,
-    PluginToolDeclaration,
-)
-from voidcode.sdk.tools import ToolEffect
-
 PLUGIN_ID = "s5-fixture"
-MODULE_NAME = "s5_plugin_impl"
 PROBE_TOOL = "s5_probe"
 WRITE_TOOL = "s5_write"
 COMMAND_NAME = "s5_command"
 #: Diagnostic a hook writes when the kernel refuses its nested invocation attempt.
 HOOK_DIAGNOSTIC = "hook_refusal.txt"
 
-#: One permissive schema per tool: an action's own arguments never need a schema edit.
-ACTION_SCHEMA: dict[str, object] = {"type": "object", "additionalProperties": True}
-
 
 def write_s5_plugin(
     source: Path,
     *,
     plugin_id: str = PLUGIN_ID,
-    module_name: str = MODULE_NAME,
-    version: str = "1.0.0",
     hooks: bool = False,
 ) -> Path:
-    """Write (or rewrite) the plugin source directory and its SHA manifest; returns the source."""
+    """Write (or rewrite) the plugin source directory; returns the source."""
     source.mkdir(parents=True, exist_ok=True)
-    module_path = source / f"{module_name}.py"
-    module_path.write_text(_MODULE_CODE, encoding="utf-8")
-    (source / "__init__.py").write_text("", encoding="utf-8")
-    files = (
-        PluginFileIdentity(path="__init__.py", sha256=hashlib.sha256(b"").hexdigest()),
-        PluginFileIdentity(path=module_path.name, sha256=hashlib.sha256(module_path.read_bytes()).hexdigest()),
-    )
-    manifest = PluginManifest(
-        plugin_id=plugin_id,
-        version=version,
-        entrypoint=f"{module_name}:create_plugin",
-        files=files,
-        tools=(
-            PluginToolDeclaration(
-                name=PROBE_TOOL,
-                description="Read this session's own facts, one child's events, or one file version.",
-                input_schema=ACTION_SCHEMA,
-                effects=(ToolEffect.READ,),
-                path_argument_keys=("path",),
-            ),
-            PluginToolDeclaration(
-                name=WRITE_TOOL,
-                description="Drive the same actions from a writable lease, mutating the workspace.",
-                input_schema=ACTION_SCHEMA,
-                effects=(ToolEffect.WRITE,),
-            ),
-        ),
-        commands=(
-            PluginCommandDeclaration(
-                name=COMMAND_NAME,
-                description="Ask the kernel for one nested tool invocation (the command-side seam).",
-                argument_schema=ACTION_SCHEMA,
-            ),
-        ),
-        hooks=(
-            PluginHookDeclaration(kind="pre_tool", match=(PROBE_TOOL, WRITE_TOOL)),
-            PluginHookDeclaration(kind="post_tool", match=(PROBE_TOOL, WRITE_TOOL)),
-        )
-        if hooks
-        else (),
-    )
-    (source / "voidcode-plugin.json").write_text(json.dumps(manifest.as_payload()), encoding="utf-8")
+    (source / "__init__.py").write_text(_MODULE_CODE.replace("__HOOKS__", repr(hooks)).replace("__PLUGIN_ID__", plugin_id), encoding="utf-8")
     return source
 
 
@@ -103,10 +43,9 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from voidcode.sdk.commands import CommandDefinition, CommandResult
-from voidcode.sdk.manifest import parse_plugin_manifest
 from voidcode.sdk.json_values import json_wire_object
-from voidcode.sdk.plugin import Plugin, tool_definition
-from voidcode.sdk.tools import OpaqueToolBody, OutputBounds, ReadObservation, TextOutput, ToolFailure, ToolSuccess
+from voidcode.sdk.plugin import Plugin
+from voidcode.sdk.tools import OpaqueToolBody, OutputBounds, ReadObservation, TextOutput, ToolDefinition, ToolEffect, ToolFailure, ToolSuccess
 
 PROBE_TOOL = "s5_probe"
 WRITE_TOOL = "s5_write"
@@ -260,7 +199,6 @@ def _coverage_context(context):
         "invocation_id": context.invocation_id,
         "revision_id": context.revision_id,
         "actor": context.actor,
-        "capabilities": sorted(context.capabilities),
         "logical_turn": context.logical_turn,
         "invocation_depth": context.invocation_depth,
         "read_paths": sorted(context.read_paths),
@@ -307,9 +245,6 @@ def _dispatch(action, call, context, services):
 class _Tool:
     """One fixture tool with the whole action surface; both tools share this dispatch."""
 
-    def __init__(self, definition):
-        self.definition = definition
-
     def invoke(self, call, *, context, services):
         action = str(call.arguments.get("action", ""))
         if action == "fail":
@@ -325,9 +260,24 @@ class _Tool:
 class SessionProbe(_Tool):
     """Read-only: this session's own facts, its child's events, coverage and nested read work."""
 
+    definition = ToolDefinition(
+        name=PROBE_TOOL,
+        description="Read this session's own facts, one child's events, or one file version.",
+        input_schema={"type": "object", "additionalProperties": True},
+        effects=frozenset({ToolEffect.READ}),
+        path_argument_keys=("path",),
+    )
+
 
 class SessionWrite(_Tool):
     """Writable: the same actions, plus a real workspace mutation."""
+
+    definition = ToolDefinition(
+        name=WRITE_TOOL,
+        description="Drive the same actions from a writable lease, mutating the workspace.",
+        input_schema={"type": "object", "additionalProperties": True},
+        effects=frozenset({ToolEffect.WRITE}),
+    )
 
 
 class InvokeCommand:
@@ -381,18 +331,17 @@ def _post_tool(outcome, context, services):
     )
 
 
+_HOOKS = __HOOKS__
+
+
 def create_plugin(config):
-    """Wire the tools, the command, and the hooks only when the manifest declares them."""
-    manifest = parse_plugin_manifest(json.loads(Path(__file__).with_name("voidcode-plugin.json").read_text(encoding="utf-8")))
-    tools = tuple(
-        (SessionWrite if declaration.name == WRITE_TOOL else SessionProbe)(tool_definition(declaration))
-        for declaration in manifest.tools
-    )
-    kinds = {declaration.kind for declaration in manifest.hooks}
+    hooks = _HOOKS
     return Plugin(
-        tools=tools,
-        commands=tuple(InvokeCommand() for declaration in manifest.commands if declaration.name == COMMAND_NAME),
-        pre_tool=_pre_tool if "pre_tool" in kinds else None,
-        post_tool=_post_tool if "post_tool" in kinds else None,
+        tools=(SessionProbe(), SessionWrite()),
+        commands=(InvokeCommand(),),
+        pre_tool=_pre_tool if hooks else None,
+        pre_tool_match=(PROBE_TOOL, WRITE_TOOL) if hooks else ("*",),
+        post_tool=_post_tool if hooks else None,
+        post_tool_match=(PROBE_TOOL, WRITE_TOOL) if hooks else ("*",),
     )
 '''

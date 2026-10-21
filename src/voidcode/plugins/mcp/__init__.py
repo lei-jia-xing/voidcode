@@ -1,21 +1,13 @@
-"""MCP plugin: one ``mcp`` tool backed by the plugin-owned MCP manager.
-
-The entry module assembles the tool from the plugin manifest, so the declared
-schema/effects and the registered tool can never drift. It is the package entry
-point: a package spec keeps the plugin-local modules importable.
-"""
+"""MCP plugin: one ``mcp`` tool backed by the plugin-owned MCP manager."""
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
-from pathlib import Path
 from typing import cast
 
 from voidcode.sdk.hooks import ContextContribution
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.manifest import parse_plugin_manifest
-from voidcode.sdk.plugin import Plugin, command_definition, tool_definition
+from voidcode.sdk.plugin import Plugin
 from voidcode.sdk.services import PluginServices
 
 from .inventory import McpInventoryCommand, context_contribution
@@ -71,11 +63,6 @@ def _mcp_config(config: Mapping[str, object] | None) -> McpConfig | None:
 
 
 def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
-    manifest_path = Path(__file__).parent / "voidcode-plugin.json"
-    raw_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest = parse_plugin_manifest(raw_manifest)
-    tool_defs = {decl.name: tool_definition(decl) for decl in manifest.tools}
-    command_defs = {decl.name: command_definition(decl) for decl in manifest.commands}
     manager = build_mcp_manager(_mcp_config(config))
 
     def contribute(context: ToolContext, services: PluginServices) -> ContextContribution | None:
@@ -86,8 +73,8 @@ def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
         manager.shutdown()
 
     return Plugin(
-        tools=(McpTool(definition=tool_defs["mcp"], manager=manager),),
-        commands=(McpInventoryCommand(definition=command_defs["mcp"], manager=manager),),
+        tools=(McpTool(manager=manager),),
+        commands=(McpInventoryCommand(manager),),
         context=contribute,
         close=close,
     )

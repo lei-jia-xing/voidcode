@@ -8,16 +8,13 @@ import pytest
 
 from voidcode.sdk.codec import (
     decode_message,
-    decode_provider_error,
     decode_provider_result,
     decode_tool_call,
     decode_tool_result,
-    encode_provider_error,
     encode_provider_result,
     encode_tool_result,
 )
 from voidcode.sdk.provider import (
-    ProviderExecutionError,
     ProviderTokenUsage,
     ProviderTurnResult,
 )
@@ -142,25 +139,3 @@ def test_decode_message_strict_role_boundary() -> None:
     msg = decode_message({"role": "user", "content": "hi", "tool_calls": []})
     assert msg.role == "user"
     assert msg.content == "hi"
-
-
-def test_provider_error_roundtrip() -> None:
-    err = ProviderExecutionError(
-        kind="rate_limit",
-        provider_name="deepseek",
-        model_name="deepseek-flash",
-        message="Rate limit reached",
-        retryable=True,
-        retry_after=5.0,
-    )
-    enc = encode_provider_error(err)
-    assert enc["kind"] == "rate_limit"
-    assert enc["provider_name"] == "deepseek"
-    dec = decode_provider_error(enc)
-    assert isinstance(dec, ProviderExecutionError)
-    assert dec.kind == "rate_limit"
-    assert dec.provider_name == "deepseek"
-    assert dec.model_name == "deepseek-flash"
-    assert dec.message == "Rate limit reached"
-    assert dec.retryable is True
-    assert dec.retry_after == 5.0

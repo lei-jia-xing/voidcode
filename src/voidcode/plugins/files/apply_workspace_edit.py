@@ -6,14 +6,14 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import ClassVar, Final
 
 from pydantic import BaseModel, Field
 
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.services import PluginServices, QueryUnavailable
-from voidcode.sdk.tools import TextOutput, ToolCall, ToolDefinition, ToolDiagnostics, ToolFailure, ToolResult, ToolSuccess
+from voidcode.sdk.tools import TextOutput, ToolCall, ToolDefinition, ToolDiagnostics, ToolEffect, ToolFailure, ToolResult, ToolSuccess
 
 from .args import parse_tool_args
 from .edits_hooks import format_after_write, post_edit_diagnostics
@@ -121,7 +121,7 @@ def _diagnostic_failure(
     retry_guidance: str,
     details: dict[str, object] | None = None,
 ) -> ToolFailure:
-    """A model-visible typed diagnostic: the host redacts raised errors, so the new version
+    """A model-visible typed diagnostic: the runtime redacts raised errors, so the new version
     guards return text plus the standard diagnostics slot instead of raising raw ValueErrors.
     Only these new paths use it; legacy file errors keep existing behavior.
     """
@@ -163,7 +163,7 @@ def _require_query_answer(answered: Mapping[str, object] | None, *, path: str, t
 def _query_document_state(services: PluginServices, path: Path, *, tool_name: str) -> _LspDocumentState | None:
     """The LSP plugin's opened-document record for one path, or None when that plugin has none.
 
-    Only a genuinely unanswered query (`QueryUnavailable`, LSP disabled in this host generation)
+    Only a genuinely unanswered query (`QueryUnavailable`, LSP disabled in this runtime generation)
     degrades to "no version available": the caller's version guards then fail closed for
     version-constrained edits and hash-only edits proceed. Query handler bugs raise (never
     fallback), and a malformed provider answer fails visibly, never confused with "not open".
@@ -176,8 +176,52 @@ def _query_document_state(services: PluginServices, path: Path, *, tool_name: st
 
 
 class ApplyWorkspaceEditTool:
-    def __init__(self, *, definition: ToolDefinition, hooks_config: object | None = None) -> None:
-        self.definition = definition
+    definition: ClassVar[ToolDefinition] = ToolDefinition(
+        name="apply_workspace_edit",
+        description="Apply validated LSP text edits with document-version checks; runtime approval governs filesystem access.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "positionEncoding": {
+                    "type": "string",
+                    "enum": ["utf-8", "utf-16", "utf-32"],
+                    "description": "LSP position encoding; defaults to the opened document's negotiated encoding or UTF-16.",
+                },
+                "edits": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": (
+                        "Text edits with 1-based line/character ranges. Every edit requires expectedHash from read. "
+                        "expectedVersion, when provided, must match the currently opened LSP document."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "required": ["path", "startLine", "startCharacter", "endLine", "endCharacter", "newText", "expectedHash"],
+                        "properties": {
+                            "path": {"type": "string"},
+                            "startLine": {"type": "integer", "minimum": 1},
+                            "startCharacter": {"type": "integer", "minimum": 1},
+                            "endLine": {"type": "integer", "minimum": 1},
+                            "endCharacter": {"type": "integer", "minimum": 1},
+                            "newText": {"type": "string"},
+                            "expectedHash": {"type": "string"},
+                            "expectedVersion": {
+                                "type": "integer",
+                                "description": "Optional open-document version from the LSP result; checked against runtime document state.",
+                            },
+                            "version": {"type": "integer", "description": "LSP documentChanges version; checked when supplied."},
+                        },
+                    },
+                },
+            },
+            "required": ["edits"],
+            "additionalProperties": False,
+        },
+        effects=frozenset({ToolEffect.WRITE}),
+        path_argument_keys=("edits[].path",),
+    )
+
+    def __init__(self, *, hooks_config: object | None = None) -> None:
         self._hooks_config = hooks_config
 
     def invoke(

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import shutil
 import sys
 from pathlib import Path
@@ -19,8 +18,6 @@ from voidcode.plugins.formatter.formatter_plugin import (
 from voidcode.sdk.hooks import ToolOutcome
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices
-
-_MANIFEST = Path(__file__).resolve().parents[3] / "src" / "voidcode" / "plugins" / "formatter" / "voidcode-plugin.json"
 
 
 class _NoServices(PluginServices):
@@ -123,15 +120,11 @@ def test_hook_reports_a_warning_instead_of_failing_the_write(tmp_path: Path) -> 
     assert "boom" in note
 
 
-def test_manifest_declares_the_mutating_post_tool_hook_for_the_write_tools() -> None:
-    manifest = json.loads(_MANIFEST.read_text(encoding="utf-8"))
-    hooks = manifest["hooks"]
-    assert len(hooks) == 1
-    assert hooks[0]["kind"] == "post_tool"
-    assert hooks[0]["mutating"] is True, "the kernel must be able to skip it under a restrictive stance"
-    assert tuple(hooks[0]["match"]) == FORMATTED_TOOL_NAMES
+def test_registration_declares_the_mutating_post_tool_hook_for_the_write_tools() -> None:
     plugin = create_plugin({"format_on_write": True})
     assert plugin.post_tool is not None
+    assert plugin.post_tool_mutating is True, "the kernel must be able to skip it under a restrictive stance"
+    assert plugin.post_tool_match == FORMATTED_TOOL_NAMES
     assert plugin.tools == ()
     assert plugin.commands == ()
 

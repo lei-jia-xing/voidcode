@@ -1,61 +1,49 @@
-# Capability Activation (P3)
+# Capability Activation
 
-Same-session execution-code hot update for the kernel: one workspace runs exactly one active
-capability generation, and a switch is a single SQLite transaction that either commits once or
-leaves the previous generation untouched. This document is the authoritative contract for the
-admission, activation, trust, and continuation behavior added in P3.
+Same-session hot update for the kernel: one workspace runs exactly one active
+generation, and a switch is a single SQLite transaction that either commits once or
+leaves the previous generation untouched. This document is the authoritative contract for
+admission, activation, and continuation behavior.
 
 ## Scope and limits
 
-- Trusted Python, not an OS sandbox. An admitted plugin can still reach everything the kernel
-  process can. Only code the user explicitly trusted is admitted.
+- Trusted Python, not an OS sandbox. Plugins are trusted code equal to the
+  application: the enabled bundled defaults plus configured external packages.
 - One active generation per workspace. There is no long-lived mixed-version routing and no
-  in-place module reloading; a candidate is a new host process over an immutable artifact.
-- A mutated SDK is a controlled kernel upgrade (`voidcode upgrade run --candidate`, see
-  [`kernel-upgrade.md`](./kernel-upgrade.md)), never a hot reload: activation refuses when
-  the installed SDK bytes differ from the revision's pinned `sdk_sha256`.
+  in-place module reloading; a candidate is a new runtime over the current source.
+- A changed SDK or image is a controlled kernel upgrade
+  (`voidcode upgrade run --candidate`, see [`kernel-upgrade.md`](./kernel-upgrade.md)),
+  never a hot reload: activation refuses when the installed image pin
+  differs from the revision's.
 
-## Admission pins bytes; it never imports candidates
+## Admission loads packages; it never copies code
 
-`kernel/activation.py:admit_plugin` verifies `trusted`, parses the manifest, requires the
-entrypoint to be a declared implementation file, rejects undeclared Python sources, checks the
-requested capabilities and the configuration schema, then copies every declared file (hash
-verified) into the content-addressed immutable artifact directory `<state>/artifacts/<sha256>`.
-A second admission of the same manifest re-verifies the pinned bytes instead of trusting the
-source tree. The candidate's code is imported only later, inside a fresh host process.
+`kernel/activation.py:admit_live` resolves each configured plugin id to its source
+directory, validates the configuration, injects the resolved providers map, and hands the
+runtime `{id, root, config}` specs. Nothing is copied, hashed, or pinned: the runtime imports
+the current source, and the returned `Plugin` registration is the single truth the runtime
+serves as the init catalog.
 
-The public revision payload never carries credentials or raw plugin configuration: it stores each
-plugin's manifest and artifact identity plus a digest of the redacted configuration, and a single
-`private_config_sha256` digest of the credential-bearing snapshot. Rotating a credential changes
-the revision identity without publishing a secret.
-
-## Trust is bound to canonical source paths
-
-- Trust comes only from the explicit startup flag (`--trust-plugin <plugin-id>`) or from a path
-  that a previous generation already authorized.
-- At startup the flag is resolved **once** into canonical source paths
-  (`kernel/bootstrap.py:_configured_source`); reloads never map an id to a live path again, so
-  changing a plugin's configured `path` cannot inherit authorization.
-- Configuration entries that are trusted but disabled keep their authorized path, so a later
-  re-enable does not silently lose or re-acquire authorization.
-- Neither the agent nor a client can grant trust through `kernel.reload`; an unauthorized candidate
-  is refused with the explicit-trust guidance and the previous generation stays active.
+The public revision payload never carries credentials or raw plugin configuration: an opaque
+UUID names the recorded config/composition, and a single `private_config_sha256` digest of the
+credential-bearing snapshot remains for config integrity. Rotating a credential changes the
+revision identity without publishing a secret.
 
 ## One immutable snapshot per generation
 
-`Kernel` holds exactly one `_Snapshot` pointer: revision id, pinned SDK hash, the effective
-`KernelConfig` (model, providers, policy, plugin entries), the admission, the host client, the tool
+`Kernel` holds exactly one `_Snapshot` pointer: revision id, the effective
+`KernelConfig` (model, providers, policy, plugin entries), the admission, the plugin runtime, the tool
 definitions/validators, the command catalog, and the kernel-owned tools. Every read of
-`Kernel.host`, `Kernel.config`, `Kernel.revision_id`, `Kernel.command_catalog()` and
+`Kernel.plugin_runtime`, `Kernel.config`, `Kernel.revision_id`, `Kernel.command_catalog()` and
 `Kernel.plugin_views()` comes from that one pointer, so configuration, catalog, tool schema,
 context and dispatch always describe the same generation. Publication is a single assignment.
 
 ### Dispatch units
 
-Each host dispatch (provider turn, tool call, command, view render, observer notification, context
+Each runtime dispatch (provider turn, tool call, command, view render, observer notification, context
 contribution) runs inside `Kernel._dispatch(...)`: under a short lock it checks the fence, captures
 the current snapshot and registers an active call; the call stays registered until the callback's
-result is committed. No lock and no SQLite transaction is ever held across an RPC.
+result is committed. No lock and no SQLite transaction is ever held across a plugin call.
 
 ### Activation fence
 
@@ -76,29 +64,33 @@ run's own tool stack waits for or triggers the switch.
 ## The two control surfaces
 
 - Reserved tool `kernel_reload` (kernel-owned, `EXECUTE` effect, so `ask` mode parks it for user
-  approval): it only records `kernel.activation_requested` with the pinned target and returns. It
+  approval): it only records `kernel.activation_requested` with the prepared target and returns. It
   never waits, never imports, and never switches anything inside the tool call.
 - Reserved command `kernel.reload` (client-initiated, same activation service): refused in
   `read_only` mode and for busy sessions, and it owes no automatic continuation.
 
-When an approval is required, the candidate is pinned *before* the user is asked
+When an approval is required, the target revision is prepared *before* the user is asked
 (`Kernel._prepare_target`): the approval payload carries `target_revision_id`, and after `allow`
-the activation rebuilds that exact pinned artifact and private configuration, re-verifying the
-pinned bytes. A later workspace edit cannot change what was approved; a mutated artifact fails
-hard instead of activating something else.
+the activation adopts that exact recorded config/composition and its private configuration from
+the durable records. The approval covers config/composition only: source on disk can change
+before the runtime loads it.
 
 ## State migration and deactivation are pure copies
 
 - `Plugin.migrate_state(payload, from_version, to_version) -> Mapping`, arity 3, no services, no
-  leases, no store access: run in the candidate host for owners whose `state_schema_version`
-  increased. The migrated copy is validated against the candidate manifest's optional
-  `state_schema` before the commit; a downgrade (candidate version < stored version) is refused,
-  and a missing transform fails the activation visibly.
+  leases, no store access: run in the candidate runtime for owners whose `StateSchema.version`
+  increased. The migrated copy is validated against the candidate registration's optional
+  `state.schema` before the commit; a downgrade (candidate version < stored version) is refused,
+  and a missing transform fails the activation visibly. A schema increase on a plain restart is
+  refused the same way; the supervised `serve --session-id` path preflights and adopts the
+  migration even on the same image.
 - `Plugin.prepare_deactivate(payload, scope, scope_key, tip_sequence) -> Mapping`, arity 4, run in
-  the *current* host for owners the candidate does not admit (disabled, removed, or missing). This
+  the *current* runtime for owners the candidate drops (disabled or removed from config). This
   is what turns "an owner was disabled" into an explicit lifecycle state instead of leaving opaque
-  durable state claiming to be active. Session-scope rows receive that row's own session event tip;
-  workspace-scope rows receive `None`; any other combination is refused.
+  durable state claiming to be active. An enabled owner whose source is missing refuses instead —
+  it never runs a deactivation transform. Session-scope rows receive that row's own session event
+  tip; workspace-scope rows receive `None`; any other combination is refused. To remove a plugin,
+  disable it via `kernel.reload` on the old running kernel first so its real transform runs.
 - Every `(scope, scope_key, owner)` row is transformed at most once per activation, with its own
   optimistic-concurrency version; an owner admitted unchanged with the same schema version is only
   validated, never rewritten.
@@ -126,11 +118,11 @@ hard instead of activating something else.
    for a session that had none), plus the durable resume intent described below.
 
 A blocker found here raises a conflict: the refusal is recorded as `kernel.activation_blocked` (with
-the blocker list) or `kernel.activation_failed`, the candidate host is closed, and the previous
+the blocker list) or `kernel.activation_failed`, the candidate runtime is closed, and the previous
 generation stays active. Nothing is cancelled implicitly.
 
-After the commit: pending facts of the old generation were already flushed through the old host;
-then the snapshot pointer is swapped under a short lock and the old host is closed, which revokes
+After the commit: pending facts of the old generation were already flushed through the old runtime;
+then the snapshot pointer is swapped under a short lock and the old runtime is closed, which revokes
 every handle and lease of the old generation and can never respawn.
 
 ## Durable automatic continuation
@@ -149,19 +141,18 @@ budget the chain already owns. No client resume, prompt, or drain is involved, a
 `open_kernel` inspects the state read-only first. If no revision was ever adopted, the live
 configuration is admitted (validated before anything is written, and only after the workspace is
 verified to be free) and its private snapshot is written before the pointer. Otherwise the kernel
-restores the *persisted* revision: the revision payload from the database, the pinned artifacts
-(re-hashed), and the credential-bearing snapshot from `<state>/private/<revision_id>.json`
-immutable, mode 0600. Changed workspace source or configuration is never admitted implicitly —
-that is what an explicit reload is for — and a missing snapshot is a hard error with recovery
-guidance instead of a silent fallback.
+restores the *persisted* revision: the revision payload from the database plus the current source
+at the recorded locations, with the credential-bearing snapshot from
+`<state>/private/<revision_id>.json` immutable, mode 0600. Changed configuration is never admitted
+implicitly — that is what an explicit reload is for — and a missing snapshot is a hard error with
+recovery guidance instead of a silent fallback.
 
 ## Observer eligibility across generations
 
-Facts are delivered to exactly the owners the *source event's own revision* registered: live events
-use that generation's registration, and older events use their revision's stored manifest
-declarations. A newly subscribing owner therefore never receives old facts, an unchanged owner's
-counters are never double-accounted, and receipts remain one per `(event, owner)` with no
-generation column. An eligible owner that is not loaded aborts an activation (undelivered facts must
+Fact-eligible owners are stamped onto the producing durable event itself, so eligibility is
+immutable per event across source changes and restarts: a newly subscribing owner never receives
+old facts, an unchanged owner's counters are never double-accounted, and receipts remain one per
+`(event, owner)`. An eligible owner that is not loaded aborts an activation (undelivered facts must
 never be papered over); during ordinary replay it surfaces visibly and stays pending.
 
 ## Client contract
@@ -182,10 +173,9 @@ never be papered over); during ordinary replay it surfaces visibly and stays pen
   happened, so nothing is owed and no continuation is recorded. Revision, workspace pointer,
   session refs, owner state and queued work are unchanged, and the durable activation request
   stays pending. This is an ordinary run crash under the existing contract: the session requires
-  an explicit resume, and that resume re-activates the pinned target (re-verifying its bytes),
-  consumes the request exactly once and executes the new tool only after that resume. The kernel
-  never spends provider tokens on a switch that did not commit, and it never auto-retries the
-  request on cold boot.
+  an explicit resume, and that resume re-activates the prepared target, consumes the request
+  exactly once and executes the new tool only after that resume. The kernel never spends provider
+  tokens on a switch that did not commit, and it never auto-retries the request on cold boot.
 - After the commit, before publication: the database is the single truth. A restart restores the
   committed target, performs no second migration, and the startup driver claims the durable resume
   intent once and finishes the continuation in the same session with no client resume, prompt or

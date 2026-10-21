@@ -27,9 +27,7 @@ def test_live_tool_progress_uses_existing_session_sse_stream(tmp_path: Path) -> 
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             port = probe.getsockname()[1]
-        app = create_kernel_app(
-            workspace=workspace, state_dir=tmp_path / "state", trusted_plugins=frozenset({PLUGIN_ID}), bearer_token="progress-token"
-        )
+        app = create_kernel_app(workspace=workspace, state_dir=tmp_path / "state", bearer_token="progress-token")
         server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
         http_worker = threading.Thread(target=server.run, daemon=True)
         http_worker.start()

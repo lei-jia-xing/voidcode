@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import sqlite3
@@ -13,6 +12,7 @@ from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
 from typing import Literal, Self, cast
+from uuid import uuid4
 
 from ...sdk.json_values import json_wire_object, own_json_object
 from ...sdk.services import CHILD_MESSAGE_OWNER, PluginBudget, SessionInfo
@@ -31,6 +31,18 @@ class ForeignDatabaseError(StorageError):
 
 class StoreConflict(StorageError):
     """Raised when an optimistic concurrency check fails or state is stale."""
+
+
+class SequenceConflict(StoreConflict):
+    """The session advanced between the caller's snapshot and its atomic CAS.
+
+    The transaction committed nothing, so retrying the same payload after reconciling to the
+    fresh tip is safe; callers must never replay external work on this signal.
+    """
+
+
+class RootBudgetExhausted(StoreConflict):
+    """The durable root action budget refused this reservation."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,11 +272,6 @@ class DrainBlocker:
     detail: str = ""
 
 
-def revision_identity(payload: Mapping[str, object]) -> str:
-    """Content address of a capability revision payload, computed without storing it."""
-    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
-
-
 def canonical_json(value: Mapping[str, object]) -> str:
     """Produce deterministic, sorted, compact UTF-8 JSON without NaN."""
     return json.dumps(
@@ -440,10 +447,9 @@ def _verify_existing_file(path: Path, *, supported: frozenset[int] | None = None
         probe.close()
 
 
-#: Database versions whose table matrix the current code can read. The first adoption of a P5
-#: build is the only writer that advances 4 to 5, inside the adoption transaction; everything
-#: else refuses anything that is not exactly the current version.
-READABLE_SCHEMA_VERSIONS = frozenset({4, 5})
+#: Database versions whose table matrix the current code can read. This build reads exactly its
+#: own schema; anything else refuses visibly. A schema change ships with its own transition.
+READABLE_SCHEMA_VERSIONS = frozenset({SCHEMA_VERSION})
 
 
 def read_recorded_schema(database: Path) -> int | None:
@@ -504,24 +510,6 @@ def inspect_existing_workspace(database: Path, workspace: str) -> tuple[str | No
         probe.close()
 
 
-#: The single supported schema transition: a version-4 database becomes a version-5 database by
-#: rebuilding only the identity table (the old CHECK is part of the table definition, so the row
-#: cannot be updated in place). Runs exclusively inside the adoption transaction; every statement
-#: executes at ``execute`` level, never via ``executescript``, so the whole adoption stays atomic.
-_SCHEMA_TRANSITION_4_TO_5 = (
-    """
-    CREATE TABLE kernel_identity_v5 (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        magic TEXT NOT NULL CHECK (magic = 'voidcode-kernel-v1'),
-        schema_version INTEGER NOT NULL CHECK (schema_version = 5)
-    ) STRICT
-    """,
-    "INSERT INTO kernel_identity_v5 (id, magic, schema_version) SELECT id, magic, 5 FROM kernel_identity",
-    "DROP TABLE kernel_identity",
-    "ALTER TABLE kernel_identity_v5 RENAME TO kernel_identity",
-)
-
-
 @dataclass(frozen=True, slots=True)
 class WindowProjectionRecord:
     """One verified projection: the committed prefix it replaces and its measured accounting."""
@@ -539,7 +527,7 @@ class WindowProjectionRecord:
 class SqliteStore:
     """Concrete SQLite store for kernel sessions, revisions, events, and checkpoints."""
 
-    def __init__(self, path: Path | str, *, allow_schema: frozenset[int] | None = None) -> None:
+    def __init__(self, path: Path | str) -> None:
         self._lock = threading.RLock()
         # ponytail: single store RLock serializes connection access per instance; separate reader/writer connection pools if concurrency matters
         self._closed = False
@@ -558,7 +546,7 @@ class SqliteStore:
             try:
                 descriptor = os.open(resolved_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             except FileExistsError:
-                recorded_schema = _verify_existing_file(resolved_path, supported=allow_schema)
+                recorded_schema = _verify_existing_file(resolved_path)
             else:
                 os.close(descriptor)
                 is_new = True
@@ -592,8 +580,7 @@ class SqliteStore:
 
     @property
     def recorded_schema(self) -> int:
-        """The schema version the opened file records (equal to the current one unless this store
-        was opened explicitly to perform a supported transition)."""
+        """The schema version the opened file records (this build opens exactly its own schema)."""
         return self._recorded_schema
 
     @property
@@ -616,22 +603,40 @@ class SqliteStore:
         if self._closed:
             raise StorageError("store is closed")
 
-    def put_revision(self, payload: Mapping[str, object]) -> str:
-        """Persist a revision payload canonically and return its SHA-256 revision ID."""
+    def put_revision(self, payload: Mapping[str, object], *, revision_id: str | None = None) -> str:
+        """Persist one generation payload under an opaque id and return that id.
+
+        A generation id names a composition/config snapshot, not source bytes; callers that
+        already own an id (an admission, a pinned approval target) pass it so the same row is
+        addressed before and after the host finalized its runtime metadata.
+        """
         canonical_text = canonical_json(payload)
-        revision_id = hashlib.sha256(canonical_text.encode("utf-8")).hexdigest()
+        revision_id = uuid4().hex if revision_id is None else revision_id
+        if not revision_id:
+            raise ValueError("revision id must be a non-empty string")
         now = int(time.time() * 1000)
         with self._lock:
             self._check_open()
+            existing = self._connection.execute(
+                "SELECT payload_json FROM revisions WHERE revision_id = ?",
+                (revision_id,),
+            ).fetchone()
+            if existing is not None:
+                if str(existing[0]) != canonical_text:
+                    raise ValueError(f"revision {revision_id} already exists with other content")
+                return revision_id
             self._connection.execute(
-                """
-                INSERT INTO revisions (revision_id, created_at, payload_json)
-                VALUES (?, ?, ?)
-                ON CONFLICT (revision_id) DO NOTHING
-                """,
+                "INSERT INTO revisions (revision_id, created_at, payload_json) VALUES (?, ?, ?)",
                 (revision_id, now, canonical_text),
             )
         return revision_id
+
+    def revision_exists(self, revision_id: str) -> bool:
+        """Whether this generation was already published (its runtime metadata is recorded)."""
+        with self._lock:
+            self._check_open()
+            row = self._connection.execute("SELECT 1 FROM revisions WHERE revision_id = ?", (revision_id,)).fetchone()
+            return row is not None
 
     def revision(self, revision_id: str) -> Mapping[str, object]:
         """Fetch the payload of a revision by ID, returning an immutable mapping snapshot."""
@@ -691,30 +696,51 @@ class SqliteStore:
         root_session_id: str,
         depth: int,
         tool_allowlist: tuple[str, ...] | None = None,
+        max_root_children: int | None = None,
     ) -> SessionRecord:
         """Create a delegated child session that can only be narrower than its parent.
 
         The lineage is durable and the insert still takes the revision from the workspace
-        pointer, so a child can never be pinned to a generation that just moved.
+        pointer, so a child can never be pinned to a generation that just moved. When
+        `max_root_children` is set, the chain count and insert are one transaction so
+        concurrent spawns cannot both pass the same budget check.
         """
         now = int(time.time() * 1000)
         allowlist_json = None if tool_allowlist is None else json.dumps(list(tool_allowlist))
         with self._lock:
             self._check_open()
-            cursor = self._connection.execute(
-                """
-                INSERT INTO sessions (
-                    session_id, workspace, status, active_revision_id, run_id, turn, created_at, updated_at, last_event_sequence,
-                    parent_session_id, root_session_id, depth, tool_allowlist_json
+            in_transaction = False
+            try:
+                if max_root_children is not None:
+                    self._connection.execute("BEGIN IMMEDIATE")
+                    in_transaction = True
+                    row = self._connection.execute(
+                        "SELECT COUNT(*) FROM sessions WHERE root_session_id = ? AND parent_session_id IS NOT NULL",
+                        (root_session_id,),
+                    ).fetchone()
+                    if row is not None and int(row[0]) >= max_root_children:
+                        raise ValueError("delegation spawn budget exhausted for this chain")
+                cursor = self._connection.execute(
+                    """
+                    INSERT INTO sessions (
+                        session_id, workspace, status, active_revision_id, run_id, turn, created_at, updated_at, last_event_sequence,
+                        parent_session_id, root_session_id, depth, tool_allowlist_json
+                    )
+                    SELECT ?, ?, 'idle', w.active_revision_id, NULL, 0, ?, ?, 0, ?, ?, ?, ?
+                    FROM workspace_state w
+                    WHERE w.workspace = ? AND w.active_revision_id = ?
+                    """,
+                    (session_id, workspace, now, now, parent_session_id, root_session_id, depth, allowlist_json, workspace, revision_id),
                 )
-                SELECT ?, ?, 'idle', w.active_revision_id, NULL, 0, ?, ?, 0, ?, ?, ?, ?
-                FROM workspace_state w
-                WHERE w.workspace = ? AND w.active_revision_id = ?
-                """,
-                (session_id, workspace, now, now, parent_session_id, root_session_id, depth, allowlist_json, workspace, revision_id),
-            )
-            if cursor.rowcount == 0:
-                raise StoreConflict(f"workspace revision moved away from {revision_id!r}; retry against the current revision")
+                if cursor.rowcount == 0:
+                    raise StoreConflict(f"workspace revision moved away from {revision_id!r}; retry against the current revision")
+                if in_transaction:
+                    self._connection.execute("COMMIT")
+                    in_transaction = False
+            except Exception:
+                if in_transaction:
+                    self._connection.execute("ROLLBACK")
+                raise
             return SessionRecord(
                 session_id=session_id,
                 workspace=workspace,
@@ -1192,34 +1218,36 @@ class SqliteStore:
                 budget=budget,
             )
 
-    def sessions(self, workspace: str | None = None, limit: int = 100) -> tuple[SessionRecord, ...]:
-        """Fetch sessions, optionally filtered by workspace, ordered by updated_at descending."""
+    def sessions(self, workspace: str | None = None, limit: int | None = 100) -> tuple[SessionRecord, ...]:
+        """Fetch sessions, optionally filtered by workspace, ordered by updated_at descending.
+
+        ``limit=None`` is the explicit complete-scan form used by startup publication recovery;
+        ordinary callers keep the bounded default.
+        """
         with self._lock:
             self._check_open()
-            capped_limit = max(1, limit)
+            capped_limit = None if limit is None else max(1, limit)
             if workspace is not None:
-                cursor = self._connection.execute(
-                    """
+                sql = """
                     SELECT session_id, workspace, status, active_revision_id, run_id, turn, last_event_sequence,
                            parent_session_id, root_session_id, depth, tool_allowlist_json
                     FROM sessions
                     WHERE workspace = ?
                     ORDER BY updated_at DESC
-                    LIMIT ?
-                    """,
-                    (workspace, capped_limit),
-                )
+                """
+                params: tuple[object, ...] = (workspace,)
             else:
-                cursor = self._connection.execute(
-                    """
+                sql = """
                     SELECT session_id, workspace, status, active_revision_id, run_id, turn, last_event_sequence,
                            parent_session_id, root_session_id, depth, tool_allowlist_json
                     FROM sessions
                     ORDER BY updated_at DESC
-                    LIMIT ?
-                    """,
-                    (capped_limit,),
-                )
+                """
+                params = ()
+            if capped_limit is not None:
+                sql += " LIMIT ?"
+                params = (*params, capped_limit)
+            cursor = self._connection.execute(sql, params)
             return tuple(_session_record(row) for row in cursor.fetchall())
 
     def events(self, session_id: str, after_sequence: int = 0, limit: int | None = None) -> tuple[StoredEvent, ...]:
@@ -1380,7 +1408,7 @@ class SqliteStore:
                         (reserved_at, root_id),
                     )
                     if reserved.rowcount == 0:
-                        raise StoreConflict(f"root action budget exhausted for {root_id!r}")
+                        raise RootBudgetExhausted(f"root action budget exhausted for {root_id!r}")
 
                 cursor = self._connection.execute(
                     """
@@ -1398,7 +1426,7 @@ class SqliteStore:
                 (_, workspace, _, curr_revision_id, curr_run_id, curr_turn, curr_seq, curr_parent, curr_root, curr_depth, curr_allowlist) = row
 
                 if expected_sequence is not None and curr_seq != expected_sequence:
-                    raise StoreConflict(f"sequence mismatch for session {session_id!r}: expected {expected_sequence}, got {curr_seq}")
+                    raise SequenceConflict(f"sequence mismatch for session {session_id!r}: expected {expected_sequence}, got {curr_seq}")
                 if expected_run_id is not None and curr_run_id != expected_run_id:
                     raise StoreConflict(f"run_id mismatch for session {session_id!r}: expected {expected_run_id!r}, got {curr_run_id!r}")
                 if curr_revision_id != revision_id:
@@ -1755,9 +1783,6 @@ class SqliteStore:
         second generation in.
         """
         target_text = canonical_json(target_payload)
-        computed_target = hashlib.sha256(target_text.encode("utf-8")).hexdigest()
-        if computed_target != target_revision_id:
-            raise ValueError("target revision payload does not match its declared identity")
         with self._lock:
             self._check_open()
             in_transaction = False
@@ -1782,7 +1807,7 @@ class SqliteStore:
                 if row_workspace != workspace:
                     raise StoreConflict(f"session {session_id!r} belongs to workspace {row_workspace!r}")
                 if curr_seq != expected_sequence:
-                    raise StoreConflict(f"sequence mismatch for session {session_id!r}: expected {expected_sequence}, got {curr_seq}")
+                    raise SequenceConflict(f"sequence mismatch for session {session_id!r}: expected {expected_sequence}, got {curr_seq}")
                 if expected_run_id is not None and curr_run_id != expected_run_id:
                     raise StoreConflict(f"run_id mismatch for session {session_id!r}: expected {expected_run_id!r}, got {curr_run_id!r}")
                 if curr_revision_id != expected_revision_id:
@@ -1800,7 +1825,6 @@ class SqliteStore:
                     """
                     INSERT INTO revisions (revision_id, created_at, payload_json)
                     VALUES (?, ?, ?)
-                    ON CONFLICT (revision_id) DO NOTHING
                     """,
                     (target_revision_id, now, target_text),
                 )
@@ -1964,25 +1988,35 @@ class SqliteStore:
         cancelled_owners: Sequence[str] = (),
         cleared_budget_owners: Sequence[str] = (),
         require_quiescent: bool,
+        recover_orphaned_runs: bool = False,
+        fact_observers: Mapping[str, Sequence[str]] | None = None,
     ) -> str:
         """One CAS transaction that adopts a new kernel generation for the workspace.
 
-        Covers, atomically: the supported schema rebuild (4 to 5) when the opened file still
-        records 4, the immutable revision row, the workspace pointer, EVERY session ref in the
-        workspace, every migrated/deactivated owner state copy, cancelled work for dropped owners,
-        retargeted queued work, and (when an acting session names the transition) that session's
-        CAS, events, and checkpoint. An adoption without an acting session is allowed only when
-        the workspace has no sessions at all.
+        Covers, atomically: the immutable revision row, the workspace pointer, EVERY session ref in
+        the workspace, every migrated/deactivated owner state copy, cancelled work for dropped
+        owners, retargeted queued work, and (when an acting session names the transition) that
+        session's CAS, events, and checkpoint. An adoption without an acting session is allowed
+        only when the workspace has no sessions at all.
+
+        ``recover_orphaned_runs`` may be set only by a caller that proved no kernel owns the
+        workspace (exclusive lease). Every other ``running`` row is then a dead run at its last
+        committed boundary: it becomes ``interrupted`` with one durable fact, while its cursor,
+        batch references, and replay policies are preserved, so an explicit resume still applies
+        the ordinary interrupted-batch and unknown-usage settlement instead of replaying native
+        work here. All other blockers keep refusing regardless of this flag.
+        ``fact_observers`` is the target generation's fact-kind -> owners roster captured before
+        this transaction: the recovery fact freezes it exactly as the engine stamps its own facts,
+        so delivery eligibility never has to be guessed from a later generation.
         """
         target_text = canonical_json(target_payload)
-        computed_target = hashlib.sha256(target_text.encode("utf-8")).hexdigest()
-        if computed_target != target_revision_id:
-            raise ValueError("target revision payload does not match its declared identity")
         if session_id is None:
             if expected_sequence is not None or expected_run_id is not None:
                 raise ValueError("adoption without an acting session must not carry session expectations")
         elif expected_sequence is None:
             raise ValueError("adoption with an acting session needs its expected sequence")
+        if recover_orphaned_runs and fact_observers is None:
+            raise ValueError("orphan recovery needs the target generation's fact observers")
         with self._lock:
             self._check_open()
             in_transaction = False
@@ -1993,12 +2027,10 @@ class SqliteStore:
 
                 identity_row = self._connection.execute("SELECT schema_version FROM kernel_identity WHERE id = 1").fetchone()
                 live_schema = int(identity_row[0])
-                if live_schema == 4:
-                    for statement in _SCHEMA_TRANSITION_4_TO_5:
-                        self._connection.execute(statement)
-                elif live_schema != SCHEMA_VERSION:
+                if live_schema != SCHEMA_VERSION:
                     raise StoreConflict(f"schema {live_schema} cannot be adopted by this kernel")
 
+                acting_was_running = False
                 if session_id is None:
                     count = self._connection.execute("SELECT COUNT(*) FROM sessions WHERE workspace = ?", (workspace,)).fetchone()
                     if int(count[0]) != 0:
@@ -2015,11 +2047,11 @@ class SqliteStore:
                     ).fetchone()
                     if row is None:
                         raise StoreConflict(f"session {session_id!r} does not exist")
-                    row_workspace, _, curr_revision_id, curr_run_id, _, curr_seq = row
+                    row_workspace, curr_status, curr_revision_id, curr_run_id, _, curr_seq = row
                     if row_workspace != workspace:
                         raise StoreConflict(f"session {session_id!r} belongs to workspace {row_workspace!r}")
                     if curr_seq != expected_sequence:
-                        raise StoreConflict(f"sequence mismatch for session {session_id!r}: expected {expected_sequence}, got {curr_seq}")
+                        raise SequenceConflict(f"sequence mismatch for session {session_id!r}: expected {expected_sequence}, got {curr_seq}")
                     if curr_run_id != expected_run_id:
                         raise StoreConflict(f"run_id mismatch for session {session_id!r}: expected {expected_run_id!r}, got {curr_run_id!r}")
                     if curr_revision_id != expected_revision_id:
@@ -2028,20 +2060,43 @@ class SqliteStore:
                         )
                     if target_revision_id == expected_revision_id:
                         raise StoreConflict("the workspace already runs the target capability revision")
+                    if recover_orphaned_runs and curr_status == "running":
+                        # The caller proved no kernel owns the workspace, so this acting row is an
+                        # orphan too. It may adopt only as interrupted, keeping its cursor for an
+                        # explicit resume instead of ending the transaction still "running".
+                        if status != "interrupted" or checkpoint_kind not in (None, "interrupted"):
+                            raise StoreConflict("an orphaned acting session must be adopted as interrupted")
+                        acting_was_running = True
 
-                blockers = self._drain_blockers_locked(workspace, include_parked=require_quiescent)
-                if blockers:
-                    joined = "; ".join(f"{blocker.session_id} is blocked ({blocker.reason})" for blocker in blockers)
-                    raise StoreConflict(f"adoption blocked: {joined}")
-
+                # The revision row precedes orphan settlement: the durable recovery fact it
+                # appends carries the identity this transaction is about to publish.
                 self._connection.execute(
                     """
                     INSERT INTO revisions (revision_id, created_at, payload_json)
                     VALUES (?, ?, ?)
-                    ON CONFLICT (revision_id) DO NOTHING
                     """,
                     (target_revision_id, now, target_text),
                 )
+                if recover_orphaned_runs:
+                    assert fact_observers is not None
+                    self._settle_orphaned_runs_locked(
+                        workspace,
+                        target_revision_id=target_revision_id,
+                        acting_session_id=session_id,
+                        fact_observers=fact_observers,
+                        now=now,
+                    )
+                blockers = self._drain_blockers_locked(
+                    workspace,
+                    include_parked=require_quiescent,
+                    # The acting orphan is settled by the caller's explicit interrupted commit;
+                    # it is still subject to every non-running blocker below.
+                    exclude_running=session_id if acting_was_running else None,
+                )
+                if blockers:
+                    joined = "; ".join(f"{blocker.session_id} is blocked ({blocker.reason})" for blocker in blockers)
+                    raise StoreConflict(f"adoption blocked: {joined}")
+
                 self._connection.execute(
                     """
                     INSERT INTO workspace_state (workspace, active_revision_id, updated_at)
@@ -2172,18 +2227,19 @@ class SqliteStore:
                     self._connection.execute("ROLLBACK")
                 raise
 
-    def _drain_blockers_locked(self, workspace: str, *, include_parked: bool) -> list[DrainBlocker]:
-        """Work that must settle before an adoption commits; callers hold the connection lock."""
+    def _drain_blockers_locked(self, workspace: str, *, include_parked: bool, exclude_running: str | None = None) -> list[DrainBlocker]:
+        """Work that must settle before an adoption commits; callers hold the connection lock.
+
+        ``exclude_running`` names the one acting session an orphan recovery is already settling
+        explicitly; it still appears through every other blocker category.
+        """
         blockers: list[DrainBlocker] = []
-        cursor = self._connection.execute(
-            """
-            SELECT session_id
-            FROM sessions
-            WHERE workspace = ? AND status = 'running'
-            ORDER BY session_id ASC
-            """,
-            (workspace,),
-        )
+        running_query = "SELECT session_id FROM sessions WHERE workspace = ? AND status = 'running'"
+        running_params: list[object] = [workspace]
+        if exclude_running is not None:
+            running_query += " AND session_id <> ?"
+            running_params.append(exclude_running)
+        cursor = self._connection.execute(running_query + " ORDER BY session_id ASC", tuple(running_params))
         blockers.extend(DrainBlocker(session_id=str(row[0]), status="running", reason="running") for row in cursor.fetchall())
         if include_parked:
             cursor = self._connection.execute(
@@ -2224,6 +2280,75 @@ class SqliteStore:
             DrainBlocker(session_id=str(row[0]), status="claimed", reason="claimed_continuation", detail=str(row[1])) for row in cursor.fetchall()
         )
         return blockers
+
+    def _settle_orphaned_runs_locked(
+        self,
+        workspace: str,
+        *,
+        target_revision_id: str,
+        acting_session_id: str | None,
+        fact_observers: Mapping[str, Sequence[str]],
+        now: int,
+    ) -> None:
+        """Settle dead runs of ONE workspace inside the caller's adoption transaction.
+
+        Only ``running`` rows of ``workspace`` are touched, and only because the caller proved no
+        kernel owns it. Each becomes ``interrupted`` at its last committed boundary with one
+        ``kernel.run_interrupted`` fact. The checkpoint payload (cursor, batch references, replay
+        policies) is preserved byte-for-byte: native effects and unsettled dispatches stay exactly
+        as unknown as they were, so an explicit resume applies the ordinary replay-policy and
+        unknown-usage settlement instead of this transaction inventing a replay or a stop.
+        """
+        query = "SELECT session_id, run_id, last_event_sequence FROM sessions WHERE workspace = ? AND status = 'running'"
+        params: list[object] = [workspace]
+        if acting_session_id is not None:
+            query += " AND session_id <> ?"
+            params.append(acting_session_id)
+        rows = self._connection.execute(query + " ORDER BY session_id ASC", tuple(params)).fetchall()
+        eligible_owners = list(fact_observers.get("run_finished", ()))
+        for session_id, run_id, last_sequence in rows:
+            if not isinstance(run_id, str) or not run_id:
+                raise StoreConflict(f"running session {session_id!r} has no durable run identity")
+            sequence = int(last_sequence) + 1
+            logical_turn = ""
+            checkpoint = self._connection.execute(
+                "SELECT payload_json FROM checkpoints WHERE session_id = ?",
+                (str(session_id),),
+            ).fetchone()
+            if checkpoint is not None:
+                payload = json.loads(str(checkpoint[0]))
+                if isinstance(payload, dict) and isinstance(payload.get("logical_turn"), str):
+                    logical_turn = payload["logical_turn"]
+            self._connection.execute(
+                """
+                INSERT INTO session_events (
+                    session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json
+                ) VALUES (?, ?, ?, 'kernel.run_interrupted', 'kernel', 'kernel', ?, ?)
+                """,
+                (
+                    str(session_id),
+                    sequence,
+                    str(run_id),
+                    target_revision_id,
+                    canonical_json(
+                        {
+                            "reason": "the kernel that owned this run is gone; adoption recovered the session at its last committed boundary",
+                            "stop_cause": "shutdown",
+                            "logical_turn": logical_turn,
+                            "eligible_owners": eligible_owners,
+                        }
+                    ),
+                ),
+            )
+            self._connection.execute(
+                "UPDATE sessions SET status = 'interrupted', last_event_sequence = ?, updated_at = ? WHERE session_id = ?",
+                (sequence, now, str(session_id)),
+            )
+            # The cursor is kept as-is; only its status and generation move with the adoption.
+            self._connection.execute(
+                "UPDATE checkpoints SET kind = 'interrupted', revision_id = ?, last_event_sequence = ?, updated_at = ? WHERE session_id = ?",
+                (target_revision_id, sequence, now, str(session_id)),
+            )
 
     def drain_blockers(self, workspace: str, *, include_parked: bool) -> tuple[DrainBlocker, ...]:
         """Read-only view of the work that must settle before an adoption commits."""
@@ -2901,6 +3026,10 @@ class SqliteStore:
                 if curr_revision_id != revision_id:
                     raise StoreConflict(f"active revision mismatch for session {session_id!r}: active is {curr_revision_id!r}, got {revision_id!r}")
 
+                checkpoint_row = self._connection.execute(
+                    "SELECT kind, run_id, payload_json FROM checkpoints WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
                 now = int(time.time() * 1000)
 
                 c_cursor = self._connection.execute(
@@ -2933,6 +3062,17 @@ class SqliteStore:
                     if claimed_row is None:
                         raise StoreConflict(f"no pending or claimed continuations for session {session_id!r}")
                     cont_row = claimed_row
+                    if checkpoint_row is None:
+                        raise StoreConflict(f"claimed continuation {cont_row[0]!r} has no resumable checkpoint")
+                    cp_kind, cp_run_id, cp_payload_json = checkpoint_row
+                    if cp_kind == "terminal":
+                        raise StoreConflict(f"claimed continuation {cont_row[0]!r} has a terminal checkpoint")
+                    try:
+                        cp_payload = own_json_object(json.loads(cp_payload_json))
+                    except (TypeError, ValueError) as exc:
+                        raise StoreConflict(f"claimed continuation {cont_row[0]!r} has a malformed checkpoint") from exc
+                    if str(cp_run_id) != str(cont_row[4]) or str(cp_payload.get("continuation_id")) != str(cont_row[0]):
+                        raise StoreConflict(f"claimed continuation {cont_row[0]!r} does not own the session checkpoint")
                     claimed_record = ContinuationRecord(
                         continuation_id=cont_row[0],
                         owner=cont_row[1],
@@ -2964,6 +3104,20 @@ class SqliteStore:
                         tool_allowlist=_allowlist_from_json(curr_allowlist),
                     )
 
+                if status not in ("idle", "completed", "failed", "interrupted"):
+                    raise StoreConflict(f"session {session_id!r} already holds active work ({status})")
+                if status == "idle" and curr_parent is not None:
+                    # A spawned child is idle only before its first run commits; its first
+                    # boundary merges the queued follow-up instead of racing a second start.
+                    raise StoreConflict(f"child session {session_id!r} has not committed its spawn run")
+                if checkpoint_row is not None and checkpoint_row[0] not in ("terminal",):
+                    raise StoreConflict(f"session {session_id!r} holds a resumable/parked checkpoint ({checkpoint_row[0]})")
+                claimed_other = self._connection.execute(
+                    "SELECT 1 FROM continuations WHERE session_id = ? AND status = 'claimed' LIMIT 1",
+                    (session_id,),
+                ).fetchone()
+                if claimed_other is not None:
+                    raise StoreConflict(f"session {session_id!r} already has claimed work")
                 cid = cont_row[0]
                 self._connection.execute(
                     """

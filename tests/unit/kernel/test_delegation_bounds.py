@@ -74,7 +74,7 @@ def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path) -> N
 
 
 def _open(tmp_path: Path) -> Kernel:
-    kernel = open_kernel(tmp_path / "workspace", state_dir=tmp_path / "state", trusted_plugins=frozenset({PLUGIN_ID}))
+    kernel = open_kernel(tmp_path / "workspace", state_dir=tmp_path / "state")
     _CREATED.append(kernel)
     return kernel
 

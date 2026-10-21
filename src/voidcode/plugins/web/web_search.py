@@ -5,7 +5,7 @@ import os
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import final
+from typing import ClassVar, final
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import httpx
@@ -14,7 +14,7 @@ from pydantic import BaseModel, field_validator
 
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices
-from voidcode.sdk.tools import OutputBounds, TextOutput, ToolCall, ToolDefinition, ToolFailure, ToolResult, ToolSuccess
+from voidcode.sdk.tools import OutputBounds, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult, ToolSuccess
 
 from .args import parse_tool_args, validate_non_empty
 
@@ -1061,8 +1061,20 @@ def _resolve_candidate_ids(provider_override: str | None = None) -> list[str]:
 
 @final
 class WebSearchTool:
-    def __init__(self, definition: ToolDefinition) -> None:
-        self.definition = definition
+    definition: ClassVar[ToolDefinition] = ToolDefinition(
+        name="web_search",
+        description="Search the web for information. Returns search results with titles, URLs, and snippets.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The search query"},
+                "numResults": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Number of results to return (default: 8)"},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+        effects=frozenset({ToolEffect.READ, ToolEffect.NETWORK}),
+    )
 
     def invoke(
         self,
@@ -1074,28 +1086,6 @@ class WebSearchTool:
     ) -> ToolResult:
         _ = context
         _ = services
-        return self._invoke(call, runtime_timeout_seconds=None, provider=provider)
-
-    def invoke_with_runtime_timeout(
-        self,
-        call: ToolCall,
-        *,
-        context: ToolContext,
-        services: PluginServices,
-        timeout_seconds: int,
-        provider: str | None = None,
-    ) -> ToolResult:
-        _ = context
-        _ = services
-        return self._invoke(call, runtime_timeout_seconds=timeout_seconds, provider=provider)
-
-    def _invoke(
-        self,
-        call: ToolCall,
-        *,
-        runtime_timeout_seconds: int | None,
-        provider: str | None = None,
-    ) -> ToolResult:
         args = parse_tool_args(
             WebSearchArgs,
             {
@@ -1107,14 +1097,7 @@ class WebSearchTool:
 
         num_results = min(args.numResults, 20)
 
-        timeout = (
-            DEFAULT_TIMEOUT
-            if runtime_timeout_seconds is None
-            else min(
-                DEFAULT_TIMEOUT,
-                runtime_timeout_seconds,
-            )
-        )
+        timeout = DEFAULT_TIMEOUT
 
         candidate_ids = _resolve_candidate_ids(provider)
 

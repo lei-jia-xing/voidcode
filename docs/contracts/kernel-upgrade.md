@@ -1,4 +1,4 @@
-# Controlled Kernel Upgrade (P5)
+# Controlled Kernel Upgrade
 
 One workspace runs exactly one kernel generation at a time, and a kernel upgrade replaces the
 running build with a candidate installation under supervision: immutable images, a read-only
@@ -13,9 +13,8 @@ governs client rendering.
 Supported, and proven by `tests/integration/test_kernel_upgrade.py` plus the unit suites named
 below:
 
-- Upgrading one installation to another installation of the same product line: the schema-4 to
-  schema-5 first adoption, and 5-to-5 generation changes (new image bytes, new SDK bytes, changed
-  bundled plugins, or any combination).
+- Upgrading one installation to another installation of the same product line: generation changes
+  (new image bytes, new SDK bytes, changed bundled plugins, or any combination).
 - The upgrade preserves the session id, the append-only event prefix, pending and parked work that
   the policy allows, and the elected image across restarts. Completed side effects never replay.
 
@@ -52,29 +51,24 @@ historical version compatibility.
 
 ## Supported transitions
 
-- **Schema profiles.** Exactly two, both explicit: 4 → 5 (once, inside the adoption transaction,
-  rebuilding only the `kernel_identity` table whose old CHECK is part of its definition), and 5 →
-  5 (no DDL at all: the revision pointer moves, the schema identity does not). Anything else
-  (`3`, `6`, foreign magic) is refused in preflight with `db_schema_unsupported_transition`,
-  `db_schema_newer`, `db_schema_older`, or `db_magic` before anything stops, with data untouched.
+- **Schema profiles.** The adoption transaction moves the revision pointer; the schema identity
+  does not change. Anything the candidate cannot read is refused in preflight before anything
+  stops, with data untouched. There is no old-format importer: incompatible old state is refused
+  with guidance, never silently converted.
 - **Generation diff.** `adoption_required` compares the recorded generation with the candidate
-  installation: the image digest, the SDK source bytes, the SDK and launch protocols (exactly
-  1 → 1; a bumped protocol refuses with `host_protocol_mismatch` / `launch_protocol_mismatch`
-  unless a specified conversion exists, and P5 specifies none), and the artifact identity of
-  every enabled bundled plugin. External plugins reuse their recorded pins byte-for-byte without
-  re-reading workspace sources; a *changed* recorded external source identity refuses, while an
-  absent path the upgrade never reads is tolerated.
+  installation: the image digest, the SDK and launch protocols (equality gates; a bumped protocol
+  refuses with `launch_protocol_mismatch`), and the composition of
+  every enabled plugin. Adoption is required for an image change or when a state migration is
+  owed (including the same-image case). A configured-but-enabled plugin that is absent from the
+  candidate installation is a preflight error: to remove a plugin, disable it via `kernel.reload`
+  on the old running kernel first (so its real `prepare_deactivate` runs), then upgrade.
 - **The adoption transaction** (`SqliteStore.adopt_revision`) is one `BEGIN IMMEDIATE` commit:
-  the optional 4 → 5 rebuild (guarded by re-reading the live schema version inside the
-  transaction), the acting session CAS, the blocker re-check, the new immutable revision row (the
+  the acting session CAS, the blocker re-check, the new immutable revision row (the
   old row is never mutated), the workspace pointer, every session ref, every migrated or
   deactivated owner state copy, budget/overlay/projection cleanup for dropped owners, rebinding
   of pending/claimed continuations **and of every non-terminal checkpoint** in the workspace, and
   `kernel.revision_adopted` on the acting session. An adoption without an acting session is
   allowed only when the workspace has no sessions.
-- **Source-identity cutover.** The SDK/protocol pin uses the same framed helper as images. That
-  changes every `sdk_sha256`, so the 4 → 5 adoption is the explicit crossing point; no legacy
-  hash alias is preserved.
 
 ## Preflight: read-only checks plus the throwaway dry-run
 
@@ -82,12 +76,12 @@ historical version compatibility.
 `0` for a report or `1` with `{ok: false, reason, detail}` for a refusal. It runs from the
 candidate image while the old kernel still owns the workspace, reads the database strictly
 read-only (URI-escaped `mode=ro` plus `PRAGMA query_only`), and never creates, migrates, or writes
-anything live — including no live artifacts, snapshots, sessions, or continuations.
+anything live — including no live snapshots, sessions, or continuations.
 
 Read-only checks (each a named refusal): database identity and supported transition; adopted
-revision presence and payload shape; private snapshot presence and digest; every pinned artifact's
-existence and hash; SDK/launch protocol equality; Python/dependency environment equality; external
-source identity stability; plugin state rows against their pinned manifests (above the declared
+revision presence and payload shape; private snapshot presence and digest; SDK/launch protocol
+equality; Python/dependency environment equality; enabled-plugin presence in the candidate;
+plugin state rows against their registered `StateSchema` (above the declared
 version refuses as a downgrade, at the version validates, below reports `migration_owed`).
 An empty plugin map is a legal generation (every plugin disabled): there is nothing to verify or
 load beyond the snapshot digest. With the old kernel connected — the topology every supervised
@@ -95,12 +89,10 @@ preflight runs in — the database files are byte-identical before and after; on
 SQLite may finalize WAL bookkeeping bytes on a lone open, which moves already-committed frames
 without changing logical content (row-level dumps are identical either way).
 
-The dry-run then executes the candidate's plugin code in throwaway hosts, because a generation
-that cannot load or migrate must fail here and not after downtime: bundled sources are pinned
-into a scratch tree under the candidate image (removed afterwards), external ids reuse their
-recorded pins, and two host processes — one for the target generation, one for the recorded one —
-are built with no store and no callbacks. The existing state-copy planner runs its real
-`migrate_state` / `prepare_deactivate` transforms through them; the plan is reported
+The dry-run then executes the candidate's plugin code in a throwaway runtime, because a generation
+that cannot load or migrate must fail here and not after downtime: the target generation is
+built with no store and no callbacks. The existing state-copy planner runs its real
+`migrate_state` / `prepare_deactivate` transforms through it; the plan is reported
 (`migrated_owners`, `deactivated_owners`) and discarded. Admission, load, and transform failures
 are `admission_failed`, `plugin_load_failed`, and `migration_failed`, each naming the owner.
 
@@ -139,8 +131,8 @@ pause_intent}` (supervisor control credential only):
   backlog and are answered by the elected child.
 - Children start fenced and stay fenced until promoted. A child that owes an adoption serves
   health plus the control surface with no kernel (`validating` → `validated`); `POST
-  /api/kernel/adopt {"session_id": <id|null>}` builds the target generation, runs the real pinned
-  host load, commits the adoption, and only then constructs the kernel (`adopted`);
+  /api/kernel/adopt {"session_id": <id|null>}` builds the target generation, runs the real runtime
+  load, commits the adoption, and only then constructs the kernel (`adopted`);
   `POST /api/kernel/promote` starts background work and clears the fence (`serving`). A child
   that owes no adoption constructs its kernel at startup and waits fenced for promotion.
 - Control routes (`/api/kernel/drain|admit|adopt|promote`) require a separate unguessable control
@@ -148,18 +140,18 @@ pause_intent}` (supervisor control credential only):
   the API bearer gets `401 missing_control_credential` there. The supervisor's own CLI socket
   (`0600`) lives in a private per-user runtime directory (`0700`, `/tmp/voidcode-<uid>`), named by
   a digest of the canonical state directory because the durable state path plus its workspace
-  identity is longer than the fixed AF_UNIX address limit; it is a same-OS-user boundary like
-  `--trust-plugin`: it proves no human typed, but no client credential, agent tool, plugin, or
-  remote caller can name a candidate or elect state. Platforms without POSIX ownership/mode
-  semantics refuse to host the supervisor instead of weakening this boundary. No agent-facing tool
-  accepts an executable identity.
+  identity is longer than the fixed AF_UNIX address limit; it is OS-user authority — the SDK/API
+  client control surface does not expose image election — not a plugin sandbox: trusted Python
+  running as the same OS user can connect it. Platforms without POSIX ownership/mode semantics
+  refuse to serve the supervisor instead of weakening this boundary. No agent-facing tool accepts
+  an executable identity.
 - The durable decision is SQLite, never a journal file: the revision pointer plus the revision's
   image pin, resolved to `<state>/kernel-images/<digest>/root`. Anything before the adoption
   commit restarts the old image; anything after restarts the candidate image; a missing elected
   image refuses by name instead of starting another image against state it cannot read. The old
-  image refuses post-adoption state by its own pin guard; the pre-P5 build refuses it by the
-  schema identity. A SIGKILL between the database commit and any journal write still recovers the
-  candidate, because the election committed atomically with the revision.
+  image refuses post-adoption state by its own pin guard. A SIGKILL between the database commit
+  and any journal write still recovers the candidate, because the election committed atomically
+  with the revision.
 - A child watches its supervisor by comparing `os.getppid()` against the passed
   `--supervisor-pid` (no signals, so PID reuse is harmless) and shuts down gracefully when it
   differs; the embedded supervisor watches the TUI pid the same way when `--owner-pid` is
@@ -181,15 +173,21 @@ pause_intent}` (supervisor control credential only):
   through an explicit client `resume`, which first appends `kernel.tool_interrupted` for each
   parked batch member and then continues from the durable cursor: an interrupted member is
   never replayed and never reported completed.
+- A dead kernel's orphan `running` session is interrupted only inside a controlled adoption
+  holding the exclusive workspace lease (a live kernel makes adoption refuse, so the row
+  can have no live owner): the adoption appends `kernel.run_interrupted` at the last
+  committed boundary, keeps the cursor untouched, and the session stays explicitly
+  resumable. A plain start against a schema-changed source refuses instead of
+  reinterpreting stored state; only the adoption transaction migrates it.
 - The event prefix is immutable; the upgrade only appends (`kernel.revision_adopted`,
   `kernel.upgrade_paused`, `kernel.continuation_consumed`).
 
 ## Client surface
 
 - Health: `GET /api/health` (in the OpenAPI schema) reports the stable identity clients and the
-  supervisor poll — status, fence, stage, pid, workspace, revision, SDK hash/protocols, kernel
-  version, image digest, SDK path, web bundle, supervisor pid, generation, and the active
-  upgrade. It answers even with no kernel constructed.
+  supervisor poll — status, fence, stage, pid, workspace, revision, SDK/launch protocols, kernel
+  version, image identity, supervisor pid, and the active upgrade. It answers even with no kernel
+  constructed.
 - Restart: a followed stream whose drain succeeded ends with
   `{"kind":"server_restart","cursor":<last sequence this stream delivered>}` after flushing its
   final backlog; the cursor never names an undelivered event, so reconnecting with

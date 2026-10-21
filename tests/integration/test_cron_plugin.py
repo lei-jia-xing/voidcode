@@ -1,6 +1,6 @@
 """End-to-end tests for the cron plugin on the real kernel stack.
 
-Drives the real kernel, plugin host, loopback provider and durable storage:
+Drives the real kernel, plugin runtime, loopback provider and durable storage:
 - A model tool call creates a durable session schedule armed with exactly one kernel wakeup
 - The kernel ticker (driven explicitly here) fires that wakeup, and the fired run reaches the
   provider with the scheduled prompt as a verbatim USER message
@@ -14,17 +14,13 @@ reason: with a 1s cadence it would otherwise fire whenever the real clock crosse
 and race every assertion below. Only *when* a tick happens is controlled; what a tick does
 (claim one due wakeup, create its authentic run, drive it) is the real kernel path.
 
-``voidcode-plugin.json`` is owned by the bundled identity generator, so when it has not been
-generated for this plugin yet the suite materializes a faithful artifact from the real sources:
-its manifest declares exactly the tools, commands, state schema and observed facts the plugin
-registers, and the plugin code under test is the real one.
+The plugin under test is the real bundled source, referenced by path so the host
+imports the current code.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
-import shutil
 import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -37,99 +33,15 @@ from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.kernel.bootstrap import open_kernel
 from voidcode.kernel.engine import Kernel
 from voidcode.kernel.storage.store import StoredEvent, WakeupRecord
-from voidcode.plugins.cron import cron_plugin as cron_module
 from voidcode.plugins.cron.loop_command import USAGE_MESSAGE
-from voidcode.sdk.commands import CommandDefinition
-from voidcode.sdk.json_values import json_wire_object
-from voidcode.sdk.manifest import (
-    PluginCommandDeclaration,
-    PluginFileIdentity,
-    PluginManifest,
-    PluginToolDeclaration,
-)
-from voidcode.sdk.tools import ToolDefinition
 
 _CRON_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "cron"
-#: The state contract the generated manifest must declare (kept in step with ``CronState``).
-_STATE_SCHEMA: dict[str, object] = {
-    "type": "object",
-    "required": ["schema_version", "schedules", "cursor_sequence"],
-    "additionalProperties": False,
-    "properties": {
-        "schema_version": {"type": "integer", "enum": [cron_module.SCHEMA_VERSION]},
-        "schedules": {
-            "type": "object",
-            "additionalProperties": {
-                "type": "object",
-                "required": ["schedule_text", "kind", "prompt", "enabled", "expires_at", "wakeup_id", "created_at"],
-                "additionalProperties": False,
-                "properties": {
-                    "schedule_text": {"type": "string"},
-                    "kind": {"type": "string", "enum": ["every", "at", "cron", "once"]},
-                    "prompt": {"type": "string"},
-                    "enabled": {"type": "boolean"},
-                    "expires_at": {"type": ["integer", "null"]},
-                    "wakeup_id": {"type": ["string", "null"]},
-                    "created_at": {"type": "integer", "minimum": 0},
-                },
-            },
-        },
-        "cursor_sequence": {"type": "integer", "minimum": 0},
-    },
-}
-
-
-def _tool_declaration(definition: ToolDefinition) -> PluginToolDeclaration:
-    return PluginToolDeclaration(
-        name=definition.name,
-        description=definition.description,
-        input_schema=json_wire_object(definition.input_schema),
-        effects=tuple(sorted(effect.value for effect in definition.effects)),
-        replay_policy=definition.replay_policy,
-        path_argument_keys=tuple(definition.path_argument_keys),
-        supports_parallel=definition.supports_parallel,
-    )
-
-
-def _command_declaration(definition: CommandDefinition) -> PluginCommandDeclaration:
-    return PluginCommandDeclaration(
-        name=definition.name,
-        description=definition.description,
-        argument_schema=json_wire_object(definition.argument_schema),
-        effects=tuple(sorted(effect.value for effect in definition.effects)),
-        capabilities=tuple(definition.capabilities),
-        busy_gate=definition.busy_gate,
-        client_capabilities=tuple(definition.client_capabilities),
-        direct_user=definition.direct_user,
-        client_syntax=definition.client_syntax,
-    )
 
 
 def _cron_source(tmp_path: Path) -> Path:
-    """The real cron plugin source (or a faithful artifact while its manifest is ungenerated)."""
-    if (_CRON_PLUGIN_ROOT / "voidcode-plugin.json").is_file():
-        return _CRON_PLUGIN_ROOT
-    root = tmp_path / "cron-plugin-source"
-    root.mkdir(parents=True, exist_ok=True)
-    for source in sorted(_CRON_PLUGIN_ROOT.glob("*.py")):
-        shutil.copyfile(source, root / source.name)
-    plugin = cron_module.create_plugin(None)
-    manifest = PluginManifest(
-        plugin_id="cron",
-        version="1.0.0",
-        entrypoint="__init__:create_plugin",
-        files=tuple(
-            PluginFileIdentity(path=source.name, sha256=hashlib.sha256(source.read_bytes()).hexdigest()) for source in sorted(root.glob("*.py"))
-        ),
-        tools=tuple(_tool_declaration(tool.definition) for tool in plugin.tools),
-        commands=tuple(_command_declaration(command.definition) for command in plugin.commands),
-        state_schema_version=cron_module.SCHEMA_VERSION,
-        state_schema=_STATE_SCHEMA,
-        config_schema={"type": "object", "additionalProperties": False, "properties": {}},
-        observed_facts=("run_finished",),
-    )
-    (root / "voidcode-plugin.json").write_text(json.dumps(manifest.as_payload()), encoding="utf-8")
-    return root
+    """The real cron plugin source."""
+    _ = tmp_path
+    return _CRON_PLUGIN_ROOT
 
 
 @contextmanager
@@ -177,7 +89,7 @@ def _kernel(tmp_path: Path, server: OpenAILoopbackServer) -> Kernel:
         },
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-    kernel = open_kernel(workspace, state_dir=state_dir, trusted_plugins=frozenset({"cron"}))
+    kernel = open_kernel(workspace, state_dir=state_dir)
     _CREATED_KERNELS.append(kernel)
     return kernel
 

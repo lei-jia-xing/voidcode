@@ -23,11 +23,24 @@ READ_PAGE = 200
 _EXPORT_CHARS = 200_000
 
 
+_PANEL_DESCRIPTIONS: dict[str, str] = {
+    "session_status": "Show the current session identity, event counts, usage and budget.",
+    "context": "Show what the model context is made of, with measured and estimated sizes.",
+    "usage": "Show measured token usage, cost and the active budget for this session.",
+    "export": "Export the session transcript as Markdown.",
+    "copy": "List copyable blocks from the last assistant response.",
+}
+
+
 class SessionInfoCommand:
     """One read-only panel over the calling session's committed facts."""
 
-    def __init__(self, definition: CommandDefinition, panel: str) -> None:
-        self.definition = definition
+    def __init__(self, panel: str) -> None:
+        self.definition = CommandDefinition(
+            name=panel,
+            description=_PANEL_DESCRIPTIONS[panel],
+            argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        )
         self._panel = panel
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:

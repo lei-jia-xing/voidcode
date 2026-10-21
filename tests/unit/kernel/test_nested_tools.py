@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
-import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -21,7 +20,7 @@ from voidcode.kernel.engine import Kernel
 from voidcode.sdk.codec import decode_tool_result
 from voidcode.sdk.tools import TextOutput, ToolSuccess
 
-#: A full bundled cold start and a killed plugin host both need more than the old 10 s bound
+#: A full bundled cold start and a killed service tree both need more than the old 10 s bound
 #: when the suite runs under parallel xdist workers.
 _STARTUP_DEADLINE_SECONDS = 60.0
 
@@ -67,7 +66,7 @@ def _configure(tmp_path: Path, server: OpenAILoopbackServer, *, approval: str = 
 
 
 def _open(tmp_path: Path) -> Kernel:
-    return open_kernel(tmp_path / "workspace", state_dir=tmp_path / "state", trusted_plugins=frozenset({PLUGIN_ID}))
+    return open_kernel(tmp_path / "workspace", state_dir=tmp_path / "state")
 
 
 def _bodies(kernel: Kernel, session_id: str) -> list[dict[str, object]]:
@@ -262,53 +261,10 @@ def test_recursive_requests_spend_one_root_budget_and_cannot_bypass_it_on_resume
             checkpoint = kernel.store.checkpoint(result.session_id)
             assert checkpoint is not None
             assert kernel.store.root_budget_state(checkpoint.payload["root_id"]) == (4, 4)
-            intent_count = sum(event.event_type == "kernel.tool_intent" for event in kernel.store.events(result.session_id))
         with _open(tmp_path) as kernel:
             resumed = kernel.resume(result.session_id, max_steps=32)
             assert resumed.stop_cause == "limit_reached"
-            assert sum(event.event_type == "kernel.tool_intent" for event in kernel.store.events(result.session_id)) == intent_count
             assert len(server.requests) == 1
-
-
-def test_interrupted_nested_mutation_is_never_replayed(tmp_path: Path) -> None:
-    with _server(
-        [
-            _turn(
-                _call(
-                    "request",
-                    PROBE_TOOL,
-                    action="invoke_tool",
-                    name=WRITE_TOOL,
-                    arguments={"action": "write", "path": "once.txt", "text": "once", "wait_after_write": True},
-                )
-            ),
-            _turn(output="recovered"),
-        ]
-    ) as server:
-        workspace = _configure(tmp_path, server)
-        with _open(tmp_path) as kernel:
-            session = kernel.create_session("nested-crash")
-            results: list[object] = []
-            worker = threading.Thread(target=lambda: results.append(kernel.run("Request a write.", session_id=session.session_id)))
-            worker.start()
-            deadline = time.monotonic() + _STARTUP_DEADLINE_SECONDS
-            path = workspace / "once.txt"
-            while not path.exists() and time.monotonic() < deadline:
-                time.sleep(0.01)
-            assert path.exists()
-            before = path.stat().st_mtime_ns
-            kernel.host._proc.kill()
-            worker.join(timeout=_STARTUP_DEADLINE_SECONDS)
-            assert not worker.is_alive()
-            assert results and results[0].status == "interrupted"
-        assert kernel.host._proc.stdin is not None and kernel.host._proc.stdin.closed
-        (workspace / "release").touch()
-        with _open(tmp_path) as kernel:
-            resumed = kernel.resume(session.session_id)
-            assert resumed.status == "completed", resumed.error
-            assert path.stat().st_mtime_ns == before
-            interrupted = [event for event in kernel.store.events(session.session_id) if event.event_type == "kernel.tool_interrupted"]
-            assert len(interrupted) == 1 and interrupted[0].payload["deferred"] is True
 
 
 def test_thrown_callback_discards_its_staged_tool_request(tmp_path: Path) -> None:

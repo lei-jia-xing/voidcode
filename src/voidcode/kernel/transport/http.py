@@ -29,12 +29,10 @@ from starlette.types import Receive, Scope, Send
 from ... import __version__
 from ...sdk.commands import CommandCatalog, CommandResult
 from ...sdk.json_values import json_wire_object
-from ...sdk.manifest import SDK_PROTOCOL_VERSION
 from ...sdk.services import SessionUsageReport
 from ...sdk.views import ViewsSnapshot
 from ..bootstrap import adopt_generation, open_kernel
 from ..engine import DrainRefused, Kernel, KernelResult
-from ..host import HostTimeout, HostUnavailable
 from ..images import Image, installed_identity, running_identity
 from ..preflight import LAUNCH_PROTOCOL_VERSION
 from ..storage.store import SessionRecord, StoreConflict, StoredEvent, inspect_existing_workspace
@@ -619,28 +617,17 @@ class KernelTransportApp(FastAPI):
     async def _handle_health(self) -> Response:
         kernel = self._kernel
         revision_id = ""
-        sdk_sha256 = ""
-        sdk_protocol = SDK_PROTOCOL_VERSION
         if kernel is not None:
             revision_id = kernel.revision_id
-            recorded = kernel.admission.revision_payload if kernel.admission is not None else {}
-            sdk_sha256 = str(recorded.get("sdk_sha256", ""))
-            recorded_protocol = recorded.get("sdk_protocol")
-            if isinstance(recorded_protocol, int) and not isinstance(recorded_protocol, bool):
-                sdk_protocol = recorded_protocol
         elif self._workspace is not None and self._state_dir is not None:
             database = self._state_dir / "kernel-v1.sqlite3"
             if database.is_file():
                 try:
-                    found_revision, found_payload, _ = await asyncio.to_thread(inspect_existing_workspace, database, str(self._workspace))
+                    found_revision, _found_payload, _ = await asyncio.to_thread(inspect_existing_workspace, database, str(self._workspace))
                 except Exception:
-                    found_revision, found_payload = None, None
-                if found_revision is not None and found_payload is not None:
+                    found_revision = None
+                if found_revision is not None:
                     revision_id = found_revision
-                    sdk_sha256 = str(found_payload.get("sdk_sha256", ""))
-                    recorded_protocol = found_payload.get("sdk_protocol")
-                    if isinstance(recorded_protocol, int) and not isinstance(recorded_protocol, bool):
-                        sdk_protocol = recorded_protocol
         image = self._image
         return _ok(
             {
@@ -650,12 +637,9 @@ class KernelTransportApp(FastAPI):
                 "pid": os.getpid(),
                 "workspace": "" if self._workspace is None else str(self._workspace),
                 "revision_id": revision_id,
-                "sdk_sha256": sdk_sha256,
-                "sdk_protocol": sdk_protocol,
                 "launch_protocol": LAUNCH_PROTOCOL_VERSION,
                 "kernel_version": __version__,
                 "image_digest": "" if image is None else image.digest,
-                "sdk_path": "" if image is None else str(image.package_root / "sdk"),
                 "web_bundle": None if image is None else image.bundle,
                 "supervisor_pid": os.getppid(),
                 "generation": self._generation,
@@ -719,10 +703,8 @@ class KernelTransportApp(FastAPI):
             report = await asyncio.to_thread(adopt_generation, workspace=self._workspace, state_dir=self._state_dir, session_id=body.session_id)
         except StoreConflict as exc:
             raise HttpError(409, str(exc), code="adoption_blocked") from None
-        except ValueError as exc:
+        except (ValueError, RuntimeError) as exc:
             raise HttpError(409, str(exc), code="adoption_refused") from None
-        except (HostUnavailable, HostTimeout) as exc:
-            raise HttpError(409, f"candidate generation does not load: {exc}", code="adoption_refused") from None
         except Exception as exc:
             raise _kernel_error(exc) from None
         try:
@@ -877,7 +859,6 @@ def create_kernel_app(
     *,
     workspace: Path,
     state_dir: Path | None = None,
-    trusted_plugins: frozenset[str] = frozenset(),
     bearer_token: str | None = None,
     allow_origin: str | None = None,
     frontend_dist: Path | None = None,
@@ -891,7 +872,7 @@ def create_kernel_app(
     resolved_state = None if state_dir is None else Path(state_dir)
 
     def factory() -> Kernel | None:
-        return open_kernel(resolved_workspace, state_dir=resolved_state, trusted_plugins=trusted_plugins)
+        return open_kernel(resolved_workspace, state_dir=resolved_state)
 
     return KernelTransportApp(
         kernel_factory=factory,

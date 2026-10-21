@@ -100,12 +100,9 @@ class HealthBody(KernelHttpModel):
     pid: int
     workspace: str
     revision_id: str
-    sdk_sha256: str
-    sdk_protocol: int
     launch_protocol: int
     kernel_version: str
     image_digest: str
-    sdk_path: str
     web_bundle: str | None
     supervisor_pid: int
     generation: int

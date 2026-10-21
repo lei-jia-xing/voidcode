@@ -39,7 +39,6 @@ sys.exit(
         host="127.0.0.1",
         port=0,
         bearer_token=None,
-        trusted_plugins=frozenset(),
         session_id=None,
         open_browser=False,
     )
@@ -417,7 +416,6 @@ sys.exit(
         host="127.0.0.1",
         port=0,
         bearer_token=sys.argv[3],
-        trusted_plugins=frozenset(),
         session_id=None,
         open_browser=False,
     )
@@ -437,7 +435,6 @@ sys.exit(
         host="127.0.0.1",
         port=0,
         bearer_token=None,
-        trusted_plugins=frozenset(),
         session_id=None,
         open_browser=False,
         owner_pid=int(sys.argv[3]),

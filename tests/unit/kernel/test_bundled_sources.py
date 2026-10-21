@@ -1,10 +1,9 @@
-"""P4 cutover gate: the whole bundled plugin set admits, registers, and dispatches together.
+"""Cutover gate: the whole bundled plugin set boots and dispatches together.
 
 The bundled list is the product surface — every mechanism ships as an ordinary plugin — so
-this is the bundle's integrity proof: one real host generation admits every bundled id,
-registers exactly the tools/commands/providers its manifests declare, and routes a real tool
-call to each tool-providing plugin (a success where the subject is local, a *governed* failure
-where the tool needs a server or a child that does not exist).
+this is the bundle's behavioral proof: one real kernel boots the default set and routes a real
+tool call to each tool-providing plugin (a success where the subject is local, a *governed*
+failure where the tool needs a server or a child that does not exist).
 """
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ import threading
 from pathlib import Path
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.kernel.bootstrap import _bundled_sources, open_kernel
+from voidcode.kernel.bootstrap import open_kernel
 from voidcode.sdk.codec import decode_tool_result
 from voidcode.sdk.tools import ToolFailure, ToolSuccess
 
@@ -33,10 +32,6 @@ _REPRESENTATIVE_CALLS: tuple[tuple[str, dict[str, object], type[object]], ...] =
     ("mcp", {"server": "missing-server", "tool": "missing-tool"}, ToolFailure),
     ("lsp", {"operation": "diagnostics", "path": "bundle.txt"}, ToolFailure),
 )
-
-
-def _manifests() -> dict[str, dict[str, object]]:
-    return {plugin_id: json.loads((source / "voidcode-plugin.json").read_text(encoding="utf-8")) for plugin_id, source in _bundled_sources().items()}
 
 
 def _call(call_id: str, name: str, arguments: dict[str, object]) -> dict[str, object]:
@@ -69,21 +64,6 @@ def _workspace(tmp_path: Path, server: OpenAILoopbackServer | None) -> Path:
         encoding="utf-8",
     )
     return workspace
-
-
-def test_bundle_admits_and_registers_every_bundled_declaration(tmp_path: Path) -> None:
-    manifests = _manifests()
-    workspace = _workspace(tmp_path, None)
-    with open_kernel(workspace, state_dir=tmp_path / "state") as kernel:
-        assert {plugin.manifest.plugin_id for plugin in kernel.host.loaded_plugins} == set(manifests)
-        tools = {tool.name for tool in kernel.host.tools}
-        commands = {command.name for command in kernel.command_catalog().commands}
-        declared_tools = {tool["name"] for manifest in manifests.values() for tool in manifest["tools"]}  # type: ignore[union-attr]
-        declared_commands = {command["name"] for manifest in manifests.values() for command in manifest["commands"]}  # type: ignore[union-attr]
-        declared_providers = {provider["name"] for manifest in manifests.values() for provider in manifest.get("providers", [])}  # type: ignore[union-attr,arg-type]
-        assert declared_tools <= tools, sorted(declared_tools - tools)
-        assert declared_commands <= commands, sorted(declared_commands - commands)
-        assert set(kernel.host.providers) >= declared_providers, sorted(declared_providers - set(kernel.host.providers))
 
 
 def test_bundle_dispatches_one_tool_per_tool_plugin(tmp_path: Path) -> None:

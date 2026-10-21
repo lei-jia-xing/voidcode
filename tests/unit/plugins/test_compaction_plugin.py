@@ -770,8 +770,6 @@ def test_compact_command_declares_a_busy_gated_session_effect() -> None:
     assert definition.busy_gate is True
     assert {effect.value for effect in definition.effects} == {"session"}
     assert definition.client_syntax == "/compact"
-    assert definition.direct_user is False
-    assert definition.capabilities == frozenset()
 
 
 # --- State and config validation ---

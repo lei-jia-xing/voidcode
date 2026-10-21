@@ -1,26 +1,15 @@
 """Fixture plugin source whose revision, state schema, and behavior can be rewritten in place.
 
-Used by the P3 activation tests: the same plugin id is admitted as v1 and later re-admitted as
+Used by the activation tests: the same plugin id is admitted as v1 and later re-admitted as
 v2 with different tool output, a higher state schema version, and controlled migration or
-deactivation behavior.
+deactivation behavior. The writer generates a plain package ``__init__.py`` with hardcoded
+definitions and real ``Plugin`` metadata; there is no manifest.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
 import textwrap
 from pathlib import Path
-
-from voidcode.sdk.manifest import (
-    PluginCapabilityRequest,
-    PluginCommandDeclaration,
-    PluginFileIdentity,
-    PluginHookDeclaration,
-    PluginManifest,
-    PluginToolDeclaration,
-)
-from voidcode.sdk.tools import ToolEffect
 
 PROBE_TOOL = "reload_probe"
 DEACTIVATE_TOOL = "reload_state_note"
@@ -37,15 +26,12 @@ def write_reload_plugin(
     source: Path,
     *,
     plugin_id: str = "reload-fixture",
-    version: str = "1.0.0",
     tool_output: str = "v1",
-    module_name: str = "reload_plugin_impl",
     state_schema_version: int = 1,
     state_schema: dict | None = None,
     migration: str = "none",
     deactivation: str = "none",
     observe: bool = False,
-    depends: tuple[str, ...] = (),
     syntax_error: bool = False,
     tools: bool = True,
     marker: Path | None = None,
@@ -67,17 +53,17 @@ def write_reload_plugin(
 ) -> Path:
     """Write (or rewrite) the plugin source directory and return it."""
     source.mkdir(parents=True, exist_ok=True)
-    # A stale manifest would hide an unchanged source from the revision identity.
-    (source / "voidcode-plugin.json").write_text("{}", encoding="utf-8")
     body = _plugin_code(
         plugin_id=plugin_id,
         tool_output=tool_output,
-        module_name=module_name,
+        state_schema_version=state_schema_version,
+        state_schema=state_schema,
         migration=migration,
         deactivation=deactivation,
         observe=observe,
         marker=marker,
         factory_error=factory_error,
+        tools=tools,
         blocking=blocking,
         delegating=delegating,
         services_probe=services_probe,
@@ -93,181 +79,10 @@ def write_reload_plugin(
         pre_tool_match=pre_tool_match,
         lifecycle_hooks=lifecycle_hooks,
     )
-    module_path = source / f"{module_name}.py"
-    module_path.write_text(body, encoding="utf-8")
+    init_path = source / "__init__.py"
+    init_path.write_text(body, encoding="utf-8")
     if syntax_error:
-        module_path.write_text(body + "\nthis is not python(\n", encoding="utf-8")
-    (source / "__init__.py").write_text("", encoding="utf-8")
-
-    files = (
-        PluginFileIdentity(path="__init__.py", sha256=hashlib.sha256(b"").hexdigest()),
-        PluginFileIdentity(path=f"{module_name}.py", sha256=hashlib.sha256(module_path.read_bytes()).hexdigest()),
-    )
-    declarations: tuple[PluginToolDeclaration, ...] = ()
-    if tools and blocking:
-        declarations += (
-            PluginToolDeclaration(
-                name=BLOCK_TOOL,
-                description="Block until this session is cancelled.",
-                input_schema={"type": "object", "properties": {}, "additionalProperties": False},
-                effects=(ToolEffect.READ,),
-            ),
-        )
-    if tools and delegating:
-        declarations += (
-            PluginToolDeclaration(
-                name=DELEGATE_TOOL,
-                description="Spawn delegated child runs and join them.",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "prompts": {"type": "array", "items": {"type": "string"}},
-                        "allowlist": {"type": "array", "items": {"type": "string"}},
-                        "readonly": {"type": "boolean"},
-                    },
-                    "required": ["prompts"],
-                    "additionalProperties": False,
-                },
-                effects=(ToolEffect.SPAWN,),
-            ),
-        )
-    if tools and process_tool:
-        process_schema = {
-            "type": "object",
-            "properties": {
-                "argv": {"type": "array", "items": {"type": "string"}},
-                "stdin": {"type": "string"},
-                "timeout_seconds": {"type": "number"},
-                "max_output_bytes": {"type": "integer"},
-            },
-            "required": ["argv"],
-            "additionalProperties": False,
-        }
-        declarations += (
-            PluginToolDeclaration(
-                name=PROCESS_TOOL,
-                description="Run a child process under this lease.",
-                input_schema=process_schema,
-                effects=(ToolEffect.EXECUTE,),
-            ),
-            PluginToolDeclaration(
-                name=PROCESS_READ_TOOL,
-                description="Attempt to run a child process from a read-only lease.",
-                input_schema=process_schema,
-                effects=(ToolEffect.READ,),
-            ),
-        )
-    if tools and services_probe:
-        declarations += (
-            PluginToolDeclaration(
-                name=SERVICES_TOOL,
-                description="Exercise the plugin service seams (wakeup/events/model_query).",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "action": {"type": "string"},
-                        "text": {"type": "string"},
-                        "limit": {"type": "integer"},
-                        "offset": {"type": "integer"},
-                        "include_payload": {"type": "boolean"},
-                        "media_type": {"type": "string"},
-                        "sha256": {"type": "string"},
-                        "repeat": {"type": "integer"},
-                        "argv": {"type": "array", "items": {"type": "string"}},
-                        "process_id": {"type": "string"},
-                        "stream": {"type": "string"},
-                        "stdin": {"type": "boolean"},
-                        "stdout_suffix": {"type": "string"},
-                    },
-                    "required": ["action"],
-                    "additionalProperties": False,
-                },
-                effects=(ToolEffect.WRITE,),
-            ),
-        )
-    if tools and services_read_probe:
-        declarations += (
-            PluginToolDeclaration(
-                name=SERVICES_READ_TOOL,
-                description="Exercise the plugin service seams from a read-only lease.",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "action": {"type": "string"},
-                        "text": {"type": "string"},
-                        "limit": {"type": "integer"},
-                        "offset": {"type": "integer"},
-                        "include_payload": {"type": "boolean"},
-                        "media_type": {"type": "string"},
-                        "sha256": {"type": "string"},
-                        "repeat": {"type": "integer"},
-                        "argv": {"type": "array", "items": {"type": "string"}},
-                        "process_id": {"type": "string"},
-                        "stream": {"type": "string"},
-                        "stdin": {"type": "boolean"},
-                        "stdout_suffix": {"type": "string"},
-                    },
-                    "required": ["action"],
-                    "additionalProperties": False,
-                },
-                effects=(ToolEffect.READ,),
-            ),
-        )
-    if tools:
-        declarations += (
-            PluginToolDeclaration(
-                name=PROBE_TOOL,
-                description=f"Probe the loaded revision ({tool_output}).",
-                input_schema={"type": "object", "properties": {}, "additionalProperties": False},
-                effects=(ToolEffect.WRITE,),
-            ),
-            PluginToolDeclaration(
-                name=DEACTIVATE_TOOL,
-                description="Read the owner state this revision loaded.",
-                input_schema={"type": "object", "properties": {}, "additionalProperties": False},
-                effects=(ToolEffect.READ,),
-            ),
-        )
-    command_declarations: tuple[PluginCommandDeclaration, ...] = ()
-    if overlay_command:
-        command_declarations = (
-            PluginCommandDeclaration(
-                name=OVERLAY_COMMAND,
-                description="Enter or leave the restrictive overlay (user action).",
-                argument_schema={
-                    "type": "object",
-                    "properties": {"action": {"enum": ["on", "off"]}},
-                    "required": ["action"],
-                    "additionalProperties": False,
-                },
-                effects=(ToolEffect.SESSION,),
-                direct_user=True,
-                client_syntax="/plan",
-            ),
-        )
-    hook_declarations: list[PluginHookDeclaration] = []
-    if post_tool_hook:
-        hook_declarations.append(PluginHookDeclaration(kind="post_tool", match=tuple(post_tool_match or (PROBE_TOOL,)), mutating=True))
-    if pre_tool_gate:
-        hook_declarations.append(PluginHookDeclaration(kind="pre_tool", match=tuple(pre_tool_match or (PROBE_TOOL,)), mutating=False))
-    if lifecycle_hooks:
-        hook_declarations.append(PluginHookDeclaration(kind="session_start"))
-        hook_declarations.append(PluginHookDeclaration(kind="session_end"))
-    manifest = PluginManifest(
-        plugin_id=plugin_id,
-        version=version,
-        entrypoint=f"{module_name}:create_plugin",
-        files=files,
-        capabilities=(PluginCapabilityRequest(name="workspace.write", reason="fixture probe"),),
-        tools=declarations,
-        commands=command_declarations,
-        hooks=tuple(hook_declarations),
-        depends=depends,
-        state_schema_version=state_schema_version,
-        state_schema=state_schema,
-        observed_facts=("invocation_finished",) if observe else (),
-    )
-    (source / "voidcode-plugin.json").write_text(json.dumps(manifest.as_payload()), encoding="utf-8")
+        init_path.write_text(body + "\nthis is not python(\n", encoding="utf-8")
     return source
 
 
@@ -280,12 +95,14 @@ def _plugin_code(
     *,
     plugin_id: str,
     tool_output: str,
-    module_name: str,
+    state_schema_version: int,
+    state_schema: dict | None,
     migration: str,
     deactivation: str,
     observe: bool,
     marker: Path | None,
     factory_error: bool,
+    tools: bool,
     blocking: bool,
     delegating: bool,
     services_probe: bool,
@@ -318,7 +135,7 @@ def _plugin_code(
         "refuse": 'raise ValueError("candidate refuses to migrate this state")',
         "crash": "import os\nos._exit(9)",
         "invalid": "return {'migrated_to': 'not-an-int' if True else 0, 'note': [1, 2]}",
-        # Blocks (bounded) inside the candidate host so a test can kill the kernel at a
+        # Blocks (bounded) inside the candidate runtime so a test can kill the kernel at a
         # deterministic point before the activation transaction commits.
         "hang": hang_body,
     }[migration]
@@ -349,10 +166,9 @@ import json
 import os
 from pathlib import Path
 
-from voidcode.sdk.plugin import Plugin, tool_definition
 from voidcode.sdk.commands import CommandDefinition, CommandResult
-from voidcode.sdk.manifest import parse_plugin_manifest
-from voidcode.sdk.tools import TextOutput, ToolFailure, ToolSuccess, ToolEffect
+from voidcode.sdk.plugin import Plugin, StateSchema
+from voidcode.sdk.tools import TextOutput, ToolDefinition, ToolEffect, ToolFailure, ToolSuccess
 
 OUTPUT = {tool_output!r}
 
@@ -368,9 +184,16 @@ def _spawn(services, call, log_dir, suffix):
     )
 
 
+_EMPTY_SCHEMA = {{"type": "object", "properties": {{}}, "additionalProperties": False}}
+
+
 class Probe:
-    def __init__(self, definition):
-        self.definition = definition
+    definition = ToolDefinition(
+        name="{PROBE_TOOL}",
+        description=f"Probe the loaded revision ({{OUTPUT}}).",
+        input_schema=_EMPTY_SCHEMA,
+        effects=frozenset({{ToolEffect.WRITE}}),
+    )
 
     def invoke(self, call, *, context, services):
         state, version = services.get_state("session")
@@ -381,8 +204,12 @@ class Probe:
 
 
 class ReadNote:
-    def __init__(self, definition):
-        self.definition = definition
+    definition = ToolDefinition(
+        name="{DEACTIVATE_TOOL}",
+        description="Read the owner state this revision loaded.",
+        input_schema=_EMPTY_SCHEMA,
+        effects=frozenset({{ToolEffect.READ}}),
+    )
 
     def invoke(self, call, *, context, services):
         state, _version = services.get_state("session")
@@ -392,8 +219,32 @@ class ReadNote:
 class ServicesProbe:
     """Drive one plugin-service seam per call and return its observable result."""
 
-    def __init__(self, definition):
-        self.definition = definition
+    def __init__(self, name, effects):
+        self.definition = ToolDefinition(
+            name=name,
+            description="Exercise the plugin service seams.",
+            input_schema={{
+                "type": "object",
+                "properties": {{
+                    "action": {{"type": "string"}},
+                    "text": {{"type": "string"}},
+                    "limit": {{"type": "integer"}},
+                    "offset": {{"type": "integer"}},
+                    "include_payload": {{"type": "boolean"}},
+                    "media_type": {{"type": "string"}},
+                    "sha256": {{"type": "string"}},
+                    "repeat": {{"type": "integer"}},
+                    "argv": {{"type": "array", "items": {{"type": "string"}}}},
+                    "process_id": {{"type": "string"}},
+                    "stream": {{"type": "string"}},
+                    "stdin": {{"type": "boolean"}},
+                    "stdout_suffix": {{"type": "string"}},
+                }},
+                "required": ["action"],
+                "additionalProperties": False,
+            }},
+            effects=frozenset(effects),
+        )
 
     def invoke(self, call, *, context, services):
         action = str(call.arguments.get("action", ""))
@@ -560,29 +411,29 @@ class ServicesProbe:
                     return ToolSuccess(call.tool_name, TextOutput(json.dumps({{"bytes": 0, "running": False}})))
                 __import__("time").sleep(0.05)
             return ToolSuccess(call.tool_name, TextOutput(json.dumps({{"bytes": 0, "timed_out": True}})))
-        if action == "spill_abandon":
-            # One unterminated chunk: the lease must not leave its private temp file behind.
-            import base64 as _b64
-            server = services._server
-            resp = server._send_reverse_rpc(
-                "artifact_spill",
-                {{
-                    "lease_token": services._lease_token,
-                    "spill_id": None,
-                    "media_type": "text/plain",
-                    "data": _b64.b64encode(text.encode("utf-8")).decode("ascii"),
-                    "final": False,
-                }},
-            )
-            return ToolSuccess(call.tool_name, TextOutput(json.dumps({{"spill_id": resp.get("spill_id", "")}})))
         return ToolFailure(call.tool_name, f"unknown action: {{action}}")
 
 
 class ProcessProbe:
     """Run one lease-scoped child process and report exactly what the service returned."""
 
-    def __init__(self, definition):
-        self.definition = definition
+    def __init__(self, name, effects):
+        self.definition = ToolDefinition(
+            name=name,
+            description="Run a child process under this lease.",
+            input_schema={{
+                "type": "object",
+                "properties": {{
+                    "argv": {{"type": "array", "items": {{"type": "string"}}}},
+                    "stdin": {{"type": "string"}},
+                    "timeout_seconds": {{"type": "number"}},
+                    "max_output_bytes": {{"type": "integer"}},
+                }},
+                "required": ["argv"],
+                "additionalProperties": False,
+            }},
+            effects=frozenset(effects),
+        )
 
     def invoke(self, call, *, context, services):
         argv = [str(item) for item in (call.arguments.get("argv") or ())]
@@ -620,8 +471,21 @@ class ProcessProbe:
 class Delegate:
     """Spawn child sessions through the SDK and join them without polling."""
 
-    def __init__(self, definition):
-        self.definition = definition
+    definition = ToolDefinition(
+        name="{DELEGATE_TOOL}",
+        description="Spawn delegated child runs and join them.",
+        input_schema={{
+            "type": "object",
+            "properties": {{
+                "prompts": {{"type": "array", "items": {{"type": "string"}}}},
+                "allowlist": {{"type": "array", "items": {{"type": "string"}}}},
+                "readonly": {{"type": "boolean"}},
+            }},
+            "required": ["prompts"],
+            "additionalProperties": False,
+        }},
+        effects=frozenset({{ToolEffect.SPAWN}}),
+    )
 
     def invoke(self, call, *, context, services):
         raw_prompts = call.arguments.get("prompts") or ()
@@ -640,8 +504,12 @@ class Delegate:
 class Block:
     """Hold this session's run inside a tool until the kernel cancels it."""
 
-    def __init__(self, definition):
-        self.definition = definition
+    definition = ToolDefinition(
+        name="{BLOCK_TOOL}",
+        description="Block until this session is cancelled.",
+        input_schema=_EMPTY_SCHEMA,
+        effects=frozenset({{ToolEffect.READ}}),
+    )
 
     def invoke(self, call, *, context, services):
         import time
@@ -667,7 +535,7 @@ def prepare_deactivate(state, scope, scope_key, tip_sequence):
 class OverlayCommand:
     definition = CommandDefinition(
         name="{OVERLAY_COMMAND}",
-        description="Enter or leave the restrictive overlay (user action).",
+        description="Enter or leave the restrictive overlay.",
         argument_schema={{
             "type": "object",
             "properties": {{"action": {{"enum": ["on", "off"]}}}},
@@ -675,7 +543,6 @@ class OverlayCommand:
             "additionalProperties": False,
         }},
         effects=frozenset({{ToolEffect.SESSION}}),
-        direct_user=True,
         client_syntax="/plan",
     )
 
@@ -738,35 +605,40 @@ def create_plugin(config):
         raise RuntimeError("fixture factory failure")
     if {str(marker) if marker else ""!r}:
         Path({str(marker) if marker else ""!r}).write_text(str(os.getpid()), encoding="utf-8")
-    manifest = parse_plugin_manifest(json.loads(Path(__file__).with_name("voidcode-plugin.json").read_text()))
-    tools = tuple(
-        Probe(tool_definition(declaration))
-        if declaration.name == "{PROBE_TOOL}"
-        else Block(tool_definition(declaration))
-        if declaration.name == "{BLOCK_TOOL}"
-        else Delegate(tool_definition(declaration))
-        if declaration.name == "{DELEGATE_TOOL}"
-        else ServicesProbe(tool_definition(declaration))
-        if declaration.name in ("{SERVICES_TOOL}", "{SERVICES_READ_TOOL}")
-        else ProcessProbe(tool_definition(declaration))
-        if declaration.name in ("{PROCESS_TOOL}", "{PROCESS_READ_TOOL}")
-        else ReadNote(tool_definition(declaration))
-        for declaration in manifest.tools
-    )
+    tools = []
+    if {blocking!r}:
+        tools.append(Block())
+    if {delegating!r}:
+        tools.append(Delegate())
+    if {process_tool!r}:
+        tools.append(ProcessProbe("{PROCESS_TOOL}", (ToolEffect.EXECUTE,)))
+        tools.append(ProcessProbe("{PROCESS_READ_TOOL}", (ToolEffect.READ,)))
+    if {services_probe!r}:
+        tools.append(ServicesProbe("{SERVICES_TOOL}", (ToolEffect.WRITE,)))
+    if {services_read_probe!r}:
+        tools.append(ServicesProbe("{SERVICES_READ_TOOL}", (ToolEffect.READ,)))
+    if {tools!r}:
+        tools.append(Probe())
+        tools.append(ReadNote())
     commands = (OverlayCommand(),) if {overlay_command!r} else ()
     post_tool = _post_tool if {post_tool_hook!r} else None
     pre_tool = _pre_tool if {pre_tool_gate!r} else None
     session_start = _session_start if {lifecycle_hooks!r} else None
     session_end = _session_end if {lifecycle_hooks!r} else None
     return Plugin(
+        tools=tuple(tools),
         commands=commands,
         post_tool=post_tool,
+        post_tool_match={post_tool_match or (PROBE_TOOL,)!r} if {post_tool_hook!r} else ("*",),
+        post_tool_mutating=True if {post_tool_hook!r} else False,
         pre_tool=pre_tool,
+        pre_tool_match={pre_tool_match or (PROBE_TOOL,)!r} if {pre_tool_gate!r} else ("*",),
         session_start=session_start,
         session_end=session_end,
-        tools=tools,
+        state=StateSchema(version={state_schema_version!r}, schema={state_schema!r}),
         migrate_state=migrate_state if {migration!r} != "none" else None,
         prepare_deactivate=prepare_deactivate if {deactivation!r} != "none" else None,
         observer=_observe if {observe!r} else None,
+        observed_facts=("invocation_finished",) if {observe!r} else (),
     )
 '''

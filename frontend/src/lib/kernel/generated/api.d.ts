@@ -300,7 +300,7 @@ export interface components {
         };
         /**
          * CommandDescriptor
-         * @description Catalog entry describing an admitted plugin command or reserved core command.
+         * @description Catalog entry describing a plugin command or reserved core command.
          */
         CommandDescriptor: {
             /** Argument Schema */
@@ -313,11 +313,6 @@ export interface components {
              */
             busy_gate: boolean;
             /**
-             * Capabilities
-             * @default []
-             */
-            capabilities: string[];
-            /**
              * Client Capabilities
              * @default []
              */
@@ -326,11 +321,6 @@ export interface components {
             client_syntax?: string | null;
             /** Description */
             description: string;
-            /**
-             * Direct User
-             * @default false
-             */
-            direct_user: boolean;
             /**
              * Effects
              * @default []
@@ -549,12 +539,6 @@ export interface components {
             pid: number;
             /** Revision Id */
             revision_id: string;
-            /** Sdk Path */
-            sdk_path: string;
-            /** Sdk Protocol */
-            sdk_protocol: number;
-            /** Sdk Sha256 */
-            sdk_sha256: string;
             /** Stage */
             stage: string;
             /** Status */
@@ -596,7 +580,7 @@ export interface components {
             /** Status */
             status: string;
             /** Stop Cause */
-            stop_cause?: ("completed" | "error" | "user_stop" | "owner_cancel" | "limit_reached" | "shutdown" | "host_loss") | null;
+            stop_cause?: ("completed" | "error" | "user_stop" | "owner_cancel" | "limit_reached" | "shutdown") | null;
         };
         /** MarkdownViewData */
         MarkdownViewData: {

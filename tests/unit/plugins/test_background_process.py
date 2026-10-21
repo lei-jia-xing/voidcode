@@ -9,7 +9,6 @@ workspace state, the ready-pattern wait, line paged logs, stdin writes, and the 
 
 from __future__ import annotations
 
-import json
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
@@ -30,11 +29,9 @@ from voidcode.plugins.exec.background_process import (
 )
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
-from voidcode.sdk.manifest import parse_plugin_manifest
 from voidcode.sdk.services import ProcessHandle, ProcessOutput
-from voidcode.sdk.tools import RuntimeToolTimeoutError, ToolCall, ToolEffect, ToolFailure, ToolSuccess
+from voidcode.sdk.tools import ToolCall, ToolEffect, ToolFailure, ToolSuccess
 
-_MANIFEST = Path(__file__).resolve().parents[3] / "src" / "voidcode" / "plugins" / "exec" / "voidcode-plugin.json"
 _SHELL_WRAPPER = ["cmd.exe", "/c"] if os.name == "nt" else ["/bin/sh", "-c"]
 _LOG_PAGE_BYTES = 64 * 1024
 _HOST_PAGE_LIMIT = 256 * 1024
@@ -233,7 +230,6 @@ def _context(workspace: Path, abort_signal: object | None = None) -> ToolContext
         invocation_id="invocation-test",
         revision_id="rev-test",
         actor="model",
-        capabilities=frozenset({"workspace.write"}),
         abort_signal=abort_signal,  # type: ignore[arg-type]
     )
 
@@ -246,23 +242,14 @@ def _invoke(arguments: Mapping[str, object], tmp_path: Path, services: _FakeServ
     )
 
 
-def test_the_plugin_registers_both_tools_from_the_manifest() -> None:
-    manifest = parse_plugin_manifest(json.loads(_MANIFEST.read_text(encoding="utf-8")))
+def test_the_plugin_registers_both_tools() -> None:
     definitions = {tool.definition.name: tool.definition for tool in create_plugin({}).tools}
-    declared = {decl.name: decl for decl in manifest.tools}
 
     assert set(definitions) == {"shell_exec", "background_process"}
     definition = definitions["background_process"]
-    # The admitted declaration is the registered definition: catalog and handler cannot drift.
-    assert definition.input_schema == declared["background_process"].input_schema
-    assert definition.description == declared["background_process"].description
     assert definition.effects == frozenset({ToolEffect.EXECUTE, ToolEffect.SPAWN})
-    assert declared["background_process"].capabilities == ("workspace.write",)
-    assert [capability.name for capability in manifest.capabilities] == ["workspace.write"]
     # The kernel validates the schema at admission and again on every call.
     jsonschema.Draft202012Validator.check_schema(json_wire_object(definition.input_schema))
-    # Every python file of the plugin is pinned by the manifest, which plugin_host verifies.
-    assert {identity.path for identity in manifest.files} == {path.name for path in _MANIFEST.parent.glob("*.py")}
 
 
 @pytest.mark.parametrize(
@@ -287,8 +274,8 @@ def test_the_plugin_registers_both_tools_from_the_manifest() -> None:
     ],
 )
 def test_the_declared_schema_is_the_legacy_op_contract(arguments: Mapping[str, object], accepted: bool) -> None:
-    manifest = parse_plugin_manifest(json.loads(_MANIFEST.read_text(encoding="utf-8")))
-    schema = json_wire_object(manifest.tools[1].input_schema)
+    tool = next(tool for tool in create_plugin({}).tools if tool.definition.name == "background_process")
+    schema = json_wire_object(tool.definition.input_schema)
 
     assert (not list(jsonschema.Draft202012Validator(schema).iter_errors(dict(arguments)))) is accepted
 
@@ -408,9 +395,12 @@ def test_start_reports_a_process_that_exited_before_readiness(tmp_path: Path) ->
 def test_start_of_a_cancelled_call_launches_nothing(tmp_path: Path) -> None:
     services = _FakeServices()
 
-    with pytest.raises(RuntimeToolTimeoutError, match="aborted before launching the process"):
-        _invoke({"op": "start", "command": "serve"}, tmp_path, services, abort_signal=_AbortSignal(cancelled=True))
+    result = _invoke({"op": "start", "command": "serve"}, tmp_path, services, abort_signal=_AbortSignal(cancelled=True))
 
+    assert result.status == "error"
+    assert "aborted before launching the process" in (result.error or "")
+    assert result.execution is not None and result.execution.cancellation_signalled is True
+    assert result.execution.side_effect_state == "settled"
     # The refusal is pre-flight: no process was started and no identity was written.
     assert services.names() == []
     assert services.state == {}

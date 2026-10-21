@@ -48,8 +48,6 @@ class BtwCommand:
         effects=frozenset({ToolEffect.NETWORK}),
         # Legacy parity: a side question may be asked while the session is busy.
         busy_gate=False,
-        # Only the user asks side questions; a model path must never spend this turn.
-        direct_user=True,
     )
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
@@ -67,5 +65,4 @@ class BtwCommand:
 
 
 def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
-    """Plugin entrypoint registered in voidcode-plugin.json."""
     return Plugin(commands=(BtwCommand(),))

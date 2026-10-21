@@ -68,7 +68,7 @@ _COMMANDS = frozenset(
         "serve",
     }
 )
-_ROOT_VALUE_OPTIONS = frozenset({"--workspace", "--state-dir", "--trust-plugin"})
+_ROOT_VALUE_OPTIONS = frozenset({"--workspace", "--state-dir"})
 #: Every value option the command scan skips, so a session named e.g. ``run`` never reads as a subcommand.
 _COMMAND_SCAN_VALUE_OPTIONS = _ROOT_VALUE_OPTIONS | frozenset({"--server", "--token", "--session-id"})
 
@@ -148,7 +148,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--workspace", type=Path, default=Path.cwd(), metavar="PATH", help="Workspace directory holding voidcode.json (default: current directory)"
     )
     roots.add_argument("--state-dir", type=Path, default=None, metavar="PATH", help="State directory (default: derived from the workspace)")
-    roots.add_argument("--trust-plugin", action="append", default=[], metavar="PLUGIN_ID", help="Trust an external plugin source (repeatable)")
     roots.add_argument("--version", action="version", version=__version__, help="Print the version and exit")
     commands = parser.add_subparsers(prog="voidcode", dest="command", metavar="COMMAND", title="commands")
     agents = commands.add_parser(
@@ -179,7 +178,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     show = commands.add_parser(
         "show",
         help="Read durable session history without starting a kernel",
-        description="Read durable session history straight from SQLite: no config, host, or revision checks.",
+        description="Read durable session history straight from SQLite: no config, runtime, or revision checks.",
     )
     show.add_argument("session_id", metavar="SESSION", help="Session to read")
     show.add_argument("--events", action="store_true", help="Include the persisted event history")
@@ -289,7 +288,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             bare_directory = args.state_dir if args.state_dir is not None else state_directory(workspace)
             if args.server is not None:
                 return run_tui(args.server, token=args.token, session_id=args.tui_session_id)
-            return _embedded_tui(workspace, bare_directory, trusted_plugins=frozenset(args.trust_plugin), session_id=args.tui_session_id)
+            return _embedded_tui(workspace, bare_directory, session_id=args.tui_session_id)
         if args.command in {"show", "preflight"}:
             if args.state_dir is not None:
                 directory = args.state_dir
@@ -301,7 +300,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return _preflight(workspace, directory)
             return _show(workspace, directory, args.session_id, events=args.events)
         # Pure ingress validation before opening the kernel: malformed client
-        # input fails fast without touching config, host, or storage.
+        # input fails fast without touching config, runtime, or storage.
         if args.command == "invoke":
             args.parsed_arguments = _parse_arguments(args.arguments)
             args.parsed_capabilities = _parse_capabilities(args.client_capabilities)
@@ -320,7 +319,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 serve_kernel(
                     workspace=workspace,
                     state_dir=directory,
-                    trusted_plugins=frozenset(args.trust_plugin),
                     host=args.host,
                     port=args.port,
                     bearer_token=args.bearer_token,
@@ -341,12 +339,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 host=args.host,
                 port=args.port,
                 bearer_token=args.bearer_token,
-                trusted_plugins=frozenset(args.trust_plugin),
                 session_id=args.session_id,
                 open_browser=args.open_browser,
                 owner_pid=args.owner_pid,
             )
-        with open_kernel(workspace, state_dir=directory, trusted_plugins=frozenset(args.trust_plugin)) as kernel:
+        with open_kernel(workspace, state_dir=directory) as kernel:
             previous = {number: signal.signal(number, lambda *_: kernel.cancel("user signal")) for number in (signal.SIGINT, signal.SIGTERM)}
             try:
                 return _dispatch(kernel, args)
@@ -359,7 +356,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _show(workspace: Path, directory: Path, session_id: str, *, events: bool) -> int:
-    """Rescue path: read durable history without config, host, or revision checks.
+    """Rescue path: read durable history without config, runtime, or revision checks.
 
     Runs before any kernel bootstrap so broken configuration, untrusted or
     broken plugins, and revision drift cannot hide already-persisted history.
@@ -435,11 +432,9 @@ def _show(workspace: Path, directory: Path, session_id: str, *, events: bool) ->
 def _preflight(workspace: Path, directory: Path) -> int:
     """Candidate preflight for THIS installation against the workspace's live state.
 
-    Runs before any kernel bootstrap: it reads the database, the pinned artifacts and the private
+    Runs before any kernel bootstrap: it reads the database and the private
     snapshot without opening the configured plugins, never writes, and answers with one JSON object.
     """
-    from ..sdk.manifest import SDK_PROTOCOL_VERSION
-    from .activation import sdk_source_hash
     from .images import bundle_of, installed_identity, running_identity
     from .preflight import LAUNCH_PROTOCOL_VERSION, PreflightRefused, verify_preflight
     from .storage.store import SCHEMA_VERSION
@@ -451,8 +446,6 @@ def _preflight(workspace: Path, directory: Path) -> int:
             workspace=str(workspace),
             state_dir=directory,
             candidate_package_root=identity.package_root,
-            candidate_sdk_sha256=sdk_source_hash(identity.package_root / "sdk"),
-            candidate_sdk_protocol=SDK_PROTOCOL_VERSION,
             candidate_launch_protocol=LAUNCH_PROTOCOL_VERSION,
             image_digest=identity.digest,
             web_bundle=bundle_of(identity.package_root),
@@ -571,7 +564,7 @@ def _upgrade(directory: Path, args: argparse.Namespace) -> int:
     return 0 if response.get("status") == "upgraded" else 1
 
 
-def _embedded_tui(workspace: Path, directory: Path, *, trusted_plugins: frozenset[str], session_id: str | None) -> int:
+def _embedded_tui(workspace: Path, directory: Path, *, session_id: str | None) -> int:
     """Run the TUI against a supervisor child process, so a kernel replacement never kills the UI."""
     import queue
     import subprocess
@@ -597,8 +590,6 @@ def _embedded_tui(workspace: Path, directory: Path, *, trusted_plugins: frozense
     ]
     if session_id is not None:
         command.append(f"--session-id={session_id}")
-    for plugin_id in sorted(trusted_plugins):
-        command.append(f"--trust-plugin={plugin_id}")
     # The supervisor is spawned with the same pinned launch as a kernel child: safe path mode
     # plus an import root that names this installation, so a workspace or cwd package cannot
     # hijack it. The working directory is inherited untouched; it is never on the import path.

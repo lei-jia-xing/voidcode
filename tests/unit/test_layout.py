@@ -1,7 +1,7 @@
 """Cutover guards: the legacy world is gone and the new world never reaches back for it.
 
 These are layout/direction guards, not behavior tests: the P4 cutover deleted the
-runtime/tools/provider/cli world, and nothing in the kernel, the plugin host, the SDK,
+runtime/tools/provider/cli world, and nothing in the kernel, the SDK,
 or a bundled plugin may import it again (or a concrete plugin, from the kernel).
 """
 
@@ -37,7 +37,7 @@ _LEGACY_TOP_LEVEL = frozenset(
 )
 
 #: The layers that must never depend on a concrete plugin or on the deleted world.
-_GUARDED_ROOTS = ("kernel", "plugin_host", "plugins", "sdk")
+_GUARDED_ROOTS = ("kernel", "plugins", "sdk")
 
 
 def _iter_sources(root: Path):
@@ -86,8 +86,8 @@ def test_new_world_never_imports_legacy_modules() -> None:
                 head = module.split(".")[1] if module.startswith("voidcode.") else None
                 if head in _LEGACY_TOP_LEVEL:
                     violations.append(f"{source.relative_to(_SRC)}: imports {module}")
-                # The kernel and the host admit plugins by identity from disk; importing the
+                # The kernel admits plugins by root from disk; importing the
                 # bundled plugin package would make one concrete plugin part of the kernel.
-                if root_name in {"kernel", "plugin_host"} and module.startswith("voidcode.plugins"):
-                    violations.append(f"{source.relative_to(_SRC)}: kernel/host imports a concrete plugin: {module}")
+                if root_name == "kernel" and module.startswith("voidcode.plugins"):
+                    violations.append(f"{source.relative_to(_SRC)}: kernel imports a concrete plugin: {module}")
     assert not violations, "\n".join(violations)

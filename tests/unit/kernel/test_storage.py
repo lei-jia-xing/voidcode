@@ -20,7 +20,6 @@ from voidcode.kernel.storage.store import (
     StorageError,
     StoreConflict,
     StoredEvent,
-    canonical_json,
 )
 
 
@@ -114,8 +113,8 @@ def test_supported_identity_missing_root_columns_is_rejected_unchanged(tmp_path:
     assert _file_sha256(chain_db) == chain_sha_before
 
 
-def test_revision_canonical_content_hashing_and_idempotence(tmp_path: Path) -> None:
-    """Revisions produce identical SHA-256 digests across equivalent JSON and store idempotently."""
+def test_revision_opaque_ids_and_immutability(tmp_path: Path) -> None:
+    """A generation id is opaque; the same id accepts identical bytes and refuses changed ones."""
     db_path = tmp_path / "kernel.sqlite3"
     with SqliteStore(db_path) as store:
         payload_1 = {"b": 2, "a": {"z": 10, "y": 20}}
@@ -123,10 +122,11 @@ def test_revision_canonical_content_hashing_and_idempotence(tmp_path: Path) -> N
 
         rev_id_1 = store.put_revision(payload_1)
         rev_id_2 = store.put_revision(payload_2)
+        assert rev_id_1 != rev_id_2
 
-        assert rev_id_1 == rev_id_2
-        expected_hash = hashlib.sha256(canonical_json(payload_1).encode("utf-8")).hexdigest()
-        assert rev_id_1 == expected_hash
+        assert store.put_revision(payload_1, revision_id=rev_id_1) == rev_id_1
+        with pytest.raises(ValueError, match="already exists with other content"):
+            store.put_revision({"b": 3}, revision_id=rev_id_1)
 
         # Re-fetching returns immutable snapshot
         loaded = store.revision(rev_id_1)

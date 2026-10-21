@@ -12,7 +12,7 @@ VoidCode is an open-source, local-first coding agent built as a small trusted ke
 
 - **Local-first**: sessions, events, and checkpoints are stored in per-workspace SQLite under your XDG state directory. Configured model providers receive conversation context (prompts, tool results, and attachments); trusted plugins and tools may make network requests.
 - **Plugin architecture**: every product mechanism — tools, commands, providers, hooks, views, and session state — is a plugin using the same public SDK a third-party plugin gets, and the kernel imports no concrete plugin. The kernel keeps only its own reserved control surface (`/run`, `/resume`, `/show`, `/status`, `/help`, `/kernel.reload`, and the `kernel_reload` tool), which a plugin can neither declare nor shadow.
-- **Pinned, reviewable plugins**: an admitted plugin is a content-addressed copy verified by manifest hash. Editing plugin source produces a new identity; it never mutates an admitted generation in place.
+- **Trusted plugins, no ceremony**: a plugin is a Python package whose `create_plugin` returns its registration — tools, commands, hooks, views, and state schema in one place. Plugins are trusted code equal to the application; revisions identify configuration and composition, never code bytes.
 - **Append-only durability**: one immutable event stream per session. Views, transcripts, usage, and UI are projections; clients commit each fact exactly once and never rewind.
 - **Three client surfaces, one contract**: the kernel CLI executes inside the elected image, and the inline terminal UI and React web client speak the same HTTP/SSE contract — one command catalog, one set of declarative views, one event stream.
 - **Agent-facing delegation**: the primary agent delegates focused work through the `task`/`task_batch` tools; there is no separate human task console.
@@ -44,7 +44,7 @@ The kernel reads exactly one file, `voidcode.json`, from the workspace root. Wri
 }
 ```
 
-`api_key` may be omitted when the matching `<PROVIDER>_API_KEY` environment variable is set (here `OPENAI_API_KEY`). See the [Configuration Guide](./docs/configuration.md) for every field, plugin configuration, and trust rules.
+`api_key` may be omitted when the matching `<PROVIDER>_API_KEY` environment variable is set (here `OPENAI_API_KEY`). See the [Configuration Guide](./docs/configuration.md) for every field and plugin configuration.
 
 ### Run
 
@@ -63,7 +63,7 @@ voidcode --help
 voidcode run --help
 ```
 
-In a source checkout without the console script installed, use `uv run python -m voidcode.kernel` with the same subcommands. Every command accepts `--workspace PATH` (default: current directory), `--state-dir PATH`, and `--trust-plugin PLUGIN_ID`.
+In a source checkout without the console script installed, use `uv run python -m voidcode.kernel` with the same subcommands. Every command accepts `--workspace PATH` (default: current directory) and `--state-dir PATH`.
 
 ## Command Reference
 
@@ -121,10 +121,8 @@ graph TD
     TUI["Inline TUI (supervisor child, or --server)"] --> Transport["Kernel transport (HTTP/SSE, /api)"]
     Web["Web client (served bundle)"] --> Transport
     Transport --> Kernel
-    Kernel --> Host["Plugin host process"]
-    Host --> Plugins["Bundled plugins (tools, commands, providers, views)"]
+    Kernel --> Plugins["Bundled plugins (tools, commands, providers, views)"]
     Kernel -.-> SDK["SDK contracts"]
-    Host -.-> SDK
     Plugins -.-> SDK
 ```
 
@@ -133,13 +131,13 @@ For an in-depth explanation, see the [Architecture Overview](./docs/architecture
 ## Configuration & State
 
 - **Configuration**: `voidcode.json` only. A legacy `.voidcode.json` is rejected explicitly and never converted.
-- **State**: `$XDG_STATE_HOME/voidcode/kernel-v1/<workspace-sha256>/kernel-v1.sqlite3`, next to `artifacts/` (pinned plugins) and `private/` (the 0600 configuration snapshot). `--state-dir` overrides it; it must be outside the workspace.
+- **State**: `$XDG_STATE_HOME/voidcode/kernel-v1/<workspace-sha256>/kernel-v1.sqlite3`, next to `private/` (the 0600 configuration snapshot). `--state-dir` overrides it; it must be outside the workspace.
 - **No migration**: legacy session databases and configuration from earlier architectures are neither imported nor auto-deleted.
 
 ## Development & Testing
 
 ```bash
-mise run check            # lint, typecheck, plugin identities, Python tests, frontend checks
+mise run check            # lint, typecheck, Python tests, frontend checks
 uv run pre-commit run --all-files   # the same hooks the commit gate runs
 
 mise run test             # Python suite
@@ -148,8 +146,8 @@ mise run frontend:test    # Vitest component tests
 
 ## Documentation
 
-- [Architecture Overview](./docs/architecture.md): kernel, plugin host, SDK, and the bundled plugin set.
-- [Configuration Guide](./docs/configuration.md): `voidcode.json` fields, trust rules, and state directory.
+- [Architecture Overview](./docs/architecture.md): kernel, plugin runtime, SDK, and the bundled plugin set.
+- [Configuration Guide](./docs/configuration.md): `voidcode.json` fields and state directory.
 - [Coding Standards](./docs/coding-standards.md): conventions and commit formats.
 - [Testing Policy](./docs/testing.md): test tiers, loopback providers, and offline guards.
 - [Kernel & Plugin Contracts](./docs/contracts/README.md): durability, activation, goal, and client transport contracts.

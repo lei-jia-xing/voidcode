@@ -276,7 +276,6 @@ class ReviewCommand:
             "additionalProperties": False,
         },
         effects=frozenset({ToolEffect.READ, ToolEffect.SPAWN}),
-        capabilities=("workspace.read",),
         busy_gate=True,
     )
 
@@ -319,5 +318,4 @@ class ReviewCommand:
 
 
 def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
-    """Plugin entrypoint registered in voidcode-plugin.json."""
     return Plugin(commands=(ReviewCommand(),))

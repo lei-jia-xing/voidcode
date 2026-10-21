@@ -3,10 +3,9 @@
 Ports the legacy plan-mode mechanism (``collaboration_mode`` in
 ``src/voidcode/runtime/permissions/policy.py`` plus ``PLAN_MODE_INSTRUCTION`` from
 ``src/voidcode/runtime/context/window.py``) onto the kernel's owner-scoped overlay primitive:
-
-- ``plan`` requires authentic user ingress (``direct_user``), tightens the session with a
-  read-only overlay, records the mode in this plugin's own session state and contributes the
-  verbatim plan instruction to the provider context.
+- ``plan`` tightens the session with a read-only overlay, records the mode in
+  this plugin's own session state and contributes the verbatim plan instruction
+  to the provider context.
 - ``plan.off`` revokes exactly this owner's overlay and stops the contribution. A read-only
   policy frozen by the user (kernel config or another owner) is never affected: overlays can
   only tighten.
@@ -27,7 +26,7 @@ from typing import ClassVar
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
 from voidcode.sdk.hooks import ContextContribution
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.plugin import Plugin
+from voidcode.sdk.plugin import Plugin, StateSchema
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import ToolEffect
 
@@ -96,7 +95,6 @@ class PlanCommand:
         argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
         effects=frozenset({ToolEffect.SESSION}),
         busy_gate=False,
-        direct_user=True,
     )
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
@@ -120,7 +118,6 @@ class PlanOffCommand:
         argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
         effects=frozenset({ToolEffect.SESSION}),
         busy_gate=False,
-        direct_user=True,
     )
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
@@ -161,8 +158,20 @@ def plan_context(context: ToolContext, services: PluginServices) -> ContextContr
 
 
 def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
-    """Plugin entrypoint registered in voidcode-plugin.json."""
     return Plugin(
         commands=(PlanCommand(), PlanOffCommand(), PlanStatusCommand()),
         context=plan_context,
+        state=StateSchema(
+            version=SCHEMA_VERSION,
+            schema={
+                "type": "object",
+                "required": ["schema_version", "active", "activations"],
+                "additionalProperties": False,
+                "properties": {
+                    "schema_version": {"type": "integer", "enum": [SCHEMA_VERSION]},
+                    "active": {"type": "boolean"},
+                    "activations": {"type": "integer", "minimum": 0},
+                },
+            },
+        ),
     )

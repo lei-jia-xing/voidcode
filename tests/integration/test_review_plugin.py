@@ -1,6 +1,6 @@
 """End-to-end integration test for the Review plugin on the real kernel stack.
 
-Drives the real kernel, plugin host, loopback provider, git workspace and durable storage: the
+Drives the real kernel, plugin runtime, loopback provider, git workspace and durable storage: the
 ``review`` command resolves the workspace diff from a real repository, spawns a real child session
 whose provider request carries the legacy review instructions plus that diff, and returns the
 child's answer as the command result.
@@ -14,7 +14,6 @@ same reason: a tool catalog refuses two plugins declaring the same name.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import subprocess
 from collections.abc import Iterator, Mapping
@@ -27,19 +26,9 @@ import pytest
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.kernel.bootstrap import open_kernel
 from voidcode.kernel.engine import Kernel
-from voidcode.plugins.review.review_plugin import REVIEW_TOOL_ALLOWLIST, create_plugin
-from voidcode.sdk.commands import CommandDefinition
-from voidcode.sdk.manifest import (
-    PluginCapabilityRequest,
-    PluginCommandDeclaration,
-    PluginFileIdentity,
-    PluginManifest,
-    PluginToolDeclaration,
-)
-from voidcode.sdk.tools import ToolEffect
+from voidcode.plugins.review.review_plugin import REVIEW_TOOL_ALLOWLIST
 
 _REVIEW_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "review"
-_PLUGIN_FILES = ("__init__.py", "review_plugin.py", "workspace_review.py")
 _PROFILE_TOOL_NAMES = REVIEW_TOOL_ALLOWLIST
 
 _CREATED_KERNELS: list[Kernel] = []
@@ -81,42 +70,10 @@ def _dirty_repo(workspace: Path) -> None:
     (workspace / "tracked.txt").write_text("base\ndirty review target\n", encoding="utf-8")
 
 
-def _declaration(definition: CommandDefinition) -> PluginCommandDeclaration:
-    return PluginCommandDeclaration(
-        name=definition.name,
-        description=definition.description,
-        argument_schema=definition.argument_schema,
-        effects=tuple(definition.effects),
-        capabilities=tuple(definition.capabilities),
-        busy_gate=definition.busy_gate,
-        client_capabilities=tuple(definition.client_capabilities),
-        direct_user=definition.direct_user,
-        client_syntax=definition.client_syntax,
-    )
-
-
 def _admitted_review_source(tmp_path: Path) -> Path:
-    """Materialize an admitted review plugin root from the real sources.
-
-    The committed ``voidcode-plugin.json`` is owned by the packaging lane, so this suite builds
-    one from the plugin's own command definition: the real sources are what get admitted.
-    """
-    source = tmp_path / "review-source"
-    source.mkdir()
-    for name in _PLUGIN_FILES:
-        (source / name).write_bytes((_REVIEW_PLUGIN_ROOT / name).read_bytes())
-    plugins = create_plugin()
-    manifest = PluginManifest(
-        plugin_id="review",
-        version="1.0.0",
-        # A multi-module plugin is admitted as a package (its own module imports its git surface).
-        entrypoint="__init__:create_plugin",
-        files=tuple(PluginFileIdentity(path=name, sha256=hashlib.sha256((source / name).read_bytes()).hexdigest()) for name in _PLUGIN_FILES),
-        commands=tuple(_declaration(command.definition) for command in plugins.commands),
-        capabilities=(PluginCapabilityRequest(name="workspace.read", reason="Read the workspace git surface for a review."),),
-    )
-    (source / "voidcode-plugin.json").write_text(json.dumps(manifest.as_payload()), encoding="utf-8")
-    return source
+    """The real review plugin root, referenced by path."""
+    _ = tmp_path
+    return _REVIEW_PLUGIN_ROOT
 
 
 def _admitted_profile_tools_source(tmp_path: Path, names: tuple[str, ...]) -> Path:
@@ -124,16 +81,14 @@ def _admitted_profile_tools_source(tmp_path: Path, names: tuple[str, ...]) -> Pa
 
     The child's allowlist is validated against the active revision's catalog, so the names the
     review profile grants have to exist for the spawn to prove the real path. This source only
-    declares them; every invocation fails, and the child in this suite never calls one.
+    declares them; every invocation succeeds trivially, and the child in this suite never calls one.
     """
     source = tmp_path / "profile-tools-source"
     source.mkdir()
+    names_literal = repr(tuple(names))
     code = (
-        "from pathlib import Path\n"
-        "import json\n"
-        "from voidcode.sdk.manifest import parse_plugin_manifest\n"
-        "from voidcode.sdk.plugin import Plugin, tool_definition\n"
-        "from voidcode.sdk.tools import TextOutput, ToolSuccess\n"
+        "from voidcode.sdk.plugin import Plugin\n"
+        "from voidcode.sdk.tools import TextOutput, ToolDefinition, ToolEffect, ToolSuccess\n"
         "\n"
         "\n"
         "class DeclaredTool:\n"
@@ -145,31 +100,15 @@ def _admitted_profile_tools_source(tmp_path: Path, names: tuple[str, ...]) -> Pa
         "\n"
         "\n"
         "def create_plugin(config):\n"
-        '    manifest = parse_plugin_manifest(json.loads(Path(__file__).with_name("voidcode-plugin.json").read_text()))\n'
-        "    return Plugin(tools=tuple(DeclaredTool(tool_definition(declaration)) for declaration in manifest.tools))\n"
+        f"    tools = tuple(\n"
+        f"        DeclaredTool(ToolDefinition(name=name, description=f'Declared review profile tool {{name}}.',\n"
+        f"            input_schema={{'type': 'object', 'additionalProperties': True}}, effects=frozenset({{ToolEffect.READ}}),\n"
+        f"            replay_policy='safe'))\n"
+        f"        for name in {names_literal}\n"
+        f"    )\n"
+        "    return Plugin(tools=tools)\n"
     )
-    (source / "profile_tools_plugin.py").write_text(code, encoding="utf-8")
-    manifest = PluginManifest(
-        plugin_id="profile-tools",
-        version="1.0.0",
-        entrypoint="profile_tools_plugin:create_plugin",
-        files=(
-            PluginFileIdentity(path="profile_tools_plugin.py", sha256=hashlib.sha256((source / "profile_tools_plugin.py").read_bytes()).hexdigest()),
-        ),
-        tools=tuple(
-            PluginToolDeclaration(
-                name=name,
-                description=f"Declared review profile tool {name}.",
-                input_schema={"type": "object", "additionalProperties": True},
-                effects=(ToolEffect.READ,),
-                replay_policy="safe",
-                capabilities=("workspace.read",),
-            )
-            for name in names
-        ),
-        capabilities=(PluginCapabilityRequest(name="workspace.read", reason="Declare the review profile's read-only tools."),),
-    )
-    (source / "voidcode-plugin.json").write_text(json.dumps(manifest.as_payload()), encoding="utf-8")
+    (source / "__init__.py").write_text(code, encoding="utf-8")
     return source
 
 
@@ -201,7 +140,7 @@ def _kernel(tmp_path: Path, server: OpenAILoopbackServer) -> Kernel:
         },
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-    kernel = open_kernel(workspace, state_dir=state_dir, trusted_plugins=frozenset({"profile-tools", "review"}))
+    kernel = open_kernel(workspace, state_dir=state_dir)
     _CREATED_KERNELS.append(kernel)
     return kernel
 

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar
 
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices
-from voidcode.sdk.tools import OutputBounds, TextOutput, ToolCall, ToolDefinition, ToolFailure, ToolResult, ToolSuccess
+from voidcode.sdk.tools import OutputBounds, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult, ToolSuccess
 
 from .gitignore import GitIgnoreMatcher
 
@@ -60,8 +61,37 @@ class GlobResultBody:
 
 
 class GlobTool:
-    def __init__(self, definition: ToolDefinition) -> None:
-        self.definition = definition
+    definition: ClassVar[ToolDefinition] = ToolDefinition(
+        name="glob",
+        description="Find files matching a glob pattern.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "The glob pattern to match files against"},
+                "path": {"type": "string", "description": "Directory to search; relative paths are based at the workspace root."},
+                "include_hidden": {
+                    "type": "boolean",
+                    "description": (
+                        "Include hidden files and directories (name starts with '.'); defaults to true to preserve existing behaviour. "
+                        "Set false to skip them."
+                    ),
+                },
+                "respect_gitignore": {
+                    "type": "boolean",
+                    "description": (
+                        "Also skip paths matched by the search root's .gitignore; defaults to false. "
+                        "The matcher only reads the root .gitignore (no nested/global excludes)."
+                    ),
+                },
+                "limit": {"type": "integer", "minimum": 1, "maximum": 5000, "description": "Maximum number of files to return; defaults to 100."},
+            },
+            "required": ["pattern"],
+            "additionalProperties": False,
+        },
+        effects=frozenset({ToolEffect.READ}),
+        path_argument_keys=("path",),
+        supports_parallel=True,
+    )
 
     @staticmethod
     def _find_files(

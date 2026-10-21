@@ -113,18 +113,15 @@ class CommandResult:
 
 @dataclass(frozen=True, slots=True)
 class CommandDescriptor:
-    """Catalog entry describing an admitted plugin command or reserved core command."""
+    """Catalog entry describing a plugin command or reserved core command."""
 
     name: str
     owner: str
     description: str
     argument_schema: Mapping[str, object] = field(default_factory=dict)
     effects: tuple[ToolEffect, ...] = ()
-    capabilities: tuple[str, ...] = ()
     busy_gate: bool = False
     client_capabilities: tuple[str, ...] = ()
-    #: Whether the command requires authentic user ingress (direct-user authority).
-    direct_user: bool = False
     #: Declarative client syntax prefix, when the command declares one.
     client_syntax: str | None = None
 
@@ -138,10 +135,8 @@ class CommandDescriptor:
             "description": self.description,
             "argument_schema": json_wire_object(self.argument_schema),
             "effects": [e.value for e in self.effects],
-            "capabilities": list(self.capabilities),
             "busy_gate": self.busy_gate,
             "client_capabilities": list(self.client_capabilities),
-            "direct_user": self.direct_user,
             "client_syntax": self.client_syntax,
         }
 
@@ -169,11 +164,8 @@ class CommandDefinition:
     description: str
     argument_schema: Mapping[str, object] = field(default_factory=dict)
     effects: frozenset[ToolEffect] | Sequence[ToolEffect] = frozenset()
-    capabilities: frozenset[str] | Sequence[str] = frozenset()
     busy_gate: bool = False
     client_capabilities: frozenset[str] | Sequence[str] = frozenset()
-    #: Requires authentic user ingress; an agent/plugin path can never claim this authority.
-    direct_user: bool = False
     #: Declarative client syntax prefix (clients route it; the kernel never parses it).
     client_syntax: str | None = None
 
@@ -181,8 +173,6 @@ class CommandDefinition:
         object.__setattr__(self, "argument_schema", own_json_object(self.argument_schema))
         if not isinstance(self.effects, frozenset):
             object.__setattr__(self, "effects", frozenset(self.effects))
-        if not isinstance(self.capabilities, frozenset):
-            object.__setattr__(self, "capabilities", frozenset(self.capabilities))
         if not isinstance(self.client_capabilities, frozenset):
             object.__setattr__(self, "client_capabilities", frozenset(self.client_capabilities))
 

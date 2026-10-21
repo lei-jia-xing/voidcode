@@ -13,7 +13,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import final
+from typing import ClassVar, final
 
 from pydantic import BaseModel
 
@@ -22,10 +22,10 @@ from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import (
     OutputBounds,
     OutputReference,
-    RuntimeToolTimeoutError,
     TextOutput,
     ToolCall,
     ToolDefinition,
+    ToolEffect,
     ToolFailure,
     ToolResult,
     ToolSuccess,
@@ -191,30 +191,23 @@ def _progress_sink(context: ToolContext) -> Callable[[str, bytes], None] | None:
 
 @final
 class ShellExecTool:
-    def __init__(self, definition: ToolDefinition) -> None:
-        self.definition = definition
+    definition: ClassVar[ToolDefinition] = ToolDefinition(
+        name="shell_exec",
+        description="Execute a command inside the current workspace.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "minLength": 1, "description": "Shell command to execute in the workspace."},
+                "timeout": {"type": "integer", "minimum": 1, "maximum": 600, "description": "Timeout in seconds (max 600)"},
+                "description": {"type": "string", "description": "Human-readable description of the command"},
+            },
+            "required": ["command"],
+            "additionalProperties": False,
+        },
+        effects=frozenset({ToolEffect.EXECUTE, ToolEffect.SPAWN}),
+    )
 
     def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:
-        return self._invoke(call, context=context, services=services, runtime_timeout_seconds=None)
-
-    def invoke_with_runtime_timeout(
-        self,
-        call: ToolCall,
-        *,
-        context: ToolContext,
-        services: PluginServices,
-        timeout_seconds: int,
-    ) -> ToolResult:
-        return self._invoke(call, context=context, services=services, runtime_timeout_seconds=timeout_seconds)
-
-    def _invoke(
-        self,
-        call: ToolCall,
-        *,
-        context: ToolContext,
-        services: PluginServices,
-        runtime_timeout_seconds: int | None,
-    ) -> ToolResult:
         workspace = context.require_workspace()
         args = parse_tool_args(
             ShellExecArgs,
@@ -237,9 +230,6 @@ class ShellExecTool:
         timeout_seconds = (
             min(int(timeout_value), MAX_TIMEOUT_SECONDS) if isinstance(timeout_value, (int, float)) and timeout_value > 0 else DEFAULT_TIMEOUT_SECONDS
         )
-        runtime_timeout_selected = runtime_timeout_seconds is not None and runtime_timeout_seconds < timeout_seconds
-        if runtime_timeout_selected:
-            timeout_seconds = runtime_timeout_seconds
 
         run_process = getattr(services, "run_process", None)
         if not callable(run_process):
@@ -295,20 +285,6 @@ class ShellExecTool:
             # The lease stopped the group itself and drained its pipes, so the stop is confirmed;
             # `exit_code` is None because the child never reported one of its own.
             stopped_body = replace(body, interrupted=True, timed_out=True, stop_confirmed=True)
-            if runtime_timeout_selected:
-                content = f"tool '{self.definition.name}' exceeded runtime timeout of {timeout_seconds}s"
-                partial_result = ToolFailure(
-                    tool_name=self.definition.name,
-                    error=content,
-                    output=TextOutput(output, bounds=partial_bounds),
-                    body=stopped_body,
-                    timeout_seconds=timeout_seconds,
-                )
-                raise RuntimeToolTimeoutError(
-                    content,
-                    partial_result=partial_result,
-                    execution_stopped=True,
-                )
             return ToolFailure(
                 tool_name=self.definition.name,
                 error=f"shell_exec command timed out after {timeout_seconds}s",

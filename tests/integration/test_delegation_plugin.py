@@ -1,6 +1,6 @@
 """End-to-end integration test for the Delegation plugin on the real kernel stack.
 
-Drives the real kernel, plugin host, loopback provider and durable storage: a parent run whose
+Drives the real kernel, plugin runtime, loopback provider and durable storage: a parent run whose
 model calls ``task(prompt=..., run_in_background=false)`` spawns a real child session, the child's
 run completes against the same provider, and its outcome comes back inside the parent's tool
 result with ``kernel.child_spawned``/``kernel.child_finished`` facts on the parent session.
@@ -8,7 +8,6 @@ result with ``kernel.child_spawned``/``kernel.child_finished`` facts on the pare
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -20,14 +19,10 @@ import pytest
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.kernel.bootstrap import open_kernel
 from voidcode.kernel.engine import Kernel
-from voidcode.plugins.delegation.delegation_plugin import TaskBatchTool, TaskTool
 from voidcode.plugins.delegation.presets import EXPLORE_PROMPT_BODY
-from voidcode.sdk.manifest import PluginFileIdentity, PluginManifest, PluginToolDeclaration
-from voidcode.sdk.tools import ToolDefinition
 
 _DELEGATION_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "delegation"
 _TODO_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "todo"
-_PLUGIN_FILES = ("__init__.py", "delegation_plugin.py", "presets.py")
 
 
 @contextmanager
@@ -53,37 +48,10 @@ def _close_created_kernels() -> Iterator[None]:
         _CREATED_KERNELS.pop().close()
 
 
-def _declaration(definition: ToolDefinition) -> PluginToolDeclaration:
-    return PluginToolDeclaration(
-        name=definition.name,
-        description=definition.description,
-        input_schema=definition.input_schema,
-        effects=tuple(definition.effects),
-        replay_policy=definition.replay_policy,
-    )
-
-
 def _admitted_source(tmp_path: Path) -> Path:
-    """Materialize an admitted delegation plugin root from the real sources.
-
-    The kernel only admits a source whose ``voidcode-plugin.json`` pins its file hashes, and the
-    committed manifest is owned by the packaging lane: this suite builds one from the plugin's own
-    tool definitions, so it proves the real sources without depending on that file.
-    """
-    source = tmp_path / "delegation-source"
-    source.mkdir()
-    for name in _PLUGIN_FILES:
-        (source / name).write_bytes((_DELEGATION_PLUGIN_ROOT / name).read_bytes())
-    manifest = PluginManifest(
-        plugin_id="delegation",
-        version="1.0.0",
-        # A multi-module plugin is admitted as a package (its own modules import their presets).
-        entrypoint="__init__:create_plugin",
-        files=tuple(PluginFileIdentity(path=name, sha256=hashlib.sha256((source / name).read_bytes()).hexdigest()) for name in _PLUGIN_FILES),
-        tools=tuple(_declaration(tool.definition) for tool in (TaskTool(), TaskBatchTool())),
-    )
-    (source / "voidcode-plugin.json").write_text(json.dumps(manifest.as_payload()), encoding="utf-8")
-    return source
+    """The real delegation plugin root, referenced by path."""
+    _ = tmp_path
+    return _DELEGATION_PLUGIN_ROOT
 
 
 def _kernel(tmp_path: Path, server: OpenAILoopbackServer) -> Kernel:
@@ -112,7 +80,7 @@ def _kernel(tmp_path: Path, server: OpenAILoopbackServer) -> Kernel:
         },
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-    kernel = open_kernel(workspace, state_dir=state_dir, trusted_plugins=frozenset({"delegation"}))
+    kernel = open_kernel(workspace, state_dir=state_dir)
     _CREATED_KERNELS.append(kernel)
     return kernel
 

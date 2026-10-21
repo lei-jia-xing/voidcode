@@ -1,6 +1,6 @@
 """S5/7.6 acceptance: the lease-scoped process service owns flags, bounds, groups, and stance.
 
-The host runs the child, so no output crosses the kernel protocol; what the kernel contributes is
+The runtime runs the child, so no output crosses a wire protocol; what the kernel contributes is
 policy, and the tests below drive real processes through the real runtime: a positive run with
 stdin, a bounded capture, a timeout, a session cancel that kills the whole group, the read-only and
 hook refusals, and shutdown reaping.
@@ -23,7 +23,7 @@ from tests.fixtures.reload_plugin import PROBE_TOOL, PROCESS_READ_TOOL, PROCESS_
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.kernel.bootstrap import open_kernel
 from voidcode.kernel.engine import Kernel
-from voidcode.plugin_host.processes import ProcessRegistry
+from voidcode.kernel.processes import ProcessRegistry
 from voidcode.sdk.services import ProcessResult
 
 PLUGIN_ID = "reload-fixture"
@@ -64,7 +64,7 @@ def _close_kernels() -> Iterator[None]:
 
 
 def _open(tmp_path: Path) -> Kernel:
-    kernel = open_kernel(tmp_path / "workspace", state_dir=tmp_path / "state", trusted_plugins=frozenset({PLUGIN_ID}))
+    kernel = open_kernel(tmp_path / "workspace", state_dir=tmp_path / "state")
     _CREATED.append(kernel)
     return kernel
 
@@ -132,7 +132,7 @@ def _pid_alive(pid: int, *, marker: str | None = None) -> bool:
     return True
 
 
-#: A full bundled cold start, the plugin host spawn, and a group kill/reap all need more than
+#: A full bundled cold start, a service spawn, and a group kill/reap all need more than
 #: the old 10 s bound when the suite runs under parallel xdist workers.
 _STARTUP_DEADLINE_SECONDS = 60.0
 
@@ -254,7 +254,7 @@ def test_run_process_timeout_kills_the_whole_group(tmp_path: Path) -> None:
 
         leader_pid = int(_wait_for_file(leader_pid_file))
         grandchild_pid = int(_wait_for_file(grandchild_pid_file))
-        # The whole group dies, not just the process the host spawned. Each probe carries the
+        # The whole group dies, not just the process the runtime spawned. Each probe carries the
         # sleeper's own unique command line, so a recycled pid cannot read as still alive.
         assert _wait_for_pid_exit(leader_pid, marker=str(leader_pid_file))
         assert _wait_for_pid_exit(grandchild_pid, marker=str(grandchild_pid_file))

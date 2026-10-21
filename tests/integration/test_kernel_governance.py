@@ -1,7 +1,7 @@
 """Independent runtime acceptance and crash harness for P2 kernel governance.
 
 Proves real boundaries across actual subprocess CLI, actual listening HTTP,
-listening loopback provider, isolated plugin host process, and SQLite storage.
+listening loopback provider, in-process plugins, and SQLite storage.
 No fake services, no mocked forwards, no stubbed counts.
 
 Run only against a frozen tree; targeted postfix proofs:
@@ -27,7 +27,6 @@ Run only against a frozen tree; targeted postfix proofs:
 from __future__ import annotations
 
 import fcntl
-import hashlib
 import json
 import os
 import signal
@@ -39,7 +38,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, cast
@@ -50,14 +49,6 @@ import uvicorn
 from tests.provider_loopback import OpenAILoopbackServer, _OpenAILoopbackHandler, openai_response
 from voidcode.kernel.storage.store import SqliteStore
 from voidcode.kernel.transport.http import create_kernel_app
-from voidcode.sdk.manifest import (
-    PluginCapabilityRequest,
-    PluginCommandDeclaration,
-    PluginFileIdentity,
-    PluginManifest,
-    PluginToolDeclaration,
-)
-from voidcode.sdk.tools import ToolEffect
 
 _GOV_PLUGIN_ID = "gov-plugin"
 _OBSERVER_PLUGIN_ID = "gov-observer2"
@@ -95,7 +86,7 @@ class GovMutateTool:
             stream.flush()
             os.fsync(stream.fileno())
 
-        (workspace / "host.pid").write_text(str(os.getpid()), encoding="utf-8")
+        (workspace / "tool.started").write_text(str(os.getpid()), encoding="utf-8")
 
         if call.arguments.get("block"):
             release_marker = workspace / "release.txt"
@@ -160,7 +151,6 @@ class GovWriteCommand:
             },
         },
         effects=frozenset({ToolEffect.WRITE}),
-        capabilities=frozenset({"workspace.write"}),
         busy_gate=False,
     )
 
@@ -194,7 +184,6 @@ class GovBudgetCommand:
             },
         },
         effects=frozenset({ToolEffect.WRITE}),
-        capabilities=frozenset({"workspace.write"}),
         busy_gate=False,
     )
 
@@ -221,7 +210,6 @@ class GovKeyedQueueCommand:
             "required": ["key", "tag"],
         },
         effects=frozenset({ToolEffect.WRITE}),
-        capabilities=frozenset({"workspace.write"}),
         busy_gate=False,
     )
 
@@ -248,7 +236,6 @@ class GovConfirmCancelCommand:
         description="Confirm-gated owner cancellation of this owner's durable work.",
         argument_schema={"type": "object"},
         effects=frozenset({ToolEffect.WRITE, ToolEffect.SESSION}),
-        capabilities=frozenset({"workspace.write"}),
         busy_gate=False,
     )
 
@@ -281,7 +268,6 @@ class GovQueueCommand:
             "properties": {"note": {"type": "string"}},
         },
         effects=frozenset({ToolEffect.WRITE}),
-        capabilities=frozenset({"workspace.write"}),
         busy_gate=False,
     )
 
@@ -297,7 +283,6 @@ class GovCancelThenQueueCommand:
         description="Cancel all owner continuations, then enqueue one.",
         argument_schema={"type": "object"},
         effects=frozenset({ToolEffect.WRITE}),
-        capabilities=frozenset({"workspace.write"}),
         busy_gate=False,
     )
 
@@ -313,7 +298,6 @@ class GovQueueThenCancelCommand:
         description="Enqueue one continuation and cancel exactly that one.",
         argument_schema={"type": "object"},
         effects=frozenset({ToolEffect.WRITE}),
-        capabilities=frozenset({"workspace.write"}),
         busy_gate=False,
     )
 
@@ -332,7 +316,6 @@ class GovOwnerCancelCommand:
             "properties": {"continuation_id": {"type": "string"}},
         },
         effects=frozenset({ToolEffect.WRITE, ToolEffect.SESSION}),
-        capabilities=frozenset({"workspace.write"}),
         busy_gate=False,
     )
 
@@ -348,7 +331,6 @@ class GovGatedCommand:
         description="Gated action.",
         argument_schema={"type": "object"},
         effects=frozenset({ToolEffect.WRITE}),
-        capabilities=frozenset({"workspace.write"}),
         busy_gate=True,
     )
 
@@ -367,7 +349,6 @@ class GovReadCommand:
             },
         },
         effects=frozenset({ToolEffect.READ}),
-        capabilities=frozenset({"workspace.read"}),
         busy_gate=False,
     )
 
@@ -420,7 +401,6 @@ class GovConfirmCommand:
             "required": ["target_file"],
         },
         effects=frozenset({ToolEffect.WRITE}),
-        capabilities=frozenset({"workspace.write"}),
         busy_gate=False,
     )
 
@@ -519,54 +499,59 @@ def gov_observer(fact, ctx, services):
         # observed; the admission check that follows must already see it.
         if (workspace / "observer.zerobudget").exists():
             services.set_budget(since_sequence=0, max_total_tokens=0)
-        # Crash injection for the checkpoint-reference proof: kill the KERNEL
-        # process (this plugin lives in the host subprocess) the instant its
-        # callback runs, which is exactly after the source commit it observes.
+        # Crash injection for the checkpoint-reference proof: kill THIS kernel
+        # CLI process (plugins run in-process) the instant its callback runs,
+        # which is exactly after the source commit it observes.
         if (workspace / "observer.kill").exists():
-            os.kill(os.getppid(), signal.SIGKILL)
+            os.kill(os.getpid(), signal.SIGKILL)
 
 
 def create_plugin(config):
-    manifest_data = json.loads((Path(__file__).with_name("voidcode-plugin.json")).read_text(encoding="utf-8"))
-    mutate_decl = next(t for t in manifest_data["tools"] if t["name"] == "gov_mutate")
-    read_decl = next(t for t in manifest_data["tools"] if t["name"] == "gov_read")
-
     mutate_tool = GovMutateTool(
         ToolDefinition(
-            name=mutate_decl["name"],
-            description=mutate_decl["description"],
-            input_schema=mutate_decl["input_schema"],
+            name="gov_mutate",
+            description="Mutating tool with never replay policy and optional block.",
+            input_schema={
+                "type": "object",
+                "properties": {"marker": {"type": "string"}, "block": {"type": "boolean"}},
+                "additionalProperties": False,
+            },
             effects=frozenset({ToolEffect.WRITE}),
             replay_policy="never",
         )
     )
     read_tool = GovReadTool(
         ToolDefinition(
-            name=read_decl["name"],
-            description=read_decl["description"],
-            input_schema=read_decl["input_schema"],
+            name="gov_read",
+            description="Safe read tool.",
+            input_schema={
+                "type": "object",
+                "properties": {"path": {"type": "string"}, "attempt_mutation": {"type": "boolean"}},
+                "required": ["path"],
+                "additionalProperties": False,
+            },
             effects=frozenset({ToolEffect.READ}),
             replay_policy="safe",
         )
     )
-
-    fanout_decl = next(t for t in manifest_data["tools"] if t["name"] == "gov_fanout")
     fanout_tool = GovFanoutTool(
         ToolDefinition(
-            name=fanout_decl["name"],
-            description=fanout_decl["description"],
-            input_schema=fanout_decl["input_schema"],
+            name="gov_fanout",
+            description="Queue two durable follow-up continuations.",
+            input_schema={"type": "object", "additionalProperties": False},
             effects=frozenset({ToolEffect.WRITE}),
             replay_policy="never",
         )
     )
-
-    self_cancel_decl = next(t for t in manifest_data["tools"] if t["name"] == "gov_self_cancel")
     self_cancel_tool = GovSelfCancelTool(
         ToolDefinition(
-            name=self_cancel_decl["name"],
-            description=self_cancel_decl["description"],
-            input_schema=self_cancel_decl["input_schema"],
+            name="gov_self_cancel",
+            description="Stage cancellation of this owner's own durable work.",
+            input_schema={
+                "type": "object",
+                "properties": {"continuation_id": {"type": "string"}},
+                "additionalProperties": False,
+            },
             effects=frozenset({ToolEffect.WRITE}),
             replay_policy="never",
         )
@@ -589,195 +574,10 @@ def create_plugin(config):
         ),
         context=gov_context,
         observer=gov_observer,
-    )
-'''
-    plugin_path = root / "gov_plugin.py"
-    plugin_path.write_text(code, encoding="utf-8")
-    content_hash = hashlib.sha256(plugin_path.read_bytes()).hexdigest()
-
-    manifest = PluginManifest(
-        plugin_id=_GOV_PLUGIN_ID,
-        version="1.0.0",
-        entrypoint="gov_plugin:create_plugin",
-        files=(PluginFileIdentity(path="gov_plugin.py", sha256=content_hash),),
-        tools=(
-            PluginToolDeclaration(
-                name="gov_mutate",
-                description="Mutating tool with never replay policy and optional block.",
-                input_schema={
-                    "type": "object",
-                    "properties": {"marker": {"type": "string"}, "block": {"type": "boolean"}},
-                    "additionalProperties": False,
-                },
-                effects=(ToolEffect.WRITE,),
-                replay_policy="never",
-                capabilities=("workspace.write",),
-            ),
-            PluginToolDeclaration(
-                name="gov_fanout",
-                description="Queue two durable follow-up continuations.",
-                input_schema={"type": "object", "additionalProperties": False},
-                effects=(ToolEffect.WRITE,),
-                replay_policy="never",
-                capabilities=("workspace.write",),
-            ),
-            PluginToolDeclaration(
-                name="gov_self_cancel",
-                description="Stage cancellation of this owner's own durable work.",
-                input_schema={
-                    "type": "object",
-                    "properties": {"continuation_id": {"type": "string"}},
-                    "additionalProperties": False,
-                },
-                effects=(ToolEffect.WRITE,),
-                replay_policy="never",
-                capabilities=("workspace.write",),
-            ),
-            PluginToolDeclaration(
-                name="gov_read",
-                description="Safe read tool.",
-                input_schema={
-                    "type": "object",
-                    "properties": {"path": {"type": "string"}, "attempt_mutation": {"type": "boolean"}},
-                    "required": ["path"],
-                    "additionalProperties": False,
-                },
-                effects=(ToolEffect.READ,),
-                replay_policy="safe",
-                capabilities=("workspace.read",),
-            ),
-        ),
-        commands=(
-            PluginCommandDeclaration(
-                name="gov_write_cmd",
-                description="Non-gated write command.",
-                argument_schema={
-                    "type": "object",
-                    "properties": {
-                        "value": {"type": "string"},
-                        "owner": {"type": "string"},
-                        "actor": {"type": "string"},
-                        "scope": {"type": "string"},
-                    },
-                },
-                effects=(ToolEffect.WRITE,),
-                capabilities=("workspace.write",),
-                busy_gate=False,
-            ),
-            PluginCommandDeclaration(
-                name="gov_budget_cmd",
-                description="Set or clear owner budget.",
-                argument_schema={
-                    "type": "object",
-                    "properties": {
-                        "since_sequence": {"type": "integer"},
-                        "max_total_tokens": {"type": "integer"},
-                        "max_elapsed_seconds": {"type": "number"},
-                        "clear": {"type": "boolean"},
-                    },
-                },
-                effects=(ToolEffect.WRITE,),
-                capabilities=("workspace.write",),
-                busy_gate=False,
-            ),
-            PluginCommandDeclaration(
-                name="gov_queue_cmd",
-                description="Enqueue a durable continuation for idle follow-up work.",
-                argument_schema={
-                    "type": "object",
-                    "properties": {"note": {"type": "string"}},
-                },
-                effects=(ToolEffect.WRITE,),
-                capabilities=("workspace.write",),
-                busy_gate=False,
-            ),
-            PluginCommandDeclaration(
-                name="gov_keyed_queue_cmd",
-                description="Enqueue one keyed durable continuation, then optionally hold before returning.",
-                argument_schema={
-                    "type": "object",
-                    "properties": {"key": {"type": "string"}, "tag": {"type": "string"}, "block": {"type": "boolean"}},
-                    "required": ["key", "tag"],
-                },
-                effects=(ToolEffect.WRITE,),
-                capabilities=("workspace.write",),
-                busy_gate=False,
-            ),
-            PluginCommandDeclaration(
-                name="gov_cancel_then_queue_cmd",
-                description="Cancel all owner continuations, then enqueue one.",
-                argument_schema={"type": "object"},
-                effects=(ToolEffect.WRITE,),
-                capabilities=("workspace.write",),
-                busy_gate=False,
-            ),
-            PluginCommandDeclaration(
-                name="gov_queue_then_cancel_cmd",
-                description="Enqueue one continuation and cancel exactly that one.",
-                argument_schema={"type": "object"},
-                effects=(ToolEffect.WRITE,),
-                capabilities=("workspace.write",),
-                busy_gate=False,
-            ),
-            PluginCommandDeclaration(
-                name="gov_owner_cancel_cmd",
-                description="Cancel this owner's durable continuations.",
-                argument_schema={
-                    "type": "object",
-                    "properties": {"continuation_id": {"type": "string"}},
-                },
-                effects=(ToolEffect.WRITE, ToolEffect.SESSION),
-                capabilities=("workspace.write",),
-                busy_gate=False,
-            ),
-            PluginCommandDeclaration(
-                name="gov_confirm_cancel_cmd",
-                description="Confirm-gated owner cancellation of this owner's durable work.",
-                argument_schema={"type": "object"},
-                effects=(ToolEffect.WRITE, ToolEffect.SESSION),
-                capabilities=("workspace.write",),
-                busy_gate=False,
-            ),
-            PluginCommandDeclaration(
-                name="gov_gated_cmd",
-                description="Gated action.",
-                argument_schema={"type": "object"},
-                effects=(ToolEffect.WRITE,),
-                capabilities=("workspace.write",),
-                busy_gate=True,
-            ),
-            PluginCommandDeclaration(
-                name="gov_read_cmd",
-                description="Read command verifying lease denial.",
-                argument_schema={
-                    "type": "object",
-                    "properties": {"test_mutation": {"type": "boolean"}},
-                },
-                effects=(ToolEffect.READ,),
-                capabilities=("workspace.read",),
-                busy_gate=False,
-            ),
-            PluginCommandDeclaration(
-                name="gov_confirm_cmd",
-                description="Command with pending confirmation.",
-                argument_schema={
-                    "type": "object",
-                    "properties": {"target_file": {"type": "string"}},
-                    "required": ["target_file"],
-                },
-                effects=(ToolEffect.WRITE,),
-                capabilities=("workspace.write",),
-                busy_gate=False,
-            ),
-        ),
-        capabilities=(
-            PluginCapabilityRequest(name="workspace.read", reason="read files"),
-            PluginCapabilityRequest(name="workspace.write", reason="mutate files"),
-        ),
-        context=True,
         observed_facts=("usage", "invocation_finished", "run_finished"),
     )
-    (root / "voidcode-plugin.json").write_text(json.dumps(manifest.as_payload()), encoding="utf-8")
+'''
+    (root / "__init__.py").write_text(code, encoding="utf-8")
 
 
 def _observer_plugin_source(root: Path) -> None:
@@ -837,7 +637,6 @@ class Obs2ForeignCancelCommand:
             "required": ["continuation_id"],
         },
         effects=frozenset({ToolEffect.WRITE}),
-        capabilities=frozenset({"workspace.write"}),
         busy_gate=False,
     )
 
@@ -847,60 +646,22 @@ class Obs2ForeignCancelCommand:
 
 
 def create_plugin(config):
-    manifest_data = json.loads((Path(__file__).with_name("voidcode-plugin.json")).read_text(encoding="utf-8"))
-    cancel_decl = next(t for t in manifest_data["tools"] if t["name"] == "obs2_native_cancel")
     cancel_tool = Obs2ForeignCancelTool(
         ToolDefinition(
-            name=cancel_decl["name"],
-            description=cancel_decl["description"],
-            input_schema=cancel_decl["input_schema"],
+            name="obs2_native_cancel",
+            description="Native tool: attempt to cancel another plugin's continuation id.",
+            input_schema={
+                "type": "object",
+                "properties": {"continuation_id": {"type": "string"}},
+                "additionalProperties": False,
+            },
             effects=frozenset({ToolEffect.WRITE}),
             replay_policy="never",
         )
     )
-    return Plugin(tools=(cancel_tool,), commands=(Obs2ForeignCancelCommand(),), observer=obs2_observer)
+    return Plugin(tools=(cancel_tool,), commands=(Obs2ForeignCancelCommand(),), observer=obs2_observer, observed_facts=("usage",))
 '''
-    plugin_path = root / "obs2_plugin.py"
-    plugin_path.write_text(code, encoding="utf-8")
-    content_hash = hashlib.sha256(plugin_path.read_bytes()).hexdigest()
-    manifest = PluginManifest(
-        plugin_id=_OBSERVER_PLUGIN_ID,
-        version="1.0.0",
-        entrypoint="obs2_plugin:create_plugin",
-        files=(PluginFileIdentity(path="obs2_plugin.py", sha256=content_hash),),
-        tools=(
-            PluginToolDeclaration(
-                name="obs2_native_cancel",
-                description="Native tool: attempt to cancel another plugin's continuation id.",
-                input_schema={
-                    "type": "object",
-                    "properties": {"continuation_id": {"type": "string"}},
-                    "additionalProperties": False,
-                },
-                effects=(ToolEffect.WRITE,),
-                replay_policy="never",
-                capabilities=("workspace.write",),
-            ),
-        ),
-        commands=(
-            PluginCommandDeclaration(
-                name="obs2_cancel_cmd",
-                description="Attempt to cancel a continuation id owned by another plugin.",
-                argument_schema={
-                    "type": "object",
-                    "properties": {"continuation_id": {"type": "string"}},
-                    "required": ["continuation_id"],
-                },
-                effects=(ToolEffect.WRITE,),
-                capabilities=("workspace.write",),
-                busy_gate=False,
-            ),
-        ),
-        capabilities=(PluginCapabilityRequest(name="workspace.write", reason="foreign cancellation must stay scoped to its own rows"),),
-        context=False,
-        observed_facts=("usage",),
-    )
-    (root / "voidcode-plugin.json").write_text(json.dumps(manifest.as_payload()), encoding="utf-8")
+    (root / "__init__.py").write_text(code, encoding="utf-8")
 
 
 def _configure(
@@ -949,7 +710,7 @@ def _provider(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer
         server.server_close()
 
 
-#: Cold start admits the whole bundled plugin set and spawns the plugin host before the run can
+#: Cold start admits the whole bundled plugin set and loads the plugin runtime before the run can
 #: reach the provider or write a marker, and these tests run under parallel xdist workers. The
 #: old 10-20 s cutoffs failed here while the durable state showed the process still progressing.
 _STARTUP_DEADLINE_SECONDS = 60.0
@@ -995,12 +756,9 @@ def _gated_provider(replies: list[dict[str, object]]) -> Iterator[_GatedLoopback
         server.server_close()
 
 
-def _command(workspace: Path, state: Path, *arguments: str, trust: Sequence[str] = (_GOV_PLUGIN_ID,)) -> list[str]:
+def _command(workspace: Path, state: Path, *arguments: str) -> list[str]:
     if arguments and arguments[0] in {"invoke", "confirm"} and "--expected-revision" not in arguments:
-        arguments = (*arguments, "--expected-revision", _cli_catalog_revision(workspace, state, trust))
-    trusted: list[str] = []
-    for plugin_id in trust:
-        trusted += ["--trust-plugin", plugin_id]
+        arguments = (*arguments, "--expected-revision", _cli_catalog_revision(workspace, state))
     return [
         sys.executable,
         "-m",
@@ -1009,7 +767,6 @@ def _command(workspace: Path, state: Path, *arguments: str, trust: Sequence[str]
         str(workspace),
         "--state-dir",
         str(state),
-        *trusted,
         *arguments,
     ]
 
@@ -1017,19 +774,19 @@ def _command(workspace: Path, state: Path, *arguments: str, trust: Sequence[str]
 _CLI_REVISION_CACHE: dict[tuple[Path, Path], str] = {}
 
 
-def _cli_catalog_revision(workspace: Path, state: Path, trust: Sequence[str]) -> str:
+def _cli_catalog_revision(workspace: Path, state: Path) -> str:
     key = (workspace, state)
     cached = _CLI_REVISION_CACHE.get(key)
     if cached is None:
-        res = subprocess.run(_command(workspace, state, "catalog", trust=trust), capture_output=True, text=True, timeout=60, check=False)
+        res = subprocess.run(_command(workspace, state, "catalog"), capture_output=True, text=True, timeout=60, check=False)
         assert res.returncode == 0, res.stdout + res.stderr
         cached = str(json.loads(res.stdout)["revision_id"])
         _CLI_REVISION_CACHE[key] = cached
     return cached
 
 
-def _cli(workspace: Path, state: Path, *arguments: str, trust: Sequence[str] = (_GOV_PLUGIN_ID,), code: int = 0) -> dict[str, Any]:
-    res = subprocess.run(_command(workspace, state, *arguments, trust=trust), capture_output=True, text=True, timeout=60, check=False)
+def _cli(workspace: Path, state: Path, *arguments: str, code: int = 0) -> dict[str, Any]:
+    res = subprocess.run(_command(workspace, state, *arguments), capture_output=True, text=True, timeout=60, check=False)
     assert res.returncode == code, f"CLI exited with {res.returncode} (expected {code}): stdout={res.stdout} stderr={res.stderr}"
     return json.loads(res.stdout)
 
@@ -1041,8 +798,8 @@ def _free_port() -> int:
 
 
 @contextmanager
-def _listening_http(workspace: Path, state: Path, token: str, *, trust: Sequence[str] = (_GOV_PLUGIN_ID,)) -> Iterator[str]:
-    app = create_kernel_app(workspace=workspace, state_dir=state, trusted_plugins=frozenset(trust), bearer_token=token)
+def _listening_http(workspace: Path, state: Path, token: str) -> Iterator[str]:
+    app = create_kernel_app(workspace=workspace, state_dir=state, bearer_token=token)
     port = _free_port()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
     worker = threading.Thread(target=server.run, daemon=True)
@@ -1167,7 +924,7 @@ def test_active_run_concurrency_and_cancellation_isolation(tmp_path: Path) -> No
             t_run.start()
 
             # Wait for run A to reach tool block
-            _await_marker(workspace / "host.pid")
+            _await_marker(workspace / "tool.started")
             assert (workspace / "mut.txt").is_file()
 
             # 1. Non-gated command commits state in SAME session while run A is active
@@ -1320,7 +1077,7 @@ def test_new_user_turn_after_user_stop_is_admitted(tmp_path: Path) -> None:
 
             worker = threading.Thread(target=_drive, daemon=True)
             worker.start()
-            _await_marker(workspace / "host.pid")
+            _await_marker(workspace / "tool.started")
 
             status, body = _request(base, "POST", "/api/sessions/after-stop/cancel", token=token)
             assert status == 200
@@ -1407,12 +1164,10 @@ def test_command_committed_during_context_rpc_does_not_shift_dispatch_refs(tmp_p
 # ---------------------------------------------------------------------------
 
 
-def test_owner_authority_and_read_only_enforcement(tmp_path: Path) -> None:
+def test_lease_identity_and_workspace_isolation(tmp_path: Path) -> None:
     """Prove:
-    1. READ command attempting state/budget/queue mutation is denied without mutation.
-    2. Business arguments named 'owner' and 'actor' do not override authentic lease identity.
-    3. Distinct workspaces sharing a DB isolate workspace-scoped state.
-    4. read_only config policy overrides yolo without dispatch.
+    1. Business arguments named 'owner' and 'actor' do not override authentic lease identity.
+    2. Distinct workspaces sharing a DB isolate workspace-scoped state.
     """
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -1424,16 +1179,7 @@ def test_owner_authority_and_read_only_enforcement(tmp_path: Path) -> None:
         _configure(workspace, server, source, approval_mode="yolo")
         _cli(workspace, state, "create-session", "--session-id", "auth-session")
 
-        # 1. READ command attempting mutations has them all rejected by read-only lease
-        res = _cli(workspace, state, "invoke", "auth-session", "gov_read_cmd", "--arguments", '{"test_mutation": true}')
-        assert res["status"] == "ok"
-        rejections = res["data"]["rejections"]
-        assert len(rejections) == 5
-        assert any("state:" in r for r in rejections)
-        assert any("budget:" in r for r in rejections)
-        assert any("continuation:" in r for r in rejections)
-
-        # 2. Business args 'owner' and 'actor' do not forge identity
+        # 1. Business args 'owner' and 'actor' do not forge identity
         cmd_res = _cli(
             workspace,
             state,
@@ -1453,7 +1199,7 @@ def test_owner_authority_and_read_only_enforcement(tmp_path: Path) -> None:
         assert real_state is not None
         assert real_state["value"] == "legit"
 
-    # 3. Workspace scope keys isolation across distinct workspaces in shared DB
+    # 2. Workspace scope keys isolation across distinct workspaces in shared DB
     ws2 = tmp_path / "workspace2"
     ws2.mkdir()
     with _provider([]) as server:
@@ -1467,6 +1213,42 @@ def test_owner_authority_and_read_only_enforcement(tmp_path: Path) -> None:
         ws2_state, _ = store.plugin_state(_GOV_PLUGIN_ID, "workspace", str(ws2.resolve()))
         assert ws1_state is not None and ws1_state["value"] == "ws1_data"
         assert ws2_state is not None and ws2_state["value"] == "ws2_data"
+
+
+def test_root_read_only_denies_internal_staging_without_side_effects(tmp_path: Path) -> None:
+    """Prove the true read_only contract: under a root read_only session, a READ command
+    attempting state/event/continuation/budget staging has all five rejected, and none of
+    the illegal payloads reaches durable state, events, continuations, or budgets.
+    """
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "external"
+    _governance_plugin_source(source)
+    state = tmp_path / "state"
+
+    with _provider([]) as server:
+        _configure(workspace, server, source, approval_mode="yolo", read_only=True)
+        _cli(workspace, state, "create-session", "--session-id", "ro-session")
+
+        res = _cli(workspace, state, "invoke", "ro-session", "gov_read_cmd", "--arguments", '{"test_mutation": true}')
+        assert res["status"] == "ok"
+        rejections = res["data"]["rejections"]
+        assert len(rejections) == 5, rejections
+        assert any("state:" in r for r in rejections)
+        assert any("event:" in r for r in rejections)
+        assert any("continuation:" in r for r in rejections)
+        assert any("budget:" in r for r in rejections)
+        assert any("clear_budget:" in r for r in rejections)
+        assert server.requests == []
+
+    with SqliteStore(state / "kernel-v1.sqlite3") as store:
+        stored, _ = store.plugin_state(_GOV_PLUGIN_ID, "session", "ro-session")
+        assert stored is None or "illegal" not in stored
+        events = store.events("ro-session")
+        assert not [e for e in events if e.event_type == "illegal_event"]
+        assert "illegal" not in json.dumps([(e.event_type, dict(e.payload)) for e in events], default=str)
+        assert store.pending_continuations("ro-session") == ()
+        assert store.session_budgets("ro-session") == ()
 
 
 # ---------------------------------------------------------------------------
@@ -1708,7 +1490,7 @@ def test_durable_claim_crash_recovery_and_prefix_preservation(tmp_path: Path) ->
         )
 
         try:
-            _await_marker(workspace / "host.pid")
+            _await_marker(workspace / "tool.started")
             assert (workspace / "cont_mut.txt").is_file()
 
             # Kill kernel process abruptly mid-mutation
@@ -1883,7 +1665,6 @@ def test_owner_cancel_stops_own_claimed_run_without_next_turn(tmp_path: Path) ->
     _governance_plugin_source(source)
     _observer_plugin_source(observer_source)
     state = tmp_path / "state"
-    trust = (_GOV_PLUGIN_ID, _OBSERVER_PLUGIN_ID)
 
     replies = [
         _turn(_call("o1", "gov_mutate", marker="owner_cancel.txt", block=True)),
@@ -1891,7 +1672,7 @@ def test_owner_cancel_stops_own_claimed_run_without_next_turn(tmp_path: Path) ->
     ]
     with _provider(replies) as server:
         _configure(workspace, server, source, observer_source=observer_source, approval_mode="yolo")
-        _cli(workspace, state, "create-session", "--session-id", "owner-cancel-session", trust=trust)
+        _cli(workspace, state, "create-session", "--session-id", "owner-cancel-session")
         with SqliteStore(state / "kernel-v1.sqlite3") as store:
             store.enqueue_continuation(
                 "owner-claim",
@@ -1904,7 +1685,7 @@ def test_owner_cancel_stops_own_claimed_run_without_next_turn(tmp_path: Path) ->
             )
 
         token = "owner-cancel-token"
-        with _listening_http(workspace, state, token, trust=trust) as base:
+        with _listening_http(workspace, state, token) as base:
             drained: dict[str, Any] = {}
 
             def _drive() -> None:
@@ -1915,7 +1696,7 @@ def test_owner_cancel_stops_own_claimed_run_without_next_turn(tmp_path: Path) ->
             worker = threading.Thread(target=_drive, daemon=True)
             worker.start()
             deadline = time.monotonic() + _STARTUP_DEADLINE_SECONDS
-            while not (workspace / "host.pid").is_file() and "payload" not in drained and time.monotonic() < deadline:
+            while not (workspace / "tool.started").is_file() and "payload" not in drained and time.monotonic() < deadline:
                 time.sleep(0.02)
             assert (workspace / "owner_cancel.txt").is_file(), drained
 
@@ -2074,9 +1855,9 @@ def test_user_stop_cancels_claim_without_auto_resume(tmp_path: Path) -> None:
             worker.start()
 
             deadline = time.monotonic() + _STARTUP_DEADLINE_SECONDS
-            while not (workspace / "host.pid").is_file() and "payload" not in drain_result and time.monotonic() < deadline:
+            while not (workspace / "tool.started").is_file() and "payload" not in drain_result and time.monotonic() < deadline:
                 time.sleep(0.02)
-            assert (workspace / "host.pid").is_file(), drain_result
+            assert (workspace / "tool.started").is_file(), drain_result
             assert (workspace / "claim_mut.txt").is_file()
 
             status, body = _request(base, "POST", "/api/sessions/user-stop-session/cancel", token=token)
@@ -2646,7 +2427,7 @@ def test_two_concurrent_keyed_leases_return_one_durable_continuation(tmp_path: P
 
             worker = threading.Thread(target=_drive_run, daemon=True)
             worker.start()
-            _await_marker(workspace / "host.pid")
+            _await_marker(workspace / "tool.started")
 
             responses: list[dict[str, Any]] = []
 
@@ -2842,13 +2623,12 @@ def test_two_owner_partial_receipt_delivers_only_the_missing_owner(tmp_path: Pat
     _governance_plugin_source(source)
     _observer_plugin_source(observer_source)
     state = tmp_path / "state"
-    trust = (_GOV_PLUGIN_ID, _OBSERVER_PLUGIN_ID)
 
     replies = [_turn(output="observed once by both owners")]
     with _provider(replies) as server:
         _configure(workspace, server, source, observer_source=observer_source, approval_mode="yolo")
-        _cli(workspace, state, "create-session", "--session-id", "two-owner", trust=trust)
-        first = _cli(workspace, state, "run", "observe me", "--session-id", "two-owner", trust=trust)
+        _cli(workspace, state, "create-session", "--session-id", "two-owner")
+        first = _cli(workspace, state, "run", "observe me", "--session-id", "two-owner")
         assert first["status"] == "completed", first
 
         with SqliteStore(state / "kernel-v1.sqlite3") as store:
@@ -2872,7 +2652,7 @@ def test_two_owner_partial_receipt_delivers_only_the_missing_owner(tmp_path: Pat
         # Two fresh processes: the missing owner is delivered the fact once, the
         # receipted owner is not called again, and the receipt prevents a repeat.
         for _ in range(2):
-            snapshot = _cli(workspace, state, "invoke", "two-owner", "gov_read_cmd", trust=trust)
+            snapshot = _cli(workspace, state, "invoke", "two-owner", "gov_read_cmd")
             assert snapshot["status"] == "ok", snapshot
 
         with SqliteStore(state / "kernel-v1.sqlite3") as store:
@@ -3002,16 +2782,15 @@ def test_internal_session_effects_need_no_read_only_waiver_or_approval(tmp_path:
             "plugins": {"goal": {"path": str(goal_source)}},
         }
         (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-        trust = ("goal",)
-        _cli(workspace, state, "create-session", "--session-id", "session-effects-goal", trust=trust)
-        _cli(workspace, state, "create-session", "--session-id", "session-effects-write", trust=trust)
+        _cli(workspace, state, "create-session", "--session-id", "session-effects-goal")
+        _cli(workspace, state, "create-session", "--session-id", "session-effects-write")
 
-        goal_run = _cli(workspace, state, "run", "pursue the explicit goal", "--session-id", "session-effects-goal", trust=trust)
+        goal_run = _cli(workspace, state, "run", "pursue the explicit goal", "--session-id", "session-effects-goal")
         assert goal_run["status"] == "completed", goal_run
         assert goal_run["pending_approval"] is None, goal_run
         assert goal_run["output"] == "goal completed", goal_run
 
-        write_run = _cli(workspace, state, "run", "write a file", "--session-id", "session-effects-write", trust=trust)
+        write_run = _cli(workspace, state, "run", "write a file", "--session-id", "session-effects-write")
 
     with SqliteStore(state / "kernel-v1.sqlite3") as store:
         goal_state, _ = store.plugin_state("goal", "session", "session-effects-goal")
@@ -3056,7 +2835,6 @@ def test_native_tool_cancellation_is_scoped_to_its_owner(tmp_path: Path, case: s
     _governance_plugin_source(source)
     _observer_plugin_source(observer_source)
     state = tmp_path / "state"
-    trust = (_GOV_PLUGIN_ID, _OBSERVER_PLUGIN_ID)
     claim_id = f"native-claim-{case}"
 
     if case == "foreign":
@@ -3081,7 +2859,7 @@ def test_native_tool_cancellation_is_scoped_to_its_owner(tmp_path: Path, case: s
     with _provider(replies) as server:
         _configure(workspace, server, source, observer_source=observer_source, approval_mode="yolo")
         session_id = f"native-scope-{case}"
-        _cli(workspace, state, "create-session", "--session-id", session_id, trust=trust)
+        _cli(workspace, state, "create-session", "--session-id", session_id)
         with SqliteStore(state / "kernel-v1.sqlite3") as store:
             store.enqueue_continuation(
                 claim_id,
@@ -3094,7 +2872,7 @@ def test_native_tool_cancellation_is_scoped_to_its_owner(tmp_path: Path, case: s
             )
 
         token = f"native-scope-token-{case}"
-        with _listening_http(workspace, state, token, trust=trust) as base:
+        with _listening_http(workspace, state, token) as base:
             drained: dict[str, Any] = {}
 
             def _drive() -> None:

@@ -21,7 +21,7 @@ The kernel binds `127.0.0.1`, `::1`, or `localhost` only. Every request under `/
 | `resume <session_id> [--approval-request-id --decision allow\|deny] [--max-steps]` | Continue a session, optionally resolving one native tool approval. | same as `run` |
 | `create-session [--session-id]` | Create an empty session. | `0` |
 | `sessions [--limit]` | List this workspace's sessions. | `0` |
-| `show <session_id> [--events]` | Read durable state (and optionally the raw event history) without configuration, host, or revision checks. | `0` |
+| `show <session_id> [--events]` | Read durable state (and optionally the raw event history) without configuration, runtime, or revision checks. | `0` |
 | `catalog` | Print the admitted command catalog (`revision_id` + commands). | `0` |
 | `invoke <session_id> <name> --arguments JSON --expected-revision ID [--client-capabilities]` | Invoke one admitted command. | `0` ok, `2` pending confirmation, `1` error |
 | `confirm <session_id> <request_id> --decision allow\|deny --expected-revision ID [--client-capabilities]` | Resolve a stored plugin confirmation. | `0` ok, `2` pending confirmation, `1` error |
@@ -33,7 +33,7 @@ The kernel binds `127.0.0.1`, `::1`, or `localhost` only. Every request under `/
 | `upgrade [run\|status] --candidate PATH [--session-id ID] [--timeout S]` | Ask the running supervisor for its status, or upgrade this workspace to a candidate installation (one JSON object; exit `0` only on `upgraded`/`ok`). | `0` ok, `1` refused/blocked/failed |
 | `preflight` | Read-only candidate check for this installation against the live state (one JSON object; exit `1` on a named refusal). | `0` ok, `1` refused |
 
-Root options: `--workspace PATH` (default: current directory), `--state-dir PATH`, `--trust-plugin PLUGIN_ID` (repeatable). `invoke` arguments must be a JSON object; `--client-capabilities` is a comma-separated list of capability names. Every failure (including malformed arguments, refused trust, or a missing config) prints `{"status": "failed", "error": "..."}` and exits non-zero.
+Root options: `--workspace PATH` (default: current directory), `--state-dir PATH`. `invoke` arguments must be a JSON object; `--client-capabilities` is a comma-separated list of client capability names. Every failure (including malformed arguments or a missing config) prints `{"status": "failed", "error": "..."}` and exits non-zero.
 
 ## HTTP API
 

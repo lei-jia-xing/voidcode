@@ -55,7 +55,7 @@ def _close_kernels() -> Iterator[None]:
 def _open(tmp_path: Path) -> Kernel:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
-    kernel = open_kernel(workspace, state_dir=tmp_path / "state", trusted_plugins=frozenset({PLUGIN_ID}))
+    kernel = open_kernel(workspace, state_dir=tmp_path / "state")
     _CREATED.append(kernel)
     return kernel
 

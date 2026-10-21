@@ -44,7 +44,7 @@ from .images import (
     materialize,
     validate_candidate,
 )
-from .storage.store import SCHEMA_VERSION, ForeignDatabaseError, inspect_existing_workspace, open_read_only
+from .storage.store import ForeignDatabaseError, inspect_existing_workspace, open_read_only
 
 __all__ = ["control_socket_path", "run_supervisor"]
 
@@ -104,7 +104,6 @@ def run_supervisor(
     host: str,
     port: int,
     bearer_token: str | None,
-    trusted_plugins: frozenset[str],
     session_id: str | None,
     open_browser: bool,
     owner_pid: int | None = None,
@@ -126,7 +125,6 @@ def run_supervisor(
             host=host,
             port=port,
             bearer_token=bearer_token,
-            trusted_plugins=trusted_plugins,
             session_id=session_id,
             open_browser=open_browser,
             owner_pid=owner_pid,
@@ -360,7 +358,6 @@ class _Supervisor:
         host: str,
         port: int,
         bearer_token: str | None,
-        trusted_plugins: frozenset[str],
         session_id: str | None,
         open_browser: bool,
         owner_pid: int | None = None,
@@ -374,7 +371,6 @@ class _Supervisor:
         self._api_token = bearer_token or _new_token()
         #: Control authority for /api/kernel/*: generated per lifetime, never printed, never stored.
         self._control_token = _new_token()
-        self._trusted = tuple(sorted(trusted_plugins))
         self._session_id = session_id
         self._open_browser = open_browser
         self._images_dir = state_dir / IMAGES_DIR_NAME
@@ -629,8 +625,6 @@ class _Supervisor:
                 arguments.append(f"--upgrade-id={upgrade_id}")
             if session_id is not None:
                 arguments.append(f"--session-id={session_id}")
-            for plugin_id in self._trusted:
-                arguments.append(f"--trust-plugin={plugin_id}")
             # The working directory is inherited on purpose: a user's relative paths keep working,
             # and ``-P`` plus the image-only PYTHONPATH is what keeps imports pinned. Child stdout
             # is discarded so it can never corrupt the supervisor's exact stdout contract; it logs
@@ -815,9 +809,6 @@ class _Supervisor:
         """
         if not self._database.is_file():
             return False
-        revision_id, digest, schema = self._election()
-        if revision_id is not None and digest == image.digest and schema == SCHEMA_VERSION:
-            return False
         try:
             report = self._preflight(image)
         except SupervisorError as exc:
@@ -962,10 +953,12 @@ class _Supervisor:
             except (OSError, ValueError) as exc:
                 raise SupervisorError("materialize_failed", str(exc)) from exc
             result["to_image"] = candidate.digest
-            if candidate.digest == active.digest:
-                raise SupervisorError("candidate_identical", "the candidate has the running image's digest; nothing would change")
             report = self._preflight(candidate)
             adoption_required = report.get("adoption_required") is True
+            if not adoption_required and candidate.digest == active.digest:
+                # A same-image restart is only meaningful when the preflight proved a generation
+                # adoption is owed (e.g. an external plugin source moved its state schema).
+                raise SupervisorError("candidate_identical", "the candidate is the running image and no generation adoption is owed")
             if adoption_required and session_id is None and self._has_sessions():
                 raise SupervisorError(
                     "session_required",

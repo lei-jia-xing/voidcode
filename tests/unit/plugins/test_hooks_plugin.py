@@ -22,10 +22,8 @@ from voidcode.plugins.hooks.hooks_plugin import (
 )
 from voidcode.sdk.hooks import RunLifecycle, ToolIntent, ToolOutcome
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.manifest import parse_plugin_manifest
 from voidcode.sdk.services import PluginServices
 
-_MANIFEST = Path(__file__).resolve().parents[3] / "src" / "voidcode" / "plugins" / "hooks" / "voidcode-plugin.json"
 _EMIT_ARGV = "import json, sys; print(json.dumps(json.loads(sys.argv[1])))"
 
 
@@ -306,7 +304,7 @@ def test_create_plugin_provides_every_declared_surface(tmp_path: Path) -> None:
     assert plugin.tools == () and plugin.commands == ()
     assert plugin.pre_tool(_intent("write"), _context(tmp_path), _NoServices()) is not None
 
-    # No commands configured: every callback still exists (the manifest declares every kind)
+    # No commands configured: every callback still exists (the registration provides every kind)
     # and is a fast no-op.
     bare = create_plugin(None)
     assert bare.pre_tool is not None and bare.post_tool is not None
@@ -316,22 +314,14 @@ def test_create_plugin_provides_every_declared_surface(tmp_path: Path) -> None:
     assert bare.session_end is not None and bare.session_end(_lifecycle("end"), _context(tmp_path), _NoServices()) is None
 
 
-def test_manifest_declares_every_hook_kind_with_pinned_sources() -> None:
-    manifest = parse_plugin_manifest(json.loads(_MANIFEST.read_text(encoding="utf-8")))
-    assert manifest.plugin_id == "hooks"
-    assert manifest.entrypoint == "__init__:create_plugin"
+def test_registration_declares_mutating_tool_hooks() -> None:
+    plugin = create_plugin(None)
     # mutating=True is the legacy stance: argv hooks may change the workspace and the legacy
     # runtime skipped them under a read-only policy, which the kernel now expresses by skipping
     # declared-mutating hooks. Lifecycle hooks have no tool stance.
-    assert [(hook.kind, hook.match, hook.mutating) for hook in manifest.hooks] == [
-        ("pre_tool", ("*",), True),
-        ("post_tool", ("*",), True),
-        ("session_start", ("*",), False),
-        ("session_end", ("*",), False),
-    ]
-    assert manifest.tools == ()
-    assert manifest.commands == ()
-    assert manifest.capabilities == ()
-    assert manifest.state_schema_version == 1
-    assert manifest.context is False
-    assert {identity.path for identity in manifest.files} == {path.name for path in _MANIFEST.parent.glob("*.py")}
+    assert plugin.pre_tool is not None and plugin.pre_tool_match == ("*",) and plugin.pre_tool_mutating is True
+    assert plugin.post_tool is not None and plugin.post_tool_match == ("*",) and plugin.post_tool_mutating is True
+    assert plugin.session_start is not None and plugin.session_end is not None
+    assert plugin.tools == ()
+    assert plugin.commands == ()
+    assert plugin.context is None

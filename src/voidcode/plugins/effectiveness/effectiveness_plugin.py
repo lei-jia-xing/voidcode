@@ -507,5 +507,4 @@ class EffectivenessCommand:
 
 
 def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
-    """Plugin entrypoint registered in voidcode-plugin.json."""
     return Plugin(commands=(EffectivenessCommand(),))

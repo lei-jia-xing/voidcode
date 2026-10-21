@@ -19,7 +19,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Literal, final
+from typing import Annotated, ClassVar, Literal, final
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
@@ -27,10 +27,11 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError,
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices, ProcessHandle
 from voidcode.sdk.tools import (
-    RuntimeToolTimeoutError,
+    ConfirmedStop,
     TextOutput,
     ToolCall,
     ToolDefinition,
+    ToolEffect,
     ToolFailure,
     ToolResult,
     ToolSuccess,
@@ -466,8 +467,98 @@ def _external_failure(*, tool_name: str, process_id: str, record: Mapping[str, o
 
 @final
 class BackgroundProcessTool:
-    def __init__(self, definition: ToolDefinition) -> None:
-        self.definition = definition
+    definition: ClassVar[ToolDefinition] = ToolDefinition(
+        name="background_process",
+        description=(
+            "Manage a long-running background process. Use op=start to launch, ps to list the current workspace processes, "
+            "logs to read bounded output, send to write stdin, or stop to terminate a process. "
+            "Process rows are scoped to the current owner and workspace."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {},
+            "additionalProperties": True,
+            "oneOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["op", "command"],
+                    "properties": {
+                        "op": {"const": "start", "description": "Start a supervised process that outlives this call."},
+                        "command": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Shell command to run in the workspace for the lifetime of the process.",
+                        },
+                        "description": {"type": "string", "description": "Human-readable description of the process, persisted with its identity."},
+                        "ready_pattern": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 512,
+                            "description": "Text to wait for in the process output before returning.",
+                        },
+                        "ready_timeout": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 30,
+                            "default": 10,
+                            "description": "Seconds to wait for ready_pattern (1-30, default 10).",
+                        },
+                    },
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["op"],
+                    "properties": {"op": {"const": "ps", "description": "List the processes of this workspace and session."}},
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["op", "process_id"],
+                    "properties": {
+                        "op": {"const": "logs", "description": "Read a bounded, line-paged window of a process's output."},
+                        "process_id": {"type": "string", "description": "Process id returned by op=start."},
+                        "stream": {
+                            "type": "string",
+                            "enum": ["stdout", "stderr", "both"],
+                            "default": "both",
+                            "description": "Which output stream to read.",
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 1000000,
+                            "default": 0,
+                            "description": "Number of leading lines to skip; page from next_offset to read on.",
+                        },
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 500, "description": "Maximum lines to return (1-500)."},
+                    },
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["op", "process_id", "input"],
+                    "properties": {
+                        "op": {"const": "send", "description": "Write to a process's standard input."},
+                        "process_id": {"type": "string", "description": "Process id returned by op=start."},
+                        "input": {"type": "string", "description": "Text written to the process's standard input."},
+                        "newline": {"type": "boolean", "default": True, "description": "Append a newline to input (default true)."},
+                    },
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["op", "process_id"],
+                    "properties": {
+                        "op": {"const": "stop", "description": "Stop a process and its whole process group."},
+                        "process_id": {"type": "string", "description": "Process id returned by op=start."},
+                    },
+                },
+            ],
+        },
+        effects=frozenset({ToolEffect.EXECUTE, ToolEffect.SPAWN}),
+    )
 
     def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:
         _require_process_service(services)
@@ -494,8 +585,14 @@ class BackgroundProcessTool:
 
     def _start(self, args: _StartArgs, *, workspace: Path, services: PluginServices, aborted: bool) -> ToolResult:
         if aborted:
-            # Legacy pre-flight refusal: a cancelled call launches no process.
-            raise RuntimeToolTimeoutError("background_process start aborted before launching the process")
+            # Pre-flight refusal: a cancelled call launches no process, so nothing is unknown.
+            message = "background_process start aborted before launching the process"
+            return ToolFailure(
+                tool_name=self.definition.name,
+                error=message,
+                output=TextOutput(message),
+                execution=ConfirmedStop(cancellation_signalled=True),
+            )
         records, version = _read_records(services)
         process_id = f"proc-{uuid4().hex}"
         log_dir = workspace.joinpath(*_LOG_DIR_PARTS)

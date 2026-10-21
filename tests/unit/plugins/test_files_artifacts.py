@@ -55,7 +55,6 @@ def _context(tmp_path: Path) -> ToolContext:
         invocation_id="inv-artifacts",
         revision_id="rev-artifacts",
         actor="model",
-        capabilities=frozenset({"workspace.read"}),
     )
 
 

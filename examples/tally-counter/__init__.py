@@ -10,14 +10,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
-from typing import cast
+from typing import ClassVar, cast
 
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.plugin import Plugin, command_definition, tool_definition
+from voidcode.sdk.plugin import Plugin, StateSchema
 from voidcode.sdk.services import PluginServices
-from voidcode.sdk.tools import TextOutput, ToolCall, ToolDefinition, ToolFailure, ToolResult, ToolSuccess
+from voidcode.sdk.tools import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult, ToolSuccess
 from voidcode.sdk.views import PluginViewDescriptor
 
 SCHEMA_VERSION = 1
@@ -76,8 +75,17 @@ def _apply(state: TallyState, delta: int) -> TallyState:
 class TallyAddTool:
     """Add a delta to the session tally (model tool, SESSION effect)."""
 
-    def __init__(self, definition: ToolDefinition) -> None:
-        self.definition = definition
+    definition: ClassVar[ToolDefinition] = ToolDefinition(
+        name="tally_add",
+        description="Add a delta to this session's tally counter.",
+        input_schema={
+            "type": "object",
+            "properties": {"delta": {"type": "integer", "description": "Amount to add (may be negative)."}},
+            "required": ["delta"],
+            "additionalProperties": False,
+        },
+        effects=frozenset({ToolEffect.SESSION}),
+    )
 
     def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:
         _ = context
@@ -95,8 +103,17 @@ class TallyAddTool:
 class TallyCommand:
     """Add a delta to the session tally (user command, SESSION effect)."""
 
-    def __init__(self, definition: CommandDefinition) -> None:
-        self.definition = definition
+    definition: ClassVar[CommandDefinition] = CommandDefinition(
+        name="tally",
+        description="Add a delta to this session's tally counter.",
+        argument_schema={
+            "type": "object",
+            "properties": {"delta": {"type": "integer", "description": "Amount to add (may be negative)."}},
+            "required": ["delta"],
+            "additionalProperties": False,
+        },
+        effects=frozenset({ToolEffect.SESSION}),
+    )
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
         delta = _delta(invocation.arguments)
@@ -135,19 +152,21 @@ class TallyView:
 
 
 def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
-    """Plugin entrypoint registered in voidcode-plugin.json."""
-    import json
-
-    from voidcode.sdk.manifest import parse_plugin_manifest
-
-    manifest = parse_plugin_manifest(json.loads((Path(__file__).parent / "voidcode-plugin.json").read_text(encoding="utf-8")))
-    (tool_decl,) = manifest.tools
-    (command_decl,) = manifest.commands
-    # Registered definitions MUST equal the admitted declarations exactly; deriving
-    # both from the manifest (the pattern exec/lsp/session_info use) makes drift
-    # impossible.
     return Plugin(
-        tools=(TallyAddTool(tool_definition(tool_decl)),),
-        commands=(TallyCommand(command_definition(command_decl)),),
+        tools=(TallyAddTool(),),
+        commands=(TallyCommand(),),
         views=(TallyView(),),
+        state=StateSchema(
+            version=SCHEMA_VERSION,
+            schema={
+                "type": "object",
+                "properties": {
+                    "schema_version": {"const": SCHEMA_VERSION},
+                    "total": {"type": "integer"},
+                    "updates": {"type": "integer", "minimum": 0},
+                },
+                "required": ["schema_version", "total", "updates"],
+                "additionalProperties": False,
+            },
+        ),
     )

@@ -1,6 +1,6 @@
 """End-to-end integration tests for the Todo plugin on the real kernel stack.
 
-Drives the real kernel, plugin host, loopback provider and durable storage:
+Drives the real kernel, plugin runtime, loopback provider and durable storage:
 - A model tool call writes the plan; the tool result body and the next provider request show it
 - Plan truth is contributed to the provider context only while active tasks remain
 - Plugin state survives a kernel restart on the same state directory
@@ -71,7 +71,7 @@ def _kernel(tmp_path: Path, server: OpenAILoopbackServer, *, todo_enabled: bool,
         },
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-    kernel = open_kernel(workspace, state_dir=resolved_state, trusted_plugins=frozenset({"todo"}))
+    kernel = open_kernel(workspace, state_dir=resolved_state)
     _CREATED_KERNELS.append(kernel)
     return kernel
 

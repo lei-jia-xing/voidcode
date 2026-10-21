@@ -1,6 +1,6 @@
 """End-to-end tests for the compaction plugin on the real kernel stack.
 
-Drives the real kernel, plugin host, loopback provider and durable storage:
+Drives the real kernel, plugin runtime, loopback provider and durable storage:
 
 - a run whose dispatch reports enough prompt tokens makes the plugin declare a window
   projection; the kernel verifies the boundary and measures the covered/dropped bytes itself
@@ -17,7 +17,6 @@ bundled source.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from collections.abc import Iterator, Mapping
@@ -32,12 +31,9 @@ from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.kernel.bootstrap import open_kernel
 from voidcode.kernel.engine import Kernel
 from voidcode.sdk.json_values import json_wire_object
-from voidcode.sdk.manifest import PluginFileIdentity, PluginManifest, PluginToolDeclaration, parse_plugin_manifest
-from voidcode.sdk.tools import ToolEffect
 
 _COMPACTION_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "compaction"
 _PROBE_PLUGIN_ID = "compaction-probe"
-_PROBE_PLUGIN_MODULE = "compaction_probe_plugin"
 _WRITE_TOOL = "probe_write"
 _READ_TOOL = "probe_read"
 #: Enough text that covering it always shrinks the window, whatever the previews keep.
@@ -108,59 +104,11 @@ def create_plugin(config=None):
 '''
 
 
-def _tool_declaration(
-    name: str, description: str, schema: dict[str, object], effects: tuple[ToolEffect, ...], replay_policy: str
-) -> PluginToolDeclaration:
-    return PluginToolDeclaration(
-        name=name,
-        description=description,
-        input_schema=schema,
-        effects=effects,
-        replay_policy=replay_policy,
-        supports_parallel=False,
-        path_argument_keys=(),
-    )
-
-
 def _probe_source(tmp_path: Path) -> Path:
     """The inline probe plugin: real tool batches for the projection to cover."""
     root = tmp_path / "probe-plugin"
     root.mkdir(parents=True, exist_ok=True)
-    source = root / f"{_PROBE_PLUGIN_MODULE}.py"
-    source.write_text(_PROBE_PLUGIN_SOURCE, encoding="utf-8")
-    manifest = PluginManifest(
-        plugin_id=_PROBE_PLUGIN_ID,
-        version="1.0.0",
-        entrypoint=f"{_PROBE_PLUGIN_MODULE}:create_plugin",
-        files=(PluginFileIdentity(path=source.name, sha256=hashlib.sha256(source.read_bytes()).hexdigest()),),
-        tools=(
-            _tool_declaration(
-                _WRITE_TOOL,
-                "Write text to a file in the workspace (test tool).",
-                {
-                    "type": "object",
-                    "properties": {"path": {"type": "string"}, "text": {"type": "string"}},
-                    "required": ["path", "text"],
-                    "additionalProperties": False,
-                },
-                (ToolEffect.WRITE,),
-                "never",
-            ),
-            _tool_declaration(
-                _READ_TOOL,
-                "Read a file from the workspace (test tool).",
-                {
-                    "type": "object",
-                    "properties": {"path": {"type": "string"}},
-                    "required": ["path"],
-                    "additionalProperties": False,
-                },
-                (ToolEffect.READ,),
-                "safe",
-            ),
-        ),
-    )
-    (root / "voidcode-plugin.json").write_text(json.dumps(manifest.as_payload()), encoding="utf-8")
+    (root / "__init__.py").write_text(_PROBE_PLUGIN_SOURCE, encoding="utf-8")
     return root
 
 
@@ -222,7 +170,7 @@ def _kernel(tmp_path: Path, server: OpenAILoopbackServer, *, threshold_tokens: i
         },
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-    kernel = open_kernel(workspace, state_dir=state_dir, trusted_plugins=frozenset({_PROBE_PLUGIN_ID, "compaction"}))
+    kernel = open_kernel(workspace, state_dir=state_dir)
     _CREATED_KERNELS.append(kernel)
     return kernel
 
@@ -388,14 +336,16 @@ def test_manual_compact_projects_on_demand_then_noops(tmp_path: Path) -> None:
         assert noop.data["dropped_bytes"] == row.dropped_bytes
 
         # The durable state is this plugin's own bookkeeping, and it satisfies the schema the
-        # manifest declares (the kernel validates owner state against exactly that contract).
+        # registration declares (the kernel validates owner state against exactly that contract).
         stored, version = kernel.store.plugin_state("compaction", "session", session_id)
         assert version >= 1
         assert isinstance(stored, Mapping)
-        manifest = parse_plugin_manifest(json.loads((_COMPACTION_ROOT / "voidcode-plugin.json").read_text(encoding="utf-8")))
-        assert manifest.state_schema is not None
+        from voidcode.plugins.compaction.compaction_plugin import create_plugin as create_compaction_plugin
+
+        state_schema = create_compaction_plugin(None).state.schema
+        assert state_schema is not None
         # Exactly how the kernel validates an owner's state copy against the declaration.
-        jsonschema.Draft202012Validator(json_wire_object(manifest.state_schema)).validate(json_wire_object(stored))
+        jsonschema.Draft202012Validator(json_wire_object(state_schema)).validate(json_wire_object(stored))
         assert stored["schema_version"] == 1
         assert stored["cursor_sequence"] >= row.covered_to_sequence
         assert stored["last_projection"]["covered_bytes"] == row.covered_bytes

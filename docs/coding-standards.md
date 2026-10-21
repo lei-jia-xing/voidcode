@@ -14,9 +14,8 @@ VoidCode prioritizes readability, explicit boundaries, and repeatable local veri
 
 VoidCode enforces clean boundaries across its backend layers:
 
-- **`src/voidcode/sdk/`**: The shared contract surface (manifest, plugin, tools, commands, services, provider, hooks, views, invocation, config). It may import only the standard library, `pydantic`, and `jsonschema` — never the kernel, the plugin host, or a plugin.
-- **`src/voidcode/kernel/`**: Governance, append-only persistence, plugin admission and activation, artifacts, HTTP/SSE transport, and the TUI. It imports no concrete plugin.
-- **`src/voidcode/plugin_host/`**: The out-of-process plugin host: stdio protocol, identity verification, and lease-scoped/supervised child processes.
+- **`src/voidcode/sdk/`**: The shared contract surface (plugin, tools, commands, services, provider, hooks, views, invocation, config). It may import only the standard library, `pydantic`, and `jsonschema` — never the kernel or a plugin.
+- **`src/voidcode/kernel/`**: Governance, append-only persistence, plugin admission and activation, the in-process plugin runtime (`plugins.py`, `services.py`, `processes.py`), HTTP/SSE transport, and the TUI. It imports no concrete plugin.
 - **`src/voidcode/plugins/`**: The bundled plugins, built on the public SDK exactly like third-party plugins.
 
 ## Python Standards
@@ -53,4 +52,4 @@ Examples:
 - `feat(kernel): persist sessions in sqlite`
 - `fix(kernel): handle unknown session ids`
 - `docs: add architecture overview guide`
-- `feat(plugins)!: require schema v2 in plugin manifests`
+- `feat(plugins)!: require state schema on owner state`

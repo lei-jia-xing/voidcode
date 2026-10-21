@@ -30,7 +30,7 @@ from typing import ClassVar, Literal
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
 from voidcode.sdk.hooks import PluginFact, RunFinishedFact, UsageFact
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.plugin import Plugin
+from voidcode.sdk.plugin import Plugin, StateSchema
 from voidcode.sdk.services import EventView, PluginServices
 from voidcode.sdk.tools import ToolEffect
 
@@ -56,7 +56,7 @@ _EVENT_PAGE_SIZE = 200
 
 _STATE_KEYS: frozenset[str] = frozenset({"schema_version", "cursor_sequence", "last_projection"})
 _PROJECTION_KEYS: frozenset[str] = frozenset({"covered_from_sequence", "covered_to_sequence", "covered_bytes", "dropped_bytes", "summary_kind"})
-_CONFIG_KEYS: frozenset[str] = frozenset({"enabled", "threshold_tokens", "reserve_tokens", "keep_recent_tokens", "summary_enabled"})
+_CONFIG_KEYS: frozenset[str] = frozenset({"enabled", "threshold_tokens", "reserve_tokens", "keep_recent_tokens", "summary_enabled", "providers"})
 _SUMMARY_KINDS: frozenset[str] = frozenset({"deterministic", "model"})
 
 ProjectionReason = Literal["threshold", "manual"]
@@ -500,11 +500,35 @@ class CompactCommand:
 
 
 def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
-    """Plugin entrypoint registered in voidcode-plugin.json."""
     resolved = parse_compaction_config(config)
     return Plugin(
         commands=(CompactCommand(resolved),),
         observer=partial(compaction_observer, config=resolved),
+        observed_facts=("usage", "run_finished"),
+        state=StateSchema(
+            version=SCHEMA_VERSION,
+            schema={
+                "type": "object",
+                "required": ["schema_version", "cursor_sequence", "last_projection"],
+                "additionalProperties": False,
+                "properties": {
+                    "schema_version": {"type": "integer", "enum": [SCHEMA_VERSION]},
+                    "cursor_sequence": {"type": "integer", "minimum": 0},
+                    "last_projection": {
+                        "type": ["object", "null"],
+                        "required": ["covered_from_sequence", "covered_to_sequence", "covered_bytes", "dropped_bytes", "summary_kind"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "covered_from_sequence": {"type": "integer", "minimum": 0},
+                            "covered_to_sequence": {"type": "integer", "minimum": 0},
+                            "covered_bytes": {"type": "integer", "minimum": 0},
+                            "dropped_bytes": {"type": "integer", "minimum": 0},
+                            "summary_kind": {"type": "string", "enum": ["deterministic", "model"]},
+                        },
+                    },
+                },
+            },
+        ),
     )
 
 

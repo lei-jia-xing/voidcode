@@ -124,7 +124,6 @@ def _make_context(workspace: Path, *, actor: str = "client", logical_turn: str =
         invocation_id="inv-1",
         revision_id="rev-1",
         actor=actor,
-        capabilities=frozenset({"workspace.read", "workspace.write"}),
         logical_turn=logical_turn,
     )
 

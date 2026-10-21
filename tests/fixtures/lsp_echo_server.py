@@ -68,6 +68,14 @@ def main() -> int:
                 record.write(json.dumps({"method": method + ":version", "version": doc.get("version")}) + "\n")
                 record.flush()
                 continue
+            # Hang only after recording a real request past the answered quota: the
+            # request is genuinely in flight (and the client genuinely blocked waiting
+            # for its response) while `__hanging__` marks the deterministic barrier.
+            if args.hang_after is not None and responses_sent >= args.hang_after:
+                record.write(json.dumps({"method": "__hanging__"}) + "\n")
+                record.flush()
+                while True:
+                    time.sleep(3600)
             if method == "shutdown":
                 response = {"jsonrpc": "2.0", "id": message.get("id"), "result": None}
             elif method == "initialize":
@@ -83,11 +91,6 @@ def main() -> int:
             stdout.write(b"Content-Length: %d\r\n\r\n" % len(body) + body)
             stdout.flush()
             responses_sent += 1
-            if args.hang_after is not None and responses_sent >= args.hang_after:
-                record.write(json.dumps({"method": "__hanging__"}) + "\n")
-                record.flush()
-                while True:
-                    time.sleep(3600)
             _ = next_id
     except EOFError, BrokenPipeError:
         return 0

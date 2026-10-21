@@ -7,7 +7,6 @@ shortcuts, no skipped core gaps.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import socket
 import subprocess
@@ -24,13 +23,6 @@ import uvicorn
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.kernel.transport.http import create_kernel_app
-from voidcode.sdk.manifest import (
-    PluginCapabilityRequest,
-    PluginCommandDeclaration,
-    PluginFileIdentity,
-    PluginManifest,
-)
-from voidcode.sdk.tools import ToolEffect
 
 _HELLO_ID = "hello-state"
 
@@ -59,7 +51,7 @@ def hello_observer(fact, ctx, services):
         if with_context
         else ""
     )
-    factory_tail = ", context=hello_context, observer=hello_observer" if with_context else ""
+    factory_tail = ', context=hello_context, observer=hello_observer, observed_facts=("usage",)' if with_context else ""
     code = '''"""Ordinary third-party plugin: durable greeting with a gated action."""
 
 from __future__ import annotations
@@ -76,7 +68,6 @@ class HelloSetCommand:
         description="Set the durable greeting.",
         argument_schema={"type": "object", "properties": {"greeting": {"type": "string"}}},
         effects=frozenset({ToolEffect.WRITE}),
-        capabilities=frozenset({"workspace.write"}),
         busy_gate=False,
     )
 
@@ -97,7 +88,6 @@ class HelloGetCommand:
         description="Read the durable greeting.",
         argument_schema={"type": "object", "additionalProperties": False},
         effects=frozenset({ToolEffect.READ}),
-        capabilities=frozenset({"workspace.read"}),
         busy_gate=False,
     )
 
@@ -115,7 +105,6 @@ class GatedCommand:
         description="Gated action requiring an idle session.",
         argument_schema={"type": "object"},
         effects=frozenset({ToolEffect.WRITE}),
-        capabilities=frozenset({"workspace.write"}),
         busy_gate=True,
     )
 
@@ -149,47 +138,7 @@ def create_plugin(config):
         "def create_plugin(config):", extra_callbacks + "\ndef create_plugin(config):" if with_context else "def create_plugin(config):"
     )
     code = code.replace("FACTORY_TAIL", factory_tail)
-    plugin_path = root / "hello_plugin.py"
-    plugin_path.write_text(code, encoding="utf-8")
-    manifest = PluginManifest(
-        plugin_id=_HELLO_ID,
-        version="1.0.0",
-        entrypoint="hello_plugin:create_plugin",
-        files=(PluginFileIdentity(path="hello_plugin.py", sha256=hashlib.sha256(plugin_path.read_bytes()).hexdigest()),),
-        commands=(
-            PluginCommandDeclaration(
-                name="hello_set",
-                description="Set the durable greeting.",
-                argument_schema={"type": "object", "properties": {"greeting": {"type": "string"}}},
-                effects=(ToolEffect.WRITE,),
-                capabilities=("workspace.write",),
-                busy_gate=False,
-            ),
-            PluginCommandDeclaration(
-                name="hello_get",
-                description="Read the durable greeting.",
-                argument_schema={"type": "object", "additionalProperties": False},
-                effects=(ToolEffect.READ,),
-                capabilities=("workspace.read",),
-                busy_gate=False,
-            ),
-            PluginCommandDeclaration(
-                name="gated_action",
-                description="Gated action requiring an idle session.",
-                argument_schema={"type": "object"},
-                effects=(ToolEffect.WRITE,),
-                capabilities=("workspace.write",),
-                busy_gate=True,
-            ),
-        ),
-        capabilities=(
-            PluginCapabilityRequest(name="workspace.read", reason="read greeting"),
-            PluginCapabilityRequest(name="workspace.write", reason="write greeting"),
-        ),
-        context=with_context,
-        observed_facts=("usage",) if with_context else (),
-    )
-    (root / "voidcode-plugin.json").write_text(json.dumps(manifest.as_payload()), encoding="utf-8")
+    (root / "__init__.py").write_text(code, encoding="utf-8")
 
 
 def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path, **policy: object) -> None:
@@ -226,8 +175,6 @@ def _turn(*calls: dict[str, object], output: str | None = None, usage: dict[str,
 
 def _cli(workspace: Path, state: Path, *arguments: str, code: int = 0) -> dict[str, object]:
     command = [sys.executable, "-m", "voidcode.kernel", "--workspace", str(workspace), "--state-dir", str(state)]
-    if _HELLO_ID in (workspace / "voidcode.json").read_text():
-        command += ["--trust-plugin", _HELLO_ID]
     arguments = _with_displayed_revision(command, arguments)
     completed = subprocess.run([*command, *arguments], capture_output=True, text=True, timeout=60, check=False)
     assert completed.returncode == code, completed.stdout + completed.stderr
@@ -256,7 +203,7 @@ def _free_port() -> int:
 
 @contextmanager
 def _listening_http(workspace: Path, state: Path, token: str) -> Iterator[str]:
-    app = create_kernel_app(workspace=workspace, state_dir=state, trusted_plugins=frozenset({_HELLO_ID}), bearer_token=token)
+    app = create_kernel_app(workspace=workspace, state_dir=state, bearer_token=token)
     port = _free_port()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
     worker = threading.Thread(target=server.run, daemon=True)

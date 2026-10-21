@@ -64,20 +64,16 @@ describe("FormView", () => {
       name: "get_initial_form",
       description: "Read initial objective",
       effects: ["read"],
-      capabilities: [],
       client_capabilities: [],
       busy_gate: false,
-      direct_user: false,
     },
     {
       owner: "test",
       name: "unsafe_write_action",
       description: "Mutating action",
       effects: ["write"],
-      capabilities: [],
       client_capabilities: [],
       busy_gate: false,
-      direct_user: false,
     },
   ];
   it("renders inputs with initial values and submits values", async () => {
@@ -429,10 +425,8 @@ describe("FormView", () => {
             name: "goal.load_objective",
             description: "Read the full objective",
             effects: ["read"],
-            capabilities: [],
             client_capabilities: [],
             busy_gate: false,
-            direct_user: false,
           },
         ]}
         onSubmit={onSubmit}
@@ -456,10 +450,8 @@ describe("FormView", () => {
         name: "read_write_probe",
         description: "Read+write probe",
         effects: ["read", "write"],
-        capabilities: [],
         client_capabilities: [],
         busy_gate: false,
-        direct_user: false,
       },
     ];
 

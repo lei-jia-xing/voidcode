@@ -168,7 +168,6 @@ def test_create_plugin_registers_the_btw_command() -> None:
     assert definition.argument_schema["additionalProperties"] is False
     assert definition.effects == frozenset({"network"})
     assert definition.busy_gate is False
-    assert definition.direct_user is True
     assert plugin.tools == ()
     assert plugin.context is None
     assert plugin.observer is None

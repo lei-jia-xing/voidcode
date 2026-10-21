@@ -7,7 +7,6 @@ the file on disk, the events, and the text the model's next request carries.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sys
 from collections.abc import Iterator, Mapping
@@ -20,8 +19,6 @@ import pytest
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.kernel.bootstrap import open_kernel
 from voidcode.kernel.engine import Kernel
-from voidcode.sdk.manifest import PluginFileIdentity, PluginManifest, PluginToolDeclaration
-from voidcode.sdk.tools import ToolEffect
 
 _HOOKS_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "hooks"
 _NOTES_SOURCE = '''"""Test-only note writer."""
@@ -110,41 +107,7 @@ def _action_command(payload: dict[str, object]) -> list[str]:
 def _notes_root(workspace: Path) -> Path:
     root = workspace / ".test-plugins" / "notes"
     root.mkdir(parents=True, exist_ok=True)
-    source = root / "notes_plugin.py"
-    source.write_text(_NOTES_SOURCE, encoding="utf-8")
-    manifest = PluginManifest(
-        plugin_id="notes",
-        version="1.0.0",
-        entrypoint="notes_plugin:create_plugin",
-        files=(PluginFileIdentity(path="notes_plugin.py", sha256=hashlib.sha256(source.read_bytes()).hexdigest()),),
-        tools=(
-            PluginToolDeclaration(
-                name="write",
-                description="Write a small note file.",
-                input_schema={
-                    "type": "object",
-                    "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
-                    "required": ["path", "content"],
-                    "additionalProperties": False,
-                },
-                effects=(ToolEffect.WRITE,),
-                replay_policy="never",
-            ),
-            PluginToolDeclaration(
-                name="read_note",
-                description="Read a small note file.",
-                input_schema={
-                    "type": "object",
-                    "properties": {"path": {"type": "string"}},
-                    "required": ["path"],
-                    "additionalProperties": False,
-                },
-                effects=(ToolEffect.READ,),
-                replay_policy="never",
-            ),
-        ),
-    )
-    (root / "voidcode-plugin.json").write_text(json.dumps(manifest.as_payload()), encoding="utf-8")
+    (root / "__init__.py").write_text(_NOTES_SOURCE, encoding="utf-8")
     return root
 
 
@@ -171,7 +134,7 @@ def _kernel(
         },
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-    kernel = open_kernel(workspace, state_dir=state_dir, trusted_plugins=frozenset({"notes", "hooks"}))
+    kernel = open_kernel(workspace, state_dir=state_dir)
     _CREATED_KERNELS.append(kernel)
     return kernel
 

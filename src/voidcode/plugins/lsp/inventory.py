@@ -6,7 +6,7 @@ runtime server states, so listing servers never spawns one.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
 from voidcode.sdk.services import PluginServices
@@ -15,8 +15,13 @@ from voidcode.sdk.services import PluginServices
 class LspInventoryCommand:
     """Report the language servers one workspace resolves to and their state."""
 
-    def __init__(self, definition: CommandDefinition, manager: Any) -> None:
-        self.definition = definition
+    definition: ClassVar[CommandDefinition] = CommandDefinition(
+        name="lsp",
+        description="List the language servers this workspace resolves to and their state.",
+        argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
+    )
+
+    def __init__(self, manager: Any) -> None:
         self._manager = manager
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:

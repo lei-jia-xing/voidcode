@@ -1,15 +1,13 @@
-"""User shell plugin: the user's own ``!`` escape, as an explicit direct-user command.
+"""User shell plugin: the ``!`` escape as an ordinary EXECUTE command.
 
 Ports the legacy ``user_shell`` escape (``src/voidcode/runtime/user_shell.py``: one-bang parse,
 login-shell execution, 3600 s timeout, middle-truncated 10k output, the
-``<user_shell_command>`` record) onto the kernel's direct-user command authority:
+``<user_shell_command>`` record) onto the kernel's command contract:
 
-- the command declares ``direct_user`` and the client syntax ``!``, so only authentic user
-  ingress reaches it and the kernel attributes it to ``actor="user"``; the kernel itself never
-  parses the prefix, clients route it from the command catalog;
-- being the user's own action, it is exempt from the approval gate and from read-only/plan
-  overlays, exactly like the legacy escape, while schema validation, capabilities and effect
-  declarations still apply;
+- the command declares the client syntax ``!``; the kernel itself never parses
+  the prefix, clients route it from the command catalog;
+- it follows the same effects/read-only rules as every command: EXECUTE is
+  denied under a read-only session or plan overlay, and works otherwise;
 - the invocation is recorded as one durable ``shell_executed`` event with the exit code,
   duration, truncation and timed-out flags, and the model-visible record text stays available
   for export.
@@ -47,7 +45,7 @@ def _command_text(value: object) -> str | None:
 class ShellCommand:
     definition: ClassVar[CommandDefinition] = CommandDefinition(
         name="shell",
-        description="Run a shell command locally as the user (the `!` escape).",
+        description="Run a shell command locally (the `!` escape).",
         argument_schema={
             "type": "object",
             "properties": {
@@ -58,7 +56,6 @@ class ShellCommand:
         },
         effects=frozenset({ToolEffect.EXECUTE}),
         busy_gate=False,
-        direct_user=True,
         client_syntax="!",
     )
 
@@ -104,5 +101,4 @@ class ShellCommand:
 
 
 def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
-    """Plugin entrypoint registered in voidcode-plugin.json."""
     return Plugin(commands=(ShellCommand(),))

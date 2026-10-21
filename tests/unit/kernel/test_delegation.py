@@ -13,7 +13,7 @@ import pytest
 from tests.fixtures.reload_plugin import DEACTIVATE_TOOL, DELEGATE_TOOL, PROBE_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.kernel.bootstrap import open_kernel
-from voidcode.kernel.engine import DELEGATION_MAX_DEPTH, DELEGATION_SPAWN_BUDGET, Kernel
+from voidcode.kernel.engine import DELEGATION_SPAWN_BUDGET, Kernel
 from voidcode.sdk.json_values import json_wire_object
 
 PLUGIN_ID = "reload-fixture"
@@ -67,7 +67,7 @@ def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path) -> N
 
 
 def _open(tmp_path: Path) -> Kernel:
-    kernel = open_kernel(tmp_path / "workspace", state_dir=tmp_path / "state", trusted_plugins=frozenset({PLUGIN_ID}))
+    kernel = open_kernel(tmp_path / "workspace", state_dir=tmp_path / "state")
     _CREATED.append(kernel)
     return kernel
 
@@ -141,30 +141,43 @@ def test_delegated_children_run_and_join_with_a_narrowed_tool_scope(tmp_path: Pa
 def test_child_limits_and_scope_are_enforced_by_the_kernel(tmp_path: Path) -> None:
     source = tmp_path / "plugin"
     write_reload_plugin(source, tool_output="v1", delegating=True)
-    with _server([_turn(output="unused")]) as server:
+    # Every spawned child auto-drives exactly one provider turn: supply one final
+    # reply per child the budget admits, then join each child before the server
+    # exits so no child thread outlives its provider or the store.
+    replies = [_turn(output=f"child {index} done") for index in range(DELEGATION_SPAWN_BUDGET)]
+    with _server(replies) as server:
         _configure(tmp_path / "workspace", server, source)
         kernel = _open(tmp_path)
         kernel.create_session("root")
         session = kernel.session("root")
+        children: list[str] = []
 
         # A tool outside the admitted catalog cannot be requested.
         with pytest.raises(ValueError, match="names an unknown tool"):
             kernel.spawn_child("root", "child", tool_allowlist=("no_such_tool",))
         # Narrowing inside a child is allowed; widening is refused.
         child = kernel.spawn_child("root", "scoped child", tool_allowlist=(PROBE_TOOL,))
+        children.append(child)
         with pytest.raises(ValueError, match="widens the parent scope"):
             kernel.spawn_child(child, "grandchild", tool_allowlist=(PROBE_TOOL, DEACTIVATE_TOOL))
         record = kernel.session(child)
         assert record.depth == 1
         assert record.root_session_id == "root"
         assert session.depth == 0
-        assert DELEGATION_MAX_DEPTH == 3
 
         # The chain's spawn budget is finite and counts every child of the root chain.
         while kernel.store.count_root_children("root") < DELEGATION_SPAWN_BUDGET:
-            kernel.spawn_child("root", "budget child")
+            children.append(kernel.spawn_child("root", "budget child"))
         with pytest.raises(ValueError, match="spawn budget exhausted"):
             kernel.spawn_child("root", "one too many")
+
+        # Join every driven child while the provider is still listening: each must
+        # reach its terminal state, and the join consumes its published fact.
+        assert len(children) == DELEGATION_SPAWN_BUDGET
+        for child_id in children:
+            outcome = kernel.join_child("root", child_id, timeout_seconds=60.0)
+            assert outcome.status == "completed", outcome.as_payload()
+        assert len(server.requests) == DELEGATION_SPAWN_BUDGET
 
 
 def test_child_cannot_call_a_tool_outside_its_scope(tmp_path: Path) -> None:

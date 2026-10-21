@@ -25,7 +25,6 @@ def serve_kernel(
     *,
     workspace: Path,
     state_dir: Path | None,
-    trusted_plugins: frozenset[str],
     host: str,
     port: int,
     bearer_token: str | None,
@@ -52,13 +51,10 @@ def serve_kernel(
         app = create_kernel_app(
             workspace=workspace,
             state_dir=state_dir,
-            trusted_plugins=trusted_plugins,
             bearer_token=token,
             frontend_dist=frontend_dist,
         )
     else:
-        from ...sdk.manifest import SDK_PROTOCOL_VERSION
-        from ..activation import sdk_source_hash
         from ..bootstrap import open_kernel, state_directory
         from ..engine import Kernel
         from ..preflight import LAUNCH_PROTOCOL_VERSION, PreflightRefused, verify_preflight
@@ -76,8 +72,6 @@ def serve_kernel(
                     workspace=str(workspace),
                     state_dir=resolved_state,
                     candidate_package_root=identity.package_root,
-                    candidate_sdk_sha256=sdk_source_hash(identity.package_root / "sdk"),
-                    candidate_sdk_protocol=SDK_PROTOCOL_VERSION,
                     candidate_launch_protocol=LAUNCH_PROTOCOL_VERSION,
                     image_digest=identity.digest,
                     web_bundle=identity.bundle,
@@ -85,7 +79,7 @@ def serve_kernel(
                 )
             except PreflightRefused as exc:
                 if exc.reason in {"db_missing", "no_adopted_revision"}:
-                    return open_kernel(workspace, state_dir=resolved_state, trusted_plugins=trusted_plugins)
+                    return open_kernel(workspace, state_dir=resolved_state)
                 print(
                     _json.dumps({"ok": False, "reason": exc.reason, "detail": exc.detail}, ensure_ascii=False),
                     file=_sys.stderr,
@@ -94,7 +88,7 @@ def serve_kernel(
                 raise SystemExit(f"preflight refused: {exc.reason}: {exc.detail}") from None
             if report.adoption_required:
                 return None
-            return open_kernel(workspace, state_dir=resolved_state, trusted_plugins=trusted_plugins)
+            return open_kernel(workspace, state_dir=resolved_state)
 
         app = create_kernel_app_with_factory(
             kernel_factory=child_factory,

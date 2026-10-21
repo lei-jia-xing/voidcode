@@ -87,7 +87,7 @@ def test_window_measures_the_literal_messages_of_each_dispatch(tmp_path: Path) -
     replies = [_turn(_call("probe-1", PROBE_TOOL)), _turn(output="done")]
     with _server(replies) as server:
         _configure(tmp_path / "workspace", server, source)
-        kernel = open_kernel(tmp_path / "workspace", state_dir=tmp_path / "state", trusted_plugins=frozenset({PLUGIN_ID}))
+        kernel = open_kernel(tmp_path / "workspace", state_dir=tmp_path / "state")
         _CREATED.append(kernel)
         kernel.create_session("sess-window")
         assert kernel.run(PROMPT, session_id="sess-window").status == "completed"

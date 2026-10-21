@@ -35,7 +35,7 @@ from typing import ClassVar, Literal, TypeIs
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
 from voidcode.sdk.hooks import ContextContribution, InvocationFinishedFact, PluginFact
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.plugin import Plugin, PluginQuery, PluginQueryCaller
+from voidcode.sdk.plugin import Plugin, PluginQuery, PluginQueryCaller, StateSchema
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import (
     TextOutput,
@@ -318,7 +318,7 @@ def _config_bool(value: object, *, field_name: str, default: bool) -> bool:
 def parse_skills_config(config: Mapping[str, object] | None) -> SkillsConfig:
     if config is None:
         return SkillsConfig()
-    unknown = sorted(str(key) for key in config if key not in {"enabled", "paths", "config"})
+    unknown = sorted(str(key) for key in config if key not in {"enabled", "paths", "config", "providers"})
     if unknown:
         raise ValueError(f"skills config field '{unknown[0]}' is not supported")
     enabled = _config_bool(config.get("enabled"), field_name="enabled", default=False)
@@ -554,8 +554,6 @@ class SkillTool:
         services: PluginServices,
     ) -> ToolResult:
         _ = services
-        if not context.has_capability("workspace.read"):
-            return ToolFailure(self.definition.name, error="Missing required capability: workspace.read")
 
         raw_name = call.arguments.get("name")
         name = raw_name.strip() if isinstance(raw_name, str) else ""
@@ -606,7 +604,6 @@ class SkillsCommand:
         description="List discovered workspace skills and whether each is enabled.",
         argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
         effects=frozenset({ToolEffect.READ}),
-        capabilities=("workspace.read",),
         busy_gate=False,
     )
 
@@ -857,7 +854,6 @@ def _rule_page_query(arguments: Mapping[str, object], caller: PluginQueryCaller)
 
 
 def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
-    """Plugin entrypoint registered in voidcode-plugin.json."""
     skills_config = parse_skills_config(config)
     return Plugin(
         tools=(SkillTool(skills_config),),
@@ -865,4 +861,18 @@ def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
         queries=(PluginQuery(name="workspace.rule_page", handler=_rule_page_query),),
         context=SkillsContextProvider(skills_config),
         observer=skills_observer,
+        observed_facts=("invocation_finished",),
+        state=StateSchema(
+            version=1,
+            schema={
+                "type": "object",
+                "required": ["schema_version", "cursor_sequence", "touched_paths"],
+                "additionalProperties": False,
+                "properties": {
+                    "schema_version": {"type": "integer", "enum": [1]},
+                    "cursor_sequence": {"type": "integer", "minimum": 0},
+                    "touched_paths": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+        ),
     )

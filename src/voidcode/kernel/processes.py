@@ -1,10 +1,16 @@
-"""Lease-scoped child processes owned by the plugin host.
+"""Kernel-owned child processes: lease-scoped runs plus supervised services and jobs.
 
-The host owns the process, its group, and its bounded output: nothing here crosses the stdio
-protocol, so a process result never depends on the kernel staying responsive, and the kernel's own
-governance already decided whether the calling tool may execute at all. The lease adds stance only:
-a read-only or hook lease is refused by the caller, and every live group is reaped when the host
-shuts down so no child outlives the generation that started it.
+The kernel owns the process, its group, and its bounded output. The kernel's own
+governance already decided whether the calling tool may execute at all; the lease adds
+stance only: a read-only or hook lease is refused by the caller.
+
+Every child this registry starts lives in its OWN process group — never the kernel's
+group, which the kernel shares with the supervisor, the UI, and the test driver. Group
+signals therefore touch exactly the owned tree. Service processes (one per generation,
+stopped at generation retire) run behind a foster-parent intermediate in their own
+session: grandchildren that outlive the server reparent to the intermediate and stay
+observable until the whole service stops. Detached background jobs (user jobs that
+survive a reload) own their session directly.
 """
 
 from __future__ import annotations
@@ -24,7 +30,7 @@ from uuid import uuid4
 from voidcode.sdk.services import ProcessHandle, ProcessResult
 
 #: Hard ceiling for one stream's capture. The bound exists so a runaway command cannot exhaust the
-#: host's memory; a caller that wants more must spill the output itself.
+#: kernel's memory; a caller that wants more must spill the output itself.
 MAX_CAPTURE_BYTES: Final[int] = 256 * 1024 * 1024
 #: One bounded page of a background process's log, matching the artifact page bound.
 MAX_PAGE_BYTES: Final[int] = 256 * 1024
@@ -38,26 +44,47 @@ _READER_GRACE_SECONDS: Final[float] = 2.0
 #: A cancelled invocation answers inside the kernel's cooperative-cancel window, partial output and all.
 _CANCEL_RESPONSE_SECONDS: Final[float] = 0.75
 #: Service foster parent: becomes a child subreaper (Linux), spawns the real server with the
-#: host's log fds, reports the server pid, then lingers as the foster parent so grandchildren
+#: kernel's log fds, reports the server pid, then lingers as the foster parent so grandchildren
 #: that outlive the server reparent here (observable) instead of to init (invisible). It exits
 #: once the server and all fostered children are gone; the registry also signals it on cancel.
+#: The intermediate opens its OWN session (never the kernel's group, which is shared with the
+#: supervisor); the server shares the intermediate's group so one group signal stops the whole
+#: tree. argv[3] is the expected kernel pid, checked before the server spawns and during both
+#: wait loops: a changed parent (hard kernel death) kills the foster's OWN group and exits,
+#: so no service outlives its kernel.
 _SERVICE_INTERMEDIATE: Final[str] = (
-    "import ctypes,os,subprocess,sys,time\n"
+    "import ctypes,os,signal,subprocess,sys,time\n"
     "control=int(sys.argv[1])\n"
     "sin=int(sys.argv[2])\n"
+    "kernel=int(sys.argv[3])\n"
+    "def _orphaned():\n"
+    "    return os.getppid()!=kernel\n"
+    "def _kill_own_group():\n"
+    "    try:\n"
+    "        os.killpg(os.getpgrp(),signal.SIGKILL)\n"
+    "    except Exception:\n"
+    "        pass\n"
+    "if _orphaned():\n"
+    "    sys.exit(9)\n"
     "try:\n"
     "    ctypes.CDLL(None,use_errno=True).prctl(36,1,0,0,0)\n"
     "except Exception:\n"
     "    pass\n"
-    "server=subprocess.Popen(sys.argv[3:],stdin=sin,stdout=sys.stdout.fileno(),"
+    "server=subprocess.Popen(sys.argv[4:],stdin=sin,stdout=sys.stdout.fileno(),"
     "stderr=sys.stderr.fileno(),start_new_session=False,close_fds=True,pass_fds=(sin,))\n"
     "os.write(control,repr(server.pid).encode())\n"
     "os.close(control)\n"
     "os.close(sin)\n"
     "while server.poll() is None:\n"
+    "    if _orphaned():\n"
+    "        _kill_own_group()\n"
+    "        sys.exit(9)\n"
     "    time.sleep(0.05)\n"
     "deadline=time.monotonic()+300\n"
     "while time.monotonic()<deadline:\n"
+    "    if _orphaned():\n"
+    "        _kill_own_group()\n"
+    "        sys.exit(9)\n"
     "    time.sleep(0.5)\n"
     "sys.exit(server.returncode or 0)\n"
 )
@@ -141,10 +168,8 @@ def _proc_ppid(pid: int) -> int | None:
     if marker < 0:
         return None
     fields = stat[marker + 2 :].split()
-    if len(fields) < 2:
-        return None
     try:
-        return int(fields[1])
+        return int(fields[1]) if len(fields) > 1 else None
     except ValueError:
         return None
 
@@ -152,29 +177,29 @@ def _proc_ppid(pid: int) -> int | None:
 def _group_pids(leader_pid: int) -> tuple[int, ...]:
     """Live members of one leader's process group, as far as procfs can tell.
 
-    Used only for owned groups the host itself created, never for the shared host group.
+    Used only for owned groups this registry itself created, never for the shared kernel group.
     Without procfs only the leader is known; group sweeps then degrade to leader signals.
     """
     if os.name != "posix" or not Path("/proc").is_dir():
         return (leader_pid,) if _pid_alive(leader_pid) else ()
     try:
-        pgid = os.getpgid(leader_pid)
-    except ProcessLookupError, PermissionError, OSError:
-        # Every group this helper serves was opened with the leader as its pgid, so that id still
-        # names live members after the leader was reaped. A live /proc entry means pid reuse, and
-        # the reused process is not this group: refuse rather than signal an unrelated group.
-        if _proc_pgrp(leader_pid) is not None:
-            return ()
-        pgid = leader_pid
-    members: list[int] = []
-    try:
-        candidates = [name for name in os.listdir("/proc") if name.isdigit()]
+        own_pgid = os.getpgrp()
     except OSError:
-        return ()
-    for name in candidates:
-        member = int(name)
-        if _proc_pgrp(member) == pgid and _pid_alive(member):
-            members.append(member)
+        own_pgid = -1
+    members: list[int] = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        pgrp = _proc_pgrp(pid)
+        if pgrp is None or pgrp != leader_pid:
+            continue
+        # Every group this helper serves was opened with the leader as its pgid, so that id still
+        # names live members after the leader was reaped. Refuse the kernel's own group outright:
+        # signalling it would hit the supervisor, the UI, or the test driver.
+        if pgrp == own_pgid:
+            return ()
+        members.append(pid)
     return tuple(members)
 
 
@@ -188,10 +213,8 @@ def _proc_pgrp(pid: int) -> int | None:
     if marker < 0:
         return None
     fields = stat[marker + 2 :].split()
-    if len(fields) < 3:
-        return None
     try:
-        return int(fields[2])
+        return int(fields[2]) if len(fields) > 2 else None
     except ValueError:
         return None
 
@@ -199,51 +222,39 @@ def _proc_pgrp(pid: int) -> int | None:
 def _descendant_pids(pid: int) -> tuple[int, ...]:
     """Every live descendant of one pid, deepest last, as far as procfs can tell.
 
-    A service process shares this host's process group, which is exactly why per-process stops
-    cannot use `killpg`: it would signal the host itself. Walking the parent chain gives the
-    descendants that a group signal would otherwise have covered. Without procfs nothing is
+    Used to observe grandchildren a foster intermediate reparented. Without procfs nothing is
     known, and callers signal the pid only.
     """
     if os.name != "posix" or not Path("/proc").is_dir():
         return ()
     children: dict[int, list[int]] = {}
-    try:
-        candidates = [name for name in os.listdir("/proc") if name.isdigit()]
-    except OSError:
-        return ()
-    for name in candidates:
-        child_pid = int(name)
-        parent = _proc_ppid(child_pid)
-        if parent is None:
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
             continue
-        children.setdefault(parent, []).append(child_pid)
-    descendants: list[int] = []
-    frontier = [pid]
-    seen = {pid}
-    while frontier:
-        current = frontier.pop()
-        for child_pid in children.get(current, ()):
-            if child_pid in seen:
-                continue
-            seen.add(child_pid)
-            descendants.append(child_pid)
-            frontier.append(child_pid)
-    return tuple(descendants)
+        child = int(entry.name)
+        parent = _proc_ppid(child)
+        if parent is not None:
+            children.setdefault(parent, []).append(child)
+    ordered: list[int] = []
+    stack = [pid]
+    while stack:
+        current = stack.pop()
+        for child in children.get(current, ()):
+            ordered.append(child)
+            stack.append(child)
+    ordered.reverse()
+    return tuple(ordered)
 
 
 def _pid_alive(pid: int) -> bool:
-    """Whether one pid still names a live process this host may signal (zombies are gone)."""
+    """Whether one pid still names a live process this registry may signal (zombies are gone)."""
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError, OSError:
         return True
-    try:
-        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
-    except OSError:
-        return True
-    return stat.rsplit(") ", 1)[-1].split()[0] != "Z"
+    return True
 
 
 def _signal_pid(pid: int, sig: int) -> None:
@@ -253,22 +264,9 @@ def _signal_pid(pid: int, sig: int) -> None:
         pass
 
 
-def _signal_tree(pids: tuple[int, ...], leader: int, sig: int) -> None:
-    """Signal recorded descendants and their leader, never the group they share with us."""
-    for child_pid in pids:
-        _signal_pid(child_pid, sig)
-    _signal_pid(leader, sig)
-
-
 @dataclass(slots=True)
 class _Background:
-    """One supervised process: identity, group, stdin pipe, and its log targets.
-
-    ``own_group`` says who the group signal may reach: a background (user job) child opened its
-    own session, so `killpg` is exactly its group; a service child shares this host's group, so it
-    is stopped by signalling its recorded descendant tree, and the kernel's tracked-group sweep
-    covers a hard host death separately.
-    """
+    """One supervised process: identity, group, stdin pipe, and its log targets."""
 
     process_id: str
     session_id: str
@@ -291,16 +289,17 @@ class _Background:
             stdout_path=str(self.stdout_path),
             stderr_path=str(self.stderr_path),
             running=self.running(),
-            exit_code=self.process.poll(),
+            exit_code=self.process.returncode,
         )
 
 
 class ProcessRegistry:
-    """Every child process the host started for a lease, plus its bounded capture."""
+    """Every child process the kernel started for a lease, plus its bounded capture."""
 
     def __init__(self) -> None:
         # One-shot `run()` children only: supervised background jobs are owned by their bucket
-        # (they survive a host swap), and service children share the host group (never `killpg`).
+        # (they survive a generation swap), and service children live in their own sessions so a
+        # generation retire stops exactly its tree without touching the shared kernel group.
         self._groups: dict[int, subprocess.Popen[Any]] = {}
         self._background: dict[str, _Background] = {}
         self._services: dict[str, _Background] = {}
@@ -356,14 +355,14 @@ class ProcessRegistry:
         stdin_thread = threading.Thread(
             target=_write_stdin,
             args=(process, stdin_payload),
-            name="plugin-host-stdin",
+            name="kernel-stdin",
             daemon=True,
         )
         readers = [
             threading.Thread(
                 target=_read_stream,
                 args=(pipe, capture, stream_name, reader_errors, on_output),
-                name=f"plugin-host-{stream_name}",
+                name=f"kernel-{stream_name}",
                 daemon=True,
             )
             for pipe, capture, stream_name in (
@@ -449,9 +448,9 @@ class ProcessRegistry:
     def reap_all(self) -> None:
         """Kill and reap every one-shot `run()` group; supervised buckets are owned separately.
 
-        Background jobs survive a host swap (stopped only by an explicit owner shutdown), and
-        service children are stopped by `stop_services` — never by a group sweep that would
-        signal the shared host group. The host still leaves no *one-shot* child behind.
+        Background jobs survive a generation swap (stopped only by an explicit owner shutdown),
+        and service children are stopped by `stop_services` per owned tree. This registry still
+        leaves no *one-shot* child behind.
         """
         with self._lock:
             processes = list(self._groups.values())
@@ -463,7 +462,7 @@ class ProcessRegistry:
 
     # ---- background processes -----------------------------------------------------------------
     # A background process outlives the invocation that started it, so it is supervised instead of
-    # awaited: the host owns the live process and its group, the caller owns the identity it
+    # awaited: the kernel owns the live process and its group, the caller owns the identity it
     # persists (`ProcessHandle`) and the log paths it asked for.
 
     def spawn(
@@ -481,9 +480,9 @@ class ProcessRegistry:
     ) -> ProcessHandle:
         """Start one supervised process, streaming its output into the caller's paths.
 
-        ``service`` selects the lifetime: a service process belongs to this host generation (it is
-        stopped at host retirement and joins the host's process group, so a hard host kill reaches
-        it), while a background process is a user job that survives a host swap.
+        ``service`` selects the lifetime: a service process belongs to this kernel generation
+        (it is stopped at generation retirement, in its own session so the shared kernel group
+        is never signalled), while a background process is a user job that survives a swap.
         """
         command = _decode_argv(argv, caller="spawn_service_process" if service else "spawn_process")
         identifier = process_id or f"{'svc' if service else 'proc'}-{uuid4().hex[:16]}"
@@ -549,14 +548,14 @@ class ProcessRegistry:
         stdout_path: Path,
         stderr_path: Path,
     ) -> ProcessHandle:
-        """Start one service child behind a reaping intermediate in the host's group.
+        """Start one service child behind a reaping intermediate in its own session.
 
-        The intermediate double-forks the real server, reports its pid over a pipe, then waits as
-        the foster parent: grandchildren that outlive the server reparent to the intermediate
-        (never to init), so the recorded tree stays observable until the whole service stops. The
-        entry's ``process`` handle is the intermediate — shared group, reaped by us — while the
-        server's stdin handle and log paths serve IO. The reported ``ProcessHandle`` names the
-        server pid the caller observes.
+        The intermediate opens its own session (never the kernel's group), double-forks the real
+        server, reports its pid over a pipe, then waits as the foster parent: grandchildren that
+        outlive the server reparent to the intermediate (never to init), so the recorded tree
+        stays observable until the whole service stops. The entry's ``process`` handle is the
+        intermediate — owned session, reaped by us — while the server's stdin handle and log paths
+        serve IO. The reported ``ProcessHandle`` names the server pid the caller observes.
         """
         control_reader, control_writer = os.pipe()
         stdin_reader, stdin_writer = os.pipe()
@@ -569,6 +568,7 @@ class ProcessRegistry:
                         _SERVICE_INTERMEDIATE,
                         str(control_writer),
                         str(stdin_reader),
+                        str(os.getpid()),
                         *command,
                     ],
                     cwd=None if cwd is None else str(cwd),
@@ -576,7 +576,7 @@ class ProcessRegistry:
                     stdin=subprocess.DEVNULL,
                     stdout=out,
                     stderr=err,
-                    start_new_session=False,
+                    start_new_session=True,
                     pass_fds=(control_writer, stdin_reader),
                     creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
                 )
@@ -608,7 +608,7 @@ class ProcessRegistry:
             stdout_path=stdout_path,
             stderr_path=stderr_path,
             process=intermediate,
-            own_group=False,
+            own_group=True,
         )
         entry.process.stdin = stdin_pipe  # type: ignore[assignment]
         with self._lock:
@@ -626,8 +626,8 @@ class ProcessRegistry:
             entry = self._background.get(process_id) or self._services.get(process_id)
         if entry is None:
             # Either it was never started here, or it belongs to another session, or it survived a
-            # host restart: all three are "not supervised by this host for this session", and the
-            # caller's persisted identity is what distinguishes them for the user.
+            # kernel restart: all three are "not supervised by this kernel for this session", and
+            # the caller's persisted identity is what distinguishes them for the user.
             raise ValueError(f"unknown background process for this session: {process_id}")
         if entry.session_id != session_id:
             raise ValueError(f"unknown background process for this session: {process_id}")
@@ -638,7 +638,7 @@ class ProcessRegistry:
         return self._supervised(process_id, session_id=session_id)
 
     def service_entry(self, process_id: str, *, session_id: str) -> _Background | None:
-        """One host-generation service entry, or None when this id is not a live service."""
+        """One generation service entry, or None when this id is not a live service."""
         with self._lock:
             entry = self._services.get(process_id)
         if entry is None or entry.session_id != session_id:
@@ -688,7 +688,7 @@ class ProcessRegistry:
         """Stop one supervised process and its owned descendants, reporting whether all are gone."""
         entry = self.background(process_id, session_id=session_id)
         descendants = self._refresh_tree(entry)
-        leaders_alive = entry.process.poll() is None or (not entry.own_group and _pid_alive(entry.pid))
+        leaders_alive = entry.process.poll() is None or _pid_alive(entry.pid)
         if leaders_alive:
             self._signal_entry(entry, descendants, signal.SIGTERM)
             drain_until = time.monotonic() + _STOP_GRACE_SECONDS
@@ -710,8 +710,6 @@ class ProcessRegistry:
         intermediate and stay observable. Stale numbers are harmless: signals and liveness
         probes skip dead pids.
         """
-        if entry.own_group:
-            return ()
         seen = set(entry.tree_pids)
         seen.update(_descendant_pids(entry.pid))
         seen.update(_descendant_pids(entry.process.pid))
@@ -734,17 +732,20 @@ class ProcessRegistry:
 
     @staticmethod
     def _signal_entry(entry: _Background, descendants: tuple[int, ...], sig: int) -> None:
-        """Signal exactly what this entry owns: its own group, or its tree in the shared group."""
-        if entry.own_group:
-            _kill_group(entry.process, sig)
-        else:
-            for child_pid in descendants:
-                _signal_pid(child_pid, sig)
-            _signal_pid(entry.pid, sig)
-            _signal_pid(entry.process.pid, sig)
+        """Signal exactly what this entry owns: its own session group plus its recorded tree.
+
+        The intermediate owns the session and the server shares its group, so one group
+        signal reaches both leaders; the recorded tree covers grandchildren that escaped
+        the group. The kernel's own group is never signalled.
+        """
+        _kill_group(entry.process, sig)
+        for child_pid in descendants:
+            _signal_pid(child_pid, sig)
+        _signal_pid(entry.pid, sig)
+        _signal_pid(entry.process.pid, sig)
 
     def stop_background(self) -> None:
-        """Stop every supervised background (user job) at the owner's shutdown; a host swap keeps them running.
+        """Stop every supervised background (user job) at the owner's shutdown; a swap keeps them running.
 
         Each job owns its process group, so the stop sweeps the whole group — including
         TERM-ignoring members after a dead leader — and only then reports. A swap never calls
@@ -783,9 +784,9 @@ class ProcessRegistry:
     def stop_services(self) -> None:
         """Stop every service process this generation started, plus its recorded descendants.
 
-        Called by the host's own cleanup on retire/reload/owner-shutdown. A hard host kill is
-        covered separately: the kernel sweeps this host's tracked group even when the leader is
-        already dead, because service children share the group by design.
+        Called by the runtime's own cleanup on retire/reload/owner-shutdown. Each service owns
+        its session, so the stop sweeps exactly its group plus the fostered tree — never the
+        shared kernel group.
         """
         entries = self._drain_bucket(self._services)
         drain_until = time.monotonic() + _READER_GRACE_SECONDS

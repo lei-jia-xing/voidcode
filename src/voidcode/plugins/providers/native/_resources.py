@@ -1,7 +1,7 @@
 """Plugin-local resource loading.
 
 Data files ship inside the admitted plugin artifact next to these modules, so a
-plain filesystem-relative read is both correct and independent of how the host
+plain filesystem-relative read is both correct and independent of how the runtime
 names the plugin package.
 """
 

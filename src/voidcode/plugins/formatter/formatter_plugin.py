@@ -4,7 +4,7 @@ Ports the legacy formatter policy (``src/voidcode/formatter/{config,executor}.py
 post-write trigger sites in ``tools/write.py``/``tools/edit.py``) onto the kernel's post-tool
 hook seam:
 
-- the manifest declares one ``post_tool`` hook with ``mutating=True`` for the file-mutating
+- the registration declares one ``post_tool`` hook with ``mutating=True`` for the file-mutating
   tools, so the kernel runs it inside the SAME governed invocation, only after a successful
   result, and appends its note to the result the model reads and the events record;
 - a restrictive stance (frozen read-only or an active overlay) makes the kernel SKIP the hook
@@ -33,8 +33,8 @@ from .formatter_config import (
 )
 from .formatter_executor import FormatterExecutor, formatter_diagnostics
 
-#: Tools whose successful result is offered to this hook. ``apply_patch`` names no admitted
-#: tool (patch runs inside ``edit``), so it matches nothing; kept for manifest parity only.
+#: Tools whose successful result is offered to this hook. ``apply_patch`` names no registered
+#: tool (patch runs inside ``edit``), so it matches nothing; kept for forward compatibility.
 FORMATTED_TOOL_NAMES: tuple[str, ...] = ("write", "edit", "apply_workspace_edit", "apply_patch", "ast_grep")
 #: Argument keys the file tools use for the written path.
 _PATH_ARGUMENT_KEYS: tuple[str, ...] = ("path", "file_path", "target_path")
@@ -100,7 +100,7 @@ def parse_formatter_config(config: Mapping[str, object] | None) -> FormatterRunt
     base = FormatterRuntimeConfig(enabled=True, format_on_write=False, formatter_presets=default_formatter_presets())
     if config is None:
         return base
-    unknown = sorted(str(key) for key in config if key not in {"enabled", "format_on_write", "languages"})
+    unknown = sorted(str(key) for key in config if key not in {"enabled", "format_on_write", "languages", "providers"})
     if unknown:
         raise ValueError(f"formatter config field '{unknown[0]}' is not supported")
     raw_languages = config.get("languages")
@@ -156,6 +156,9 @@ class FormatterHook:
 
 
 def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
-    """Plugin entrypoint registered in voidcode-plugin.json."""
     formatter_config = parse_formatter_config(config)
-    return Plugin(post_tool=FormatterHook(formatter_config))
+    return Plugin(
+        post_tool=FormatterHook(formatter_config),
+        post_tool_match=("write", "edit", "apply_workspace_edit", "apply_patch", "ast_grep"),
+        post_tool_mutating=True,
+    )

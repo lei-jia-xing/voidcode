@@ -1,20 +1,12 @@
-"""Files plugin: workspace read, write, edit, and search tools (patch runs inside edit).
-
-The entry module assembles the tools from the plugin manifest, so the declared
-schema/effects and the registered tools can never drift. It is the package
-entry point: a package spec keeps the plugin-local modules importable.
-"""
+"""Files plugin: workspace read, write, edit, and search tools (patch runs inside edit)."""
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
-from pathlib import Path
 from typing import Any
 
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.manifest import parse_plugin_manifest
-from voidcode.sdk.plugin import Plugin, tool_definition
+from voidcode.sdk.plugin import Plugin
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import TextOutput, ToolCall, ToolDiagnostics, ToolFailure, ToolResult
 
@@ -30,7 +22,7 @@ from .write_tool import WriteTool
 class _ModelVisibleTool:
     """Public boundary: a raised file diagnostic becomes the model-visible typed failure.
 
-    The host redacts an escaping exception to its class name, so the shared guards' refusals
+    The runtime redacts an escaping exception to its class name, so the shared guards' refusals
     (unseen ranges, write-without-read) must be answered here with their own text.
     """
 
@@ -56,22 +48,16 @@ class _ModelVisibleTool:
 
 
 def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
-    manifest_path = Path(__file__).parent / "voidcode-plugin.json"
-    raw_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest = parse_plugin_manifest(raw_manifest)
-    tool_defs = {decl.name: tool_definition(decl) for decl in manifest.tools}
     return Plugin(
         tools=tuple(
             _ModelVisibleTool(tool)
             for tool in (
-                ReadTool(definition=tool_defs["read"]),
-                WriteTool(definition=tool_defs["write"]),
-                EditTool(definition=tool_defs["edit"]),
-                ApplyWorkspaceEditTool(definition=tool_defs["apply_workspace_edit"]),
-                GlobTool(tool_defs["glob"]),
-                GrepTool(tool_defs["grep"]),
+                ReadTool(),
+                WriteTool(),
+                EditTool(),
+                ApplyWorkspaceEditTool(),
+                GlobTool(),
+                GrepTool(),
             )
         ),
-        providers=(),
-        close=None,
     )

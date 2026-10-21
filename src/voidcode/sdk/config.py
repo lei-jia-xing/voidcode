@@ -44,9 +44,9 @@ class KernelPolicyConfig:
 
 @dataclass(frozen=True, slots=True)
 class KernelProviderEntry:
-    """Endpoint configuration for one provider name registered by an admitted plugin.
+    """Endpoint configuration for one provider name registered by a plugin.
 
-    The configured name IS the selection: the kernel passes it to the host unchanged and never
+    The configured name IS the selection: the kernel passes it to the runtime unchanged and never
     knows a wire protocol, vendor, or adapter identity.
     """
 

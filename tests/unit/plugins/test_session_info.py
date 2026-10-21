@@ -111,7 +111,6 @@ def _invocation(tmp_path: Path, name: str) -> CommandInvocation:
         invocation_id="invocation",
         revision_id="rev",
         actor="user",
-        capabilities=frozenset(),
     )
     return CommandInvocation(context=context, name=name)
 
@@ -210,7 +209,7 @@ def test_copy_without_an_assistant_turn_is_an_explicit_error(tmp_path: Path) -> 
     assert "no assistant response" in (result.error or "")
 
 
-def test_panels_only_register_their_manifest_commands() -> None:
+def test_panels_only_register_their_commands() -> None:
     plugin = _plugin()
 
     assert sorted(command.definition.name for command in plugin.commands) == ["context", "copy", "export", "session_status", "usage"]

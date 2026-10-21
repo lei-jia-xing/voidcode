@@ -62,7 +62,7 @@ def _close_kernels() -> Iterator[None]:
 
 
 def _open(tmp_path: Path) -> Kernel:
-    kernel = open_kernel(tmp_path / "workspace", state_dir=tmp_path / "state", trusted_plugins=frozenset({PLUGIN_ID}))
+    kernel = open_kernel(tmp_path / "workspace", state_dir=tmp_path / "state")
     _CREATED.append(kernel)
     return kernel
 
@@ -253,7 +253,7 @@ def test_a_foreign_reference_is_refused_and_never_read(tmp_path: Path) -> None:
         _configure(tmp_path / "workspace", server, source)
         kernel = _open(tmp_path)
         kernel.create_session("sess-foreign")
-        # The tool call fails visibly: the host refuses the reference and the model is told so.
+        # The tool call fails visibly: the runtime refuses the reference and the model is told so.
         assert kernel.run("read outside", session_id="sess-foreign").status == "completed"
         tool_text = json.dumps(server.requests[1].get("messages"))
         assert "must be a lowercase sha256 digest" in tool_text
@@ -294,24 +294,17 @@ def test_hook_lease_cannot_spill(tmp_path: Path) -> None:
         kernel.create_session("sess-hook-spill")
         assert kernel.run("spill", session_id="sess-hook-spill").status == "completed"
         tool_text = json.dumps(server.requests[1].get("messages"))
-        assert "hook leases cannot call artifact_spill" in tool_text
+        assert "hook leases cannot spill artifacts" in tool_text
 
 
 def test_an_unfinished_spill_leaves_no_temporary_file(tmp_path: Path) -> None:
-    source = tmp_path / "plugin"
-    write_reload_plugin(source, tool_output="v1", services_probe=True)
-    replies = [
-        _turn(_call("spill-1", SERVICES_TOOL, action="spill_abandon", text="never finalized")),
-        _turn(output="done"),
-    ]
-    with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source)
-        kernel = _open(tmp_path)
-        kernel.create_session("sess-abandon")
-        assert kernel.run("abandon", session_id="sess-abandon").status == "completed"
+    from voidcode.kernel.artifacts import ArtifactStore
 
-        assert _tool_payloads(server)[0]["spill_id"]
-        # No private temp file and no published blob: an abandoned spill leaves nothing behind.
-        leftovers = [entry.name for entry in (tmp_path / "state" / "artifacts").iterdir()]
-        assert [name for name in leftovers if name.startswith(".spill-")] == []
-        assert [name for name in leftovers if entry_is_file(tmp_path, name)] == []
+    store = ArtifactStore(tmp_path / "artifacts")
+    spill_id, spill = store.start_spill("text/plain", owner="lease-1")
+    spill.append(b"never finalized")
+    assert spill_id
+    # The lease is revoked with the spill unfinished: its private temp file is gone.
+    store.discard_owner("lease-1")
+    leftovers = [entry.name for entry in (tmp_path / "artifacts").iterdir()]
+    assert [name for name in leftovers if name.startswith(".spill-")] == []

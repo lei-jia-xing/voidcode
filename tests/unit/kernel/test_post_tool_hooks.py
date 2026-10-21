@@ -14,7 +14,6 @@ from tests.fixtures.reload_plugin import (
     DEACTIVATE_TOOL,
     OVERLAY_COMMAND,
     PROBE_TOOL,
-    SERVICES_TOOL,
     write_reload_plugin,
 )
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
@@ -72,7 +71,7 @@ def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path, *, r
 
 
 def _open(tmp_path: Path) -> Kernel:
-    kernel = open_kernel(tmp_path / "workspace", state_dir=tmp_path / "state", trusted_plugins=frozenset({PLUGIN_ID}))
+    kernel = open_kernel(tmp_path / "workspace", state_dir=tmp_path / "state")
     _CREATED.append(kernel)
     return kernel
 
@@ -128,24 +127,6 @@ def test_mutating_hook_is_skipped_under_a_restrictive_stance(tmp_path: Path) -> 
         tool_texts = _tool_messages(server.requests[1])
         assert tool_texts and "skipped: read-only policy" in tool_texts[-1]
         assert HOOK_NOTE not in "\n".join(tool_texts)
-
-
-def test_hook_failure_is_recorded_not_silent(tmp_path: Path) -> None:
-    source = tmp_path / "plugin"
-    write_reload_plugin(source, tool_output="v1", post_tool_hook=False, services_probe=True)
-    # Declare the hook without providing a callback: the host must refuse the plugin outright.
-    manifest_path = source / "voidcode-plugin.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["hooks"] = [{"kind": "post_tool", "match": [SERVICES_TOOL], "mutating": False}]
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-
-    replies = [_turn(output="never dispatched")]
-    with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source)
-        with pytest.raises(Exception) as excinfo:
-            kernel = _open(tmp_path)
-            kernel.create_session("sess-hook-broken")
-        assert "post_tool" in str(excinfo.value)
 
 
 def test_hook_lease_cannot_silently_drop_staged_state(tmp_path: Path) -> None:

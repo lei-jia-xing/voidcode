@@ -1,4 +1,4 @@
-"""Wire-agnostic provider contracts shared by kernel, host, and plugins.
+"""Wire-agnostic provider contracts shared by kernel, runtime, and plugins.
 
 Providers consume neutral messages and tool definitions only. The kernel owns
 context assembly and catalog metadata; opaque provider metadata travels as a

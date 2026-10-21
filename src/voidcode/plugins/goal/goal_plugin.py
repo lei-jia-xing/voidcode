@@ -926,7 +926,6 @@ class GoalCommand:
         description="Show current goal status and details.",
         argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
         effects=frozenset({ToolEffect.READ}),
-        capabilities=frozenset(),
         busy_gate=False,
         client_capabilities=frozenset(),
     )
@@ -969,7 +968,6 @@ class GoalSetCommand:
             "additionalProperties": False,
         },
         effects=frozenset({ToolEffect.WRITE, ToolEffect.SESSION}),
-        capabilities=frozenset({"workspace.write"}),
         busy_gate=False,
         client_capabilities=frozenset(),
     )
@@ -1084,7 +1082,6 @@ class GoalEditCommand:
             "additionalProperties": False,
         },
         effects=frozenset({ToolEffect.WRITE, ToolEffect.SESSION}),
-        capabilities=frozenset({"workspace.write", "workspace.read"}),
         busy_gate=False,
         client_capabilities=frozenset(),
     )
@@ -1199,7 +1196,6 @@ class GoalPauseCommand:
         description="Pause the active goal.",
         argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
         effects=frozenset({ToolEffect.SESSION}),
-        capabilities=frozenset(),
         busy_gate=False,
         client_capabilities=frozenset(),
     )
@@ -1242,7 +1238,6 @@ class GoalResumeCommand:
         description="Resume paused, blocked, or limited goal.",
         argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
         effects=frozenset({ToolEffect.SESSION}),
-        capabilities=frozenset(),
         busy_gate=False,
         client_capabilities=frozenset(),
     )
@@ -1334,7 +1329,6 @@ class GoalClearCommand:
         description="Clear current goal.",
         argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
         effects=frozenset({ToolEffect.SESSION}),
-        capabilities=frozenset(),
         busy_gate=False,
         client_capabilities=frozenset(),
     )
@@ -1362,7 +1356,6 @@ class GoalLoadObjectiveCommand:
         description="Retrieve full objective text for large goals.",
         argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
         effects=frozenset({ToolEffect.READ}),
-        capabilities=frozenset({"workspace.read"}),
         busy_gate=False,
         client_capabilities=frozenset(),
     )
@@ -1805,7 +1798,7 @@ def prepare_goal_deactivation(
 ) -> Mapping[str, object]:
     """Pure deactivation transform: close the live window at the authentic tip and pause the goal.
 
-    The kernel runs this in the host that still holds this schema, before the owner's
+    The kernel runs this in the runtime that still holds this schema, before the owner's
     registrations are dropped, so there is no service, lease, store or clock to consult: the
     paused copy is derived from the state alone and keeps the identity, objective, lifetime
     counters, budgets and `updated_at` a disable must not rewrite. Closing the window at the
@@ -1851,7 +1844,6 @@ def prepare_goal_deactivation(
 
 
 def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
-    """Plugin entrypoint registered in voidcode-plugin.json."""
     tools = (
         GetGoalTool(),
         CreateGoalTool(),
@@ -1879,6 +1871,7 @@ def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
         providers=(),
         context=goal_context,
         observer=goal_observer,
+        observed_facts=("usage", "invocation_finished", "run_finished"),
         prepare_deactivate=prepare_goal_deactivation,
         close=None,
     )

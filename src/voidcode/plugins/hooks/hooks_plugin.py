@@ -15,13 +15,13 @@ The legacy ``hooks.pre_tool`` / ``hooks.post_tool`` / ``hooks.on_session_start``
 - Hook leases are read-only, so this plugin touches no state and stages no events.
 
 Which tools a surface applies to is config-driven (``pre_tool_match`` /
-``post_tool_match``), exactly as in the legacy runtime; the manifest declares
-``match: ["*"]`` because every tool must reach the plugin to be filtered.
+``post_tool_match``), exactly as in the legacy runtime; the registration matches
+``("*",)`` because every tool must reach the plugin to be filtered.
 
 The remaining legacy surfaces (``session_idle``, ``turn_progress``,
 ``tool_batch_repeated``, ``approval_requested``, ``question_asked``,
 ``before_compact`` and the ``background_task_*`` family) have no kernel channel
-today, so no config field and no manifest declaration exists for them.
+today, so no config field and no registration exists for them.
 """
 
 from __future__ import annotations
@@ -62,6 +62,8 @@ _CONFIG_KEYS: frozenset[str] = frozenset(
         "post_tool_match",
         "session_start",
         "session_end",
+        # The kernel injects the resolved providers map every factory receives; it is not ours.
+        "providers",
     }
 )
 
@@ -264,11 +266,14 @@ class ToolHooks:
 
 
 def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
-    """Plugin entrypoint registered in voidcode-plugin.json."""
     hooks = ToolHooks(parse_hooks_config(config))
     return Plugin(
         pre_tool=hooks.pre_tool,
+        pre_tool_match=("*",),
+        pre_tool_mutating=True,
         post_tool=hooks.post_tool,
+        post_tool_match=("*",),
+        post_tool_mutating=True,
         session_start=hooks.lifecycle,
         session_end=hooks.lifecycle,
     )

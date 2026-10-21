@@ -1,11 +1,11 @@
-"""LSP managed-consumer smoke on the real kernel + plugin host + loopback provider.
+"""LSP managed-consumer smoke on the real kernel + loopback provider.
 
 End-to-end proofs the unit suite cannot give: the read+execute lease fix lets a
 yolo `lsp` call spawn a real fixture server; the `workspace.document_version`
 query drives genuine `apply_workspace_edit` match/stale/None guards through the
-kernel; a second-use invocation cancelled mid-wait kills the actual server plus
-its TERM-ignoring descendant; hang-timeout stops the server; graceful close and
-PID-only host SIGKILL leave no service or descendant behind; read_only refuses
+kernel; a session cancel during a blocked second use kills the actual server plus
+its TERM-ignoring descendant; graceful close and reload leave no service or
+descendant behind (detached background jobs survive); read_only refuses
 the tool while the inventory command stays passive.
 """
 
@@ -13,8 +13,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import signal
 import sys
 import time
 from collections.abc import Iterator
@@ -152,16 +150,20 @@ def _wait_file(path: Path, *, timeout: float = 15.0) -> str:
     raise AssertionError(f"{path} was never written")
 
 
-class _TestAbort:
-    """Local abort handle satisfying the provider protocol for direct host.invoke calls."""
+def _wait_second_hover_started(record: Path, *, timeout: float = 30.0) -> bool:
+    """Wait until the fixture records the hung second hover plus its barrier.
 
-    def __init__(self) -> None:
-        self.cancelled = False
-        self.reason: str | None = None
-
-    def set_cancelled(self, value: bool, *, reason: str | None = None) -> None:
-        self.cancelled = value
-        self.reason = reason if value else None
+    The fixture answers `hang_after` requests, then records the next real
+    request and `__hanging__` before sleeping: both lines prove hover #2 is
+    genuinely in flight and the client genuinely blocked awaiting its response.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        methods = [entry.get("method") for entry in _record_methods(record)]
+        if "__hanging__" in methods and methods.count("textDocument/hover") >= 2:
+            return True
+        time.sleep(0.05)
+    return False
 
 
 def test_yolo_lsp_spawns_fixture_and_opens_document(tmp_path: Path) -> None:
@@ -258,7 +260,7 @@ def test_apply_workspace_edit_version_match_and_stale_refusal(tmp_path: Path) ->
         assert "not requested version 99" in completed[4].error or "version" in completed[4].error.lower()
 
 
-def test_second_use_cancel_kills_server_and_term_ignoring_descendant(tmp_path: Path) -> None:
+def test_session_cancel_during_blocked_use_kills_server_and_term_ignoring_descendant(tmp_path: Path) -> None:
     record = tmp_path / "record.jsonl"
     grandchild_pid = tmp_path / "grandchild.pid"
     grandchild_cmd = (
@@ -270,6 +272,8 @@ def test_second_use_cancel_kills_server_and_term_ignoring_descendant(tmp_path: P
     replies = [
         _turn(_call("call-lsp-1", "lsp", operation="hover", path="note.txt", line=1, character=2)),
         _turn(output="first done"),
+        _turn(_call("call-lsp-2", "lsp", operation="hover", path="note.txt", line=1, character=2)),
+        _turn(output="second done"),
     ]
     with _loopback_server(replies) as server:
         kernel, workspace = _kernel(tmp_path, server, record, grandchild=grandchild_cmd, hang_after=2)
@@ -281,91 +285,21 @@ def test_second_use_cancel_kills_server_and_term_ignoring_descendant(tmp_path: P
         assert first_pids, "fixture never spawned the grandchild on first use"
         server_pid = int(first_pids[0]["pid"])
 
-        # Direct second invocation reuses the live server and blocks; the host cancel
-        # RPC (the same path _wait_for_future takes) must stop server + descendant.
-        from uuid import uuid4
-
-        from voidcode.kernel.host import InvocationCancelled
-        from voidcode.sdk.invocation import ToolContext
-        from voidcode.sdk.tools import ToolCall
-
-        host = kernel.host
-        abort = _TestAbort()
-        context = ToolContext(
-            workspace=workspace,
-            session_id=session_id,
-            run_id="run-cancel",
-            invocation_id=uuid4().hex,
-            revision_id=kernel.command_catalog().revision_id,
-            actor="model",
-            capabilities=frozenset({"workspace.read"}),
-            abort_signal=abort,  # type: ignore[arg-type]
-        )
-        call = ToolCall("lsp", {"operation": "hover", "path": "note.txt", "line": 1, "character": 1})
+        # Second run blocks inside the hung server; cancelling the session must
+        # cooperatively stop the invocation and kill the server + descendant.
         outcome: dict[str, object] = {}
 
-        def _second_use() -> None:
-            try:
-                outcome["result"] = host.invoke(call, context=context, timeout_seconds=60)
-            except BaseException as exc:  # noqa: BLE001 - the cancel path is the assertion
-                outcome["error"] = exc
+        def _second_run() -> None:
+            outcome["result"] = kernel.run("second hover", session_id=session_id, max_steps=8)
 
-        worker = Thread(target=_second_use, daemon=True)
+        worker = Thread(target=_second_run, daemon=True)
         worker.start()
-        time.sleep(2.0)  # let the second hover reach the blocked read
-        abort.set_cancelled(True, reason="smoke cancel")
-        worker.join(timeout=30)
-        assert not worker.is_alive(), "second use never returned after cancel"
-        assert isinstance(outcome.get("error"), InvocationCancelled), outcome
-        assert _pid_gone(server_pid), f"server pid {server_pid} survived second-use cancel"
-        assert _pid_gone(descendant), f"descendant pid {descendant} survived second-use cancel"
-
-
-def test_second_use_timeout_stops_hung_server(tmp_path: Path) -> None:
-    record = tmp_path / "record.jsonl"
-    grandchild_pid = tmp_path / "grandchild.pid"
-    grandchild_cmd = (
-        f'{sys.executable} -c "import os,pathlib,signal,time;'
-        "signal.signal(signal.SIGTERM,signal.SIG_IGN);"
-        f'pathlib.Path({str(grandchild_pid)!r}).write_text(str(os.getpid()));time.sleep(120)"'
-    )
-    replies = [
-        _turn(_call("call-lsp-1", "lsp", operation="hover", path="note.txt", line=1, character=2)),
-        _turn(output="first done"),
-    ]
-    with _loopback_server(replies) as server:
-        kernel, workspace = _kernel(tmp_path, server, record, hang_after=2, grandchild=grandchild_cmd)
-        (workspace / "note.txt").write_text("x\n", encoding="utf-8")
-        session_id = kernel.create_session().session_id
-        assert kernel.run("first hover", session_id=session_id, max_steps=8).status == "completed"
-        descendant = int(_wait_file(grandchild_pid))
-        markers = [entry for entry in _record_methods(record) if entry.get("method") == "__grandchild__"]
-        assert markers, "fixture never spawned the grandchild on first use"
-        server_pid = int(markers[0]["pid"])
-        from uuid import uuid4
-
-        from voidcode.kernel.host import HostTimeout
-        from voidcode.sdk.invocation import ToolContext
-        from voidcode.sdk.tools import ToolCall
-
-        host = kernel.host
-        context = ToolContext(
-            workspace=workspace,
-            session_id=session_id,
-            run_id="run-timeout",
-            invocation_id=uuid4().hex,
-            revision_id=kernel.command_catalog().revision_id,
-            actor="model",
-            capabilities=frozenset({"workspace.read"}),
-        )
-        call = ToolCall("lsp", {"operation": "hover", "path": "note.txt", "line": 1, "character": 1})
-        started = time.monotonic()
-        with pytest.raises(HostTimeout):
-            host.invoke(call, context=context, timeout_seconds=3)
-        assert time.monotonic() - started < 30, "timeout must come from the host window, not the LSP read"
-        # Proven BEFORE kernel.close: the timeout killed the hung server + descendant.
-        assert _pid_gone(server_pid, timeout=20), f"server pid {server_pid} survived second-use timeout"
-        assert _pid_gone(descendant, timeout=20), f"descendant pid {descendant} survived second-use timeout"
+        assert _wait_second_hover_started(record)
+        assert kernel.cancel_session(session_id, reason="smoke cancel") is True
+        worker.join(timeout=60)
+        assert not worker.is_alive(), "second run never returned after cancel"
+        assert _pid_gone(server_pid), f"server pid {server_pid} survived session cancel"
+        assert _pid_gone(descendant), f"descendant pid {descendant} survived session cancel"
 
 
 def test_ask_parks_before_spawn_and_allow_spawns_successfully(tmp_path: Path) -> None:
@@ -448,7 +382,7 @@ def test_live_graceful_close_kills_server_and_term_ignoring_descendant(tmp_path:
         assert _pid_gone(descendant, timeout=20), f"descendant pid {descendant} survived graceful close"
 
 
-def test_reload_retires_old_host_and_its_service_tree(tmp_path: Path) -> None:
+def test_reload_retires_old_runtime_and_its_service_tree(tmp_path: Path) -> None:
     record = tmp_path / "record.jsonl"
     grandchild_pid = tmp_path / "grandchild.pid"
     grandchild_cmd = (
@@ -482,7 +416,7 @@ def test_reload_retires_old_host_and_its_service_tree(tmp_path: Path) -> None:
         bg_pid = int(_wait_file(tmp_path / "bg.pid"))
         markers = [entry for entry in _record_methods(record) if entry.get("method") == "__grandchild__"]
         server_pid = int(markers[0]["pid"])
-        old_host_pid = kernel.host.pid
+        old_runtime = kernel.plugin_runtime
 
         # A no-op reload refuses; change the workspace config so the swap is real.
         config_path = workspace / "voidcode.json"
@@ -491,39 +425,7 @@ def test_reload_retires_old_host_and_its_service_tree(tmp_path: Path) -> None:
         config_path.write_text(json.dumps(config), encoding="utf-8")
         reloaded = kernel.invoke_command(session_id, "kernel.reload", {}, expected_revision=kernel.command_catalog().revision_id)
         assert reloaded.status == "ok", reloaded
-        assert kernel.host.pid != old_host_pid, "reload must swap the host process"
+        assert kernel.plugin_runtime is not old_runtime, "reload must swap the plugin runtime"
         assert _pid_gone(server_pid, timeout=20), f"server pid {server_pid} survived reload"
         assert _pid_gone(descendant, timeout=20), f"descendant pid {descendant} survived reload"
-        assert _pid_gone(old_host_pid, timeout=20), f"old host pid {old_host_pid} survived reload"
         assert not _pid_gone(bg_pid, timeout=0.1), f"detached background job {bg_pid} must survive reload"
-
-
-def test_pid_kill_of_live_host_leaves_no_service_behind(tmp_path: Path) -> None:
-    record = tmp_path / "record.jsonl"
-
-    grandchild_pid = tmp_path / "grandchild.pid"
-    grandchild_cmd = (
-        f'{sys.executable} -c "import os,pathlib,signal,time;'
-        "signal.signal(signal.SIGTERM,signal.SIG_IGN);"
-        f'pathlib.Path({str(grandchild_pid)!r}).write_text(str(os.getpid()));time.sleep(120)"'
-    )
-    replies = [
-        _turn(_call("call-lsp-1", "lsp", operation="hover", path="note.txt", line=1, character=2)),
-        _turn(output="close done"),
-    ]
-    with _loopback_server(replies) as server:
-        kernel, workspace = _kernel(tmp_path, server, record, grandchild=grandchild_cmd)
-        (workspace / "note.txt").write_text("x\n", encoding="utf-8")
-        session_id = kernel.create_session().session_id
-        assert kernel.run("hover once", session_id=session_id, max_steps=8).status == "completed"
-        descendant = int(_wait_file(grandchild_pid))
-        markers = [entry for entry in _record_methods(record) if entry.get("method") == "__grandchild__"]
-        server_pid = int(markers[0]["pid"])
-
-        # PID-only host kill: the kernel's tracked-pgid sweep must take the group.
-        host_pid = kernel.host.pid
-        assert isinstance(host_pid, int) and host_pid > 1
-        os.kill(host_pid, signal.SIGKILL)
-        assert _pid_gone(host_pid), "host pid survived its own SIGKILL"
-        assert _pid_gone(server_pid, timeout=20), f"server pid {server_pid} survived host SIGKILL"
-        assert _pid_gone(descendant, timeout=20), f"descendant pid {descendant} survived host SIGKILL"

@@ -13,12 +13,10 @@ from typing import Any, cast
 
 import pytest
 
-import voidcode.plugins.files
 from voidcode.plugins.files import create_plugin as _orig_create_plugin
 from voidcode.plugins.files.read_tool import ReadResultBody
 from voidcode.plugins.files.write_tool import WriteResultBody
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.manifest import parse_plugin_manifest
 from voidcode.sdk.plugin import Plugin
 from voidcode.sdk.provider import ProviderAbortSignal
 from voidcode.sdk.tools import ConfirmedStop, ReadObservation, ToolCall, ToolFailure, ToolSuccess
@@ -80,7 +78,6 @@ class DummyAbortSignal:
 def _context(
     workspace: Path,
     *,
-    capabilities: frozenset[str] = frozenset({"workspace.read", "workspace.write"}),
     abort_signal: ProviderAbortSignal | None = None,
     read_paths: frozenset[str] = frozenset(),
     read_lines: dict[tuple[str, str], frozenset[int]] | None = None,
@@ -94,7 +91,6 @@ def _context(
         invocation_id="inv-test",
         revision_id="rev-test",
         actor="model",
-        capabilities=capabilities,
         abort_signal=abort_signal,
         read_paths=read_paths,
         read_lines=read_lines or {},
@@ -103,16 +99,15 @@ def _context(
     )
 
 
-def test_files_tool_declarations_require_workspace_capabilities() -> None:
-    """The kernel grants capabilities per declaration; the tools do not self-grant."""
-    manifest = parse_plugin_manifest(json.loads((Path(voidcode.plugins.files.__file__).parent / "voidcode-plugin.json").read_text(encoding="utf-8")))
-    declared = {decl.name: decl for decl in manifest.tools}
+def test_files_tools_declare_their_effect_tiers() -> None:
+    definitions = {tool.definition.name: tool.definition for tool in create_plugin({}).tools}
 
-    assert declared["read"].capabilities == ("workspace.read",)
-    assert declared["write"].capabilities == ("workspace.write",)
-    assert declared["edit"].capabilities == ("workspace.write",)
-    assert declared["glob"].capabilities == ("workspace.read",)
-    assert declared["grep"].capabilities == ("workspace.read",)
+    assert set(definitions) == {"read", "write", "edit", "apply_workspace_edit", "glob", "grep"}
+    assert {effect.value for effect in definitions["read"].effects} == {"read"}
+    assert {effect.value for effect in definitions["write"].effects} == {"write"}
+    assert {effect.value for effect in definitions["edit"].effects} == {"write"}
+    assert {effect.value for effect in definitions["glob"].effects} == {"read"}
+    assert {effect.value for effect in definitions["grep"].effects} == {"read"}
 
 
 def test_read_tool_reads_utf8_single_pass_with_offset_and_limit(tmp_path: Path) -> None:
@@ -481,19 +476,6 @@ def test_edit_batch_with_stale_base_refuses_prior_version_lines(tmp_path: Path) 
     assert result.diagnostics.details["reason"] == "unseen_range"
     assert result.diagnostics.guidance is not None and "Use read on the target path" in result.diagnostics.guidance
     assert target.read_text(encoding="utf-8") == v2
-
-
-def test_write_tool_requires_capability(tmp_path: Path) -> None:
-    plugin = create_plugin({})
-    write_tool = next(t for t in plugin.tools if t.definition.name == "write")
-
-    result = write_tool.invoke(
-        ToolCall(tool_name="write", arguments={"path": "new.txt", "content": "hello"}),
-        context=_context(tmp_path, capabilities=frozenset({"workspace.read"})),
-    )
-    assert isinstance(result, ToolFailure)
-    assert "Missing required capability: workspace.write" in result.error
-    assert not (tmp_path / "new.txt").exists()
 
 
 def test_write_tool_creates_new_file_without_expected_hash(tmp_path: Path) -> None:

@@ -1,19 +1,13 @@
-"""External identity generation + runnable-example consumer behavior (P6).
+"""Runnable-example consumer behavior: the tally package over a live kernel.
 
-Covers the exact authoring seams, not hash snapshots: pinning an unpinned
-external manifest, proving an edited source becomes a new admitted identity,
---check refusing stale state without writing, escaped-resource rejection, and
-the runnable tally example's real admission/tool/command/view behavior over a
-live kernel with the loopback provider.
+Covers the tally example's real tool/command/state behavior over a live kernel
+with the loopback provider.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import shutil
-import subprocess
-import sys
 import threading
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
@@ -22,21 +16,13 @@ from pathlib import Path
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.kernel.bootstrap import open_kernel
 from voidcode.kernel.storage.store import SqliteStore
-from voidcode.sdk.manifest import parse_plugin_manifest
 
 _EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "tally-counter"
-_GENERATOR = [sys.executable, "scripts/generate_plugin_identities.py"]
-
-
-def _generate(*arguments: str, code: int = 0) -> subprocess.CompletedProcess[str]:
-    completed = subprocess.run([*_GENERATOR, *arguments], capture_output=True, text=True, timeout=60, check=False)
-    assert completed.returncode == code, completed.stdout + completed.stderr
-    return completed
 
 
 def _copy_example(root: Path) -> Path:
     target = root / "tally-counter"
-    shutil.copytree(_EXAMPLE, target)
+    shutil.copytree(_EXAMPLE, target, ignore=shutil.ignore_patterns("__pycache__"))
     return target
 
 
@@ -100,77 +86,6 @@ def _provider(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer
         server.server_close()
 
 
-def test_external_unpinned_manifest_pins_then_admits_without_hand_edits(tmp_path: Path) -> None:
-    plugin = _copy_example(tmp_path)
-    manifest_path = plugin / "voidcode-plugin.json"
-    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    payload["files"] = []
-    manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-
-    _generate("--plugin-dir", str(plugin), "--check", code=1)
-    assert json.loads(manifest_path.read_text(encoding="utf-8"))["files"] == []
-    _generate("--plugin-dir", str(plugin))
-    _generate("--plugin-dir", str(plugin), "--check")
-
-    parsed = parse_plugin_manifest(json.loads(manifest_path.read_text(encoding="utf-8")))
-    assert [item.path for item in parsed.files] == ["tally_plugin.py"]
-    assert parsed.files[0].sha256 == hashlib.sha256((plugin / "tally_plugin.py").read_bytes()).hexdigest()
-
-
-def test_source_edit_is_a_new_identity_never_an_in_place_mutation(tmp_path: Path) -> None:
-    plugin = _copy_example(tmp_path)
-    before = json.loads((plugin / "voidcode-plugin.json").read_text(encoding="utf-8"))["files"][0]["sha256"]
-    with (plugin / "tally_plugin.py").open("a", encoding="utf-8") as stream:
-        stream.write("\n# author edit\n")
-    _generate("--plugin-dir", str(plugin), "--check", code=1)
-    assert json.loads((plugin / "voidcode-plugin.json").read_text(encoding="utf-8"))["files"][0]["sha256"] == before
-    _generate("--plugin-dir", str(plugin))
-    after = json.loads((plugin / "voidcode-plugin.json").read_text(encoding="utf-8"))["files"][0]["sha256"]
-    assert after != before
-
-
-def test_escaped_resource_is_rejected_and_manifest_is_not_rewritten(tmp_path: Path) -> None:
-    plugin = _copy_example(tmp_path)
-    manifest_path = plugin / "voidcode-plugin.json"
-    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    payload["files"].append({"path": "../escape.txt", "sha256": "0" * 64})
-    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
-    before = manifest_path.read_bytes()
-    _generate("--plugin-dir", str(plugin), code=1)
-    assert manifest_path.read_bytes() == before
-
-
-def test_explicit_drop_forgets_deleted_resource_while_plain_generation_still_fails(tmp_path: Path) -> None:
-    plugin = _copy_example(tmp_path)
-    manifest_path = plugin / "voidcode-plugin.json"
-    pristine = manifest_path.read_bytes()
-    _generate("--drop-resource", "notes.txt", "--check", code=2)
-    baseline = {item["path"]: item["sha256"] for item in json.loads(pristine)["files"]}
-
-    (plugin / "notes.txt").write_text("author notes\n", encoding="utf-8")
-    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    payload["files"].append({"path": "notes.txt", "sha256": "0" * 64})
-    manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    _generate("--plugin-dir", str(plugin))
-    pinned = {item["path"]: item["sha256"] for item in json.loads(manifest_path.read_text(encoding="utf-8"))["files"]}
-    assert set(pinned) == set(baseline) | {"notes.txt"}
-    assert all(pinned[path] == baseline[path] for path in baseline)
-
-    (plugin / "notes.txt").unlink()
-    before = manifest_path.read_bytes()
-    _generate("--plugin-dir", str(plugin), code=1)
-    assert manifest_path.read_bytes() == before
-    _generate("--plugin-dir", str(plugin), "--drop-resource", "tally_plugin.py", code=1)
-    assert manifest_path.read_bytes() == before
-    _generate("--plugin-dir", str(plugin), "--drop-resource", "nope.txt", code=1)
-    assert manifest_path.read_bytes() == before
-
-    _generate("--plugin-dir", str(plugin), "--drop-resource", "notes.txt")
-    dropped = {item["path"]: item["sha256"] for item in json.loads(manifest_path.read_text(encoding="utf-8"))["files"]}
-    assert dropped == baseline
-    _generate("--plugin-dir", str(plugin), "--check")
-
-
 def test_example_command_and_tool_share_durable_session_state(tmp_path: Path) -> None:
     plugin = _copy_example(tmp_path)
     workspace = tmp_path / "workspace"
@@ -192,7 +107,7 @@ def test_example_command_and_tool_share_durable_session_state(tmp_path: Path) ->
     ]
     with _provider(replies) as server:
         _configure(workspace, server, plugin)
-        with closing(open_kernel(workspace, state_dir=state, trusted_plugins=frozenset({"tally-counter"}))) as kernel:
+        with closing(open_kernel(workspace, state_dir=state)) as kernel:
             kernel.create_session("tally-session")
             revision = kernel.command_catalog().revision_id
 

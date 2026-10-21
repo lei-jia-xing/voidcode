@@ -29,7 +29,7 @@ from pathlib import Path
 
 from tests.fixtures.reload_plugin import PROCESS_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.kernel.bootstrap import _bundled_sources
+from voidcode.kernel.activation import bundled_sources
 from voidcode.kernel.images import running_package_root
 from voidcode.kernel.supervisor import control_socket_path
 
@@ -63,7 +63,7 @@ def _provider(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer
 
 def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path) -> None:
     workspace.mkdir(parents=True, exist_ok=True)
-    plugins: dict[str, object] = {name: {"enabled": False} for name in _bundled_sources() if name != "providers"}
+    plugins: dict[str, object] = {name: {"enabled": False} for name in bundled_sources() if name != "providers"}
     plugins[PLUGIN_ID] = {"path": str(source), "enabled": True}
     (workspace / "voidcode.json").write_text(
         json.dumps(
@@ -110,7 +110,7 @@ def _health(endpoint: str, token: str) -> dict[str, object]:
 class _Supervisor:
     """A real supervisor process: parsed endpoint/token, health-gated readiness, clean teardown."""
 
-    def __init__(self, workspace: Path, state_dir: Path, *, trust: tuple[str, ...] = (), session_id: str | None = None) -> None:
+    def __init__(self, workspace: Path, state_dir: Path, *, session_id: str | None = None) -> None:
         self.workspace = workspace
         self.state_dir = state_dir
         command = [
@@ -123,8 +123,6 @@ class _Supervisor:
             "--host=127.0.0.1",
             "--port=0",
         ]
-        for plugin_id in trust:
-            command.append(f"--trust-plugin={plugin_id}")
         if session_id is not None:
             command.append(f"--session-id={session_id}")
         env = dict(__import__("os").environ)
@@ -290,7 +288,7 @@ def test_two_installations_change_a_core_decision_in_the_same_session(tmp_path: 
         workspace, state = tmp_path / "workspace", tmp_path / "state"
         source = write_reload_plugin(tmp_path / "plugin", process_tool=True, deactivation="pause")
         _configure(workspace, server, source)
-        supervisor = _Supervisor(workspace, state, trust=(PLUGIN_ID,))
+        supervisor = _Supervisor(workspace, state)
         try:
             endpoint, token = supervisor.endpoint, supervisor.token
             first = _health(endpoint, token)
@@ -359,7 +357,7 @@ def test_two_installations_change_a_core_decision_in_the_same_session(tmp_path: 
             supervisor.stop()
 
         # Restarting from the original installation still serves the elected image.
-        supervisor2 = _Supervisor(workspace, state, trust=(PLUGIN_ID,))
+        supervisor2 = _Supervisor(workspace, state)
         try:
             third = _health(supervisor2.endpoint, supervisor2.token)
             assert third["stage"] == "serving" and third["image_digest"] == upgraded["to_image"]
@@ -378,7 +376,7 @@ def test_two_sessions_pause_and_resume_exactly_once_across_the_upgrade(tmp_path:
         workspace, state = tmp_path / "workspace", tmp_path / "state"
         source = write_reload_plugin(tmp_path / "plugin", process_tool=True)
         _configure(workspace, server, source)
-        supervisor = _Supervisor(workspace, state, trust=(PLUGIN_ID,))
+        supervisor = _Supervisor(workspace, state)
         try:
             endpoint, token = supervisor.endpoint, supervisor.token
             for session_id in ("pause-a", "pause-b"):
@@ -490,7 +488,7 @@ def test_candidate_startup_failure_recovers_the_old_image(tmp_path: Path) -> Non
         workspace, state = tmp_path / "workspace", tmp_path / "state"
         source = write_reload_plugin(tmp_path / "plugin", process_tool=True)
         _configure(workspace, server, source)
-        supervisor = _Supervisor(workspace, state, trust=(PLUGIN_ID,))
+        supervisor = _Supervisor(workspace, state)
         try:
             endpoint, token = supervisor.endpoint, supervisor.token
             old_image = _health(endpoint, token)["image_digest"]
@@ -601,7 +599,7 @@ def test_drain_timeout_abort_keeps_streams_and_finishes_the_run(tmp_path: Path) 
         workspace, state = tmp_path / "workspace", tmp_path / "state"
         source = write_reload_plugin(tmp_path / "plugin", process_tool=True)
         _configure(workspace, server, source)
-        supervisor = _Supervisor(workspace, state, trust=(PLUGIN_ID,))
+        supervisor = _Supervisor(workspace, state)
         try:
             endpoint, token = supervisor.endpoint, supervisor.token
             status, _ = _api(endpoint, token, "POST", "/api/sessions", {"session_id": "abort-me"})
@@ -672,7 +670,7 @@ def test_killed_child_is_recovered_by_the_elected_image_and_resumes_exactly_once
         workspace, state = tmp_path / "workspace", tmp_path / "state"
         source = write_reload_plugin(tmp_path / "plugin", process_tool=True)
         _configure(workspace, server, source)
-        supervisor = _Supervisor(workspace, state, trust=(PLUGIN_ID,))
+        supervisor = _Supervisor(workspace, state)
         try:
             endpoint, token = supervisor.endpoint, supervisor.token
             status, _ = _api(endpoint, token, "POST", "/api/sessions", {"session_id": "crash-me"})
@@ -705,7 +703,7 @@ def test_killed_child_is_recovered_by_the_elected_image_and_resumes_exactly_once
         finally:
             supervisor.stop()
 
-        restarted = _Supervisor(workspace, state, trust=(PLUGIN_ID,))
+        restarted = _Supervisor(workspace, state)
         try:
             endpoint, token = restarted.endpoint, restarted.token
             assert restarted.revision_pin()["digest"] == elected, "the elected image is what restarts"
@@ -741,7 +739,7 @@ def test_unsupported_schema_refuses_before_downtime(tmp_path: Path) -> None:
         workspace, state = tmp_path / "workspace", tmp_path / "state"
         source = write_reload_plugin(tmp_path / "plugin", process_tool=True)
         _configure(workspace, server, source)
-        supervisor = _Supervisor(workspace, state, trust=(PLUGIN_ID,))
+        supervisor = _Supervisor(workspace, state)
         try:
             endpoint, token = supervisor.endpoint, supervisor.token
             status, _ = _api(endpoint, token, "POST", "/api/sessions", {"session_id": "steady"})
@@ -791,171 +789,13 @@ def test_unsupported_schema_refuses_before_downtime(tmp_path: Path) -> None:
             supervisor.stop()
 
 
-def _v4_schema_sql() -> str:
-    """The historical version-4 definition: today's schema with the version-4 identity check."""
-    text = files("voidcode.kernel.storage").joinpath("schema.sql").read_text(encoding="utf-8")
-    assert "CHECK (schema_version = 5)" in text
-    return text.replace("CHECK (schema_version = 5)", "CHECK (schema_version = 4)").replace("Kernel schema v5.", "Kernel schema v4.", 1)
-
-
-def _v4_workspace(root: Path, *, session_id: str | None = "cold-1") -> tuple[Path, Path, str]:
-    """A genuine pre-P5 workspace: schema 4, no image pin, real pinned artifacts, one idle session."""
-    from voidcode.kernel.activation import admit_plugin, sdk_source_hash
-    from voidcode.sdk.manifest import MANIFEST_FILE_NAME, parse_plugin_manifest
-
-    workspace, state_dir = root / "workspace", root / "state"
-    workspace.mkdir(parents=True, exist_ok=True)
-    state_dir.mkdir(parents=True, exist_ok=True)
-    database = state_dir / "kernel-v1.sqlite3"
-    with sqlite3.connect(database) as raw:
-        raw.executescript(_v4_schema_sql())
-        raw.execute("PRAGMA foreign_keys = ON")
-        raw.execute("INSERT INTO kernel_identity (id, magic, schema_version) VALUES (1, 'voidcode-kernel-v1', 4)")
-        raw.commit()
-
-    source = write_reload_plugin(workspace / "ext-plugin", process_tool=True)
-    fixture_identity = admit_plugin(
-        source,
-        artifacts=state_dir / "artifacts",
-        trusted=True,
-        config={},
-        capabilities=frozenset({"workspace.read", "workspace.write", "network"}),
-    )
-    providers_source = running_package_root() / "plugins" / "providers"
-    providers_manifest = parse_plugin_manifest(json.loads((providers_source / MANIFEST_FILE_NAME).read_text(encoding="utf-8")))
-    providers_identity = admit_plugin(
-        providers_source,
-        artifacts=state_dir / "artifacts",
-        trusted=True,
-        config={},
-        capabilities=frozenset({"workspace.read", "workspace.write", "network"}),
-    )
-    assert providers_identity.manifest.plugin_id == "providers"
-    snapshot: dict[str, object] = {
-        "version": 1,
-        "providers": {},
-        "model": {"model": None, "reasoning_effort": None},
-        "policy": {"approval_mode": "yolo", "read_only": False},
-        "plugins": {
-            PLUGIN_ID: {
-                "enabled": True,
-                "external": True,
-                "path": str(source.relative_to(workspace)),
-                "canonical_path": str(source.resolve()),
-                "trusted": True,
-                "capabilities": ["workspace.read", "workspace.write", "network"],
-                "entry_config": {},
-                "config": {},
-            },
-            "providers": {
-                "enabled": True,
-                "external": False,
-                "path": None,
-                "canonical_path": str(providers_source.resolve()),
-                "trusted": True,
-                "capabilities": ["workspace.read", "workspace.write", "network"],
-                "entry_config": {},
-                "config": {},
-            },
-        },
-        "authorized_paths": [str(source.resolve())],
-    }
-    import hashlib as _hashlib
-    import sys as _sys
-    from importlib.metadata import version as _version
-
-    from voidcode.kernel.storage.store import canonical_json as _canonical_json
-
-    payload: dict[str, object] = {
-        "sdk_protocol": 1,
-        "sdk_sha256": sdk_source_hash(running_package_root() / "sdk"),
-        "python": _sys.implementation.cache_tag,
-        "dependencies": {name: _version(name) for name in ("openai", "pydantic", "jsonschema")},
-        "plugins": {
-            PLUGIN_ID: {"manifest": fixture_identity.manifest.as_payload(), "artifact": fixture_identity.root.name},
-            "providers": {"manifest": providers_identity.manifest.as_payload(), "artifact": providers_identity.root.name},
-        },
-        "private_config_sha256": _hashlib.sha256(_canonical_json(snapshot).encode("utf-8")).hexdigest(),
-    }
-    from voidcode.kernel.storage.store import SqliteStore as _Store
-
-    with _Store(database, allow_schema=frozenset({4, 5})) as store:
-        revision_id = store.put_revision(payload)
-        store.record_workspace_revision(str(workspace.resolve()), revision_id)
-    from voidcode.kernel.activation import write_private_snapshot as _write_snapshot
-
-    _write_snapshot(state_dir, revision_id, snapshot)
-    if session_id is not None:
-        with sqlite3.connect(database) as raw:
-            raw.execute(
-                """
-                INSERT INTO sessions (
-                    session_id, workspace, status, active_revision_id, run_id, turn, created_at, updated_at,
-                    last_event_sequence, parent_session_id, root_session_id, depth, tool_allowlist_json
-                ) VALUES (?, ?, 'idle', ?, NULL, 0, 1, 1, 0, NULL, ?, 0, NULL)
-                """,
-                (session_id, str(workspace.resolve()), revision_id, session_id),
-            )
-            raw.commit()
-    assert providers_manifest.plugin_id == "providers"
-    return workspace, state_dir, revision_id
-
-
-def test_cold_adoption_from_schema_4_serves_with_an_image_pin(tmp_path: Path) -> None:
-    workspace, state_dir, old_revision = _v4_workspace(tmp_path)
-    supervisor = _Supervisor(workspace, state_dir, trust=(PLUGIN_ID,), session_id="cold-1")
-    try:
-        health = _health(supervisor.endpoint, supervisor.token)
-        assert health["stage"] == "serving" and health["fenced"] is False
-        with sqlite3.connect(f"{(state_dir / 'kernel-v1.sqlite3').resolve().as_uri()}?mode=ro", uri=True) as raw:
-            assert raw.execute("SELECT schema_version FROM kernel_identity WHERE id = 1").fetchone()[0] == 5
-            current = raw.execute("SELECT active_revision_id FROM workspace_state").fetchone()[0]
-            assert current != old_revision
-            payload = json.loads(raw.execute("SELECT payload_json FROM revisions WHERE revision_id = ?", (current,)).fetchone()[0])
-        assert payload["image"]["digest"] == health["image_digest"]
-        assert (state_dir / "kernel-images" / health["image_digest"]).is_dir()
-        status, shown = _api(supervisor.endpoint, supervisor.token, "GET", "/api/sessions/cold-1/show")
-        assert status == 200 and shown["status"] == "idle"
-        status, catalog = _api(supervisor.endpoint, supervisor.token, "GET", "/api/commands")
-        assert status == 200 and catalog["revision_id"] == current
-    finally:
-        supervisor.stop()
-
-
-def test_cold_adoption_without_an_acting_session_refuses_by_name(tmp_path: Path) -> None:
-    workspace, state_dir, _ = _v4_workspace(tmp_path)
-    command = [
-        sys.executable,
-        "-m",
-        "voidcode.kernel",
-        "serve",
-        "--workspace",
-        str(workspace),
-        "--state-dir",
-        str(state_dir),
-        "--host",
-        "127.0.0.1",
-        "--port",
-        "0",
-        "--trust-plugin",
-        PLUGIN_ID,
-    ]
-    env = dict(__import__("os").environ)
-    env["PYTHONPATH"] = str(_REPO_ROOT / "src")
-    completed = subprocess.run(command, capture_output=True, text=True, timeout=240, check=False, cwd=tmp_path)
-    assert completed.returncode != 0, completed.stdout + completed.stderr
-    assert "session-id" in completed.stdout + completed.stderr
-    with sqlite3.connect(f"{(state_dir / 'kernel-v1.sqlite3').resolve().as_uri()}?mode=ro", uri=True) as raw:
-        assert raw.execute("SELECT schema_version FROM kernel_identity WHERE id = 1").fetchone()[0] == 4
-
-
 def test_crash_after_adoption_commit_recovers_the_candidate_image(tmp_path: Path) -> None:
     """Adoption committed but no supervisor journal update: recovery reads the revision pin alone."""
     with _provider([_turn(output="steady"), _turn(output="after")]) as server:
         workspace, state = tmp_path / "workspace", tmp_path / "state"
         source = write_reload_plugin(tmp_path / "plugin", process_tool=True)
         _configure(workspace, server, source)
-        supervisor = _Supervisor(workspace, state, trust=(PLUGIN_ID,))
+        supervisor = _Supervisor(workspace, state)
         try:
             endpoint, token = supervisor.endpoint, supervisor.token
             old_image = _health(endpoint, token)["image_digest"]
@@ -989,7 +829,7 @@ def test_crash_after_adoption_commit_recovers_the_candidate_image(tmp_path: Path
         upgrades = state / "supervisor" / "upgrades"
         assert not upgrades.is_dir() or list(upgrades.iterdir()) == []
 
-        supervisor2 = _Supervisor(workspace, state, trust=(PLUGIN_ID,))
+        supervisor2 = _Supervisor(workspace, state)
         try:
             health = _health(supervisor2.endpoint, supervisor2.token)
             assert health["stage"] == "serving" and health["image_digest"] != old_image

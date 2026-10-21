@@ -54,7 +54,7 @@ class MockServices(PluginServices):
         raise AssertionError("skills cancels no continuations")
 
 
-def _context(workspace: Path, *, capabilities: frozenset[str] = frozenset({"workspace.read"})) -> ToolContext:
+def _context(workspace: Path) -> ToolContext:
     return ToolContext(
         workspace=workspace,
         session_id="session-1",
@@ -62,7 +62,6 @@ def _context(workspace: Path, *, capabilities: frozenset[str] = frozenset({"work
         invocation_id="inv-1",
         revision_id="rev-1",
         actor="model",
-        capabilities=capabilities,
         logical_turn="turn-1",
     )
 
@@ -287,17 +286,6 @@ def test_skill_tool_reports_unknown_skill_when_disabled_or_absent(tmp_path: Path
     res = tool.invoke(ToolCall(tool_name="skill", arguments={"name": "alpha"}), context=_context(tmp_path), services=MockServices())
     assert isinstance(res, ToolFailure)
     assert res.error == "unknown skill: alpha"
-
-
-def test_skill_tool_requires_workspace_read_capability(tmp_path: Path) -> None:
-    tool = SkillTool(SkillsConfig(enabled=True))
-    res = tool.invoke(
-        ToolCall(tool_name="skill", arguments={"name": "alpha"}),
-        context=_context(tmp_path, capabilities=frozenset()),
-        services=MockServices(),
-    )
-    assert isinstance(res, ToolFailure)
-    assert res.error == "Missing required capability: workspace.read"
 
 
 # --- Command and context ---

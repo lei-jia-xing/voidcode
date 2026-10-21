@@ -1,7 +1,6 @@
-"""Invocation context shared by kernel, plugin host, and plugins.
+"""Invocation context shared by kernel, runtime, and plugins.
 
-Neutral execution identity, capabilities, and cancellation handle handed to
-tools and commands.
+Neutral execution identity and cancellation handle handed to tools and commands.
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class ToolContext:
-    """Explicit invocation facts plus the capabilities the kernel granted.
+    """Explicit invocation facts handed to a tool or command handler.
 
     The read-coverage fields describe what this session's model has ALREADY been shown, derived
     by the runtime from committed, model-visible results: `read_paths` is every file some result
@@ -34,7 +33,6 @@ class ToolContext:
     invocation_id: str
     revision_id: str
     actor: str
-    capabilities: frozenset[str] = frozenset()
     logical_turn: str = ""
     #: How many nested invocations separate this call from the session's own tool call: a nested
     #: request inherits its caller's depth plus one, so a deferred descendant is always counted.
@@ -53,8 +51,6 @@ class ToolContext:
     def __post_init__(self) -> None:
         if isinstance(self.workspace, str):
             object.__setattr__(self, "workspace", Path(self.workspace))
-        if not isinstance(self.capabilities, frozenset):
-            object.__setattr__(self, "capabilities", frozenset(self.capabilities))
         if type(self.invocation_depth) is not int or self.invocation_depth < 0:
             raise ValueError("tool invocation depth must be a non-negative integer")
         if not isinstance(self.read_paths, frozenset):
@@ -84,6 +80,3 @@ class ToolContext:
         if not self.revision_id:
             raise RuntimeError("tool requires an explicit capability revision")
         return self.revision_id
-
-    def has_capability(self, name: str) -> bool:
-        return name in self.capabilities

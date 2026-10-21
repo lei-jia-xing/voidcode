@@ -10,14 +10,10 @@ and the ``workspace.document_version`` query answers the caller's session's
 already-opened documents without starting a server or sending didOpen/didChange.
 """
 
-from __future__ import annotations
-
-import json
 from collections.abc import Mapping
 from pathlib import Path
 
-from voidcode.sdk.manifest import parse_plugin_manifest
-from voidcode.sdk.plugin import Plugin, PluginQuery, PluginQueryCaller, command_definition, tool_definition
+from voidcode.sdk.plugin import Plugin, PluginQuery, PluginQueryCaller
 
 from .inventory import LspInventoryCommand
 from .lsp_manager import LspManager, build_lsp_manager
@@ -48,17 +44,14 @@ def _document_version_query(manager: LspManager) -> PluginQuery:
 
 
 def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
-    manifest = parse_plugin_manifest(json.loads((Path(__file__).parent / "voidcode-plugin.json").read_text(encoding="utf-8")))
-    definitions = {decl.name: tool_definition(decl) for decl in manifest.tools}
-    commands = {decl.name: command_definition(decl) for decl in manifest.commands}
     manager = build_lsp_manager(lsp_config_from_mapping(config))
 
     def close() -> None:
         manager.shutdown()
 
     return Plugin(
-        tools=(LspTool(definitions["lsp"], manager),),
-        commands=(LspInventoryCommand(commands["lsp"], manager),),
+        tools=(LspTool(manager),),
+        commands=(LspInventoryCommand(manager),),
         queries=(_document_version_query(manager),),
         close=close,
     )

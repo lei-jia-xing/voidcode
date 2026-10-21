@@ -1,4 +1,4 @@
-"""Strict JSON boundary shared by the kernel and plugin host."""
+"""Strict JSON boundary for durable event payloads and provider transcripts."""
 
 from __future__ import annotations
 
@@ -11,16 +11,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
-from .commands import (
-    CommandDescriptor,
-    CommandInvocation,
-    CommandResult,
-    ConfirmationRequest,
-)
-from .invocation import ToolContext
 from .json_values import json_wire_object
-from .provider import ProviderCacheRetention, ProviderExecutionError, ProviderMessage, ProviderTurnRequest, ProviderTurnResult
-from .services import ContinuationResult, PluginBudget, SessionInfo, SessionUsageReport
+from .provider import ProviderMessage, ProviderTurnResult
 from .tools import (
     AttachmentOutput,
     ConfirmedStop,
@@ -39,7 +31,6 @@ from .tools import (
     ToolSuccess,
     UnconfirmedStop,
 )
-from .views import PluginViewDescriptor
 
 
 def _wire(value: object) -> object:
@@ -75,7 +66,6 @@ _CALL = TypeAdapter(ToolCall)
 _DEFINITION = TypeAdapter(ToolDefinition)
 _MESSAGE = TypeAdapter(ProviderMessage)
 _PROVIDER_RESULT = TypeAdapter(ProviderTurnResult)
-_PROVIDER_ERROR = TypeAdapter(ProviderExecutionError)
 
 
 def encode_tool_call(call: ToolCall | Mapping[str, object]) -> dict[str, object]:
@@ -114,127 +104,12 @@ class _WireModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
-class _ProviderRequest(_WireModel):
-    messages: tuple[ProviderMessage, ...]
-    available_tools: tuple[ToolDefinition, ...] = ()
-    raw_model: str | None = None
-    provider_name: str | None = None
-    model_name: str | None = None
-    reasoning_effort: str | None = None
-    cache_retention: ProviderCacheRetention | None = None
-    attempt: int = Field(default=0, ge=0)
-    metadata: dict[str, object] = Field(default_factory=dict)
-
-
-_REQUEST = TypeAdapter(_ProviderRequest)
-
-
-def encode_provider_request(request: ProviderTurnRequest | Mapping[str, object]) -> dict[str, object]:
-    return _encode(request)
-
-
-def decode_provider_request(payload: Mapping[str, object]) -> ProviderTurnRequest:
-    wire = _decode(_REQUEST, payload)
-    return ProviderTurnRequest(
-        messages=wire.messages,
-        available_tools=wire.available_tools,
-        raw_model=wire.raw_model,
-        provider_name=wire.provider_name,
-        model_name=wire.model_name,
-        reasoning_effort=wire.reasoning_effort,
-        cache_retention=wire.cache_retention,
-        attempt=wire.attempt,
-        metadata=wire.metadata,
-    )
-
-
 def encode_provider_result(result: ProviderTurnResult | Mapping[str, object]) -> dict[str, object]:
     return _encode(result)
 
 
 def decode_provider_result(payload: Mapping[str, object]) -> ProviderTurnResult:
     return _decode(_PROVIDER_RESULT, payload)
-
-
-def encode_provider_error(error: ProviderExecutionError) -> dict[str, object]:
-    return _encode(error)
-
-
-def decode_provider_error(payload: Mapping[str, object]) -> ProviderExecutionError:
-    return _decode(_PROVIDER_ERROR, payload)
-
-
-class _ObservedLines(_WireModel):
-    path: str = Field(min_length=1)
-    content_hash: str
-    lines: list[Annotated[int, Field(ge=1)]] = Field(default_factory=list)
-
-
-class _ObservedFile(_WireModel):
-    path: str = Field(min_length=1)
-    content_hash: str
-
-
-class _Context(_WireModel):
-    workspace: Path
-    session_id: str = Field(min_length=1)
-    run_id: str = Field(min_length=1)
-    invocation_id: str = Field(min_length=1)
-    revision_id: str = Field(min_length=1)
-    actor: str = Field(min_length=1)
-    capabilities: frozenset[str] = frozenset()
-    logical_turn: str = ""
-    invocation_depth: int = Field(default=0, ge=0)
-    read_paths: frozenset[str] = frozenset()
-    #: Coverage keys are tuples, which JSON has no shape for: they travel as records.
-    read_lines: list[_ObservedLines] = Field(default_factory=list)
-    read_whole_files: list[_ObservedFile] = Field(default_factory=list)
-    read_hash: str | None = None
-
-
-_CONTEXT = TypeAdapter(_Context)
-
-
-def encode_context(context: ToolContext | Mapping[str, object]) -> dict[str, object]:
-    """Encode a tool context. Callback handles (progress, abort) never cross the wire."""
-    if isinstance(context, Mapping):
-        return _encode(context)
-    return {
-        "workspace": str(context.workspace),
-        "session_id": context.session_id,
-        "run_id": context.run_id,
-        "invocation_id": context.invocation_id,
-        "revision_id": context.revision_id,
-        "actor": context.actor,
-        "capabilities": sorted(context.capabilities),
-        "logical_turn": context.logical_turn,
-        "invocation_depth": context.invocation_depth,
-        "read_paths": sorted(context.read_paths),
-        "read_lines": [
-            {"path": path, "content_hash": digest, "lines": sorted(lines)} for (path, digest), lines in sorted(context.read_lines.items())
-        ],
-        "read_whole_files": [{"path": path, "content_hash": digest} for path, digest in sorted(context.read_whole_files)],
-        "read_hash": context.read_hash,
-    }
-
-
-def decode_context(payload: Mapping[str, object]) -> ToolContext:
-    wire = _decode(_CONTEXT, payload)
-    return ToolContext(
-        workspace=wire.workspace,
-        session_id=wire.session_id,
-        run_id=wire.run_id,
-        invocation_id=wire.invocation_id,
-        revision_id=wire.revision_id,
-        actor=wire.actor,
-        capabilities=wire.capabilities,
-        logical_turn=wire.logical_turn,
-        invocation_depth=wire.invocation_depth,
-        read_paths=wire.read_paths,
-        read_lines={(item.path, item.content_hash): frozenset(item.lines) for item in wire.read_lines},
-        read_whole_files=frozenset((item.path, item.content_hash) for item in wire.read_whole_files),
-        read_hash=wire.read_hash,
-    )
 
 
 class _Text(_WireModel):
@@ -353,119 +228,3 @@ def decode_tool_result(payload: Mapping[str, object]) -> ToolResult:
         else:
             execution = UnconfirmedStop(observation.cancellation_signalled)
     return ToolFailure(wire.tool_name, wire.error, decoded, body, wire.diagnostics, execution, wire.timeout_seconds)
-
-
-_COMMAND_DESCRIPTOR = TypeAdapter(CommandDescriptor)
-_COMMAND_INVOCATION = TypeAdapter(CommandInvocation)
-_CONFIRMATION_REQUEST = TypeAdapter(ConfirmationRequest)
-_COMMAND_RESULT = TypeAdapter(CommandResult)
-_VIEW_DESCRIPTOR = TypeAdapter(PluginViewDescriptor)
-_CONTINUATION_RESULT = TypeAdapter(ContinuationResult)
-_SESSION_USAGE = TypeAdapter(SessionUsageReport)
-
-
-def encode_command_descriptor(descriptor: CommandDescriptor | Mapping[str, object]) -> dict[str, object]:
-    return _encode(descriptor)
-
-
-def decode_command_descriptor(payload: Mapping[str, object]) -> CommandDescriptor:
-    return _decode(_COMMAND_DESCRIPTOR, payload)
-
-
-def encode_command_invocation(invocation: CommandInvocation | Mapping[str, object]) -> dict[str, object]:
-    return _encode(invocation)
-
-
-def decode_command_invocation(payload: Mapping[str, object]) -> CommandInvocation:
-    return _decode(_COMMAND_INVOCATION, payload)
-
-
-def encode_command_result(result: CommandResult | Mapping[str, object]) -> dict[str, object]:
-    return _encode(result)
-
-
-def decode_command_result(payload: Mapping[str, object]) -> CommandResult:
-    return _decode(_COMMAND_RESULT, payload)
-
-
-def encode_confirmation_request(request: ConfirmationRequest | Mapping[str, object]) -> dict[str, object]:
-    return _encode(request)
-
-
-def decode_confirmation_request(payload: Mapping[str, object]) -> ConfirmationRequest:
-    return _decode(_CONFIRMATION_REQUEST, payload)
-
-
-def encode_view_descriptor(descriptor: PluginViewDescriptor | Mapping[str, object]) -> dict[str, object]:
-    return _encode(descriptor)
-
-
-def decode_view_descriptor(payload: Mapping[str, object]) -> PluginViewDescriptor:
-    return _decode(_VIEW_DESCRIPTOR, payload)
-
-
-def encode_continuation_result(result: ContinuationResult | Mapping[str, object]) -> dict[str, object]:
-    return _encode(result)
-
-
-def decode_continuation_result(payload: Mapping[str, object]) -> ContinuationResult:
-    return _decode(_CONTINUATION_RESULT, payload)
-
-
-def encode_session_usage(report: SessionUsageReport | Mapping[str, object]) -> dict[str, object]:
-    return _encode(report)
-
-
-def decode_session_usage(payload: Mapping[str, object]) -> SessionUsageReport:
-    return _decode(_SESSION_USAGE, payload)
-
-
-_BUDGET = TypeAdapter(PluginBudget)
-
-
-def encode_budget(budget: PluginBudget | Mapping[str, object]) -> dict[str, object]:
-    return _encode(budget)
-
-
-def decode_budget(payload: Mapping[str, object]) -> PluginBudget:
-    return _decode(_BUDGET, payload)
-
-
-class _SessionInfo(_WireModel):
-    session_id: str = Field(min_length=1)
-    status: str
-    run_id: str | None = None
-    revision_id: str = Field(min_length=1)
-    parent_session_id: str | None = None
-    root_session_id: str = Field(min_length=1)
-    depth: int = Field(default=0, ge=0)
-    turn: int = Field(default=0, ge=0)
-    last_event_sequence: int = Field(default=0, ge=0)
-    tool_allowlist: list[str] | None = None
-    pending_approval: dict[str, object] | None = None
-    chain_budget: int | None = None
-    chain_reserved: int | None = None
-    budget: PluginBudget | None = None
-
-
-_SESSION_INFO = TypeAdapter(_SessionInfo)
-
-
-def decode_session_info(payload: Mapping[str, object]) -> SessionInfo:
-    wire = _decode(_SESSION_INFO, payload)
-    return SessionInfo(
-        session_id=wire.session_id,
-        status=wire.status,
-        run_id=wire.run_id,
-        revision_id=wire.revision_id,
-        parent_session_id=wire.parent_session_id,
-        root_session_id=wire.root_session_id,
-        depth=wire.depth,
-        turn=wire.turn,
-        last_event_sequence=wire.last_event_sequence,
-        tool_allowlist=None if wire.tool_allowlist is None else tuple(wire.tool_allowlist),
-        pending_approval=wire.pending_approval,
-        chain_budget=wire.chain_budget,
-        chain_reserved=wire.chain_reserved,
-        budget=wire.budget,
-    )

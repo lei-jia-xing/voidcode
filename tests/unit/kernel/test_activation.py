@@ -8,7 +8,6 @@ import threading
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
-from typing import cast
 
 import pytest
 
@@ -16,10 +15,8 @@ from tests.fixtures.reload_plugin import DEACTIVATE_TOOL, PROBE_TOOL, write_relo
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.kernel.bootstrap import open_kernel
 from voidcode.kernel.engine import Kernel
-from voidcode.kernel.host import HostUnavailable
 from voidcode.kernel.storage.store import PluginStateRow, SqliteStore
 from voidcode.sdk.json_values import json_wire_object
-from voidcode.sdk.tools import ToolDefinition
 
 PLUGIN_ID = "reload-fixture"
 
@@ -88,7 +85,7 @@ def _configure(
 def _open(tmp_path: Path, *, trusted: frozenset[str] = frozenset({PLUGIN_ID})) -> Kernel:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
-    kernel = open_kernel(workspace, state_dir=tmp_path / "state", trusted_plugins=trusted)
+    kernel = open_kernel(workspace, state_dir=tmp_path / "state")
     _CREATED.append(kernel)
     return kernel
 
@@ -186,12 +183,9 @@ def test_same_session_reload_switches_generation_and_migrates_state(tmp_path: Pa
             assert row.payload == {"note": "v2", "migrated_to": 2}
 
 
-@pytest.mark.parametrize("defect", ["syntax", "dependency", "migration"])
+@pytest.mark.parametrize("defect", ["syntax", "migration"])
 def test_failed_candidate_keeps_the_old_generation(tmp_path: Path, defect: str) -> None:
     source = tmp_path / "plugin"
-    missing = tmp_path / "missing-plugin"
-    if defect == "dependency":
-        write_reload_plugin(missing, plugin_id="missing-plugin", version="1.0.0")
     write_reload_plugin(source, tool_output="v1")
     replies = [
         _turn(_call("probe-0", PROBE_TOOL)),
@@ -207,8 +201,6 @@ def test_failed_candidate_keeps_the_old_generation(tmp_path: Path, defect: str) 
         before = kernel.revision_id
         if defect == "syntax":
             write_reload_plugin(source, tool_output="v2", syntax_error=True)
-        elif defect == "dependency":
-            write_reload_plugin(source, tool_output="v2", depends=("missing-plugin",))
         else:
             write_reload_plugin(source, tool_output="v2", state_schema_version=2, migration="raise")
 
@@ -265,42 +257,6 @@ def test_activation_is_blocked_by_a_waiting_session(tmp_path: Path) -> None:
         resumed = kernel.resume(parked.session_id, approval_request_id=approval.payload["request_id"], decision="allow")
         assert resumed.status == "completed"
         assert _tool_outputs(kernel, parked.session_id)[0] == "probe=v1"
-
-
-def test_source_path_change_needs_explicit_trust(tmp_path: Path) -> None:
-    trusted_root = tmp_path / "plugin-a"
-    other_root = tmp_path / "plugin-b"
-    write_reload_plugin(trusted_root, tool_output="v1")
-    write_reload_plugin(other_root, tool_output="b1")
-    with _server([_turn(_call("probe-1", PROBE_TOOL)), _turn(output="done")]) as server:
-        _configure(tmp_path / "workspace", server, trusted_root)
-        kernel = _open(tmp_path)
-        session = kernel.create_session("sess-trust")
-        before = kernel.revision_id
-
-        rewritten = _configure(tmp_path / "workspace", server, other_root)
-        rewritten_plugins = rewritten["plugins"]
-        assert isinstance(rewritten_plugins, dict)
-        rewritten_entry = rewritten_plugins[PLUGIN_ID]
-        assert isinstance(rewritten_entry, dict)
-        refused = kernel.invoke_command(session.session_id, "kernel.reload", {}, expected_revision=kernel.command_catalog().revision_id)
-        assert refused.status == "error"
-        assert "trust" in (refused.error or "")
-        assert kernel.revision_id == before
-        assert rewritten_entry["path"] == str(other_root)
-        kernel.close()
-
-    # An explicit startup trust for the new path authorizes exactly that path.
-    with _server([_turn(output="after trust")]) as server:
-        _configure(tmp_path / "workspace", server, other_root, model="endpoint/exact-model")
-        kernel = open_kernel(tmp_path / "workspace", state_dir=tmp_path / "state", trusted_plugins=frozenset({PLUGIN_ID}))
-        _CREATED.append(kernel)
-        session = kernel.create_session("sess-trust-2")
-        activated = kernel.invoke_command(session.session_id, "kernel.reload", {}, expected_revision=kernel.command_catalog().revision_id)
-        assert activated.status == "ok", activated.error
-        assert activated.data is not None
-        assert activated.data["to_revision_id"] == kernel.revision_id
-        assert activated.data["from_revision_id"] != activated.data["to_revision_id"]
 
 
 def _owner_row(store: SqliteStore, scope: str, scope_key: str) -> PluginStateRow:
@@ -377,24 +333,25 @@ def test_restart_restores_the_persisted_generation_until_an_explicit_reload(tmp_
     ]
     with _server(replies) as server:
         _configure(tmp_path / "workspace", server, source)
-        kernel = open_kernel(tmp_path / "workspace", state_dir=tmp_path / "state", trusted_plugins=frozenset({PLUGIN_ID}))
+        kernel = open_kernel(tmp_path / "workspace", state_dir=tmp_path / "state")
         session = kernel.create_session("sess-restart")
         first = kernel.run("write v1", session_id=session.session_id)
         assert first.status == "completed"
         persisted = first.revision_id
         kernel.close()
 
-        # Changed source AND changed model: neither is admitted implicitly on restart.
+        # Changed source AND changed model: the recorded generation and model are restored, but
+        # the current plugin source is what runs (no byte pin); only an explicit reload moves the id.
         write_reload_plugin(source, tool_output="v2")
         _configure(tmp_path / "workspace", server, source, model="endpoint/other-model")
-        restarted = open_kernel(tmp_path / "workspace", state_dir=tmp_path / "state", trusted_plugins=frozenset())
+        restarted = open_kernel(tmp_path / "workspace", state_dir=tmp_path / "state")
         _CREATED.append(restarted)
         assert restarted.revision_id == persisted
         assert restarted.config.model.model == "endpoint/exact-model"
         resumed = restarted.run("still v1", session_id=session.session_id)
         assert resumed.status == "completed"
         assert resumed.revision_id == persisted
-        assert _tool_outputs(restarted, session.session_id)[-1] == "probe=v1"
+        assert _tool_outputs(restarted, session.session_id)[-1] == "probe=v2"
         assert all(request["model"] == "exact-model" for request in server.requests)
 
         switched = restarted.invoke_command(session.session_id, "kernel.reload", {}, expected_revision=restarted.command_catalog().revision_id)
@@ -405,47 +362,6 @@ def test_restart_restores_the_persisted_generation_until_an_explicit_reload(tmp_
         assert _tool_outputs(restarted, session.session_id)[-1] == "probe=v2"
 
 
-def test_mutated_pinned_artifact_is_refused_after_approval(tmp_path: Path) -> None:
-    source = tmp_path / "plugin"
-    write_reload_plugin(source, tool_output="v1")
-    replies = [
-        _turn(_call("reload-1", "kernel_reload", reason="approved upgrade")),
-        _turn(output="still v1"),
-        _turn(output="v1 keeps working"),
-    ]
-    with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source, approval_mode="ask")
-        kernel = _open(tmp_path)
-        session = kernel.create_session("sess-artifact-toctou")
-        write_reload_plugin(source, tool_output="v2")
-        parked = kernel.run("upgrade", session_id=session.session_id)
-        assert parked.status == "waiting"
-        approval = parked.pending_approval
-        assert approval is not None
-        approval_payload = json_wire_object(approval)
-        pinned = str(approval_payload["target_revision_id"])
-        before = kernel.revision_id
-
-        # Someone mutates the pinned bytes after the user was asked: the approved target can no
-        # longer be reconstructed, so the switch must fail instead of running different code.
-        payload = json_wire_object(kernel.store.revision(pinned))
-        identities = payload.get("plugins")
-        assert isinstance(identities, dict)
-        identity = identities.get(PLUGIN_ID)
-        assert isinstance(identity, dict)
-        artifact_name = str(identity["artifact"])
-        artifact_file = tmp_path / "state" / "artifacts" / artifact_name / "reload_plugin_impl.py"
-        artifact_file.write_text(artifact_file.read_text(encoding="utf-8") + "\n# tampered\n", encoding="utf-8")
-
-        resumed = kernel.resume(session.session_id, approval_request_id=str(approval_payload["request_id"]), decision="allow")
-        assert resumed.status == "completed"
-        kinds = [event.event_type for event in _events(kernel, session.session_id)]
-        assert "kernel.activation_failed" in kinds
-        assert "kernel.activation_committed" not in kinds
-        assert kernel.revision_id == before
-        assert kernel.run("still the old generation", session_id=session.session_id).status == "completed"
-
-
 def test_new_observer_subscription_never_receives_old_facts(tmp_path: Path) -> None:
     source = tmp_path / "plugin"
     secondary = tmp_path / "observer"
@@ -453,7 +369,6 @@ def test_new_observer_subscription_never_receives_old_facts(tmp_path: Path) -> N
     write_reload_plugin(
         secondary,
         plugin_id="observer-secondary",
-        module_name="observer_secondary_impl",
         tool_output="secondary",
         observe=True,
         tools=False,
@@ -511,13 +426,14 @@ def test_failed_cold_start_adopts_nothing_and_retries_after_the_source_is_fixed(
     database = tmp_path / "state" / "kernel-v1.sqlite3"
     with _server([_turn(_call("probe-1", PROBE_TOOL)), _turn(output="recovered")]) as server:
         _configure(tmp_path / "workspace", server, source)
-        with pytest.raises(HostUnavailable):
+        with pytest.raises(ValueError, match="factory failed"):
             _open(tmp_path)
         with sqlite3.connect(database) as connection:
             assert connection.execute("SELECT COUNT(*) FROM workspace_state").fetchone()[0] == 0
-            assert connection.execute("SELECT COUNT(*) FROM revisions").fetchone()[0] >= 1
+            # A failed cold start publishes no generation at all.
+            assert connection.execute("SELECT COUNT(*) FROM revisions").fetchone()[0] == 0
 
-        # Fixing the SAME authorized source is enough: no database deletion, no re-trust.
+        # Fixing the SAME configured source is enough: no database deletion, no trust step.
         write_reload_plugin(source, tool_output="v1")
         kernel = _open(tmp_path)
         session = kernel.create_session("sess-cold-start")
@@ -539,7 +455,7 @@ def test_provider_selection_must_be_a_registered_name(tmp_path: Path) -> None:
         # A configured provider nobody declares is refused at admission, not at dispatch time.
         config["providers"]["ghost-adapter"] = {"base_url": "http://127.0.0.1:1/v1"}
         config_path.write_text(json.dumps(config), encoding="utf-8")
-        with pytest.raises(ValueError, match="is not declared by any admitted plugin"):
+        with pytest.raises(ValueError, match="is not registered by any admitted plugin"):
             _open(tmp_path)
 
         # A model naming a provider that is not configured is refused too.
@@ -548,46 +464,6 @@ def test_provider_selection_must_be_a_registered_name(tmp_path: Path) -> None:
         config_path.write_text(json.dumps(config), encoding="utf-8")
         with pytest.raises(ValueError, match="must name a configured provider/model"):
             _open(tmp_path)
-
-
-def test_sdk_pin_and_expected_revision_contracts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    source = tmp_path / "plugin"
-    write_reload_plugin(source, tool_output="v1")
-    with _server([_turn(output="chat")]) as server:
-        _configure(tmp_path / "workspace", server, source)
-        kernel = _open(tmp_path)
-        session = kernel.create_session("sess-contracts")
-        catalog = kernel.command_catalog()
-        assert catalog.revision_id == kernel.revision_id
-        assert "kernel.reload" in {command.name for command in catalog.commands}
-
-        with pytest.raises(ValueError, match="expected_revision must be the revision the client displayed"):
-            kernel.invoke_command(session.session_id, "status", {}, expected_revision="")
-        with pytest.raises(ValueError, match="stale; refresh the catalog"):
-            kernel.invoke_command(session.session_id, "status", {}, expected_revision="deadbeef")
-        assert kernel.plugin_views(session.session_id).revision_id == kernel.revision_id
-
-        admission = kernel.admission
-        assert admission is not None
-        # Deliberate probes: the runtime snapshot is read-only even when viewed as a dict.
-        writable_payload = cast("dict[str, object]", admission.revision_payload)
-        with pytest.raises(TypeError):
-            writable_payload["plugins"] = {}
-        snapshot = kernel._snapshot
-        assert snapshot is not None
-        writable_definitions = cast("dict[str, ToolDefinition]", snapshot.definitions)
-        with pytest.raises(TypeError):
-            writable_definitions["injected"] = ToolDefinition(name="injected", description="x", input_schema={})
-        writable_native = cast("dict[str, ToolDefinition]", snapshot.native_tools)
-        with pytest.raises(TypeError):
-            writable_native["injected"] = ToolDefinition(name="injected", description="x", input_schema={})
-
-        write_reload_plugin(source, tool_output="v2")
-        monkeypatch.setattr("voidcode.kernel.engine.sdk_source_hash", lambda _root: "0" * 64)
-        refused = kernel.invoke_command(session.session_id, "kernel.reload", {}, expected_revision=kernel.revision_id)
-        assert refused.status == "error"
-        assert "SDK source" in (refused.error or "")
-        assert kernel.revision_id == catalog.revision_id
 
 
 def test_prepared_approval_target_ignores_later_source_edits(tmp_path: Path) -> None:

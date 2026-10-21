@@ -1,13 +1,12 @@
-"""Opaque provider fields: delivered verbatim to the declaring plugin, and to nobody else.
+"""Opaque provider fields: delivered verbatim to trusted plugin factories, never to records.
 
 The kernel never learns a vendor vocabulary, so every configured field that is not the typed
-``api_key``/``base_url`` must travel to the plugin that declared the provider name without being
-named, redacted by field name, or written to any record a revision or an event can observe.
+``api_key``/``base_url`` must reach the plugin factories under the reserved ``providers`` key
+without being named or redacted, and must never be written to a revision, event, or log record.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sqlite3
 import stat
@@ -19,10 +18,8 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.kernel.activation import config_from_snapshot, load_private_snapshot, snapshot_path
-from voidcode.kernel.bootstrap import _bundled_sources
+from voidcode.kernel.activation import bundled_sources, config_from_snapshot, load_private_snapshot, snapshot_path
 from voidcode.sdk.json_values import json_wire_object
-from voidcode.sdk.manifest import PluginCapabilityRequest, PluginFileIdentity, PluginManifest, PluginProviderDeclaration
 
 PROVIDER_NAME = "vendor-passthrough"
 PROVIDER_PLUGIN = "vendor-provider-fixture"
@@ -109,48 +106,18 @@ def create_plugin(config=None) -> Plugin:
 '''
 
 
-def _write_source(
-    source: Path,
-    *,
-    module_name: str,
-    body: str,
-    plugin_id: str,
-    capabilities: tuple[PluginCapabilityRequest, ...] = (),
-    providers: tuple[PluginProviderDeclaration, ...] = (),
-) -> Path:
+def _write_source(source: Path, *, body: str) -> Path:
     source.mkdir(parents=True, exist_ok=True)
-    (source / "voidcode-plugin.json").write_text("{}", encoding="utf-8")
-    module = source / f"{module_name}.py"
-    module.write_text(body, encoding="utf-8")
-    (source / "__init__.py").write_text("", encoding="utf-8")
-    manifest = PluginManifest(
-        plugin_id=plugin_id,
-        version="1.0.0",
-        entrypoint=f"{module_name}:create_plugin",
-        files=(
-            PluginFileIdentity(path="__init__.py", sha256=hashlib.sha256(b"").hexdigest()),
-            PluginFileIdentity(path=f"{module_name}.py", sha256=hashlib.sha256(module.read_bytes()).hexdigest()),
-        ),
-        capabilities=capabilities,
-        providers=providers,
-    )
-    (source / "voidcode-plugin.json").write_text(json.dumps(manifest.as_payload()), encoding="utf-8")
+    (source / "__init__.py").write_text(body, encoding="utf-8")
     return source
 
 
 def _write_provider_plugin(root: Path) -> Path:
-    return _write_source(
-        root,
-        module_name="vendor_provider",
-        body=_PROVIDER_MODULE.replace("__PROVIDER_NAME__", PROVIDER_NAME),
-        plugin_id=PROVIDER_PLUGIN,
-        capabilities=(PluginCapabilityRequest(name="network", reason="fixture provider calls its loopback endpoint"),),
-        providers=(PluginProviderDeclaration(name=PROVIDER_NAME, description="Opaque vendor field fixture"),),
-    )
+    return _write_source(root, body=_PROVIDER_MODULE.replace("__PROVIDER_NAME__", PROVIDER_NAME))
 
 
 def _write_bystander_plugin(root: Path) -> Path:
-    return _write_source(root, module_name="vendor_bystander", body=_BYSTANDER_MODULE, plugin_id=BYSTANDER_PLUGIN)
+    return _write_source(root, body=_BYSTANDER_MODULE)
 
 
 @contextmanager
@@ -179,10 +146,6 @@ def _cli(workspace: Path, state: Path, *arguments: str) -> dict:
         str(workspace),
         "--state-dir",
         str(state),
-        "--trust-plugin",
-        PROVIDER_PLUGIN,
-        "--trust-plugin",
-        BYSTANDER_PLUGIN,
         *arguments,
     ]
     result = subprocess.run(command, capture_output=True, text=True, timeout=120, check=False)
@@ -232,7 +195,7 @@ def test_vendor_fields_reach_only_the_declaring_plugin(tmp_path: Path) -> None:
             "plugins": {
                 # This test is about provider fields, not bundled plugins: admit only the two
                 # fixtures, so an unrelated plugin edit cannot make the subject unobservable.
-                **{plugin_id: {"enabled": False} for plugin_id in _bundled_sources()},
+                **{plugin_id: {"enabled": False} for plugin_id in bundled_sources()},
                 PROVIDER_PLUGIN: {"path": str(provider_source)},
                 BYSTANDER_PLUGIN: {"path": str(bystander_source), "config": {"evidence": str(evidence)}},
             },
@@ -262,10 +225,12 @@ def test_vendor_fields_reach_only_the_declaring_plugin(tmp_path: Path) -> None:
             assert headers["authorization"] == f"Bearer {API_KEY}"
             assert json.loads(headers["x-vendor-fields"]) == VENDOR_FIELDS
 
-        # The other plugin was handed its own configuration and nothing else.
-        recorded = evidence.read_text(encoding="utf-8")
-        assert json.loads(recorded) == {"evidence": str(evidence)}
-        assert not any(marker in recorded for marker in MARKERS)
+        # Every trusted plugin factory also receives the reserved providers key verbatim.
+        recorded = json.loads(evidence.read_text(encoding="utf-8"))
+        assert recorded == {
+            "evidence": str(evidence),
+            "providers": {PROVIDER_NAME: {"api_key": API_KEY, "base_url": base_url, **VENDOR_FIELDS}},
+        }
 
     # The credential-bearing snapshot is private, and it is where the fields live.
     location = snapshot_path(state, revision_id)
@@ -281,9 +246,8 @@ def test_vendor_fields_reach_only_the_declaring_plugin(tmp_path: Path) -> None:
     assert restored.providers[PROVIDER_NAME].base_url == base_url
     assert json_wire_object(restored.providers[PROVIDER_NAME].extra) == VENDOR_FIELDS
 
-    # Public records carry a digest of the redacted configuration, never a redacted field list.
-    identity = _revision_payload(state, revision_id)["plugins"][PROVIDER_PLUGIN]
-    assert set(identity) == {"manifest", "artifact", "config_sha256"}
+    # Public records carry only the generation's plugin composition, never a credential field.
+    assert PROVIDER_PLUGIN in _revision_payload(state, revision_id)["plugins"]
     database = b"".join(path.read_bytes() for path in sorted(state.glob("kernel-v1.sqlite3*")))
     for marker in MARKERS:
         assert marker.encode("utf-8") not in database

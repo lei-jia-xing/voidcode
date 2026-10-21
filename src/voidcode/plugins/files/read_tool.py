@@ -12,7 +12,7 @@ import zipfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, cast, final
+from typing import ClassVar, Literal, cast, final
 from urllib.parse import parse_qs
 
 from pydantic import BaseModel, StrictInt, field_validator
@@ -30,6 +30,7 @@ from voidcode.sdk.tools import (
     TextOutput,
     ToolCall,
     ToolDefinition,
+    ToolEffect,
     ToolFailure,
     ToolResult,
     ToolSuccess,
@@ -802,7 +803,7 @@ class _ReadOutcome:
 
 
 def _uri_failure(tool_name: str, message: str) -> ToolFailure:
-    """A model-visible URI failure: the host redacts raised errors, so URI branches return text.
+    """A model-visible URI failure: the runtime redacts raised errors, so URI branches return text.
 
     Only the `voidcode://` derived views use this; workspace file errors keep the file's existing
     raise-and-redact behavior, which is out of scope.
@@ -1610,8 +1611,77 @@ def _render_format_view(
 class ReadTool:
     """Read a file or supported attachment from the current workspace."""
 
-    def __init__(self, definition: ToolDefinition) -> None:
-        self.definition = definition
+    definition: ClassVar[ToolDefinition] = ToolDefinition(
+        name="read",
+        description="Read a file inside the current workspace.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Internal URLs: voidcode://tool/<name> reads a tool's guidance and input schema; "
+                        "voidcode://rule/<name> reads a bounded workspace rule catalog entry; "
+                        "voidcode://artifact/<id> reads a bounded slice of the current session's spilled tool-output artifact; "
+                        "voidcode://transcript/<session_id> reads a bounded, payload-stripped transcript of the current session "
+                        "or of a child session it spawned."
+                    ),
+                },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": (
+                        "1-based starting file line, SQLite row, Notebook cell, or PDF text line; "
+                        "Notebook cell offsets use `offset` rather than `cell`."
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 2000,
+                    "description": "Maximum file lines, SQLite rows, Notebook cells, or PDF text lines to return.",
+                },
+                "byte_offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Zero-based UTF-8 byte offset for continuing a long artifact line; use the returned next_byte_offset.",
+                },
+                "byte_limit": {
+                    "type": "integer",
+                    "minimum": 4,
+                    "maximum": 47104,
+                    "description": "Maximum UTF-8 bytes in an artifact page; requires byte_offset.",
+                },
+                "view": {
+                    "type": "string",
+                    "enum": ["raw", "sqlite", "notebook", "pdf"],
+                    "description": (
+                        "Select a read-only derived view; raw returns the original file bytes/text and preserves ordinary file-read semantics."
+                    ),
+                },
+                "table": {"type": "string", "description": "SQLite table to inspect; defaults to the first user table."},
+                "query": {"type": "string", "description": "One read-only SQLite SELECT/WITH query."},
+                "cell": {"type": "integer", "minimum": 0, "description": "Zero-based notebook cell index to inspect alone."},
+                "page": {"type": "integer", "minimum": 1, "description": "One-based PDF page to extract."},
+                "output_offset": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "1-based notebook output index within `cell`; requires the zero-based cell selector.",
+                },
+                "output_limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 20,
+                    "description": "Maximum notebook outputs to return for `cell`; continue with next_output_offset.",
+                },
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        effects=frozenset({ToolEffect.READ}),
+        path_argument_keys=("path",),
+        supports_parallel=True,
+    )
 
     def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:
         args = parse_tool_args(
@@ -1654,7 +1724,7 @@ class ReadTool:
                     {"uri": args.path, "offset": args.offset or 1, "limit": args.limit or DEFAULT_READ_LIMIT},
                 )
             except QueryUnavailable:
-                return _uri_failure(self.definition.name, f"rule catalog is unavailable in this host generation: {args.path}")
+                return _uri_failure(self.definition.name, f"rule catalog is unavailable in this runtime generation: {args.path}")
             if answered is None:
                 return _uri_failure(self.definition.name, f"unknown rule in this workspace: {args.path}")
             page = _RulePage.from_query(answered)

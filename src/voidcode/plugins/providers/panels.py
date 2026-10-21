@@ -12,9 +12,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import ClassVar
 
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
 from voidcode.sdk.services import PluginServices
+from voidcode.sdk.tools import ToolEffect
 from voidcode.sdk.views import PluginViewDescriptor
 
 from .native.model_catalog import static_catalog_model_ids
@@ -182,8 +184,14 @@ def model_panel(services: PluginServices, facts: ProviderFacts, provider: str | 
 class ProvidersCommand:
     """Read-only ledger of the workspace provider configuration."""
 
-    def __init__(self, definition: CommandDefinition, facts: ProviderFacts) -> None:
-        self.definition = definition
+    definition: ClassVar[CommandDefinition] = CommandDefinition(
+        name="providers",
+        description="List configured providers with their shipped table row, catalog size and credential presence.",
+        argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        effects=frozenset({ToolEffect.READ}),
+    )
+
+    def __init__(self, facts: ProviderFacts) -> None:
         self._facts = facts
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
@@ -195,8 +203,14 @@ class ProvidersCommand:
 class ModelCommand:
     """Read-only report of the dispatching provider/model and a provider's shipped models."""
 
-    def __init__(self, definition: CommandDefinition, facts: ProviderFacts) -> None:
-        self.definition = definition
+    definition: ClassVar[CommandDefinition] = CommandDefinition(
+        name="model",
+        description="Show the provider/model this session last dispatched with, or one provider's shipped catalog models.",
+        argument_schema={"type": "object", "properties": {"provider": {"type": "string"}}, "additionalProperties": False},
+        effects=frozenset({ToolEffect.READ}),
+    )
+
+    def __init__(self, facts: ProviderFacts) -> None:
         self._facts = facts
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:

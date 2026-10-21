@@ -7,7 +7,6 @@ file to the NEXT dispatch, and that the touched path is durable in the plugin's 
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -27,17 +26,26 @@ _TOUCH_TOOL = "touch_file"
 _TOUCH_PLUGIN_IMPL = '''
 """Test-only plugin: one tool that writes the path it is given."""
 
-import json
 from pathlib import Path
 
-from voidcode.sdk.manifest import parse_plugin_manifest
-from voidcode.sdk.plugin import Plugin, tool_definition
-from voidcode.sdk.tools import TextOutput, ToolSuccess
+from voidcode.sdk.plugin import Plugin
+from voidcode.sdk.tools import TextOutput, ToolDefinition, ToolEffect, ToolSuccess
 
 
 class TouchFile:
-    def __init__(self, definition):
-        self.definition = definition
+    definition = ToolDefinition(
+        name="touch_file",
+        description="Write the given workspace-relative path.",
+        input_schema={
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        effects=frozenset({ToolEffect.WRITE}),
+        path_argument_keys=("path",),
+        replay_policy="never",
+    )
 
     def invoke(self, call, *, context, services):
         target = Path(str(call.arguments.get("path", "")))
@@ -49,8 +57,7 @@ class TouchFile:
 
 
 def create_plugin(config):
-    manifest = parse_plugin_manifest(json.loads(Path(__file__).with_name("voidcode-plugin.json").read_text(encoding="utf-8")))
-    return Plugin(tools=tuple(TouchFile(tool_definition(declaration)) for declaration in manifest.tools))
+    return Plugin(tools=(TouchFile(),))
 '''
 
 
@@ -79,38 +86,7 @@ def _close_created_kernels() -> Iterator[None]:
 
 def _write_touch_plugin(root: Path) -> Path:
     root.mkdir(parents=True, exist_ok=True)
-    (root / "touch_plugin.py").write_text(_TOUCH_PLUGIN_IMPL, encoding="utf-8")
-    files = [{"path": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()} for path in sorted(root.glob("*.py"))]
-    manifest = {
-        "plugin_id": _TOUCH_PLUGIN_ID,
-        "version": "1.0.0",
-        "sdk_protocol": 1,
-        "schema_version": 1,
-        "entrypoint": "touch_plugin:create_plugin",
-        "files": files,
-        "tools": [
-            {
-                "name": _TOUCH_TOOL,
-                "description": "Write the given workspace-relative path.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {"path": {"type": "string"}},
-                    "required": ["path"],
-                    "additionalProperties": False,
-                },
-                "effects": ["write"],
-                "replay_policy": "never",
-                "capabilities": [],
-                "path_argument_keys": ["path"],
-            }
-        ],
-        "commands": [],
-        "capabilities": [],
-        "providers": [],
-        "depends": [],
-        "state_schema_version": 1,
-    }
-    (root / "voidcode-plugin.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    (root / "__init__.py").write_text(_TOUCH_PLUGIN_IMPL, encoding="utf-8")
     return root
 
 
@@ -141,7 +117,7 @@ def _kernel(tmp_path: Path, server: OpenAILoopbackServer, *, skills_enabled: boo
         },
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-    kernel = open_kernel(workspace, state_dir=state_dir, trusted_plugins=frozenset({"skills", _TOUCH_PLUGIN_ID}))
+    kernel = open_kernel(workspace, state_dir=state_dir)
     _CREATED_KERNELS.append(kernel)
     return kernel
 

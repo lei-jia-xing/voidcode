@@ -1,8 +1,8 @@
 """End-to-end integration test for the User shell plugin on the real kernel stack.
 
-Proves the legacy ``!`` contract on the new seams: a direct-user command (declarative client
-syntax, actor=user) runs even when the session is frozen read-only, needs no approval, and
-records exactly one durable event with the exit code and truncation facts.
+Proves the ``!`` contract on the new seams: an ordinary EXECUTE command (declarative client
+syntax) that works normally, is denied under a frozen read-only session with no workspace
+mutation, and records exactly one durable event with the exit code and truncation facts.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ def _kernel(tmp_path: Path, *, read_only: bool, approval_mode: str) -> Kernel:
         },
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-    kernel = open_kernel(workspace, state_dir=state_dir, trusted_plugins=frozenset({"user_shell"}))
+    kernel = open_kernel(workspace, state_dir=state_dir)
     _CREATED_KERNELS.append(kernel)
     return kernel
 
@@ -51,12 +51,11 @@ def _invoke(kernel: Kernel, session_id: str, name: str, arguments: dict[str, obj
     return kernel.invoke_command(session_id, name, arguments, expected_revision=kernel.command_catalog().revision_id)
 
 
-def test_shell_escape_runs_read_only_without_approval_and_records_the_fact(tmp_path: Path) -> None:
-    kernel = _kernel(tmp_path, read_only=True, approval_mode="ask")
+def test_shell_escape_runs_and_records_the_fact(tmp_path: Path) -> None:
+    kernel = _kernel(tmp_path, read_only=False, approval_mode="ask")
     session_id = kernel.create_session().session_id
 
     descriptor = {command.name: command for command in kernel.command_catalog().commands}["shell"]
-    assert descriptor.direct_user is True
     assert descriptor.client_syntax == "!"
     assert "execute" in {effect.value for effect in descriptor.effects}
 
@@ -70,14 +69,23 @@ def test_shell_escape_runs_read_only_without_approval_and_records_the_fact(tmp_p
     assert result.data["timed_out"] is False
     assert "<user_shell_command>" in str(result.data["record"])
 
-    # The session is still frozen: no approval was requested, and no provider work happened.
-    assert kernel.session(session_id).status in {"idle", "completed"}
     events = kernel.events_after(session_id)
     shell_events = [event for event in events if event.event_type == "plugin.user_shell.shell_executed"]
     assert len(shell_events) == 1
     assert shell_events[0].payload["command"] == "echo hello-from-shell"
     assert shell_events[0].payload["exit_code"] == 0
-    assert not [event for event in events if event.event_type == "kernel.approval_requested"]
+
+
+def test_shell_escape_is_denied_read_only_with_no_workspace_mutation(tmp_path: Path) -> None:
+    kernel = _kernel(tmp_path, read_only=True, approval_mode="ask")
+    session_id = kernel.create_session().session_id
+    target = tmp_path / "workspace" / "shell-should-not-write.txt"
+
+    result = _invoke(kernel, session_id, "shell", {"command": f"echo mutated > {target.name}"})
+    assert result.status == "error"
+    assert "read-only" in (result.error or "")
+    assert not target.exists()
+    assert not [event for event in kernel.events_after(session_id) if event.event_type == "plugin.user_shell.shell_executed"]
 
 
 def test_shell_failure_records_a_nonzero_exit_code(tmp_path: Path) -> None:

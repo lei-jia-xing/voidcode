@@ -1,8 +1,7 @@
 -- Kernel schema v5. The store verifies an existing database's identity BEFORE
 -- setting pragmas or executing this DDL; foreign/legacy files are never changed.
--- A version-4 database is adopted once, inside the explicit 4 -> 5 transition
--- transaction; anything else that is not version 5 is refused read-only. This file is
--- the whole schema: tables are added here together with the owner that uses them.
+-- This build reads exactly version 5; any other version is refused read-only. This file
+-- is the whole schema: tables are added here together with the owner that uses them.
 
 CREATE TABLE kernel_identity (
     id INTEGER PRIMARY KEY CHECK (id = 1),

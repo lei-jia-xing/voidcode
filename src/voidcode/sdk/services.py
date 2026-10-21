@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 
 class QueryUnavailable(ValueError):
-    """No admitted plugin in this host generation answers the named query."""
+    """No admitted plugin in this runtime generation answers the named query."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,7 +105,7 @@ class ChildOutcome:
     history_sha256: str | None = None
     history_bytes: int | None = None
     history_truncated: bool = False
-    #: Bounded preview when the terminal output was too large to cross the host boundary inline.
+    #: Bounded preview when the terminal output was too large to cross the runtime boundary inline.
     output_preview: str | None = None
     #: Full output artifact, when the run produced more than the inline bound.
     output_sha256: str | None = None
@@ -346,7 +346,7 @@ class SessionInfo:
 
 @dataclass(frozen=True, slots=True)
 class ToolInvocationReceipt:
-    """A same-session request staged with the caller's result, never executed inside its RPC.
+    """A same-session request staged with the caller's result, never executed inside its callback.
 
     The kernel runs it after the callback returns, through ordinary admission and approval.
     Its committed result is available in this session's events under `request_id`.
@@ -522,8 +522,7 @@ class PluginServices(Protocol):
         """Tighten the bound session with an owner-owned restrictive overlay.
 
         Overlays can only restrict; an owner revokes exactly its own row, and the kernel's
-        frozen policy is never affected. This call requires an authentic user-authority
-        invocation (e.g. a `direct_user` command), never a model/agent path.
+        frozen policy is never affected.
         """
         ...
 
@@ -597,10 +596,10 @@ class PluginServices(Protocol):
         ...
 
     def query(self, name: str, arguments: Mapping[str, object] | None = None) -> Mapping[str, object] | None:
-        """Ask the host for a named query another admitted plugin answers.
+        """Ask the runtime for a named query another admitted plugin answers.
 
-        Queries are host-local, read-only conveniences between trusted plugins (see
-        ``PluginQuery``): the answering handler runs in this host process, receives the caller's
+        Queries are runtime-local, read-only conveniences between trusted plugins (see
+        ``PluginQuery``): the answering handler runs in this runtime process, receives the caller's
         lease-provided session and workspace, and returns one bounded JSON object or ``None`` for
         "no answer". No kernel governance is involved, so a query answers questions, never
         performs work. A name nobody answers raises ``QueryUnavailable``; every other failure
@@ -620,8 +619,8 @@ class PluginServices(Protocol):
 
         The kernel resolves the target in the active revision the caller displayed
         (`expected_revision`), applies the session's tool scope, read-only stance, pre-tool gates,
-        declared-effect approval policy, and the target's capabilities exactly as it does for a
-        model-requested call. Requests are staged atomically with the caller's result and execute
+        and declared-effect approval policy exactly as it does for a model-requested call.
+        Requests are staged atomically with the caller's result and execute
         only after its callback returns; this receipt never waits on execution or human consent.
         Approvable targets go through the ordinary approval boundary, never a rejection for
         needing approval. Recursion consumes the chain's action budget and carries kernel-counted
@@ -640,9 +639,9 @@ class PluginServices(Protocol):
         max_output_bytes: int = 262144,
         on_output: Callable[[str, bytes], None] | None = None,
     ) -> ProcessResult:
-        """Run one child process of this plugin host, in its own process group under this lease.
+        """Run one child process of this runtime, in its own process group under this lease.
 
-        Nothing here crosses an RPC: the host owns the process, the bytes, and the bounds, and the
+        The runtime owns the process, the bytes, and the bounds, and the
         kernel's own governance already decided whether the calling tool may execute at all. What
         the lease adds is stance: a read-only lease and a hook lease are refused outright, because
         neither may touch the machine. `env` overrides the inherited environment; `cwd` defaults to
@@ -679,15 +678,15 @@ class PluginServices(Protocol):
         env: Mapping[str, str] | None = None,
         process_id: str | None = None,
     ) -> ProcessHandle:
-        """Start a supervised *service* process: a helper this host generation owns end to end.
+        """Start a supervised *service* process: a helper this runtime generation owns end to end.
 
         Same identity, stdin, log paging, and cancellation surface as `spawn_process` (`write_process`,
         `read_process_output`, `cancel_process`, `list_processes` all address it by its id), with one
-        lifetime difference: a service process belongs to the host generation that started it. It is
-        stopped when that generation retires — a host swap/reload, owner shutdown, or a hard host kill
-        — because it joins the host's own process group, while a background process keeps its
-        documented "survives a host swap" contract. Service processes are the right shape for a
-        language server or another interactive helper: they are not a user job the caller persists,
+        lifetime difference: a service process belongs to the runtime generation that started it. It
+        is stopped when that generation retires — a reload/retire or owner shutdown — because it
+        runs in its own process group, while a background process keeps its
+        documented "survives a generation swap" contract. Service processes are the right shape for
+        a language server or another interactive helper: they are not a user job the caller persists,
         and a stale one outliving its generation would hold the workspace.
         """
         ...
@@ -705,12 +704,12 @@ class PluginServices(Protocol):
     ) -> ProcessHandle:
         """Start a supervised process that outlives this invocation, and return its identity.
 
-        Supervised means the host owns the live process and its group: `cancel_process` stops the
+        Supervised means the runtime owns the live process and its group: `cancel_process` stops the
         whole group, and the owner's shutdown stops every supervised process. What the caller owns
         is the identity — persist `ProcessHandle` (pid + start_time + log paths): after the caller's
-        own restart the host no longer supervises that process, and only that identity can tell a
+        own restart the runtime no longer supervises that process, and only that identity can tell a
         live process from a recycled pid. Output goes to the log paths you name (created, never
-        truncated); pass none and the host spools into its own temporary files, whose paths the
+        truncated); pass none and the runtime spools into its own temporary files, whose paths the
         returned handle carries. A duplicate `process_id` is refused, so a retried start cannot
         silently create a second process.
         """
@@ -719,8 +718,8 @@ class PluginServices(Protocol):
     def write_process(self, process_id: str, data: bytes | str) -> int:
         """Write to a supervised process's stdin; returns the bytes accepted.
 
-        Only for processes started with `stdin=True` in this host: a process that survived a host
-        restart keeps running but its pipe did not, so that write is refused rather than lost.
+        Only for processes started with `stdin=True` in this runtime: a process that survived a
+        kernel restart keeps running but its pipe did not, so that write is refused rather than lost.
         """
         ...
 
@@ -740,7 +739,7 @@ class PluginServices(Protocol):
         ...
 
     def list_processes(self) -> tuple[ProcessHandle, ...]:
-        """Every process this host supervises for this session, running or already exited."""
+        """Every process this runtime supervises for this session, running or already exited."""
         ...
 
     def model_query(self, prompt: str, *, model: str | None = None, max_output_tokens: int | None = None) -> str:

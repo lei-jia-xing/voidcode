@@ -95,7 +95,6 @@ def _context(workspace: Path) -> ToolContext:
         invocation_id="inv-1",
         revision_id="rev-1",
         actor="client",
-        capabilities=frozenset({"workspace.read"}),
         logical_turn="turn-1",
     )
 

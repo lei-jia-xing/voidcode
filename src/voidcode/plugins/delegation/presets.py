@@ -3,8 +3,8 @@
 Each preset pairs one delegated profile with the scope its child runs under: the prompt text the
 child starts from, the tools it may use, and whether it is read-only. The prompt bodies are verbatim
 copies of the agents plugin's ``profiles/<id>.txt`` text, embedded here as module constants because
-plugins cannot import each other: an admitted plugin is its own pinned source root, so this plugin
-reads no other plugin's resources and duplicates no loader.
+plugins cannot import each other, so this plugin reads no other plugin's resources and duplicates
+no loader.
 
 ``model_preference`` exists per preset but is never applied: the kernel has no per-child model seam
 (a child session carries no model of its own and runs the workspace model), so a non-null

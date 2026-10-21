@@ -6,7 +6,7 @@ import json
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, field_validator
 
@@ -19,6 +19,7 @@ from voidcode.sdk.tools import (
     TextOutput,
     ToolCall,
     ToolDefinition,
+    ToolEffect,
     ToolFailure,
     ToolResult,
     ToolSuccess,
@@ -364,8 +365,30 @@ def _run_preview_replace(
 # only `read` grants the lines a later write or AST-rewrite guard may rely on. Replacement keeps
 # its own hash-bound preflight against the hashes the session observed.
 class AstGrepTool:
-    def __init__(self, definition: ToolDefinition, *, hooks_config: object | None = None) -> None:
-        self.definition = definition
+    definition: ClassVar[ToolDefinition] = ToolDefinition(
+        name="ast_grep",
+        description=(
+            "Structural code search and rewrite with ast-grep. Search and preview are read operations; replace mutates files and requires approval."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "mode": {"type": "string", "enum": ["search", "preview", "replace"], "description": "AST operation to perform."},
+                "pattern": {"type": "string", "minLength": 1, "description": "ast-grep pattern."},
+                "path": {"type": "string", "minLength": 1, "description": "Workspace-relative or absolute file or directory path."},
+                "rewrite": {"type": "string"},
+                "lang": {"type": "string"},
+                "apply": {"type": "boolean"},
+                "expectedHash": {"type": "string", "description": "Optional expected SHA-256 content hash of target file for replace mode."},
+            },
+            "required": ["mode", "pattern", "path"],
+            "additionalProperties": False,
+        },
+        effects=frozenset({ToolEffect.WRITE}),
+        replay_policy="never",
+    )
+
+    def __init__(self, *, hooks_config: object | None = None) -> None:
         # ponytail: formatter/diagnostic wiring belongs to the owning plugin; None keeps the
         # port's declared behavior until the host hands this tool a hooks config.
         self._hooks_config = hooks_config
@@ -373,15 +396,6 @@ class AstGrepTool:
     def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:
         workspace = context.require_workspace()
         return self._invoke(call, workspace=workspace, timeout_seconds=30, context=context, services=services)
-
-    def invoke_with_runtime_timeout(self, call: ToolCall, *, context: ToolContext, services: PluginServices, timeout_seconds: int) -> ToolResult:
-        return self._invoke(
-            call,
-            workspace=context.require_workspace(),
-            timeout_seconds=timeout_seconds,
-            context=context,
-            services=services,
-        )
 
     def _invoke(self, call: ToolCall, *, workspace: Path, timeout_seconds: int, context: ToolContext, services: PluginServices) -> ToolResult:
         args = self._validate_call(call)

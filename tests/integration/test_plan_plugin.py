@@ -7,7 +7,6 @@ restores writes while a user-frozen read-only policy stays in force.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -20,8 +19,6 @@ from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.kernel.bootstrap import open_kernel
 from voidcode.kernel.engine import Kernel
 from voidcode.plugins.plan.plan_plugin import PLAN_MODE_INSTRUCTION
-from voidcode.sdk.manifest import PluginFileIdentity, PluginManifest, PluginToolDeclaration
-from voidcode.sdk.tools import ToolEffect
 
 _PLAN_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "plan"
 _WRITE_TOOL_PLUGIN_SOURCE = '''"""Test-only plugin exposing one write-tier tool."""
@@ -74,24 +71,7 @@ def _loopback_server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbac
 def _write_tool_plugin(workspace: Path) -> Path:
     root = workspace / ".test-plugins" / "notes"
     root.mkdir(parents=True, exist_ok=True)
-    source = root / "notes_plugin.py"
-    source.write_text(_WRITE_TOOL_PLUGIN_SOURCE, encoding="utf-8")
-    manifest = PluginManifest(
-        plugin_id="notes",
-        version="1.0.0",
-        entrypoint="notes_plugin:create_plugin",
-        files=(PluginFileIdentity(path="notes_plugin.py", sha256=hashlib.sha256(source.read_bytes()).hexdigest()),),
-        tools=(
-            PluginToolDeclaration(
-                name="notes_write",
-                description="Write a note (test write-tier tool).",
-                input_schema={"type": "object", "properties": {}, "additionalProperties": False},
-                effects=(ToolEffect.WRITE,),
-                replay_policy="never",
-            ),
-        ),
-    )
-    (root / "voidcode-plugin.json").write_text(json.dumps(manifest.as_payload()), encoding="utf-8")
+    (root / "__init__.py").write_text(_WRITE_TOOL_PLUGIN_SOURCE, encoding="utf-8")
     return root
 
 
@@ -124,7 +104,7 @@ def _kernel(
         },
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-    kernel = open_kernel(workspace, state_dir=resolved_state, trusted_plugins=frozenset({"plan", "notes"}))
+    kernel = open_kernel(workspace, state_dir=resolved_state)
     _CREATED_KERNELS.append(kernel)
     return kernel
 
@@ -184,8 +164,6 @@ def test_plan_mode_hides_and_denies_write_tools_until_plan_off(tmp_path: Path) -
         assert kernel.run("plan it", session_id=session_id).status == "completed"
         assert "notes_write" not in _tool_names(server.requests[1])
         assert PLAN_MODE_INSTRUCTION in _text(server.requests[1])
-        descriptor = {c.name: c for c in kernel.command_catalog().commands}["plan"]
-        assert descriptor.direct_user is True
 
         # The overlay survives a restart: still hidden, still instructed.
         kernel.close()

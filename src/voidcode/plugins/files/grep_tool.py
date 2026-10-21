@@ -7,13 +7,14 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
+from typing import ClassVar
 
 from pydantic import BaseModel, field_validator
 
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.services import PluginServices
-from voidcode.sdk.tools import OutputBounds, TextOutput, ToolCall, ToolDefinition, ToolResult, ToolSuccess
+from voidcode.sdk.tools import OutputBounds, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess
 
 from .args import parse_tool_args, validate_non_empty
 from .gitignore import GitIgnoreMatcher
@@ -127,8 +128,38 @@ class GrepResultBody:
 
 
 class GrepTool:
-    def __init__(self, definition: ToolDefinition) -> None:
-        self.definition = definition
+    definition: ClassVar[ToolDefinition] = ToolDefinition(
+        name="grep",
+        description=(
+            "Search workspace files. Pattern is literal by default; set regex=true to use regular expressions, "
+            "and ignore_case=true for case-insensitive matching."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Text to search for; treated literally unless regex=true."},
+                "path": {"type": "string", "description": "File or directory to search, relative to the workspace; defaults to workspace root."},
+                "regex": {"type": "boolean", "description": "Treat pattern as a regular expression; defaults to false."},
+                "ignore_case": {"type": "boolean", "description": "Match case-insensitively; defaults to false."},
+                "context": {"type": "integer", "minimum": 0, "description": "Number of surrounding lines to include for each match."},
+                "include": {"type": "array", "items": {"type": "string"}, "description": "Optional glob filters for files to include."},
+                "exclude": {"type": "array", "items": {"type": "string"}, "description": "Optional glob filters for files to exclude."},
+                "respect_gitignore": {
+                    "type": "boolean",
+                    "description": (
+                        "Also skip paths matched by the search root's .gitignore; defaults to false. "
+                        "The matcher only reads the root .gitignore (no nested/global excludes)."
+                    ),
+                },
+                "limit": {"type": "integer", "minimum": 1, "maximum": 5000, "description": "Maximum matching lines to return; defaults to 200."},
+            },
+            "required": ["pattern", "path"],
+            "additionalProperties": False,
+        },
+        effects=frozenset({ToolEffect.READ}),
+        path_argument_keys=("path",),
+        supports_parallel=True,
+    )
 
     @staticmethod
     def _matches_glob(path: str, pattern: str) -> bool:

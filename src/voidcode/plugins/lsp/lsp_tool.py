@@ -6,6 +6,7 @@ import enum
 import json
 from collections.abc import Mapping
 from pathlib import Path
+from typing import ClassVar
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
@@ -22,6 +23,7 @@ from voidcode.sdk.tools import (
     TextOutput,
     ToolCall,
     ToolDefinition,
+    ToolEffect,
     ToolFailure,
     ToolResult,
     ToolSuccess,
@@ -94,15 +96,64 @@ def _bound_requester(manager: LspManager) -> LspRequester:
 
 
 class LspTool:
-    """Read-only adapter over the plugin-owned LSP manager.
+    """Read-only adapter over the plugin-owned LSP manager; this class also owns the invocation schema/effects."""
 
-    Name, description, schema, effects and capabilities are the admitted
-    manifest declaration; this class only implements the invocation, its
-    validation and its bounded rendering.
-    """
+    definition: ClassVar[ToolDefinition] = ToolDefinition(
+        name="lsp",
+        description="LSP client for basic code intelligence lookups.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "operation": {
+                    "type": "string",
+                    "enum": [
+                        "codeAction",
+                        "diagnostics",
+                        "documentSymbol",
+                        "findReferences",
+                        "goToDefinition",
+                        "goToImplementation",
+                        "hover",
+                        "incomingCalls",
+                        "outgoingCalls",
+                        "rename",
+                        "willRenameFiles",
+                        "workspaceSymbol",
+                    ],
+                    "description": (
+                        "LSP operation. Preferred names include diagnostics, goToDefinition, findReferences, hover, documentSymbol, "
+                        "workspaceSymbol, goToImplementation, incomingCalls, and outgoingCalls."
+                    ),
+                },
+                "path": {"type": "string", "description": "Workspace-relative file path used for target selection and server resolution."},
+                "line": {"type": "integer", "description": "1-based line number as shown in editors. Required for position-based operations."},
+                "character": {
+                    "type": "integer",
+                    "description": "1-based character number as shown in editors. Required for position-based operations.",
+                },
+                "query": {"type": "string", "description": "Optional workspaceSymbol search query. Empty string requests all symbols."},
+                "server": {"type": "string", "description": "Optional configured LSP server name."},
+                "newName": {"type": "string", "minLength": 1, "description": "Replacement symbol name for rename."},
+                "newPath": {"type": "string", "minLength": 1, "description": "Destination workspace-relative path for willRenameFiles."},
+                "endLine": {"type": "integer", "minimum": 1, "description": "Optional 1-based end line for codeAction; defaults to line."},
+                "endCharacter": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Optional 1-based end character for codeAction; defaults to character.",
+                },
+                "diagnostics": {"type": "array", "items": {"type": "object"}, "description": "Optional LSP diagnostics used as codeAction context."},
+                "offset": {"type": "integer", "minimum": 1, "default": 1, "description": "1-based result page offset."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 50, "description": "Maximum results to render per page."},
+            },
+            "required": ["operation", "path"],
+            "additionalProperties": False,
+        },
+        effects=frozenset({ToolEffect.READ, ToolEffect.EXECUTE}),
+        path_argument_keys=("path",),
+        supports_parallel=True,
+    )
 
-    def __init__(self, definition: ToolDefinition, manager: LspManager) -> None:
-        self.definition = definition
+    def __init__(self, manager: LspManager) -> None:
         self._converter = lsp_converters.get_converter()
         self._requester: LspRequester = _bound_requester(manager)
 

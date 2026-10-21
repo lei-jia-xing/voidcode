@@ -497,7 +497,6 @@ def test_create_plugin_registers_the_effectiveness_command() -> None:
     assert commands[0].argument_schema == {"type": "object", "properties": {}, "additionalProperties": False}
     assert commands[0].effects == frozenset({"read"})
     assert commands[0].busy_gate is False
-    assert commands[0].direct_user is False
     assert plugin.tools == ()
     assert plugin.context is None
     assert plugin.observer is None

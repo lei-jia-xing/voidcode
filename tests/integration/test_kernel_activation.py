@@ -67,8 +67,6 @@ def _command(workspace: Path, state: Path, *arguments: str) -> list[str]:
         str(workspace),
         "--state-dir",
         str(state),
-        "--trust-plugin",
-        PLUGIN_ID,
         *arguments,
     ]
 
@@ -125,29 +123,125 @@ def _session_row(state: Path, session_id: str) -> tuple[str, str]:
         connection.close()
 
 
-def _spawn_kernel_holder(workspace: Path, state: Path) -> subprocess.Popen[str]:
-    """Open a fresh kernel against the existing state and keep it alive so its driver can run."""
+def _spawn_reloading_holder(workspace: Path, state: Path, session_id: str, trigger: Path, done: Path) -> subprocess.Popen[str]:
+    """A long-lived v1 kernel that reloads on trigger, so the old generation stays alive across the source edit.
+
+    Under the current-source contract a fresh process would boot the edited source; only a
+    kernel opened BEFORE the edit can run a live activation against it. The holder watches
+    for the trigger file, invokes `kernel.reload` once, and records the outcome.
+    """
     code = (
         "import sys, time\n"
         "from pathlib import Path\n"
         "from voidcode.kernel.bootstrap import open_kernel\n"
-        f"kernel = open_kernel(Path(sys.argv[1]), state_dir=Path(sys.argv[2]), trusted_plugins=frozenset({{{PLUGIN_ID!r}}}))\n"
+        "workspace, state_dir = Path(sys.argv[1]), Path(sys.argv[2])\n"
+        "session, trigger, done, ready = sys.argv[3], Path(sys.argv[4]), Path(sys.argv[5]), Path(sys.argv[6])\n"
+        "kernel = open_kernel(workspace, state_dir=state_dir, auto_drain=False)\n"
+        "revision = kernel.command_catalog().revision_id\n"
+        "ready.write_text('opened', encoding='utf-8')\n"
+        "deadline = time.monotonic() + 120.0\n"
+        "while not trigger.exists():\n"
+        "    if time.monotonic() > deadline:\n"
+        "        raise SystemExit('holder timed out waiting for the trigger')\n"
+        "    time.sleep(0.05)\n"
+        "result = kernel.invoke_command(session, 'kernel.reload', {}, expected_revision=revision)\n"
+        "done.write_text(result.status + ':' + (result.error or ''), encoding='utf-8')\n"
+        "time.sleep(120)\n"
+    )
+    ready = trigger.parent / (trigger.stem + ".ready")
+    if ready.exists():
+        ready.unlink()
+    process = subprocess.Popen(
+        [sys.executable, "-c", code, str(workspace), str(state), session_id, str(trigger), str(done), str(ready)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    # Readiness is a positive signal AFTER the holder's kernel opened: the workspace
+    # lease alone is not enough (bootstrap takes it transiently before importing).
+    _await(ready.exists, process)
+    return process
+
+
+def _spawn_model_reloading_holder(workspace: Path, state: Path, session_id: str, trigger: Path, ready: Path) -> subprocess.Popen[str]:
+    """A long-lived v1 kernel that runs one model turn after the source edit.
+
+    The model turn asks for `kernel_reload`, so the committed switch owes the same run a
+    continuation. Only a kernel opened BEFORE the edit can do this: a fresh process boots the
+    edited source and the state-schema guard refuses.
+    """
+    code = (
+        "import sys, time\n"
+        "from pathlib import Path\n"
+        "from voidcode.kernel.bootstrap import open_kernel\n"
+        "workspace, state_dir = Path(sys.argv[1]), Path(sys.argv[2])\n"
+        "session, trigger, ready = sys.argv[3], Path(sys.argv[4]), Path(sys.argv[5])\n"
+        "kernel = open_kernel(workspace, state_dir=state_dir, auto_drain=False)\n"
+        "ready.write_text('opened', encoding='utf-8')\n"
+        "deadline = time.monotonic() + 120.0\n"
+        "while not trigger.exists():\n"
+        "    if time.monotonic() > deadline:\n"
+        "        raise SystemExit('holder timed out waiting for the trigger')\n"
+        "    time.sleep(0.05)\n"
+        "kernel.run('upgrade now', session_id=session, max_steps=4)\n"
+        "time.sleep(120)\n"
+    )
+    ready.unlink(missing_ok=True)
+    process = subprocess.Popen(
+        [sys.executable, "-c", code, str(workspace), str(state), session_id, str(trigger), str(ready)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    _await(ready.exists, process)
+    return process
+
+
+def _add_activation_barrier(source: Path, marker: Path) -> None:
+    """Make the written generation block once between its activation and the next dispatch.
+
+    `Plugin.context` runs in `_messages`, after `kernel.activation_committed` committed the
+    switch and before the continuation's `kernel.provider_intent`: killing at the marker leaves
+    the owed resume intent durable. The marker also lets the restart's own context call pass.
+    """
+    path = source / "__init__.py"
+    text = path.read_text(encoding="utf-8")
+    barrier = (
+        "\n\ndef _activation_barrier(context, services):\n"
+        "    import os, time\n"
+        "    from pathlib import Path\n"
+        f"    marker = Path({str(marker)!r})\n"
+        "    if marker.exists():\n"
+        "        return None\n"
+        "    marker.write_text(str(os.getpid()), encoding='utf-8')\n"
+        "    time.sleep(60)\n"
+        "    return None\n"
+    )
+    assert "\ndef create_plugin(" in text, "the fixture writer changed its factory shape"
+    text = text.replace("\ndef create_plugin(", barrier + "\ndef create_plugin(", 1)
+    text = text.replace("    return Plugin(\n", "    return Plugin(\n        context=_activation_barrier,\n", 1)
+    path.write_text(text, encoding="utf-8")
+
+
+def _spawn_kernel_holder(workspace: Path, state: Path) -> subprocess.Popen[str]:
+    """Open a fresh kernel against the existing state and keep it alive so its driver can run.
+
+    Callers judge real progress from the durable state (session status, events); spawning is not
+    a readiness proof, so nothing here guesses at process health.
+    """
+    code = (
+        "import sys, time\n"
+        "from pathlib import Path\n"
+        "from voidcode.kernel.bootstrap import open_kernel\n"
+        "kernel = open_kernel(Path(sys.argv[1]), state_dir=Path(sys.argv[2]))\n"
         "time.sleep(60)\n"
     )
-    process = subprocess.Popen(
+    return subprocess.Popen(
         [sys.executable, "-c", code, str(workspace), str(state)],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
-    # The kernel must actually open before we judge the driver's progress.
-    _await_durable(lambda: "another kernel owns this workspace" not in _peek(process), process)
-    time.sleep(0.5)
-    return process
-
-
-def _peek(process: subprocess.Popen[str]) -> str:
-    return "" if process.poll() is None else "another kernel owns this workspace"
 
 
 def _await_durable(predicate, process: subprocess.Popen[str], *, timeout: float = _CRASH_STARTUP_DEADLINE_SECONDS) -> None:
@@ -207,6 +301,30 @@ def _activation_commits(state: Path, session_id: str) -> int:
         connection.close()
 
 
+def _event_payloads(state: Path, session_id: str, event_type: str) -> list[dict]:
+    connection = sqlite3.connect(f"{(state / 'kernel-v1.sqlite3').resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        rows = connection.execute(
+            "SELECT payload_json FROM session_events WHERE session_id = ? AND event_type = ? ORDER BY sequence",
+            (session_id, event_type),
+        ).fetchall()
+        return [json.loads(str(row[0])) for row in rows]
+    finally:
+        connection.close()
+
+
+def _event_sequences(state: Path, session_id: str, event_type: str) -> list[int]:
+    connection = sqlite3.connect(f"{(state / 'kernel-v1.sqlite3').resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        rows = connection.execute(
+            "SELECT sequence FROM session_events WHERE session_id = ? AND event_type = ? ORDER BY sequence",
+            (session_id, event_type),
+        ).fetchall()
+        return [int(row[0]) for row in rows]
+    finally:
+        connection.close()
+
+
 def test_crash_after_the_commit_keeps_exactly_one_committed_target(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     state = tmp_path / "state"
@@ -220,28 +338,42 @@ def test_crash_after_the_commit_keeps_exactly_one_committed_target(tmp_path: Pat
         _turn(_call("reload-1", "kernel_reload", reason="upgrade now")),
         _turn(_call("probe-2", PROBE_TOOL)),
         _turn(output="post switch one"),
-        _turn(_call("probe-3", PROBE_TOOL)),
-        _turn(output="post switch two"),
-        _turn(_call("probe-4", PROBE_TOOL)),
-        _turn(output="post switch three"),
     ]
     with _server(replies) as server:
         _configure(workspace, server, source)
         first = _cli(workspace, state, "run", "write v1", "--session-id", "crash-session")
         assert first["status"] == "completed"
         before = first["revision_id"]
-        write_reload_plugin(source, tool_output="v2", state_schema_version=2, migration="ok")
 
-        process = _spawn(workspace, state, "run", "upgrade now", "--session-id", "crash-session")
+        # The v1 kernel stays alive across the source edit: only a generation opened
+        # BEFORE the edit can run a live activation against it. The barrier blocks the
+        # committed run's continuation in `_messages`, after the switch and before the
+        # continuation's provider dispatch, so the owed resume intent is still durable.
+        trigger = tmp_path / "reload.trigger"
+        ready = tmp_path / "reload.ready"
+        barrier = tmp_path / "continuation.started"
+        holder = _spawn_model_reloading_holder(workspace, state, "crash-session", trigger, ready)
         try:
-            _await(lambda: _activation_commits(state, "crash-session") == 1, process)
+            write_reload_plugin(source, tool_output="v2", state_schema_version=2, migration="ok")
+            _add_activation_barrier(source, barrier)
+            trigger.write_text("reload", encoding="utf-8")
+            _await(lambda: _activation_commits(state, "crash-session") == 1 and barrier.exists(), holder)
         finally:
-            if process.poll() is None:
-                os.kill(process.pid, signal.SIGKILL)
-                process.wait(timeout=10)
-        committed_revision, _status = _session_row(state, "crash-session")
+            if holder.poll() is None:
+                os.kill(holder.pid, signal.SIGKILL)
+                holder.wait(timeout=10)
+        # The kill landed after the commit and before the continuation dispatch: the session is
+        # still running and no provider turn was recorded after the activation.
+        committed_revision, status = _session_row(state, "crash-session")
+        assert status == "running"
         assert committed_revision != before
         assert _revision_of(state) == committed_revision
+        assert (
+            max(_event_sequences(state, "crash-session", "kernel.provider_intent"))
+            < _event_sequences(state, "crash-session", "kernel.activation_committed")[0]
+        )
+        _version, payload = _state_row(state, "crash-session")
+        assert json.loads(payload).get("migrated_to") == 2
 
         # A fresh kernel over the same state must finish the owed continuation BY ITSELF:
         # no resume, no prompt, no drain -- it drives the session to completion on the committed
@@ -269,40 +401,118 @@ def test_crash_during_candidate_validation_keeps_the_previous_generation(tmp_pat
     replies = [
         _turn(_call("probe-1", PROBE_TOOL)),
         _turn(output="v1 done"),
+        # The model asks for the switch; the migration below hangs, so the request is never
+        # answered and nothing commits.
         _turn(_call("reload-1", "kernel_reload", reason="crash before commit")),
-        _turn(output="resumed on the old generation"),
-        _turn(output="still the old generation"),
+        _turn(output="resumed on the adopted generation"),
     ]
     with _server(replies) as server:
         _configure(workspace, server, source)
         first = _cli(workspace, state, "run", "write v1", "--session-id", "crash-pre")
         assert first["status"] == "completed"
-        write_reload_plugin(source, tool_output="v2", state_schema_version=2, migration="hang", marker=marker)
 
-        process = _spawn(workspace, state, "run", "upgrade and die", "--session-id", "crash-pre")
+        trigger = tmp_path / "reload.trigger"
+        ready = tmp_path / "reload.ready"
+        holder = _spawn_model_reloading_holder(workspace, state, "crash-pre", trigger, ready)
         try:
-            _await(marker.exists, process)
+            write_reload_plugin(source, tool_output="v2", state_schema_version=2, migration="hang", marker=marker)
+            trigger.write_text("reload", encoding="utf-8")
+            # Boot also imports the plugin (writing its pid); only the hang body's
+            # 'migrating' proves the candidate entered migration before the kill.
+            _await(lambda: marker.exists() and marker.read_text(encoding="utf-8") == "migrating", holder)
         finally:
-            if process.poll() is None:
-                os.kill(process.pid, signal.SIGKILL)
-                process.wait(timeout=10)
+            if holder.poll() is None:
+                os.kill(holder.pid, signal.SIGKILL)
+                holder.wait(timeout=10)
         # The candidate was admitted, imported, and was mid-migration when the kernel died:
-        # nothing can have been committed.
+        # nothing can have been committed, and the dead run is still 'running' durably.
         assert _revision_of(state) == first["revision_id"]
         assert _activation_commits(state, "crash-pre") == 0
+        assert _session_status(state, "crash-pre") == "running"
         _version, payload = _state_row(state, "crash-pre")
         assert json.loads(payload) == {"note": "v1"}
 
-        # The staged request is durable and unconsumed: once the source is valid again, the
-        # resumed run retries it instead of losing the model's request.
+        # A plain start against the edited source refuses to reinterpret the old row.
+        refused = _cli(workspace, state, "catalog", code=1)
+        assert "will not reinterpret" in refused["error"]
+
+        # The explicit same-image adoption recovers the dead run: the held workspace lease
+        # proves no kernel owns it, so the orphan settles as interrupted in the SAME transaction
+        # that migrates the state. Its cursor is preserved for an explicit resume.
         write_reload_plugin(source, tool_output="v2", state_schema_version=2, migration="ok")
+        still_refused = _cli(workspace, state, "catalog", code=1)
+        assert "will not reinterpret" in still_refused["error"]
+        from voidcode.kernel.bootstrap import adopt_generation
+
+        report = adopt_generation(workspace=workspace, state_dir=state, session_id="crash-pre")
+        assert report["migrated_owners"] == [PLUGIN_ID]
+        assert _revision_of(state) == report["to_revision_id"]
+        assert _revision_of(state) != first["revision_id"]
+        _version, payload = _state_row(state, "crash-pre")
+        assert json.loads(payload).get("migrated_to") == 2
+        assert _session_status(state, "crash-pre") == "interrupted"
+        recovery = _event_payloads(state, "crash-pre", "kernel.run_interrupted")
+        assert recovery, "the orphan recovery fact is durable"
+        assert recovery[-1]["stop_cause"] == "shutdown"
+        assert isinstance(recovery[-1]["eligible_owners"], list), "fact eligibility is frozen, never guessed"
+        assert _activation_commits(state, "crash-pre") == 0
+        catalog = _cli(workspace, state, "catalog")
+        assert catalog["revision_id"] == report["to_revision_id"]
+
+        # Safe continuation: the durable activation request is retried exactly once on the
+        # adopted generation, and the session reaches a terminal result.
         resumed = _cli(workspace, state, "resume", "crash-pre", "--max-steps", "4")
-        assert resumed["revision_id"] != first["revision_id"]
-        assert _revision_of(state) == resumed["revision_id"]
+        assert resumed["status"] == "completed"
         assert _activation_commits(state, "crash-pre") == 1
+        assert _revision_of(state) == resumed["revision_id"]
 
 
-def test_host_crash_inside_migration_refuses_only_the_candidate(tmp_path: Path) -> None:
+def test_adoption_recovers_a_non_acting_orphaned_run(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    state = tmp_path / "state"
+    source = tmp_path / "plugin"
+    marker = tmp_path / "candidate.loaded"
+    write_reload_plugin(source, tool_output="v1")
+    replies = [
+        _turn(_call("probe-1", PROBE_TOOL)),
+        _turn(output="v1 done"),
+        _turn(_call("reload-1", "kernel_reload", reason="crash before commit")),
+    ]
+    with _server(replies) as server:
+        _configure(workspace, server, source)
+        first = _cli(workspace, state, "run", "write v1", "--session-id", "crash-pre")
+        assert first["status"] == "completed"
+
+        trigger = tmp_path / "reload.trigger"
+        ready = tmp_path / "reload.ready"
+        # The victim session is created by the holder's own run; the acting session is the
+        # already-completed one, so this exercises the store's non-acting orphan path.
+        holder = _spawn_model_reloading_holder(workspace, state, "victim", trigger, ready)
+        try:
+            write_reload_plugin(source, tool_output="v2", state_schema_version=2, migration="hang", marker=marker)
+            trigger.write_text("reload", encoding="utf-8")
+            _await(lambda: marker.exists() and marker.read_text(encoding="utf-8") == "migrating", holder)
+        finally:
+            if holder.poll() is None:
+                os.kill(holder.pid, signal.SIGKILL)
+                holder.wait(timeout=10)
+        assert _session_status(state, "victim") == "running"
+        assert _activation_commits(state, "victim") == 0
+
+        write_reload_plugin(source, tool_output="v2", state_schema_version=2, migration="ok")
+        from voidcode.kernel.bootstrap import adopt_generation
+
+        report = adopt_generation(workspace=workspace, state_dir=state, session_id="crash-pre")
+        assert report["migrated_owners"] == [PLUGIN_ID]
+        assert _session_status(state, "victim") == "interrupted"
+        assert _session_status(state, "crash-pre") == "completed"
+        recovery = _event_payloads(state, "victim", "kernel.run_interrupted")
+        assert recovery and recovery[-1]["stop_cause"] == "shutdown"
+        assert isinstance(recovery[-1]["eligible_owners"], list)
+        assert _event_payloads(state, "crash-pre", "kernel.run_interrupted") == []
+
+
+def test_kernel_crash_inside_migration_commits_nothing_and_keeps_the_previous_generation(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     state = tmp_path / "state"
     source = tmp_path / "plugin"
@@ -310,19 +520,34 @@ def test_host_crash_inside_migration_refuses_only_the_candidate(tmp_path: Path) 
     replies = [
         _turn(_call("probe-1", PROBE_TOOL)),
         _turn(output="v1 done"),
-        _turn(_call("reload-1", "kernel_reload", reason="host dies mid migration")),
-        _turn(output="kept v1"),
     ]
     with _server(replies) as server:
         _configure(workspace, server, source)
         first = _cli(workspace, state, "run", "write v1", "--session-id", "crash-host")
         assert first["status"] == "completed"
-        write_reload_plugin(source, tool_output="v2", state_schema_version=2, migration="crash")
 
-        second = _cli(workspace, state, "run", "upgrade", "--session-id", "crash-host")
-        assert second["status"] == "completed"
-        assert second["revision_id"] == first["revision_id"]
+        # In-process, a crashing migration takes the kernel down with it: the holder
+        # exits 9 by itself and the activation transaction never ran.
+        trigger = tmp_path / "reload.trigger"
+        done = tmp_path / "reload.done"
+        holder = _spawn_reloading_holder(workspace, state, "crash-host", trigger, done)
+        write_reload_plugin(source, tool_output="v2", state_schema_version=2, migration="crash")
+        trigger.write_text("reload", encoding="utf-8")
+        holder.wait(timeout=120)
+        assert holder.returncode == 9, holder.returncode
         assert _activation_commits(state, "crash-host") == 0
         assert _revision_of(state) == first["revision_id"]
         _version, payload = _state_row(state, "crash-host")
         assert json.loads(payload) == {"note": "v1"}
+
+        # The crashed source still declares v2, so a plain start refuses; restoring a
+        # valid v2 migration and adopting explicitly recovers the new generation.
+        refused = _cli(workspace, state, "catalog", code=1)
+        assert "will not reinterpret" in refused["error"]
+        write_reload_plugin(source, tool_output="v2", state_schema_version=2, migration="ok")
+        from voidcode.kernel.bootstrap import adopt_generation
+
+        report = adopt_generation(workspace=workspace, state_dir=state, session_id="crash-host")
+        assert report["migrated_owners"] == [PLUGIN_ID]
+        catalog = _cli(workspace, state, "catalog")
+        assert catalog["revision_id"] == report["to_revision_id"]
