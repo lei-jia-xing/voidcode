@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "model": {
+    "model": "endpoint/your-model"
+  },
+  "providers": {
+    "endpoint": {
+      "base_url": "http://127.0.0.1:8000/v1",
+      "api_key": "replace-with-your-key"
+    }
+  },
+  "plugins": {
+    "ast_grep": {
+      "enabled": false
+    },
+    "btw": {
+      "enabled": false
+    },
+    "compaction": {
+      "enabled": false
+    },
+    "cron": {
+      "enabled": false
+    },
+    "delegation": {
+      "enabled": false
+    },
+    "effectiveness": {
+      "enabled": false
+    },
+    "exec": {
+      "enabled": false
+    },
+    "files": {
+      "enabled": false
+    },
+    "goal": {
+      "enabled": false
+    },
+    "hooks": {
+      "enabled": false
+    },
+    "lsp": {
+      "enabled": false
+    },
+    "mcp": {
+      "enabled": false
+    },
+    "plan": {
+      "enabled": false
+    },
+    "providers": {
+      "enabled": false
+    },
+    "review": {
+      "enabled": false
+    },
+    "session_info": {
+      "enabled": false
+    },
+    "skills": {
+      "enabled": false
+    },
+    "todo": {
+      "enabled": false
+    },
+    "user_shell": {
+      "enabled": false
+    },
+    "web": {
+      "enabled": false
+    }
+  }
+}

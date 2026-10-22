@@ -212,7 +212,13 @@ def adopt_generation(*, workspace: Path, state_dir: Path, session_id: str | None
 
             candidate_runtime: PluginRuntime | None = None
             try:
-                candidate_runtime = PluginRuntime(admission.plugins, workspace=workspace, revision_id="adopt-target", store=None)
+                candidate_runtime = PluginRuntime(
+                    admission.plugins,
+                    workspace=workspace,
+                    revision_id="adopt-target",
+                    store=None,
+                    builtin_providers=resolved_providers(admission.config),
+                )
                 # Frozen BEFORE the transaction: a recovery fact must carry the same durable
                 # eligibility the engine stamps on its own facts, never a later roster.
                 fact_observers = dict(candidate_runtime.observer_owners)

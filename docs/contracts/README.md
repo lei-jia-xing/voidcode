@@ -4,6 +4,8 @@ This directory contains the authoritative technical contracts for the VoidCode c
 
 ## Contracts
 
+- [`optional-queries.md`](./optional-queries.md): Typed, optional plugin collaboration, replacement providers, absence and failure behavior, and capability-based workflow scopes.
+
 - [`client-transport.md`](./client-transport.md): Core HTTP/SSE API, core CLI, inline TUI, and the web client: catalog/revision binding, view descriptors, event streams, and the two decision gates.
 - [`agent-collaboration.md`](./agent-collaboration.md): Delegated agent collaboration: child facts, run-scoped join/steering, completion notices and atomic acknowledgement, restart publication recovery, and bounded transcript/history paging.
 - [`goal-plugin.md`](./goal-plugin.md): Official Goal plugin contracts, state schema, windowed accounting, 3-turn blocked audit, and declarative views.

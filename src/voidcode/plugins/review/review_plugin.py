@@ -288,10 +288,13 @@ class ReviewCommand:
         except ValueError as exc:
             return CommandResult(status="error", error=str(exc))
         try:
+            available_tools = tuple(name for name in REVIEW_TOOL_ALLOWLIST if services.tool_definition(name) is not None)
+            if not available_tools:
+                return CommandResult(status="error", error="review has no available inspection tools in the current session")
             child_id = services.spawn_child(
                 request.prompt,
                 label=REVIEW_CHILD_LABEL,
-                tool_allowlist=REVIEW_TOOL_ALLOWLIST,
+                tool_allowlist=available_tools,
                 max_steps=REVIEW_CHILD_MAX_STEPS,
                 # A review child never mutates: declaring the stance is what lets a read-only or
                 # plan-mode session delegate it at all, and the core forces it anyway whenever

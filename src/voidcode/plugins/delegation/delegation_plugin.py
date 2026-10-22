@@ -18,10 +18,10 @@ the rendered profile text followed by this call's prompt, its tools are the prof
 and its stance is the profile's ``readonly`` (customs declare no stance, so they run writable
 unless the parent lease is read-only). The core has no per-child system prompt seam -- a
 child receives exactly one user prompt -- so the profile text is materialized into that prompt
-rather than sent as a separate system message. An allowlist the active revision does not admit (its
-owning plugin can be disabled in a workspace) falls back once to the parent tool scope, with the
-downgrade visible in the result; a profile model preference is reported as a note because children
-always run the workspace model.
+rather than sent as a separate system message. The requested profile tools are intersected with
+the session's visible capabilities; omitted names are reported, and an empty scope is refused.
+A failed spawn never retries with a wider parent scope. A profile model preference is reported
+as a note because children always run the workspace model.
 
 Child runs, depth, the chain's spawn budget, tool scope and termination stay core-owned; this
 plugin only records which children its own session started, under which label and group.
@@ -606,43 +606,27 @@ def _spawn_child(
     tool_allowlist: tuple[str, ...] | None,
     notify_on_completion: bool,
 ) -> tuple[str, tuple[str, ...]]:
-    """Spawn one child, reporting the caveats that shaped how it runs.
-
-    A profile materializes the child prompt as its rendered text plus this call's prompt (the core
-    has no per-child system prompt seam: a child receives exactly one user prompt) and passes the
-    profile's allowlist and stance. An allowlist the active revision does not admit falls back once
-    to the parent tool scope, with the downgrade visible in the result, so a disabled owning plugin
-    degrades the child instead of failing the spawn.
-
-    The core validates the requested scope before it creates anything, and its refusal reaches
-    this process as a ``ValueError`` locally or as the host transport's wrapping ``RuntimeError``:
-    both mean the same thing here, and a rejected spawn leaves no child behind to retry onto.
-    """
+    """Narrow a profile to currently visible capabilities, then spawn exactly once."""
     body = prompt if profile is None or profile_body is None else f"{profile_body}\n\n{prompt}"
     allowlist = tool_allowlist if profile is None else profile.tool_allowlist
     readonly = False if profile is None else profile.readonly
     notes = _profile_notes(profile)
-    try:
-        child_id = services.spawn_child(
-            body,
-            label=label,
-            tool_allowlist=allowlist,
-            max_steps=max_steps,
-            readonly=readonly,
-            notify_on_completion=notify_on_completion,
-        )
-    except (ValueError, RuntimeError) as exc:
-        if profile is None:
-            raise
-        child_id = services.spawn_child(
-            body,
-            label=label,
-            tool_allowlist=None,
-            max_steps=max_steps,
-            readonly=readonly,
-            notify_on_completion=notify_on_completion,
-        )
-        return child_id, (*notes, f"profile '{profile.id}' scope was unavailable ({exc}); the child inherited the parent tool scope instead")
+    if profile is not None and allowlist is not None:
+        available = tuple(name for name in allowlist if services.tool_definition(name) is not None)
+        missing = tuple(name for name in allowlist if name not in available)
+        if not available:
+            raise ValueError(f"profile '{profile.id}' has no available tools in the current session")
+        if missing:
+            notes = (*notes, f"profile '{profile.id}' omitted unavailable tools: {', '.join(missing)}")
+        allowlist = available
+    child_id = services.spawn_child(
+        body,
+        label=label,
+        tool_allowlist=allowlist,
+        max_steps=max_steps,
+        readonly=readonly,
+        notify_on_completion=notify_on_completion,
+    )
     return child_id, notes
 
 

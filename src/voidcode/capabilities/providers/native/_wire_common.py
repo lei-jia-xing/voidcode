@@ -169,6 +169,17 @@ def iter_stream_with_timeout(
             if kind == "done":
                 return
             if kind == "error":
+                # The HTTP transport can time out before our queue does. The
+                # same caller intent must win regardless of which clock fires.
+                if isinstance(value, Exception) and aborted is not None and aborted():
+                    raise ProviderExecutionError(
+                        kind="cancelled",
+                        provider_name=provider_name,
+                        model_name=model_name,
+                        message="provider stream cancelled while waiting for a chunk",
+                        retryable=False,
+                        fallback_allowed=False,
+                    ) from value
                 raise cast(BaseException, value)
             seen_first_event = True
             yield value

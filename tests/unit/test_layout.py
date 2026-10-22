@@ -35,7 +35,7 @@ _LEGACY_TOP_LEVEL = frozenset(
 )
 
 #: The layers that must never depend on a concrete plugin or on the deleted world.
-_GUARDED_ROOTS = ("core", "plugins", "sdk")
+_GUARDED_ROOTS = ("core", "plugins", "sdk", "capabilities")
 
 
 def _iter_sources(root: Path):
@@ -77,6 +77,13 @@ def test_new_world_never_imports_legacy_modules() -> None:
                 head = module.split(".")[1] if module.startswith("voidcode.") else None
                 if head in _LEGACY_TOP_LEVEL:
                     violations.append(f"{source.relative_to(_SRC)}: imports {module}")
+                if root_name == "plugins" and head == "plugins":
+                    imported_parts = module.split(".")
+                    own_plugin = source.relative_to(_SRC).parts[1]
+                    if len(imported_parts) > 2 and imported_parts[2] != own_plugin:
+                        violations.append(f"{source.relative_to(_SRC)}: imports concrete peer {module}")
+                if root_name == "capabilities" and head in {"core", "plugins"}:
+                    violations.append(f"{source.relative_to(_SRC)}: shared capability imports {module}")
                 # The core admits plugins by root from disk; importing the
                 # bundled plugin package would make one concrete plugin part of the core.
                 if root_name == "core" and module.startswith("voidcode.plugins"):

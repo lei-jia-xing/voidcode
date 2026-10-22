@@ -21,6 +21,7 @@ from pydantic import BaseModel, StrictInt, ValidationInfo, field_validator
 from voidcode.sdk.history import render_history_page
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
+from voidcode.sdk.queries import QueryContractError
 from voidcode.sdk.services import ArtifactPage, PluginServices, QueryUnavailable
 from voidcode.sdk.tools import (
     AttachmentOutput,
@@ -37,6 +38,7 @@ from voidcode.sdk.tools import (
     ToolSuccess,
     is_read_tier,
 )
+from voidcode.sdk.workspace_queries import RULE_PAGES, RULE_URI_PREFIX, RulePageRequest
 
 from .read_formats import MAX_OUTPUTS, render_notebook, render_pdf_bytes, render_pdf_path, render_sqlite
 
@@ -65,52 +67,6 @@ VOIDCODE_ARTIFACT_PREFIX = "voidcode://artifact/"
 #: payload-included pages of the caller's own session or of one of its own descendants.
 #: Parents, siblings, unrelated roots, and foreign workspaces are refused by the core.
 VOIDCODE_TRANSCRIPT_PREFIX = "voidcode://transcript/"
-
-#: Internal URL scheme for workspace rule catalogs, shared verbatim with the
-#: skills plugin's catalog URIs: ``services.query("workspace.rule_page")`` asks
-#: the skills plugin, which owns the rulebook semantics.
-RULE_URI_PREFIX = "voidcode://rule/"
-
-#: Named query this tool asks the skills plugin whenever the caller reads a
-#: ``voidcode://rule/`` URI: the skills plugin owns the rulebook semantics, so
-#: this plugin never parses rule files itself.
-RULE_PAGE_QUERY = "workspace.rule_page"
-
-#: Named query this module expects the LSP plugin to answer for document-state
-#: guards applied by ``apply_workspace_edit``.
-DOCUMENT_VERSION_QUERY = "workspace.document_version"
-
-
-@dataclass(frozen=True, slots=True)
-class _RulePage:
-    rule: str
-    content_hash: str
-    text: str
-    next_offset: int | None
-
-    @classmethod
-    def from_query(cls, value: Mapping[str, object]) -> _RulePage | None:
-        rule = value.get("rule")
-        content_hash = value.get("content_hash")
-        text = value.get("text")
-        next_offset = value.get("next_offset")
-        if not isinstance(rule, str) or not rule:
-            return None
-        if not isinstance(content_hash, str) or not content_hash:
-            return None
-        if not isinstance(text, str):
-            return None
-        if next_offset is not None and (not isinstance(next_offset, int) or isinstance(next_offset, bool) or next_offset < 1):
-            return None
-        return cls(rule=rule, content_hash=content_hash, text=text, next_offset=next_offset)
-
-    def as_payload(self) -> dict[str, object]:
-        return {
-            "rule": self.rule,
-            "content_hash": self.content_hash,
-            "text": self.text,
-            "next_offset": self.next_offset,
-        }
 
 
 def _spill_artifact(
@@ -1680,17 +1636,13 @@ class ReadTool:
 
         if args.path.startswith(RULE_URI_PREFIX):
             try:
-                answered = services.query(
-                    RULE_PAGE_QUERY,
-                    {"uri": args.path, "offset": args.offset or 1, "limit": args.limit or DEFAULT_READ_LIMIT},
-                )
+                page = RULE_PAGES.ask(services, RulePageRequest(uri=args.path, offset=args.offset or 1, limit=args.limit or DEFAULT_READ_LIMIT))
             except QueryUnavailable:
                 return _uri_failure(self.definition.name, f"rule catalog is unavailable in this runtime generation: {args.path}")
-            if answered is None:
-                return _uri_failure(self.definition.name, f"unknown rule in this workspace: {args.path}")
-            page = _RulePage.from_query(answered)
-            if page is None:
+            except QueryContractError:
                 return _uri_failure(self.definition.name, f"unreadable rule page for {args.path}: provider shape violated")
+            if page is None:
+                return _uri_failure(self.definition.name, f"unknown rule in this workspace: {args.path}")
             next_offset = page.next_offset
             truncated = next_offset is not None
             body = page.as_payload()

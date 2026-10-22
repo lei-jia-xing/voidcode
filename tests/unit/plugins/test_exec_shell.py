@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from voidcode.capabilities.exec.shell_exec import ShellExecResultBody
 from voidcode.plugins.exec import create_plugin
-from voidcode.plugins.exec.shell_exec import ShellExecResultBody
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import ProcessResult
 from voidcode.sdk.tools import TextOutput, ToolCall, ToolFailure, ToolSuccess

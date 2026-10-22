@@ -4,31 +4,47 @@ This document is the primary reference for autonomous agents and developers modi
 
 ## Architecture & Subsystem Boundaries
 
-VoidCode is a small trusted core plus a Python plugin SDK and a bundled official plugin set:
+VoidCode is a small trusted core plus shared product capabilities, a Python plugin SDK and a bundled official plugin set:
 
 ```mermaid
 graph LR
     SDK["src/voidcode/sdk/<br/>(contracts only)"]
     Core["src/voidcode/core/<br/>(engine, runtime, storage, transport, tui, activation, coverage, bootstrap)"]
     Plugins["src/voidcode/plugins/<br/>(bundled plugins)"]
+    Capabilities["src/voidcode/capabilities/<br/>(shared files, execution, providers)"]
 
     Core --> SDK
     Plugins --> SDK
     Core --> Plugins
+    Core --> Capabilities
+    Plugins --> Capabilities
+    Capabilities --> SDK
 ```
 
 - **SDK (`src/voidcode/sdk/`)**:
-  The only contract surface shared by the core and every plugin: plugin registration (`plugin.py`), tools (`tools.py`), commands (`commands.py`), invocation context (`invocation.py`), provider contracts (`provider.py`), hook/observer contracts (`hooks.py`), declarative views (`views.py`), scoped services (`services.py`), configuration parsing (`config.py`), plus the shared JSON/limit helpers (`json_values.py`, `codec.py`, `limits.py`).
+  The only contract surface shared by the core and every plugin: plugin registration (`plugin.py`), tools (`tools.py`), commands (`commands.py`), invocation context (`invocation.py`), provider contracts (`provider.py`), hook/observer contracts (`hooks.py`), declarative views (`views.py`), scoped services (`services.py`), configuration parsing (`config.py`), typed optional queries (`queries.py`, `workspace_queries.py`), plus the shared JSON/limit helpers (`json_values.py`, `codec.py`, `limits.py`).
 - **Core (`src/voidcode/core/`)**:
   The product: `engine.py` runs governed turns over append-only events with durable native tool batches, approvals and confirmation gates; `bootstrap.py` owns configuration and the per-workspace state directory; `activation.py` admits configured plugin sources and switches revisions; `plugins.py` is the in-process plugin runtime that loads plugin packages and dispatches invocations by direct call; `services.py` binds scoped services to one invocation lease; `processes.py` owns child processes and supervised services; `storage/` owns the SQLite store and schema; `transport/` serves the HTTP/SSE API and the built web client; `tui/` is the inline-scrollback client; `coverage.py` tracks what a session's model has genuinely been shown.
 - **Bundled plugins (`src/voidcode/plugins/`)**:
-  The official plugins ship in the wheel. They own all product mechanisms — tools, commands, providers, hooks, views, and session state — using the same public SDK a third-party plugin gets. The core's reserved control surface (Layer Rule 2) is not a plugin.
+  The official plugins ship in the wheel. They extend the built-in product with tools, commands, providers, hooks, views, and session state using the same public SDK a third-party plugin gets. The core's reserved control surface (Layer Rule 2) is not a plugin.
 
 ### Layer Rules
 
 1. **The SDK has no implementation dependencies.** `sdk/` may import the standard library, `pydantic`, and `jsonschema` only; never `core/` or `plugins/`. Enforced by `tests/unit/sdk/test_sdk_direction.py`.
 2. **The core imports no concrete plugin.** The core knows plugin ids, roots, and configs, never a plugin module. Plugin-declared tools, commands, providers, and views arrive through admission (`core/activation.py`) and the in-process runtime (`core/plugins.py`). Separately, the core owns its own control surface: the reserved core commands (`run`, `resume`, `show`, `status`, `help`, `core.reload`) and the reserved `core_reload` tool are defined and dispatched in `engine.py` over the same typed command/tool contracts, and a plugin may never declare or shadow those names (`core/plugins.py`: `RESERVED_COMMAND_NAMES`, `RESERVED_COMMAND_PREFIXES`, `RESERVED_TOOL_NAMES`).
-3. **Plugins import only the SDK** (plus their own third-party dependencies). A plugin that needs core behavior asks for it through `PluginServices`; there is no private core entry for bundled plugins.
+3. **Plugins import the SDK and shared capabilities** (plus their own third-party dependencies). Shared capabilities (`src/voidcode/capabilities/`) depend only on the SDK and their own dependencies, never on the core or concrete plugins. A plugin that needs core behavior asks for it through `PluginServices`; there is no private core entry for bundled plugins.
+
+The core statically registers file tools and `shell_exec`, plus provider adapters, even when
+no plugin is admitted. These defaults use the ordinary governed dispatch and leases, are owned
+by `core`, and are not plugin sources. An admitted plugin may replace a default tool/provider
+by name; duplicate names between two plugins still fail. Disabling a plugin removes its
+registrations, not the core defaults. Use policy/visibility controls to restrict built-in tools.
+
+Plugin collaboration uses shared SDK `QueryContract` objects: providers register with `bind`,
+consumers call `ask`, and neither imports a concrete peer. Preserve the difference between
+`QueryUnavailable`, a `None` resource answer, malformed data, and handler errors. Workflow
+profiles use the current visible tool subset; never retry failed child creation with a wider
+scope. See `docs/contracts/optional-queries.md`.
 
 ## Where to Look
 

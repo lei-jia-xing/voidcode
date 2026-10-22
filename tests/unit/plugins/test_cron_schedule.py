@@ -319,3 +319,15 @@ def test_loop_confirmation_message_uses_parsed_schedule() -> None:
     message = loop_confirmation_message(_Summary(prompt=prompt, human_schedule=human_schedule(expr), id="job-7"))
     assert message.startswith("Scheduled 'check the deploy' on cadence 'every 30m' (job ID: job-7).")
     assert message.endswith("use `cron_delete` or run `voidcode cron remove job-7`.")
+
+
+def test_cron_leap_day_crosses_non_leap_years() -> None:
+    after = _local_epoch(2025, 3, 1, 0, 0, 0)
+    result = next_fire_after(parse_schedule("cron 0 9 29 2 *"), after)
+    assert _local_iso(result) == "2028-02-29T09:00:00"
+
+
+@pytest.mark.parametrize("fields", ["0 9 * JAN *", "0 9 * * MON", "H 9 * * *", "R 9 * * *", "0 9 * * 5-1"])
+def test_cron_library_extensions_do_not_expand_public_dialect(fields: str) -> None:
+    with pytest.raises(ValueError):
+        parse_schedule(f"cron {fields}")

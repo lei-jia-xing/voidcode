@@ -12,8 +12,10 @@ from pydantic import BaseModel, Field
 
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
+from voidcode.sdk.queries import QueryContractError
 from voidcode.sdk.services import PluginServices, QueryUnavailable
 from voidcode.sdk.tools import TextOutput, ToolCall, ToolDefinition, ToolDiagnostics, ToolEffect, ToolFailure, ToolResult, ToolSuccess
+from voidcode.sdk.workspace_queries import DOCUMENT_STATES, DocumentState, DocumentStateRequest
 
 from .guards import enforce_seen_lines
 
@@ -37,34 +39,6 @@ class _WorkspaceEditArgs(BaseModel):
     edits: list[_TextEdit] = Field(min_length=1)
 
 
-# Shape answered by the LSP plugin's ``workspace.document_version`` query; restated locally
-# (no cross-plugin imports) and validated below. The query answers only what the caller's
-# session already opened through an LSP request — it starts no server — so an unknown document
-# means "no version available", never a fabricated state.
-@dataclass(frozen=True, slots=True)
-class _LspDocumentState:
-    path: str
-    version: int
-    content_hash: str
-    position_encoding: str
-
-    @classmethod
-    def from_query(cls, value: Mapping[str, object], *, path: str) -> _LspDocumentState | None:
-        answered_path = value.get("path")
-        version = value.get("version")
-        content_hash = value.get("content_hash")
-        encoding = value.get("position_encoding")
-        if answered_path != path:
-            return None
-        if not isinstance(version, int) or isinstance(version, bool) or version < 1:
-            return None
-        if not isinstance(content_hash, str) or _SHA256_PATTERN.fullmatch(content_hash) is None:
-            return None
-        if not isinstance(encoding, str) or encoding not in ("utf-8", "utf-16", "utf-32"):
-            return None
-        return cls(path=path, version=version, content_hash=content_hash, position_encoding=encoding)
-
-
 @dataclass(frozen=True, slots=True)
 class ApplyWorkspaceEditResultBody:
     paths: tuple[str, ...]
@@ -84,30 +58,12 @@ class ApplyWorkspaceEditResultBody:
         return payload
 
 
-DOCUMENT_VERSION_QUERY = "workspace.document_version"
-
-
 class _DiagnosticFailure(Exception):
     """Carries a prebuilt model-visible ToolFailure up to the invoke boundary."""
 
     def __init__(self, result: ToolFailure) -> None:
         super().__init__(result.error)
         self.result = result
-
-
-def _require_mapping(value: object, *, what: str, tool_name: str) -> Mapping[str, object]:
-    if not isinstance(value, Mapping):
-        raise _DiagnosticFailure(
-            _diagnostic_failure(
-                tool_name,
-                message=f"{what} must be a JSON object.",
-                error_kind="tool_input_mismatch",
-                reason="document_answer_not_object",
-                retry_guidance="The document-version provider answered outside its contract; retry once, then report the provider as broken.",
-                details={"what": what, "actual_type": type(value).__name__},
-            )
-        )
-    return value
 
 
 def _diagnostic_failure(
@@ -134,43 +90,23 @@ def _diagnostic_failure(
     )
 
 
-def _require_query_answer(answered: Mapping[str, object] | None, *, path: str, tool_name: str) -> _LspDocumentState | None:
-    """Validate one document-version answer: ``None`` stays "not open", corruption fails visibly.
-
-    The answer must name the exact canonical path requested, carry a real version and SHA-256,
-    and name a supported encoding: a different document's version or a malformed hash is a
-    provider contract violation, never ordinary "stale". A handler bug raises (never fallback).
-    """
-    if answered is None:
+def _query_document_state(services: PluginServices, path: Path, *, tool_name: str) -> DocumentState | None:
+    """Ask any document-state provider; absence permits only hash-based guards."""
+    try:
+        return DOCUMENT_STATES.ask(services, DocumentStateRequest(path=path.as_posix()))
+    except QueryUnavailable:
         return None
-    state = _LspDocumentState.from_query(_require_mapping(answered, what=f"document version answer for {path}", tool_name=tool_name), path=path)
-    if state is None:
+    except QueryContractError as exc:
         raise _DiagnosticFailure(
             _diagnostic_failure(
                 tool_name,
                 message=f"unreadable document version answer for {path}: the provider broke its shape contract.",
                 error_kind="tool_input_mismatch",
                 reason="document_answer_shape_violation",
-                retry_guidance="Retry once; if it repeats, the document-version provider is broken and must be fixed, not worked around.",
-                details={"path": path},
+                retry_guidance="The document-state provider violated its SDK contract; fix the provider before retrying.",
+                details={"path": path.as_posix()},
             )
-        )
-    return state
-
-
-def _query_document_state(services: PluginServices, path: Path, *, tool_name: str) -> _LspDocumentState | None:
-    """The LSP plugin's opened-document record for one path, or None when that plugin has none.
-
-    Only a genuinely unanswered query (`QueryUnavailable`, LSP disabled in this runtime generation)
-    degrades to "no version available": the caller's version guards then fail closed for
-    version-constrained edits and hash-only edits proceed. Query handler bugs raise (never
-    fallback), and a malformed provider answer fails visibly, never confused with "not open".
-    """
-    try:
-        answered = services.query(DOCUMENT_VERSION_QUERY, {"path": path.as_posix()})
-    except QueryUnavailable:
-        return None
-    return _require_query_answer(answered, path=path.as_posix(), tool_name=tool_name)
+        ) from exc
 
 
 class ApplyWorkspaceEditTool:
@@ -190,7 +126,7 @@ class ApplyWorkspaceEditTool:
                     "minItems": 1,
                     "description": (
                         "Text edits with 1-based line/character ranges. Every edit requires expectedHash from read. "
-                        "expectedVersion, when provided, must match the currently opened LSP document."
+                        "expectedVersion, when provided, must match the document-state provider's current version."
                     ),
                     "items": {
                         "type": "object",
@@ -205,7 +141,7 @@ class ApplyWorkspaceEditTool:
                             "expectedHash": {"type": "string"},
                             "expectedVersion": {
                                 "type": "integer",
-                                "description": "Optional open-document version from the LSP result; checked against runtime document state.",
+                                "description": "Optional document version; checked against the active document-state provider.",
                             },
                             "version": {"type": "integer", "description": "LSP documentChanges version; checked when supplied."},
                         },
@@ -257,7 +193,7 @@ class ApplyWorkspaceEditTool:
 
         raw_contents: dict[Path, bytes] = {}
         originals: dict[Path, str] = {}
-        document_states: dict[Path, _LspDocumentState | None] = {}
+        document_states: dict[Path, DocumentState | None] = {}
         grouped: dict[Path, list[tuple[int, int, str]]] = {}
         display_by_path: dict[Path, str] = {}
         workspace_root = workspace.resolve()
@@ -292,31 +228,29 @@ class ApplyWorkspaceEditTool:
                     document_states[path] = _query_document_state(services, path, tool_name=self.definition.name)
             except _DiagnosticFailure as exc:
                 return exc.result
-            document_state: _LspDocumentState | None = document_states[path]
+            document_state: DocumentState | None = document_states[path]
             requested_version = edit.expectedVersion if edit.expectedVersion is not None else edit.version
             if requested_version is not None and document_state is None:
                 return _diagnostic_failure(
                     self.definition.name,
                     message=(
                         f"apply_workspace_edit requested expectedVersion {requested_version} for {edit.path}, "
-                        "but no LSP document is open for it (fail-closed)."
+                        "but no document-state provider has a version for it (fail-closed)."
                     ),
                     error_kind="stale_edit",
                     reason="document_version_unavailable",
                     retry_guidance=(
-                        "Run an LSP request that opens this file first (for example diagnostics or hover), "
-                        "then retry with the document version that LSP reports; or drop expectedVersion and "
-                        "retry with expectedHash only."
+                        "Obtain a current document version from an enabled document-state provider before retrying this version-constrained edit."
                     ),
                     details={"path": edit.path, "expected_version": requested_version},
                 )
             if document_state is not None and document_state.content_hash != actual_hash:
                 return _diagnostic_failure(
                     self.definition.name,
-                    message=f"apply_workspace_edit rejected because the opened LSP document changed for {edit.path}.",
+                    message=f"apply_workspace_edit rejected because the provider's document content changed for {edit.path}.",
                     error_kind="stale_edit",
                     reason="document_content_mismatch",
-                    retry_guidance="Refresh the LSP result and read the current file before retrying the workspace edit.",
+                    retry_guidance="Refresh the document-state result and read the current file before retrying the workspace edit.",
                     details={
                         "path": edit.path,
                         "document_hash": document_state.content_hash,
@@ -327,12 +261,12 @@ class ApplyWorkspaceEditTool:
                 return _diagnostic_failure(
                     self.definition.name,
                     message=(
-                        f"apply_workspace_edit rejected because {edit.path} is at opened LSP version "
+                        f"apply_workspace_edit rejected because {edit.path} is at document version "
                         f"{document_state.version}, not requested version {requested_version}."
                     ),
                     error_kind="stale_edit",
                     reason="document_version_mismatch",
-                    retry_guidance="Refresh the LSP result and retry the complete workspace edit against the current document version.",
+                    retry_guidance="Refresh the document-state result and retry the complete workspace edit against the current document version.",
                     details={
                         "path": edit.path,
                         "expected_version": requested_version,

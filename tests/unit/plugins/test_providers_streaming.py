@@ -18,7 +18,7 @@ from typing import cast
 import pytest
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.plugins.providers.dispatch import RegisteredProvider, build_registered_providers
+from voidcode.capabilities.providers.dispatch import RegisteredProvider, build_registered_providers
 from voidcode.sdk.provider import (
     ProviderExecutionError,
     ProviderMessage,

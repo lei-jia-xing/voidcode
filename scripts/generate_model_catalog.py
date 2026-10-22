@@ -2,7 +2,7 @@
 
 Dev-time generator only; never imported by the runtime. Fetches the
 field-pruned models.dev mirror at https://catalog.stencil.so/models.json.zstd
-and emits `src/voidcode/plugins/providers/native/model_catalog_data.json`, which
+and emits `src/voidcode/capabilities/providers/native/model_catalog_data.json`, which
 is the providers plugin's only static metadata source.
 
 Field names in the emitted per-model entries must EXACTLY match
@@ -21,11 +21,11 @@ from typing import Final
 import httpx
 import zstandard
 
-from voidcode.plugins.providers.native.api_routes import api_route_for
-from voidcode.plugins.providers.native.provider_table import PROVIDER_TABLE, PROVIDER_TABLE_BY_ID
+from voidcode.capabilities.providers.native.api_routes import api_route_for
+from voidcode.capabilities.providers.native.provider_table import PROVIDER_TABLE, PROVIDER_TABLE_BY_ID
 
 CATALOG_URL = "https://catalog.stencil.so/models.json.zstd"
-_PROVIDER_PLUGIN = Path(__file__).resolve().parent.parent / "src" / "voidcode" / "plugins" / "providers" / "native"
+_PROVIDER_PLUGIN = Path(__file__).resolve().parent.parent / "src" / "voidcode" / "capabilities" / "providers" / "native"
 OUTPUT_PATH = _PROVIDER_PLUGIN / "model_catalog_data.json"
 #: Model -> tokenizer routing, extracted from oh-my-pi by
 #: ``scripts/extract_tokenizer_data.py``. The models.dev mirror carries no
@@ -34,7 +34,7 @@ TOKENIZER_ROUTING_PATH = _PROVIDER_PLUGIN / "tokenizer_routing.json"
 _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"  # little-endian 0xfd2fb528
 
 # Must stay equal to `CANONICAL_EFFORTS`
-# (src/voidcode/plugins/providers/native/reasoning_effort.py):
+# (src/voidcode/capabilities/providers/native/reasoning_effort.py):
 # the runtime clamps requested effort against these levels, so a level outside
 # the ladder would be unreachable, and a missing one would never be offered.
 CANONICAL_EFFORT_LEVELS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh", "max")

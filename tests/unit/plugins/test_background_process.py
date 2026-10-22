@@ -17,8 +17,7 @@ from pathlib import Path
 import jsonschema
 import pytest
 
-from voidcode.plugins.exec import create_plugin
-from voidcode.plugins.exec.background_process import (
+from voidcode.capabilities.exec.background_process import (
     MAX_PROCESS_ROWS,
     BackgroundProcessExternalBody,
     BackgroundProcessListBody,
@@ -27,6 +26,7 @@ from voidcode.plugins.exec.background_process import (
     BackgroundProcessStartBody,
     BackgroundProcessStopBody,
 )
+from voidcode.plugins.exec import create_plugin
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.services import ProcessHandle, ProcessOutput

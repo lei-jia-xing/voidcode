@@ -67,6 +67,7 @@ from .activation import (
     config_from_snapshot,
     load_private_snapshot,
     plan_state_copies,
+    resolved_providers,
     validate_providers,
     write_private_snapshot,
 )
@@ -517,6 +518,7 @@ class Core:
             resources.callback(self.store.close)
             runtime = PluginRuntime(
                 plugins,
+                builtin_providers=resolved_providers(config),
                 workspace=self.workspace,
                 revision_id=revision_id,
                 store=self.store,
@@ -2252,6 +2254,7 @@ class Core:
         try:
             candidate_runtime = PluginRuntime(
                 admission.plugins,
+                builtin_providers=resolved_providers(admission.config),
                 workspace=self.workspace,
                 revision_id=target_revision_id,
                 store=self.store,

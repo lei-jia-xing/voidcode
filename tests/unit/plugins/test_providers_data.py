@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from voidcode.plugins.providers.native.api_routes import api_route_for
-from voidcode.plugins.providers.native.model_catalog import static_catalog_metadata
-from voidcode.plugins.providers.native.pricing_rules import usage_cost_usd
-from voidcode.plugins.providers.native.provider_table import PROVIDER_TABLE
-from voidcode.plugins.providers.native.thinking_rules import thinking_rule_for
+from voidcode.capabilities.providers.native.api_routes import api_route_for
+from voidcode.capabilities.providers.native.model_catalog import static_catalog_metadata
+from voidcode.capabilities.providers.native.pricing_rules import usage_cost_usd
+from voidcode.capabilities.providers.native.provider_table import PROVIDER_TABLE
+from voidcode.capabilities.providers.native.thinking_rules import thinking_rule_for
 from voidcode.sdk.provider import ProviderTokenUsage
 
 _SUPPORTED_WIRES = frozenset({"openai-completions", "anthropic-messages", "google-generative-ai"})

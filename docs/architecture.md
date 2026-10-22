@@ -1,11 +1,11 @@
 # Architecture Overview
 
-VoidCode is a local-first coding agent built as a small trusted **core**, a **plugin SDK**, and a bundled plugin set that owns every product mechanism. Execution is durable and append-only, revisions identify configuration and composition, and clients talk to the core through one generic command/view/event contract rather than product-specific routes.
+VoidCode is a local-first coding agent built as a small trusted **core**, a **plugin SDK**, shared product capabilities, and a bundled plugin set. Execution is durable and append-only, revisions identify configuration and composition, and clients talk to the core through one generic command/view/event contract rather than product-specific routes.
 
 ## Core Design Principles
 
 1. **Trusted Core, Trusted Plugins**:
-   The core (`src/voidcode/core/`) owns governance, persistence, streaming, and admission. Plugins own behavior — tools, commands, providers, hooks, views, and session state — and reach the core only through the SDK's scoped services. Nothing in the core imports a concrete plugin. Plugins are trusted code equal to the application: an admitted plugin is trusted Python running in the core's process, and only source code the user configured is ever loaded. This is an architecture boundary, not a sandbox.
+   The core (`src/voidcode/core/`) owns governance, persistence, streaming, and admission. The core statically registers baseline file tools, shell execution, and model adapters from `src/voidcode/capabilities/`. Plugins add or replace tools and providers, and add commands, hooks, views, and state. Both use the SDK's scoped services. Nothing in the core imports a concrete plugin. Plugins are trusted code equal to the application: an admitted plugin is trusted Python running in the core's process, and only source code the user configured is ever loaded. This is an architecture boundary, not a sandbox.
 
 2. **Contracts-Only SDK**:
    `src/voidcode/sdk/` is the single shared surface for the core and every plugin, and it depends on nothing from the implementation layers (standard library, `pydantic`, and `jsonschema` only).
@@ -63,6 +63,9 @@ graph TD
     Runtime --> Processes
     Runtime --> Artifacts
     Runtime --> Plugins
+    Runtime --> Capabilities["Shared capabilities: files · execution · providers"]
+    Plugins --> Capabilities
+    Capabilities --> SDK
     Core --> SDK
     Plugins --> SDK
 ```
@@ -163,3 +166,34 @@ declares `read`+`execute` and flows through the existing approval/read-only gate
 - `supervisor/` — the supervisor's journal and scratch (observability only; SQLite stays canonical). The control socket is ephemeral under `/tmp/voidcode-<uid>/`, derived from the state directory.
 
 The state directory must not live inside the workspace; `--state-dir` overrides the derived location. Legacy state from the pre-core architecture is neither read nor migrated.
+
+## Zero-plugin operation and optional collaboration
+
+With every bundled plugin disabled, configured model calls and the `read`, `write`, `edit`,
+`apply_workspace_edit`, `glob`, `grep`, and `shell_exec` tools still work. The runtime loads no
+plugin source for those defaults. They share the implementation in `capabilities/` with the
+optional files/exec/providers adapters; there is no second tool algorithm or HTTP adapter.
+Built-ins run through ordinary approval, coverage, process-lease, event, and recovery paths.
+Provider credentials are still required when the endpoint requires authentication.
+
+An admitted plugin replaces a built-in by tool/provider name. Removing it restores the default;
+this does not disable a product capability. Duplicate names between plugins remain errors.
+Built-ins carry the `core` owner, have no plugin-owned state, and are rebuilt on core restart
+or capability reload. Shared implementation code belongs to the elected image; plugin reload
+replaces the adapter, while shared implementation changes require a core upgrade.
+
+Plugins collaborate through optional contracts rather than importing a concrete peer.
+`voidcode.sdk.workspace_queries` defines `workspace.rule_page` and
+`workspace.document_version`, their shared request/answer types, and the rule URI prefix.
+Both sides use `QueryContract.bind` / `ask` rather than duplicating dictionaries and validation. Any plugin
+can implement them. `QueryUnavailable` means no provider was admitted; `None` means the
+provider knows no such resource. Malformed answers and provider exceptions remain visible
+failures. Files can operate without skills or LSP; rule URIs report unavailability, hash-only
+edits remain usable, and version-constrained edits fail closed without a document version.
+This removes duplicated contract definitions, while retaining the explicit semantic dependency
+when a caller requests an optional resource. Custom query names remain available to plugins.
+
+Workflow profiles also depend on visible tool capabilities rather than a fixed plugin set.
+Delegation and review select the available subset of their declared tools. An unavailable
+optional tool never causes a retry with the broader parent scope. See
+[optional query contracts](contracts/optional-queries.md) for provider authoring and failure semantics.

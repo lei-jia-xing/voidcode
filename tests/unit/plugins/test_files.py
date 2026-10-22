@@ -13,9 +13,9 @@ from typing import Any, cast
 
 import pytest
 
+from voidcode.capabilities.files.read_tool import ReadResultBody
+from voidcode.capabilities.files.write_tool import WriteResultBody
 from voidcode.plugins.files import create_plugin as _orig_create_plugin
-from voidcode.plugins.files.read_tool import ReadResultBody
-from voidcode.plugins.files.write_tool import WriteResultBody
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.plugin import Plugin
 from voidcode.sdk.provider import ProviderAbortSignal
@@ -1029,3 +1029,23 @@ def test_apply_read_edit_read_edit_cycle_binds_to_current_version(tmp_path: Path
     )
     assert isinstance(second, ToolSuccess), second
     assert target.read_text(encoding="utf-8") == "VALUE = 3\n\n\n"
+
+
+@pytest.mark.parametrize("tool_name", ["glob", "grep"])
+def test_searches_respect_gitignore_double_star_and_negation(tmp_path: Path, tool_name: str) -> None:
+    (tmp_path / ".gitignore").write_text("a/**/b.txt\n*.log\n!keep.log\n", encoding="utf-8")
+    for name in ("a/b.txt", "a/x/b.txt", "drop.log", "keep.log", "visible.txt"):
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("needle\n", encoding="utf-8")
+    tool = next(t for t in create_plugin({}).tools if t.definition.name == tool_name)
+    pattern = "**/*" if tool_name == "glob" else "needle"
+    result = tool.invoke(
+        ToolCall(tool_name=tool_name, arguments={"pattern": pattern, "path": ".", "respect_gitignore": True}),
+        context=_context(tmp_path),
+    )
+    assert isinstance(result, ToolSuccess)
+    assert "keep.log" in result.output.text
+    assert "visible.txt" in result.output.text
+    assert "b.txt" not in result.output.text
+    assert "drop.log" not in result.output.text

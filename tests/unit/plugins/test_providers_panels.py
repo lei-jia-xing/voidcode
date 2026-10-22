@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import Literal
 
 import voidcode.plugins.providers as providers_plugin
-from voidcode.plugins.providers.native.model_catalog import static_catalog_model_ids
-from voidcode.plugins.providers.native.provider_table import PROVIDER_TABLE
-from voidcode.plugins.providers.panels import DISPATCH_EVENT
+from voidcode.capabilities.providers.native.model_catalog import static_catalog_model_ids
+from voidcode.capabilities.providers.native.provider_table import PROVIDER_TABLE
+from voidcode.capabilities.providers.panels import DISPATCH_EVENT
 from voidcode.sdk.commands import Command, CommandInvocation, CommandResult
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.plugin import Plugin

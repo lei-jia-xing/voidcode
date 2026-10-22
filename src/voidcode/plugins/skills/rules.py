@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from voidcode.sdk.workspace_queries import RULE_URI_PREFIX, RulePage
+
 RULE_FILE_NAME = "AGENTS.md"
 LOCAL_RULE_FILE_NAME = "AGENTS.override.md"
 MAX_RULE_FILES = 8
@@ -27,7 +29,7 @@ MAX_RULEBOOK_CONTENT_CHARS = 12_000
 MAX_RULEBOOK_METADATA_CHARS = 240
 MAX_RULEBOOK_PROMPT_CHARS = 12_000
 #: Rule URI prefix, shared verbatim with the files plugin's ``voidcode://rule/`` reader.
-RULE_URI_PREFIX = "voidcode://rule/"
+
 _RULE_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 
 RuleApplication = Literal["always_apply", "discoverable"]
@@ -374,24 +376,6 @@ def rulebook_prompt_context(catalog: RuleCatalog) -> str:
                 f"precedence={metadata.precedence}, hash={metadata.content_hash}, uri={RULE_URI_PREFIX}{metadata.name})"
             )
     return "\n".join(parts)[:MAX_RULEBOOK_PROMPT_CHARS]
-
-
-@dataclass(frozen=True, slots=True)
-class RulePage:
-    """One paged read of a rulebook rule: `text` is the requested line window."""
-
-    rule: str
-    content_hash: str
-    text: str
-    next_offset: int | None
-
-    def payload(self) -> dict[str, object]:
-        return {
-            "rule": self.rule,
-            "content_hash": self.content_hash,
-            "text": self.text,
-            "next_offset": self.next_offset,
-        }
 
 
 def read_rule_page(workspace: Path | None, uri: str, *, offset: int = 1, limit: int = 2000) -> RulePage | None:

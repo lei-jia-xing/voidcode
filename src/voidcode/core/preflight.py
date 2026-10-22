@@ -31,6 +31,7 @@ from .activation import (
     config_from_snapshot,
     load_private_snapshot,
     plan_state_copies,
+    resolved_providers,
     validate_providers,
     validate_state_payload,
 )
@@ -375,7 +376,9 @@ def verify_dry_run(
     except (OSError, PermissionError, ValueError) as exc:
         raise PreflightRefused("admission_failed", f"candidate cannot admit the recorded generation: {exc}") from exc
     try:
-        candidate_runtime = PluginRuntime(admitted, workspace=workspace, revision_id="dry-run-target", store=None)
+        candidate_runtime = PluginRuntime(
+            admitted, workspace=workspace, revision_id="dry-run-target", store=None, builtin_providers=resolved_providers(config)
+        )
     except Exception as exc:
         raise PreflightRefused("plugin_load_failed", f"the candidate generation does not load: {exc}") from exc
     try:

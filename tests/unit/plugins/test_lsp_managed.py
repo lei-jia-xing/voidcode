@@ -292,7 +292,7 @@ def test_document_version_query_answers_strict_shape_or_none(harness: tuple[_Ser
     assert direct["position_encoding"] == "utf-16"
     foreign = PluginQueryCaller(session_id="sess-2", workspace=workspace)
     assert _document_version_query(manager).handler({"path": "note.txt"}, foreign) is None
-    with pytest.raises(ValueError, match="requires a string 'path'"):
+    with pytest.raises(ValueError, match="path"):
         _document_version_query(manager).handler({"path": 3}, caller)
 
 

@@ -1,8 +1,4 @@
-"""Schedule expression parsing/formatting ported from ``voidcode.runtime.background.schedule_expr``.
-
-Pure algorithm copy: grammar constants, cron dialect validation, next-fire search and
-human formatting are preserved verbatim apart from import paths.
-"""
+"""Schedule syntax and formatting, with cron iteration delegated to croniter."""
 
 from __future__ import annotations
 
@@ -10,6 +6,8 @@ import datetime
 import re
 from dataclasses import dataclass
 from typing import Literal
+
+from croniter import CroniterBadDateError, croniter
 
 _GRAMMAR_HELP = "Accepted grammar: 'every <N><s|m|h|d>', 'at <ISO-8601>', 'cron <min> <hour> <day> <month> <dow>', or 'once'"
 
@@ -78,47 +76,6 @@ def _parse_cron_field(field: str, min_val: int, max_val: int, field_name: str) -
                 raise ValueError(f"Value out of bounds ({min_val}-{max_val}) in {field_name}: {val}")
         else:
             raise ValueError(f"Unsupported character or alias in {field_name}: {part!r}")
-
-
-def _matches_cron_field(val: int, field: str, min_val: int, max_val: int) -> bool:
-    for part in field.split(","):
-        part = part.strip()
-        if part == "*":
-            return True
-        if "/" in part:
-            sub = part.split("/")
-            if len(sub) != 2:
-                continue
-            base, step_s = sub
-            if not step_s.isdigit():
-                continue
-            step = int(step_s)
-            if step <= 0:
-                continue
-            if base == "*":
-                start, end = min_val, max_val
-            elif "-" in base:
-                r = base.split("-")
-                if len(r) != 2 or not r[0].isdigit() or not r[1].isdigit():
-                    continue
-                start, end = int(r[0]), int(r[1])
-            elif base.isdigit():
-                start, end = int(base), max_val
-            else:
-                continue
-            if start <= val <= end and (val - start) % step == 0:
-                return True
-        elif "-" in part:
-            r = part.split("-")
-            if len(r) != 2 or not r[0].isdigit() or not r[1].isdigit():
-                continue
-            start, end = int(r[0]), int(r[1])
-            if start <= val <= end:
-                return True
-        elif part.isdigit():
-            if int(part) == val:
-                return True
-    return False
 
 
 def parse_schedule(text: str) -> ScheduleExpr:
@@ -199,56 +156,14 @@ def next_fire_after(expr: ScheduleExpr, after_epoch: int) -> int:
     if expr.kind == "cron":
         if expr.cron_fields is None:
             raise ValueError("Missing cron_fields for 'cron' schedule")
-        fields = expr.cron_fields.split()
-        dt = datetime.datetime.fromtimestamp(after_epoch).astimezone()
-        # Advance at least 1 second and align to start of minute
-        dt = (dt + datetime.timedelta(seconds=1)).replace(second=0, microsecond=0)
-        if dt.timestamp() <= after_epoch:
-            dt += datetime.timedelta(minutes=1)
-
-        max_steps = 5 * 365 * 24 * 60  # bound search to 5 years
-        steps = 0
-        while steps < max_steps:
-            # Check month
-            if not _matches_cron_field(dt.month, fields[3], 1, 12):
-                year = dt.year + (1 if dt.month == 12 else 0)
-                month = 1 if dt.month == 12 else dt.month + 1
-                dt = dt.replace(year=year, month=month, day=1, hour=0, minute=0, second=0)
-                steps += 60
-                continue
-
-            # Check day
-            dom_matches = _matches_cron_field(dt.day, fields[2], 1, 31)
-            cron_dow = (dt.weekday() + 1) % 7
-            dow_matches = _matches_cron_field(cron_dow, fields[4], 0, 6) or (cron_dow == 0 and _matches_cron_field(7, fields[4], 0, 7))
-            dom_restricted = fields[2] != "*"
-            dow_restricted = fields[4] != "*"
-            day_ok = (
-                (dom_matches or dow_matches)
-                if (dom_restricted and dow_restricted)
-                else (dom_matches if dom_restricted else (dow_matches if dow_restricted else True))
-            )
-
-            if not day_ok:
-                dt = (dt + datetime.timedelta(days=1)).replace(hour=0, minute=0, second=0)
-                steps += 60
-                continue
-
-            # Check hour
-            if not _matches_cron_field(dt.hour, fields[1], 0, 23):
-                dt = (dt + datetime.timedelta(hours=1)).replace(minute=0, second=0)
-                steps += 60
-                continue
-
-            # Check minute
-            if not _matches_cron_field(dt.minute, fields[0], 0, 59):
-                dt += datetime.timedelta(minutes=1)
-                steps += 1
-                continue
-
-            return int(dt.timestamp())
-
-        raise ValueError(f"No matching fire time found within 5 years for cron {expr.cron_fields!r}")
+        # Naive datetimes preserve the host-local wall-clock schedule, including
+        # conversion back through the host timezone at the resulting date.
+        base = datetime.datetime.fromtimestamp(after_epoch)
+        try:
+            next_time = croniter(expr.cron_fields, base, day_or=True, max_years_between_matches=5).get_next(datetime.datetime)
+        except CroniterBadDateError as exc:
+            raise ValueError(f"No matching fire time found within 5 years for cron {expr.cron_fields!r}") from exc
+        return int(next_time.timestamp())
 
     raise ValueError(f"Unknown schedule kind: {expr.kind!r}")
 

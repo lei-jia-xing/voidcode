@@ -16,7 +16,8 @@ VoidCode enforces clean boundaries across its backend layers:
 
 - **`src/voidcode/sdk/`**: The shared contract surface (plugin, tools, commands, services, provider, hooks, views, invocation, config). It may import only the standard library, `pydantic`, and `jsonschema` — never the core or a plugin.
 - **`src/voidcode/core/`**: Governance, append-only persistence, plugin admission and activation, the in-process plugin runtime (`plugins.py`, `services.py`, `processes.py`), HTTP/SSE transport, and the TUI. It imports no concrete plugin.
-- **`src/voidcode/plugins/`**: The bundled plugins, built on the public SDK exactly like third-party plugins.
+- **`src/voidcode/capabilities/`**: Shared files, execution, and provider implementations. Imports the SDK and third-party libraries; never imports core or plugins.
+- **`src/voidcode/plugins/`**: The bundled plugins, built on the public SDK and shared capabilities. Optional peer queries use SDK contracts rather than cross-plugin imports.
 
 ## Python Standards
 

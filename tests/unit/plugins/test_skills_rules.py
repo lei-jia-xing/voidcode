@@ -556,9 +556,9 @@ def test_rule_page_query_validates_arguments_and_never_fabricates(tmp_path: Path
     answered = query.handler({"uri": "voidcode://rule/notes", "offset": 1, "limit": 2000}, caller)
     assert answered is not None and answered["text"] == "Read me" and answered["next_offset"] is None
     assert query.handler({"uri": "voidcode://rule/missing", "offset": 1, "limit": 2000}, caller) is None
-    with pytest.raises(ValueError, match="requires a rule uri"):
+    with pytest.raises(ValueError, match="uri"):
         query.handler({"uri": "  "}, caller)
-    with pytest.raises(ValueError, match="offset must be a positive integer"):
+    with pytest.raises(ValueError, match="offset"):
         query.handler({"uri": "voidcode://rule/notes", "offset": 0}, caller)
-    with pytest.raises(ValueError, match="limit must be within"):
+    with pytest.raises(ValueError, match="limit"):
         query.handler({"uri": "voidcode://rule/notes", "limit": 2001}, caller)

@@ -14,33 +14,26 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from voidcode.sdk.plugin import Plugin, PluginQuery, PluginQueryCaller
+from voidcode.sdk.workspace_queries import DOCUMENT_STATES, DocumentState, DocumentStateRequest
 
 from .inventory import LspInventoryCommand
 from .lsp_manager import LspManager, build_lsp_manager
 from .lsp_tool import LspTool
 from .lsp_types import lsp_config_from_mapping
 
-DOCUMENT_VERSION_QUERY = "workspace.document_version"
-
 
 def _document_version_query(manager: LspManager) -> PluginQuery:
-    def handler(arguments: Mapping[str, object], caller: PluginQueryCaller) -> Mapping[str, object] | None:
-        raw_path = arguments.get("path")
-        if not isinstance(raw_path, str) or not raw_path:
-            raise ValueError("workspace.document_version requires a string 'path' argument")
-        requested = Path(raw_path)
+    def handler(request: DocumentStateRequest, caller: PluginQueryCaller) -> DocumentState | None:
+        requested = Path(request.path)
         candidate = (requested if requested.is_absolute() else caller.workspace / requested).resolve()
         state = manager.document_state(session_id=caller.session_id, file_path=candidate, workspace=caller.workspace)
         if state is None:
             return None
-        return {
-            "path": candidate.as_posix(),
-            "version": state.version,
-            "content_hash": state.content_hash,
-            "position_encoding": state.position_encoding,
-        }
+        return DocumentState(
+            path=candidate.as_posix(), version=state.version, content_hash=state.content_hash, position_encoding=state.position_encoding
+        )
 
-    return PluginQuery(name=DOCUMENT_VERSION_QUERY, handler=handler)
+    return DOCUMENT_STATES.bind(handler)
 
 
 def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:

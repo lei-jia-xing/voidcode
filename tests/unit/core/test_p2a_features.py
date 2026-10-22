@@ -301,7 +301,7 @@ def make_configured_core(
 
     config = CoreConfig(
         model=CoreModelConfig(model="endpoint/test-model" if include_provider else None),
-        providers={"endpoint": CoreProviderEntry()} if include_provider else {},
+        providers={"endpoint": CoreProviderEntry(base_url="http://127.0.0.1:1/v1")} if include_provider else {},
         policy=CorePolicyConfig(approval_mode="ask", read_only=read_only),
     )
     core = Core(

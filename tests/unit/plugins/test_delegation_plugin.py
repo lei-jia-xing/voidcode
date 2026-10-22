@@ -32,7 +32,7 @@ from voidcode.sdk.services import (
     PluginServices,
     SessionUsageReport,
 )
-from voidcode.sdk.tools import TextOutput, ToolCall, ToolFailure, ToolResult, ToolSuccess
+from voidcode.sdk.tools import TextOutput, ToolCall, ToolDefinition, ToolFailure, ToolResult, ToolSuccess
 
 
 class MockServices(PluginServices):
@@ -42,6 +42,7 @@ class MockServices(PluginServices):
         self.state: dict[str, tuple[Mapping[str, object] | None, int]] = {}
         self.staged_events: list[tuple[str, Mapping[str, object]]] = []
         self.spawn_calls: list[dict[str, object]] = []
+        self.unavailable_tools: set[str] = set()
         self.join_calls: list[tuple[str, float]] = []
         self.cancel_calls: list[tuple[str, str]] = []
         self.send_calls: list[dict[str, object]] = []
@@ -53,6 +54,9 @@ class MockServices(PluginServices):
         self.send_result = ChildSendReceipt(child_session_id="child-1", delivery="queued", child_status="running")
         self.child_events: dict[str, tuple[EventView, ...]] = {}
         self.artifacts: dict[str, bytes] = {}
+
+    def tool_definition(self, name: str) -> ToolDefinition | None:
+        return None if name in self.unavailable_tools else ToolDefinition(name=name, description="Test capability")
 
     def get_state(self, scope: Literal["session", "workspace"] = "session") -> tuple[Mapping[str, object] | None, int]:
         return self.state.get(scope, (None, 0))
@@ -466,51 +470,34 @@ def test_subagent_type_applies_to_spawns_only(tmp_path: Path) -> None:
     assert services.spawn_calls == []
 
 
-def test_unavailable_profile_scope_falls_back_to_the_parent_scope(tmp_path: Path) -> None:
+def test_profile_scope_omits_unavailable_tools_without_widening(tmp_path: Path) -> None:
     services = MockServices()
-    services.spawn_failures = {1: "tool_allowlist names an unknown tool: lsp"}
+    services.unavailable_tools = {"lsp", "ast_grep"}
     res = _task(services, tmp_path, {"prompt": "map it", "subagent_type": "explore"})
-
-    note = "profile 'explore' scope was unavailable (tool_allowlist names an unknown tool: lsp); the child inherited the parent tool scope instead"
     assert isinstance(res, ToolSuccess)
-    assert [call["tool_allowlist"] for call in services.spawn_calls] == [("read", "glob", "grep", "ast_grep", "lsp"), None]
-    assert [call["readonly"] for call in services.spawn_calls] == [True, True]
-    assert [call["prompt"] for call in services.spawn_calls] == [f"{_builtin_body(tmp_path, 'explore')}\n\nmap it"] * 2
-    assert _payload(res)["notes"] == [note]
-    assert note in res.output.text
-    assert _stored(services).children == {"child-1": ChildRecord(subagent_type="explore")}
+    assert [call["tool_allowlist"] for call in services.spawn_calls] == [("read", "glob", "grep")]
+    assert services.spawn_calls[0]["readonly"] is True
+    assert _payload(res)["notes"] == ["profile 'explore' omitted unavailable tools: ast_grep, lsp"]
 
 
-def test_host_wrapped_scope_rejection_also_falls_back(tmp_path: Path) -> None:
-    """A core refusal reaches the plugin as the host transport's wrapping ``RuntimeError``."""
+@pytest.mark.parametrize("failure", [ValueError("spawn refused"), RuntimeError("host refused")])
+def test_profile_spawn_failure_is_not_retried_with_a_wider_scope(tmp_path: Path, failure: Exception) -> None:
     services = MockServices()
-    services.spawn_failures = {
-        1: RuntimeError("Service call rejected: ValueError: tool_allowlist names an unknown tool: lsp"),
-    }
+    services.spawn_failures = {1: failure}
     res = _task(services, tmp_path, {"prompt": "map it", "subagent_type": "explore"})
-
-    assert isinstance(res, ToolSuccess)
-    assert [call["tool_allowlist"] for call in services.spawn_calls] == [("read", "glob", "grep", "ast_grep", "lsp"), None]
-    assert [call["readonly"] for call in services.spawn_calls] == [True, True]
-    assert _payload(res)["notes"] == [
-        "profile 'explore' scope was unavailable (Service call rejected: ValueError: tool_allowlist names an unknown tool: lsp); "
-        "the child inherited the parent tool scope instead"
-    ]
-    assert _stored(services).children == {"child-1": ChildRecord(subagent_type="explore")}
-
-
-def test_unavailable_profile_scope_reports_a_failed_retry(tmp_path: Path) -> None:
-    services = MockServices()
-    services.spawn_failures = {
-        1: "tool_allowlist names an unknown tool: lsp",
-        2: "delegation depth limit exceeded: depth 4 exceeds max 3",
-    }
-    res = _task(services, tmp_path, {"prompt": "map it", "subagent_type": "explore"})
-
     assert isinstance(res, ToolFailure)
-    assert res.error == "delegation depth limit exceeded: depth 4 exceeds max 3"
-    assert len(services.spawn_calls) == 2
+    assert str(failure) in res.error
+    assert len(services.spawn_calls) == 1
     assert services.get_state("session") == (None, 0)
+
+
+def test_profile_with_no_available_tools_fails_before_spawning(tmp_path: Path) -> None:
+    services = MockServices()
+    services.unavailable_tools = {"read", "glob", "grep", "ast_grep", "lsp"}
+    res = _task(services, tmp_path, {"prompt": "map it", "subagent_type": "explore"})
+    assert isinstance(res, ToolFailure)
+    assert "no available tools" in res.error
+    assert services.spawn_calls == []
 
 
 def test_no_profile_keeps_the_calling_allowlist_and_writable_stance(tmp_path: Path) -> None:
@@ -920,23 +907,19 @@ def test_batch_items_select_their_own_profiles(tmp_path: Path) -> None:
     assert "profile=research" in res.output.text
 
 
-def test_batch_item_profile_fallback_is_visible_in_the_result(tmp_path: Path) -> None:
+def test_batch_item_uses_available_profile_tools_and_preserves_other_failures(tmp_path: Path) -> None:
     services = MockServices()
-    services.spawn_failures = {
-        1: "tool_allowlist names an unknown tool: skill",
-        3: "delegation spawn budget exhausted for this chain",
-    }
+    services.unavailable_tools = {"skill"}
+    services.spawn_failures = {2: "delegation spawn budget exhausted for this chain"}
     res = _batch(services, tmp_path, {"tasks": [{"prompt": "plan it", "subagent_type": "plan"}, {"prompt": "doomed"}]})
-
-    note = "profile 'plan' scope was unavailable (tool_allowlist names an unknown tool: skill); the child inherited the parent tool scope instead"
+    note = "profile 'plan' omitted unavailable tools: skill"
     payload = _payload(res)
     assert payload["partial"] is True
     assert payload["created"] == [{"index": 0, "task_id": "child-1", "subagent_type": "plan", "notes": [note]}]
     assert payload["failed"] == [{"index": 1, "error": "delegation spawn budget exhausted for this chain"}]
-    assert "note: profile 'plan' scope was unavailable" in res.output.text
+    assert note in res.output.text
     assert [call["tool_allowlist"] for call in services.spawn_calls] == [
-        ("read", "glob", "grep", "ast_grep", "lsp", "skill", "web_search"),
-        None,
+        ("read", "glob", "grep", "ast_grep", "lsp", "web_search"),
         None,
     ]
 

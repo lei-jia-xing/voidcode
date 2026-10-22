@@ -17,6 +17,7 @@ from threading import Thread
 import pytest
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
+from voidcode.core.activation import BUNDLED_PLUGIN_IDS
 from voidcode.core.bootstrap import open_core
 from voidcode.core.engine import Core
 from voidcode.plugins.delegation.profiles.prompts import render_builtin_prompt_profile
@@ -55,7 +56,7 @@ def _admitted_source(tmp_path: Path) -> Path:
     return _DELEGATION_PLUGIN_ROOT
 
 
-def _core(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
+def _core(tmp_path: Path, server: OpenAILoopbackServer, *, minimal: bool = False) -> Core:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     state_dir = tmp_path / "state"
@@ -80,6 +81,11 @@ def _core(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
             "delegation": {"path": str(_admitted_source(tmp_path)), "enabled": True},
         },
     }
+    if minimal:
+        config["plugins"] = {
+            **{name: {"enabled": False} for name in BUNDLED_PLUGIN_IDS},
+            "delegation": {"path": str(_admitted_source(tmp_path)), "enabled": True},
+        }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
     core = open_core(workspace, state_dir=state_dir)
     _CREATED_CORES.append(core)
@@ -186,13 +192,8 @@ def test_parent_spawns_a_real_child_and_receives_its_output(tmp_path: Path) -> N
         assert version >= 1
 
 
-def test_profile_child_gets_the_rendered_prompt_and_a_visible_scope_downgrade(tmp_path: Path) -> None:
-    """A profile child materializes the rendered text; an unavailable scope degrades visibly.
-
-    This workspace disables the bundled ``files`` plugin, so the explore profile's allowlist names
-    tools the active revision does not admit: the child still runs, on the parent's scope, and the
-    tool result and the note say so instead of failing the spawn.
-    """
+def test_profile_child_gets_the_rendered_prompt_and_builtin_file_scope(tmp_path: Path) -> None:
+    """Disabling the files adapter keeps baseline discovery available to a child."""
     replies: list[dict[str, object]] = [
         openai_response(
             message={
@@ -211,7 +212,7 @@ def test_profile_child_gets_the_rendered_prompt_and_a_visible_scope_downgrade(tm
         openai_response(message={"role": "assistant", "content": "profile delegation complete"}, finish="stop"),
     ]
     with _loopback_server(replies) as server:
-        core = _core(tmp_path, server)
+        core = _core(tmp_path, server, minimal=True)
         parent_id = core.create_session("parent").session_id
         result = core.run("explore the visitor guide", session_id=parent_id)
 
@@ -225,18 +226,15 @@ def test_profile_child_gets_the_rendered_prompt_and_a_visible_scope_downgrade(tm
         assert body["subagent_type"] == "explore"
         assert body["status"] == "completed"
         assert body["output"] == "child answer: explored"
-        notes = body["notes"]
-        assert len(notes) == 1
-        assert notes[0].startswith("profile 'explore' scope was unavailable (")
-        assert "tool_allowlist names an unknown tool: glob" in notes[0], "the disabled files plugin owns read/glob/grep"
-        assert notes[0].endswith("); the child inherited the parent tool scope instead")
+        assert body["notes"] == ["profile 'explore' omitted unavailable tools: ast_grep, lsp"]
+        assert {"read", "glob", "grep"} <= set(_tool_names(server.requests[1]))
+        assert "write" not in _tool_names(server.requests[1])
         assert "profile=explore" in tool_text
-        assert f"note: {notes[0]}" in tool_text
 
         child_id = str(body["task_id"])
         child = core.session(child_id)
         assert child.parent_session_id == parent_id
-        assert child.tool_allowlist is None, "the fallback runs the child on the parent's scope"
+        assert child.tool_allowlist == ("glob", "grep", "read")
         assert core.store.session_overlays(child_id) == ("read-only",), "a read-only profile keeps its stance"
 
         stored = core.store.plugin_state("delegation", "session", parent_id)

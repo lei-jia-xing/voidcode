@@ -247,6 +247,7 @@ class PluginRuntime:
         progress_callback: Callable[[LeaseContext, Mapping[str, object]], None] | None = None,
         tool_definition_callback: Callable[[str, str, str], tuple[Mapping[str, object] | None, str]] | None = None,
         artifacts_dir: Path | None = None,
+        builtin_providers: Mapping[str, object] | None = None,
     ) -> None:
         self.workspace = Path(workspace).resolve()
         if not self.workspace.is_dir():
@@ -300,12 +301,15 @@ class PluginRuntime:
         self._state_migrators: dict[str, Any] = {}
         self._state_deactivators: dict[str, Any] = {}
         self._queries: dict[str, tuple[Any, str]] = {}
+        self._builtin_provider_closers: list[Callable[[], None]] = []
         self._plugins: list[Plugin] = []
         self._plugin_ids: list[str] = []
         self._plugin_states: dict[str, StateSchema] = {}
         try:
             for source in sources:
                 self._load_plugin(source)
+            if builtin_providers is not None:
+                self._register_builtins(builtin_providers)
             self._build_catalog()
         except Exception:
             self.close()
@@ -412,6 +416,28 @@ class PluginRuntime:
                 raise ValueError(f"Duplicate query name registered across plugins: {query.name}")
             _check_arity(query.handler, 2, f"Plugin {plugin_id} query {query.name} handler")
             self._queries[query.name] = (query.handler, plugin_id)
+
+    def _register_builtins(self, provider_config: Mapping[str, object]) -> None:
+        """Static product defaults; optional plugins may replace individual names.
+
+        Builtins use ordinary tool/provider dispatch and leases, but are not admitted
+        plugin sources and do not contribute plugin ids, callbacks, or owner state.
+        """
+        from voidcode.capabilities.exec.shell_exec import ShellExecTool
+        from voidcode.capabilities.files import create_tools
+        from voidcode.capabilities.providers.dispatch import DECLARED_PROVIDER_NAMES, build_registered_providers
+
+        for tool in (*create_tools(), ShellExecTool()):
+            self._tools.setdefault(tool.definition.name, (tool, "core"))
+        # An extension's credentials vocabulary is opaque to built-in adapters.
+        # Parse only configurations whose provider will actually use a built-in.
+        fallback_config = {name: entry for name, entry in provider_config.items() if name not in self._providers and name in DECLARED_PROVIDER_NAMES}
+        for provider in build_registered_providers({"providers": fallback_config}):
+            if provider.name in self._providers:
+                provider.close()
+            else:
+                self._providers[provider.name] = (provider, "core")
+                self._builtin_provider_closers.append(provider.close)
 
     def _build_catalog(self) -> None:
         self._tool_defs = tuple(tool.definition for tool, _ in self._tools.values())
@@ -1384,6 +1410,13 @@ class PluginRuntime:
                 except BaseException as exc:
                     if first_error is None:
                         first_error = exc
+        for closer in self._builtin_provider_closers:
+            try:
+                closer()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+        self._builtin_provider_closers.clear()
         # 3. Unimport this generation's namespaces so a reloaded generation never reuses
         #    stale modules. No cache directories are touched: loading bypasses bytecode.
         try:

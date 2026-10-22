@@ -25,7 +25,7 @@ from voidcode.plugins.review.workspace_review import WorkspaceReviewService, git
 from voidcode.sdk.commands import CommandInvocation, CommandResult
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import ChildOutcome, PluginServices
-from voidcode.sdk.tools import ToolEffect
+from voidcode.sdk.tools import ToolDefinition, ToolEffect
 
 
 class MockServices(PluginServices):
@@ -33,12 +33,16 @@ class MockServices(PluginServices):
 
     def __init__(self) -> None:
         self.spawn_calls: list[dict[str, object]] = []
+        self.unavailable_tools: set[str] = set()
         self.join_calls: list[tuple[str, float]] = []
         self.staged_events: list[tuple[str, Mapping[str, object]]] = []
         #: Outcome the core's join returns for the spawned child.
         self.join_status: Literal["completed", "failed", "interrupted", "cancelled", "running", "waiting"] = "completed"
         self.join_output: str | None = "review findings: 3 issues"
         self.join_error: str | None = None
+
+    def tool_definition(self, name: str) -> ToolDefinition | None:
+        return None if name in self.unavailable_tools else ToolDefinition(name=name, description="Test capability")
 
     def get_state(self, scope: Literal["session", "workspace"] = "session") -> tuple[Mapping[str, object] | None, int]:
         raise AssertionError("review keeps no state")
@@ -570,3 +574,25 @@ def _tree_paths(tree) -> set[str]:
         paths.add(node.path)
         paths.update(_tree_paths(node.children))
     return paths
+
+
+def test_review_does_not_require_optional_inspection_plugins(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    (repo / "tracked.txt").write_text("base\nchanged\n", encoding="utf-8")
+    services = MockServices()
+    services.unavailable_tools = {"ast_grep", "lsp"}
+    result = _review(services, repo, {})
+    assert result.status == "ok"
+    assert services.spawn_calls[0]["tool_allowlist"] == ("read", "glob", "grep")
+    assert services.spawn_calls[0]["readonly"] is True
+
+
+def test_review_with_no_visible_tools_does_not_inherit_parent_scope(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    (repo / "tracked.txt").write_text("base\nchanged\n", encoding="utf-8")
+    services = MockServices()
+    services.unavailable_tools = set(REVIEW_TOOL_ALLOWLIST)
+    result = _review(services, repo, {})
+    assert result.status == "error"
+    assert "no available inspection tools" in result.error
+    assert services.spawn_calls == []

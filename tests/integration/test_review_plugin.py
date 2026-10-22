@@ -1,16 +1,4 @@
-"""End-to-end integration test for the Review plugin on the real core stack.
-
-Drives the real core, plugin runtime, loopback provider, git workspace and durable storage: the
-``review`` command resolves the workspace diff from a real repository, spawns a real child session
-whose provider request carries the legacy review instructions plus that diff, and returns the
-child's answer as the command result.
-
-The review profile's allowlist (read/glob/grep/ast_grep/lsp) names tools that only exist once the
-files/ast_grep/lsp plugins are admitted, and those sources are under active rewrite by another
-lane -- so this suite declares the same names with a minimal admitted source of its own instead of
-depending on them. The bundled ``files``, ``ast_grep`` and ``lsp`` plugins are disabled for the
-same reason: a tool catalog refuses two plugins declaring the same name.
-"""
+"""Review uses built-in file tools with every other plugin disabled."""
 
 from __future__ import annotations
 
@@ -24,12 +12,11 @@ from threading import Thread
 import pytest
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
+from voidcode.core.activation import BUNDLED_PLUGIN_IDS
 from voidcode.core.bootstrap import open_core
 from voidcode.core.engine import Core
-from voidcode.plugins.review.review_plugin import REVIEW_TOOL_ALLOWLIST
 
 _REVIEW_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "review"
-_PROFILE_TOOL_NAMES = REVIEW_TOOL_ALLOWLIST
 
 _CREATED_CORES: list[Core] = []
 
@@ -70,48 +57,6 @@ def _dirty_repo(workspace: Path) -> None:
     (workspace / "tracked.txt").write_text("base\ndirty review target\n", encoding="utf-8")
 
 
-def _admitted_review_source(tmp_path: Path) -> Path:
-    """The real review plugin root, referenced by path."""
-    _ = tmp_path
-    return _REVIEW_PLUGIN_ROOT
-
-
-def _admitted_profile_tools_source(tmp_path: Path, names: tuple[str, ...]) -> Path:
-    """An admitted source declaring the review profile's tool names.
-
-    The child's allowlist is validated against the active revision's catalog, so the names the
-    review profile grants have to exist for the spawn to prove the real path. This source only
-    declares them; every invocation succeeds trivially, and the child in this suite never calls one.
-    """
-    source = tmp_path / "profile-tools-source"
-    source.mkdir()
-    names_literal = repr(tuple(names))
-    code = (
-        "from voidcode.sdk.plugin import Plugin\n"
-        "from voidcode.sdk.tools import TextOutput, ToolDefinition, ToolEffect, ToolSuccess\n"
-        "\n"
-        "\n"
-        "class DeclaredTool:\n"
-        "    def __init__(self, definition):\n"
-        "        self.definition = definition\n"
-        "\n"
-        "    def invoke(self, call, *, context, services):\n"
-        "        return ToolSuccess(call.tool_name, TextOutput('declared review profile tool'))\n"
-        "\n"
-        "\n"
-        "def create_plugin(config):\n"
-        f"    tools = tuple(\n"
-        f"        DeclaredTool(ToolDefinition(name=name, description=f'Declared review profile tool {{name}}.',\n"
-        f"            input_schema={{'type': 'object', 'additionalProperties': True}}, effects=frozenset({{ToolEffect.READ}}),\n"
-        f"            replay_policy='safe'))\n"
-        f"        for name in {names_literal}\n"
-        f"    )\n"
-        "    return Plugin(tools=tools)\n"
-    )
-    (source / "__init__.py").write_text(code, encoding="utf-8")
-    return source
-
-
 def _core(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
     workspace = tmp_path / "workspace"
     _dirty_repo(workspace)
@@ -129,14 +74,8 @@ def _core(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
             }
         },
         "plugins": {
-            # The bundled files plugin is not under test here and is rewritten by another P4 lane.
-            "files": {"enabled": False},
-            # This synthetic source declares ast_grep/lsp itself, so their bundled owners stay out:
-            # the revision refuses two plugins declaring the same tool name.
-            "ast_grep": {"enabled": False},
-            "lsp": {"enabled": False},
-            "profile-tools": {"path": str(_admitted_profile_tools_source(tmp_path, _PROFILE_TOOL_NAMES)), "enabled": True},
-            "review": {"path": str(_admitted_review_source(tmp_path)), "enabled": True},
+            **{name: {"enabled": False} for name in BUNDLED_PLUGIN_IDS},
+            "review": {"path": str(_REVIEW_PLUGIN_ROOT), "enabled": True},
         },
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
@@ -189,12 +128,12 @@ def test_review_command_spawns_a_real_child_that_receives_the_git_diff(tmp_path:
         assert child.parent_session_id == parent_id
         assert child.status == "completed"
         assert child.tool_allowlist is not None
-        assert sorted(child.tool_allowlist) == sorted(REVIEW_TOOL_ALLOWLIST)
+        assert sorted(child.tool_allowlist) == ["glob", "grep", "read"]
 
         # Exactly one provider request: the child's, carrying the legacy prompt and the real diff.
         assert len(server.requests) == 1
         request = server.requests[0]
-        assert sorted(_tool_names(request)) == sorted(REVIEW_TOOL_ALLOWLIST)
+        assert sorted(_tool_names(request)) == ["glob", "grep", "read"]
         prompt = str(_messages(request)[-1]["content"])
         assert "Review the current workspace changes (staged, unstaged, and untracked files) and provide prioritized findings." in prompt
         assert "Aggregate Git diff:" in prompt

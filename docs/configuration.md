@@ -149,3 +149,15 @@ Legacy configuration is rejected, never converted:
 
 - A workspace with a legacy `.voidcode.json` and no `voidcode.json` fails with an explicit error (`legacy .voidcode.json is not supported; create voidcode.json explicitly`). Nothing is read from the legacy file, and no converter exists.
 - Legacy session/state databases from the pre-core architecture are neither imported nor auto-deleted. The core never reads them. Removing that historical data is a manual user action with `rm`; there is no cleanup command.
+
+## Built-in capabilities with plugins disabled
+
+The core always supplies file read/write/edit/search, `shell_exec`, and configured model
+adapters. Optional plugins may replace those names or add other capabilities. Disabling
+`files`, `exec`, or `providers` removes that adapter, but leaves the core defaults available;
+use the policy and session tool scope to restrict execution or writes.
+
+`plugins: {}` keeps the bundled default set; it does not request zero plugins. To admit none,
+set `enabled: false` for each bundled id listed in `core/activation.py` (`BUNDLED_PLUGIN_IDS`).
+The `model` and `providers` configuration remains necessary for model calls, even with no
+plugins. Core defaults use the same provider configuration and authentication as the adapters.

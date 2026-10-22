@@ -28,14 +28,14 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.plugins.providers.dispatch import RegisteredProvider, build_registered_providers
-from voidcode.plugins.providers.native.auth import (
+from voidcode.capabilities.providers.dispatch import RegisteredProvider, build_registered_providers
+from voidcode.capabilities.providers.native.auth import (
     ProviderAuthAuthorizeRequest,
     ProviderAuthCallbackRequest,
     ProviderAuthResolutionError,
     ProviderAuthResolver,
 )
-from voidcode.plugins.providers.native.config import (
+from voidcode.capabilities.providers.native.config import (
     AnthropicProviderConfig,
     CopilotProviderAuthConfig,
     CopilotProviderConfig,
@@ -46,9 +46,9 @@ from voidcode.plugins.providers.native.config import (
     ProviderConfigs,
     ProviderEndpointConfig,
 )
-from voidcode.plugins.providers.native.model_catalog import static_catalog_metadata
-from voidcode.plugins.providers.native.pricing_rules import usage_cost_usd
-from voidcode.plugins.providers.pricing import price_usage
+from voidcode.capabilities.providers.native.model_catalog import static_catalog_metadata
+from voidcode.capabilities.providers.native.pricing_rules import usage_cost_usd
+from voidcode.capabilities.providers.pricing import price_usage
 from voidcode.sdk.provider import (
     ProviderExecutionError,
     ProviderMessage,

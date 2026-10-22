@@ -9,8 +9,8 @@ from typing import Any, cast
 
 import pytest
 
+from voidcode.capabilities.files.read_tool import MAX_ARTIFACT_PAGE_BYTES, MAX_INLINE_ATTACHMENT_BYTES
 from voidcode.plugins.files import create_plugin
-from voidcode.plugins.files.read_tool import MAX_ARTIFACT_PAGE_BYTES, MAX_INLINE_ATTACHMENT_BYTES
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import ArtifactPage, ArtifactReference
 from voidcode.sdk.tools import AttachmentOutput, OpaqueToolBody, TextOutput, ToolCall, ToolSuccess
