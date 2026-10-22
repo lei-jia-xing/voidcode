@@ -85,7 +85,6 @@ def test_parse_skill_manifest_returns_body_and_paths(tmp_path: Path) -> None:
     assert skill.content == "# Steps\n\n1. bump"
     assert skill.directory == entry.parent
     assert skill.enabled is True
-    assert skill.origin == "workspace"
 
 
 @pytest.mark.parametrize(

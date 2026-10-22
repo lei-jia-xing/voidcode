@@ -15,7 +15,6 @@ from voidcode.plugins.todo.todo_plugin import (
     TODO_MID_RUN_KIND,
     TODO_MID_RUN_MUTATION_THRESHOLD,
     TODO_REMINDER_KIND,
-    ReminderSuppression,
     TodoClearCommand,
     TodoMidRunState,
     TodoRemindersConfig,
@@ -495,13 +494,11 @@ def test_mutation_count_uses_declared_effects_and_todo_touch(tmp_path: Path) -> 
 
 
 def test_mid_run_nudge_threshold_budget_and_reset() -> None:
-    suppression = ReminderSuppression()
     silent = decide_todo_mid_run_nudge(
         state=TodoMidRunState(cycle_run_id="run-1"),
         run_id="run-1",
         mutations=TODO_MID_RUN_MUTATION_THRESHOLD - 1,
         incomplete_count=3,
-        suppression=suppression,
     )
     assert silent.injects is False
 
@@ -510,10 +507,8 @@ def test_mid_run_nudge_threshold_budget_and_reset() -> None:
         run_id="run-1",
         mutations=TODO_MID_RUN_MUTATION_THRESHOLD,
         incomplete_count=3,
-        suppression=suppression,
     )
     assert first.injects is True
-    assert first.attempt == 1
     assert first.state == TodoMidRunState(attempts=1, mutations=0, mutation_baseline=TODO_MID_RUN_MUTATION_THRESHOLD, cycle_run_id="run-1")
     assert first.text == (
         '<system-reminder reason="todo_stale">\n'
@@ -528,38 +523,25 @@ def test_mid_run_nudge_threshold_budget_and_reset() -> None:
         run_id="run-1",
         mutations=TODO_MID_RUN_MUTATION_THRESHOLD * 2,
         incomplete_count=3,
-        suppression=suppression,
     )
     assert second.injects is True
-    assert second.attempt == 2
+    assert second.state.attempts == 2
     capped = decide_todo_mid_run_nudge(
         state=second.state,
         run_id="run-1",
         mutations=TODO_MID_RUN_MUTATION_THRESHOLD * 3,
         incomplete_count=3,
-        suppression=suppression,
     )
     assert capped.injects is False
     assert capped.state.attempts == 2
-
     fresh_cycle = decide_todo_mid_run_nudge(
         state=second.state,
         run_id="run-2",
         mutations=TODO_MID_RUN_MUTATION_THRESHOLD,
         incomplete_count=3,
-        suppression=suppression,
     )
     assert fresh_cycle.injects is True
-    assert fresh_cycle.attempt == 1
-
-    blocked = decide_todo_mid_run_nudge(
-        state=TodoMidRunState(cycle_run_id="run-1"),
-        run_id="run-1",
-        mutations=TODO_MID_RUN_MUTATION_THRESHOLD,
-        incomplete_count=3,
-        suppression=ReminderSuppression(runtime_waits_for_user=True),
-    )
-    assert blocked.injects is False
+    assert fresh_cycle.state.attempts == 1
 
 
 def test_mid_run_nudge_text_matches_legacy_shape() -> None:
@@ -576,10 +558,8 @@ def test_completion_reminder_budget_watermark_and_cycle() -> None:
         run_id="run-1",
         incomplete_phases=phases,
         tool_result_count=5,
-        suppression=ReminderSuppression(),
     )
     assert first.injects is True
-    assert first.attempt == 1
     assert first.state == TodoReminderState(attempts=1, awaiting_progress=True, progress_watermark=5, cycle_run_id="run-1")
     assert first.text == (
         "<system-reminder>\n"
@@ -599,7 +579,6 @@ def test_completion_reminder_budget_watermark_and_cycle() -> None:
         run_id="run-1",
         incomplete_phases=phases,
         tool_result_count=5,
-        suppression=ReminderSuppression(),
     )
     assert stalled.injects is False
 
@@ -609,10 +588,9 @@ def test_completion_reminder_budget_watermark_and_cycle() -> None:
         run_id="run-1",
         incomplete_phases=phases,
         tool_result_count=9,
-        suppression=ReminderSuppression(),
     )
     assert progressed.injects is True
-    assert progressed.attempt == 2
+    assert progressed.state.attempts == 2
     assert progressed.state.progress_watermark == 9
 
     finished = decide_todo_reminder(
@@ -621,7 +599,6 @@ def test_completion_reminder_budget_watermark_and_cycle() -> None:
         run_id="run-1",
         incomplete_phases=(),
         tool_result_count=12,
-        suppression=ReminderSuppression(),
     )
     assert finished.injects is False
     assert finished.state == TodoReminderState(cycle_run_id="run-1")
@@ -633,13 +610,12 @@ def test_completion_reminder_budget_watermark_and_cycle() -> None:
         run_id="run-1",
         incomplete_phases=phases,
         tool_result_count=20,
-        suppression=ReminderSuppression(),
     )
     assert exhausted.injects is False
     assert exhausted.state.attempts == DEFAULT_TODO_REMINDER_MAX_PER_CYCLE
 
 
-def test_completion_reminder_suppression_and_incomplete_projection() -> None:
+def test_completion_reminder_incomplete_projection() -> None:
     phases = (("A", ("x",)), ("B", ("y", "z")))
     assert incomplete_todo_phases(({"name": "A", "tasks": [{"content": "done", "status": "completed"}]},)) == ()
     assert (
@@ -649,16 +625,6 @@ def test_completion_reminder_suppression_and_incomplete_projection() -> None:
         == phases
     )
 
-    skipped = decide_todo_reminder(
-        max_per_cycle=3,
-        state=TodoReminderState(cycle_run_id="run-1"),
-        run_id="run-1",
-        incomplete_phases=phases,
-        tool_result_count=1,
-        suppression=ReminderSuppression(pending_background_task=True),
-    )
-    assert skipped.injects is False
-    assert skipped.state.attempts == 0
     assert todo_reminder_text((("A", ("x",)),), attempt=1, max_attempts=3).startswith(
         "<system-reminder>\nYou stopped with 1 incomplete todo item(s):"
     )

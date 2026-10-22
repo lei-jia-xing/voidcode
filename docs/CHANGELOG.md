@@ -4,6 +4,11 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Web tools: `web_fetch` removed, `web_search` fixed provider order (BREAKING)
+- The `web_fetch` tool is gone: there is no bundled page fetcher anymore. Ask the model to search instead, or fetch pages through your own command or script.
+- `web_search` tries its search backends in a fixed order (Exa first) and uses the first one with a credential set — one attempt, no silent hop to the next backend on failure. Set any one of the search keys below and search works; with none set it fails with a visible message naming the credentials instead of silently falling back to a weaker engine. The search-engine scraping fallbacks are deleted, so results come from a real search API or the call fails explicitly.
+- The `research` and `plan` agent profiles no longer offer `web_fetch`; their web access is `web_search` only. The agents→delegation migration guidance in this file still applies: delete stale `plugins.agents` sections, profile discovery roots are unchanged.
+
 ### Plugin deactivation lifecycle, agents→delegation merge, stable compaction fact (BREAKING)
 - Every state-owning bundled plugin now declares `prepare_deactivate`: compaction, cron,
   delegation, exec, plan, skills, todo join goal. Disabling a used owner no longer refuses the

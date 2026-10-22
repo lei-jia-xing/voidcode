@@ -785,7 +785,7 @@ def test_read_rule_reports_unavailable_unknown_and_malformed(tmp_path: Path) -> 
         context=_context(tmp_path),
         services=cast(
             Any,
-            _UriServices(rule_answer={"rule": "notes", "content_hash": "abc", "text": "Read me", "next_offset": None, "byte_truncated": False}),
+            _UriServices(rule_answer={"rule": "notes", "content_hash": "abc", "text": "Read me", "next_offset": None}),
         ),
     )
     assert isinstance(page, ToolSuccess)

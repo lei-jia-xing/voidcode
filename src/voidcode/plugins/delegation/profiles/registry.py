@@ -2,7 +2,7 @@
 ``voidcode.agent.registry``.
 
 Discovery roots, frontmatter whitelist/required fields, scope precedence
-(installed -> user -> project), duplicate-id rejection and builtin-id
+(user -> project), duplicate-id rejection and builtin-id
 protection are the legacy behavior; only the module paths moved.
 """
 
@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 import re
 import sys
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -21,7 +21,6 @@ from .builtin import list_builtin_agent_manifests
 from .frontmatter import load_frontmatter_mapping, split_frontmatter
 from .models import (
     AgentManifest,
-    AgentMcpBindingIntent,
     AgentMode,
     AgentPromptMaterialization,
     AgentSourceScope,
@@ -44,7 +43,6 @@ _SUPPORTED_FRONTMATTER_FIELDS = frozenset(
         "fallback_models",
         "tool_allowlist",
         "skill_refs",
-        "mcp_binding",
         "prompt_append",
     }
 )
@@ -67,12 +65,6 @@ class AgentManifestRegistry:
 
     def list_manifests(self) -> tuple[AgentManifest, ...]:
         return (*self.builtin.values(), *self.custom.values())
-
-    def executable_primary_ids(self) -> frozenset[str]:
-        return frozenset(manifest.id for manifest in self.list_manifests() if manifest.mode == "primary" and manifest.top_level_selectable)
-
-    def executable_subagent_ids(self) -> frozenset[str]:
-        return frozenset(manifest.id for manifest in self.list_manifests() if manifest.mode == "subagent")
 
 
 def agent_manifest_id_from_name(name: str) -> str:
@@ -112,7 +104,6 @@ def load_agent_manifest_registry(
     workspace: Path,
     *,
     env: Mapping[str, str] | None = None,
-    installed_manifests: Iterable[AgentManifest] = (),
 ) -> AgentManifestRegistry:
     builtin = {manifest.id: manifest for manifest in list_builtin_agent_manifests()}
     user_manifests = _discover_custom_agent_manifests(
@@ -124,15 +115,7 @@ def load_agent_manifest_registry(
         scope="project",
     )
     custom: dict[str, AgentManifest] = {}
-    installed = tuple(installed_manifests)
-    for manifest in installed:
-        if type(manifest) is not AgentManifest:
-            raise ValueError("installed agent manifests must be pure AgentManifest records")
-        if manifest.source_scope != "package" or manifest.source_id is None:
-            raise ValueError("installed agent manifests require actual package origin/source_id")
-        if not is_valid_agent_manifest_id(manifest.id):
-            raise ValueError(f"invalid installed agent manifest id: {manifest.id}")
-    for manifest in (*installed, *user_manifests, *project_manifests):
+    for manifest in (*user_manifests, *project_manifests):
         if manifest.id in builtin:
             raise ValueError(
                 f"custom agent manifest {manifest.source_path} uses builtin id '{manifest.id}'; builtin agent manifests cannot be replaced"
@@ -148,13 +131,12 @@ def manifest_from_markdown_file(
     path: Path,
     *,
     scope: AgentSourceScope,
-    source_id: str | None = None,
 ) -> AgentManifest:
     try:
         content = path.read_text(encoding="utf-8")
     except OSError as exc:
         raise ValueError(f"failed to read custom agent manifest {path}: {exc}") from exc
-    return manifest_from_markdown(content, scope=scope, source_path=str(path), source_id=source_id)
+    return manifest_from_markdown(content, scope=scope, source_path=str(path))
 
 
 def manifest_from_markdown(
@@ -162,14 +144,13 @@ def manifest_from_markdown(
     *,
     scope: AgentSourceScope,
     source_path: str | None = None,
-    source_id: str | None = None,
 ) -> AgentManifest:
     try:
         frontmatter, body = split_frontmatter(contents, require_body=True)
         payload = _validate_frontmatter_fields(load_frontmatter_mapping(frontmatter))
-        return _manifest_from_payload(payload, body=body, source_path=source_path, scope=scope, source_id=source_id)
+        return _manifest_from_payload(payload, body=body, source_path=source_path, scope=scope)
     except ValueError as exc:
-        raise ValueError(f"invalid custom agent manifest {source_path or source_id}: {exc}") from exc
+        raise ValueError(f"invalid custom agent manifest {source_path}: {exc}") from exc
 
 
 def _discover_custom_agent_manifests(
@@ -212,7 +193,6 @@ def _manifest_from_payload(
     body: str,
     source_path: str | None,
     scope: AgentSourceScope,
-    source_id: str | None,
 ) -> AgentManifest:
     name = _required_string(payload, "name")
     manifest_id = _require_optional_string(payload, "id") or agent_manifest_id_from_name(name)
@@ -229,24 +209,17 @@ def _manifest_from_payload(
         description=_required_string(payload, "description"),
         source_scope=scope,
         source_path=source_path,
-        source_id=source_id,
         prompt_profile=manifest_id,
         model_preference=_require_optional_string(payload, "model"),
         fallback_models=_string_list(payload.get("fallback_models"), field="fallback_models"),
         tool_allowlist=tool_allowlist,
         skill_refs=skill_refs,
-        mcp_binding=_parse_mcp_binding(payload.get("mcp_binding")),
         top_level_selectable=mode == "primary",
         prompt_materialization=AgentPromptMaterialization(
             profile=manifest_id,
-            version=1,
             source="custom_markdown",
-            format="markdown",
             body=body,
             prompt_append=prompt_append,
-            source_scope=scope,
-            source_path=source_path,
-            source_id=source_id,
         ),
     )
 
@@ -288,24 +261,6 @@ def _string_list(value: object, *, field: str) -> tuple[str, ...]:
     if len(parsed) != len(set(parsed)):
         raise ValueError(f"frontmatter field '{field}' must not contain duplicates")
     return tuple(parsed)
-
-
-def _parse_mcp_binding(value: object) -> AgentMcpBindingIntent | None:
-    if value is None:
-        return None
-    if not isinstance(value, dict):
-        raise ValueError("frontmatter field 'mcp_binding' must be an object")
-    payload = value
-    unknown = sorted(key for key in payload if key not in {"profile", "servers"})
-    if unknown:
-        raise ValueError(f"frontmatter field 'mcp_binding' has unsupported key(s): {', '.join(unknown)}")
-    profile = payload.get("profile")
-    if profile is not None and (not isinstance(profile, str) or not profile.strip()):
-        raise ValueError("frontmatter field 'mcp_binding.profile' must be a non-empty string")
-    return AgentMcpBindingIntent(
-        profile=profile.strip() if isinstance(profile, str) else None,
-        servers=_string_list(payload.get("servers"), field="mcp_binding.servers"),
-    )
 
 
 __all__ = [

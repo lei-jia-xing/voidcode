@@ -74,7 +74,7 @@ _RECURRING_KINDS: frozenset[str] = frozenset({"every", "cron"})
 _KINDS: frozenset[str] = _ONE_SHOT_KINDS | _RECURRING_KINDS
 
 _STATE_KEYS: frozenset[str] = frozenset({"schema_version", "schedules", "cursor_sequence"})
-_SCHEDULE_KEYS: frozenset[str] = frozenset({"schedule_text", "kind", "prompt", "enabled", "expires_at", "wakeup_id", "created_at"})
+_SCHEDULE_KEYS: frozenset[str] = frozenset({"schedule_text", "kind", "prompt", "enabled", "expires_at", "wakeup_id"})
 #: How many event pages one observation may consume while looking for unconsumed wakeup firings.
 _MAX_EVENT_PAGES: Final[int] = 3
 _EVENT_PAGE_SIZE: Final[int] = 200
@@ -104,7 +104,6 @@ class ScheduleEntry:
     enabled: bool
     expires_at: int | None
     wakeup_id: str | None
-    created_at: int
 
     @classmethod
     def from_payload(cls, raw: Mapping[str, object], *, schedule_id: str) -> ScheduleEntry:
@@ -128,7 +127,6 @@ class ScheduleEntry:
             enabled=enabled,
             expires_at=_optional_ms(raw["expires_at"], field=f"cron schedule '{schedule_id}' expires_at"),
             wakeup_id=_optional_text(raw["wakeup_id"], field=f"cron schedule '{schedule_id}' wakeup_id"),
-            created_at=_required_ms(raw["created_at"], field=f"cron schedule '{schedule_id}' created_at"),
         )
 
     def to_payload(self) -> dict[str, object]:
@@ -139,7 +137,6 @@ class ScheduleEntry:
             "enabled": self.enabled,
             "expires_at": self.expires_at,
             "wakeup_id": self.wakeup_id,
-            "created_at": self.created_at,
         }
 
 
@@ -281,7 +278,6 @@ def _create(
         enabled=True,
         expires_at=_expiry_for(expr, now_ms=now_ms),
         wakeup_id=None,
-        created_at=now_ms,
     )
     entry = replace(entry, wakeup_id=_arm(services, schedule_id=schedule_id, prompt=prompt, due_at_ms=due_at_ms))
     schedules = dict(state.schedules)
@@ -653,7 +649,7 @@ def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
                         "type": "object",
                         "additionalProperties": {
                             "type": "object",
-                            "required": ["schedule_text", "kind", "prompt", "enabled", "expires_at", "wakeup_id", "created_at"],
+                            "required": ["schedule_text", "kind", "prompt", "enabled", "expires_at", "wakeup_id"],
                             "additionalProperties": False,
                             "properties": {
                                 "schedule_text": {"type": "string"},
@@ -662,7 +658,6 @@ def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
                                 "enabled": {"type": "boolean"},
                                 "expires_at": {"type": ["integer", "null"]},
                                 "wakeup_id": {"type": ["string", "null"]},
-                                "created_at": {"type": "integer", "minimum": 0},
                             },
                         },
                     },

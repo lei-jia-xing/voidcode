@@ -95,7 +95,7 @@ Each plugin directory is a Python package admitted by the same rules as a third-
 | `files` | `read`, `write`, `edit`, `glob`, `grep`, `apply_workspace_edit` |
 | `ast_grep` | `ast_grep` structural search |
 | `exec` | `shell_exec`, `background_process` |
-| `web` | `web_fetch`, `web_search` |
+| `web` | `web_search` (Exa-backed) |
 | `lsp` | `lsp` tool and `/lsp` command |
 | `mcp` | `mcp` tool and `/mcp` inventory |
 | `providers` | turn providers for OpenAI-compatible, Anthropic, and Google families, plus `/model` and `/providers` panels |

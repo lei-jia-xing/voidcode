@@ -906,7 +906,7 @@ def test_batch_items_select_their_own_profiles(tmp_path: Path) -> None:
         {
             "prompt": f"{_builtin_body(tmp_path, 'research')}\n\nread the docs",
             "label": "",
-            "tool_allowlist": ("web_search", "web_fetch"),
+            "tool_allowlist": ("web_search",),
             "max_steps": 32,
             "readonly": True,
             "notify_on_completion": True,
@@ -935,7 +935,7 @@ def test_batch_item_profile_fallback_is_visible_in_the_result(tmp_path: Path) ->
     assert payload["failed"] == [{"index": 1, "error": "delegation spawn budget exhausted for this chain"}]
     assert "note: profile 'plan' scope was unavailable" in res.output.text
     assert [call["tool_allowlist"] for call in services.spawn_calls] == [
-        ("read", "glob", "grep", "ast_grep", "lsp", "skill", "web_search", "web_fetch"),
+        ("read", "glob", "grep", "ast_grep", "lsp", "skill", "web_search"),
         None,
         None,
     ]

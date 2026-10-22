@@ -229,7 +229,6 @@ class ToolHooks:
                 phase=phase,
                 recursion_env_var=RECURSION_ENV_VAR,
                 environment=os.environ,
-                sequence_start=0,
                 policy=HookExecutionPolicy(),
             )
         )
@@ -253,7 +252,6 @@ class ToolHooks:
                 surface="session_start" if lifecycle.phase == "start" else "session_end",
                 recursion_env_var=RECURSION_ENV_VAR,
                 environment=os.environ,
-                sequence_start=0,
                 payload=payload,
                 policy=HookExecutionPolicy(),
             )

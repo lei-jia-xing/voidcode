@@ -38,7 +38,6 @@ RuleScope = Literal["workspace", "repo"]
 class RuntimeFileRuleContext:
     path: str
     content: str
-    truncated: bool = False
 
 
 def _rule_file_in_directory(directory: Path) -> Path | None:
@@ -110,17 +109,11 @@ def runtime_file_rule_contexts(
             rel_path = first_path.relative_to(workspace_root).as_posix()
         except ValueError:
             rel_path = Path(os.path.relpath(first_path, workspace_root)).as_posix()
-        return (RuntimeFileRuleContext(path=rel_path, content="", truncated=True),)
+        return (RuntimeFileRuleContext(path=rel_path, content=""),)
     contexts: list[RuntimeFileRuleContext] = []
     remaining_bytes = max_total_rule_bytes
     for index, rule_path in enumerate(rule_paths):
         if remaining_bytes == 0:
-            if contexts:
-                contexts[-1] = RuntimeFileRuleContext(
-                    path=contexts[-1].path,
-                    content=contexts[-1].content,
-                    truncated=True,
-                )
             break
         try:
             content = rule_path.read_text(encoding="utf-8")
@@ -131,12 +124,10 @@ def runtime_file_rule_contexts(
         encoded = content.encode("utf-8")
         marker = b"\n[Rule file truncated by runtime context policy]"
         budget_truncated = len(encoded) > remaining_bytes
-        truncated = file_truncated or budget_truncated
         if len(encoded) > remaining_bytes:
             marker_bytes = marker if remaining_bytes >= len(marker) else b""
             prefix = encoded[: remaining_bytes - len(marker_bytes)]
             content = prefix.decode("utf-8", errors="ignore") + marker_bytes.decode("utf-8")
-            truncated = True
         elif file_truncated:
             marker_bytes = marker if remaining_bytes - len(encoded) >= len(marker) else b""
             content += marker_bytes.decode("utf-8")
@@ -147,9 +138,8 @@ def runtime_file_rule_contexts(
         final_content = content.strip()
         used_bytes = len(final_content.encode("utf-8"))
         remaining_bytes -= used_bytes
-        contexts.append(RuntimeFileRuleContext(path=rel_path, content=final_content, truncated=truncated))
+        contexts.append(RuntimeFileRuleContext(path=rel_path, content=final_content))
         if budget_truncated or (remaining_bytes == 0 and index + 1 < len(rule_paths)):
-            contexts[-1] = RuntimeFileRuleContext(path=rel_path, content=final_content, truncated=True)
             break
     return tuple(contexts)
 
@@ -239,7 +229,6 @@ class RuleMetadata:
     application: RuleApplication
     scope: RuleScope
     precedence: int
-    path: str
     content_hash: str
 
     def payload(self) -> dict[str, object]:
@@ -281,7 +270,7 @@ def _rule_sort_key(metadata: RuleMetadata) -> tuple[int, int, str]:
     return (0 if metadata.scope == "workspace" else 1, metadata.precedence, metadata.name)
 
 
-def _parse_rule_document(path: Path, text: str, *, workspace_root: Path) -> RuleCatalogEntry | None:
+def _parse_rule_document(path: Path, text: str) -> RuleCatalogEntry | None:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     fields: dict[str, str] = {}
     body = normalized
@@ -296,7 +285,6 @@ def _parse_rule_document(path: Path, text: str, *, workspace_root: Path) -> Rule
             key, value = line.split(":", 1)
             fields[key.strip()] = value.strip()
         body = "\n".join(lines[end + 1 :])
-    relative = path.relative_to(workspace_root).as_posix()
     raw_name = fields.get("name") or path.stem
     name = raw_name.strip()
     if _RULE_NAME_PATTERN.fullmatch(name) is None or "/" in name or "\\" in name:
@@ -325,7 +313,7 @@ def _parse_rule_document(path: Path, text: str, *, workspace_root: Path) -> Rule
         return None
     description = fields.get("description") or next((line.strip().lstrip("#").strip() for line in content.splitlines() if line.strip()), name)
     description = description[:MAX_RULEBOOK_METADATA_CHARS].strip()
-    metadata = RuleMetadata(name, description, application, scope, precedence, relative, hashlib.sha256(_canonical_rule_bytes(content)).hexdigest())
+    metadata = RuleMetadata(name, description, application, scope, precedence, hashlib.sha256(_canonical_rule_bytes(content)).hexdigest())
     return RuleCatalogEntry(metadata=metadata, content=content)
 
 
@@ -358,7 +346,7 @@ def build_rule_catalog(workspace: Path | None, *, rule_roots: tuple[str, ...] = 
     parsed: dict[str, RuleCatalogEntry] = {}
     for path in _rule_files(workspace_root=workspace_root, rule_roots=rule_roots):
         try:
-            entry = _parse_rule_document(path, path.read_text(encoding="utf-8"), workspace_root=workspace_root)
+            entry = _parse_rule_document(path, path.read_text(encoding="utf-8"))
         except OSError, UnicodeDecodeError:
             continue
         if entry is None:
@@ -396,7 +384,6 @@ class RulePage:
     content_hash: str
     text: str
     next_offset: int | None
-    byte_truncated: bool
 
     def payload(self) -> dict[str, object]:
         return {
@@ -404,7 +391,6 @@ class RulePage:
             "content_hash": self.content_hash,
             "text": self.text,
             "next_offset": self.next_offset,
-            "byte_truncated": self.byte_truncated,
         }
 
 
@@ -430,5 +416,4 @@ def read_rule_page(workspace: Path | None, uri: str, *, offset: int = 1, limit: 
         content_hash=entry.metadata.content_hash,
         text="\n".join(window),
         next_offset=end + 1 if end < len(lines) else None,
-        byte_truncated=False,
     )

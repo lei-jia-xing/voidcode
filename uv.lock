@@ -1446,7 +1446,6 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
-    { name = "beautifulsoup4" },
     { name = "click" },
     { name = "fastapi" },
     { name = "google-auth" },
@@ -1489,7 +1488,6 @@ syntax = [
 [package.metadata]
 requires-dist = [
     { name = "anthropic", specifier = ">=1.6.0" },
-    { name = "beautifulsoup4" },
     { name = "click", specifier = ">=8.1.8" },
     { name = "fastapi" },
     { name = "google-auth", specifier = ">=2.58.0" },

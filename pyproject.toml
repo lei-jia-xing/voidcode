@@ -25,7 +25,6 @@ classifiers = [
   "Topic :: Software Development :: Libraries :: Application Frameworks",
 ]
 dependencies = [
-  "beautifulsoup4",
   "click>=8.1.8",
   "fastapi",
   "lsprotocol",

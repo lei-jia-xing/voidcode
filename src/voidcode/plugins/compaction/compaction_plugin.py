@@ -184,6 +184,8 @@ def parse_compaction_config(config: Mapping[str, object] | None) -> CompactionCo
     unknown = sorted(set(config) - _CONFIG_KEYS)
     if unknown:
         raise ValueError(f"compaction config has unsupported field: {unknown[0]}")
+    # Reserved config key: the core injects its resolved providers map into every factory.
+    _ = config.get("providers")
     enabled = config.get("enabled", True)
     if not isinstance(enabled, bool):
         raise ValueError("compaction config 'enabled' must be a boolean")

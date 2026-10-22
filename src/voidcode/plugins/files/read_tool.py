@@ -87,7 +87,6 @@ class _RulePage:
     content_hash: str
     text: str
     next_offset: int | None
-    byte_truncated: bool
 
     @classmethod
     def from_query(cls, value: Mapping[str, object]) -> _RulePage | None:
@@ -95,7 +94,6 @@ class _RulePage:
         content_hash = value.get("content_hash")
         text = value.get("text")
         next_offset = value.get("next_offset")
-        truncated = value.get("byte_truncated")
         if not isinstance(rule, str) or not rule:
             return None
         if not isinstance(content_hash, str) or not content_hash:
@@ -104,9 +102,7 @@ class _RulePage:
             return None
         if next_offset is not None and (not isinstance(next_offset, int) or isinstance(next_offset, bool) or next_offset < 1):
             return None
-        if not isinstance(truncated, bool):
-            return None
-        return cls(rule=rule, content_hash=content_hash, text=text, next_offset=next_offset, byte_truncated=truncated)
+        return cls(rule=rule, content_hash=content_hash, text=text, next_offset=next_offset)
 
     def as_payload(self) -> dict[str, object]:
         return {
@@ -114,7 +110,6 @@ class _RulePage:
             "content_hash": self.content_hash,
             "text": self.text,
             "next_offset": self.next_offset,
-            "byte_truncated": self.byte_truncated,
         }
 
 
@@ -1697,7 +1692,7 @@ class ReadTool:
             if page is None:
                 return _uri_failure(self.definition.name, f"unreadable rule page for {args.path}: provider shape violated")
             next_offset = page.next_offset
-            truncated = page.byte_truncated or next_offset is not None
+            truncated = next_offset is not None
             body = page.as_payload()
             body.update(
                 {

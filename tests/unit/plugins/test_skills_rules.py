@@ -169,7 +169,6 @@ def test_default_total_budget_stops_at_thirty_six_kilobytes(tmp_path: Path) -> N
     contexts = runtime_file_rule_contexts(workspace=tmp_path, touched_paths=tuple(f"{name}/file.txt" for name in names))
     assert [context.path for context in contexts] == ["AGENTS.md", "one/AGENTS.md", "two/AGENTS.md"]
     assert sum(len(context.content.encode("utf-8")) for context in contexts) == 36_000
-    assert [context.truncated for context in contexts] == [False, False, True]
 
 
 def test_baseline_alone_saturates_the_file_cap(tmp_path: Path) -> None:
@@ -204,7 +203,6 @@ def test_per_file_truncation_appends_the_exact_marker(tmp_path: Path) -> None:
     assert len(contexts) == 1
     context = contexts[0]
     assert context.path == RULE_FILE_NAME
-    assert context.truncated is True
     assert context.content == "a" * MAX_RULE_FILE_CHARS + TRUNCATION_MARKER
 
 
@@ -214,20 +212,17 @@ def test_total_budget_truncates_the_file_that_overruns_it(tmp_path: Path) -> Non
 
     contexts = runtime_file_rule_contexts(workspace=tmp_path, touched_paths=("sub/file.txt",), max_total_rule_bytes=200)
     assert [context.path for context in contexts] == ["AGENTS.md", "sub/AGENTS.md"]
-    assert contexts[0].truncated is False
     assert contexts[0].content == "a" * 120
-    assert contexts[1].truncated is True
     assert contexts[1].content == "b" * (200 - 120 - len(TRUNCATION_MARKER)) + TRUNCATION_MARKER
     assert len(contexts[1].content.encode("utf-8")) == 200 - 120
 
 
-def test_budget_exhausted_by_an_exact_file_marks_it_truncated(tmp_path: Path) -> None:
+def test_budget_exhausted_by_an_exact_file_stops_there(tmp_path: Path) -> None:
     _write(tmp_path / RULE_FILE_NAME, "a" * 100)
     _write(tmp_path / "sub" / RULE_FILE_NAME, "b" * 100)
 
     contexts = runtime_file_rule_contexts(workspace=tmp_path, touched_paths=("sub/file.txt",), max_total_rule_bytes=100)
     assert [context.path for context in contexts] == ["AGENTS.md"]
-    assert contexts[0].truncated is True
     assert contexts[0].content == "a" * 100
 
 
@@ -237,7 +232,6 @@ def test_zero_budget_reports_the_first_rule_path_with_empty_content(tmp_path: Pa
     contexts = runtime_file_rule_contexts(workspace=tmp_path, max_total_rule_bytes=0)
     assert [context.path for context in contexts] == ["AGENTS.md"]
     assert contexts[0].content == ""
-    assert contexts[0].truncated is True
 
     assert runtime_file_rule_contexts(workspace=tmp_path, max_total_rule_bytes=0, include_workspace_root=False) == ()
     assert runtime_file_rule_contexts(workspace=None) == ()
@@ -292,7 +286,6 @@ def test_rulebook_parses_valid_documents_and_skips_invalid_ones(tmp_path: Path) 
     assert [entry.metadata.name for entry in catalog.entries] == ["notes", "style"]
     style = catalog.always_apply[0].metadata
     assert (style.scope, style.precedence, style.description) == ("repo", 5, "House style")
-    assert style.path == ".voidcode/rules/style.md"
     notes = catalog.discoverable[0].metadata
     assert (notes.precedence, notes.description) == (0, "Read me")
     assert build_rule_catalog(None).entries == ()
@@ -545,7 +538,7 @@ def test_rule_page_reads_the_same_catalog_the_prompt_publishes(tmp_path: Path) -
 
     page = read_rule_page(tmp_path, "voidcode://rule/notes", offset=2, limit=1)
     assert page is not None
-    assert (page.rule, page.text, page.next_offset, page.byte_truncated) == ("notes", "line two", 3, False)
+    assert (page.rule, page.text, page.next_offset) == ("notes", "line two", 3)
     assert page.content_hash == build_rule_catalog(tmp_path).entries[0].metadata.content_hash
 
     assert read_rule_page(tmp_path, "voidcode://rule/missing") is None

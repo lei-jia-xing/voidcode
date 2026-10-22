@@ -17,10 +17,10 @@ continuations carrying the verbatim legacy text under ``payload["text"]``, so a 
 restated as a system message. The mid-run nudge fires on the invocation that crosses the mutation
 threshold and the completion reminder fires when a run finishes with open todos; per-cycle
 budgets, watermarks and the cycle identity (the newest genuine user prompt, read from the
-session's own committed events) reproduce the legacy accounting. Legacy suppression inputs the
-new core does not expose to a plugin - "delegated child", "runtime waits for user", "pending
-background task", "todo tool advertised" - are documented instead of faked: a parked run emits no
-run-finished fact (so waiting is silent), and the remaining three are listed as unavailable.
+session's own committed events) reproduce the legacy accounting. The legacy suppression
+inputs ("delegated child", "runtime waits for user", "pending background task", "todo tool
+advertised") are not exposed to a plugin, so reminders never suppress on them: a parked run
+emits no run-finished fact, so "waits for user" is silent by construction.
 """
 
 from __future__ import annotations
@@ -129,34 +129,10 @@ class TodoMidRunState:
 
 
 @dataclass(frozen=True, slots=True)
-class ReminderSuppression:
-    """Reasons a reminder is withheld, shared by both reminder kinds.
-
-    Legacy fed four inputs here. The new core exposes none of them to a plugin handler, so
-    every field keeps its default (nothing blocks) and the unavailable reasons are documented in
-    the module docstring instead of being guessed: a parked run emits no run-finished fact, so
-    "waits for user" is silent by construction.
-    """
-
-    delegated_child: bool = False
-    runtime_waits_for_user: bool = False
-    pending_background_task: bool = False
-    todo_tool_available: bool = True
-
-    @property
-    def blocked(self) -> bool:
-        return self.delegated_child or self.runtime_waits_for_user or self.pending_background_task or not self.todo_tool_available
-
-
-@dataclass(frozen=True, slots=True)
 class ReminderDecision[S]:
     """One verdict from either reminder kind, plus the state to persist for it."""
 
     state: S
-    max_attempts: int
-    attempt: int = 0
-    incomplete_count: int = 0
-    mutation_count: int = 0
     text: str | None = None
 
     @property
@@ -741,7 +717,6 @@ def decide_todo_mid_run_nudge(
     run_id: str | None,
     mutations: int,
     incomplete_count: int,
-    suppression: ReminderSuppression,
 ) -> ReminderDecision[TodoMidRunState]:
     """Whether the next provider call earns a mid-run todo nudge."""
     fresh = TodoMidRunState(cycle_run_id=run_id)
@@ -754,23 +729,14 @@ def decide_todo_mid_run_nudge(
         mutation_baseline=baseline,
         cycle_run_id=run_id,
     )
-    silent: ReminderDecision[TodoMidRunState] = ReminderDecision(
-        state=counters,
-        max_attempts=max_per_cycle,
-        mutation_count=pending,
-        incomplete_count=incomplete_count,
-    )
-    if incomplete_count == 0 or suppression.blocked:
+    silent: ReminderDecision[TodoMidRunState] = ReminderDecision(state=counters)
+    if incomplete_count == 0:
         return silent
     if pending < TODO_MID_RUN_MUTATION_THRESHOLD or counters.attempts >= max_per_cycle:
         return silent
     attempt = counters.attempts + 1
     return ReminderDecision[TodoMidRunState](
         state=TodoMidRunState(attempts=attempt, mutations=0, mutation_baseline=mutations, cycle_run_id=run_id),
-        max_attempts=max_per_cycle,
-        attempt=attempt,
-        mutation_count=pending,
-        incomplete_count=incomplete_count,
         text=todo_mid_run_nudge_text(
             mutation_count=pending,
             incomplete_count=incomplete_count,
@@ -828,17 +794,13 @@ def decide_todo_reminder(
     run_id: str | None,
     incomplete_phases: tuple[tuple[str, tuple[str, ...]], ...],
     tool_result_count: int,
-    suppression: ReminderSuppression,
 ) -> ReminderDecision[TodoReminderState]:
     """Whether a terminal turn earns a todo completion reminder."""
     fresh = TodoReminderState(cycle_run_id=run_id)
     cycle_state = state if state.cycle_run_id == run_id else fresh
-    incomplete_count = sum(len(contents) for _name, contents in incomplete_phases)
-    silent: ReminderDecision[TodoReminderState] = ReminderDecision(state=cycle_state, max_attempts=max_per_cycle, incomplete_count=incomplete_count)
+    silent: ReminderDecision[TodoReminderState] = ReminderDecision(state=cycle_state)
     if not incomplete_phases:
         return replace(silent, state=fresh)
-    if suppression.blocked:
-        return silent
     if cycle_state.awaiting_progress and tool_result_count <= cycle_state.progress_watermark:
         return silent
     progressed = replace(cycle_state, awaiting_progress=False)
@@ -852,9 +814,6 @@ def decide_todo_reminder(
             progress_watermark=tool_result_count,
             cycle_run_id=run_id,
         ),
-        max_attempts=max_per_cycle,
-        attempt=attempt,
-        incomplete_count=incomplete_count,
         text=todo_reminder_text(incomplete_phases, attempt=attempt, max_attempts=max_per_cycle),
     )
 
@@ -982,7 +941,6 @@ def _account_invocation(state: TodoState, fact: InvocationFinishedFact, cycle: s
         run_id=cycle,
         mutations=mid.mutation_baseline + mid.mutations,
         incomplete_count=_incomplete_count(state.phases),
-        suppression=ReminderSuppression(),
     )
     updated = replace(state, mid_run=decision.state, cycle_run_id=cycle, invocations=state.invocations + 1)
     return updated, decision.text
@@ -996,7 +954,6 @@ def _account_run_finish(state: TodoState, fact: RunFinishedFact, cycle: str, max
         run_id=cycle,
         incomplete_phases=incomplete_todo_phases(state.phases),
         tool_result_count=state.invocations,
-        suppression=ReminderSuppression(),
     )
     updated = replace(state, todo_reminder=decision.state, cycle_run_id=cycle)
     if fact.status != "completed":

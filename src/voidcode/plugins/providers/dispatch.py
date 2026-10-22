@@ -9,7 +9,6 @@ per-model wire routing, and the catalog cost of the reported usage.
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
-from typing import cast
 
 from voidcode.sdk.provider import (
     ProviderExecutionError,
@@ -114,42 +113,52 @@ def _materialize(provider_name: str, configuration: object | None) -> TurnProvid
     on the wire its table row declares, and an unknown id is only reachable as a
     declared custom endpoint.
     """
+    if configuration is not None and not isinstance(
+        configuration,
+        (
+            OpenAIProviderConfig,
+            AnthropicProviderConfig,
+            GoogleProviderConfig,
+            CopilotProviderConfig,
+            ProviderEndpointConfig,
+            OpenAICompatibleProviderConfig,
+        ),
+    ):
+        raise ValueError(f"provider configuration has the wrong type for {provider_name!r}")
+    entry = configuration
     match provider_name:
-        case "opencode-zen":
-            return OpenCodeZenModelProvider(config=cast(ProviderEndpointConfig | None, configuration)).turn_provider()
-        case "openai":
-            return OpenAIModelProvider(config=cast(OpenAIProviderConfig | None, configuration)).turn_provider()
-        case "google":
-            return GoogleModelProvider(config=cast(GoogleProviderConfig | None, configuration)).turn_provider()
-        case "github-copilot":
-            return GithubCopilotModelProvider(config=cast(CopilotProviderConfig | None, configuration)).turn_provider()
-        case "endpoint":
-            return OpenAIEndpointProvider(name=provider_name, config=cast(ProviderEndpointConfig | None, configuration)).turn_provider()
-        case "openrouter":
-            return OpenRouterModelProvider(config=cast(ProviderEndpointConfig | None, configuration)).turn_provider()
-        case "opencode-go":
-            return OpenCodeGoModelProvider(config=cast(OpenAICompatibleProviderConfig | None, configuration)).turn_provider()
+        case "opencode-zen" if entry is None or isinstance(entry, ProviderEndpointConfig):
+            return OpenCodeZenModelProvider(config=entry).turn_provider()
+        case "openai" if entry is None or isinstance(entry, OpenAIProviderConfig):
+            return OpenAIModelProvider(config=entry).turn_provider()
+        case "google" if entry is None or isinstance(entry, GoogleProviderConfig):
+            return GoogleModelProvider(config=entry).turn_provider()
+        case "github-copilot" if entry is None or isinstance(entry, CopilotProviderConfig):
+            return GithubCopilotModelProvider(config=entry).turn_provider()
+        case "endpoint" if entry is None or isinstance(entry, ProviderEndpointConfig):
+            return OpenAIEndpointProvider(name=provider_name, config=entry).turn_provider()
+        case "openrouter" if entry is None or isinstance(entry, ProviderEndpointConfig):
+            return OpenRouterModelProvider(config=entry).turn_provider()
+        case "opencode-go" if entry is None or isinstance(entry, OpenAICompatibleProviderConfig):
+            return OpenCodeGoModelProvider(config=entry).turn_provider()
+        case "opencode-zen" | "openai" | "google" | "github-copilot" | "endpoint" | "openrouter" | "opencode-go":
+            raise ValueError(f"provider configuration has the wrong type for {provider_name!r}")
     wire = PROVIDER_WIRES.get(provider_name)
     if wire is not None:
-        if wire.shape == "anthropic":
-            return AnthropicMessagesProvider(
-                name=provider_name,
-                config=cast(AnthropicProviderConfig | None, configuration),
-            )
-        if wire.shape == "openai_compatible":
-            return OpenAIChatCompletionsProvider(
-                name=provider_name,
-                config=cast(ProviderEndpointConfig | None, _endpoint_of(provider_name, configuration)),
-            )
-    elif isinstance(configuration, ProviderEndpointConfig):
-        return OpenAIEndpointProvider(name=provider_name, config=configuration).turn_provider()
+        if wire.shape == "anthropic" and (entry is None or isinstance(entry, AnthropicProviderConfig)):
+            return AnthropicMessagesProvider(name=provider_name, config=entry)
+        if wire.shape == "openai_compatible" and (entry is None or isinstance(entry, OpenAICompatibleProviderConfig)):
+            return OpenAIChatCompletionsProvider(name=provider_name, config=_endpoint_of(provider_name, entry))
+        raise ValueError(f"provider configuration has the wrong type for {provider_name!r}")
+    if isinstance(entry, ProviderEndpointConfig):
+        return OpenAIEndpointProvider(name=provider_name, config=entry).turn_provider()
     raise UnknownProviderIdError(provider_name)
 
 
-def _endpoint_of(provider_name: str, configuration: object | None) -> ProviderEndpointConfig:
+def _endpoint_of(provider_name: str, configuration: OpenAICompatibleProviderConfig | None) -> ProviderEndpointConfig:
     from .native.config import openai_compatible_endpoint_config
 
-    return openai_compatible_endpoint_config(provider_name, cast(OpenAICompatibleProviderConfig | None, configuration))
+    return openai_compatible_endpoint_config(provider_name, configuration)
 
 
 class RegisteredProvider:

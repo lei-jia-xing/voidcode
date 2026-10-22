@@ -33,11 +33,9 @@ _DEFAULT_TOOL_ALLOWLIST = (
     "update_goal",
     "skill",
     "web_search",
-    "web_fetch",
     "mcp",
 )
 
-_BUILTIN_PROMPT_MATERIALIZATION_VERSION = 3
 
 DEFAULT_AGENT_MANIFEST = AgentManifest(
     id="default",
@@ -49,9 +47,7 @@ DEFAULT_AGENT_MANIFEST = AgentManifest(
     top_level_selectable=True,
     prompt_materialization=AgentPromptMaterialization(
         profile="default",
-        version=_BUILTIN_PROMPT_MATERIALIZATION_VERSION,
         source="builtin",
-        format="text",
     ),
 )
 
@@ -73,9 +69,7 @@ EXECUTE_AGENT_MANIFEST = AgentManifest(
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
         profile="execute",
-        version=_BUILTIN_PROMPT_MATERIALIZATION_VERSION,
         source="builtin",
-        format="text",
     ),
 )
 
@@ -90,9 +84,7 @@ REVIEW_AGENT_MANIFEST = AgentManifest(
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
         profile="review",
-        version=_BUILTIN_PROMPT_MATERIALIZATION_VERSION,
         source="builtin",
-        format="text",
     ),
 )
 
@@ -107,9 +99,7 @@ EXPLORE_AGENT_MANIFEST = AgentManifest(
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
         profile="explore",
-        version=_BUILTIN_PROMPT_MATERIALIZATION_VERSION,
         source="builtin",
-        format="text",
     ),
 )
 
@@ -120,13 +110,11 @@ RESEARCH_AGENT_MANIFEST = AgentManifest(
     mode="subagent",
     description="Delegated research using public sources and external evidence.",
     prompt_profile="research",
-    tool_allowlist=("web_search", "web_fetch"),
+    tool_allowlist=("web_search",),
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
         profile="research",
-        version=_BUILTIN_PROMPT_MATERIALIZATION_VERSION,
         source="builtin",
-        format="text",
     ),
 )
 
@@ -134,7 +122,6 @@ _PLAN_TOOL_ALLOWLIST = (
     *_WORKSPACE_DISCOVERY_TOOLS,
     "skill",
     "web_search",
-    "web_fetch",
 )
 
 PLAN_AGENT_MANIFEST = AgentManifest(
@@ -148,9 +135,7 @@ PLAN_AGENT_MANIFEST = AgentManifest(
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
         profile="plan",
-        version=_BUILTIN_PROMPT_MATERIALIZATION_VERSION,
         source="builtin",
-        format="text",
     ),
 )
 
@@ -173,15 +158,6 @@ def validate_builtin_agent_manifests(
             raise ValueError(f"builtin agent manifest '{manifest.id}' references unknown prompt profile '{manifest.prompt_profile}'")
         if len(manifest.tool_allowlist) != len(set(manifest.tool_allowlist)):
             raise ValueError(f"builtin agent manifest '{manifest.id}' must not contain duplicate tool patterns")
-        if manifest.mcp_binding is not None:
-            binding_profile = manifest.mcp_binding.profile
-            if binding_profile is not None and not binding_profile.strip():
-                raise ValueError(f"builtin agent manifest '{manifest.id}' mcp_binding.profile must be a non-empty string")
-            if len(manifest.mcp_binding.servers) != len(set(manifest.mcp_binding.servers)):
-                raise ValueError(f"builtin agent manifest '{manifest.id}' mcp_binding.servers must not contain duplicate server refs")
-            for server_ref in manifest.mcp_binding.servers:
-                if not server_ref.strip():
-                    raise ValueError(f"builtin agent manifest '{manifest.id}' mcp_binding.servers refs must be non-empty")
         if manifest.mode == "primary" and not manifest.top_level_selectable:
             raise ValueError(f"builtin agent manifest '{manifest.id}' has mode='primary' but is not marked top_level_selectable")
         if manifest.mode == "subagent" and manifest.top_level_selectable:

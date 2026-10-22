@@ -58,7 +58,6 @@ _EXPECTED_TOOL_ALLOWLISTS: dict[str, tuple[str, ...]] = {
         "update_goal",
         "skill",
         "web_search",
-        "web_fetch",
         "mcp",
     ),
     "execute": (
@@ -72,12 +71,11 @@ _EXPECTED_TOOL_ALLOWLISTS: dict[str, tuple[str, ...]] = {
     ),
     "review": _WORKSPACE_DISCOVERY_TOOLS,
     "explore": _WORKSPACE_DISCOVERY_TOOLS,
-    "research": ("web_search", "web_fetch"),
+    "research": ("web_search",),
     "plan": (
         *_WORKSPACE_DISCOVERY_TOOLS,
         "skill",
         "web_search",
-        "web_fetch",
     ),
 }
 
@@ -106,12 +104,10 @@ def _load_registry(
     workspace: Path,
     *,
     xdg_config_home: Path,
-    installed: tuple[AgentManifest, ...] = (),
 ):
     return load_agent_manifest_registry(
         workspace,
         env={"XDG_CONFIG_HOME": str(xdg_config_home)},
-        installed_manifests=installed,
     )
 
 
@@ -124,11 +120,8 @@ def test_builtin_manifests_expose_exact_allowlists_and_refs() -> None:
         assert manifest.source_scope == "builtin"
         assert manifest.skill_refs == ()
         assert manifest.fallback_models == ()
-        assert manifest.mcp_binding is None
         assert manifest.prompt_materialization is not None
         assert manifest.prompt_materialization.source == "builtin"
-        assert manifest.prompt_materialization.format == "text"
-        assert manifest.prompt_materialization.version == 3
         assert manifest.prompt_materialization.profile == manifest.prompt_profile
 
     assert get_builtin_agent_manifest("default") is DEFAULT_AGENT_MANIFEST
@@ -231,7 +224,6 @@ def test_manifest_payload_round_trip() -> None:
     payload = DEFAULT_AGENT_MANIFEST.prompt_materialization
     assert payload is not None
     assert AgentPromptMaterialization.from_payload(payload.to_payload()) == payload
-    assert AgentPromptMaterialization.from_payload(payload.to_payload(profile="custom")) == AgentPromptMaterialization(profile="custom", version=3)
     with pytest.raises(ValueError, match="invalid current prompt materialization fields"):
         AgentPromptMaterialization.from_payload({**payload.to_payload(), "unknown": 1})
 
@@ -266,8 +258,6 @@ def test_user_and_project_discovery_precedence(tmp_path: Path) -> None:
     assert user_only.mode == "subagent"
     assert user_only.top_level_selectable is False
     assert [manifest.id for manifest in registry.list_manifests()][:6] == ["default", "execute", "review", "explore", "research", "plan"]
-    assert registry.executable_primary_ids() == frozenset({"default", "shared"})
-    assert registry.executable_subagent_ids() == frozenset({"execute", "review", "explore", "research", "plan", "user-only"})
 
 
 def test_duplicate_id_in_same_scope_is_rejected(tmp_path: Path) -> None:
@@ -346,38 +336,9 @@ def test_frontmatter_framing_and_value_rejections(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="unsupported frontmatter field 'preset_hook_refs'"):
         _load_registry(workspace, xdg_config_home=xdg_config_home)
 
-
-def test_installed_package_scope_requires_source_id(tmp_path: Path) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    xdg_config_home = tmp_path / "config"
-    packaging = AgentManifest(
-        id="packaged",
-        name="Packaged",
-        mode="subagent",
-        description="Installed package profile.",
-        source_scope="package",
-        source_id="voidcode-pack",
-    )
-
-    registry = _load_registry(workspace, xdg_config_home=xdg_config_home, installed=(packaging,))
-    assert registry.get("packaged") is packaging
-    assert registry.executable_subagent_ids() == frozenset({"execute", "review", "explore", "research", "plan", "packaged"})
-
-    with pytest.raises(ValueError, match="installed agent manifests require actual package origin/source_id"):
-        _load_registry(
-            workspace,
-            xdg_config_home=xdg_config_home,
-            installed=(AgentManifest(id="loose", name="Loose", mode="subagent", description="d"),),
-        )
-    with pytest.raises(ValueError, match="invalid installed agent manifest id: Bad Id"):
-        _load_registry(
-            workspace,
-            xdg_config_home=xdg_config_home,
-            installed=(AgentManifest(id="Bad Id", name="Bad", mode="subagent", description="d", source_scope="package", source_id="pkg"),),
-        )
-    with pytest.raises(ValueError, match="package prompt materialization requires source_id"):
-        AgentPromptMaterialization(profile="packaged", source_scope="package")
+    (user_dir / "no-block.md").write_text(f"---\n{_custom_frontmatter(extra='mcp_binding:\n  profile: main\n')}---\n\nbody\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="unsupported frontmatter field 'mcp_binding'"):
+        _load_registry(workspace, xdg_config_home=xdg_config_home)
 
 
 def test_manifest_id_derivation_and_validation() -> None:
@@ -451,13 +412,9 @@ def test_custom_markdown_prompt_rendering_with_append(tmp_path: Path) -> None:
     materialization = manifest.prompt_materialization
     assert materialization is not None
     assert materialization.source == "custom_markdown"
-    assert materialization.format == "markdown"
     assert materialization.profile == "custom"
-    assert materialization.version == 1
     assert materialization.body == body
     assert materialization.prompt_append == "Prefer terse answers."
-    assert materialization.source_scope == "user"
-    assert materialization.source_path == str(user_dir / "custom.md")
     assert render_agent_prompt(materialization) == f"{body}\n\n{_USER_APPEND_HEADING}\nPrefer terse answers."
 
     (user_dir / "custom.md").unlink()

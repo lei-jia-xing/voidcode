@@ -13,7 +13,7 @@ reminders, ``outputSchema``/``schemaMode`` structured-output validation, ``load_
 ``operation=output`` is the whole control surface.
 
 ``subagent_type`` selects one executable child profile from the owned registry in
-``profiles/`` (builtin manifests plus workspace/user/package customs): the child's prompt is
+``profiles/`` (builtin manifests plus user/project customs): the child's prompt is
 the rendered profile text followed by this call's prompt, its tools are the profile's allowlist,
 and its stance is the profile's ``readonly`` (customs declare no stance, so they run writable
 unless the parent lease is read-only). The core has no per-child system prompt seam -- a

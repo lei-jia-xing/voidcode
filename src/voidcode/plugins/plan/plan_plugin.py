@@ -32,7 +32,7 @@ from voidcode.sdk.tools import ToolEffect
 
 SCHEMA_VERSION = 1
 OWNER = "plan"
-_STATE_KEYS: frozenset[str] = frozenset({"schema_version", "active", "activations"})
+_STATE_KEYS: frozenset[str] = frozenset({"schema_version", "active"})
 
 #: Verbatim legacy plan-mode instruction (``runtime/context/window.py:PLAN_MODE_INSTRUCTION``).
 PLAN_MODE_INSTRUCTION = (
@@ -55,7 +55,6 @@ class PlanState:
     """This plugin's session-scope state: whether plan mode is currently active."""
 
     active: bool = False
-    activations: int = 0
 
     @classmethod
     def from_payload(cls, raw: Mapping[str, object] | None) -> PlanState:
@@ -72,13 +71,10 @@ class PlanState:
         active = raw["active"]
         if not isinstance(active, bool):
             raise ValueError("plan state field 'active' must be a boolean")
-        activations = raw["activations"]
-        if not isinstance(activations, int) or isinstance(activations, bool) or activations < 0:
-            raise ValueError("plan state field 'activations' must be a non-negative integer")
-        return cls(active=active, activations=activations)
+        return cls(active=active)
 
     def to_payload(self) -> dict[str, object]:
-        return {"schema_version": SCHEMA_VERSION, "active": self.active, "activations": self.activations}
+        return {"schema_version": SCHEMA_VERSION, "active": self.active}
 
 
 def _load(services: PluginServices) -> tuple[PlanState, int]:
@@ -103,9 +99,9 @@ class PlanCommand:
         services.set_overlay(tier="read-only")
         if state.active:
             return CommandResult(status="ok", output=ENABLED_OUTPUT, data={"active": True, "changed": False})
-        updated = PlanState(active=True, activations=state.activations + 1)
+        updated = PlanState(active=True)
         services.replace_state(updated.to_payload(), expected_version=version)
-        services.stage_event("plan_mode_enabled", {"activations": updated.activations})
+        services.stage_event("plan_mode_enabled", {})
         return CommandResult(status="ok", output=ENABLED_OUTPUT, data={"active": True, "changed": True})
 
 
@@ -126,7 +122,7 @@ class PlanOffCommand:
         cleared = services.clear_overlay()
         if not state.active:
             return CommandResult(status="ok", output=DISABLED_OUTPUT, data={"active": False, "changed": cleared})
-        services.replace_state(PlanState(active=False, activations=state.activations).to_payload(), expected_version=version)
+        services.replace_state(PlanState(active=False).to_payload(), expected_version=version)
         services.stage_event("plan_mode_disabled", {})
         return CommandResult(status="ok", output=DISABLED_OUTPUT, data={"active": False, "changed": True})
 
@@ -146,7 +142,7 @@ class PlanStatusCommand:
         return CommandResult(
             status="ok",
             output="Mode: plan" if state.active else "Mode: default",
-            data={"active": state.active, "activations": state.activations},
+            data={"active": state.active},
         )
 
 
@@ -167,11 +163,11 @@ def prepare_plan_deactivation(
 
     The activation transaction deletes this owner's overlay, so a kept active flag would
     promise a restriction that no longer exists. After re-enable the user enters plan mode
-    again explicitly; the activation count is history and stays untouched.
+    again explicitly.
     """
     _ = (scope, scope_key, tip_sequence)
-    parsed = PlanState.from_payload(state)
-    return PlanState(active=False, activations=parsed.activations).to_payload()
+    PlanState.from_payload(state)
+    return PlanState(active=False).to_payload()
 
 
 def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
@@ -182,12 +178,11 @@ def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
             version=SCHEMA_VERSION,
             schema={
                 "type": "object",
-                "required": ["schema_version", "active", "activations"],
+                "required": ["schema_version", "active"],
                 "additionalProperties": False,
                 "properties": {
                     "schema_version": {"type": "integer", "enum": [SCHEMA_VERSION]},
                     "active": {"type": "boolean"},
-                    "activations": {"type": "integer", "minimum": 0},
                 },
             },
         ),

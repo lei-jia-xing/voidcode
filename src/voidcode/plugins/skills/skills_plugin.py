@@ -30,7 +30,7 @@ import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import ClassVar, Literal, TypeIs
+from typing import ClassVar
 
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
 from voidcode.sdk.hooks import ContextContribution, InvocationFinishedFact, PluginFact
@@ -54,12 +54,6 @@ SKILL_ENTRY_FILE_NAME = "SKILL.md"
 DEFAULT_SKILL_SEARCH_PATHS: tuple[str, ...] = (".voidcode/skills",)
 SUPPORTED_FRONTMATTER_KEYS: frozenset[str] = frozenset({"name", "description"})
 
-SkillOrigin = Literal["workspace"]
-type SkillSnapshotSource = Literal["run", "resume", "replay"]
-
-
-# --- Skill metadata ---
-
 
 def _validated_non_empty_string(value: object, *, field_name: str) -> str:
     if not isinstance(value, str):
@@ -82,17 +76,6 @@ def _validated_path(value: object, *, field_name: str) -> Path:
     return value
 
 
-def is_skill_origin(value: object) -> TypeIs[SkillOrigin]:
-    """Whether an untrusted ``origin`` token names the workspace skill origin."""
-    return value == "workspace"
-
-
-def _validated_skill_origin(value: object) -> SkillOrigin:
-    if is_skill_origin(value):
-        return value
-    raise ValueError("origin must be one of: workspace")
-
-
 @dataclass(frozen=True, slots=True)
 class SkillMetadata:
     name: str
@@ -100,7 +83,6 @@ class SkillMetadata:
     content: str
     directory: Path
     entry_path: Path
-    origin: SkillOrigin = "workspace"
     enabled: bool = True
 
     def __post_init__(self) -> None:
@@ -111,7 +93,6 @@ class SkillMetadata:
         entry_path = _validated_path(self.entry_path, field_name="entry_path")
         object.__setattr__(self, "directory", directory)
         object.__setattr__(self, "entry_path", entry_path)
-        object.__setattr__(self, "origin", _validated_skill_origin(self.origin))
         object.__setattr__(self, "enabled", bool(self.enabled))
         if entry_path.parent != directory:
             raise ValueError("entry_path must live inside directory")
@@ -383,7 +364,6 @@ class SkillRuntimeContext:
     description: str
     content: str
     prompt_context: str
-    execution_notes: str
     source_path: str = ""
 
 
@@ -398,12 +378,11 @@ def _normalize_text(value: str) -> str:
 def build_runtime_context(skill: SkillMetadata) -> SkillRuntimeContext:
     description = _normalize_text(skill.description)
     content = skill.content
-    execution_notes = content
     prompt_parts = [f"Skill: {skill.name}"]
     if description:
         prompt_parts.append(f"Description: {description}")
-    if execution_notes:
-        prompt_parts.append(f"Instructions:\n{execution_notes}")
+    if content:
+        prompt_parts.append(f"Instructions:\n{content}")
     prompt_context = "\n".join(prompt_parts)
 
     return SkillRuntimeContext(
@@ -411,7 +390,6 @@ def build_runtime_context(skill: SkillMetadata) -> SkillRuntimeContext:
         description=description,
         content=content,
         prompt_context=prompt_context,
-        execution_notes=execution_notes,
         source_path=str(skill.entry_path),
     )
 

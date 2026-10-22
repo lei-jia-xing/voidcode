@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Annotated, Literal, cast, get_args
+from typing import Annotated, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic.functional_validators import BeforeValidator
@@ -1001,10 +1001,11 @@ def _extend_config_field_path(field_path: str, loc: tuple[object, ...]) -> str:
 def _format_provider_payload_validation_error(
     *,
     field_path: str,
-    error: dict[str, object],
+    error: Mapping[str, object],
     object_when_provided: bool = True,
 ) -> str:
-    loc = tuple(cast(tuple[object, ...], error.get("loc", ())))
+    raw_loc = error.get("loc", ())
+    loc = tuple(raw_loc) if isinstance(raw_loc, (list, tuple)) else ()
     error_type = error.get("type", "")
     target = _extend_config_field_path(field_path, loc)
     if error_type in {"model_type", "dict_type"}:
@@ -1036,7 +1037,8 @@ def _validate_provider_payload_model[TModel: BaseModel](
     try:
         return model_type.model_validate(raw_value)
     except ValidationError as exc:
-        error = cast(dict[str, object], exc.errors(include_url=False)[0])
+        first = exc.errors(include_url=False)[0]
+        error = first if isinstance(first, Mapping) else {}
         raise ValueError(_format_provider_payload_validation_error(field_path=field_path, error=error)) from exc
 
 

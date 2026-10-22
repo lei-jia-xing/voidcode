@@ -496,7 +496,6 @@ TOOL_SYMBOLS: Final[Mapping[str, str]] = MappingProxyType(
         "task": "tool.task",
         "task_batch": "tool.task",
         "todo": "tool.todo",
-        "web_fetch": "tool.webSearch",
         "web_search": "tool.webSearch",
         "write": "tool.write",
         "yield": "tool.eval",

@@ -197,7 +197,9 @@ def test_a_fired_schedule_reaches_the_provider_and_rearms_once(tmp_path: Path) -
         assert entry["kind"] == "every"
         assert entry["prompt"] == "tick tock"
         assert entry["enabled"] is True
-        assert entry["expires_at"] == entry["created_at"] + 7 * 86400 * 1000
+        # Recurring schedules expire 7 days after creation: within one tick of now + 7d.
+        now_ms = int(time.time() * 1000)
+        assert abs(int(entry["expires_at"]) - (now_ms + 7 * 86400 * 1000)) < 60_000
 
         armed = _pending(core)
         assert [wakeup.wakeup_id for wakeup in armed] == [entry["wakeup_id"]]
@@ -207,7 +209,7 @@ def test_a_fired_schedule_reaches_the_provider_and_rearms_once(tmp_path: Path) -
         assert first.role == "user"
         assert first.payload == {"kind": "cron", "text": "tick tock", "schedule_id": schedule_id}
         # A 1s cadence fires on the first second boundary after creation.
-        assert first.due_at == (int(entry["created_at"]) // 1000 + 1) * 1000
+        assert first.due_at == (int(entry["expires_at"] - 7 * 86400 * 1000) // 1000 + 1) * 1000
         assert _fires(core, session_id) == []
 
         # Nothing fires before its instant.
@@ -294,7 +296,8 @@ def test_loop_command_creates_a_schedule_and_fires_it_immediately(tmp_path: Path
         assert isinstance(entry, Mapping)
         assert entry["kind"] == "every"
         assert entry["schedule_text"] == "every 1s"
-        assert entry["expires_at"] == entry["created_at"] + 7 * 86400 * 1000
+        now_ms = int(time.time() * 1000)
+        assert abs(int(entry["expires_at"]) - (now_ms + 7 * 86400 * 1000)) < 60_000
 
         assert tick(now_ms=int(armed[0].due_at))["fired"] == armed[0].wakeup_id
         assert len(_fires(core, session_id)) == 1

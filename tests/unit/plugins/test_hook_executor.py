@@ -36,7 +36,6 @@ def _tool_request(
     hooks: RuntimeHooksConfig | None = None,
     phase: str = "pre",
     tool_name: str = "write_file",
-    sequence_start: int = 0,
     policy: HookExecutionPolicy | None = None,
     environment: dict[str, str] | None = None,
 ) -> HookExecutionRequest:
@@ -48,7 +47,6 @@ def _tool_request(
         phase=phase,  # type: ignore[arg-type]
         recursion_env_var=RECURSION_ENV_VAR,
         environment=environment or {},
-        sequence_start=sequence_start,
         policy=policy or HookExecutionPolicy(),
     )
 
@@ -58,7 +56,6 @@ def _lifecycle_request(
     *,
     hooks: RuntimeHooksConfig | None = None,
     surface: str = "session_start",
-    sequence_start: int = 0,
     payload: dict[str, object] | None = None,
     policy: HookExecutionPolicy | None = None,
 ) -> LifecycleHookExecutionRequest:
@@ -69,7 +66,6 @@ def _lifecycle_request(
         surface=surface,  # type: ignore[arg-type]
         recursion_env_var=RECURSION_ENV_VAR,
         environment={},
-        sequence_start=sequence_start,
         payload=payload or {},
         policy=policy or HookExecutionPolicy(),
     )
@@ -92,11 +88,8 @@ def test_pre_hook_reports_diagnostic_and_guidance(tmp_path: Path) -> None:
 
     assert outcome.action == "continue"
     assert outcome.failed_error is None
-    assert outcome.last_sequence == 1
     assert outcome.diagnostics == ("diag text",)
     (event,) = outcome.events
-    assert event.sequence == 1
-    assert event.event_type == "runtime.tool_hook_pre"
     assert event.payload == {
         "phase": "pre",
         "tool_name": "write_file",
@@ -177,7 +170,6 @@ def test_malformed_stdout_warns_on_post_tool(tmp_path: Path) -> None:
     assert outcome.action is None
     assert outcome.failed_error == "tool post-hook failed for write_file: hook command returned malformed JSON"
     (event,) = outcome.events
-    assert event.event_type == "runtime.tool_hook_post"
     assert event.payload["status"] == "error"
     assert "guidance" not in event.payload
 
@@ -256,13 +248,11 @@ def test_hook_command_cwd_is_the_workspace(tmp_path: Path) -> None:
 def test_cancel_short_circuits_pre_tool_loop(tmp_path: Path) -> None:
     cancel = _emit({"action": "cancel", "diagnostic": "blocked by policy", "guidance": "fix the command"})
     hooks = RuntimeHooksConfig(pre_tool=(cancel, MARKER_WRITER))
-    outcome = run_tool_hooks(_tool_request(tmp_path, hooks=hooks, sequence_start=10))
+    outcome = run_tool_hooks(_tool_request(tmp_path, hooks=hooks))
 
     assert outcome.action == "cancel"
-    assert outcome.last_sequence == 11
     assert outcome.diagnostics == ("blocked by policy",)
     (event,) = outcome.events
-    assert event.sequence == 11
     assert event.payload["action"] == "cancel"
     assert event.payload["diagnostic"] == "blocked by policy"
     assert event.payload["guidance"] == "fix the command"
@@ -275,7 +265,6 @@ def test_cancel_is_ignored_on_advisory_lifecycle_surface(tmp_path: Path) -> None
     outcome = run_lifecycle_hooks(_lifecycle_request(tmp_path, hooks=hooks))
 
     assert outcome.action == "continue"
-    assert outcome.last_sequence == 2
     assert len(outcome.events) == 2
     assert "action" not in outcome.events[0].payload
     assert outcome.events[0].payload["diagnostic"] == "advisory"
@@ -309,7 +298,6 @@ def test_lifecycle_hook_environment_and_payload(tmp_path: Path) -> None:
     outcome = run_lifecycle_hooks(_lifecycle_request(tmp_path, hooks=hooks, surface="session_start", payload={"phase": "start"}))
 
     assert outcome.events[0].payload["guidance"] == 'session_start|sess-1|{"phase": "start"}'
-    assert outcome.events[0].event_type == "runtime.lifecycle_hook"
     assert outcome.events[0].payload["hook_status"] == "ok"
     assert outcome.events[0].payload["phase"] == "start"
     assert outcome.events[0].payload["surface"] == "session_start"
@@ -319,26 +307,25 @@ def test_lifecycle_hook_environment_and_payload(tmp_path: Path) -> None:
 
 
 def test_empty_command_list_is_a_no_op(tmp_path: Path) -> None:
-    outcome = run_tool_hooks(_tool_request(tmp_path, hooks=RuntimeHooksConfig(), sequence_start=7))
+    outcome = run_tool_hooks(_tool_request(tmp_path, hooks=RuntimeHooksConfig()))
 
     assert outcome.events == ()
-    assert outcome.last_sequence == 7
     assert outcome.failed_error is None
 
 
 def test_disabled_hooks_are_a_no_op(tmp_path: Path) -> None:
     marker = MARKER_WRITER
-    disabled = run_tool_hooks(_tool_request(tmp_path, hooks=RuntimeHooksConfig(pre_tool=(marker,), enabled=False), sequence_start=3))
+    disabled = run_tool_hooks(_tool_request(tmp_path, hooks=RuntimeHooksConfig(pre_tool=(marker,), enabled=False)))
 
-    assert (disabled.events, disabled.last_sequence) == ((), 3)
+    assert disabled.events == ()
     assert not (tmp_path / "marker.txt").exists()
 
 
 def test_recursion_guard_skips_execution(tmp_path: Path) -> None:
     hooks = RuntimeHooksConfig(pre_tool=(MARKER_WRITER,))
-    outcome = run_tool_hooks(_tool_request(tmp_path, hooks=hooks, environment={RECURSION_ENV_VAR: "1"}, sequence_start=4))
+    outcome = run_tool_hooks(_tool_request(tmp_path, hooks=hooks, environment={RECURSION_ENV_VAR: "1"}))
 
-    assert (outcome.events, outcome.last_sequence) == ((), 4)
+    assert outcome.events == ()
     assert not (tmp_path / "marker.txt").exists()
 
 
@@ -350,8 +337,8 @@ def test_tool_name_glob_filtering(tmp_path: Path) -> None:
     assert (tmp_path / "marker.txt").exists()
     (tmp_path / "marker.txt").unlink()
 
-    non_matching = run_tool_hooks(_tool_request(tmp_path, hooks=hooks, tool_name="read", sequence_start=5))
-    assert (non_matching.events, non_matching.last_sequence) == ((), 5)
+    non_matching = run_tool_hooks(_tool_request(tmp_path, hooks=hooks, tool_name="read"))
+    assert non_matching.events == ()
     assert not (tmp_path / "marker.txt").exists()
 
 
@@ -365,7 +352,6 @@ def test_tool_name_match_is_case_sensitive_and_phase_specific(tmp_path: Path) ->
     assert pre_phase.events == ()
     post_phase = run_tool_hooks(_tool_request(tmp_path, hooks=post_only, phase="post", tool_name="read"))
     assert len(post_phase.events) == 1
-    assert post_phase.events[0].event_type == "runtime.tool_hook_post"
 
 
 def test_hook_tool_matches_empty_patterns_match_every_tool() -> None:
@@ -377,10 +363,9 @@ def test_hook_tool_matches_empty_patterns_match_every_tool() -> None:
 
 def test_read_only_policy_skips_commands(tmp_path: Path) -> None:
     hooks = RuntimeHooksConfig(pre_tool=(MARKER_WRITER, MARKER_WRITER))
-    outcome = run_tool_hooks(_tool_request(tmp_path, hooks=hooks, policy=HookExecutionPolicy(read_only=True), sequence_start=2))
+    outcome = run_tool_hooks(_tool_request(tmp_path, hooks=hooks, policy=HookExecutionPolicy(read_only=True)))
 
     assert outcome.failed_error is None
-    assert outcome.last_sequence == 4
     assert len(outcome.events) == 2
     assert [event.payload["status"] for event in outcome.events] == ["skipped", "skipped"]
     assert outcome.events[0].payload["hook_policy"] == {

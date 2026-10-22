@@ -245,7 +245,6 @@ def _schedule_payload(
                 enabled=enabled,
                 expires_at=expires_at,
                 wakeup_id=wakeup_id,
-                created_at=NOW_MS,
             )
         }
     ).to_payload()
@@ -274,7 +273,6 @@ def test_create_arms_the_first_fire_computed_by_the_expression(services: MockSer
     assert entry.kind == expr.kind
     assert entry.prompt == prompt
     assert entry.enabled is True
-    assert entry.created_at == NOW_MS
 
     assert services.pending() == {
         entry.wakeup_id: {
@@ -342,7 +340,6 @@ def test_schedule_cap_is_enforced_per_session(services: MockServices, tmp_path: 
             enabled=True,
             expires_at=NOW_MS + DEFAULT_RECURRING_EXPIRY_SECONDS * 1000,
             wakeup_id=f"wakeup-{index}",
-            created_at=NOW_MS,
         )
         for index in range(MAX_SCHEDULES_PER_WORKSPACE)
     }
@@ -630,9 +627,9 @@ def test_loop_returns_the_usage_message_when_it_cannot_parse(services: MockServi
 
 
 def test_state_document_is_strict() -> None:
-    payload = CronState(schedules={"sched-1": ScheduleEntry("every 10m", "every", "x", True, None, "w-1", NOW_MS)}).to_payload()
+    payload = CronState(schedules={"sched-1": ScheduleEntry("every 10m", "every", "x", True, None, "w-1")}).to_payload()
     assert payload["schema_version"] == SCHEMA_VERSION
-    assert CronState.from_payload(payload) == CronState(schedules={"sched-1": ScheduleEntry("every 10m", "every", "x", True, None, "w-1", NOW_MS)})
+    assert CronState.from_payload(payload) == CronState(schedules={"sched-1": ScheduleEntry("every 10m", "every", "x", True, None, "w-1")})
 
     with pytest.raises(ValueError, match="field 'bogus' is not supported"):
         CronState.from_payload({**payload, "bogus": 1})
