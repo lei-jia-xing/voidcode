@@ -17,6 +17,26 @@ Plugins depend on SDK contracts, rather than another plugin's tool names or the 
 | `ContextProjectedFact` | An applied core window projection with measured covered/dropped UTF-8 bytes. It does not depend on a compressor plugin id. |
 | `UsageFact`, `RunFinishedFact` | Existing truthful usage and terminal-run observations. |
 
+Mixed-mode tools declare `ToolDefinition.semantic_rules`: a mapping from `ToolSemantic` to a Draft 2020-12 JSON Schema over invocation arguments. `semantics_for(arguments)` combines static `semantics` with all matching rules. Rules are immutable, validated at definition ingress, and survive the ordinary definition codec; they are data rather than executable callbacks or a custom predicate language.
+
+```python
+ToolDefinition(
+    name="structural_tool",
+    description="Search, preview, or replace code",
+    effects=frozenset({ToolEffect.WRITE}),
+    semantic_rules={
+        ToolSemantic.RESOURCE_EDIT: {
+            "properties": {"mode": {"const": "replace"}},
+            "required": ["mode"],
+        },
+    },
+)
+```
+
+`ast_grep` uses this rule: search and preview are not edit attempts; replace is an edit attempt even if validation, approval, or execution refuses it. One semantic can use standard `anyOf`/`allOf` schemas for more complex conditions. Static meanings always apply; matching rules add meanings and never remove them. These predicates do not alter effects, approval, read-only admission, replay policy, or input validation.
+
+The core freezes the resolved semantics in the tool intent before execution. Failures use that recorded declaration too. Pre-execution refusals resolve against the same invocation arguments without creating an intent; unresolved tools have no declared meanings. History and recovery read the recorded meanings and never re-evaluate a changed catalog's predicates.
+
 Tools report their own successful resource observations. The core records them with invocation identity and the declaration used for that invocation. Consumers must not reconstruct historical semantics from the currently installed catalog. Read observations do not themselves grant write permission: the existing coverage reducer still enforces clipping, version, session, and model visibility constraints.
 
 A tool can declare paths using `path_argument_keys`, including `edits[].path`. Invocation facts collect those paths and successful read/change paths. Skills uses that surface for touched-file rules; it no longer guesses parameter names or parses patch text. Undeclared shell effects are not inferred from command text. Resource observations are claims by trusted tools, not filesystem monitoring.

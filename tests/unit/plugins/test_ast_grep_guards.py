@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+from voidcode.plugins.ast_grep.ast_grep_tool import AstGrepTool
 from voidcode.plugins.ast_grep.guards import enforce_seen_lines
 from voidcode.plugins.ast_grep.repair import ToolDiagnosticError
 from voidcode.sdk.invocation import ToolContext
@@ -83,3 +84,15 @@ def test_unseen_lines_still_fail_closed(tmp_path: Path) -> None:
         assert exc.error_details.get("reason") == "unseen_range"
     else:
         raise AssertionError("line 2 was never revealed at the current hash; must fail closed")
+
+
+def test_search_and_preview_are_not_classified_as_edit_attempts():
+    from voidcode.sdk.tools import ToolSemantic
+
+    definition = AstGrepTool.definition
+    assert definition.semantics_for({"mode": "search"}) == frozenset()
+    assert definition.semantics_for({"mode": "preview", "apply": True}) == frozenset()
+    assert definition.semantics_for({}) == frozenset()
+    # Even an invalid apply flag is a failed edit attempt, rather than a preview.
+    assert definition.semantics_for({"mode": "replace", "apply": False}) == frozenset({ToolSemantic.RESOURCE_EDIT})
+    assert definition.semantics_for({"mode": "replace", "apply": True}) == frozenset({ToolSemantic.RESOURCE_EDIT})

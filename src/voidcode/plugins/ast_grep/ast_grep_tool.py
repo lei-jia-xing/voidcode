@@ -22,6 +22,7 @@ from voidcode.sdk.tools import (
     ToolEffect,
     ToolFailure,
     ToolResult,
+    ToolSemantic,
     ToolSuccess,
 )
 
@@ -380,6 +381,14 @@ class AstGrepTool:
         },
         effects=frozenset({ToolEffect.WRITE}),
         replay_policy="never",
+        path_argument_keys=("path",),
+        semantic_rules={
+            ToolSemantic.RESOURCE_EDIT: {
+                "type": "object",
+                "properties": {"mode": {"const": "replace"}},
+                "required": ["mode"],
+            },
+        },
     )
 
     def __init__(self) -> None:

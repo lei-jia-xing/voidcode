@@ -4591,7 +4591,7 @@ class Core:
                             "call": encode_tool_call(call),
                             "owner": snapshot.owner_of(call.tool_name),
                             "effects": sorted(effect.value for effect in definition.effects),
-                            "semantics": sorted(item.value for item in definition.semantics),
+                            "semantics": sorted(item.value for item in definition.semantics_for(call.arguments)),
                             "replay_policy": definition.replay_policy_for(call.arguments),
                             "logical_turn": execution.cursor.logical_turn,
                             "depth": cursor.deferred_depth,
@@ -4747,7 +4747,11 @@ class Core:
             (event for event in reversed(execution.events) if event.sequence == batch_sequence and event.event_type == "kernel.model_turn"), None
         )
         metadata: dict[str, object] = {
-            "semantics": declaration["semantics"] if intent is not None else [item.value for item in definition.semantics] if definition else [],
+            "semantics": declaration["semantics"]
+            if intent is not None
+            else [item.value for item in definition.semantics_for(call.arguments)]
+            if definition
+            else [],
             "model": model_event.payload.get("model") if model_event is not None else None,
             "argument_bytes": len(canonical_json(dict(call.arguments)).encode("utf-8")),
             "result_bytes": len(canonical_json(encode_tool_result(result)).encode("utf-8")),
