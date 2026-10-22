@@ -1,15 +1,3 @@
-"""Profile listing commands owned by the delegation plugin.
-
-The profile model, discovery roots, builtin manifests and prompt materialization are ported
-from the legacy ``voidcode.agent`` package (see ``models.py``/``registry.py``/``builtin.py``/
-``prompts.py`` here, including the six verbatim ``texts/*.txt`` bodies).
-
-``agents`` lists the registry and ``agents.show`` renders one profile's prompt plus its
-declared tool allowlist: exactly the profiles ``task``/``task_batch`` resolve through
-``subagent_type``. Nothing here selects a profile for a run, and no policy is silently
-applied to a run.
-"""
-
 from __future__ import annotations
 
 from typing import ClassVar

@@ -1,10 +1,3 @@
-"""Agent prompt materialization, ported verbatim from ``voidcode.agent.prompts``.
-
-Builtin profiles render from this package's ``texts/<name>.txt`` resources
-(the legacy ``voidcode/agent/<profile>/base.txt`` bodies); custom markdown
-profiles render their parsed body plus the optional user append.
-"""
-
 from __future__ import annotations
 
 from functools import cache

@@ -1,9 +1,3 @@
-"""Agent manifest value records owned by the delegation plugin.
-
-`AgentManifest` is the discovered profile record; `AgentPromptMaterialization`
-describes how that profile's prompt is rendered.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Mapping

@@ -1,11 +1,3 @@
-"""Builtin agent manifests, ported from ``voidcode.agent.builtin``.
-
-The tool allowlists name the real admitted tools of the new world: the legacy handoff tool
-(``yield``), the ask-user tool (``question``), the nested-invocation wrapper (``invoke_tool``) and
-the ``mcp/*`` glob are gone, replaced by ``mcp``. Descriptions and prompt
-materializations keep their legacy values; only the module paths of the validators moved.
-"""
-
 from __future__ import annotations
 
 from .models import AgentManifest, AgentPromptMaterialization

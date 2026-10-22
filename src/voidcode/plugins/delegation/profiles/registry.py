@@ -1,11 +1,3 @@
-"""Custom agent profile discovery and merge, ported verbatim from
-``voidcode.agent.registry``.
-
-Discovery roots, frontmatter whitelist/required fields, scope precedence
-(user -> project), duplicate-id rejection and builtin-id
-protection are the legacy behavior; only the module paths moved.
-"""
-
 from __future__ import annotations
 
 import os

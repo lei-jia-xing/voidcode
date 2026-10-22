@@ -1,19 +1,3 @@
-"""Bounded YAML frontmatter parsing for markdown-backed plugin resources.
-
-Ported from the legacy shared helper (``src/voidcode/common/frontmatter.py``) with the same
-framing rules, size bound and mapping checks: a plugin artifact is deployed on its own, so it
-carries its own copy instead of importing a shared module.
-
-Framing differences between callers are options, not copies of the loop:
-``require_delimiter`` (profile manifests must open with ``---``), ``require_closing``
-(an unterminated block is an error), ``require_body`` (the markdown body must be non-empty) and
-``strip_body`` (whitespace handling).
-
-This module owns the *syntax* of the block and nothing else; the profile
-registry owns its own field whitelist, required fields, value types, and
-authority checks.
-"""
-
 from __future__ import annotations
 
 from typing import Final
