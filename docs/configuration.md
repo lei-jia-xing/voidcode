@@ -110,6 +110,39 @@ Bundled plugin ids (those shipped in `src/voidcode/plugins/`) need no entry at a
 > fails closed (an enabled non-bundled id without a `path` is refused); delete it. Profile
 > discovery roots are unchanged (`.voidcode/agents/*.md`, `$XDG_CONFIG_HOME/voidcode/agents`).
 
+## API Environment Variables
+
+Export API credentials in the environment of the process that starts VoidCode; no `.env` file is required.
+
+### Model providers
+
+For a configured provider, omit `providers.<name>.api_key` to use `<PROVIDER>_API_KEY`: uppercase the provider name and replace `-` with `_`. For example, `openai` uses `OPENAI_API_KEY`, `deepseek` uses `DEEPSEEK_API_KEY`, and `github-copilot` uses `GITHUB_COPILOT_API_KEY`. An explicit `api_key` in `voidcode.json` takes precedence.
+
+```bash
+export OPENAI_API_KEY="sk-..."
+voidcode run "Summarize this repository"
+```
+
+The provider entry, its `base_url`, and the selected `model` still belong in `voidcode.json`; setting an API key alone does not configure a provider. Provider credentials are captured when a revision is admitted and restored from its private snapshot on restart. To adopt a changed key, export it before starting the core process and invoke `core.reload`; changing another shell's environment does not affect an already-running core.
+
+### Web search APIs
+
+The bundled `web_search` tool selects the first available backend in this order:
+
+| Backend | Environment variables |
+|---|---|
+| Exa | `EXA_API_KEY` |
+| Tavily | `TAVILY_API_KEY` |
+| Brave | `BRAVE_API_KEY` |
+| DeepSeek | `DEEPSEEK_API_KEY` |
+| TinyFish | `TINYFISH_API_KEY` |
+| Kagi | `KAGI_API_KEY` |
+| Firecrawl | `FIRECRAWL_API_KEY`; `FIRECRAWL_BASE_URL` (or `FIRECRAWL_API_URL`) selects a self-hosted endpoint and also enables keyless use. |
+| SearXNG | `SEARXNG_ENDPOINT`; optional `SEARXNG_BASIC_USERNAME` + `SEARXNG_BASIC_PASSWORD`, or `SEARXNG_TOKEN` for bearer authentication. Basic authentication takes precedence when both fields are set. |
+| Jina | Optional `JINA_API_KEY`; the final fallback supports keyless use at low volume. |
+
+These are read directly from the core process environment by the web plugin, independently of the model provider credentials in the revision snapshot.
+
 ## Plugins are trusted code
 
 There is no trust flag, no manifest, and no sandbox: configuring a plugin id

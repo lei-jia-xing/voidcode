@@ -39,12 +39,18 @@ The core reads exactly one file, `voidcode.json`, from the workspace root. Write
   "model": { "model": "openai/gpt-4o-mini" },
   "policy": { "approval_mode": "ask" },
   "providers": {
-    "openai": { "api_key": "sk-...", "base_url": "https://api.openai.com/v1" }
+    "openai": { "base_url": "https://api.openai.com/v1" }
   }
 }
 ```
 
-`api_key` may be omitted when the matching `<PROVIDER>_API_KEY` environment variable is set (here `OPENAI_API_KEY`). See the [Configuration Guide](./docs/configuration.md) for every field and plugin configuration.
+Export the API key before starting VoidCode:
+
+```bash
+export OPENAI_API_KEY="sk-..."
+```
+
+No `.env` file is required. See [API Environment Variables](./docs/configuration.md#api-environment-variables) for credential names and search API keys, and the [Configuration Guide](./docs/configuration.md) for every field and plugin configuration.
 
 ### Run
 
