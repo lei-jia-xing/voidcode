@@ -13,6 +13,7 @@ from .json_values import json_wire_object, own_json_object
 if TYPE_CHECKING:
     from .hooks import FactPage
     from .tools import ToolDefinition
+    from .transcript import TranscriptPage
 
 
 class QueryUnavailable(ValueError):
@@ -556,6 +557,16 @@ class PluginServices(Protocol):
         Limits count source events (1..200). Advance next_sequence even for empty
         pages; has_more, not the fact count, determines whether to continue.
         Recorded facts must satisfy the current contract; incomplete records raise.
+        """
+        ...
+
+    def read_transcript(self, *, after_sequence: int = 0, limit: int = 100) -> TranscriptPage:
+        """Read committed conversation records, scoped to the calling session.
+
+        ``limit`` bounds source events (1..200). The page has a soft 64 KiB
+        source-payload budget: an oversized first record is returned whole on
+        its own so every message remains reachable. Advance the source cursor
+        even on empty pages. This does not apply the current window projection.
         """
         ...
 

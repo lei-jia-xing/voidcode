@@ -14,7 +14,7 @@ for decisions before execution.
 | `cron/cron_plugin.py` | Parses `kernel.wakeup_fired` and its nested payload. | Introduce a public wakeup-fired fact carrying owner, wakeup identity and payload before migrating. A run request does not establish that a wakeup fired. |
 | `compaction/compaction_plugin.py`, `compaction/projection.py` | Reconstruct provider messages, tool batches and complete compaction boundaries from private event layouts. | Define a public transcript/context projection contract. Aggregate facts alone omit message bodies and batch relationships. |
 | `compaction/projection.py` | Extracts references from `path`/`command` arguments and recognizes delegation by `task`/`background_task` names. | Replace these assumptions with resource observations and child facts when the transcript contract can correlate them with source invocations. |
-| `session_info/panels.py` | Parses provider intents, messages and outcomes for context, counts and exports. | Use facts for accounting; use the transcript contract for export/copy and a typed dispatch/window contract for context inspection. |
+| `session_info/panels.py` | Parsed provider intents, messages and outcomes for context and exports. | Removed: context/export/copy use the public typed transcript; usage uses its dedicated service. Status reads only diagnostic event headers. |
 | `capabilities/providers/panels.py` | Reads provider intents to identify the latest dispatched provider/model. | Share the dispatch contract with session inspection. Completion-only usage facts would hide in-flight dispatches. |
 | `review/review_plugin.py`, `delegation/profiles/builtin.py` | Curated tool-name allowlists define child authority and workflow scope. | Keep explicit scope restrictions. Capability-based discovery must preserve authorized subsets; selecting every read tool could widen authority. |
 | `delegation/delegation_plugin.py` | Reads bounded child history through a service and delegates rendering to the SDK. | Legitimate diagnostic contract usage; consolidate rendering with the future transcript projection rather than duplicating event parsing in plugins. |
@@ -26,9 +26,10 @@ an LSP action named `edit` are not tool-name coupling either.
 
 ## Follow-up order
 
-1. Specify transcript/context projection around the needs of compaction and session
-   inspection: message bodies, native batch boundaries, source identities and
-   in-flight dispatch visibility. Keep durable storage events private to the core.
+1. Extend the [public transcript](./transcript.md), now used by session inspection,
+   with certified native batch boundaries and invocation correlation before migrating
+   compaction. Message bodies, source identities and in-flight dispatch windows are
+   available; durable storage event layouts remain private to the core.
 2. Add a typed wakeup-fired fact and migrate cron, preserving owner isolation and
    replay behavior.
 3. Remove compaction's concrete tool assumptions using correlated observations;

@@ -72,6 +72,7 @@ from voidcode.sdk.tools import (
     ToolResult,
     is_read_tier,
 )
+from voidcode.sdk.transcript import TranscriptEntry, TranscriptPage
 from voidcode.sdk.views import PluginViewDescriptor
 
 from .artifacts import ArtifactStore
@@ -87,6 +88,7 @@ from .storage.store import (
     StagedStateUpdate,
     canonical_json,
 )
+from .transcript import transcript_entry
 
 RESERVED_COMMAND_NAMES: frozenset[str] = frozenset({"run", "resume", "show", "cancel", "close", "init", "help", "status", "sessions", "catalog"})
 RESERVED_COMMAND_PREFIXES: tuple[str, ...] = ("core.", "voidcode.")
@@ -725,6 +727,24 @@ class PluginRuntime:
                 kind, payload = decoded
                 facts.append(self._typed_fact(kind, payload, event.session_id, event.run_id, event.revision_id, str(payload.get("logical_turn", ""))))
         return FactPage(tuple(facts), page[-1].sequence if page else after, len(source) > limit)
+
+    def transcript_page(self, session_id: str, after: int, limit: int) -> TranscriptPage:
+        source = self.require_store().events(session_id, after_sequence=after, limit=limit + 1)
+        entries: list[TranscriptEntry] = []
+        budget = 64 * 1024
+        consumed = 0
+        cursor = after
+        for event in source[:limit]:
+            size = len(json.dumps(json_wire_object(event.payload), ensure_ascii=False, allow_nan=False).encode("utf-8"))
+            if consumed and size > budget:
+                break
+            entry = transcript_entry(event)
+            if entry is not None:
+                entries.append(entry)
+            budget -= size
+            consumed += 1
+            cursor = event.sequence
+        return TranscriptPage(tuple(entries), cursor, len(source) > consumed, consumed)
 
     def event_views(self, session_id: str, after: int, limit: int, include_payload: bool) -> tuple[EventView, ...]:
         """One bounded page of a session's events; the payload budget is shared by the page."""

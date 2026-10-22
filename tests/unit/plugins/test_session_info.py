@@ -10,9 +10,10 @@ from voidcode.sdk.codec import encode_provider_result, encode_tool_call, encode_
 from voidcode.sdk.commands import CommandInvocation
 from voidcode.sdk.hooks import RequestWindow, WindowSegment
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.provider import ProviderTurnResult
+from voidcode.sdk.provider import ProviderMessage, ProviderTurnResult
 from voidcode.sdk.services import EventView, PluginBudget, SessionUsageReport
 from voidcode.sdk.tools import TextOutput, ToolCall, ToolSuccess
+from voidcode.sdk.transcript import TranscriptDispatch, TranscriptEntry, TranscriptPage, TranscriptRun, TranscriptTool
 
 _EVENTS: tuple[EventView, ...] = (
     EventView(
@@ -66,6 +67,25 @@ _WINDOW_EVENT = EventView(
     },
 )
 
+_TRANSCRIPT = (
+    TranscriptEntry(1, "run", "rev", "client", ProviderMessage("user", "read a")),
+    TranscriptEntry(
+        2,
+        "run",
+        "rev",
+        "provider",
+        ProviderTurnResult(output="hello\n\n```python\nprint(1)\n```", tool_calls=(ToolCall("read", {"path": "a"}, "call-1"),)),
+    ),
+    TranscriptEntry(
+        3,
+        "run",
+        "rev",
+        "core",
+        TranscriptTool(ToolCall("read", {"path": "a"}, "call-1"), ToolSuccess("read", output=TextOutput("contents of a")), False),
+    ),
+    TranscriptEntry(4, "run", "rev", "core", TranscriptRun("completed")),
+)
+
 _USAGE = SessionUsageReport(
     session_id="session-1",
     input_tokens=1200,
@@ -90,6 +110,21 @@ class _FakeServices:
     def read_events(self, *, after_sequence: int = 0, limit: int = 100, include_payload: bool = True) -> tuple[EventView, ...]:
         _ = include_payload
         return tuple(event for event in self._events if event.sequence > after_sequence)[:limit]
+
+    def read_transcript(self, *, after_sequence=0, limit=100):
+        entries = tuple(entry for entry in _TRANSCRIPT if entry.sequence > after_sequence and any(e.sequence == entry.sequence for e in self._events))
+        if _WINDOW_EVENT in self._events and after_sequence < 5:
+            entries += (
+                TranscriptEntry(
+                    5,
+                    "run",
+                    "rev",
+                    "core",
+                    TranscriptDispatch("provider", "model", RequestWindow.from_payload(_WINDOW_EVENT.payload["request_window"])),
+                ),
+            )
+        page = entries[:limit]
+        return TranscriptPage(page, page[-1].sequence if page else after_sequence, len(entries) > limit, len(page))
 
     def get_usage(self, *, since_sequence: int = 0, until_sequence: int | None = None) -> SessionUsageReport:
         _ = since_sequence, until_sequence
@@ -224,3 +259,39 @@ def test_event_identity_is_preserved_in_status_data(tmp_path: Path) -> None:
     assert result.data is not None
     assert isinstance(result.data["event_counts"], Mapping)
     assert result.data["revision_id"] == "rev"
+
+
+def test_usage_does_not_require_history_access(tmp_path: Path) -> None:
+    class UsageOnly:
+        get_usage = _FakeServices.get_usage
+
+        def get_budget(self):
+            return None
+
+    assert _result(tmp_path, "usage", UsageOnly()).status == "ok"
+
+
+def test_transcript_scan_passes_empty_pages_and_refuses_to_copy_a_stale_response(tmp_path: Path) -> None:
+    class Sparse(_FakeServices):
+        def __init__(self):
+            super().__init__()
+            self.cursors = []
+
+        def read_transcript(self, *, after_sequence=0, limit=100):
+            self.cursors.append(after_sequence)
+            if after_sequence == 0:
+                return TranscriptPage((), 200, True, 200)
+            return TranscriptPage((_TRANSCRIPT[1],), 201, False, 1)
+
+    sparse = Sparse()
+    copied = _result(tmp_path, "copy", sparse)
+    assert copied.status == "ok"
+    assert sparse.cursors == [0, 200]
+
+    class Capped(_FakeServices):
+        def read_transcript(self, *, after_sequence=0, limit=100):
+            return TranscriptPage((_TRANSCRIPT[1],) if after_sequence == 0 else (), after_sequence + limit, True, limit)
+
+    capped = _result(tmp_path, "copy", Capped())
+    assert capped.status == "error"
+    assert "cannot identify the last assistant response" in capped.error

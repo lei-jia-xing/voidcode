@@ -1,21 +1,19 @@
 """Session information panels: status, context, usage, export and copy.
 
 Every panel reads committed facts through the SDK's bounded session services
-(``read_events``, ``get_usage``, ``get_budget``); nothing here writes state or
+(``read_transcript``, header-only ``read_events``, ``get_usage``, ``get_budget``); nothing here writes state or
 touches storage directly.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
 
-from voidcode.sdk.codec import decode_provider_result, decode_tool_call, decode_tool_result
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
-from voidcode.sdk.hooks import RequestWindow
-from voidcode.sdk.provider import ProviderTurnResult
+from voidcode.sdk.provider import ProviderMessage, ProviderTurnResult
 from voidcode.sdk.services import EventView, PluginServices, SessionUsageReport
-from voidcode.sdk.tools import ToolCall, ToolFailure, ToolSuccess
+from voidcode.sdk.tools import ToolFailure, ToolSuccess
+from voidcode.sdk.transcript import TranscriptDispatch, TranscriptEntry, TranscriptRun, TranscriptTool
 
 #: One panel reads at most this many events, in pages of READ_PAGE events.
 MAX_EVENTS = 2000
@@ -44,18 +42,21 @@ class SessionInfoCommand:
         self._panel = panel
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
-        events, truncated = _read_events(services)
         usage = services.get_usage()
         if self._panel == "session_status":
+            events, truncated = _read_events(services)
             return _status(invocation, services, events, usage, truncated)
-        if self._panel == "context":
-            return _context(events, usage, truncated)
         if self._panel == "usage":
             return _usage(services, usage)
+        entries, truncated, source_events = _read_transcript(services)
+        if self._panel == "context":
+            return _context(entries, usage, truncated)
         if self._panel == "export":
-            return _export(events, usage, truncated)
+            return _export(entries, usage, truncated, source_events)
         if self._panel == "copy":
-            return _copy(events)
+            if truncated:
+                return CommandResult(status="error", error="transcript scan limit reached; cannot identify the last assistant response")
+            return _copy(entries)
         raise ValueError(f"unknown session_info panel: {self._panel}")
 
 
@@ -65,7 +66,7 @@ def _read_events(services: PluginServices) -> tuple[tuple[EventView, ...], bool]
     after = 0
     truncated = False
     while len(collected) < MAX_EVENTS:
-        page = services.read_events(after_sequence=after, limit=min(READ_PAGE, MAX_EVENTS - len(collected)), include_payload=True)
+        page = services.read_events(after_sequence=after, limit=min(READ_PAGE, MAX_EVENTS - len(collected)), include_payload=False)
         if not page:
             break
         collected.extend(page)
@@ -77,57 +78,18 @@ def _read_events(services: PluginServices) -> tuple[tuple[EventView, ...], bool]
     return tuple(collected), truncated
 
 
-def _assistant_turns(events: tuple[EventView, ...]) -> list[tuple[int, ProviderTurnResult]]:
-    turns: list[tuple[int, ProviderTurnResult]] = []
-    for event in events:
-        if event.event_type != "kernel.model_turn" or not isinstance(event.payload, Mapping):
-            continue
-        raw = event.payload.get("result")
-        if not isinstance(raw, Mapping):
-            continue
-        try:
-            turns.append((event.sequence, decode_provider_result(raw)))
-        except ValueError:
-            continue
-    return turns
-
-
-def _tool_calls(events: tuple[EventView, ...]) -> list[tuple[int, ToolCall | None, ToolSuccess | ToolFailure | None]]:
-    calls: list[tuple[int, ToolCall | None, ToolSuccess | ToolFailure | None]] = []
-    for event in events:
-        if event.event_type not in {"kernel.tool_completed", "kernel.tool_interrupted"} or not isinstance(event.payload, Mapping):
-            continue
-        call: ToolCall | None = None
-        result: ToolSuccess | ToolFailure | None = None
-        raw_call = event.payload.get("call")
-        if isinstance(raw_call, Mapping):
-            try:
-                call = decode_tool_call(raw_call)
-            except ValueError:
-                call = None
-        raw_result = event.payload.get("result")
-        if isinstance(raw_result, Mapping):
-            try:
-                result = decode_tool_result(raw_result)
-            except ValueError:
-                result = None
-        calls.append((event.sequence, call, result))
-    return calls
-
-
-def _latest_window(events: tuple[EventView, ...]) -> tuple[int, RequestWindow] | None:
-    """The most recent measured dispatch window, decoded from its intent event."""
-    for event in reversed(events):
-        if event.event_type != "kernel.provider_intent" or not isinstance(event.payload, Mapping):
-            continue
-        raw = event.payload.get("request_window")
-        if not isinstance(raw, Mapping):
-            continue
-        try:
-            return event.sequence, RequestWindow.from_payload(raw)
-        except KeyError, ValueError, TypeError:
-            continue
-    return None
+def _read_transcript(services: PluginServices) -> tuple[tuple[TranscriptEntry, ...], bool, int]:
+    entries: list[TranscriptEntry] = []
+    cursor = 0
+    scanned = 0
+    while scanned < MAX_EVENTS:
+        page = services.read_transcript(after_sequence=cursor, limit=min(READ_PAGE, MAX_EVENTS - scanned))
+        entries.extend(page.entries)
+        cursor = page.next_sequence
+        scanned += page.source_events
+        if not page.has_more:
+            return tuple(entries), False, scanned
+    return tuple(entries), True, scanned
 
 
 def _usage_payload(usage: SessionUsageReport) -> dict[str, object]:
@@ -176,8 +138,8 @@ def _status(
     return CommandResult(status="ok", output="\n".join(lines), data=data)
 
 
-def _context(events: tuple[EventView, ...], usage: SessionUsageReport, truncated: bool) -> CommandResult:
-    window = _latest_window(events)
+def _context(entries: tuple[TranscriptEntry, ...], usage: SessionUsageReport, truncated: bool) -> CommandResult:
+    window = next(((entry.sequence, entry.content.window) for entry in reversed(entries) if isinstance(entry.content, TranscriptDispatch)), None)
     data: dict[str, object] = {
         "events_window_truncated": truncated,
         "measured_input_tokens": usage.input_tokens,
@@ -237,55 +199,45 @@ def _usage(services: PluginServices, usage: SessionUsageReport) -> CommandResult
     return CommandResult(status="ok", output="\n".join(lines), data=data)
 
 
-def _export(events: tuple[EventView, ...], usage: SessionUsageReport, truncated: bool) -> CommandResult:
+def _export(entries: tuple[TranscriptEntry, ...], usage: SessionUsageReport, truncated: bool, source_events: int) -> CommandResult:
     lines = [
         "# Session export",
         "",
-        f"- events: {len(events)}" + (" (window truncated)" if truncated else ""),
+        f"- events: {source_events}" + (" (window truncated)" if truncated else ""),
         f"- turns: {usage.turn_count}",
         f"- input tokens: {usage.input_tokens}, output tokens: {usage.output_tokens}, cost usd: {usage.total_cost_usd}",
         "",
     ]
-    for event in events:
-        lines.extend(_export_event(event))
+    for entry in entries:
+        lines.extend(_export_entry(entry))
     markdown = "\n".join(lines)
     if len(markdown) > _EXPORT_CHARS:
         markdown = markdown[:_EXPORT_CHARS] + "\n\n[export truncated]"
-    return CommandResult(status="ok", output=markdown, data={"events": len(events), "truncated": truncated or len(markdown) > _EXPORT_CHARS})
+    return CommandResult(status="ok", output=markdown, data={"events": source_events, "truncated": truncated or len(markdown) > _EXPORT_CHARS})
 
 
-def _export_event(event: EventView) -> list[str]:
-    payload = event.payload
-    if event.event_type == "kernel.user_message" and isinstance(payload, Mapping):
-        return ["## user", "", str(payload.get("content", "")), ""]
-    if event.event_type == "kernel.model_turn":
-        turns = _assistant_turns((event,))
-        if turns:
-            turn = turns[0][1]
-            block = [f"## assistant ({event.sequence})", "", turn.output or ""]
-            if turn.tool_calls:
-                block.append("")
-                block.extend(f"- tool: {call.tool_name} {json.dumps(dict(call.arguments), ensure_ascii=False)}" for call in turn.tool_calls)
+def _export_entry(entry: TranscriptEntry) -> list[str]:
+    content = entry.content
+    if isinstance(content, ProviderMessage):
+        return [f"## {content.role}", "", content.content or "", ""]
+    if isinstance(content, ProviderTurnResult):
+        block = [f"## assistant ({entry.sequence})", "", content.output or ""]
+        if content.tool_calls:
             block.append("")
-            return block
-    if event.event_type in {"kernel.tool_completed", "kernel.tool_interrupted"}:
-        calls = _tool_calls((event,))
-        if calls:
-            _, call, result = calls[0]
-            name = call.tool_name if call is not None else "unknown"
-            status = result.status if result is not None else "interrupted"
-            text = _result_text(result)
-            return [f"### tool {name} [{status}]", "", text, ""]
-    if event.event_type in {"kernel.run_completed", "kernel.run_failed", "kernel.run_interrupted"}:
-        return [f"> run {event.event_type.rsplit('.', 1)[-1]} at {event.sequence}", ""]
+            block.extend(f"- tool: {call.tool_name} {json.dumps(dict(call.arguments), ensure_ascii=False)}" for call in content.tool_calls)
+        return [*block, ""]
+    if isinstance(content, TranscriptTool):
+        status = "interrupted" if content.interrupted else content.result.status
+        return [f"### tool {content.call.tool_name} [{status}]", "", _result_text(content.result), ""]
+    if isinstance(content, TranscriptRun):
+        return [f"> run {content.status} at {entry.sequence}", ""]
     return []
 
 
-def _copy(events: tuple[EventView, ...]) -> CommandResult:
-    turns = _assistant_turns(events)
-    if not turns:
+def _copy(entries: tuple[TranscriptEntry, ...]) -> CommandResult:
+    last = next((entry.content for entry in reversed(entries) if isinstance(entry.content, ProviderTurnResult)), None)
+    if last is None:
         return CommandResult(status="error", error="no assistant response to copy from")
-    _, last = turns[-1]
     text = last.output or ""
     blocks = _fenced_blocks(text)
     if not blocks:
@@ -310,17 +262,6 @@ def _fenced_blocks(text: str) -> list[tuple[str | None, str]]:
             blocks.append((language, "\n".join(body).strip()))
         index += 1
     return blocks
-
-
-def _event_counts(events: tuple[EventView, ...]) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for event in events:
-        counts[event.event_type] = counts.get(event.event_type, 0) + 1
-    return counts
-
-
-def _tool_result_chars(result: object) -> int:
-    return len(_result_text(result))
 
 
 def _result_text(result: object) -> str:

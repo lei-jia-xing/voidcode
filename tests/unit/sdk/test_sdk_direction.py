@@ -40,3 +40,14 @@ def test_semantic_consumers_use_public_facts_instead_of_private_event_parsers() 
             if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.startswith("kernel."):
                 violations.append(f"{name}:{node.lineno}: private event name")
     assert not violations, "\n".join(violations)
+
+
+def test_session_panels_only_read_event_headers_and_use_public_transcript_types() -> None:
+    source = Path(__file__).resolve().parents[3] / "src/voidcode/plugins/session_info/panels.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            assert not node.value.startswith("kernel."), "session panels must not interpret private core event types"
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "read_events":
+            payload_flag = next((keyword.value for keyword in node.keywords if keyword.arg == "include_payload"), None)
+            assert isinstance(payload_flag, ast.Constant) and payload_flag.value is False
