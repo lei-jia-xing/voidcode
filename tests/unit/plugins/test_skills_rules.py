@@ -34,11 +34,9 @@ from voidcode.plugins.skills.skills_plugin import (
     SkillsContextProvider,
     create_plugin,
     skills_observer,
-    touched_paths_from_arguments,
 )
-from voidcode.sdk.hooks import InvocationFinishedFact, UsageFact
+from voidcode.sdk.hooks import FactPage, InvocationFinishedFact, UsageFact
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.services import EventView
 
 TRUNCATION_MARKER = "\n[Rule file truncated by runtime context policy]"
 FILE_RULE_PREFIX = "Runtime file rules are active for touched workspace paths."
@@ -50,16 +48,17 @@ class FakeServices:
 
     state: Mapping[str, object] | None = None
     version: int = 0
-    events: tuple[EventView, ...] = ()
+    events: tuple[InvocationFinishedFact, ...] = ()
     writes: list[tuple[Mapping[str, object], int]] = field(default_factory=list)
 
     def get_state(self, scope: Literal["session", "workspace"] = "session") -> tuple[Mapping[str, object] | None, int]:
         assert scope == "session"
         return self.state, self.version
 
-    def read_events(self, *, after_sequence: int = 0, limit: int = 100, include_payload: bool = True) -> tuple[EventView, ...]:
-        assert include_payload is True
-        return tuple(event for event in self.events if event.sequence > after_sequence)[:limit]
+    def read_facts(self, *, after_sequence: int = 0, limit: int = 100) -> FactPage:
+        remaining = tuple(event for event in self.events if event.event_sequence > after_sequence)
+        page = remaining[:limit]
+        return FactPage(page, page[-1].event_sequence if page else after_sequence, len(remaining) > limit)
 
     def replace_state(self, state: Mapping[str, object], expected_version: int, scope: Literal["session", "workspace"] = "session") -> int:
         assert scope == "session"
@@ -358,29 +357,6 @@ def test_rulebook_prompt_context_is_verbatim_and_capped(tmp_path: Path) -> None:
 # --- Touched-path extraction and state ---
 
 
-def test_touched_paths_from_arguments_covers_every_named_argument_shape() -> None:
-    assert touched_paths_from_arguments({"path": "a.txt"}) == ("a.txt",)
-    assert touched_paths_from_arguments({"file_path": "b.txt"}) == ("b.txt",)
-    assert touched_paths_from_arguments({"target_path": "c.txt"}) == ("c.txt",)
-    assert touched_paths_from_arguments({"paths": ["one.txt", "two.txt"]}) == ("one.txt", "two.txt")
-    assert touched_paths_from_arguments({"paths": ("one.txt", "two.txt")}) == ("one.txt", "two.txt")
-    patch = (
-        "*** Begin Patch\n"
-        "*** Update File: sub/updated.txt\n"
-        "@@\n"
-        "*** Move to: sub/moved.txt\n"
-        "*** Add File: sub/added.txt\n"
-        "+hello\n"
-        "*** Delete File: sub/deleted.txt\n"
-        "*** End Patch"
-    )
-    assert touched_paths_from_arguments({"patch": patch}) == ("sub/updated.txt", "sub/added.txt", "sub/deleted.txt")
-    assert touched_paths_from_arguments({"input": patch}) == ("sub/updated.txt", "sub/added.txt", "sub/deleted.txt")
-    assert touched_paths_from_arguments({"path": "  spaced.txt  "}) == ("spaced.txt",)
-    assert touched_paths_from_arguments({"path": "", "paths": [], "patch": None, "content": "body"}) == ()
-    assert touched_paths_from_arguments({"paths": "not-an-array"}) == ()
-
-
 def test_rules_state_round_trips_and_rejects_unknown_keys_and_bad_types() -> None:
     assert RulesState.from_payload(None) == RulesState()
     assert RulesState(touched_paths=("a.txt",), cursor_sequence=3).to_payload() == {
@@ -403,29 +379,28 @@ def test_rules_state_round_trips_and_rejects_unknown_keys_and_bad_types() -> Non
             RulesState.from_payload(payload)
 
 
-def _intent_event(sequence: int, arguments: Mapping[str, object]) -> EventView:
-    return EventView(
-        sequence=sequence,
-        event_type="kernel.tool_intent",
+def _resource_fact(sequence: int, arguments: Mapping[str, object]) -> InvocationFinishedFact:
+    return InvocationFinishedFact(
+        session_id="session-1",
         run_id="run-1",
         revision_id="rev-1",
-        source="core",
-        actor="model",
-        payload={
-            "invocation_id": f"inv-{sequence}",
-            "call": {"tool_call_id": f"call-{sequence}", "tool_name": "write", "arguments": dict(arguments)},
-        },
+        logical_turn="turn",
+        event_sequence=sequence,
+        tool_name="custom_tool",
+        tool_call_id=None,
+        status="ok",
+        resource_paths=(str(arguments["path"]),) if "path" in arguments else (),
     )
 
 
 def test_observer_records_workspace_relative_paths_once_per_event(tmp_path: Path) -> None:
     services = FakeServices(
         events=(
-            EventView(sequence=1, event_type="kernel.user_message", run_id="run-1", revision_id="rev-1", source="core", actor="user"),
-            _intent_event(2, {"path": "sub/file.txt"}),
-            _intent_event(3, {"path": str(tmp_path / "absolute.txt")}),
-            _intent_event(4, {"path": "../outside.txt"}),
-            EventView(sequence=5, event_type="kernel.tool_completed", run_id="run-1", revision_id="rev-1", source="core", actor="model"),
+            _resource_fact(1, {}),
+            _resource_fact(2, {"path": "sub/file.txt"}),
+            _resource_fact(3, {"path": str(tmp_path / "absolute.txt")}),
+            _resource_fact(4, {"path": "../outside.txt"}),
+            _resource_fact(5, {}),
         )
     )
     skills_observer(_invocation_fact(event_sequence=5), _context(tmp_path), services)  # type: ignore[arg-type]
@@ -434,7 +409,7 @@ def test_observer_records_workspace_relative_paths_once_per_event(tmp_path: Path
     assert services.writes[0][1] == 0
 
     # A later notification consumes only what is new, and keeps recency order without duplicates.
-    services.events = services.events + (_intent_event(6, {"path": "sub/file.txt"}),)
+    services.events = services.events + (_resource_fact(6, {"path": "sub/file.txt"}),)
     skills_observer(_invocation_fact(event_sequence=6), _context(tmp_path), services)  # type: ignore[arg-type]
     assert services.state == {"schema_version": 1, "cursor_sequence": 6, "touched_paths": ["absolute.txt", "sub/file.txt"]}
     assert len(services.writes) == 2
@@ -445,7 +420,7 @@ def test_observer_records_workspace_relative_paths_once_per_event(tmp_path: Path
 
 
 def test_observer_ignores_other_facts_and_keeps_the_most_recent_paths(tmp_path: Path) -> None:
-    services = FakeServices(events=tuple(_intent_event(index + 1, {"path": f"touched/{index}.txt"}) for index in range(TOUCHED_PATHS_LIMIT + 5)))
+    services = FakeServices(events=tuple(_resource_fact(index + 1, {"path": f"touched/{index}.txt"}) for index in range(TOUCHED_PATHS_LIMIT + 5)))
     skills_observer(
         UsageFact(
             session_id="session-1",

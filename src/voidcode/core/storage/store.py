@@ -1624,6 +1624,17 @@ class SqliteStore:
                 current_seq = curr_seq
                 first_sequence_by_type: dict[str, int] = {}
                 for draft in events:
+                    if draft.event_type == "kernel.window_projected":
+                        projection = draft.payload
+                        self.set_window_projection(
+                            session_id,
+                            str(projection["owner"]),
+                            covered_from_sequence=cast(int, projection["covered_from_sequence"]),
+                            covered_to_sequence=cast(int, projection["covered_to_sequence"]),
+                            replacement=str(projection["replacement"]),
+                            covered_bytes=cast(int, projection["covered_bytes"]),
+                            dropped_bytes=cast(int, projection["dropped_bytes"]),
+                        )
                     current_seq += 1
                     first_sequence_by_type.setdefault(draft.event_type, current_seq)
                     payload_json = canonical_json(draft.payload)
@@ -1920,6 +1931,17 @@ class SqliteStore:
                 current_seq = curr_seq
                 first_sequence_by_type: dict[str, int] = {}
                 for draft in events:
+                    if draft.event_type == "kernel.window_projected":
+                        projection = draft.payload
+                        self.set_window_projection(
+                            session_id,
+                            str(projection["owner"]),
+                            covered_from_sequence=cast(int, projection["covered_from_sequence"]),
+                            covered_to_sequence=cast(int, projection["covered_to_sequence"]),
+                            replacement=str(projection["replacement"]),
+                            covered_bytes=cast(int, projection["covered_bytes"]),
+                            dropped_bytes=cast(int, projection["dropped_bytes"]),
+                        )
                     current_seq += 1
                     first_sequence_by_type.setdefault(draft.event_type, current_seq)
                     self._connection.execute(

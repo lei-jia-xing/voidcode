@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 from .json_values import json_wire_object, own_json_object
 
 if TYPE_CHECKING:
+    from .hooks import FactPage
     from .tools import ToolDefinition
 
 
@@ -547,6 +548,15 @@ class PluginServices(Protocol):
 
     def cancel_wakeup(self, wakeup_id: str) -> bool:
         """Cancel a pending wakeup owned by this plugin (claimed wakeups are untouched)."""
+        ...
+
+    def read_facts(self, *, after_sequence: int = 0, limit: int = 100) -> FactPage:
+        """Read typed committed facts using the same decoder as live observers.
+
+        Limits count source events (1..200). Advance next_sequence even for empty
+        pages; has_more, not the fact count, determines whether to continue.
+        Recorded facts must satisfy the current contract; incomplete records raise.
+        """
         ...
 
     def read_events(

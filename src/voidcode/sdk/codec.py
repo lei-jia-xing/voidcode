@@ -20,6 +20,7 @@ from .tools import (
     OpaqueToolBody,
     OutputBounds,
     ReadObservation,
+    ResourceChange,
     TextOutput,
     ToolCall,
     ToolDefinition,
@@ -148,6 +149,12 @@ class _ReadObservation(_WireModel):
     clipped: bool = False
 
 
+class _ResourceChange(_WireModel):
+    path: str = Field(min_length=1)
+    operation: Literal["create", "update", "delete", "move"] = "update"
+    old_path: str | None = None
+
+
 class _ToolResult(_WireModel):
     status: Literal["ok", "error"]
     tool_name: str = Field(min_length=1)
@@ -155,6 +162,7 @@ class _ToolResult(_WireModel):
     body: dict[str, object] | None = None
     #: Only ever sent by a read-shaped success; absent means "made no file visible".
     coverage: list[_ReadObservation] | None = None
+    changes: list[_ResourceChange] | None = None
     error: str | None = None
     diagnostics: ToolDiagnostics | None = None
     execution: _Execution | None = None
@@ -177,6 +185,8 @@ def encode_tool_result(result: ToolResult | Mapping[str, object]) -> dict[str, o
     }
     if isinstance(result, ToolSuccess) and result.coverage:
         payload["coverage"] = [observation.as_payload() for observation in result.coverage]
+    if isinstance(result, ToolSuccess) and result.changes:
+        payload["changes"] = [_encode(change) for change in result.changes]
     if isinstance(result, ToolFailure):
         execution = result.execution
         payload.update(
@@ -213,11 +223,13 @@ def decode_tool_result(payload: Mapping[str, object]) -> ToolResult:
             ReadObservation(item.path, item.content_hash, tuple(item.lines), item.line_count, item.whole_file, item.clipped)
             for item in wire.coverage or ()
         )
-        return ToolSuccess(wire.tool_name, decoded, body, coverage)
+        return ToolSuccess(
+            wire.tool_name, decoded, body, coverage, tuple(ResourceChange(item.path, item.operation, item.old_path) for item in wire.changes or ())
+        )
     if wire.error is None:
         raise ValueError("failure result requires an error")
-    if wire.coverage:
-        raise ValueError("failure result must not carry coverage")
+    if wire.coverage or wire.changes:
+        raise ValueError("failure result must not carry coverage or resource changes")
     execution = None
     if wire.execution is not None:
         observation = wire.execution

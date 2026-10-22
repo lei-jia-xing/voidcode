@@ -13,12 +13,14 @@ from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import (
     ConfirmedStop,
+    ResourceChange,
     TextOutput,
     ToolCall,
     ToolDefinition,
     ToolEffect,
     ToolFailure,
     ToolResult,
+    ToolSemantic,
     ToolSuccess,
 )
 
@@ -63,6 +65,7 @@ class WriteTool:
             "additionalProperties": False,
         },
         effects=frozenset({ToolEffect.WRITE}),
+        semantics=frozenset({ToolSemantic.RESOURCE_EDIT}),
         path_argument_keys=("path",),
         replay_policy="never",
     )
@@ -202,4 +205,5 @@ class WriteTool:
             self.definition.name,
             output=TextOutput(output_text),
             body=body,
+            changes=(ResourceChange(display_path, "create" if initial_stat is None else "update"),),
         )

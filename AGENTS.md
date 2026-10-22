@@ -22,7 +22,7 @@ graph LR
 ```
 
 - **SDK (`src/voidcode/sdk/`)**:
-  The only contract surface shared by the core and every plugin: plugin registration (`plugin.py`), tools (`tools.py`), commands (`commands.py`), invocation context (`invocation.py`), provider contracts (`provider.py`), hook/observer contracts (`hooks.py`), declarative views (`views.py`), scoped services (`services.py`), configuration parsing (`config.py`), typed optional queries (`queries.py`, `workspace_queries.py`), plus the shared JSON/limit helpers (`json_values.py`, `codec.py`, `limits.py`).
+  The only contract surface shared by the core and every plugin: plugin registration (`plugin.py`), tools (`tools.py`), commands (`commands.py`), invocation context (`invocation.py`), provider contracts (`provider.py`), hook/observer and paged durable-fact contracts (`hooks.py`), declarative views (`views.py`), scoped services (`services.py`), configuration parsing (`config.py`), typed optional queries (`queries.py`, `workspace_queries.py`), plus the shared JSON/limit helpers (`json_values.py`, `codec.py`, `limits.py`).
 - **Core (`src/voidcode/core/`)**:
   The product: `engine.py` runs governed turns over append-only events with durable native tool batches, approvals and confirmation gates; `bootstrap.py` owns configuration and the per-workspace state directory; `activation.py` admits configured plugin sources and switches revisions; `plugins.py` is the in-process plugin runtime that loads plugin packages and dispatches invocations by direct call; `services.py` binds scoped services to one invocation lease; `processes.py` owns child processes and supervised services; `storage/` owns the SQLite store and schema; `transport/` serves the HTTP/SSE API and the built web client; `tui/` is the inline-scrollback client; `coverage.py` tracks what a session's model has genuinely been shown.
 - **Bundled plugins (`src/voidcode/plugins/`)**:
@@ -144,3 +144,7 @@ codegraph node --path . --file src/voidcode/core/engine.py Core
 - [Coding Standards](./docs/coding-standards.md)
 - [Testing Policy](./docs/testing.md)
 - [Core & Plugin Contracts](./docs/contracts/README.md)
+
+## Public Facts
+
+Plugins consume typed SDK facts through observers or `PluginServices.read_facts()`, rather than classifying tool names or parsing private `kernel.*` payloads. Tools declare business semantics separately from governance effects and report actual resource observations on their results. Historical semantics come from the committed invocation, never the current catalog. See [public facts](./docs/contracts/facts.md) for paging, unknown historical metadata, and metric definitions.

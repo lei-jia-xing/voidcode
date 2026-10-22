@@ -7,8 +7,11 @@ from dataclasses import dataclass
 from typing import Literal
 
 from .provider import ProviderTokenUsage
+from .tools import ReadObservation, ResourceChange, ToolSemantic
 
-ObservedFactKind = Literal["usage", "invocation_finished", "run_finished"]
+ObservedFactKind = Literal[
+    "usage", "invocation_finished", "run_finished", "run_requested", "approval_requested", "child_spawned", "context_projected"
+]
 
 #: Canonical run status reported to observers.
 RunStatus = Literal["completed", "failed", "interrupted"]
@@ -71,6 +74,19 @@ class InvocationFinishedFact:
     owner: str = ""
     #: Declared effects the core governed this invocation under.
     effects: tuple[str, ...] = ()
+    #: Attribution and semantic observations frozen at completion. Consumers
+    #: must not consult the current catalog to reinterpret these facts.
+    model: str | None = None
+    semantics: tuple[ToolSemantic, ...] = ()
+    argument_bytes: int = 0
+    result_bytes: int = 0
+    truncated: bool = False
+    partial: bool = False
+    error_kind: str | None = None
+    has_retry_guidance: bool = False
+    reads: tuple[ReadObservation, ...] = ()
+    changes: tuple[ResourceChange, ...] = ()
+    resource_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,7 +103,64 @@ class RunFinishedFact:
     elapsed_seconds: float | None = None
 
 
-type PluginFact = UsageFact | InvocationFinishedFact | RunFinishedFact
+@dataclass(frozen=True, slots=True)
+class RunRequestedFact:
+    session_id: str
+    run_id: str
+    revision_id: str
+    logical_turn: str
+    event_sequence: int
+    resumed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalRequestedFact:
+    session_id: str
+    run_id: str
+    revision_id: str
+    logical_turn: str
+    event_sequence: int
+    request_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class ChildSpawnedFact:
+    session_id: str
+    run_id: str
+    revision_id: str
+    logical_turn: str
+    event_sequence: int
+    child_session_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class ContextProjectedFact:
+    session_id: str
+    run_id: str
+    revision_id: str
+    logical_turn: str
+    event_sequence: int
+    owner: str
+    covered_bytes: int
+    dropped_bytes: int
+
+
+type PluginFact = (
+    UsageFact | InvocationFinishedFact | RunFinishedFact | RunRequestedFact | ApprovalRequestedFact | ChildSpawnedFact | ContextProjectedFact
+)
+
+
+@dataclass(frozen=True, slots=True)
+class FactPage:
+    """One bounded source-event page; advance even when it contains no public facts.
+
+    One source event yields at most one fact. Its resources are nested observations,
+    so event_sequence is the stable identity and cannot skip sibling facts.
+    """
+
+    facts: tuple[PluginFact, ...]
+    next_sequence: int
+    has_more: bool
 
 
 @dataclass(frozen=True, slots=True)

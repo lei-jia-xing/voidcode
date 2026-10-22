@@ -10,11 +10,11 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from threading import Event, Lock
 from types import MappingProxyType
-from typing import Any, Literal, cast, get_args
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 import jsonschema
@@ -73,7 +73,9 @@ from .activation import (
 )
 from .artifacts import ArtifactStore
 from .child_history import spill_history
-from .coverage import model_result_text, read_coverage
+from .coverage import _target_paths, canonical_path, model_result_text, read_coverage
+from .facts import FACT_EVENT_TYPES as _FACT_EVENT_TYPES
+from .facts import fact_for_event
 from .plugins import LeaseContext, PluginRuntime, PluginSource, ToolInvocationOutcome
 from .storage.store import (
     Checkpoint,
@@ -153,6 +155,8 @@ _PARKED_INTERVENING_TYPES = frozenset(
         "kernel.tool_deferred",
         "kernel.tool_progress",
         "kernel.observer_error",
+        "kernel.window_projected",
+        "kernel.provider_interrupted",
         "kernel.activation_requested",
         "kernel.activation_committed",
         "kernel.activation_failed",
@@ -436,19 +440,6 @@ class _PreparedActivation:
     copies: StateCopyPlan
     source: str
     prepared_against: str
-
-
-#: Event types that carry a fact, by the subscription kind that governs delivery.
-_FACT_EVENT_TYPES: Mapping[str, str] = {
-    "kernel.provider_intent": "usage",
-    "kernel.model_turn": "usage",
-    "kernel.provider_interrupted": "usage",
-    "kernel.tool_completed": "invocation_finished",
-    "kernel.tool_interrupted": "invocation_finished",
-    "kernel.run_completed": "run_finished",
-    "kernel.run_failed": "run_finished",
-    "kernel.run_interrupted": "run_finished",
-}
 
 
 class Core:
@@ -3259,7 +3250,7 @@ class Core:
                 expected_run_id=session.run_id,
                 run_id=session.run_id or uuid4().hex,
                 revision_id=self.revision_id,
-                events=(event,),
+                events=self._stamp_fact_owners((event,)),
                 status=session.status,
                 checkpoint_kind=None,
                 checkpoint_payload=None,
@@ -3447,15 +3438,7 @@ class Core:
             if event.event_type == "kernel.provider_intent":
                 if event.sequence not in completed_dispatches:
                     pending.append(event)
-            elif event.event_type in {
-                "kernel.model_turn",
-                "kernel.provider_interrupted",
-                "kernel.tool_completed",
-                "kernel.tool_interrupted",
-                "kernel.run_completed",
-                "kernel.run_failed",
-                "kernel.run_interrupted",
-            }:
+            elif event.event_type in _FACT_EVENT_TYPES:
                 pending.append(event)
         return pending
 
@@ -3482,7 +3465,9 @@ class Core:
             )
             execution = _Execution(session, cursor, list(self.store.events(session.session_id)), session.run_id or uuid4().hex)
             for ev in pending:
-                self._deliver_fact_for_event(execution, ev, require_complete=require_complete, defer_to_candidate=defer_to_candidate)
+                if ev.event_type == "kernel.provider_intent":
+                    ev = self._record_unknown_dispatch(execution, ev)
+                self._deliver_facts(execution, (ev,), require_complete=require_complete, defer_to_candidate=defer_to_candidate)
 
     def _eligible_observers(self, event: StoredEvent) -> tuple[str, ...]:
         """Owners that subscribed this fact type when the event was produced.
@@ -3493,7 +3478,8 @@ class Core:
         owners = event.payload.get("eligible_owners")
         if not isinstance(owners, (list, tuple)) or not all(isinstance(owner, str) for owner in owners):
             raise ValueError(
-                f"cannot deliver event {event.sequence}: it carries no recorded eligible owners; this state predates this build's fact shape"
+                f"cannot deliver event {event.sequence}: it carries no recorded eligible owners; "
+                "the recorded fact does not satisfy the current contract"
             )
         return tuple(str(owner) for owner in owners)
 
@@ -3517,11 +3503,11 @@ class Core:
         *,
         require_complete: bool = False,
         defer_to_candidate: frozenset[str] = frozenset(),
-    ) -> None:
+    ) -> tuple[StoredEvent, ...]:
         """Notify exactly the owners this event's revision registered, then persist those receipts."""
         fact = self._fact_for(execution, ev)
         if fact is None:
-            return
+            return ()
         fact_type, fact_payload = fact
         session_id = ev.session_id
         with self._dispatch(f"observer:{fact_type}") as snapshot:
@@ -3542,7 +3528,7 @@ class Core:
                 )
             active = [o for o in eligible if o in registered and not self.store.has_observer_receipt(session_id, ev.sequence, o)]
             if not active:
-                return
+                return ()
             logical_turn = str(fact_payload.get("logical_turn", ""))
             obs_res = snapshot.plugin_runtime.notify_fact(fact_type, fact_payload, owners=tuple(active), logical_turn=logical_turn)
             receipts = tuple(ObserverReceiptRecord(event_sequence=ev.sequence, owner=o) for o in active)
@@ -3564,7 +3550,7 @@ class Core:
                             payload={"owner": err.get("owner"), "error": err.get("error")},
                         )
                     )
-            self._commit_staged_rebased(
+            committed = self._commit_staged_rebased(
                 execution,
                 status=execution.session.status,
                 kind=None,
@@ -3575,6 +3561,74 @@ class Core:
                 staged_budgets=tuple(staged_budget_updates),
                 observer_receipts=receipts,
             )
+            return committed
+
+    def _deliver_facts(
+        self,
+        execution: _Execution,
+        events: Sequence[StoredEvent],
+        *,
+        require_complete: bool = False,
+        defer_to_candidate: frozenset[str] = frozenset(),
+        tolerate_conflicts: bool = False,
+    ) -> None:
+        """One ordered delivery path for live commits, recovery and observer-produced facts."""
+        pending = list(events)
+        seen: set[int] = set()
+        for event in pending:
+            if event.sequence in seen or event.event_type not in _FACT_EVENT_TYPES:
+                continue
+            seen.add(event.sequence)
+            try:
+                committed = self._deliver_fact_for_event(
+                    execution,
+                    event,
+                    require_complete=require_complete,
+                    defer_to_candidate=defer_to_candidate,
+                )
+            except StoreConflict as exc:
+                if not tolerate_conflicts:
+                    raise
+                # The outcome is durable. Leave the receipt absent for recovery,
+                # and expose the rejected observer proposal without failing the run.
+                try:
+                    self._commit_staged_rebased(
+                        execution,
+                        status=execution.session.status,
+                        kind=None,
+                        events=(
+                            EventDraft(
+                                "kernel.observer_error",
+                                "plugin.observer",
+                                "plugin",
+                                {"owner": None, "error": f"observer proposals rejected: {exc}"},
+                            ),
+                        ),
+                    )
+                except StoreConflict, ValueError:
+                    pass
+                continue
+            pending.extend(committed)
+
+    def _record_unknown_dispatch(self, execution: _Execution, intent: StoredEvent) -> StoredEvent:
+        committed = self._commit_staged_rebased(
+            execution,
+            status=execution.session.status,
+            kind=None,
+            events=(
+                EventDraft(
+                    "kernel.provider_interrupted",
+                    "kernel",
+                    "kernel",
+                    {
+                        "dispatch_sequence": intent.sequence,
+                        "logical_turn": intent.payload.get("logical_turn", ""),
+                        "eligible_owners": list(self._eligible_observers(intent)),
+                    },
+                ),
+            ),
+        )
+        return committed[0]
 
     def _settle_unsettled_dispatches(self, execution: _Execution) -> None:
         """Settle dispatches of this run that never produced a completion event."""
@@ -3586,7 +3640,8 @@ class Core:
                     completed.add(int(dispatch_seq))
         for event in execution.events:
             if event.event_type == "kernel.provider_intent" and event.sequence not in completed:
-                self._deliver_fact_for_event(execution, event)
+                settled = self._record_unknown_dispatch(execution, event)
+                self._deliver_facts(execution, (settled,))
 
     @staticmethod
     def _assert_execution_prefix(execution: _Execution) -> int:
@@ -3743,7 +3798,7 @@ class Core:
         owners = self.plugin_runtime.observer_owners
         stamped: list[EventDraft] = []
         for event in events:
-            fact_type = _FACT_EVENT_TYPES.get(event.event_type)
+            fact_type = "usage" if event.event_type == "kernel.provider_intent" else _FACT_EVENT_TYPES.get(event.event_type)
             if fact_type is None or "eligible_owners" in event.payload:
                 stamped.append(event)
                 continue
@@ -3758,127 +3813,7 @@ class Core:
         return tuple(stamped)
 
     def _fact_for(self, execution: _Execution, ev: StoredEvent) -> tuple[str, dict[str, object]] | None:
-        if ev.event_type == "kernel.provider_intent":
-            # Never-settled dispatch: report an unknown-usage fact for exactly
-            # this intent so consumers see unknown, not a stale known total.
-            provider_name = ev.payload.get("provider")
-            model_name = ev.payload.get("model")
-            if not isinstance(provider_name, str) or not provider_name or not isinstance(model_name, str) or not model_name:
-                raise ValueError(f"provider intent at {ev.sequence} lacks an authentic provider/model identity")
-            # A dispatch with no completion event has no measured provider
-            # duration: elapsed stays unknown rather than counting dead-process
-            # downtime as observed provider seconds.
-            return "usage", {
-                "session_id": ev.session_id,
-                "run_id": ev.run_id,
-                "revision_id": ev.revision_id,
-                "logical_turn": str(ev.payload.get("logical_turn", "")),
-                "event_sequence": ev.sequence,
-                "dispatch_sequence": ev.sequence,
-                "provider_name": provider_name,
-                "model_name": model_name,
-                "usage": None,
-                "elapsed_seconds": None,
-                "cost_usd": None,
-            }
-        if ev.event_type in ("kernel.model_turn", "kernel.provider_interrupted"):
-            d_seq = ev.payload.get("dispatch_sequence")
-            disp_seq_val = int(d_seq) if isinstance(d_seq, (int, float)) else None
-            if disp_seq_val is None:
-                raise ValueError(f"usage fact at sequence {ev.sequence} has no dispatch sequence")
-            intent_ev = next(
-                (e for e in execution.events if e.sequence == disp_seq_val and e.event_type == "kernel.provider_intent"),
-                None,
-            )
-            if intent_ev is None:
-                raise ValueError(f"usage fact at sequence {ev.sequence} has no provider intent at {disp_seq_val}")
-            provider_name = intent_ev.payload.get("provider")
-            model_name = intent_ev.payload.get("model")
-            logical_turn = intent_ev.payload.get("logical_turn")
-            if not isinstance(provider_name, str) or not provider_name or not isinstance(model_name, str) or not model_name:
-                raise ValueError(f"provider intent at {disp_seq_val} lacks an authentic provider/model identity")
-            ms = ev.payload.get("elapsed_ms")
-            elapsed_sec = (ms / 1000.0) if ms is not None and isinstance(ms, (int, float)) else None
-            usage_payload: Mapping[str, object] | None = None
-            cost_usd: float | None = None
-            if ev.event_type == "kernel.model_turn":
-                turn = decode_provider_result(_wire_object(ev.payload["result"], "model turn"))
-                usage_payload = turn.usage.metadata_payload() if turn.usage else None
-                cost_usd = turn.usage.cost_usd if turn.usage is not None else None
-            return "usage", {
-                "session_id": ev.session_id,
-                "run_id": ev.run_id,
-                "revision_id": ev.revision_id,
-                "logical_turn": str(logical_turn) if isinstance(logical_turn, str) else "",
-                "event_sequence": ev.sequence,
-                "dispatch_sequence": disp_seq_val,
-                "provider_name": provider_name,
-                "model_name": model_name,
-                "usage": usage_payload,
-                "elapsed_seconds": elapsed_sec,
-                "cost_usd": cost_usd,
-            }
-        if ev.event_type in ("kernel.tool_completed", "kernel.tool_interrupted"):
-            call_data = ev.payload.get("call")
-            call_dict = call_data if isinstance(call_data, Mapping) else {}
-            res_data = ev.payload.get("result")
-            res_dict = res_data if isinstance(res_data, Mapping) else {}
-            tool_status = "error" if (ev.event_type == "kernel.tool_interrupted" or res_dict.get("status") == "error") else "ok"
-            owner = ""
-            effects: list[str] = []
-            invocation_id = ev.payload.get("invocation_id")
-            if isinstance(invocation_id, str):
-                intent_ev = next(
-                    (
-                        candidate
-                        for candidate in execution.events
-                        if candidate.event_type == "kernel.tool_intent" and candidate.payload.get("invocation_id") == invocation_id
-                    ),
-                    None,
-                )
-                if intent_ev is not None:
-                    raw_owner = intent_ev.payload.get("owner")
-                    owner = raw_owner if isinstance(raw_owner, str) else ""
-                    raw_effects = intent_ev.payload.get("effects")
-                    if isinstance(raw_effects, (list, tuple)):
-                        effects = [str(item) for item in raw_effects]
-            return "invocation_finished", {
-                "session_id": ev.session_id,
-                "run_id": ev.run_id,
-                "revision_id": ev.revision_id,
-                "logical_turn": str(ev.payload.get("logical_turn", "")),
-                "event_sequence": ev.sequence,
-                "tool_name": str(call_dict.get("tool_name", "")),
-                "tool_call_id": call_dict.get("tool_call_id"),
-                "status": tool_status,
-                "error": str(res_dict["error"]) if "error" in res_dict and res_dict["error"] is not None else None,
-                "owner": owner,
-                "effects": effects,
-            }
-        if ev.event_type in ("kernel.run_completed", "kernel.run_failed", "kernel.run_interrupted"):
-            if ev.event_type == "kernel.run_interrupted":
-                stop_cause = ev.payload.get("stop_cause")
-                if stop_cause not in get_args(StopCause):
-                    raise ValueError(f"interrupted run event at {ev.sequence} lacks an authentic stop cause")
-            elif ev.event_type == "kernel.run_failed":
-                stop_cause = "error"
-            else:
-                stop_cause = "completed"
-            # The originating process measured this duration and persisted it with
-            # the event; replaying a historical run must never re-measure it.
-            measured_ms = ev.payload.get("elapsed_ms")
-            elapsed_seconds = measured_ms / 1000.0 if isinstance(measured_ms, (int, float)) and not isinstance(measured_ms, bool) else None
-            return "run_finished", {
-                "session_id": ev.session_id,
-                "run_id": ev.run_id,
-                "revision_id": ev.revision_id,
-                "logical_turn": str(ev.payload.get("logical_turn", "")),
-                "event_sequence": ev.sequence,
-                "status": ev.event_type.replace("kernel.run_", ""),
-                "stop_cause": stop_cause,
-                "elapsed_seconds": elapsed_seconds,
-            }
-        return None
+        return fact_for_event(ev, execution.events)
 
     def _measured_run_elapsed_fields(self, execution: _Execution) -> dict[str, int]:
         """Stamp the duration this process actually measured for the run, if it dispatched at all."""
@@ -3909,6 +3844,7 @@ class Core:
         reserve_root: bool = False,
         checkpoint_bindings: Sequence[tuple[str, str]] = (),
     ) -> tuple[StoredEvent, ...]:
+        known_before = len(execution.events)
         new_events = self._commit_staged_rebased(
             execution,
             status=status,
@@ -3924,95 +3860,7 @@ class Core:
             completed_continuation_status=completed_continuation_status,
             start_turn=start_turn,
         )
-        # Each observed fact commits its own owner changes and receipts atomically,
-        # so the next fact callback reads the state its predecessor committed.
-        for ev in new_events:
-            if ev.event_type == "kernel.provider_intent":
-                # Intents settle only if they never complete; completions carry the fact.
-                continue
-            fact = self._fact_for(execution, ev)
-            if fact is None:
-                continue
-            fact_type, fact_payload = fact
-            eligible = self._eligible_observers(ev)
-            registered = self.plugin_runtime.observer_owners.get(fact_type, ())
-            missing = [owner for owner in eligible if owner not in registered]
-            if missing:
-                self._commit_staged_rebased(
-                    execution,
-                    status=execution.session.status,
-                    kind=None,
-                    events=(self._observer_gap_event(ev, missing),),
-                )
-            active_owners = [o for o in eligible if o in registered and not self.store.has_observer_receipt(ev.session_id, ev.sequence, o)]
-            if not active_owners:
-                continue
-            with self._dispatch(f"observer:{fact_type}") as snapshot:
-                obs_res = snapshot.plugin_runtime.notify_fact(
-                    fact_type,
-                    fact_payload,
-                    owners=tuple(active_owners),
-                    logical_turn=str(fact_payload.get("logical_turn", "")),
-                )
-                receipts = tuple(ObserverReceiptRecord(event_sequence=ev.sequence, owner=o) for o in active_owners)
-                staged_events: list[EventDraft] = []
-                staged_budget_updates: list[StagedBudgetUpdate] = []
-                if obs_res:
-                    staged_events.extend(obs_res.staged_events)
-                    for owner, b_val in obs_res.staged_budgets:
-                        if b_val == "clear":
-                            staged_budget_updates.append(StagedBudgetUpdate(owner=owner, action="clear"))
-                        elif isinstance(b_val, PluginBudget):
-                            staged_budget_updates.append(StagedBudgetUpdate(owner=b_val.owner, action="set", budget=b_val))
-                    for err in obs_res.errors:
-                        staged_events.append(
-                            EventDraft(
-                                "kernel.observer_error",
-                                source=f"plugin.{err.get('owner', 'observer')}",
-                                actor="plugin",
-                                payload={"owner": err.get("owner"), "error": err.get("error")},
-                            )
-                        )
-                    try:
-                        self._commit_staged_rebased(
-                            execution,
-                            status=execution.session.status,
-                            kind=None,
-                            events=tuple(staged_events),
-                            staged_state=obs_res.staged_state,
-                            staged_continuations=obs_res.staged_continuations,
-                            staged_cancellations=obs_res.staged_cancellations,
-                            staged_budgets=tuple(staged_budget_updates),
-                            observer_receipts=receipts,
-                        )
-                    except StoreConflict as exc:
-                        # The source fact (and any bill) is already durable; a losing
-                        # observer proposal must surface as an owned diagnostic rather
-                        # than failing the run or silently dropping the fact.
-                        try:
-                            self._commit_staged_rebased(
-                                execution,
-                                status=execution.session.status,
-                                kind=None,
-                                events=(
-                                    EventDraft(
-                                        "kernel.observer_error",
-                                        source="plugin.observer",
-                                        actor="plugin",
-                                        payload={"owner": None, "error": f"observer proposals rejected: {exc}"},
-                                    ),
-                                ),
-                                observer_receipts=(),
-                            )
-                        except StoreConflict, ValueError:
-                            pass
-                else:
-                    self._commit_staged_rebased(
-                        execution,
-                        status=execution.session.status,
-                        kind=None,
-                        observer_receipts=receipts,
-                    )
+        self._deliver_facts(execution, execution.events[known_before:], tolerate_conflicts=True)
         return new_events
 
     def _budget_admission(self, execution: _Execution) -> CoreResult | None:
@@ -4164,8 +4012,10 @@ class Core:
             return result
         return ToolSuccess(
             result.tool_name,
-            TextOutput("\n\n".join((text, *notes))),
+            TextOutput("\n\n".join((text, *notes)), bounds=result.output.bounds),
             result.body,
+            result.coverage,
+            result.changes,
         )
 
     @staticmethod
@@ -4739,6 +4589,7 @@ class Core:
                             "call": encode_tool_call(call),
                             "owner": snapshot.owner_of(call.tool_name),
                             "effects": sorted(effect.value for effect in definition.effects),
+                            "semantics": sorted(item.value for item in definition.semantics),
                             "replay_policy": definition.replay_policy_for(call.arguments),
                             "logical_turn": execution.cursor.logical_turn,
                             "depth": cursor.deferred_depth,
@@ -4879,12 +4730,59 @@ class Core:
         deferred = cursor.deferred_sequence is not None
         batch_sequence = cursor.deferred_sequence or cursor.batch_sequence
         invocation_id: str | None = None
+        intent: StoredEvent | None = None
         if cursor.intent_sequence is not None:
             intent = self._event(execution, cursor.intent_sequence, "kernel.tool_intent")
             raw_invocation = intent.payload.get("invocation_id")
             invocation_id = raw_invocation if isinstance(raw_invocation, str) else None
         cursor.intent_sequence = None
         cursor.approval_sequence = None
+        definition = self._snapshot.definitions.get(call.tool_name)
+        declaration = intent.payload if intent is not None else {}
+        diagnostic = result.diagnostics if isinstance(result, ToolFailure) else None
+        _, projection_clipped = model_result_text(result)
+        model_event = next(
+            (event for event in reversed(execution.events) if event.sequence == batch_sequence and event.event_type == "kernel.model_turn"), None
+        )
+        metadata: dict[str, object] = {
+            "semantics": declaration["semantics"] if intent is not None else [item.value for item in definition.semantics] if definition else [],
+            "model": model_event.payload.get("model") if model_event is not None else None,
+            "argument_bytes": len(canonical_json(dict(call.arguments)).encode("utf-8")),
+            "result_bytes": len(canonical_json(encode_tool_result(result)).encode("utf-8")),
+            "truncated": result.output.bounds.truncated or projection_clipped,
+            "partial": result.output.bounds.partial,
+            "error_kind": diagnostic.kind if diagnostic else None,
+            "has_retry_guidance": bool(diagnostic and diagnostic.guidance),
+            "reads": [],
+            "changes": [],
+            "resource_paths": [],
+            "owner": declaration["owner"] if intent is not None else self._snapshot.owner_of(call.tool_name) if definition else "",
+            "effects": declaration["effects"] if intent is not None else sorted(item.value for item in definition.effects) if definition else [],
+        }
+        paths = [item.path for item in result.coverage] if isinstance(result, ToolSuccess) else []
+        if isinstance(result, ToolSuccess):
+            paths.extend(item.path for item in result.changes)
+            paths.extend(item.old_path for item in result.changes if item.old_path is not None)
+        if definition is not None:
+            paths.extend(_target_paths(self.workspace, call.arguments, definition.path_argument_keys))
+        if isinstance(result, ToolSuccess):
+            metadata["reads"] = [
+                {
+                    **item.as_payload(),
+                    "path": item.path if item.path.startswith("voidcode://") else canonical_path(self.workspace, item.path),
+                    "clipped": item.clipped or projection_clipped,
+                }
+                for item in result.coverage
+            ]
+            metadata["changes"] = [
+                {
+                    **asdict(item),
+                    "path": item.path if item.path.startswith("voidcode://") else canonical_path(self.workspace, item.path),
+                    "old_path": canonical_path(self.workspace, item.old_path) if item.old_path is not None else None,
+                }
+                for item in result.changes
+            ]
+        metadata["resource_paths"] = sorted({str((self.workspace / path).resolve()) for path in paths if not path.startswith("voidcode://")})
         if deferred:
             cursor.deferred_sequence = None
             cursor.deferred_depth = 0
@@ -4902,6 +4800,7 @@ class Core:
             "batch_sequence": batch_sequence,
             "call": encode_tool_call(call),
             "result": encode_tool_result(result),
+            "fact_metadata": metadata,
             "logical_turn": execution.cursor.logical_turn,
         }
         if deferred:

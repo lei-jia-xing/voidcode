@@ -627,10 +627,6 @@ class SkillsCommand:
 TOUCHED_PATHS_LIMIT = 64
 RULES_STATE_SCHEMA_VERSION = 1
 _RULES_STATE_KEYS: frozenset[str] = frozenset({"schema_version", "cursor_sequence", "touched_paths"})
-_PATH_ARGUMENT_KEYS: tuple[str, ...] = ("path", "file_path", "target_path")
-_PATCH_ARGUMENT_KEYS: tuple[str, ...] = ("patch", "input")
-_PATCH_PATH_MARKERS: tuple[str, ...] = ("*** Update File:", "*** Add File:", "*** Delete File:")
-_TOOL_INTENT_EVENT_TYPE = "kernel.tool_intent"
 _EVENT_PAGE_SIZE = 200
 _MAX_EVENT_PAGES = 8
 
@@ -640,7 +636,7 @@ class RulesState:
     """Session-scope record of the workspace paths this session's tools touched.
 
     ``cursor_sequence`` is the last committed session event this owner consumed, so the
-    ``kernel.tool_intent`` reads that feed ``touched_paths`` stay forward-only and bounded.
+    public resource facts that feed ``touched_paths`` stay forward-only and bounded.
     """
 
     touched_paths: tuple[str, ...] = ()
@@ -674,32 +670,6 @@ class RulesState:
             "cursor_sequence": self.cursor_sequence,
             "touched_paths": list(self.touched_paths),
         }
-
-
-def touched_paths_from_arguments(arguments: Mapping[str, object]) -> tuple[str, ...]:
-    """Paths one tool invocation named, as written in its arguments."""
-    paths: list[str] = []
-
-    def add(value: object) -> None:
-        if isinstance(value, str) and value.strip():
-            paths.append(value.strip())
-
-    for key in _PATH_ARGUMENT_KEYS:
-        add(arguments.get(key))
-    for key in _PATCH_ARGUMENT_KEYS:
-        patch = arguments.get(key)
-        if not isinstance(patch, str):
-            continue
-        for line in patch.splitlines():
-            candidate = line.strip()
-            for marker in _PATCH_PATH_MARKERS:
-                if candidate.startswith(marker):
-                    add(candidate[len(marker) :])
-    raw_paths = arguments.get("paths")
-    if isinstance(raw_paths, (list, tuple)):
-        for entry in raw_paths:
-            add(entry)
-    return tuple(paths)
 
 
 def _workspace_relative_path(raw_path: str, *, workspace_root: Path) -> str | None:
@@ -738,27 +708,17 @@ def _load_rules_state(services: PluginServices) -> tuple[RulesState, int]:
         return RulesState(), version
 
 
-def _consume_tool_intents(state: RulesState, services: PluginServices) -> tuple[int, tuple[str, ...]]:
-    """Read the tool intents this owner has not consumed yet: new cursor plus their paths."""
+def _consume_resource_facts(state: RulesState, services: PluginServices) -> tuple[int, tuple[str, ...]]:
+    """Read committed resource observations without depending on event or tool names."""
     cursor = state.cursor_sequence
     found: list[str] = []
     for _ in range(_MAX_EVENT_PAGES):
-        events = services.read_events(after_sequence=cursor, limit=_EVENT_PAGE_SIZE, include_payload=True)
-        if not events:
-            break
-        for event in events:
-            if event.event_type != _TOOL_INTENT_EVENT_TYPE:
-                continue
-            payload = event.payload
-            call = payload.get("call") if isinstance(payload, Mapping) else None
-            arguments = call.get("arguments") if isinstance(call, Mapping) else None
-            # ponytail: the event read is payload-budgeted, so an argument set past the page's
-            # byte budget arrives truncated and this call contributes no paths. The cursor still
-            # advances (stalling it would re-read the same page forever).
-            if isinstance(arguments, Mapping):
-                found.extend(touched_paths_from_arguments(arguments))
-        cursor = max(cursor, max(event.sequence for event in events))
-        if len(events) < _EVENT_PAGE_SIZE:
+        page = services.read_facts(after_sequence=cursor, limit=_EVENT_PAGE_SIZE)
+        for fact in page.facts:
+            if isinstance(fact, InvocationFinishedFact):
+                found.extend(fact.resource_paths)
+        cursor = page.next_sequence
+        if not page.has_more:
             break
     return cursor, tuple(found)
 
@@ -768,7 +728,7 @@ def skills_observer(fact: PluginFact, context: ToolContext, services: PluginServ
     if not isinstance(fact, InvocationFinishedFact):
         return
     state, version = _load_rules_state(services)
-    cursor, raw_paths = _consume_tool_intents(state, services)
+    cursor, raw_paths = _consume_resource_facts(state, services)
     updated = _record_touched_paths(
         replace(state, cursor_sequence=cursor),
         workspace_root=context.workspace.resolve(strict=False),

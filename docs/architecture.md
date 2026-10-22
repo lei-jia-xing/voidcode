@@ -197,3 +197,5 @@ Workflow profiles also depend on visible tool capabilities rather than a fixed p
 Delegation and review select the available subset of their declared tools. An unavailable
 optional tool never causes a retry with the broader parent scope. See
 [optional query contracts](contracts/optional-queries.md) for provider authoring and failure semantics.
+
+Plugin observers and historical projections share [public SDK facts](./contracts/facts.md). Tool names identify dispatch; tool declarations and result observations express business meaning. Governance effects remain separate. Effectiveness and skills consume that contract without inspecting private event payloads or depending on file/delegation/compression plugin names.

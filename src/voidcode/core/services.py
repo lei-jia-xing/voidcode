@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
+from voidcode.sdk.hooks import FactPage
 from voidcode.sdk.json_values import own_json_object
 from voidcode.sdk.services import (
     CHILD_MESSAGE_OWNER,
@@ -77,6 +78,7 @@ class RuntimeServices:
             "get_state",
             "get_state_schema_version",
             "read_events",
+            "read_facts",
             "read_child_events",
             "session_info",
             "get_usage",
@@ -581,6 +583,9 @@ class RuntimeServices:
 
     def window_projection(self) -> Mapping[str, object] | None:
         lease = self._active_lease()
+        for event in reversed(lease.staged_events):
+            if event.event_type == "kernel.window_projected":
+                return dict(event.payload)
         record = self._runtime.require_store().window_projection(lease.session_id)
         return None if record is None else asdict(record)
 
@@ -639,6 +644,12 @@ class RuntimeServices:
         if lease.internal_restricted:
             raise PermissionError("Cannot cancel wakeups from a read-only service lease")
         return self._runtime.require_store().cancel_wakeup(str(wakeup_id), lease.owner)
+
+    def read_facts(self, *, after_sequence: int = 0, limit: int = 100) -> FactPage:
+        lease = self._active_lease()
+        if type(after_sequence) is not int or after_sequence < 0 or type(limit) is not int or not 1 <= limit <= 200:
+            raise ValueError("after_sequence must be >= 0 and limit within 1..200")
+        return self._runtime.fact_page(lease.session_id, after_sequence, limit)
 
     def read_events(
         self,

@@ -28,18 +28,25 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Final, Literal, cast
+from typing import Any, Final, Literal, cast, get_args
 from uuid import uuid4
 
 import jsonschema
+from pydantic import TypeAdapter
 
 from voidcode.sdk.commands import CommandDescriptor, CommandInvocation, CommandResult
 from voidcode.sdk.hooks import (
+    ApprovalRequestedFact,
+    ChildSpawnedFact,
     ContextContribution,
+    ContextProjectedFact,
+    FactPage,
     InvocationFinishedFact,
+    ObservedFactKind,
     PluginFact,
     RunFinishedFact,
     RunLifecycle,
+    RunRequestedFact,
     StopCause,
     ToolIntent,
     ToolOutcome,
@@ -68,6 +75,7 @@ from voidcode.sdk.tools import (
 from voidcode.sdk.views import PluginViewDescriptor
 
 from .artifacts import ArtifactStore
+from .facts import fact_for_event
 from .processes import ProcessRegistry
 from .services import RuntimeServices
 from .storage.store import (
@@ -462,8 +470,7 @@ class PluginRuntime:
         self._view_owners = {name: plugin_id for name, (_, plugin_id) in self._views.items()}
         self._context_owners = tuple(self._context_callbacks)
         self._observer_owners: dict[str, tuple[str, ...]] = {
-            fact_type: tuple(pid for _, obs_facts, pid in self._observers if fact_type in obs_facts)
-            for fact_type in ("usage", "invocation_finished", "run_finished")
+            fact_type: tuple(pid for _, obs_facts, pid in self._observers if fact_type in obs_facts) for fact_type in get_args(ObservedFactKind)
         }
 
     # ---- catalog accessors ----
@@ -683,19 +690,41 @@ class PluginRuntime:
                 results_covered += 1
         if calls_covered != results_covered:
             raise ValueError("a window projection must cover whole native tool batches")
-        covered_bytes = sum(len(canonical_json(dict(event.payload))) for event in covered)
+        covered_bytes = sum(len(canonical_json(dict(event.payload)).encode("utf-8")) for event in covered)
         replacement_bytes = len(replacement.encode("utf-8"))
         if replacement_bytes >= covered_bytes:
             raise ValueError("a window projection must be smaller than the window it replaces")
-        store.set_window_projection(
-            lease.session_id,
-            lease.owner,
-            covered_from_sequence=covered_from_sequence,
-            covered_to_sequence=covered_to_sequence,
-            replacement=replacement,
-            covered_bytes=covered_bytes,
-            dropped_bytes=covered_bytes - replacement_bytes,
+        lease.staged_events.append(
+            EventDraft(
+                "kernel.window_projected",
+                "kernel",
+                "plugin",
+                {
+                    "owner": lease.owner,
+                    "covered_from_sequence": covered_from_sequence,
+                    "covered_to_sequence": covered_to_sequence,
+                    "replacement": replacement,
+                    "covered_bytes": covered_bytes,
+                    "dropped_bytes": covered_bytes - replacement_bytes,
+                },
+            )
         )
+
+    def fact_page(self, session_id: str, after: int, limit: int) -> FactPage:
+        store = self.require_store()
+        source = store.events(session_id, after_sequence=after, limit=limit + 1)
+        page = source[:limit]
+        facts: list[PluginFact] = []
+        for event in page:
+            context = ()
+            dispatch = event.payload.get("dispatch_sequence")
+            if event.event_type in ("kernel.model_turn", "kernel.provider_interrupted") and type(dispatch) is int:
+                context = store.events(session_id, after_sequence=dispatch - 1, limit=1)
+            decoded = fact_for_event(event, context)
+            if decoded is not None:
+                kind, payload = decoded
+                facts.append(self._typed_fact(kind, payload, event.session_id, event.run_id, event.revision_id, str(payload.get("logical_turn", ""))))
+        return FactPage(tuple(facts), page[-1].sequence if page else after, len(source) > limit)
 
     def event_views(self, session_id: str, after: int, limit: int, include_payload: bool) -> tuple[EventView, ...]:
         """One bounded page of a session's events; the payload budget is shared by the page."""
@@ -1287,10 +1316,7 @@ class PluginRuntime:
             if call_id is not None and not isinstance(call_id, str):
                 raise ValueError("'tool_call_id' must be a string or null")
             raw_status = fact.get("status")
-            status: Literal["ok", "error", "cancelled"]
-            if raw_status in ("ok", "error", "cancelled"):
-                status = raw_status  # ty: ignore[invalid-assignment]
-            else:
+            if raw_status not in ("ok", "error", "cancelled"):
                 raise ValueError(f"Unknown invocation status: {raw_status!r}")
             error = fact.get("error")
             if error is not None and not isinstance(error, str):
@@ -1298,19 +1324,15 @@ class PluginRuntime:
             raw_effects = fact.get("effects", ())
             if not isinstance(raw_effects, (list, tuple)) or not all(isinstance(item, str) for item in raw_effects):
                 raise ValueError("'effects' must be a list of strings")
-            return InvocationFinishedFact(
-                session_id=session_id,
-                run_id=run_id,
-                revision_id=revision_id,
-                logical_turn=logical_turn,
-                event_sequence=_required_int(fact, "event_sequence"),
-                tool_name=_required_text(fact, "tool_name"),
-                tool_call_id=call_id,
-                status=status,
-                error=error,
-                owner=_optional_text(fact, "owner"),
-                effects=tuple(raw_effects),
-            )
+            return TypeAdapter(InvocationFinishedFact).validate_python(json_wire_object(fact))
+        extra_types = {
+            "run_requested": RunRequestedFact,
+            "approval_requested": ApprovalRequestedFact,
+            "child_spawned": ChildSpawnedFact,
+            "context_projected": ContextProjectedFact,
+        }
+        if fact_type in extra_types:
+            return TypeAdapter(extra_types[fact_type]).validate_python(json_wire_object(fact))
         if fact_type == "run_finished":
             stop_cause_payload = fact.get("stop_cause")
             if stop_cause_payload is not None and not isinstance(stop_cause_payload, str):

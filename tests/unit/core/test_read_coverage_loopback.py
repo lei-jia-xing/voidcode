@@ -12,6 +12,7 @@ from tests.fixtures.s5_plugin import PROBE_TOOL
 from tests.unit.core.test_nested_tools import _call, _configure, _open, _server, _turn
 from voidcode.core.engine import Core
 from voidcode.sdk.codec import decode_tool_result
+from voidcode.sdk.hooks import InvocationFinishedFact
 from voidcode.sdk.tools import TextOutput, ToolSuccess
 
 
@@ -92,6 +93,9 @@ def test_incomplete_or_model_clipped_result_grants_no_coverage(tmp_path: Path, f
             context = _context_body(core, result.session_id)
             assert context["read_paths"] == [] and context["read_lines"] == [] and context["read_whole_files"] == []
             assert context["read_hash"] is None
+            facts = core.plugin_runtime.fact_page(result.session_id, 0, 200).facts
+            observed = next(fact for fact in facts if isinstance(fact, InvocationFinishedFact) and fact.tool_call_id == "bounded")
             if "output_bytes" in flags:
+                assert observed.truncated is True and observed.reads[0].clipped is True
                 messages = server.requests[1]["messages"]
                 assert any("model projection truncated" in str(message.get("content")) for message in messages if message.get("role") == "tool")

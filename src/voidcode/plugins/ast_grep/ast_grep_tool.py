@@ -15,6 +15,7 @@ from voidcode.sdk.tools import (
     OpaqueToolBody,
     OutputBounds,
     OutputReference,
+    ResourceChange,
     TextOutput,
     ToolCall,
     ToolDefinition,
@@ -628,4 +629,5 @@ class AstGrepTool:
             tool_name=self.definition.name,
             output=output,
             body=OpaqueToolBody(result_body),
+            changes=tuple(ResourceChange(str(item["path"])) for item in file_results),
         )

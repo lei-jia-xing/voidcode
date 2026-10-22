@@ -28,3 +28,15 @@ def test_sdk_cannot_depend_on_implementation_layers() -> None:
                 if top not in sys.stdlib_module_names and top not in {"pydantic", "jsonschema"}:
                     violations.append(f"{source.name}: prohibited SDK dependency {target}")
     assert not violations, "\n".join(violations)
+
+
+def test_semantic_consumers_use_public_facts_instead_of_private_event_parsers() -> None:
+    plugins = Path(__file__).resolve().parents[3] / "src" / "voidcode" / "plugins"
+    violations: list[str] = []
+    for name in ("effectiveness/effectiveness_plugin.py", "skills/skills_plugin.py"):
+        for node in ast.walk(ast.parse((plugins / name).read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Attribute) and node.attr == "read_events":
+                violations.append(f"{name}:{node.lineno}: private event read")
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.startswith("kernel."):
+                violations.append(f"{name}:{node.lineno}: private event name")
+    assert not violations, "\n".join(violations)

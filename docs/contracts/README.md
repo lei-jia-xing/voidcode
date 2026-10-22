@@ -4,6 +4,8 @@ This directory contains the authoritative technical contracts for the VoidCode c
 
 ## Contracts
 
+- [`facts.md`](./facts.md): Typed durable observations, tool semantics, historical paging, and effectiveness metrics.
+
 - [`optional-queries.md`](./optional-queries.md): Typed, optional plugin collaboration, replacement providers, absence and failure behavior, and capability-based workflow scopes.
 
 - [`client-transport.md`](./client-transport.md): Core HTTP/SSE API, core CLI, inline TUI, and the web client: catalog/revision binding, view descriptors, event streams, and the two decision gates.

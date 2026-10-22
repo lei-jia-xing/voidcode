@@ -6,16 +6,19 @@ import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from unidiff import PatchSet
 from unidiff.errors import UnidiffParseError
 
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
-from voidcode.sdk.tools import TextOutput, ToolSuccess
+from voidcode.sdk.tools import ResourceChange, TextOutput, ToolSuccess
 
 from .guards import enforce_read_before_write, enforce_seen_lines, enforce_seen_whole_file
 from .repair import format_text_repair_hints, raise_tool_diagnostic
+
+_CHANGE_OPERATIONS: dict[str, Literal["create", "update", "delete", "move"]] = {"A": "create", "M": "update", "D": "delete", "R": "move"}
 
 
 @dataclass(frozen=True)
@@ -563,6 +566,7 @@ def _apply_marker_patch(
         tool_name=tool_name,
         output=TextOutput("\n".join(summary_lines)),
         body=ApplyPatchResultBody(changes=tuple(changes), count=len(changes)),
+        changes=tuple(ResourceChange(c.path, _CHANGE_OPERATIONS[c.status], c.old_path) for c in changes),
     )
 
 
@@ -1232,6 +1236,9 @@ def execute_patch(
         return ToolSuccess(
             tool_name=tool_name,
             output=TextOutput(content),
+            changes=tuple(
+                ResourceChange(c.path, _CHANGE_OPERATIONS[c.status], c.old_path) for c in (_patch_change_from_payload(change) for change in changes)
+            ),
             body=ApplyPatchResultBody(
                 changes=tuple(_patch_change_from_payload(change) for change in changes),
                 count=len(changes),

@@ -254,7 +254,7 @@ def test_parked_approval_blocks_a_revision_change_before_downtime(tmp_path: Path
         first = supervisor.health()
         assert supervisor.close() == 0
 
-        # Park a real approval: a revision-changing upgrade must refuse before anything stops.
+        # Park an approval checkpoint: a revision-changing upgrade must refuse before anything stops.
         with SqliteStore(state_dir / "kernel-v1.sqlite3") as store:
             revision = store.workspace_current(str(workspace))
             assert revision is not None
@@ -265,10 +265,10 @@ def test_parked_approval_blocks_a_revision_change_before_downtime(tmp_path: Path
                 expected_run_id=None,
                 run_id="run-parked",
                 revision_id=revision,
-                events=(EventDraft("kernel.approval_requested", "core", "core", {"request_id": "req-1", "command": "x"}),),
+                events=(EventDraft("kernel.approval_requested", "core", "core", {"request_id": "req-1", "command": "x", "eligible_owners": []}),),
                 status="waiting",
                 checkpoint_kind="approval_wait",
-                checkpoint_payload={"approval_request_id": "req-1"},
+                checkpoint_payload={"approval_sequence": 1},
             )
         candidate = _candidate_copy(state_dir, marker="candidate marker: blocked drain")
 
@@ -299,7 +299,7 @@ def test_parked_approval_blocks_a_revision_change_before_downtime(tmp_path: Path
                 assert parked.status == "waiting"
                 checkpoint = store.checkpoint("parked-session")
                 assert checkpoint is not None
-                assert checkpoint.payload.get("approval_request_id") == "req-1"
+                assert checkpoint.payload.get("approval_sequence") == 1
         finally:
             blocked.close()
     finally:

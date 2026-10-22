@@ -11,7 +11,7 @@ from typing import ClassVar
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.services import PluginServices
-from voidcode.sdk.tools import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess
+from voidcode.sdk.tools import ResourceChange, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSemantic, ToolSuccess
 
 from .apply_patch import execute_patch
 from .guards import CharProvenanceTracker, enforce_read_before_write, enforce_seen_lines
@@ -381,6 +381,7 @@ class EditTool:
             "additionalProperties": False,
         },
         effects=frozenset({ToolEffect.WRITE}),
+        semantics=frozenset({ToolSemantic.RESOURCE_EDIT}),
         path_argument_keys=("path",),
     )
 
@@ -582,6 +583,7 @@ class EditTool:
         return ToolSuccess(
             self.definition.name,
             output=TextOutput(content),
+            changes=(ResourceChange(display_path),),
             body=EditResultBody(
                 path=display_path,
                 additions=additions,
@@ -699,6 +701,7 @@ class EditTool:
         return ToolSuccess(
             self.definition.name,
             output=TextOutput(output),
+            changes=(ResourceChange(display_path),),
             body=EditResultBody(
                 path=display_path,
                 additions=additions,

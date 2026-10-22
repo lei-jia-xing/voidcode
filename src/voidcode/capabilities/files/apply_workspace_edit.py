@@ -14,7 +14,18 @@ from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.queries import QueryContractError
 from voidcode.sdk.services import PluginServices, QueryUnavailable
-from voidcode.sdk.tools import TextOutput, ToolCall, ToolDefinition, ToolDiagnostics, ToolEffect, ToolFailure, ToolResult, ToolSuccess
+from voidcode.sdk.tools import (
+    ResourceChange,
+    TextOutput,
+    ToolCall,
+    ToolDefinition,
+    ToolDiagnostics,
+    ToolEffect,
+    ToolFailure,
+    ToolResult,
+    ToolSemantic,
+    ToolSuccess,
+)
 from voidcode.sdk.workspace_queries import DOCUMENT_STATES, DocumentState, DocumentStateRequest
 
 from .guards import enforce_seen_lines
@@ -152,6 +163,7 @@ class ApplyWorkspaceEditTool:
             "additionalProperties": False,
         },
         effects=frozenset({ToolEffect.WRITE}),
+        semantics=frozenset({ToolSemantic.RESOURCE_EDIT}),
         path_argument_keys=("edits[].path",),
     )
 
@@ -382,6 +394,7 @@ class ApplyWorkspaceEditTool:
         return ToolSuccess(
             tool_name=self.definition.name,
             output=TextOutput(f"Applied {len(args.edits)} workspace edit(s)."),
+            changes=tuple(ResourceChange(path) for path in sorted(set(display_paths))),
             body=ApplyWorkspaceEditResultBody(
                 paths=tuple(sorted(set(display_paths))),
                 files=tuple(file_results),

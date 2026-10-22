@@ -150,6 +150,31 @@ class ToolDiagnostics:
         return cls(details=details, **values)
 
 
+class ToolSemantic(StrEnum):
+    """Business meaning, independent of governance effects and tool names."""
+
+    RESOURCE_EDIT = "resource.edit"
+
+
+@dataclass(frozen=True, slots=True)
+class ResourceChange:
+    """A successful tool's actual resource change, attributed by the core at commit."""
+
+    path: str
+    operation: Literal["create", "update", "delete", "move"] = "update"
+    old_path: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.path, str) or not self.path:
+            raise ValueError("resource change requires a non-empty path")
+        if self.operation not in {"create", "update", "delete", "move"}:
+            raise ValueError("invalid resource change operation")
+        if self.old_path is not None and (not isinstance(self.old_path, str) or not self.old_path):
+            raise ValueError("old_path must be a non-empty string or None")
+        if self.operation == "move" and not self.old_path:
+            raise ValueError("resource move requires old_path")
+
+
 @dataclass(frozen=True, slots=True)
 class ToolDefinition:
     name: str
@@ -161,11 +186,13 @@ class ToolDefinition:
     # tools default to never replay unless they explicitly opt in.
     replay_policy: ToolReplayPolicy | None = None
     supports_parallel: bool = False
+    semantics: frozenset[ToolSemantic] = frozenset()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "input_schema", own_json_object(self.input_schema))
         if not isinstance(self.effects, frozenset):
             object.__setattr__(self, "effects", frozenset(ToolEffect(e) if isinstance(e, str) else e for e in self.effects))
+        object.__setattr__(self, "semantics", frozenset(ToolSemantic(item) for item in self.semantics))
         if not isinstance(self.path_argument_keys, tuple):
             object.__setattr__(self, "path_argument_keys", tuple(self.path_argument_keys))
         if self.replay_policy == "safe" and any(
@@ -357,6 +384,7 @@ class ToolSuccess[Body: ToolBody]:
     body: Body | None = None
     #: File versions this success made visible; empty for a result that observed no file.
     coverage: tuple[ReadObservation, ...] = ()
+    changes: tuple[ResourceChange, ...] = ()
 
     status: ClassVar[Literal["ok"]] = "ok"
 
