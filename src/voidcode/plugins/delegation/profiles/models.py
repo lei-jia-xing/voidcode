@@ -160,7 +160,10 @@ class AgentManifest:
     fallback_models: tuple[str, ...] = ()
     tool_allowlist: tuple[str, ...] = ()
     skill_refs: tuple[str, ...] = ()
-    preset_hook_refs: tuple[str, ...] = ()
+    #: Child read-only stance. Builtins declare it; customs have no stance field so they parse
+    #: as False (spawn still ORs the parent lease, so a read-only parent keeps a custom child
+    #: read-only). Never inferred from tool names.
+    readonly: bool = False
     mcp_binding: AgentMcpBindingIntent | None = None
     top_level_selectable: bool = False
     prompt_materialization: AgentPromptMaterialization | None = None
@@ -182,12 +185,14 @@ class AgentManifest:
             value = getattr(self, field_name)
             if value is not None and (not isinstance(value, str) or not value.strip()):
                 raise ValueError(f"agent manifest {field_name} must be non-empty")
-        for field_name in ("fallback_models", "tool_allowlist", "skill_refs", "preset_hook_refs"):
+        for field_name in ("fallback_models", "tool_allowlist", "skill_refs"):
             values = getattr(self, field_name)
             if not isinstance(values, tuple) or any(not isinstance(value, str) or not value.strip() for value in values):
                 raise ValueError(f"agent manifest {field_name} must be a tuple of non-empty strings")
         if type(self.top_level_selectable) is not bool:
             raise ValueError("agent top_level_selectable must be a boolean")
+        if type(self.readonly) is not bool:
+            raise ValueError("agent readonly must be a boolean")
 
     def to_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -212,8 +217,8 @@ class AgentManifest:
             payload["tool_allowlist"] = list(self.tool_allowlist)
         if self.skill_refs:
             payload["skill_refs"] = list(self.skill_refs)
-        if self.preset_hook_refs:
-            payload["preset_hook_refs"] = list(self.preset_hook_refs)
+        if self.readonly:
+            payload["readonly"] = True
         if self.mcp_binding is not None:
             payload["mcp_binding"] = self.mcp_binding.to_payload()
         if self.prompt_materialization is not None:
@@ -230,6 +235,9 @@ class AgentManifest:
         raw_selectable = payload.get("top_level_selectable", False)
         if type(raw_selectable) is not bool:
             raise ValueError("AgentManifest payload 'top_level_selectable' must be a boolean")
+        raw_readonly = payload.get("readonly", False)
+        if type(raw_readonly) is not bool:
+            raise ValueError("AgentManifest payload 'readonly' must be a boolean")
         mcp_payload = payload.get("mcp_binding")
         mcp_binding = None
         if mcp_payload is not None:
@@ -274,8 +282,8 @@ class AgentManifest:
             fallback_models=_parse_tuple("fallback_models"),
             tool_allowlist=_parse_tuple("tool_allowlist"),
             skill_refs=_parse_tuple("skill_refs"),
-            preset_hook_refs=_parse_tuple("preset_hook_refs"),
             mcp_binding=mcp_binding,
             top_level_selectable=raw_selectable,
+            readonly=raw_readonly,
             prompt_materialization=prompt_materialization,
         )

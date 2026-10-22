@@ -693,10 +693,10 @@ def test_an_unknown_process_id_fails_clearly(tmp_path: Path, arguments: Mapping[
         {"op": "stop"},
     ],
 )
-def test_invalid_arguments_fail_with_the_legacy_message(tmp_path: Path, arguments: Mapping[str, object]) -> None:
+def test_invalid_arguments_fail_before_touching_services(tmp_path: Path, arguments: Mapping[str, object]) -> None:
     services = _FakeServices()
 
-    with pytest.raises(ValueError, match="background_process Validation error"):
+    with pytest.raises(ValueError):
         _invoke(arguments, tmp_path, services)
 
     assert services.names() == []

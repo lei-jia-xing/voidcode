@@ -45,7 +45,7 @@ graph TD
     subgraph Plugins["Bundled plugins (src/voidcode/plugins/)"]
         Files["files · ast_grep · exec"]
         Model["providers · session_info"]
-        Product["goal · plan · todo · skills · agents · review · delegation · btw · cron · compaction · hooks · user_shell · effectiveness · mcp · lsp · web"]
+        Product["goal · plan · todo · skills · review · delegation · btw · cron · compaction · hooks · user_shell · effectiveness · mcp · lsp · web"]
     end
 
     SDK["SDK contracts (src/voidcode/sdk/): plugin · tools · commands · services · provider · hooks · views · invocation"]
@@ -103,9 +103,8 @@ Each plugin directory is a Python package admitted by the same rules as a third-
 | `todo` | `todo` tool, `/todo`, `/todo.clear` |
 | `plan` | `/plan`, `/plan.off`, `/plan.status` collaboration mode |
 | `skills` | `skill` tool and `/skills` |
-| `agents` | `/agents`, `/agents.show` profiles |
 | `review` | `/review` |
-| `delegation` | `task`, `task_batch` (agent-facing delegation) |
+| `delegation` | `task`, `task_batch` (agent-facing delegation) plus `/agents`, `/agents.show` profiles |
 | `btw` | `/btw` side question |
 | `cron` | `cron_create`, `cron_delete`, `cron_list`, `/loop` |
 | `compaction` | `/compact` context compaction |

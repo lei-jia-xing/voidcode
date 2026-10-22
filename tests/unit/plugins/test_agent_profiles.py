@@ -1,4 +1,4 @@
-"""Unit tests for the agents plugin: builtin profiles, discovery, prompt materialization."""
+"""Unit tests for the delegation-owned profile registry: builtins, discovery, rendering."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ from typing import Literal, cast
 
 import pytest
 
-from voidcode.plugins.agents.agent_plugin import AgentsCommand, AgentShowCommand, create_plugin
-from voidcode.plugins.agents.builtin import (
+from voidcode.plugins.delegation.delegation_plugin import create_plugin
+from voidcode.plugins.delegation.profiles.builtin import (
     DEFAULT_AGENT_MANIFEST,
     EXECUTE_AGENT_MANIFEST,
     EXPLORE_AGENT_MANIFEST,
@@ -21,13 +21,14 @@ from voidcode.plugins.agents.builtin import (
     list_builtin_agent_manifests,
     validate_builtin_agent_manifests,
 )
-from voidcode.plugins.agents.models import AgentManifest, AgentPromptMaterialization
-from voidcode.plugins.agents.prompts import (
+from voidcode.plugins.delegation.profiles.commands import AgentsCommand, AgentShowCommand
+from voidcode.plugins.delegation.profiles.models import AgentManifest, AgentPromptMaterialization
+from voidcode.plugins.delegation.profiles.prompts import (
     is_builtin_prompt_profile,
     render_agent_prompt,
     render_builtin_prompt_profile,
 )
-from voidcode.plugins.agents.registry import (
+from voidcode.plugins.delegation.profiles.registry import (
     agent_manifest_id_from_name,
     is_valid_agent_manifest_id,
     load_agent_manifest_registry,
@@ -35,7 +36,6 @@ from voidcode.plugins.agents.registry import (
     project_agent_manifest_dir,
     user_agent_manifest_dir,
 )
-from voidcode.plugins.delegation.presets import PRESETS
 from voidcode.sdk.commands import CommandInvocation
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices
@@ -121,7 +121,6 @@ def test_builtin_manifests_expose_exact_allowlists_and_refs() -> None:
     assert tuple(manifest.id for manifest in manifests) == ("default", "execute", "review", "explore", "research", "plan")
     for manifest in manifests:
         assert manifest.tool_allowlist == _EXPECTED_TOOL_ALLOWLISTS[manifest.id]
-        assert manifest.preset_hook_refs == ("delegation_guard",)
         assert manifest.source_scope == "builtin"
         assert manifest.skill_refs == ()
         assert manifest.fallback_models == ()
@@ -149,16 +148,12 @@ def test_builtin_allowlists_name_only_admitted_tools() -> None:
     assert "mcp" in EXECUTE_AGENT_MANIFEST.tool_allowlist
 
 
-def test_delegated_manifests_match_the_delegation_presets() -> None:
-    """The two copies of a delegated profile's scope (agents manifest, delegation preset) agree."""
-    presets = {preset.id: preset for preset in PRESETS}
-    for manifest in list_builtin_agent_manifests():
-        preset = presets.get(manifest.id)
-        if preset is None:
-            continue
-        assert manifest.tool_allowlist == preset.tool_allowlist
-        assert manifest.prompt_materialization is not None
-        assert render_agent_prompt(manifest.prompt_materialization) == preset.prompt_body
+def test_builtin_readonly_stance_lives_on_the_manifest() -> None:
+    """Review/explore/research/plan children stay read-only; execute and default do not."""
+    assert EXECUTE_AGENT_MANIFEST.readonly is False
+    assert DEFAULT_AGENT_MANIFEST.readonly is False
+    for manifest in (REVIEW_AGENT_MANIFEST, EXPLORE_AGENT_MANIFEST, RESEARCH_AGENT_MANIFEST, PLAN_AGENT_MANIFEST):
+        assert manifest.readonly is True
 
 
 def test_builtin_manifest_names_descriptions_and_modes() -> None:
@@ -224,19 +219,6 @@ def test_builtin_manifests_validate_and_reject_broken_records() -> None:
                     description="d",
                     prompt_profile="plan",
                     tool_allowlist=("read", "read"),
-                ),
-            )
-        )
-    with pytest.raises(ValueError, match="references unknown hook preset: ghost_guard"):
-        validate_builtin_agent_manifests(
-            (
-                AgentManifest(
-                    id="broken",
-                    name="Broken",
-                    mode="subagent",
-                    description="d",
-                    prompt_profile="plan",
-                    preset_hook_refs=("ghost_guard",),
                 ),
             )
         )
@@ -361,11 +343,7 @@ def test_frontmatter_framing_and_value_rejections(tmp_path: Path) -> None:
         _load_registry(workspace, xdg_config_home=xdg_config_home)
 
     (user_dir / "no-block.md").write_text(f"---\n{_custom_frontmatter(extra='preset_hook_refs: [ghost_guard]\n')}---\n\nbody\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="references unknown hook preset: ghost_guard; valid presets are: role_reminder"):
-        _load_registry(workspace, xdg_config_home=xdg_config_home)
-
-    (user_dir / "no-block.md").write_text(f"---\n{_custom_frontmatter(extra='preset_hook_refs: [""]\n')}---\n\nbody\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="frontmatter field 'preset_hook_refs\\[0\\]' must be a non-empty string"):
+    with pytest.raises(ValueError, match="unsupported frontmatter field 'preset_hook_refs'"):
         _load_registry(workspace, xdg_config_home=xdg_config_home)
 
 
@@ -441,7 +419,7 @@ def test_builtin_prompt_renders_exact_resource_text() -> None:
     assert is_builtin_prompt_profile("ghost") is False
     assert render_builtin_prompt_profile("ghost") is None
 
-    profiles_dir = resource_files("voidcode.plugins.agents").joinpath("profiles")
+    profiles_dir = resource_files("voidcode.plugins.delegation.profiles").joinpath("texts")
     for manifest in list_builtin_agent_manifests():
         profile = cast(str, manifest.prompt_profile)
         expected = profiles_dir.joinpath(f"{profile}.txt").read_text(encoding="utf-8").strip()
@@ -556,7 +534,7 @@ def test_agents_show_renders_builtin_prompt_and_rejects_unknown(tmp_path: Path, 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    review_prompt_resource = Path(__file__).resolve().parents[3] / "src" / "voidcode" / "plugins" / "agents" / "profiles" / "review.txt"
+    review_prompt_resource = Path(__file__).resolve().parents[3] / "src" / "voidcode" / "plugins" / "delegation" / "profiles" / "texts" / "review.txt"
     expected_prompt = review_prompt_resource.read_text(encoding="utf-8").strip()
     command = AgentShowCommand()
 
@@ -586,8 +564,8 @@ def test_agents_show_renders_builtin_prompt_and_rejects_unknown(tmp_path: Path, 
     assert missing.error == "agents.show requires a profile id"
 
 
-def test_create_plugin_registers_commands() -> None:
+def test_create_plugin_registers_commands_and_tools() -> None:
     plugin = create_plugin({})
     assert [command.definition.name for command in plugin.commands] == ["agents", "agents.show"]
-    assert plugin.tools == ()
+    assert [tool.definition.name for tool in plugin.tools] == ["task", "task_batch"]
     assert plugin.context is None

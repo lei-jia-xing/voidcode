@@ -67,23 +67,6 @@ class McpToolCallResult:
     is_error: bool = False
 
 
-@dataclass(frozen=True, slots=True)
-class McpRuntimeEvent:
-    """Static MCP runtime event - does not depend on runtime lifecycle."""
-
-    event_type: str
-    payload: dict[str, Any]
-
-
-# Event type names are part of the durable event contract (runtime/events.py);
-# the values stay byte-identical so existing consumers keep matching.
-RUNTIME_MCP_SERVER_STARTED = "runtime.mcp_server_started"
-RUNTIME_MCP_SERVER_REUSED = "runtime.mcp_server_reused"
-RUNTIME_MCP_SERVER_ACQUIRED = "runtime.mcp_server_acquired"
-RUNTIME_MCP_SERVER_STOPPED = "runtime.mcp_server_stopped"
-RUNTIME_MCP_SERVER_FAILED = "runtime.mcp_server_failed"
-
-
 # =============================================================================
 # Configuration (mirrors the runtime's RuntimeMcpServerConfig/RuntimeMcpConfig)
 # =============================================================================
@@ -309,9 +292,7 @@ class McpManager(Protocol):
         workspace: Any,
     ) -> McpToolCallResult: ...
 
-    def shutdown(self) -> tuple[McpRuntimeEvent, ...]: ...
-
-    def drain_events(self) -> tuple[McpRuntimeEvent, ...]: ...
+    def shutdown(self) -> None: ...
 
     def retry_connections(self, *, workspace: Any) -> None: ...
 

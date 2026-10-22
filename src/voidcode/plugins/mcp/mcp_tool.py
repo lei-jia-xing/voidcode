@@ -1,9 +1,8 @@
 """The single ``mcp`` tool: call one tool exposed by a configured MCP server.
 
-Ported from ``voidcode.tools.mcp``. The per-server ``mcp/<server>/<tool>``
-adapters are gone: one stable tool takes ``{server, tool, arguments}`` and asks
-the plugin-owned manager. Artifact spill goes through the plugin-local artifact
-boundary (``artifacts.py``) instead of the runtime tool-output store.
+One stable tool takes ``{server, tool, arguments}`` and asks the plugin-owned
+manager. The full result JSON and embedded media spill to the core artifact
+store via typed ``PluginServices``; the page carries bounded rendered text.
 """
 
 from __future__ import annotations
@@ -33,14 +32,10 @@ from voidcode.sdk.tools import (
     ToolSuccess,
 )
 
-from .artifacts import (
-    MAX_ARTIFACT_PAGE_BYTES,
-    MAX_INLINE_ATTACHMENT_BYTES,
-    RASTER_IMAGE_MIMES,
-    artifact_uri,
-    create_artifact,
-)
 from .types import McpManager, McpToolCallResult, McpToolSafety
+
+MAX_INLINE_ATTACHMENT_BYTES = (50 * 1024 - 128) * 3 // 4
+RASTER_IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"})
 
 _MAX_MCP_BINARY_BYTES = 50 * 1024 * 1024
 _MIME_TOKEN = r"[!#$%&'*+.^_`|~0-9A-Za-z-]+"
@@ -96,26 +91,21 @@ def _spill_artifact(
     content: str | bytes,
     mime: str,
     source: str,
-) -> dict[str, object] | None:
-    """Spill a payload through the core artifact service; None keeps it inline.
-
-    ``None`` only when the handler's services object exposes no spill method: the
-    payload stays inline (bounded) and the output says truncation happened.
-    """
-    artifact = create_artifact(services, kind=kind, content=content, mime=mime, source=source)
-    uri = artifact_uri(artifact)
-    if artifact is None or uri is None:
-        return None
-    payload = dict(artifact)
-    payload["uri"] = uri
-    return payload
-
-
-def _bounded_inline_text(value: str, *, limit: int) -> tuple[str, bool]:
-    """Bound one inline string the way an artifact page bounds a spilled one."""
-    if len(value) <= limit:
-        return value, False
-    return value[:limit], True
+) -> dict[str, object]:
+    """Spill a payload through the core artifact service and project its reference."""
+    reference = services.spill_artifact(content, media_type=mime)
+    uri = f"voidcode://artifact/{reference.sha256}"
+    return {
+        "artifact_id": reference.sha256,
+        "sha256": reference.sha256,
+        "byte_count": reference.bytes,
+        "content_type": reference.media_type,
+        "mime": reference.media_type,
+        "uri": uri,
+        "kind": kind,
+        "status": "available",
+        "source": source,
+    }
 
 
 class McpTool:
@@ -248,7 +238,6 @@ class McpTool:
             tool_name=tool_name,
             original_result=original_result,
             result_artifact=result_artifact,
-            result_json=result_json,
             projection_error=projection_error,
         )
 
@@ -261,12 +250,11 @@ class McpTool:
         server_name: str,
         tool_name: str,
         original_result: Mapping[str, object],
-        result_artifact: dict[str, object] | None,
-        result_json: str,
+        result_artifact: dict[str, object],
         projection_error: str | None,
     ) -> ToolResult:
-        result_uri = None if result_artifact is None else result_artifact.get("uri")
-        if result_artifact is not None and (not isinstance(result_uri, str) or not result_uri):
+        result_uri = result_artifact.get("uri")
+        if not isinstance(result_uri, str) or not result_uri:
             raise RuntimeError("MCP result JSON artifact has no URI")
         referenced_artifacts: list[tuple[str, dict[str, object]]] = []
         for artifact in artifacts:
@@ -275,16 +263,8 @@ class McpTool:
                 referenced_artifacts.append((uri, artifact))
         references = [uri for uri, _ in referenced_artifacts]
         json_truncated = False
-        result_reference: OutputReference | None = None
-        if isinstance(result_uri, str):
-            rendered.insert(0, f"Full MCP result JSON: {result_uri}")
-            result_reference = OutputReference(result_uri, result_artifact)
-        else:
-            # With no spill method to reference a store, the full result JSON is
-            # inlined and bounded instead.
-            inline_json, json_truncated = _bounded_inline_text(result_json, limit=MAX_ARTIFACT_PAGE_BYTES)
-            suffix = " (truncated: no artifact storage for the full JSON)" if json_truncated else ""
-            rendered.insert(0, f"Full MCP result JSON (inline){suffix}:\n{inline_json}")
+        rendered.insert(0, f"Full MCP result JSON: {result_uri}")
+        result_reference: OutputReference | None = OutputReference(result_uri, result_artifact)
         if references:
             rendered.insert(1, "Embedded output artifacts: " + ", ".join(references))
         content = "\n\n".join(part for part in rendered if part)
@@ -306,7 +286,7 @@ class McpTool:
         if projection_error is not None:
             payload["projection_error"] = projection_error
         if artifacts:
-            payload["artifacts"] = ([result_artifact] if result_artifact is not None else []) + artifacts
+            payload["artifacts"] = [result_artifact] + artifacts
         image_artifacts = [artifact for artifact in artifacts if artifact.get("kind") == "mcp-image"]
         image_artifact = image_artifacts[0] if len(image_artifacts) == 1 else None
         artifact_size = image_artifact.get("byte_count") if image_artifact is not None else None
@@ -440,10 +420,6 @@ def _media_item(
         raise ValueError(f"embedded audio MIME {mime_type!r} is not audio")
 
     spilled = _spill_artifact(services, kind=artifact_kind, content=data, mime=mime_type, source=source)
-    if spilled is None:
-        # Without a spill method the bytes cannot be referenced, so they stay out
-        # of the transcript.
-        return None, description + f"; {len(data)} embedded bytes omitted: no artifact storage]"
     ref = {**spilled, "kind": artifact_kind, "mime": mime_type, "byte_count": len(data)}
     return ref, description + f"; {len(data)} embedded bytes saved as output artifact]"
 

@@ -53,11 +53,10 @@ class _ArtifactReference:
 class _FakeLease:
     """A scripted lease: records the call it received and returns the result it was given."""
 
-    def __init__(self, result: ProcessResult | None = None, *, spill: bool = True) -> None:
+    def __init__(self, result: ProcessResult | None = None) -> None:
         self.result = result if result is not None else ProcessResult(exit_code=0, stdout="", stderr="", duration_ms=1)
         self.calls: list[dict[str, object]] = []
         self.spills: list[dict[str, object]] = []
-        self.spill_enabled = spill
 
     def run_process(
         self,
@@ -83,25 +82,10 @@ class _FakeLease:
         )
         return self.result
 
-    def spill_artifact(self, data: bytes | str, *, media_type: str = "text/plain; charset=utf-8") -> _ArtifactReference | None:
+    def spill_artifact(self, data: bytes | str, *, media_type: str = "text/plain; charset=utf-8") -> _ArtifactReference:
         payload = data.encode("utf-8") if isinstance(data, str) else bytes(data)
         self.spills.append({"data": payload, "media_type": media_type})
-        if not self.spill_enabled:
-            return None
         return _ArtifactReference(hashlib.sha256(payload).hexdigest(), len(payload), media_type)
-
-
-class _RefusingLease(_FakeLease):
-    """A lease whose store refuses the spill; the tool keeps inline output and no reference."""
-
-    def spill_artifact(self, data: bytes | str, *, media_type: str = "text/plain; charset=utf-8") -> None:
-        return None
-
-
-class _UnspilledLease(_FakeLease):
-    """A lease with no artifact service at all (a handler that cannot spill)."""
-
-    spill_artifact = None  # type: ignore[assignment]
 
 
 def _context_with_progress(workspace: Path, chunks: list[dict[str, object]]) -> ToolContext:
@@ -213,7 +197,7 @@ def test_shell_exec_refuses_misused_shell_patterns(tmp_path: Path, command: str)
 
 
 def test_shell_exec_requires_a_command(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="shell_exec Validation error"):
+    with pytest.raises(ValueError):
         _shell_tool().invoke(ToolCall("shell_exec", {}), context=_context(tmp_path), services=_FakeLease())  # type: ignore[arg-type]
 
 
@@ -295,11 +279,10 @@ def test_shell_exec_reports_the_tool_timeout_with_partial_output(tmp_path: Path)
     assert lease.calls[0]["timeout_seconds"] == 3.0
 
 
-@pytest.mark.parametrize("lease_kind", ["spilling", "refusing", "absent"])
-def test_shell_exec_preview_overflow_spills_the_full_stream(tmp_path: Path, lease_kind: str) -> None:
+def test_shell_exec_preview_overflow_spills_the_full_stream(tmp_path: Path) -> None:
     full = "x" * (60 * 1024)
     result_value = ProcessResult(exit_code=0, stdout=full, stderr="", duration_ms=8)
-    lease = {"spilling": _FakeLease, "refusing": _RefusingLease, "absent": _UnspilledLease}[lease_kind](result_value)
+    lease = _FakeLease(result_value)
 
     result = _invoke("generate", tmp_path, lease)
 
@@ -313,18 +296,13 @@ def test_shell_exec_preview_overflow_spills_the_full_stream(tmp_path: Path, leas
     assert isinstance(result.output, TextOutput)
     assert result.output.bounds.truncated is True
     assert result.output.bounds.partial is True
-    if lease_kind == "spilling":
-        assert lease.spills == [{"data": full.encode(), "media_type": "text/plain; charset=utf-8"}]
-        assert body.stdout_artifact is not None
-        assert body.stdout_artifact["artifact_id"] == hashlib.sha256(full.encode()).hexdigest()
-        reference = result.output.bounds.reference
-        assert reference is not None
-        assert reference.uri == f"voidcode://artifact/{body.stdout_artifact['artifact_id']}"
-        assert result.output.text == f"Full process output: {reference.uri}\n\n{body.stdout}"
-    else:
-        assert body.stdout_artifact is None
-        assert result.output.bounds.reference is None
-        assert result.output.text == body.stdout
+    assert lease.spills == [{"data": full.encode(), "media_type": "text/plain; charset=utf-8"}]
+    assert body.stdout_artifact is not None
+    assert body.stdout_artifact["artifact_id"] == hashlib.sha256(full.encode()).hexdigest()
+    reference = result.output.bounds.reference
+    assert reference is not None
+    assert reference.uri == f"voidcode://artifact/{body.stdout_artifact['artifact_id']}"
+    assert result.output.text == f"Full process output: {reference.uri}\n\n{body.stdout}"
 
 
 def test_shell_exec_forwards_bounded_progress_chunks(tmp_path: Path) -> None:

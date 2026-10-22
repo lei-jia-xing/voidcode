@@ -558,8 +558,6 @@ def _facts_from_tool_results(
     refs: list[str] = []
     delegated: list[str] = []
     for result in results[:preview_item_limit]:
-        if result.tool_name == "todo":
-            continue
         preview = result.preview(max_preview_chars=preview_char_limit)
         if result.status == "ok":
             progress.append(f"Tool result compacted: {preview}")
@@ -727,7 +725,7 @@ def continuity_sections(plan: ProjectionPlan) -> tuple[str, ...]:
 
 def dropped_tool_preview(plan: ProjectionPlan) -> tuple[str, ...]:
     """The legacy ``## Dropped Tool Preview`` body: counted previews, capped items, remainder."""
-    previewable = tuple(fact for fact in plan.covered_tool_results if fact.tool_name != "todo")
+    previewable = tuple(plan.covered_tool_results)
     lines = [f"Compacted {len(plan.covered_tool_results)} earlier tool results:"]
     for index, fact in enumerate(previewable[:_COMPACTION_PREVIEW_ITEM_LIMIT], start=1):
         lines.append(f"{index}. {fact.preview()}")

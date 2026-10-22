@@ -1329,8 +1329,8 @@ class PluginRuntime:
         """Run one owner's pure deactivation transform in the runtime that still holds its schema."""
         if scope not in ("session", "workspace"):
             raise RuntimeError("scope must be 'session' or 'workspace'")
-        if scope == "session" and (isinstance(tip_sequence, bool) or not isinstance(tip_sequence, int)):
-            raise RuntimeError("session-scope deactivation requires the owning session's event tip as an integer")
+        if scope == "session" and (isinstance(tip_sequence, bool) or not isinstance(tip_sequence, int) or tip_sequence < 0):
+            raise RuntimeError("session-scope deactivation requires the owning session's event tip as a non-negative integer")
         if scope == "workspace" and tip_sequence is not None:
             raise RuntimeError("workspace-scope deactivation has no single session event tip")
         transform = self._state_deactivators.get(owner)

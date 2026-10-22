@@ -19,10 +19,11 @@ import pytest
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.core.bootstrap import open_core
 from voidcode.core.engine import Core
-from voidcode.plugins.delegation.presets import EXPLORE_PROMPT_BODY
+from voidcode.plugins.delegation.profiles.prompts import render_builtin_prompt_profile
 
 _DELEGATION_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "delegation"
 _TODO_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "todo"
+_EXPLORE_PROMPT_BODY = render_builtin_prompt_profile("explore")
 
 
 @contextmanager
@@ -185,10 +186,10 @@ def test_parent_spawns_a_real_child_and_receives_its_output(tmp_path: Path) -> N
         assert version >= 1
 
 
-def test_preset_child_gets_the_profile_prompt_and_a_visible_scope_downgrade(tmp_path: Path) -> None:
-    """A preset child materializes the profile text; an unavailable scope degrades visibly.
+def test_profile_child_gets_the_rendered_prompt_and_a_visible_scope_downgrade(tmp_path: Path) -> None:
+    """A profile child materializes the rendered text; an unavailable scope degrades visibly.
 
-    This workspace disables the bundled ``files`` plugin, so the explore preset's allowlist names
+    This workspace disables the bundled ``files`` plugin, so the explore profile's allowlist names
     tools the active revision does not admit: the child still runs, on the parent's scope, and the
     tool result and the note say so instead of failing the spawn.
     """
@@ -207,7 +208,7 @@ def test_preset_child_gets_the_profile_prompt_and_a_visible_scope_downgrade(tmp_
             finish="tool_calls",
         ),
         openai_response(message={"role": "assistant", "content": "child answer: explored"}, finish="stop"),
-        openai_response(message={"role": "assistant", "content": "preset delegation complete"}, finish="stop"),
+        openai_response(message={"role": "assistant", "content": "profile delegation complete"}, finish="stop"),
     ]
     with _loopback_server(replies) as server:
         core = _core(tmp_path, server)
@@ -217,7 +218,7 @@ def test_preset_child_gets_the_profile_prompt_and_a_visible_scope_downgrade(tmp_
         assert result.status == "completed", result.error
         assert len(server.requests) == 3
         child_prompt = _messages(server.requests[1])[-1]
-        assert child_prompt["content"] == f"{EXPLORE_PROMPT_BODY}\n\nsummarize the visitor guide"
+        assert child_prompt["content"] == f"{_EXPLORE_PROMPT_BODY}\n\nsummarize the visitor guide"
 
         tool_text = str([message for message in _messages(server.requests[2]) if message.get("role") == "tool"][0]["content"])
         body = json.loads(tool_text.splitlines()[0])
@@ -226,17 +227,17 @@ def test_preset_child_gets_the_profile_prompt_and_a_visible_scope_downgrade(tmp_
         assert body["output"] == "child answer: explored"
         notes = body["notes"]
         assert len(notes) == 1
-        assert notes[0].startswith("preset 'explore' scope was unavailable (")
+        assert notes[0].startswith("profile 'explore' scope was unavailable (")
         assert "tool_allowlist names an unknown tool: glob" in notes[0], "the disabled files plugin owns read/glob/grep"
         assert notes[0].endswith("); the child inherited the parent tool scope instead")
-        assert "preset=explore" in tool_text
+        assert "profile=explore" in tool_text
         assert f"note: {notes[0]}" in tool_text
 
         child_id = str(body["task_id"])
         child = core.session(child_id)
         assert child.parent_session_id == parent_id
         assert child.tool_allowlist is None, "the fallback runs the child on the parent's scope"
-        assert core.store.session_overlays(child_id) == ("read-only",), "a read-only preset keeps its stance"
+        assert core.store.session_overlays(child_id) == ("read-only",), "a read-only profile keeps its stance"
 
         stored = core.store.plugin_state("delegation", "session", parent_id)
         assert stored is not None

@@ -9,7 +9,6 @@ from typing import Literal
 
 import pytest
 
-from voidcode.plugins.delegation import delegation_plugin
 from voidcode.plugins.delegation.delegation_plugin import (
     CANCEL_REASON,
     DEFAULT_JOIN_TIMEOUT_SECONDS,
@@ -21,13 +20,8 @@ from voidcode.plugins.delegation.delegation_plugin import (
     TaskTool,
     create_plugin,
 )
-from voidcode.plugins.delegation.presets import (
-    EXPLORE_PROMPT_BODY,
-    PRESET_IDS,
-    PRESETS,
-    RESEARCH_PROMPT_BODY,
-    ChildPreset,
-)
+from voidcode.plugins.delegation.profiles.prompts import render_agent_prompt
+from voidcode.plugins.delegation.profiles.registry import load_agent_manifest_registry
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import (
     ArtifactPage,
@@ -220,6 +214,39 @@ def _stored(services: MockServices) -> DelegationState:
     return DelegationState.from_payload(raw)
 
 
+def _builtin_body(workspace: Path, profile_id: str) -> str:
+    manifest = load_agent_manifest_registry(workspace).get(profile_id)
+    assert manifest is not None
+    rendered = render_agent_prompt(manifest.prompt_materialization)
+    assert rendered is not None
+    return rendered
+
+
+def _custom_workspace(tmp_path: Path, filename: str, markdown: str) -> Path:
+    workspace = tmp_path / "workspace"
+    project_dir = workspace / ".voidcode" / "agents"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / filename).write_text(markdown, encoding="utf-8")
+    return workspace
+
+
+def _context_for(workspace: Path) -> ToolContext:
+    return ToolContext(
+        workspace=workspace,
+        session_id="session-1",
+        run_id="run-1",
+        invocation_id="inv-1",
+        revision_id="rev-1",
+        actor="model",
+        logical_turn="turn-1",
+    )
+
+
+def _task_at(services: MockServices, workspace: Path, arguments: Mapping[str, object]) -> ToolResult:
+    call = ToolCall(tool_name="task", arguments=arguments, tool_call_id="call-1")
+    return TaskTool().invoke(call, context=_context_for(workspace), services=services)
+
+
 # --- State contract ---
 
 
@@ -241,8 +268,8 @@ def test_state_round_trip_keeps_children_and_groups() -> None:
     assert DelegationState.from_payload(None) == DelegationState()
 
 
-def test_state_parses_rows_written_before_preset_selection() -> None:
-    """A child row from before ``subagent_type`` existed still restores, as an unset preset."""
+def test_state_parses_rows_written_before_profile_selection() -> None:
+    """A child row from before ``subagent_type`` existed still restores, as an unset profile."""
     payload = {
         "schema_version": SCHEMA_VERSION,
         "children": {"child-1": {"label": "a", "group_id": None}},
@@ -342,17 +369,17 @@ def test_synchronous_spawn_without_timeout_uses_the_default(tmp_path: Path) -> N
     assert services.join_calls == [("child-1", DEFAULT_JOIN_TIMEOUT_SECONDS)]
 
 
-# --- task: preset selection ---
+# --- task: profile selection ---
 
 
-def test_preset_spawn_materializes_the_profile_and_applies_its_scope(tmp_path: Path) -> None:
+def test_profile_spawn_materializes_the_prompt_and_applies_its_scope(tmp_path: Path) -> None:
     services = MockServices()
     res = _task(services, tmp_path, {"prompt": "map the retry paths", "label": "explore", "subagent_type": "explore"})
 
     assert isinstance(res, ToolSuccess)
     assert services.spawn_calls == [
         {
-            "prompt": f"{EXPLORE_PROMPT_BODY}\n\nmap the retry paths",
+            "prompt": f"{_builtin_body(tmp_path, 'explore')}\n\nmap the retry paths",
             "label": "explore",
             "tool_allowlist": ("read", "glob", "grep", "ast_grep", "lsp"),
             "max_steps": 32,
@@ -367,35 +394,61 @@ def test_preset_spawn_materializes_the_profile_and_applies_its_scope(tmp_path: P
         "subagent_type": "explore",
         "history_uri": "voidcode://transcript/child-1",
     }
-    assert "preset=explore" in res.output.text
+    assert "profile=explore" in res.output.text
     assert _stored(services).children == {"child-1": ChildRecord(label="explore", subagent_type="explore")}
 
 
-def test_preset_child_scope_is_reported_by_the_control_path(tmp_path: Path) -> None:
+def test_profile_child_scope_is_reported_by_the_control_path(tmp_path: Path) -> None:
     services = MockServices()
     _task(services, tmp_path, {"prompt": "plan it", "subagent_type": "plan"})
 
     res = _task(services, tmp_path, {"operation": "output", "task_id": "child-1"})
 
     assert _payload(res)["subagent_type"] == "plan"
-    assert "preset=plan" in res.output.text
+    assert "profile=plan" in res.output.text
 
     cancelled = _task(services, tmp_path, {"operation": "cancel", "task_id": "child-1"})
     assert _payload(cancelled)["subagent_type"] == "plan"
-    assert "preset=plan" in cancelled.output.text
+    assert "profile=plan" in cancelled.output.text
 
 
-def test_unknown_subagent_type_fails_listing_the_presets(tmp_path: Path) -> None:
+def test_unknown_subagent_type_fails_without_spawning(tmp_path: Path) -> None:
     services = MockServices()
     res = _task(services, tmp_path, {"prompt": "work", "subagent_type": "ghost"})
 
     assert isinstance(res, ToolFailure)
-    assert res.error == f"task subagent_type must be one of: {', '.join(PRESET_IDS)}"
+    assert res.error == "task unknown subagent_type: 'ghost'"
     assert services.spawn_calls == []
     assert services.get_state("session") == (None, 0)
 
 
-def test_preset_and_explicit_allowlist_cannot_be_combined(tmp_path: Path) -> None:
+def test_non_subagent_profile_is_not_executable_as_a_child(tmp_path: Path) -> None:
+    services = MockServices()
+    res = _task(services, tmp_path, {"prompt": "work", "subagent_type": "default"})
+
+    assert isinstance(res, ToolFailure)
+    assert res.error == "task subagent_type 'default' is not executable as a child"
+    assert services.spawn_calls == []
+    assert services.get_state("session") == (None, 0)
+
+
+def test_custom_profile_spawns_with_its_own_body_scope_and_writable_stance(tmp_path: Path) -> None:
+    workspace = _custom_workspace(
+        tmp_path,
+        "helper.md",
+        "---\nname: Helper\ndescription: Local helper\nmode: subagent\ntool_allowlist:\n  - read\n---\n\nHelp locally.\n",
+    )
+    services = MockServices()
+    res = _task_at(services, workspace, {"prompt": "count doors", "subagent_type": "helper"})
+
+    assert isinstance(res, ToolSuccess)
+    assert services.spawn_calls[0]["prompt"] == "Help locally.\n\ncount doors"
+    assert services.spawn_calls[0]["tool_allowlist"] == ("read",)
+    assert services.spawn_calls[0]["readonly"] is False
+    assert _stored(services).children == {"child-1": ChildRecord(subagent_type="helper")}
+
+
+def test_profile_and_explicit_allowlist_cannot_be_combined(tmp_path: Path) -> None:
     services = MockServices()
     res = _task(services, tmp_path, {"prompt": "work", "subagent_type": "plan", "tool_allowlist": ["read"]})
 
@@ -413,16 +466,16 @@ def test_subagent_type_applies_to_spawns_only(tmp_path: Path) -> None:
     assert services.spawn_calls == []
 
 
-def test_unavailable_preset_scope_falls_back_to_the_parent_scope(tmp_path: Path) -> None:
+def test_unavailable_profile_scope_falls_back_to_the_parent_scope(tmp_path: Path) -> None:
     services = MockServices()
     services.spawn_failures = {1: "tool_allowlist names an unknown tool: lsp"}
     res = _task(services, tmp_path, {"prompt": "map it", "subagent_type": "explore"})
 
-    note = "preset 'explore' scope was unavailable (tool_allowlist names an unknown tool: lsp); the child inherited the parent tool scope instead"
+    note = "profile 'explore' scope was unavailable (tool_allowlist names an unknown tool: lsp); the child inherited the parent tool scope instead"
     assert isinstance(res, ToolSuccess)
     assert [call["tool_allowlist"] for call in services.spawn_calls] == [("read", "glob", "grep", "ast_grep", "lsp"), None]
     assert [call["readonly"] for call in services.spawn_calls] == [True, True]
-    assert [call["prompt"] for call in services.spawn_calls] == [f"{EXPLORE_PROMPT_BODY}\n\nmap it"] * 2
+    assert [call["prompt"] for call in services.spawn_calls] == [f"{_builtin_body(tmp_path, 'explore')}\n\nmap it"] * 2
     assert _payload(res)["notes"] == [note]
     assert note in res.output.text
     assert _stored(services).children == {"child-1": ChildRecord(subagent_type="explore")}
@@ -440,13 +493,13 @@ def test_host_wrapped_scope_rejection_also_falls_back(tmp_path: Path) -> None:
     assert [call["tool_allowlist"] for call in services.spawn_calls] == [("read", "glob", "grep", "ast_grep", "lsp"), None]
     assert [call["readonly"] for call in services.spawn_calls] == [True, True]
     assert _payload(res)["notes"] == [
-        "preset 'explore' scope was unavailable (Service call rejected: ValueError: tool_allowlist names an unknown tool: lsp); "
+        "profile 'explore' scope was unavailable (Service call rejected: ValueError: tool_allowlist names an unknown tool: lsp); "
         "the child inherited the parent tool scope instead"
     ]
     assert _stored(services).children == {"child-1": ChildRecord(subagent_type="explore")}
 
 
-def test_unavailable_preset_scope_reports_a_failed_retry(tmp_path: Path) -> None:
+def test_unavailable_profile_scope_reports_a_failed_retry(tmp_path: Path) -> None:
     services = MockServices()
     services.spawn_failures = {
         1: "tool_allowlist names an unknown tool: lsp",
@@ -460,7 +513,7 @@ def test_unavailable_preset_scope_reports_a_failed_retry(tmp_path: Path) -> None
     assert services.get_state("session") == (None, 0)
 
 
-def test_no_preset_keeps_the_calling_allowlist_and_writable_stance(tmp_path: Path) -> None:
+def test_no_profile_keeps_the_calling_allowlist_and_writable_stance(tmp_path: Path) -> None:
     services = MockServices()
     res = _task(services, tmp_path, {"prompt": "plain work", "tool_allowlist": ["read", "glob"]})
 
@@ -472,24 +525,20 @@ def test_no_preset_keeps_the_calling_allowlist_and_writable_stance(tmp_path: Pat
     assert _stored(services).children == {"child-1": ChildRecord()}
 
 
-def test_a_preset_model_preference_is_reported_instead_of_faked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """No builtin preset declares one today: the note path is what a future preset would hit."""
-    preferred = ChildPreset(
-        id="plan",
-        description="Planning",
-        prompt_body="Plan it.",
-        tool_allowlist=("read",),
-        readonly=True,
-        model_preference="endpoint/gpt-x",
+def test_a_profile_model_preference_is_reported_instead_of_faked(tmp_path: Path) -> None:
+    """No builtin profile declares one today: a custom with ``model:`` hits the note path."""
+    workspace = _custom_workspace(
+        tmp_path,
+        "picky.md",
+        "---\nname: Picky\ndescription: Choosy helper\nmode: subagent\nmodel: endpoint/gpt-x\ntool_allowlist:\n  - read\n---\n\nPick well.\n",
     )
-    monkeypatch.setattr(delegation_plugin, "get_preset", lambda _preset_id: preferred)
     services = MockServices()
 
-    res = _task(services, tmp_path, {"prompt": "work", "subagent_type": "plan"})
+    res = _task_at(services, workspace, {"prompt": "work", "subagent_type": "picky"})
 
-    note = "preset 'plan' prefers model 'endpoint/gpt-x', but every child runs the workspace model; the preference was not applied"
+    note = "profile 'picky' prefers model 'endpoint/gpt-x', but every child runs the workspace model; the preference was not applied"
     assert isinstance(res, ToolSuccess)
-    assert services.spawn_calls[0]["prompt"] == "Plan it.\n\nwork"
+    assert services.spawn_calls[0]["prompt"] == "Pick well.\n\nwork"
     assert _payload(res)["notes"] == [note]
     assert note in res.output.text
 
@@ -842,10 +891,10 @@ def test_batch_group_read_rejects_unknown_groups(tmp_path: Path) -> None:
     assert services.join_calls == []
 
 
-# --- task_batch: preset selection ---
+# --- task_batch: profile selection ---
 
 
-def test_batch_items_select_their_own_presets(tmp_path: Path) -> None:
+def test_batch_items_select_their_own_profiles(tmp_path: Path) -> None:
     services = MockServices()
     res = _batch(services, tmp_path, {"tasks": [{"prompt": "read the docs", "subagent_type": "research"}, {"prompt": "plain"}]})
 
@@ -855,7 +904,7 @@ def test_batch_items_select_their_own_presets(tmp_path: Path) -> None:
     assert payload == {"operation": "spawn", "parallel_group_id": group_id, "task_ids": ["child-1", "child-2"], "partial": False}
     assert services.spawn_calls == [
         {
-            "prompt": f"{RESEARCH_PROMPT_BODY}\n\nread the docs",
+            "prompt": f"{_builtin_body(tmp_path, 'research')}\n\nread the docs",
             "label": "",
             "tool_allowlist": ("web_search", "web_fetch"),
             "max_steps": 32,
@@ -868,10 +917,10 @@ def test_batch_items_select_their_own_presets(tmp_path: Path) -> None:
         "child-1": ChildRecord(group_id=group_id, subagent_type="research"),
         "child-2": ChildRecord(group_id=group_id),
     }
-    assert "preset=research" in res.output.text
+    assert "profile=research" in res.output.text
 
 
-def test_batch_item_preset_fallback_is_visible_in_the_result(tmp_path: Path) -> None:
+def test_batch_item_profile_fallback_is_visible_in_the_result(tmp_path: Path) -> None:
     services = MockServices()
     services.spawn_failures = {
         1: "tool_allowlist names an unknown tool: skill",
@@ -879,12 +928,12 @@ def test_batch_item_preset_fallback_is_visible_in_the_result(tmp_path: Path) -> 
     }
     res = _batch(services, tmp_path, {"tasks": [{"prompt": "plan it", "subagent_type": "plan"}, {"prompt": "doomed"}]})
 
-    note = "preset 'plan' scope was unavailable (tool_allowlist names an unknown tool: skill); the child inherited the parent tool scope instead"
+    note = "profile 'plan' scope was unavailable (tool_allowlist names an unknown tool: skill); the child inherited the parent tool scope instead"
     payload = _payload(res)
     assert payload["partial"] is True
     assert payload["created"] == [{"index": 0, "task_id": "child-1", "subagent_type": "plan", "notes": [note]}]
     assert payload["failed"] == [{"index": 1, "error": "delegation spawn budget exhausted for this chain"}]
-    assert "note: preset 'plan' scope was unavailable" in res.output.text
+    assert "note: profile 'plan' scope was unavailable" in res.output.text
     assert [call["tool_allowlist"] for call in services.spawn_calls] == [
         ("read", "glob", "grep", "ast_grep", "lsp", "skill", "web_search", "web_fetch"),
         None,
@@ -892,7 +941,7 @@ def test_batch_item_preset_fallback_is_visible_in_the_result(tmp_path: Path) -> 
     ]
 
 
-def test_batch_group_read_reports_each_child_preset(tmp_path: Path) -> None:
+def test_batch_group_read_reports_each_child_profile(tmp_path: Path) -> None:
     services = MockServices()
     spawned = _batch(services, tmp_path, {"tasks": [{"prompt": "one", "subagent_type": "explore"}, {"prompt": "two"}]})
     group_id = str(_payload(spawned)["parallel_group_id"])
@@ -910,71 +959,40 @@ def test_batch_group_read_reports_each_child_preset(tmp_path: Path) -> None:
         },
         {"task_id": "child-2", "status": "completed", "history_uri": "voidcode://transcript/child-2"},
     ]
-    assert "preset=explore" in res.output.text
+    assert "profile=explore" in res.output.text
 
 
-def test_batch_item_rejects_an_unknown_preset_before_spawning(tmp_path: Path) -> None:
+def test_batch_item_with_unknown_profile_rejects_the_whole_batch(tmp_path: Path) -> None:
     services = MockServices()
     res = _batch(services, tmp_path, {"tasks": [{"prompt": "ok"}, {"prompt": "x", "subagent_type": "ghost"}]})
 
     assert isinstance(res, ToolFailure)
-    assert res.error == f"task_batch item 1 subagent_type must be one of: {', '.join(PRESET_IDS)}"
+    assert res.error == "task_batch item 1 unknown subagent_type: 'ghost'"
     assert services.spawn_calls == []
     assert services.get_state("session") == (None, 0)
 
 
-# --- Builtin presets ---
+# --- Profile-driven selection ---
 
 
-def test_builtin_presets_carry_the_agent_profile_text_verbatim() -> None:
-    """The bodies are copies of the agents plugin's profiles: plugins cannot import each other."""
-    profiles = Path(__file__).resolve().parents[3] / "src" / "voidcode" / "plugins" / "agents" / "profiles"
-
-    assert PRESET_IDS == ("execute", "review", "explore", "research", "plan")
-    assert len({preset.id for preset in PRESETS}) == len(PRESETS)
-    for preset in PRESETS:
-        assert preset.prompt_body == (profiles / f"{preset.id}.txt").read_text(encoding="utf-8").strip()
-        assert preset.description.strip()
-        assert preset.tool_allowlist
-        assert preset.model_preference is None
-
-
-def test_builtin_preset_scopes_name_real_admitted_tools() -> None:
-    discovery = ("read", "glob", "grep", "ast_grep", "lsp")
-    assert {preset.id: preset.readonly for preset in PRESETS} == {
-        "execute": False,
-        "review": True,
-        "explore": True,
-        "research": True,
-        "plan": True,
-    }
-    assert {preset.id: preset.tool_allowlist for preset in PRESETS} == {
-        "execute": (*discovery, "write", "edit", "background_process", "shell_exec", "todo", "mcp"),
-        "review": discovery,
-        "explore": discovery,
-        "research": ("web_search", "web_fetch"),
-        "plan": (*discovery, "skill", "web_search", "web_fetch"),
-    }
-    dead = {"yield", "question", "invoke_tool", "mcp/*"}
-    for preset in PRESETS:
-        assert not dead.intersection(preset.tool_allowlist)
-
-
-def test_task_schemas_expose_the_preset_enum() -> None:
+def test_task_schemas_accept_workspace_dynamic_profile_ids() -> None:
+    """Custom ids cannot be a static enum: workspace profiles resolve at ingress instead."""
     task_properties = TaskTool.definition.input_schema["properties"]
-    assert list(task_properties["subagent_type"]["enum"]) == list(PRESET_IDS)
+    assert "enum" not in task_properties["subagent_type"]
+    assert task_properties["subagent_type"]["minLength"] == 1
     item_properties = TaskBatchTool.definition.input_schema["properties"]["tasks"]["items"]["properties"]
-    assert list(item_properties["subagent_type"]["enum"]) == list(PRESET_IDS)
+    assert "enum" not in item_properties["subagent_type"]
+    assert item_properties["subagent_type"]["minLength"] == 1
 
 
 # --- Plugin wiring ---
 
 
-def test_plugin_registers_both_tools_with_spawn_effects() -> None:
+def test_plugin_registers_tools_and_profile_commands() -> None:
     plugin = create_plugin()
     names = [tool.definition.name for tool in plugin.tools]
     assert names == ["task", "task_batch"]
     for tool in plugin.tools:
         assert tool.definition.replay_policy == "never"
         assert {effect.value for effect in tool.definition.effects} == {"read", "spawn", "session"}
-    assert plugin.commands == ()
+    assert [command.definition.name for command in plugin.commands] == ["agents", "agents.show"]

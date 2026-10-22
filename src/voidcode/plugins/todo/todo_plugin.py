@@ -1244,6 +1244,29 @@ def todo_context(context: ToolContext, services: PluginServices) -> ContextContr
     return None if text is None else ContextContribution(content=text)
 
 
+def prepare_todo_deactivation(
+    state: Mapping[str, object],
+    scope: str,
+    scope_key: str,
+    tip_sequence: int | None,
+) -> Mapping[str, object]:
+    """Pure deactivation transform: the plan list survives; per-cycle reminder counters reset.
+
+    The activation transaction cancels this owner's pending reminder continuations, so kept
+    attempt counters or awaiting flags would describe injections that no longer exist. The
+    cursor stays forward-only and the next genuine user prompt starts a fresh cycle anyway.
+    """
+    _ = (scope, scope_key, tip_sequence)
+    parsed = TodoState.from_payload(state)
+    return replace(
+        parsed,
+        todo_reminder=TodoReminderState(),
+        mid_run=TodoMidRunState(),
+        invocations=0,
+        cycle_run_id=None,
+    ).to_payload()
+
+
 def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
     reminders = parse_todo_config(config)
 
@@ -1339,4 +1362,5 @@ def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
             },
         ),
         migrate_state=migrate_todo_state,
+        prepare_deactivate=prepare_todo_deactivation,
     )

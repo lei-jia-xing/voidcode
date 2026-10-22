@@ -10,7 +10,7 @@ from typing import Any, cast
 import pytest
 
 from voidcode.plugins.files import create_plugin
-from voidcode.plugins.files.artifacts import MAX_ARTIFACT_PAGE_BYTES, MAX_INLINE_ATTACHMENT_BYTES, create_artifact
+from voidcode.plugins.files.read_tool import MAX_ARTIFACT_PAGE_BYTES, MAX_INLINE_ATTACHMENT_BYTES
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import ArtifactPage, ArtifactReference
 from voidcode.sdk.tools import AttachmentOutput, OpaqueToolBody, TextOutput, ToolCall, ToolSuccess
@@ -81,9 +81,8 @@ def _read_attachment(store: FakeArtifactStore, tmp_path: Path, **arguments: obje
 def test_spill_then_read_line_page_round_trips(tmp_path: Path) -> None:
     store = FakeArtifactStore()
     text = "".join(f"artifact-line-{index}\n" for index in range(1, 6))
-    artifact = create_artifact(store, kind="content", content=text, mime="text/plain; charset=utf-8")
-    assert artifact is not None
-    sha256 = cast(str, artifact["artifact_id"])
+    artifact = store.spill_artifact(text, media_type="text/plain; charset=utf-8")
+    sha256 = artifact.sha256
     assert sha256 == hashlib.sha256(text.encode("utf-8")).hexdigest()
     uri = f"voidcode://artifact/{sha256}"
 
@@ -108,9 +107,8 @@ def test_spill_then_read_line_page_round_trips(tmp_path: Path) -> None:
 
 def test_artifact_byte_page_honors_byte_window(tmp_path: Path) -> None:
     store = FakeArtifactStore()
-    artifact = create_artifact(store, kind="content", content=b"0123456789abcdef", mime="application/octet-stream")
-    assert artifact is not None
-    uri = f"voidcode://artifact/{artifact['artifact_id']}"
+    artifact = store.spill_artifact(b"0123456789abcdef", media_type="application/octet-stream")
+    uri = f"voidcode://artifact/{artifact.sha256}"
 
     body, _ = _read_body(store, tmp_path, path=uri, byte_offset=4, byte_limit=4)
     assert body["offset_unit"] == "bytes"
@@ -121,7 +119,7 @@ def test_artifact_byte_page_honors_byte_window(tmp_path: Path) -> None:
     assert body["artifact_byte_count"] == 16
     assert body["next_byte_offset"] == 8
     assert body["truncated"] is True
-    assert body["content_hash"] == artifact["artifact_id"]
+    assert body["content_hash"] == artifact.sha256
 
     tail, _ = _read_body(store, tmp_path, path=uri, byte_offset=8, byte_limit=8)
     assert tail["raw_content"] == "89abcdef"
@@ -131,7 +129,7 @@ def test_artifact_byte_page_honors_byte_window(tmp_path: Path) -> None:
 
 def test_unknown_artifact_id_is_refused(tmp_path: Path) -> None:
     store = FakeArtifactStore()
-    with pytest.raises(ValueError, match="without a core artifact service"):
+    with pytest.raises(ValueError, match="cannot resolve voidcode://artifact URL"):
         _read_body(store, tmp_path, path=f"voidcode://artifact/{'0' * 64}")
 
 
@@ -145,10 +143,9 @@ def test_invalid_artifact_id_is_refused(tmp_path: Path) -> None:
 
 def test_pdf_magic_is_required_for_the_pdf_view(tmp_path: Path) -> None:
     store = FakeArtifactStore()
-    artifact = create_artifact(store, kind="content", content=b"plain text, not a PDF\n", mime="application/octet-stream")
-    assert artifact is not None
+    artifact = store.spill_artifact(b"plain text, not a PDF\n", media_type="application/octet-stream")
     with pytest.raises(ValueError, match="PDF artifact view requires a readable PDF artifact"):
-        _read_body(store, tmp_path, path=f"voidcode://artifact/{artifact['artifact_id']}", view="pdf")
+        _read_body(store, tmp_path, path=f"voidcode://artifact/{artifact.sha256}", view="pdf")
 
 
 def _simple_pdf(text: str) -> bytes:
@@ -178,9 +175,8 @@ def _simple_pdf(text: str) -> bytes:
 def test_image_artifact_renders_as_attachment(tmp_path: Path) -> None:
     store = FakeArtifactStore()
     png = b"\x89PNG\r\n\x1a\n" + bytes(range(64))
-    artifact = create_artifact(store, kind="content", content=png, mime="image/png")
-    assert artifact is not None
-    sha256 = cast(str, artifact["artifact_id"])
+    artifact = store.spill_artifact(png, media_type="image/png")
+    sha256 = artifact.sha256
     uri = f"voidcode://artifact/{sha256}"
 
     body, output = _read_attachment(store, tmp_path, path=uri)
@@ -209,9 +205,8 @@ def test_large_image_artifact_spills_and_references(tmp_path: Path) -> None:
     store = FakeArtifactStore()
     # Above the inline bound and across two store pages.
     png = b"\x89PNG\r\n\x1a\n" + b"\x00" * (MAX_INLINE_ATTACHMENT_BYTES + MAX_ARTIFACT_PAGE_BYTES)
-    artifact = create_artifact(store, kind="content", content=png, mime="image/png")
-    assert artifact is not None
-    sha256 = cast(str, artifact["artifact_id"])
+    artifact = store.spill_artifact(png, media_type="image/png")
+    sha256 = artifact.sha256
     uri = f"voidcode://artifact/{sha256}"
 
     body, output = _read_attachment(store, tmp_path, path=uri)
@@ -234,9 +229,8 @@ def test_large_image_artifact_spills_and_references(tmp_path: Path) -> None:
 def test_pdf_artifact_view_uses_the_media_type_claim(tmp_path: Path) -> None:
     store = FakeArtifactStore()
     pdf = _simple_pdf("artifact-pdf-text")
-    artifact = create_artifact(store, kind="content", content=pdf, mime="application/pdf")
-    assert artifact is not None
-    sha256 = cast(str, artifact["artifact_id"])
+    artifact = store.spill_artifact(pdf, media_type="application/pdf")
+    sha256 = artifact.sha256
     uri = f"voidcode://artifact/{sha256}"
 
     try:
@@ -281,9 +275,8 @@ def test_pdf_magic_fallback_only_applies_to_an_empty_claim(tmp_path: Path) -> No
 
 def test_text_artifact_still_pages_as_text(tmp_path: Path) -> None:
     store = FakeArtifactStore()
-    artifact = create_artifact(store, kind="content", content="first\nsecond\nthird\n", mime="text/plain")
-    assert artifact is not None
-    uri = f"voidcode://artifact/{artifact['artifact_id']}"
+    artifact = store.spill_artifact("first\nsecond\nthird\n", media_type="text/plain")
+    uri = f"voidcode://artifact/{artifact.sha256}"
 
     body, output = _read_body(store, tmp_path, path=uri, offset=2, limit=1)
 

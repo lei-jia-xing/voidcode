@@ -108,12 +108,6 @@ class LspManagerState:
 
 
 @dataclass(frozen=True, slots=True)
-class LspRuntimeEvent:
-    event_type: str
-    payload: dict[str, object]
-
-
-@dataclass(frozen=True, slots=True)
 class LspRequest:
     server_name: str | None
     method: str
@@ -147,9 +141,7 @@ class LspManager(Protocol):
 
     def document_state(self, *, session_id: str, file_path: Path, workspace: Path) -> LspDocumentState | None: ...
 
-    def shutdown(self) -> tuple[LspRuntimeEvent, ...]: ...
-
-    def drain_events(self) -> tuple[LspRuntimeEvent, ...]: ...
+    def shutdown(self) -> None: ...
 
 
 class DisabledLspManager:
@@ -175,11 +167,8 @@ class DisabledLspManager:
         _ = session_id, file_path, workspace
         return None
 
-    def shutdown(self) -> tuple[LspRuntimeEvent, ...]:
-        return ()
-
-    def drain_events(self) -> tuple[LspRuntimeEvent, ...]:
-        return ()
+    def shutdown(self) -> None:
+        return None
 
 
 @dataclass(slots=True)
@@ -291,7 +280,6 @@ class ManagedLspManager:
         self._server_states: dict[str, LspServerState] = {name: LspServerState(name=name) for name in self._configuration.servers}
         self._running_servers: dict[tuple[str, str], _RunningLspServer] = {}
         self._leased_servers: dict[tuple[str, str], _LspServerLease] = {}
-        self._pending_events: list[LspRuntimeEvent] = []
         self._converter = lsp_converters.get_converter()
         # An explicit plugin config owns the server set; without one the manager
         # derives workspace-safe defaults per workspace, like the runtime did.
@@ -482,24 +470,14 @@ class ManagedLspManager:
             position_encoding=running_server.position_encoding,
         )
 
-    def shutdown(self) -> tuple[LspRuntimeEvent, ...]:
+    def shutdown(self) -> None:
         # Host retirement already stopped every service process in this generation;
         # shutdown here only forgets local entries, never touches the host.
         for key in tuple(self._running_servers):
-            self._forget_local_entry(key)
-        return self.drain_events()
-
-    def _forget_local_entry(self, key: tuple[str, str]) -> None:
-        running_server = self._running_servers.pop(key, None)
-        lease = self._leased_servers.pop(key, None)
-        if running_server is None or lease is None:
-            return
-        _SESSION_SCOPED_LSP_REGISTRY.release(lease=lease)
-
-    def drain_events(self) -> tuple[LspRuntimeEvent, ...]:
-        events = tuple(self._pending_events)
-        self._pending_events.clear()
-        return events
+            self._running_servers.pop(key, None)
+            lease = self._leased_servers.pop(key, None)
+            if lease is not None:
+                _SESSION_SCOPED_LSP_REGISTRY.release(lease=lease)
 
     def _ensure_running(
         self,
@@ -542,18 +520,6 @@ class ManagedLspManager:
         except ValueError as exc:
             message = str(exc)
             self._mark_failed(server_name=server_name, error=message)
-            self._record_event(
-                LspRuntimeEvent(
-                    event_type=("runtime.lsp_server_startup_rejected" if "reuse rejected" in message else "runtime.lsp_server_failed"),
-                    payload={
-                        "server": server_name,
-                        "command": list(server_config.command),
-                        "workspace_root": str(workspace_root),
-                        "state": "failed" if "reuse rejected" not in message else "rejected",
-                        "error": message,
-                    },
-                )
-            )
             raise
 
         self._running_servers[local_key] = running_server
@@ -573,18 +539,6 @@ class ManagedLspManager:
             status="running",
             available=True,
         )
-        if outcome == "reused":
-            self._record_event(
-                LspRuntimeEvent(
-                    event_type="runtime.lsp_server_reused",
-                    payload={
-                        "server": server_name,
-                        "command": list(running_server.config.command),
-                        "workspace_root": str(running_server.workspace_root),
-                        "state": "running",
-                    },
-                )
-            )
         return running_server, lease_key
 
     @staticmethod
@@ -729,28 +683,13 @@ class ManagedLspManager:
             )
         except (ValueError, TimeoutError) as exc:
             message = f"LSP initialize failed for {server_name}: {exc}"
-            self._record_event(
-                self._failed_event(
-                    server_name=server_name,
-                    server_config=running_server.config,
-                    workspace_root=running_server.workspace_root,
-                    error=message,
-                )
-            )
+            self._mark_failed(server_name=server_name, error=message)
             raise
 
         init_error = response.get("error")
         if init_error is not None:
             message = f"LSP initialize failed for {server_name}: {init_error}"
             self._mark_failed(server_name=server_name, error=message)
-            self._record_event(
-                self._failed_event(
-                    server_name=server_name,
-                    server_config=running_server.config,
-                    workspace_root=running_server.workspace_root,
-                    error=message,
-                )
-            )
             raise ValueError(message)
         init_result = response.get("result")
         server_capabilities = init_result.get("capabilities") if isinstance(init_result, dict) else None
@@ -787,20 +726,6 @@ class ManagedLspManager:
             status="running",
             available=True,
         )
-        self._record_event(
-            LspRuntimeEvent(
-                event_type="runtime.lsp_server_started",
-                payload={
-                    "server": server_name,
-                    "command": list(running_server.config.command),
-                    "workspace_root": str(running_server.workspace_root),
-                    "state": "running",
-                },
-            )
-        )
-
-    def _record_event(self, event: LspRuntimeEvent) -> None:
-        self._pending_events.append(event)
 
     def _mark_failed(self, *, server_name: str, error: str) -> None:
         self._server_states[server_name] = LspServerState(
@@ -823,25 +748,6 @@ class ManagedLspManager:
             f"failed to start LSP server {server_name}: {details}. "
             f"Ensure '{binary_name}' is installed and available on PATH, "
             f"or override '{config_path}' in .voidcode.json with a custom command."
-        )
-
-    @staticmethod
-    def _failed_event(
-        *,
-        server_name: str,
-        server_config: ResolvedLspServerConfig,
-        workspace_root: Path,
-        error: str,
-    ) -> LspRuntimeEvent:
-        return LspRuntimeEvent(
-            event_type="runtime.lsp_server_failed",
-            payload={
-                "server": server_name,
-                "command": list(server_config.command),
-                "workspace_root": str(workspace_root),
-                "state": "failed",
-                "error": error,
-            },
         )
 
     def _workspace_root_for_request(

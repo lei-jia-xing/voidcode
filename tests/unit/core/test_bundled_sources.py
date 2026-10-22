@@ -8,11 +8,13 @@ failure where the tool needs a server or a child that does not exist).
 
 from __future__ import annotations
 
+import ast
 import json
 import threading
 from pathlib import Path
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
+from voidcode.core.activation import BUNDLED_PLUGIN_IDS, bundled_sources
 from voidcode.core.bootstrap import open_core
 from voidcode.sdk.codec import decode_tool_result
 from voidcode.sdk.tools import ToolFailure, ToolSuccess
@@ -92,3 +94,24 @@ def test_bundle_dispatches_one_tool_per_tool_plugin(tmp_path: Path) -> None:
         server.shutdown()
         worker.join(timeout=5)
         server.server_close()
+
+
+def test_every_bundled_id_resolves_to_a_plugin_package() -> None:
+    """Each bundled id names a shippable package: a directory with a `create_plugin` factory.
+
+    Guards list edits (a dropped or duplicated id breaks admission), without pinning the
+    product surface: adding a plugin never touches this test.
+    """
+    assert len(set(BUNDLED_PLUGIN_IDS)) == len(BUNDLED_PLUGIN_IDS), "bundled ids must be unique"
+    sources = bundled_sources()
+    assert set(sources) == set(BUNDLED_PLUGIN_IDS)
+    for plugin_id, root in sorted(sources.items()):
+        init = root / "__init__.py"
+        assert root.is_dir(), f"bundled plugin {plugin_id} is missing from this installation: {root}"
+        assert init.is_file(), f"bundled plugin {plugin_id} is not a package: {root}"
+        tree = ast.parse(init.read_text(encoding="utf-8"), filename=str(init))
+        assert any(
+            (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "create_plugin")
+            or (isinstance(node, ast.ImportFrom) and any(alias.asname == "create_plugin" or alias.name == "create_plugin" for alias in node.names))
+            for node in ast.walk(tree)
+        ), f"bundled plugin {plugin_id} exports no create_plugin factory: {init}"

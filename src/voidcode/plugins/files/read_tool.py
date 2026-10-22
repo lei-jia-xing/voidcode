@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import mimetypes
+import re
 import tarfile
 import time
 import zipfile
@@ -15,12 +16,12 @@ from pathlib import Path
 from typing import ClassVar, Literal, cast, final
 from urllib.parse import parse_qs
 
-from pydantic import BaseModel, StrictInt, field_validator
+from pydantic import BaseModel, StrictInt, ValidationInfo, field_validator
 
 from voidcode.sdk.history import render_history_page
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
-from voidcode.sdk.services import PluginServices, QueryUnavailable
+from voidcode.sdk.services import ArtifactPage, PluginServices, QueryUnavailable
 from voidcode.sdk.tools import (
     AttachmentOutput,
     OpaqueToolBody,
@@ -37,20 +38,13 @@ from voidcode.sdk.tools import (
     is_read_tier,
 )
 
-from .args import parse_tool_args, validate_non_empty
-from .artifacts import (
-    ARTIFACT_ID_PATTERN as _ARTIFACT_ID_PATTERN,
-)
-from .artifacts import (
-    MAX_ARTIFACT_PAGE_BYTES,
-    MAX_BINARY_READ_BYTES,
-    MAX_INLINE_ATTACHMENT_BYTES,
-    RASTER_IMAGE_MIMES,
-    artifact_uri,
-    create_artifact,
-    read_artifact_page,
-)
 from .read_formats import MAX_OUTPUTS, render_notebook, render_pdf_bytes, render_pdf_path, render_sqlite
+
+_ARTIFACT_ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+MAX_ARTIFACT_PAGE_BYTES = 50 * 1024 - 4096
+MAX_INLINE_ATTACHMENT_BYTES = (50 * 1024 - 128) * 3 // 4
+MAX_BINARY_READ_BYTES = 50 * 1024 * 1024
+RASTER_IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"})
 
 #: Internal URL scheme for on-demand tool documentation:
 #: read(path="voidcode://tool/<name>") renders the admitted definition's
@@ -131,20 +125,22 @@ def _spill_artifact(
     content: str | bytes,
     mime: str,
     source: str,
-) -> tuple[Mapping[str, object], str, str] | None:
-    """Spill a payload via ``PluginServices.spill_artifact``; None keeps it inline.
-
-    Returns ``(artifact, artifact_id, uri)``, or ``None`` when the handler's
-    services object exposes no spill method: callers then keep their bounded
-    inline output and omit the reference.
-    """
-
-    artifact = create_artifact(services, kind=kind, content=content, mime=mime, source=source)
-    artifact_id = None if artifact is None else artifact.get("artifact_id")
-    uri = artifact_uri(artifact)
-    if artifact is None or not isinstance(artifact_id, str) or uri is None:
-        return None
-    return artifact, artifact_id, uri
+) -> tuple[Mapping[str, object], str, str]:
+    """Spill a payload and project its reference as ``(artifact, artifact_id, uri)``."""
+    reference = services.spill_artifact(content, media_type=mime)
+    uri = f"voidcode://artifact/{reference.sha256}"
+    artifact: dict[str, object] = {
+        "artifact_id": reference.sha256,
+        "sha256": reference.sha256,
+        "byte_count": reference.bytes,
+        "content_type": reference.media_type,
+        "mime": reference.media_type,
+        "uri": uri,
+        "kind": kind,
+        "status": "available",
+        "source": source,
+    }
+    return artifact, reference.sha256, uri
 
 
 def _render_tool_documentation(
@@ -236,17 +232,16 @@ def _render_artifact(
     if byte_limit is not None and byte_offset is None:
         raise ValueError("byte_limit requires byte_offset")
 
-    def _window(byte_start: int, byte_length: int = MAX_ARTIFACT_PAGE_BYTES) -> Mapping[str, object]:
-        window = read_artifact_page(services, artifact_id, byte_offset=byte_start, byte_limit=byte_length)
-        if window is None:
-            raise ValueError("read cannot resolve voidcode://artifact URLs without a core artifact service")
-        return window
+    def _window(byte_start: int, byte_length: int = MAX_ARTIFACT_PAGE_BYTES) -> ArtifactPage:
+        try:
+            return services.read_artifact(artifact_id, offset=byte_start, limit=byte_length)
+        except (OSError, ValueError, LookupError) as exc:
+            raise ValueError(f"read cannot resolve voidcode://artifact URL {path}: {exc}") from exc
 
-    head: Mapping[str, object] | None = None
+    head: ArtifactPage | None = None
 
-    def _page(byte_start: int, byte_length: int = MAX_ARTIFACT_PAGE_BYTES) -> Mapping[str, object]:
+    def _page(byte_start: int, byte_length: int = MAX_ARTIFACT_PAGE_BYTES) -> ArtifactPage:
         """First page: the producer's claim plus the bytes a magic fallback needs."""
-
         nonlocal head
         if byte_start == 0 and byte_length == MAX_ARTIFACT_PAGE_BYTES:
             if head is None:
@@ -256,27 +251,25 @@ def _render_artifact(
 
     def _full_bytes(label: str) -> tuple[bytes, int, str]:
         """Every byte of the artifact, bounded by MAX_BINARY_READ_BYTES."""
-
         chunks: list[bytes] = []
         byte_start = 0
         total_bytes = 0
         content_hash = artifact_id
         while True:
             window = _page(byte_start)
-            total_bytes = cast(int, window["total_bytes"])
-            content_hash = cast(str, window["sha256"])
+            total_bytes = window.total_bytes
+            content_hash = window.sha256
             if total_bytes > MAX_BINARY_READ_BYTES:
                 raise ValueError(f"{label} exceeds the maximum supported size ({MAX_BINARY_READ_BYTES} bytes): {path}")
-            chunk = cast(bytes, window["data"])
-            if not chunk:
+            if not window.data:
                 return b"".join(chunks), total_bytes, content_hash
-            chunks.append(chunk)
-            if bool(window["eof"]):
+            chunks.append(window.data)
+            if window.eof:
                 return b"".join(chunks), total_bytes, content_hash
-            byte_start += len(chunk)
+            byte_start += len(window.data)
 
     first_page = _page(0)
-    media_type = cast(str, first_page["media_type"])
+    media_type = first_page.media_type
 
     # An explicit PDF view on a non-PDF artifact still fails below, on the magic.
     if media_type in RASTER_IMAGE_MIMES and view != "pdf":
@@ -284,8 +277,7 @@ def _render_artifact(
         inline = len(raw) <= MAX_INLINE_ATTACHMENT_BYTES
         # A payload above the inline bound re-spills its own (already stored)
         # bytes so the body carries the same reference projection the workspace
-        # branch reports; when the spill method is absent the artifact's own URI
-        # stands in for it.
+        # branch reports.
         spilled = None if inline else _spill_artifact(services, kind="content", content=raw, mime=media_type, source=path)
         artifact: Mapping[str, object] = (
             spilled[0] if spilled is not None else {"artifact_id": artifact_id, "sha256": content_hash, "byte_count": total_bytes, "uri": path}
@@ -319,7 +311,7 @@ def _render_artifact(
             ),
         )
 
-    if view == "pdf" or media_type == "application/pdf" or (not media_type and cast(bytes, first_page["data"]).startswith(b"%PDF-")):
+    if view == "pdf" or media_type == "application/pdf" or (not media_type and first_page.data.startswith(b"%PDF-")):
         source_bytes, total_bytes, content_hash = _full_bytes("PDF artifact")
         # A producer's PDF claim is trusted, but the bytes still have to be a
         # readable PDF; without a claim the magic is the only evidence.
@@ -343,11 +335,8 @@ def _render_artifact(
         text_reference: str | None = None
         output_artifact: Mapping[str, object] | None = None
         if len(full_text.encode("utf-8")) > MAX_BYTES:
-            # When the spill method is absent the extracted text beyond this page is
-            # dropped; the page's own truncation flags stay the honest signal.
             spilled = _spill_artifact(services, kind="pdf_text", content=full_text, mime="text/plain; charset=utf-8", source=path)
-            if spilled is not None:
-                output_artifact, text_reference = spilled[0], spilled[2]
+            output_artifact, text_reference = spilled[0], spilled[2]
         rendered.update(source_reference=source_reference, source_artifact=source_artifact)
         bounds_reference = (
             OutputReference(uri=cast(str, text_reference), artifact=output_artifact)
@@ -394,10 +383,10 @@ def _render_artifact(
     if byte_offset is not None:
         window_limit = min(byte_limit if byte_limit is not None else MAX_ARTIFACT_PAGE_BYTES, MAX_ARTIFACT_PAGE_BYTES)
         window = _page(byte_offset, window_limit)
-        data = cast(bytes, window["data"])
-        total_bytes = cast(int, window["total_bytes"])
-        content_hash = cast(str, window["sha256"])
-        next_byte_offset = None if bool(window["eof"]) else cast(int, window["offset"]) + len(data)
+        data = window.data
+        total_bytes = window.total_bytes
+        content_hash = window.sha256
+        next_byte_offset = None if window.eof else window.offset + len(data)
         truncated = next_byte_offset is not None
         raw_content = data.decode("utf-8", "replace")
         artifact: Mapping[str, object] = {"artifact_id": artifact_id, "sha256": content_hash, "byte_count": total_bytes, "uri": path}
@@ -440,7 +429,7 @@ def _render_artifact(
     remaining = max(0, offset - 1)
     while remaining > 0:
         window = _page(byte_start)
-        chunk = cast(bytes, window["data"])
+        chunk = window.data
         newlines = chunk.count(b"\n")
         if newlines >= remaining:
             index = -1
@@ -449,21 +438,21 @@ def _render_artifact(
             byte_start += index + 1
             break
         remaining -= newlines
-        if not chunk or bool(window["eof"]):
+        if not chunk or window.eof:
             raise ValueError(f"Offset {offset} is out of range for this artifact")
         byte_start += len(chunk)
 
     window = _page(byte_start)
-    data = cast(bytes, window["data"])
-    total_bytes = cast(int, window["total_bytes"])
-    content_hash = cast(str, window["sha256"])
+    data = window.data
+    total_bytes = window.total_bytes
+    content_hash = window.sha256
     text = data.decode("utf-8", "replace")
     page_lines = text.split("\n")
     if page_lines[-1] == "":
         page_lines.pop()
     page_lines = [line[:-1] if line.endswith("\r") else line for line in page_lines]
     shown = page_lines[:page_limit]
-    has_more = len(shown) < len(page_lines) or not bool(window["eof"])
+    has_more = len(shown) < len(page_lines) or not window.eof
     next_offset = offset + len(shown) if has_more else None
     raw_content = "\n".join(shown)
     if shown and (len(shown) < len(page_lines) or text.endswith("\n")):
@@ -602,7 +591,12 @@ class ReadArgs(BaseModel):
     output_offset: StrictInt | None = None
     output_limit: StrictInt | None = None
 
-    _validate_path = field_validator("path", mode="after")(validate_non_empty)
+    @field_validator("path", mode="after")
+    @classmethod
+    def _validate_path(cls, value: str, info: ValidationInfo) -> str:
+        if not value.strip():
+            raise ValueError(f"{info.field_name} must not be empty")
+        return value
 
     @field_validator("offset", mode="after")
     @classmethod
@@ -904,23 +898,17 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
             raise ValueError(f"read attachment exceeds the maximum supported size ({MAX_ATTACHMENT_BYTES} bytes): {relative_path}")
         raw = candidate.read_bytes()
         content_hash = hashlib.sha256(raw).hexdigest()
-        # When the spill method is absent the attachment stays inline (bounded
-        # by MAX_INLINE_ATTACHMENT_BYTES) and the reference is omitted.
         spilled = _spill_artifact(services, kind="content", content=raw, mime=mime, source=relative_path)
-        artifact = None if spilled is None else spilled[0]
-        artifact_id = None if spilled is None else spilled[1]
-        uri = None if spilled is None else spilled[2]
+        artifact, artifact_id, uri = spilled
         bounds = OutputBounds(
-            reference=OutputReference(uri=uri, artifact=artifact) if uri is not None else None,
+            reference=OutputReference(uri=uri, artifact=artifact),
             source=relative_path,
         )
         label = "Image" if mime in RASTER_IMAGE_MIMES else "PDF"
         message = f"{label} read successfully"
         if mime == "application/pdf":
-            message = f"PDF {relative_path} ({mime}, {len(raw)} bytes, sha256:{content_hash}); " + (
-                f'read the original PDF with read(path="{uri}", view="raw").'
-                if uri is not None
-                else "the original PDF reference is unavailable without a runtime artifact service."
+            message = (
+                f'PDF {relative_path} ({mime}, {len(raw)} bytes, sha256:{content_hash}); read the original PDF with read(path="{uri}", view="raw").'
             )
         data_uri = (
             f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
@@ -933,11 +921,10 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
             "content_type": mime,
             "byte_count": len(raw),
             "content_hash": content_hash,
+            "artifact_id": artifact_id,
+            "attachment": {"mime": mime, "reference": uri},
+            "bounds": {"reference": uri},
         }
-        if uri is not None:
-            attachment_body["artifact_id"] = artifact_id
-            attachment_body["attachment"] = {"mime": mime, "reference": uri}
-            attachment_body["bounds"] = {"reference": uri}
         return _ReadOutcome(
             output=AttachmentOutput(mime, data_uri, presentation=message, bounds=bounds),
             body=OpaqueToolBody(attachment_body),
@@ -947,20 +934,14 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
         raw = candidate.read_bytes()
         effective_mime = mime or "application/octet-stream"
         content_hash = hashlib.sha256(raw).hexdigest()
-        # When the spill method is absent the bytes stay out of the response
-        # (they were never inlined) and the reference is omitted.
         spilled = _spill_artifact(services, kind="content", content=raw, mime=effective_mime, source=relative_path)
-        artifact = None if spilled is None else spilled[0]
-        artifact_id = None if spilled is None else spilled[1]
-        uri = None if spilled is None else spilled[2]
+        artifact, artifact_id, uri = spilled
         bounds = OutputBounds(
-            reference=OutputReference(uri=uri, artifact=artifact) if uri is not None else None,
+            reference=OutputReference(uri=uri, artifact=artifact),
             source=relative_path,
         )
-        presentation = f"Binary file {relative_path} ({effective_mime}, {len(raw)} bytes, sha256:{content_hash})." + (
-            f' Read full content with read(path="{uri}").'
-            if uri is not None
-            else " The full content is unavailable without a runtime artifact service."
+        presentation = (
+            f'Binary file {relative_path} ({effective_mime}, {len(raw)} bytes, sha256:{content_hash}). Read full content with read(path="{uri}").'
         )
         binary_body: dict[str, object] = {
             "path": relative_path,
@@ -968,12 +949,10 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
             "content_type": effective_mime,
             "byte_count": len(raw),
             "content_hash": content_hash,
+            "artifact_id": artifact_id,
+            "source": relative_path,
+            "reference": uri,
         }
-        if artifact_id is not None:
-            binary_body["artifact_id"] = artifact_id
-        binary_body["source"] = relative_path
-        if uri is not None:
-            binary_body["reference"] = uri
         return _ReadOutcome(
             output=TextOutput(presentation, bounds=bounds),
             body=OpaqueToolBody(binary_body),
@@ -1524,13 +1503,10 @@ def _render_format_view(
     artifacts: list[Mapping[str, object]] = []
     text_reference: str | None = None
     if isinstance(full_text, str) and len(full_text.encode("utf-8")) > MAX_BYTES:
-        # When the spill method is absent the extracted text beyond this view is
-        # dropped; the view's own truncation flags stay the honest signal.
         spilled = _spill_artifact(services, kind="pdf_text", content=full_text, mime="text/plain; charset=utf-8", source=label)
-        if spilled is not None:
-            text_reference = spilled[2]
-            payload["text_reference"] = text_reference
-            payload["output_artifact"] = spilled[0]
+        text_reference = spilled[2]
+        payload["text_reference"] = text_reference
+        payload["output_artifact"] = spilled[0]
     payload["source"] = label
 
     images_value = payload.pop("images", [])
@@ -1542,8 +1518,6 @@ def _render_format_view(
         image_bytes = image.pop("data", None)
         if not isinstance(image_bytes, bytes):
             raise ValueError("notebook image data is unavailable")
-        # When the spill method is absent the image record carries no reference
-        # and the bytes were never inlined.
         spilled = _spill_artifact(
             services,
             kind="notebook_image",
@@ -1551,15 +1525,13 @@ def _render_format_view(
             mime=str(image["mime"]),
             source=f"{label}#cell={image['cell']}",
         )
-        if spilled is not None:
-            image["reference"] = spilled[2]
-            image["artifact"] = spilled[0]
-            artifacts.append(spilled[0])
+        image["reference"] = spilled[2]
+        image["artifact"] = spilled[0]
+        artifacts.append(spilled[0])
     source_reference: str | None = None
     if view == "pdf" or payload.get("truncated_text") is True or payload.get("raw_reference_required") is True:
         if not isinstance(source_bytes, bytes):
             raise ValueError(f"{view} source snapshot is unavailable")
-        # When the spill method is absent the source snapshot reference is omitted.
         spilled = _spill_artifact(
             services,
             kind="pdf_source" if view == "pdf" else "notebook_source",
@@ -1567,10 +1539,9 @@ def _render_format_view(
             mime="application/pdf" if view == "pdf" else "application/json",
             source=label,
         )
-        if spilled is not None:
-            source_reference = spilled[2]
-            payload["source_reference"] = source_reference
-            payload["source_artifact"] = spilled[0]
+        source_reference = spilled[2]
+        payload["source_reference"] = source_reference
+        payload["source_artifact"] = spilled[0]
     if artifacts:
         payload["artifacts"] = artifacts
 
@@ -1578,13 +1549,10 @@ def _render_format_view(
     output_reference: str | None = None
     output_truncated = len(raw_content.encode("utf-8")) > MAX_BYTES
     if output_truncated:
-        # When the spill method is absent the cut view body is unreachable, so
-        # the truncation flags stand alone.
         spilled = _spill_artifact(services, kind=f"{view}_view", content=raw_content, mime="application/json", source=label)
-        if spilled is not None:
-            output_reference = spilled[2]
-            payload["output_reference"] = output_reference
-            payload["output_artifact"] = spilled[0]
+        output_reference = spilled[2]
+        payload["output_reference"] = output_reference
+        payload["output_artifact"] = spilled[0]
         raw_content = raw_content.encode("utf-8")[: MAX_BYTES // 2].decode("utf-8", "ignore") + "\n…"
     truncated = bool(payload.get("truncated", False)) or output_truncated
     if output_truncated:
@@ -1684,8 +1652,7 @@ class ReadTool:
     )
 
     def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:
-        args = parse_tool_args(
-            ReadArgs,
+        args = ReadArgs.model_validate(
             {
                 "path": call.arguments.get("path"),
                 "offset": call.arguments.get("offset"),
@@ -1699,8 +1666,7 @@ class ReadTool:
                 "page": call.arguments.get("page"),
                 "output_offset": call.arguments.get("output_offset"),
                 "output_limit": call.arguments.get("output_limit"),
-            },
-            tool_name=self.definition.name,
+            }
         )
         if args.path.startswith((RULE_URI_PREFIX, VOIDCODE_TOOL_DOC_PREFIX, VOIDCODE_TRANSCRIPT_PREFIX)) and (
             args.view is not None

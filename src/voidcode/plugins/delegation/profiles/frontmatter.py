@@ -1,12 +1,15 @@
-"""YAML frontmatter framing/loading for agent profile markdown files.
+"""Bounded YAML frontmatter parsing for markdown-backed plugin resources.
 
-Copied from ``voidcode.common.frontmatter`` (the framing subset this plugin
-needs): ``---`` delimiter framing with ``require_delimiter`` /
-``require_closing`` / ``require_body`` / ``strip_body`` options, the
-``MAX_FRONTMATTER_CHARS`` bound, and a :class:`yaml.SafeLoader` subclass that
-rejects duplicate and non-string mapping keys.
+Ported from the legacy shared helper (``src/voidcode/common/frontmatter.py``) with the same
+framing rules, size bound and mapping checks: a plugin artifact is deployed on its own, so it
+carries its own copy instead of importing a shared module.
 
-This module owns the *syntax* of the block and nothing else; the agent
+Framing differences between callers are options, not copies of the loop:
+``require_delimiter`` (profile manifests must open with ``---``), ``require_closing``
+(an unterminated block is an error), ``require_body`` (the markdown body must be non-empty) and
+``strip_body`` (whitespace handling).
+
+This module owns the *syntax* of the block and nothing else; the profile
 registry owns its own field whitelist, required fields, value types, and
 authority checks.
 """
@@ -29,9 +32,7 @@ _MERGE_KEY_TAG: Final[str] = "tag:yaml.org,2002:merge"
 class FrontmatterError(ValueError):
     """Shared frontmatter syntax error.
 
-    Domains wrap or re-raise it: the agent registry and skill manifest wrap it
-    with their own file-scoped message, and their domain-specific exception
-    types (for example ``SkillManifestParseError``) keep working.
+    Callers wrap or re-raise it with their own file-scoped message.
     """
 
 
@@ -51,29 +52,25 @@ def split_frontmatter(
     """Split markdown ``text`` into ``(raw_frontmatter, markdown_body)``.
 
     The block framing rules differ per domain, so they are options instead of
-    three copies of the loop:
+    copies of the loop:
 
     ``require_delimiter``
-        ``True`` (agent manifests, skills): the file must open with a ``---``
-        line. ``False`` (slash commands): plain markdown is accepted and
-        ``(None, text)`` is returned.
+        ``True`` (the default): the file must open with a ``---`` line.
+        ``False``: plain markdown is accepted and ``(None, text)`` is returned.
     ``require_closing``
-        ``True`` (agent manifests, skills): an unterminated block is an error.
-        ``False`` (slash commands): an unterminated block is not frontmatter at
-        all, so ``(None, text)`` is returned.
+        ``True`` (the default): an unterminated block is an error.
+        ``False``: an unterminated block is not frontmatter at all, so
+        ``(None, text)`` is returned.
     ``require_body``
-        ``True`` (agent manifests): the markdown body after the block is
-        required to be non-empty.
+        ``True``: the markdown body after the block is required to be non-empty.
     ``strip_body``
-        ``True`` (agent manifests, skills): surrounding whitespace is removed
-        from the returned body. ``False`` (slash commands): everything after
-        the closing delimiter line is returned verbatim, so a command template
-        keeps its exact trailing whitespace.
+        ``True`` (the default): surrounding whitespace is removed from the
+        returned body. ``False``: everything after the closing delimiter line
+        is returned verbatim.
 
     ``source`` is an optional location prefix used only when the caller does
     not add its own: pass the file path when the error is not wrapped with
-    one, and pass ``None`` when the caller prefixes the path itself (agent
-    manifests and skill manifests do).
+    one, and pass ``None`` when the caller prefixes the path itself.
 
     A delimiter is recognized when a line's stripped content is exactly
     ``---``, so trailing whitespace and CRLF endings are tolerated and a

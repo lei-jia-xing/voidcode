@@ -59,11 +59,18 @@ def enforce_seen_lines(
     display_path: str,
     start_line: int,
     end_line: int,
+    current_hash: str | None = None,
 ) -> None:
     """Require every line in ``[start_line, end_line]`` (1-based, inclusive) to
     have been revealed by a prior read result.
 
     Fails closed: a file with no recorded line data rejects every change.
+    Coverage is always bound to the bytes currently on disk: a prior version's lines never
+    authorize the current file. ``current_hash`` lets a caller that already verified those bytes
+    skip the hashing; it is never used to override them. Without it the guard hashes the
+    candidate itself, so the core's ambiguous ``read_hash`` (None once two versions of the
+    path were observed) can no longer refuse a read→edit→read→edit cycle whose second read
+    revealed the current content.
     """
     read_paths, _read_lines, _read_whole_files, _read_hash = _coverage(context)
     if context.session_id is None:
@@ -80,7 +87,11 @@ def enforce_seen_lines(
             retry_guidance=("Use read on the target path first, review the current content, then retry the change."),
             details={"path": display_path, "raw_path": raw_path},
         )
-    seen = _seen_lines_for_context(context, resolved)
+    seen = _seen_lines_for_context(
+        context,
+        resolved,
+        current_hash=current_hash if current_hash is not None else hashlib.sha256(candidate.read_bytes()).hexdigest(),
+    )
     if seen is None:
         _raise_unseen_range(
             tool_name=tool_name,
@@ -143,6 +154,7 @@ def enforce_seen_whole_file(
         display_path=display_path,
         start_line=1,
         end_line=total_lines,
+        current_hash=actual_hash,
     )
     if (resolved, actual_hash) not in read_whole_files:
         stale_reads = [h for (p, h) in read_whole_files if p == resolved and h != actual_hash]
@@ -208,12 +220,10 @@ def _raise_unseen_range(
     )
 
 
-def _seen_lines_for_context(context: ToolContext, path: str) -> frozenset[int] | None:
-    _read_paths, read_lines, _read_whole_files, read_hash = _coverage(context)
-    if read_hash is not None:
-        return read_lines.get((path, read_hash))
-    observations = [lines for (observed_path, _), lines in read_lines.items() if observed_path == path]
-    return observations[0] if len(observations) == 1 else None
+def _seen_lines_for_context(context: ToolContext, path: str, *, current_hash: str) -> frozenset[int] | None:
+    """Lines revealed for ``path`` at exactly ``current_hash``; versions never merge."""
+    _read_paths, read_lines, _read_whole_files, _read_hash = _coverage(context)
+    return read_lines.get((path, current_hash))
 
 
 def _has_whole_file_for_context(context: ToolContext, path: str) -> bool:
@@ -234,6 +244,9 @@ class CharProvenanceTracker:
 
     def __init__(self, original_content: str) -> None:
         self._content = original_content
+        #: The exact version this tracker started from. Line coverage binds to this hash, never to
+        #: the context's read_hash, which is None once two versions of the path have been observed.
+        self._base_hash = hashlib.sha256(original_content.encode("utf-8")).hexdigest()
         prov: list[int | None] = []
         line_num = 1
         for ch in original_content:
@@ -270,7 +283,7 @@ class CharProvenanceTracker:
                 retry_guidance="Use read on the target path first, review the current content, then retry the change.",
                 details={"path": display_path, "raw_path": raw_path},
             )
-        seen = _seen_lines_for_context(context, resolved_path)
+        seen = _seen_lines_for_context(context, resolved_path, current_hash=self._base_hash)
         if seen is None:
             _raise_unseen_range(
                 tool_name=tool_name,

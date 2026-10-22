@@ -188,6 +188,15 @@ def _session_events() -> list[EventView]:
             payload={"tokens_before": 900},
         ),
         EventView(
+            sequence=16,
+            event_type="plugin.compaction.context_compacted",
+            run_id="run-1",
+            revision_id="rev-1",
+            source="plugin.compaction",
+            actor="plugin",
+            payload={"covered_bytes": 4434, "dropped_bytes": 3797, "reason": "manual"},
+        ),
+        EventView(
             sequence=14,
             event_type="kernel.approval_requested",
             run_id="run-1",
@@ -294,7 +303,7 @@ def test_synthetic_stream_produces_the_legacy_aggregates() -> None:
     assert payload["repeated_read_count"] == 2
     # The truncated /a read and the partial /b read are each followed by a completing read.
     assert payload["followup_read_count"] == 2
-    assert payload["compaction_count"] == 1
+    assert payload["compaction_count"] == 2
     assert payload["approval_request_count"] == 1
     assert payload["resumed_run_count"] == 1
     assert payload["delegated_task_count"] == 1
@@ -480,7 +489,7 @@ def test_command_returns_the_projection_and_a_short_summary() -> None:
     assert payload["provider_usage"]["cache_hit_rate"] == 0.6
     lines = (result.output or "").splitlines()
     assert lines[0] == "TOOL EFFECTIVENESS calls=10 success=7 errors=3 success_rate=70.0%"
-    assert lines[1] == "SIGNALS repeated_reads=2 followup_reads=2 compactions=1 approvals=1 resumed_runs=1 delegated_tasks=1"
+    assert lines[1] == "SIGNALS repeated_reads=2 followup_reads=2 compactions=2 approvals=1 resumed_runs=1 delegated_tasks=1"
     assert "TOKENS input=100 output=20 cache_read=60 uncached_input=40 cache_hit_rate=60.0% cost_usd=0.1 unknown=False" in lines[2]
     assert lines[3] == "TOOL                         CALLS     OK  ERRORS   RATE  RETRIES  TRUNCATED  ERROR KINDS"
     assert lines[4].startswith("read ")

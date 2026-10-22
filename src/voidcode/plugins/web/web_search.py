@@ -10,20 +10,23 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import httpx
 from bs4 import BeautifulSoup, Tag
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ValidationInfo, field_validator
 
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import OutputBounds, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult, ToolSuccess
-
-from .args import parse_tool_args, validate_non_empty
 
 
 class WebSearchArgs(BaseModel):
     query: str
     numResults: int = 8
 
-    _validate_query = field_validator("query", mode="after")(validate_non_empty)
+    @field_validator("query", mode="after")
+    @classmethod
+    def _validate_query(cls, value: str, info: ValidationInfo) -> str:
+        if not value.strip():
+            raise ValueError(f"{info.field_name} must not be empty")
+        return value
 
     @field_validator("numResults", mode="after")
     @classmethod
@@ -1086,13 +1089,11 @@ class WebSearchTool:
     ) -> ToolResult:
         _ = context
         _ = services
-        args = parse_tool_args(
-            WebSearchArgs,
+        args = WebSearchArgs.model_validate(
             {
                 "query": call.arguments.get("query"),
                 "numResults": call.arguments.get("numResults", DEFAULT_NUM_RESULTS),
-            },
-            tool_name=self.definition.name,
+            }
         )
 
         num_results = min(args.numResults, 20)

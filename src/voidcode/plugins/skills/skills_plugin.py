@@ -853,6 +853,21 @@ def _rule_page_query(arguments: Mapping[str, object], caller: PluginQueryCaller)
     return None if page is None else page.payload()
 
 
+def prepare_skills_deactivation(
+    state: Mapping[str, object],
+    scope: str,
+    scope_key: str,
+    tip_sequence: int | None,
+) -> Mapping[str, object]:
+    """Pure deactivation transform: the observation cursor and recency list survive untouched.
+
+    Both are plain history (paths, not leases) with no live resource behind them, so the
+    parked copy keeps the payload as-is and re-enable resumes exactly where it left off.
+    """
+    _ = (scope, scope_key, tip_sequence)
+    return state
+
+
 def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
     skills_config = parse_skills_config(config)
     return Plugin(
@@ -875,4 +890,5 @@ def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
                 },
             },
         ),
+        prepare_deactivate=prepare_skills_deactivation,
     )

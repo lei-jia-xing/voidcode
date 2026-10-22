@@ -4,11 +4,10 @@ import difflib
 import hashlib
 import json
 import subprocess
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ValidationInfo, field_validator
 
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices
@@ -25,9 +24,6 @@ from voidcode.sdk.tools import (
     ToolSuccess,
 )
 
-from .args import parse_tool_args, validate_non_empty
-from .artifacts import artifact_uri, create_artifact
-from .edits_hooks import post_edit_diagnostics
 from .guards import _coverage, enforce_read_before_write, enforce_seen_lines
 from .repair import raise_tool_diagnostic
 
@@ -50,7 +46,12 @@ class AstGrepArgs(BaseModel):
             raise ValueError("mode must be one of search, preview, replace")
         return value
 
-    _validate_pattern = field_validator("pattern", mode="after")(validate_non_empty)
+    @field_validator("pattern", mode="after")
+    @classmethod
+    def _validate_pattern(cls, value: str, info: ValidationInfo) -> str:
+        if not value.strip():
+            raise ValueError(f"{info.field_name} must not be empty")
+        return value
 
     @field_validator("path", mode="after")
     @classmethod
@@ -144,25 +145,23 @@ def _match_result_output(
     services: PluginServices,
     truncated: bool,
     artifact: dict[str, object] | None = None,
-) -> tuple[TextOutput, dict[str, object] | None]:
-    # No artifact service on this host -> None keeps the bounded inline output and truncation
-    # is reported honestly instead of a reference.
+) -> tuple[TextOutput, dict[str, object]]:
     if artifact is None:
-        created = create_artifact(
-            services,
-            kind="ast_grep_matches",
-            content=native_jsonl,
-            mime="text/x-ndjson; charset=utf-8",
-            source="ast-grep:json-stream",
-        )
-        artifact = None if created is None else dict(created)
-    if artifact is None:
-        bounds = OutputBounds(truncated=truncated, partial=truncated)
-        return TextOutput(output, bounds=bounds), None
-
-    uri = artifact_uri(artifact)
-    if uri is None:
-        raise RuntimeError("ast_grep match artifact has no URI")
+        reference = services.spill_artifact(native_jsonl, media_type="text/x-ndjson; charset=utf-8")
+        uri = f"voidcode://artifact/{reference.sha256}"
+        artifact = {
+            "artifact_id": reference.sha256,
+            "sha256": reference.sha256,
+            "byte_count": reference.bytes,
+            "content_type": reference.media_type,
+            "mime": reference.media_type,
+            "uri": uri,
+            "kind": "ast_grep_matches",
+            "status": "available",
+            "source": "ast-grep:json-stream",
+        }
+    else:
+        uri = f"voidcode://artifact/{artifact['artifact_id']}"
     return (
         TextOutput(
             f'Full native AST match JSONL: read(path="{uri}").\n{output}',
@@ -176,12 +175,8 @@ def _match_result_output(
     )
 
 
-def _add_match_artifact(body: dict[str, Any], artifact: dict[str, object] | None) -> None:
-    if artifact is None:
-        return
-    uri = artifact_uri(artifact)
-    if uri is None:
-        raise RuntimeError("ast_grep match artifact has no URI")
+def _add_match_artifact(body: dict[str, Any], artifact: dict[str, object]) -> None:
+    uri = f"voidcode://artifact/{artifact['artifact_id']}"
     body.update(body_artifact=artifact, artifacts=[artifact], response_reference=uri)
 
 
@@ -243,21 +238,18 @@ def _preflight_replace_targets(
             )
             actual_hash = hashlib.sha256(content).hexdigest()
             resolved_key = candidate.resolve().as_posix()
-            _read_paths, read_lines, read_whole_files, read_hash = _coverage(context)
+            _read_paths, read_lines, read_whole_files, _read_hash = _coverage(context)
             observed_hashes = {content_hash for observed_path, content_hash in read_lines if observed_path == resolved_key}
             observed_hashes.update(content_hash for observed_path, content_hash in read_whole_files if observed_path == resolved_key)
-            if read_hash is not None:
-                observed_hashes.intersection_update({read_hash})
-            if context.session_id is not None and len(observed_hashes) == 1:
+            if context.session_id is not None and actual_hash not in observed_hashes and len(observed_hashes) == 1:
                 observed_hash = next(iter(observed_hashes))
-                if observed_hash != actual_hash:
-                    raise_tool_diagnostic(
-                        message=f"ast_grep replace rejected because {display_path} changed since it was read (stale edit).",
-                        error_kind="stale_edit",
-                        reason="content_hash_mismatch",
-                        retry_guidance="Read the file again, use the SHA-256 content hash shown in read output, then retry.",
-                        details={"expected_hash": observed_hash, "actual_hash": actual_hash, "path": display_path},
-                    )
+                raise_tool_diagnostic(
+                    message=f"ast_grep replace rejected because {display_path} changed since it was read (stale edit).",
+                    error_kind="stale_edit",
+                    reason="content_hash_mismatch",
+                    retry_guidance="Read the file again, use the SHA-256 content hash shown in read output, then retry.",
+                    details={"expected_hash": observed_hash, "actual_hash": actual_hash, "path": display_path},
+                )
             display_paths[candidate] = display_path
             original_bytes[candidate] = content
             source_hashes[candidate] = actual_hash
@@ -278,6 +270,7 @@ def _preflight_replace_targets(
                 display_path=display_path,
                 start_line=start_line + 1,
                 end_line=end_line + 1,
+                current_hash=hashlib.sha256(candidate.read_bytes()).hexdigest(),
             )
 
     if args.expectedHash is not None:
@@ -410,8 +403,7 @@ class AstGrepTool:
         raise ValueError(f"unknown ast_grep mode: {args.mode}")
 
     def _validate_call(self, call: ToolCall) -> AstGrepArgs:
-        return parse_tool_args(
-            AstGrepArgs,
+        return AstGrepArgs.model_validate(
             {
                 "mode": call.arguments.get("mode", "search"),
                 "pattern": call.arguments.get("pattern"),
@@ -420,8 +412,7 @@ class AstGrepTool:
                 "lang": call.arguments.get("lang"),
                 "apply": call.arguments.get("apply", False),
                 "expectedHash": call.arguments.get("expectedHash"),
-            },
-            tool_name=self.definition.name,
+            }
         )
 
     def _invoke_search(
@@ -578,12 +569,9 @@ class AstGrepTool:
                 _raise_on_process_failure(completed=completed, fallback_message="ast-grep replace failed")
 
         file_results: list[dict[str, Any]] = []
-        diagnostics: list[Mapping[str, object]] = []
-        final_contents: dict[Path, str] = {}
         for target in ordered_targets:
             final_bytes = target.read_bytes()
             final_content = final_bytes.decode("utf-8")
-            final_contents[target] = final_content
             display_path = display_paths[target]
             diff = "".join(
                 difflib.unified_diff(
@@ -593,20 +581,15 @@ class AstGrepTool:
                     tofile=f"b/{display_path}",
                 )
             )
-            file_result: dict[str, Any] = {
-                "path": display_path,
-                "source_hash": source_hashes[target],
-                "byte_count": len(final_bytes),
-                "content_hash": hashlib.sha256(final_bytes).hexdigest(),
-                "diff": diff,
-            }
-            file_results.append(file_result)
-
-        diagnostics.extend(
-            diagnostic
-            for target in ordered_targets
-            if (diagnostic := post_edit_diagnostics(context=context, path=target, content=final_contents[target])) is not None
-        )
+            file_results.append(
+                {
+                    "path": display_path,
+                    "source_hash": source_hashes[target],
+                    "byte_count": len(final_bytes),
+                    "content_hash": hashlib.sha256(final_bytes).hexdigest(),
+                    "diff": diff,
+                }
+            )
         output_text = f"Applied {replacement_count} AST replacement(s) in {relative_path}"
         if len(file_results) > 1:
             output_text += f" across {len(file_results)} files."
@@ -632,7 +615,6 @@ class AstGrepTool:
             **_with_match_counts(matches),
             "applied": True,
             "mode": "replace",
-            "diagnostics": diagnostics,
             "timeout_seconds": timeout_seconds,
         }
         if len(file_results) == 1:

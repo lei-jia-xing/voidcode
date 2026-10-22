@@ -14,7 +14,6 @@ from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.tools import TextOutput, ToolSuccess
 
-from .edits_hooks import post_edit_diagnostics
 from .guards import enforce_read_before_write, enforce_seen_lines, enforce_seen_whole_file
 from .repair import format_text_repair_hints, raise_tool_diagnostic
 
@@ -829,51 +828,6 @@ def _invalid_patch_text_error(patch_text: str, *, detail: str | None = None) -> 
     return f"{base}{guidance}"
 
 
-def _text_at_path(workspace: Path, path_value: str) -> str:
-    """Text of one patch target, or ``""`` when it is not readable as UTF-8."""
-    requested_path = Path(path_value)
-    candidate = (requested_path if requested_path.is_absolute() else workspace / requested_path).resolve()
-    try:
-        return candidate.read_text(encoding="utf-8")
-    except OSError, UnicodeDecodeError:
-        return ""
-
-
-def _with_post_edit_diagnostics(
-    result: ToolSuccess[ApplyPatchResultBody],
-    *,
-    context: ToolContext,
-    workspace: Path,
-) -> ToolSuccess[ApplyPatchResultBody]:
-    body = result.body
-    if not isinstance(body, ApplyPatchResultBody):
-        raise TypeError("edit returned no typed patch result body")
-    lsp_diagnostics: list[dict[str, object]] = []
-    for change in body.changes:
-        requested_path = Path(change.path)
-        candidate = (requested_path if requested_path.is_absolute() else workspace / requested_path).resolve()
-        lsp_diagnostic = post_edit_diagnostics(
-            context=context,
-            path=candidate,
-            content=_text_at_path(workspace, change.path),
-        )
-        if lsp_diagnostic is not None:
-            lsp_diagnostics.append(dict(lsp_diagnostic))
-    if not lsp_diagnostics:
-        return result
-    if not isinstance(result.output, TextOutput):
-        raise TypeError("edit returned no text output for patch application")
-    return ToolSuccess(
-        result.tool_name,
-        output=result.output,
-        body=ApplyPatchResultBody(
-            changes=body.changes,
-            count=body.count,
-            diagnostics=(*body.diagnostics, *lsp_diagnostics),
-        ),
-    )
-
-
 def _guard_changes_before_write(
     changes: list[dict[str, object]],
     *,
@@ -1190,8 +1144,7 @@ def execute_patch(
         )
 
     if _looks_like_marker_patch(patch_text):
-        result = _apply_marker_patch(patch_text, workspace=workspace, expected_hashes=expected_hashes, context=context, tool_name=tool_name)
-        return _with_post_edit_diagnostics(result, workspace=workspace.resolve(), context=context)
+        return _apply_marker_patch(patch_text, workspace=workspace, expected_hashes=expected_hashes, context=context, tool_name=tool_name)
 
     normalized_patch = _normalize_patch_text(patch_text)
     changes = _changes_from_patch(patch_text)
@@ -1276,7 +1229,7 @@ def execute_patch(
 
         content = "\n".join(summary_lines) if summary_lines else "patch applied"
 
-        result = ToolSuccess(
+        return ToolSuccess(
             tool_name=tool_name,
             output=TextOutput(content),
             body=ApplyPatchResultBody(
@@ -1284,7 +1237,6 @@ def execute_patch(
                 count=len(changes),
             ),
         )
-        return _with_post_edit_diagnostics(result, workspace=workspace.resolve(), context=context)
     finally:
         try:
             patch_path.unlink(missing_ok=True)

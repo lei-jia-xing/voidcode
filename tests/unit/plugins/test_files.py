@@ -23,7 +23,9 @@ from voidcode.sdk.tools import ConfirmedStop, ReadObservation, ToolCall, ToolFai
 
 
 class _DummyServices:
-    pass
+    def spill_artifact(self, data: bytes | str, *, media_type: str = "text/plain; charset=utf-8"):  # type: ignore[no-untyped-def]
+        raw = data.encode("utf-8") if isinstance(data, str) else bytes(data)
+        return SimpleNamespace(sha256=hashlib.sha256(raw).hexdigest(), bytes=len(raw), media_type=media_type)
 
 
 _SERVICES = cast(Any, _DummyServices())

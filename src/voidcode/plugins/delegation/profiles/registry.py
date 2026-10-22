@@ -19,7 +19,6 @@ from typing import Literal
 
 from .builtin import list_builtin_agent_manifests
 from .frontmatter import load_frontmatter_mapping, split_frontmatter
-from .hook_preset_refs import validate_hook_preset_refs
 from .models import (
     AgentManifest,
     AgentMcpBindingIntent,
@@ -45,7 +44,6 @@ _SUPPORTED_FRONTMATTER_FIELDS = frozenset(
         "fallback_models",
         "tool_allowlist",
         "skill_refs",
-        "preset_hook_refs",
         "mcp_binding",
         "prompt_append",
     }
@@ -223,10 +221,6 @@ def _manifest_from_payload(
     mode = _parse_mode(_required_string(payload, "mode"))
     tool_allowlist = _string_list(payload.get("tool_allowlist"), field="tool_allowlist")
     skill_refs = _string_list(payload.get("skill_refs"), field="skill_refs")
-    preset_hook_refs = validate_hook_preset_refs(
-        _string_list(payload.get("preset_hook_refs"), field="preset_hook_refs"),
-        field_path=f"custom agent manifest {source_path or source_id} preset_hook_refs",
-    )
     prompt_append = _require_optional_string(payload, "prompt_append")
     return AgentManifest(
         id=manifest_id,
@@ -241,7 +235,6 @@ def _manifest_from_payload(
         fallback_models=_string_list(payload.get("fallback_models"), field="fallback_models"),
         tool_allowlist=tool_allowlist,
         skill_refs=skill_refs,
-        preset_hook_refs=preset_hook_refs,
         mcp_binding=_parse_mcp_binding(payload.get("mcp_binding")),
         top_level_selectable=mode == "primary",
         prompt_materialization=AgentPromptMaterialization(

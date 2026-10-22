@@ -1851,16 +1851,26 @@ class SqliteStore:
 
                 for owner in cancelled_owners:
                     # A deactivated owner's generic constraints die with it: an orphaned
-                    # restrictive overlay must never keep blocking ordinary chat.
+                    # restrictive overlay must never keep blocking ordinary chat. Session-keyed
+                    # rows are narrowed to this workspace's sessions; a shared database must
+                    # never lose another workspace's overlays to this switch.
                     self._connection.execute(
-                        "DELETE FROM session_overlays WHERE owner = ?",
-                        (owner,),
+                        """
+                        DELETE FROM session_overlays
+                        WHERE owner = ?
+                          AND session_id IN (SELECT session_id FROM sessions WHERE workspace = ?)
+                        """,
+                        (owner, workspace),
                     )
                     # A deactivated owner's projection disappears with it: the raw window
                     # becomes visible again instead of a summary nobody owns.
                     self._connection.execute(
-                        "DELETE FROM window_projections WHERE owner = ?",
-                        (owner,),
+                        """
+                        DELETE FROM window_projections
+                        WHERE owner = ?
+                          AND session_id IN (SELECT session_id FROM sessions WHERE workspace = ?)
+                        """,
+                        (owner, workspace),
                     )
                     self._connection.execute(
                         """
@@ -1871,16 +1881,23 @@ class SqliteStore:
                         """,
                         (now, owner, workspace),
                     )
+                    # A deactivated owner's pending wakeups die with it: a schedule nobody owns
+                    # must never fire into the new generation. Claimed rows already have their
+                    # run; settling them stays with that run's terminal path. Wakeups carry
+                    # their own workspace column, so this narrows directly instead of joining
+                    # sessions.
                     self._connection.execute(
                         """
-                        DELETE FROM session_budgets
-                        WHERE owner = ?
-                          AND session_id IN (SELECT session_id FROM sessions WHERE workspace = ?)
+                        UPDATE wakeups
+                        SET status = 'cancelled', updated_at = ?
+                        WHERE status = 'pending' AND owner = ? AND workspace = ?
                         """,
-                        (owner, workspace),
+                        (now, owner, workspace),
                     )
-                cleared = set(cancelled_owners) | set(cleared_budget_owners)
-                for owner in cleared:
+                # Budgets die for cancelled owners AND for still-enabled owners the caller
+                # explicitly clears (e.g. a budget reset across a generation that keeps the
+                # owner): the union preserves that path, narrowed to this workspace.
+                for owner in set(cancelled_owners) | set(cleared_budget_owners):
                     self._connection.execute(
                         """
                         DELETE FROM session_budgets
@@ -2119,8 +2136,22 @@ class SqliteStore:
                 self._apply_state_updates(state_updates, default_revision_id=target_revision_id, now=now)
 
                 for owner in cancelled_owners:
-                    self._connection.execute("DELETE FROM session_overlays WHERE owner = ?", (owner,))
-                    self._connection.execute("DELETE FROM window_projections WHERE owner = ?", (owner,))
+                    self._connection.execute(
+                        """
+                        DELETE FROM session_overlays
+                        WHERE owner = ?
+                          AND session_id IN (SELECT session_id FROM sessions WHERE workspace = ?)
+                        """,
+                        (owner, workspace),
+                    )
+                    self._connection.execute(
+                        """
+                        DELETE FROM window_projections
+                        WHERE owner = ?
+                          AND session_id IN (SELECT session_id FROM sessions WHERE workspace = ?)
+                        """,
+                        (owner, workspace),
+                    )
                     self._connection.execute(
                         """
                         UPDATE continuations
@@ -2132,11 +2163,11 @@ class SqliteStore:
                     )
                     self._connection.execute(
                         """
-                        DELETE FROM session_budgets
-                        WHERE owner = ?
-                          AND session_id IN (SELECT session_id FROM sessions WHERE workspace = ?)
+                        UPDATE wakeups
+                        SET status = 'cancelled', updated_at = ?
+                        WHERE status = 'pending' AND owner = ? AND workspace = ?
                         """,
-                        (owner, workspace),
+                        (now, owner, workspace),
                     )
                 for owner in set(cancelled_owners) | set(cleared_budget_owners):
                     self._connection.execute(

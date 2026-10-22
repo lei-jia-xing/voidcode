@@ -9,14 +9,13 @@ from itertools import islice
 from pathlib import Path
 from typing import ClassVar
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ValidationInfo, field_validator
 
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import OutputBounds, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess
 
-from .args import parse_tool_args, validate_non_empty
 from .gitignore import GitIgnoreMatcher
 from .repair import raise_tool_diagnostic
 
@@ -46,8 +45,12 @@ class GrepArgs(BaseModel):
     respect_gitignore: bool = False
     limit: int = MAX_MATCHES
 
-    _validate_pattern = field_validator("pattern", mode="after")(validate_non_empty)
-    _validate_path = field_validator("path", mode="after")(validate_non_empty)
+    @field_validator("pattern", "path", mode="after")
+    @classmethod
+    def _validate_non_empty(cls, value: str, info: ValidationInfo) -> str:
+        if not value.strip():
+            raise ValueError(f"{info.field_name} must not be empty")
+        return value
 
     @field_validator("context", mode="after")
     @classmethod
@@ -254,8 +257,7 @@ class GrepTool:
         services: PluginServices,  # noqa: ARG002 - required by the frozen Tool ABI
     ) -> ToolResult:
         workspace = context.require_workspace()
-        args = parse_tool_args(
-            GrepArgs,
+        args = GrepArgs.model_validate(
             {
                 "pattern": call.arguments.get("pattern"),
                 "path": call.arguments.get("path"),
@@ -266,8 +268,7 @@ class GrepTool:
                 "exclude": call.arguments.get("exclude"),
                 "respect_gitignore": call.arguments.get("respect_gitignore", False),
                 "limit": call.arguments.get("limit", MAX_MATCHES),
-            },
-            tool_name=self.definition.name,
+            }
         )
 
         workspace_root = workspace.resolve()

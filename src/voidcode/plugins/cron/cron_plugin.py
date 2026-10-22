@@ -612,6 +612,26 @@ def cron_observer(fact: PluginFact, context: ToolContext, services: PluginServic
         services.stage_event("schedule_fired", event)
 
 
+def prepare_cron_deactivation(
+    state: Mapping[str, object],
+    scope: str,
+    scope_key: str,
+    tip_sequence: int | None,
+) -> Mapping[str, object]:
+    """Pure deactivation transform: park every schedule disabled with no armed wakeup.
+
+    The activation transaction cancels this owner's pending wakeups, so a kept wakeup id
+    would name a dead row and a kept enabled flag would promise fires that cannot happen.
+    Schedules stay inspectable after re-enable but never silently re-arm (there is no
+    enable path; recreate the schedule to fire again). A claimed wakeup already has its
+    run, which the core's running-session blockers govern, not this state copy.
+    """
+    _ = (scope, scope_key, tip_sequence)
+    parsed = CronState.from_payload(state)
+    parked = {schedule_id: replace(entry, enabled=False, wakeup_id=None) for schedule_id, entry in parsed.schedules.items()}
+    return replace(parsed, schedules=parked).to_payload()
+
+
 def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
     # The schedule policy is the ported legacy policy; there is no configuration surface.
     _ = config
@@ -649,4 +669,5 @@ def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
                 },
             },
         ),
+        prepare_deactivate=prepare_cron_deactivation,
     )

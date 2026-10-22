@@ -4,6 +4,29 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Plugin deactivation lifecycle, agents→delegation merge, stable compaction fact (BREAKING)
+- Every state-owning bundled plugin now declares `prepare_deactivate`: compaction, cron,
+  delegation, exec, plan, skills, todo join goal. Disabling a used owner no longer refuses the
+  reload: cron schedules park disabled with no armed wakeup, plan mode parks off, todo keeps
+  its list with reminder counters zeroed, and compaction/skills/delegation/exec keep their
+  history untouched for re-enable. Live work still refuses first through the core's session
+  blockers, naming the session, before any transform runs.
+- The activation transaction now cancels a dropped owner's pending wakeups and narrows overlay,
+  projection, continuation, and budget cleanup to the switching workspace; claimed wakeups keep
+  settling through their own run. Budget clearing covers cancelled owners plus still-enabled
+  owners the caller explicitly names.
+- The `agents` plugin id is removed: its profile registry (`/agents`, `/agents.show`) now ships
+  inside `delegation`, which also owns `task`/`task_batch`. Delete stale `plugins.agents`
+  sections (they fail closed); profile discovery roots (`.voidcode/agents/`, user agents dir)
+  are unchanged. `subagent_type` resolves through the one registry, so workspace custom
+  profiles execute via `task`/`task_batch`; unknown ids fail at ingress, and a batch with any
+  bad id is refused whole with zero spawns. Builtin read-only stance lives on the profile
+  record; custom profiles run writable unless the parent lease is read-only.
+- `plugin.compaction.context_compacted` is the stable cumulative compaction fact (one event per
+  applied projection); `/effectiveness` counts it plus the legacy `runtime.context_compacted`
+  history. Compaction no longer drops `todo` results by tool name: every covered result keeps
+  its bounded preview.
+
 ### Product rename: kernel → core; formatter hook deleted (BREAKING)
 - The runtime package is `src/voidcode/core/` (`Core`, `open_core`, `CoreResult`, `CoreConfig`,
   `create_core_app*`, `python -m voidcode.core`, console script `voidcode.core.__main__:main`); the

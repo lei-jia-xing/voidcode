@@ -14,12 +14,7 @@ from typing import Literal
 
 import pytest
 
-from voidcode.plugins.hooks.hooks_plugin import (
-    MAX_NOTE_CHARACTERS,
-    ToolHooks,
-    create_plugin,
-    parse_hooks_config,
-)
+from voidcode.plugins.hooks.hooks_plugin import MAX_NOTE_CHARACTERS, ToolHooks, parse_hooks_config
 from voidcode.sdk.hooks import RunLifecycle, ToolIntent, ToolOutcome
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices
@@ -295,33 +290,3 @@ def test_disabled_config_runs_no_hook_command(tmp_path: Path) -> None:
     assert hooks.pre_tool(_intent("write"), _context(tmp_path), _NoServices()) is None
     assert hooks.post_tool(_outcome("write"), _context(tmp_path), _NoServices()) is None
     assert not ran.exists()
-
-
-def test_create_plugin_provides_every_declared_surface(tmp_path: Path) -> None:
-    plugin = create_plugin({"pre_tool": [_action_command({"action": "cancel", "diagnostic": "blocked"})]})
-    assert plugin.pre_tool is not None and plugin.post_tool is not None
-    assert plugin.session_start is not None and plugin.session_end is not None
-    assert plugin.tools == () and plugin.commands == ()
-    assert plugin.pre_tool(_intent("write"), _context(tmp_path), _NoServices()) is not None
-
-    # No commands configured: every callback still exists (the registration provides every kind)
-    # and is a fast no-op.
-    bare = create_plugin(None)
-    assert bare.pre_tool is not None and bare.post_tool is not None
-    assert bare.pre_tool(_intent("write"), _context(tmp_path), _NoServices()) is None
-    assert bare.post_tool(_outcome("write"), _context(tmp_path), _NoServices()) is None
-    assert bare.session_start is not None and bare.session_start(_lifecycle("start"), _context(tmp_path), _NoServices()) is None
-    assert bare.session_end is not None and bare.session_end(_lifecycle("end"), _context(tmp_path), _NoServices()) is None
-
-
-def test_registration_declares_mutating_tool_hooks() -> None:
-    plugin = create_plugin(None)
-    # mutating=True is the legacy stance: argv hooks may change the workspace and the legacy
-    # runtime skipped them under a read-only policy, which the core now expresses by skipping
-    # declared-mutating hooks. Lifecycle hooks have no tool stance.
-    assert plugin.pre_tool is not None and plugin.pre_tool_match == ("*",) and plugin.pre_tool_mutating is True
-    assert plugin.post_tool is not None and plugin.post_tool_match == ("*",) and plugin.post_tool_mutating is True
-    assert plugin.session_start is not None and plugin.session_end is not None
-    assert plugin.tools == ()
-    assert plugin.commands == ()
-    assert plugin.context is None

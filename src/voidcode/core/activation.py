@@ -57,7 +57,6 @@ _PRIVATE_DIR_NAME = "private"
 #: The shipped default-on plugin set: every product mechanism is an ordinary plugin, so this
 #: list is the product surface. A workspace can disable any of them by id.
 BUNDLED_PLUGIN_IDS = (
-    "agents",
     "ast_grep",
     "btw",
     "compaction",

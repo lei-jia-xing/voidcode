@@ -1,6 +1,6 @@
 """Agent prompt materialization, ported verbatim from ``voidcode.agent.prompts``.
 
-Builtin profiles render from this plugin's ``profiles/<name>.txt`` resources
+Builtin profiles render from this package's ``texts/<name>.txt`` resources
 (the legacy ``voidcode/agent/<profile>/base.txt`` bodies); custom markdown
 profiles render their parsed body plus the optional user append.
 """
@@ -20,7 +20,7 @@ _BUILTIN_PROMPT_PROFILES = frozenset(BUILTIN_PROMPT_PROFILES)
 
 
 def _prompt_resource(prompt_profile: str) -> Traversable:
-    return files(__package__).joinpath("profiles", f"{prompt_profile}.txt")
+    return files(__package__).joinpath("texts", f"{prompt_profile}.txt")
 
 
 def is_builtin_prompt_profile(prompt_profile: str) -> bool:

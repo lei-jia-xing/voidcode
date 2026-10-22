@@ -1,24 +1,20 @@
-"""Agents plugin: agent profile discovery, listing, and prompt rendering.
+"""Profile listing commands owned by the delegation plugin.
 
 The profile model, discovery roots, builtin manifests and prompt materialization are ported
 from the legacy ``voidcode.agent`` package (see ``models.py``/``registry.py``/``builtin.py``/
-``prompts.py`` in this plugin, including the six verbatim ``profiles/*.txt`` bodies).
+``prompts.py`` here, including the six verbatim ``texts/*.txt`` bodies).
 
-This plugin exposes the owned user surface: the profile registry (list) and one profile's
-rendered prompt plus its declared tool allowlist (show). Selecting a profile for a run and
-spawning a profile-scoped child stays with the delegation tools, because a plugin cannot call
-another plugin's private code: the profile -> child-run composition needs either a core
-profile seam or the delegation plugin owning the same profile registry. Nothing here fakes that
-selection, and no policy is silently applied to a run.
+``agents`` lists the registry and ``agents.show`` renders one profile's prompt plus its
+declared tool allowlist: exactly the profiles ``task``/``task_batch`` resolve through
+``subagent_type``. Nothing here selects a profile for a run, and no policy is silently
+applied to a run.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import ClassVar
 
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
-from voidcode.sdk.plugin import Plugin
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import ToolEffect
 
@@ -40,7 +36,6 @@ def _manifest_row(manifest: AgentManifest) -> dict[str, object]:
         "fallback_models": list(manifest.fallback_models),
         "tool_allowlist": list(manifest.tool_allowlist),
         "skill_refs": list(manifest.skill_refs),
-        "preset_hook_refs": list(manifest.preset_hook_refs),
         "top_level_selectable": manifest.top_level_selectable,
     }
 
@@ -111,5 +106,4 @@ class AgentShowCommand:
         )
 
 
-def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
-    return Plugin(commands=(AgentsCommand(), AgentShowCommand()))
+__all__ = ["AgentShowCommand", "AgentsCommand"]

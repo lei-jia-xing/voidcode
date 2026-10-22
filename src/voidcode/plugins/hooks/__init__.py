@@ -1,27 +1,6 @@
-"""Hooks plugin package.
+"""Hooks plugin package: user argv hooks for the four surfaces the core offers."""
 
-Ported from ``voidcode.hook``: builtin hook presets (``presets``), the surface
-table (``hook_surfaces``), argv hook configuration plus the frozen hook plan
-(``hook_config``) and the argv hook executor (``hook_executor``). The plugin
-itself (``hooks_plugin``) exposes the surfaces the core offers: the pre-tool
-gate, the post-tool note, and the session start/end lifecycle hooks.
-"""
-
-from .hook_config import (
-    HOOK_PAYLOAD_SCHEMA,
-    HOOK_PLAN_REVISION,
-    HOOK_PLAN_SCHEMA_VERSION,
-    HookPlanBinding,
-    HookPlanPhase,
-    HookPlanScope,
-    HookPlanValidationError,
-    ResolvedHookPlan,
-    RuntimeHookFailureMode,
-    RuntimeHooksConfig,
-    hook_plan_from_session_metadata,
-    hook_tool_matches,
-    materialize_hook_plan,
-)
+from .hook_config import RuntimeHooksConfig, hook_tool_matches
 from .hook_executor import (
     HookExecutionEvent,
     HookExecutionOutcome,
@@ -32,13 +11,6 @@ from .hook_executor import (
     run_lifecycle_hooks,
     run_tool_hooks,
 )
-from .hook_surfaces import (
-    HOOK_SURFACE_DESCRIPTORS,
-    HookSurfaceDescriptor,
-    HookSurfacePhase,
-    RuntimeHookSurface,
-    hook_surface_descriptor,
-)
 from .hooks_plugin import (
     DEFAULT_TIMEOUT_SECONDS,
     MAX_NOTE_CHARACTERS,
@@ -47,70 +19,22 @@ from .hooks_plugin import (
     create_plugin,
     parse_hooks_config,
 )
-from .presets import (
-    HookPreset,
-    HookPresetAction,
-    HookPresetEventScope,
-    HookPresetKind,
-    HookPresetPayload,
-    HookPresetRef,
-    ResolvedHookPresetSnapshot,
-    get_builtin_hook_preset,
-    hook_preset_snapshot_from_payload,
-    is_builtin_hook_preset_ref,
-    list_builtin_hook_presets,
-    resolve_hook_preset_refs,
-    validate_hook_preset_actions,
-    validate_hook_preset_event_scopes,
-    validate_hook_preset_refs,
-)
 
 __all__ = [
     "DEFAULT_TIMEOUT_SECONDS",
-    "HOOK_PAYLOAD_SCHEMA",
-    "HOOK_PLAN_REVISION",
-    "HOOK_PLAN_SCHEMA_VERSION",
-    "HOOK_SURFACE_DESCRIPTORS",
     "HookExecutionEvent",
     "HookExecutionOutcome",
     "HookExecutionPolicy",
     "HookExecutionRequest",
-    "HookPlanBinding",
-    "HookPlanPhase",
-    "HookPlanScope",
-    "HookPlanValidationError",
     "HookPolicyDecision",
-    "HookPreset",
-    "HookPresetAction",
-    "HookPresetEventScope",
-    "HookPresetKind",
-    "HookPresetPayload",
-    "HookPresetRef",
-    "HookSurfaceDescriptor",
-    "HookSurfacePhase",
     "LifecycleHookExecutionRequest",
     "MAX_NOTE_CHARACTERS",
     "RECURSION_ENV_VAR",
-    "ResolvedHookPlan",
-    "ResolvedHookPresetSnapshot",
-    "RuntimeHookFailureMode",
-    "RuntimeHookSurface",
     "RuntimeHooksConfig",
     "ToolHooks",
     "create_plugin",
-    "get_builtin_hook_preset",
-    "hook_plan_from_session_metadata",
-    "hook_preset_snapshot_from_payload",
-    "hook_surface_descriptor",
     "hook_tool_matches",
-    "is_builtin_hook_preset_ref",
-    "list_builtin_hook_presets",
-    "materialize_hook_plan",
     "parse_hooks_config",
-    "resolve_hook_preset_refs",
     "run_lifecycle_hooks",
     "run_tool_hooks",
-    "validate_hook_preset_actions",
-    "validate_hook_preset_event_scopes",
-    "validate_hook_preset_refs",
 ]

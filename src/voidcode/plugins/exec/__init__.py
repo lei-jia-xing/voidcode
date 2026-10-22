@@ -11,9 +11,9 @@ from collections.abc import Mapping
 
 from voidcode.sdk.plugin import Plugin
 
-from .background_process import BackgroundProcessTool
+from .background_process import BackgroundProcessTool, prepare_exec_deactivation
 from .shell_exec import ShellExecTool
 
 
 def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
-    return Plugin(tools=(ShellExecTool(), BackgroundProcessTool()))
+    return Plugin(tools=(ShellExecTool(), BackgroundProcessTool()), prepare_deactivate=prepare_exec_deactivation)

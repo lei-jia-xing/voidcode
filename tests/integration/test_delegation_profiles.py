@@ -1,4 +1,4 @@
-"""End-to-end integration test for the Agents plugin on the real core stack.
+"""End-to-end integration test for the delegation-owned profile commands on the real core stack.
 
 Proves the plugin loads from its admitted artifact, finds its packaged prompt resources, and
 serves the profile registry through the real command surface (no provider needed).
@@ -15,8 +15,8 @@ import pytest
 from voidcode.core.bootstrap import open_core
 from voidcode.core.engine import Core
 
-_AGENTS_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "agents"
-_REVIEW_PROMPT = (_AGENTS_PLUGIN_ROOT / "profiles" / "review.txt").read_text(encoding="utf-8").strip()
+_DELEGATION_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "delegation"
+_REVIEW_PROMPT = (_DELEGATION_PLUGIN_ROOT / "profiles" / "texts" / "review.txt").read_text(encoding="utf-8").strip()
 
 
 _CREATED_CORES: list[Core] = []
@@ -40,7 +40,7 @@ def _core(tmp_path: Path) -> Core:
         "plugins": {
             # The bundled files plugin is not under test here and is rewritten by another P4 lane.
             "files": {"enabled": False},
-            "agents": {"path": str(_AGENTS_PLUGIN_ROOT)},
+            "delegation": {"path": str(_DELEGATION_PLUGIN_ROOT)},
         },
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")

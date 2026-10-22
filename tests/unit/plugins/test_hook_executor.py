@@ -13,15 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from voidcode.plugins.hooks.hook_config import (
-    HOOK_PLAN_SCHEMA_VERSION,
-    HookPlanBinding,
-    HookPlanValidationError,
-    ResolvedHookPlan,
-    RuntimeHooksConfig,
-    hook_tool_matches,
-    materialize_hook_plan,
-)
+from voidcode.plugins.hooks.hook_config import RuntimeHooksConfig, hook_tool_matches
 from voidcode.plugins.hooks.hook_executor import (
     HookExecutionPolicy,
     HookExecutionRequest,
@@ -45,12 +37,11 @@ def _tool_request(
     phase: str = "pre",
     tool_name: str = "write_file",
     sequence_start: int = 0,
-    plan: ResolvedHookPlan | None = None,
     policy: HookExecutionPolicy | None = None,
     environment: dict[str, str] | None = None,
 ) -> HookExecutionRequest:
     return HookExecutionRequest(
-        hooks=hooks,
+        hooks=hooks or RuntimeHooksConfig(),
         workspace=workspace,
         session_id="sess-1",
         tool_name=tool_name,
@@ -59,7 +50,6 @@ def _tool_request(
         environment=environment or {},
         sequence_start=sequence_start,
         policy=policy or HookExecutionPolicy(),
-        plan=plan,
     )
 
 
@@ -71,10 +61,9 @@ def _lifecycle_request(
     sequence_start: int = 0,
     payload: dict[str, object] | None = None,
     policy: HookExecutionPolicy | None = None,
-    plan: ResolvedHookPlan | None = None,
 ) -> LifecycleHookExecutionRequest:
     return LifecycleHookExecutionRequest(
-        hooks=hooks,
+        hooks=hooks or RuntimeHooksConfig(),
         workspace=workspace,
         session_id="sess-1",
         surface=surface,  # type: ignore[arg-type]
@@ -83,7 +72,6 @@ def _lifecycle_request(
         sequence_start=sequence_start,
         payload=payload or {},
         policy=policy or HookExecutionPolicy(),
-        plan=plan,
     )
 
 
@@ -296,33 +284,10 @@ def test_cancel_is_ignored_on_advisory_lifecycle_surface(tmp_path: Path) -> None
     assert (tmp_path / "marker.txt").exists()
 
 
-@pytest.mark.parametrize(
-    "surface",
-    ["turn_progress", "tool_batch_repeated", "approval_requested", "before_compact"],
-)
-def test_cancel_honoring_surfaces_stop_the_loop(tmp_path: Path, surface: str) -> None:
-    hooks = RuntimeHooksConfig(**{f"on_{surface}": (_emit({"action": "cancel"}), MARKER_WRITER)})
-    outcome = run_lifecycle_hooks(_lifecycle_request(tmp_path, hooks=hooks, surface=surface))
-
-    assert outcome.action == "cancel"
-    assert outcome.last_sequence == 1
-    assert not (tmp_path / "marker.txt").exists()
-
-
-@pytest.mark.parametrize(
-    "surface",
-    [
-        "session_start",
-        "session_end",
-        "session_idle",
-        "background_task_registered",
-        "background_task_progress",
-        "delegated_result_available",
-        "question_asked",
-    ],
-)
-def test_advisory_surfaces_keep_running_after_cancel(tmp_path: Path, surface: str) -> None:
-    hooks = RuntimeHooksConfig(**{f"on_{surface}": (_emit({"action": "cancel"}), MARKER_WRITER)})
+@pytest.mark.parametrize("surface", ["session_start", "session_end"])
+def test_lifecycle_surfaces_keep_running_after_cancel(tmp_path: Path, surface: str) -> None:
+    field = "on_session_start" if surface == "session_start" else "on_session_end"
+    hooks = RuntimeHooksConfig(**{field: (_emit({"action": "cancel"}), MARKER_WRITER)})
     outcome = run_lifecycle_hooks(_lifecycle_request(tmp_path, hooks=hooks, surface=surface))
 
     assert outcome.action == "continue"
@@ -340,19 +305,14 @@ def test_lifecycle_hook_environment_and_payload(tmp_path: Path) -> None:
         "[os.environ['VOIDCODE_HOOK_SURFACE'], os.environ['VOIDCODE_SESSION_ID'],"
         " os.environ['VOIDCODE_HOOK_PAYLOAD_JSON']])}))",
     )
-    hooks = RuntimeHooksConfig(on_turn_progress=(hook,))
-    outcome = run_lifecycle_hooks(_lifecycle_request(tmp_path, hooks=hooks, surface="turn_progress", payload={"tool_name": "write_file"}))
+    hooks = RuntimeHooksConfig(on_session_start=(hook,))
+    outcome = run_lifecycle_hooks(_lifecycle_request(tmp_path, hooks=hooks, surface="session_start", payload={"phase": "start"}))
 
-    assert outcome.events[0].payload["guidance"] == 'turn_progress|sess-1|{"tool_name": "write_file"}'
+    assert outcome.events[0].payload["guidance"] == 'session_start|sess-1|{"phase": "start"}'
     assert outcome.events[0].event_type == "runtime.lifecycle_hook"
     assert outcome.events[0].payload["hook_status"] == "ok"
-    assert outcome.events[0].payload["tool_name"] == "write_file"
-    assert outcome.events[0].payload["surface"] == "turn_progress"
-
-
-def test_lifecycle_surface_rejects_tool_surfaces(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="tool hook surface must use run_tool_hooks: pre_tool"):
-        run_lifecycle_hooks(_lifecycle_request(tmp_path, hooks=RuntimeHooksConfig(), surface="pre_tool"))
+    assert outcome.events[0].payload["phase"] == "start"
+    assert outcome.events[0].payload["surface"] == "session_start"
 
 
 # --- gating: disabled, empty, recursion, globs, read-only --------------------
@@ -366,13 +326,11 @@ def test_empty_command_list_is_a_no_op(tmp_path: Path) -> None:
     assert outcome.failed_error is None
 
 
-def test_disabled_or_absent_hooks_are_a_no_op(tmp_path: Path) -> None:
+def test_disabled_hooks_are_a_no_op(tmp_path: Path) -> None:
     marker = MARKER_WRITER
     disabled = run_tool_hooks(_tool_request(tmp_path, hooks=RuntimeHooksConfig(pre_tool=(marker,), enabled=False), sequence_start=3))
-    absent = run_tool_hooks(_tool_request(tmp_path, hooks=None, sequence_start=3))
 
     assert (disabled.events, disabled.last_sequence) == ((), 3)
-    assert (absent.events, absent.last_sequence) == ((), 3)
     assert not (tmp_path / "marker.txt").exists()
 
 
@@ -446,138 +404,17 @@ def test_diagnostics_are_capped_with_sentinel(tmp_path: Path) -> None:
     assert outcome.diagnostics[-1] == "[additional diagnostics omitted]"
 
 
-# --- frozen plan --------------------------------------------------------------
+# --- configuration defaults ---------------------------------------------------
 
 
-def test_materialized_plan_orders_commands_by_surface_table(tmp_path: Path) -> None:
-    hooks = RuntimeHooksConfig(
-        pre_tool=(MARKER_WRITER, _emit({"action": "continue"})),
-        on_session_start=(MARKER_WRITER,),
-        on_before_compact=(MARKER_WRITER,),
-        timeout_seconds=12.5,
-    )
-    plan = materialize_hook_plan(hooks, plan_id="test-plan")
-
-    assert plan.schema_version == HOOK_PLAN_SCHEMA_VERSION
-    assert plan.plan_hash
-    assert [binding.binding_id for binding in plan.bindings] == [
-        "session:pre_tool:1",
-        "session:pre_tool:2",
-        "session:session_start:3",
-        "session:before_compact:4",
-    ]
-    assert [binding.phase for binding in plan.bindings] == [
-        "foreground",
-        "foreground",
-        "foreground",
-        "foreground",
-    ]
-    assert plan.commands_for_surface("pre_tool") == hooks.pre_tool
-    assert plan.commands_for_surface("session_start") == hooks.on_session_start
-    assert plan.commands_for_surface("session_end") == ()
-    assert plan.timeout_seconds == 12.5
-    assert plan.enabled is True
-    assert ResolvedHookPlan.from_payload(plan.to_payload()).bindings == plan.bindings
-
-    with pytest.raises(HookPlanValidationError, match="unknown hook event/surface: nope"):
-        plan.commands_for_surface("nope")
-
-
-def test_plan_rejects_duplicate_binding_and_bad_order() -> None:
-    with pytest.raises(HookPlanValidationError, match="duplicate hook binding for pre_tool"):
-        materialize_hook_plan(RuntimeHooksConfig(pre_tool=(MARKER_WRITER, MARKER_WRITER)))
-
-    with pytest.raises(HookPlanValidationError, match="deterministic contiguous order"):
-        ResolvedHookPlan(
-            schema_version=HOOK_PLAN_SCHEMA_VERSION,
-            plan_id="bad-order",
-            revision=1,
-            bindings=(HookPlanBinding(binding_id="session:pre_tool:2", event="pre_tool", command=("x",), order=2),),
-            enabled=True,
-            failure_mode="warn",
-            timeout_seconds=30.0,
-        )
-
-
-def test_plan_drives_commands_and_timeout(tmp_path: Path) -> None:
-    plan = materialize_hook_plan(RuntimeHooksConfig(pre_tool=(SLOW_HOOK,), timeout_seconds=0.25))
-    outcome = run_tool_hooks(_tool_request(tmp_path, hooks=None, plan=plan))
-
-    assert outcome.action == "cancel"
-    assert outcome.failed_error is not None
-    assert "timed out after 0.25 seconds" in outcome.failed_error
-    assert outcome.events[0].event_type == "runtime.tool_hook_pre"
-
-
-def test_disabled_plan_with_disabled_hooks_is_a_no_op(tmp_path: Path) -> None:
-    plan = materialize_hook_plan(RuntimeHooksConfig(pre_tool=(MARKER_WRITER,), enabled=False))
-    outcome = run_tool_hooks(_tool_request(tmp_path, hooks=None, plan=plan, sequence_start=9))
-
-    assert plan.enabled is False
-    assert (outcome.events, outcome.last_sequence) == ((), 9)
-
-
-# --- configuration surface access --------------------------------------------
-
-
-def test_commands_for_surface_maps_all_twenty_surfaces() -> None:
-    hooks = RuntimeHooksConfig(
-        pre_tool=(("a",),),
-        post_tool=(("b",),),
-        on_session_start=(("c",),),
-        on_session_end=(("d",),),
-        on_session_idle=(("e",),),
-        on_background_task_registered=(("f",),),
-        on_background_task_started=(("g",),),
-        on_background_task_progress=(("h",),),
-        on_background_task_completed=(("i",),),
-        on_background_task_failed=(("j",),),
-        on_background_task_cancelled=(("k",),),
-        on_background_task_interrupted=(("l",),),
-        on_background_task_notification_enqueued=(("m",),),
-        on_background_task_result_read=(("n",),),
-        on_delegated_result_available=(("o",),),
-        on_turn_progress=(("p",),),
-        on_tool_batch_repeated=(("q",),),
-        on_approval_requested=(("r",),),
-        on_question_asked=(("s",),),
-        on_before_compact=(("t",),),
-    )
-
-    assert hooks.commands_for_surface("pre_tool") == (("a",),)
-    assert hooks.commands_for_surface("post_tool") == (("b",),)
-    assert hooks.commands_for_surface("session_start") == (("c",),)
-    assert hooks.commands_for_surface("session_end") == (("d",),)
-    assert hooks.commands_for_surface("session_idle") == (("e",),)
-    assert hooks.commands_for_surface("background_task_registered") == (("f",),)
-    assert hooks.commands_for_surface("background_task_started") == (("g",),)
-    assert hooks.commands_for_surface("background_task_progress") == (("h",),)
-    assert hooks.commands_for_surface("background_task_completed") == (("i",),)
-    assert hooks.commands_for_surface("background_task_failed") == (("j",),)
-    assert hooks.commands_for_surface("background_task_cancelled") == (("k",),)
-    assert hooks.commands_for_surface("background_task_interrupted") == (("l",),)
-    assert hooks.commands_for_surface("background_task_notification_enqueued") == (("m",),)
-    assert hooks.commands_for_surface("background_task_result_read") == (("n",),)
-    assert hooks.commands_for_surface("delegated_result_available") == (("o",),)
-    assert hooks.commands_for_surface("turn_progress") == (("p",),)
-    assert hooks.commands_for_surface("tool_batch_repeated") == (("q",),)
-    assert hooks.commands_for_surface("approval_requested") == (("r",),)
-    assert hooks.commands_for_surface("question_asked") == (("s",),)
-    assert hooks.commands_for_surface("before_compact") == (("t",),)
-
-
-def test_unknown_surface_keeps_key_error_semantics() -> None:
-    with pytest.raises(KeyError):
-        RuntimeHooksConfig().commands_for_surface("not_a_surface")  # type: ignore[arg-type]
-
-
-def test_config_defaults_match_legacy() -> None:
+def test_config_defaults() -> None:
     hooks = RuntimeHooksConfig()
 
     assert hooks.enabled is True
     assert hooks.timeout_seconds == 30.0
-    assert hooks.failure_mode == "warn"
     assert hooks.pre_tool == ()
     assert hooks.post_tool == ()
     assert hooks.pre_tool_match == ()
-    assert hooks.on_before_compact == ()
+    assert hooks.post_tool_match == ()
+    assert hooks.on_session_start == ()
+    assert hooks.on_session_end == ()

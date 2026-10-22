@@ -15,8 +15,6 @@ from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.services import PluginServices, QueryUnavailable
 from voidcode.sdk.tools import TextOutput, ToolCall, ToolDefinition, ToolDiagnostics, ToolEffect, ToolFailure, ToolResult, ToolSuccess
 
-from .args import parse_tool_args
-from .edits_hooks import post_edit_diagnostics
 from .guards import enforce_seen_lines
 
 _SHA256_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{64}$")
@@ -252,7 +250,7 @@ class ApplyWorkspaceEditTool:
                         },
                     )
 
-        args = parse_tool_args(_WorkspaceEditArgs, call.arguments, tool_name=self.definition.name)
+        args = _WorkspaceEditArgs.model_validate(dict(call.arguments))
         requested_encoding = args.positionEncoding.lower() if args.positionEncoding is not None else None
         if requested_encoding is not None and requested_encoding not in ("utf-8", "utf-16", "utf-32"):
             raise ValueError(f"apply_workspace_edit unsupported positionEncoding: {args.positionEncoding}")
@@ -426,7 +424,6 @@ class ApplyWorkspaceEditTool:
                 f"Applied prefix: {applied_paths}; uncommitted remaining: {uncommitted_paths}"
             ) from exc
 
-        diagnostics: list[Mapping[str, object]] = []
         file_results: list[Mapping[str, object]] = []
         for path in staged:
             final_bytes = path.read_bytes()
@@ -448,21 +445,12 @@ class ApplyWorkspaceEditTool:
             file_results.append(file_result)
 
         display_paths = list(display_by_path.values())
-        for path in display_by_path:
-            lsp_diagnostic = post_edit_diagnostics(
-                context=context,
-                path=path,
-                content=staged[path],
-            )
-            if lsp_diagnostic is not None:
-                diagnostics.append(lsp_diagnostic)
         return ToolSuccess(
             tool_name=self.definition.name,
             output=TextOutput(f"Applied {len(args.edits)} workspace edit(s)."),
             body=ApplyWorkspaceEditResultBody(
                 paths=tuple(sorted(set(display_paths))),
                 files=tuple(file_results),
-                diagnostics=tuple(diagnostics),
             ),
         )
 

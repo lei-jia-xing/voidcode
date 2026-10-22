@@ -30,16 +30,10 @@ from voidcode.sdk.tools import (
     ToolSuccess,
 )
 
-from .args import parse_tool_args
-from .artifacts import (
-    ARTIFACT_ID_PATTERN,
-    MAX_ARTIFACT_PAGE_BYTES,
-    MAX_INLINE_ATTACHMENT_BYTES,
-    RASTER_IMAGE_MIMES,
-    artifact_uri,
-    create_artifact,
-    read_artifact_page,
-)
+ARTIFACT_ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+MAX_ARTIFACT_PAGE_BYTES = 50 * 1024 - 4096
+MAX_INLINE_ATTACHMENT_BYTES = (50 * 1024 - 128) * 3 // 4
+RASTER_IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"})
 
 MAX_RESPONSE_SIZE = 5 * 1024 * 1024
 DEFAULT_TIMEOUT = 30
@@ -299,12 +293,12 @@ class WebFetchTool:
             if "content_ref" in arguments or "byte_offset" in arguments:
                 return _continuation_result(
                     self.definition,
-                    parse_tool_args(WebFetchContinuationArgs, arguments, tool_name=self.definition.name),
+                    WebFetchContinuationArgs.model_validate(dict(arguments)),
                     services=services,
                 )
             return _initial_result(
                 self.definition,
-                parse_tool_args(WebFetchArgs, arguments, tool_name=self.definition.name),
+                WebFetchArgs.model_validate(dict(arguments)),
                 services=services,
             )
         except _FetchFailure as failure:
@@ -475,6 +469,32 @@ def _continuation_manifest(
     ).encode("utf-8")
 
 
+def _spill(
+    services: PluginServices,
+    *,
+    kind: str,
+    content: bytes,
+    mime: str,
+    source: str | None = None,
+) -> dict[str, object]:
+    """Spill bytes and project the reference the bodies carry."""
+    reference = services.spill_artifact(content, media_type=mime)
+    uri = f"voidcode://artifact/{reference.sha256}"
+    payload: dict[str, object] = {
+        "artifact_id": reference.sha256,
+        "sha256": reference.sha256,
+        "byte_count": reference.bytes,
+        "content_type": reference.media_type,
+        "mime": reference.media_type,
+        "uri": uri,
+        "kind": kind,
+        "status": "available",
+    }
+    if source is not None:
+        payload["source"] = source
+    return payload
+
+
 def _invalid_ref() -> _FetchFailure:
     return _FetchFailure(
         "web_fetch continuation failed: content_ref must be the voidcode://artifact/<sha256> value "
@@ -489,19 +509,20 @@ def _load_manifest(services: PluginServices, content_ref: str) -> dict[str, obje
     manifest_id = content_ref[len(CONTENT_REF_PREFIX) :]
     if ARTIFACT_ID_PATTERN.fullmatch(manifest_id) is None:
         raise _invalid_ref()
-    page = read_artifact_page(services, manifest_id, byte_limit=MAX_MANIFEST_BYTES)
-    if page is None:
+    try:
+        page = services.read_artifact(manifest_id, limit=MAX_MANIFEST_BYTES)
+    except OSError, ValueError, LookupError:
         raise _FetchFailure(
             f"web_fetch continuation failed: content_ref {content_ref} is not available in this session's "
             "artifact store. Fetch the URL again to obtain a fresh cursor."
-        )
-    if not page["eof"]:
+        ) from None
+    if not page.eof:
         raise _FetchFailure(
             f"web_fetch continuation failed: content_ref {content_ref} is larger than a web_fetch continuation "
             "manifest. Fetch the URL again for a fresh cursor."
         )
     try:
-        manifest = json.loads(cast(bytes, page["data"]).decode("utf-8"))
+        manifest = json.loads(page.data.decode("utf-8"))
     except UnicodeDecodeError, json.JSONDecodeError:
         manifest = None
     if not isinstance(manifest, dict) or manifest.get("kind") != CONTINUATION_KIND or manifest.get("version") != CONTINUATION_VERSION:
@@ -547,7 +568,7 @@ def _cursor_head(*, prefix: str, content_ref: str | None, offset: int, end: int,
     if eof:
         return f"{prefix} | bytes {offset}-{end} of {total} | complete (eof); no continuation needed"
     if content_ref is None:
-        return f"{prefix} | bytes {offset}-{end} of {total} | truncated; continuation unavailable (artifact store absent)"
+        return f"{prefix} | bytes {offset}-{end} of {total} | truncated; continuation unavailable (manifest over size bound)"
     return f'{prefix} | bytes {offset}-{end} of {total} | truncated; next call: web_fetch {{"content_ref": "{content_ref}", "byte_offset": {end}}}'
 
 
@@ -588,26 +609,21 @@ def _initial_result(
     timeout = max(min(args.timeout, 120), 1)
 
     fetched = _perform_fetch(original_url=args.url, format_value=args.format, timeout=timeout)
-    source_artifact = create_artifact(
+    source_artifact = _spill(
         services,
         kind="web_fetch_response",
         content=fetched.data,
         mime=fetched.mime or "application/octet-stream",
         source=fetched.final_url,
     )
-    raw_uri = artifact_uri(source_artifact)
-    raw_reference = raw_uri or "unavailable"
+    raw_uri = str(source_artifact["uri"])
     provenance = (
         f"Source URL: {fetched.original_url} | Final URL: {fetched.final_url} | "
-        f"MIME: {fetched.mime or 'application/octet-stream'} | charset: {fetched.used_encoding or 'unspecified'} | raw: {raw_reference}"
+        f"MIME: {fetched.mime or 'application/octet-stream'} | charset: {fetched.used_encoding or 'unspecified'} | raw: {raw_uri}"
     )
-    raw_bounds = (
-        OutputBounds(
-            reference=OutputReference(uri=raw_uri, artifact=source_artifact),
-            source="web_fetch",
-        )
-        if raw_uri is not None and source_artifact is not None
-        else OutputBounds(source="web_fetch")
+    raw_bounds = OutputBounds(
+        reference=OutputReference(uri=raw_uri, artifact=source_artifact),
+        source="web_fetch",
     )
 
     if fetched.is_attachment:
@@ -615,7 +631,7 @@ def _initial_result(
         data_uri = f"data:{fetched.mime};base64,{base64.b64encode(fetched.data).decode('ascii')}" if fits_inline else None
         presentation = f"{provenance}\nFetched {fetched.mime} attachment."
         if data_uri is None:
-            presentation += f" Inline bytes omitted above {MAX_INLINE_ATTACHMENT_BYTES} bytes; raw: {raw_reference}"
+            presentation += f" Inline bytes omitted above {MAX_INLINE_ATTACHMENT_BYTES} bytes; raw: {raw_uri}"
         body = WebFetchResultBody(
             original_url=fetched.original_url,
             final_url=fetched.final_url,
@@ -626,7 +642,7 @@ def _initial_result(
             timeout_seconds=timeout,
             used_encoding=fetched.used_encoding,
             provenance="web_fetch",
-            source_artifact={} if source_artifact is None else dict(source_artifact),
+            source_artifact=dict(source_artifact),
             content_artifact={},
             content_ref=None,
             byte_offset=0,
@@ -657,7 +673,7 @@ def _initial_result(
             timeout_seconds=timeout,
             used_encoding=fetched.used_encoding,
             provenance="web_fetch",
-            source_artifact={} if source_artifact is None else dict(source_artifact),
+            source_artifact=dict(source_artifact),
             content_artifact={},
             content_ref=None,
             byte_offset=0,
@@ -686,28 +702,27 @@ def _initial_result(
         rendered = fetched.content
     rendered_bytes = rendered.encode("utf-8")
 
-    rendered_artifact = create_artifact(
+    rendered_artifact = _spill(
         services,
         kind="web_fetch_content",
         content=rendered_bytes,
         mime=RENDERED_MIME_BY_FORMAT[args.format],
     )
-    manifest_artifact = None
-    if rendered_artifact is not None:
-        manifest_data = _continuation_manifest(
-            format_value=args.format,
-            original_url=fetched.original_url,
-            final_url=fetched.final_url,
-            raw_sha256="" if source_artifact is None else str(source_artifact.get("sha256", "")),
-            rendered_sha256=str(rendered_artifact.get("sha256", "")),
-            rendered_bytes=len(rendered_bytes),
-        )
-        if len(manifest_data) <= MAX_MANIFEST_BYTES:
-            manifest_artifact = create_artifact(services, kind=CONTINUATION_KIND, content=manifest_data, mime="application/json")
-    content_ref = artifact_uri(manifest_artifact)
-    content_uri = artifact_uri(rendered_artifact)
-    reference_artifact = rendered_artifact if rendered_artifact is not None else source_artifact
-    reference_uri = content_uri or raw_uri
+    manifest_data = _continuation_manifest(
+        format_value=args.format,
+        original_url=fetched.original_url,
+        final_url=fetched.final_url,
+        raw_sha256=str(source_artifact.get("sha256", "")),
+        rendered_sha256=str(rendered_artifact.get("sha256", "")),
+        rendered_bytes=len(rendered_bytes),
+    )
+    manifest_artifact = (
+        _spill(services, kind=CONTINUATION_KIND, content=manifest_data, mime="application/json") if len(manifest_data) <= MAX_MANIFEST_BYTES else None
+    )
+    content_ref = None if manifest_artifact is None else str(manifest_artifact["uri"])
+    content_uri = str(rendered_artifact["uri"])
+    reference_artifact = rendered_artifact
+    reference_uri = content_uri
 
     def read_bytes(offset: int, limit: int) -> tuple[bytes, int]:
         return rendered_bytes[offset : offset + limit], len(rendered_bytes)
@@ -723,7 +738,7 @@ def _initial_result(
             timeout_seconds=timeout,
             used_encoding=fetched.used_encoding,
             provenance="web_fetch",
-            source_artifact={} if source_artifact is None else dict(source_artifact),
+            source_artifact=dict(source_artifact),
             content_artifact={} if manifest_artifact is None else dict(manifest_artifact),
             content_ref=content_ref,
             byte_offset=0,
@@ -734,18 +749,14 @@ def _initial_result(
         )
 
     def head_for(end: int, eof: bool, total: int) -> str:
-        prefix = provenance + (f" | rendered: {content_uri}" if content_uri is not None else "")
+        prefix = provenance + f" | rendered: {content_uri}"
         return _cursor_head(prefix=prefix, content_ref=content_ref, offset=0, end=end, total=total, eof=eof)
 
     body, output, _end, eof, _total = _render_page(reader=read_bytes, offset=0, body_for=body_for, head_for=head_for)
-    bounds = (
-        OutputBounds(
-            reference=OutputReference(uri=reference_uri, artifact=reference_artifact),
-            truncated=not eof,
-            source="web_fetch",
-        )
-        if reference_uri is not None and reference_artifact is not None
-        else OutputBounds(truncated=not eof, source="web_fetch")
+    bounds = OutputBounds(
+        reference=OutputReference(uri=reference_uri, artifact=reference_artifact),
+        truncated=not eof,
+        source="web_fetch",
     )
     return ToolSuccess(
         tool_name=definition.name,
@@ -774,17 +785,18 @@ def _continuation_result(
         )
 
     def read_bytes(offset: int, limit: int) -> tuple[bytes, int]:
-        page = read_artifact_page(services, rendered_sha256, byte_offset=offset, byte_limit=limit)
-        if page is None:
+        try:
+            page = services.read_artifact(rendered_sha256, offset=offset, limit=limit)
+        except OSError, ValueError, LookupError:
             raise _FetchFailure(
                 f"web_fetch continuation failed: rendered bytes for {args.content_ref} are no longer available "
                 "in this session's artifact store. Fetch the URL again for a fresh cursor."
-            )
-        if cast(int, page["total_bytes"]) != total:
+            ) from None
+        if page.total_bytes != total:
             raise _FetchFailure(
                 f"web_fetch continuation failed: {args.content_ref} does not match its stored rendered bytes. Fetch the URL again for a fresh cursor."
             )
-        return cast(bytes, page["data"]), total
+        return page.data, total
 
     format_value = str(manifest["format"])
     original_url = str(manifest["original_url"])

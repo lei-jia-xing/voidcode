@@ -2,13 +2,12 @@
 
 The tool allowlists name the real admitted tools of the new world: the legacy handoff tool
 (``yield``), the ask-user tool (``question``), the nested-invocation wrapper (``invoke_tool``) and
-the ``mcp/*`` glob are gone, replaced by ``mcp``. Preset hook refs, descriptions and prompt
+the ``mcp/*`` glob are gone, replaced by ``mcp``. Descriptions and prompt
 materializations keep their legacy values; only the module paths of the validators moved.
 """
 
 from __future__ import annotations
 
-from .hook_preset_refs import validate_hook_preset_refs
 from .models import AgentManifest, AgentPromptMaterialization
 from .prompts import render_builtin_prompt_profile
 
@@ -40,10 +39,6 @@ _DEFAULT_TOOL_ALLOWLIST = (
 
 _BUILTIN_PROMPT_MATERIALIZATION_VERSION = 3
 
-_DEFAULT_PRESET_HOOK_REFS = ("delegation_guard",)
-
-_DELEGATED_PRESET_HOOK_REFS = ("delegation_guard",)
-
 DEFAULT_AGENT_MANIFEST = AgentManifest(
     id="default",
     name="Default",
@@ -51,7 +46,6 @@ DEFAULT_AGENT_MANIFEST = AgentManifest(
     description="General user-facing assistant; runtime owns policy and tool scope.",
     prompt_profile="default",
     tool_allowlist=_DEFAULT_TOOL_ALLOWLIST,
-    preset_hook_refs=_DEFAULT_PRESET_HOOK_REFS,
     top_level_selectable=True,
     prompt_materialization=AgentPromptMaterialization(
         profile="default",
@@ -76,7 +70,6 @@ EXECUTE_AGENT_MANIFEST = AgentManifest(
         "todo",
         "mcp",
     ),
-    preset_hook_refs=_DELEGATED_PRESET_HOOK_REFS,
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
         profile="execute",
@@ -88,12 +81,12 @@ EXECUTE_AGENT_MANIFEST = AgentManifest(
 
 REVIEW_AGENT_MANIFEST = AgentManifest(
     id="review",
+    readonly=True,
     name="Review",
     mode="subagent",
     description="Delegated review of evidence, risks, and options.",
     prompt_profile="review",
     tool_allowlist=_WORKSPACE_DISCOVERY_TOOLS,
-    preset_hook_refs=_DELEGATED_PRESET_HOOK_REFS,
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
         profile="review",
@@ -105,12 +98,12 @@ REVIEW_AGENT_MANIFEST = AgentManifest(
 
 EXPLORE_AGENT_MANIFEST = AgentManifest(
     id="explore",
+    readonly=True,
     name="Explore",
     mode="subagent",
     description="Delegated read-only discovery of relevant workspace evidence.",
     prompt_profile="explore",
     tool_allowlist=_WORKSPACE_DISCOVERY_TOOLS,
-    preset_hook_refs=_DELEGATED_PRESET_HOOK_REFS,
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
         profile="explore",
@@ -122,12 +115,12 @@ EXPLORE_AGENT_MANIFEST = AgentManifest(
 
 RESEARCH_AGENT_MANIFEST = AgentManifest(
     id="research",
+    readonly=True,
     name="Research",
     mode="subagent",
     description="Delegated research using public sources and external evidence.",
     prompt_profile="research",
     tool_allowlist=("web_search", "web_fetch"),
-    preset_hook_refs=_DELEGATED_PRESET_HOOK_REFS,
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
         profile="research",
@@ -146,12 +139,12 @@ _PLAN_TOOL_ALLOWLIST = (
 
 PLAN_AGENT_MANIFEST = AgentManifest(
     id="plan",
+    readonly=True,
     name="Planning",
     mode="subagent",
     description="Delegated read-only planning grounded in the request and relevant evidence.",
     prompt_profile="plan",
     tool_allowlist=_PLAN_TOOL_ALLOWLIST,
-    preset_hook_refs=_DELEGATED_PRESET_HOOK_REFS,
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
         profile="plan",
@@ -180,15 +173,6 @@ def validate_builtin_agent_manifests(
             raise ValueError(f"builtin agent manifest '{manifest.id}' references unknown prompt profile '{manifest.prompt_profile}'")
         if len(manifest.tool_allowlist) != len(set(manifest.tool_allowlist)):
             raise ValueError(f"builtin agent manifest '{manifest.id}' must not contain duplicate tool patterns")
-        if len(manifest.preset_hook_refs) != len(set(manifest.preset_hook_refs)):
-            raise ValueError(f"builtin agent manifest '{manifest.id}' must not contain duplicate preset hook refs")
-        for hook_ref in manifest.preset_hook_refs:
-            if not hook_ref.strip():
-                raise ValueError(f"builtin agent manifest '{manifest.id}' preset hook refs must be non-empty")
-        validate_hook_preset_refs(
-            manifest.preset_hook_refs,
-            field_path=f"builtin agent manifest '{manifest.id}' preset_hook_refs",
-        )
         if manifest.mcp_binding is not None:
             binding_profile = manifest.mcp_binding.profile
             if binding_profile is not None and not binding_profile.strip():

@@ -34,10 +34,6 @@ from voidcode.sdk.tools import AttachmentOutput, TextOutput, ToolCall, ToolFailu
 PUBLIC_URL = "https://93.184.216.34/docs"
 
 
-class _DummyServices:
-    """Core service bag stand-in: no artifact service, so output stays inline."""
-
-
 class _MemoryServices:
     """Content-addressed artifact double matching the core's spill/read semantics."""
 
@@ -93,7 +89,7 @@ class _CountingStream(httpx.SyncByteStream):
         pass
 
 
-_SERVICES = cast(Any, _DummyServices())
+_SERVICES = cast(Any, _MemoryServices())
 
 
 @pytest.fixture
@@ -206,7 +202,7 @@ def _large_html() -> bytes:
     return ("<html><body>" + "".join(paragraphs) + "</body></html>").encode()
 
 
-def test_webfetch_small_complete_page_stays_inline_without_artifacts(
+def test_webfetch_small_complete_page_is_inline_with_spilled_references(
     tool_context: ToolContext,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -233,17 +229,16 @@ def test_webfetch_small_complete_page_stays_inline_without_artifacts(
     assert isinstance(encoding, str) and encoding.lower() == "utf-8"
     assert payload["provenance"] == "web_fetch"
     assert "content" not in payload
-    # No service bag: no spill, no reference, and the whole small output is inline.
-    assert result.output.bounds.reference is None
+    # Small output is inline, but raw/rendered bytes are still addressable.
+    assert result.output.bounds.reference is not None
     assert result.output.bounds.truncated is False
-    assert payload["source_artifact"] == {}
-    assert payload["content_artifact"] == {}
-    assert payload["content_ref"] is None
+    assert payload["source_artifact"] != {}
+    assert payload["content_artifact"] != {}
+    assert isinstance(payload["content_ref"], str)
     assert payload["byte_offset"] == 0
     assert payload["next_byte_offset"] is None
     assert payload["eof"] is True
     assert payload["total_bytes"] == len("# TITLE\n\nHello")
-    assert "raw: unavailable" in result.output.text
     assert "complete (eof)" in result.output.text
 
 
@@ -405,12 +400,12 @@ def test_webfetch_strict_branches_reject_cross_branch_and_unknown_fields(tool_co
         {},
     ]
     for arguments in rejected:
-        with pytest.raises(ValueError, match="Validation error"):
+        with pytest.raises(ValueError):
             _invoke(tool_context, arguments)
 
 
 def test_webfetch_rejects_non_string_url(tool_context: ToolContext) -> None:
-    with pytest.raises(ValueError, match="Validation error"):
+    with pytest.raises(ValueError):
         _invoke(tool_context, {"url": None, "format": "text"})
 
 
@@ -600,12 +595,12 @@ def test_webfetch_keeps_opaque_pdf_bytes_without_decoding(tool_context: ToolCont
     body = _initial_body(result)
     assert body.used_encoding is None
     assert body.byte_count == len(pdf)
-    assert body.as_payload()["source_artifact"] == {}
+    assert body.as_payload()["source_artifact"] != {}
     assert body.content_ref is None
     assert body.eof is True
 
 
-def test_webfetch_truncates_inline_text_when_no_artifact_service_is_available(
+def test_webfetch_oversized_text_truncates_with_a_live_continuation(
     tool_context: ToolContext,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -617,14 +612,14 @@ def test_webfetch_truncates_inline_text_when_no_artifact_service_is_available(
     assert isinstance(result.output, TextOutput)
     body = _initial_body(result)
     assert result.output.bounds.truncated is True
-    assert result.output.bounds.reference is None
-    assert body.content_artifact == {}
-    assert body.content_ref is None
-    assert body.next_byte_offset is None
+    assert result.output.bounds.reference is not None
+    assert body.content_artifact != {}
+    assert isinstance(body.content_ref, str)
+    assert body.next_byte_offset is not None
     assert body.eof is False
     assert body.truncated is True
     assert body.total_bytes > MAX_ARTIFACT_PAGE_BYTES
-    assert "continuation unavailable" in result.output.text
+    assert 'next call: web_fetch {"content_ref":' in result.output.text
     assert body.byte_count == len(oversized_text)
 
 

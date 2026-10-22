@@ -14,7 +14,6 @@ from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess
 
 from .apply_patch import execute_patch
-from .edits_hooks import post_edit_diagnostics
 from .guards import CharProvenanceTracker, enforce_read_before_write, enforce_seen_lines
 from .repair import (
     ToolDiagnosticError,
@@ -580,12 +579,6 @@ class EditTool:
 
         content = f"Applied {applied} edits to {display_path}"
 
-        lsp_diagnostic = post_edit_diagnostics(
-            context=context,
-            path=candidate,
-            content=final_content,
-        )
-        lsp_diagnostics = (lsp_diagnostic,) if lsp_diagnostic is not None else ()
         return ToolSuccess(
             self.definition.name,
             output=TextOutput(content),
@@ -595,7 +588,6 @@ class EditTool:
                 deletions=deletions,
                 match_count=applied,
                 diff=diff,
-                diagnostics=tuple(lsp_diagnostics),
                 applied=applied,
                 edits=tuple(details),
                 content_hash=final_disk_hash,
@@ -704,12 +696,6 @@ class EditTool:
         if match_count > 1:
             output += f" ({match_count} occurrences replaced)"
 
-        lsp_diagnostic = post_edit_diagnostics(
-            context=context,
-            path=candidate,
-            content=final_content,
-        )
-        lsp_diagnostics = (lsp_diagnostic,) if lsp_diagnostic is not None else ()
         return ToolSuccess(
             self.definition.name,
             output=TextOutput(output),
@@ -719,7 +705,6 @@ class EditTool:
                 deletions=deletions,
                 match_count=match_count,
                 diff=diff,
-                diagnostics=tuple(lsp_diagnostics),
                 content_hash=final_disk_hash,
             ),
         )

@@ -12,9 +12,9 @@ Ports the legacy plan-mode mechanism (``collaboration_mode`` in
 - ``plan.status`` reports the plugin's view of the mode.
 
 The overlay row is owned by this plugin, so while the plugin is active plan mode survives
-restarts (the state and the overlay are both durable). Deactivation is the core's business:
-this plugin can only return its state untouched, and it must not silently claim that a disable
-cleared the overlay.
+restarts (the state and the overlay are both durable). On deactivation the core deletes the
+overlay row and this plugin's transform parks the mode off, so the parked state stays
+truthful and re-enable never silently re-tightens the session.
 """
 
 from __future__ import annotations
@@ -157,6 +157,23 @@ def plan_context(context: ToolContext, services: PluginServices) -> ContextContr
     return ContextContribution(content=PLAN_MODE_INSTRUCTION) if state.active else None
 
 
+def prepare_plan_deactivation(
+    state: Mapping[str, object],
+    scope: str,
+    scope_key: str,
+    tip_sequence: int | None,
+) -> Mapping[str, object]:
+    """Pure deactivation transform: an active mode parks off; the overlay row is core-owned.
+
+    The activation transaction deletes this owner's overlay, so a kept active flag would
+    promise a restriction that no longer exists. After re-enable the user enters plan mode
+    again explicitly; the activation count is history and stays untouched.
+    """
+    _ = (scope, scope_key, tip_sequence)
+    parsed = PlanState.from_payload(state)
+    return PlanState(active=False, activations=parsed.activations).to_payload()
+
+
 def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
     return Plugin(
         commands=(PlanCommand(), PlanOffCommand(), PlanStatusCommand()),
@@ -174,4 +191,5 @@ def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
                 },
             },
         ),
+        prepare_deactivate=prepare_plan_deactivation,
     )

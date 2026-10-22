@@ -1,7 +1,7 @@
 """Hooks plugin: argv pre-tool gate, post-tool note and session lifecycle hooks.
 
-The legacy ``hooks.pre_tool`` / ``hooks.post_tool`` / ``hooks.on_session_start`` /
-``hooks.on_session_end`` argv hooks, re-homed onto the core's gate and note contracts:
+The user's ``voidcode.json`` argv commands for the four surfaces the core
+offers:
 
 - ``pre_tool`` can only refuse: a ``cancel`` action, a non-zero exit, malformed
   stdout or a timeout denies the call, and the hook's own diagnostic is what the
@@ -15,13 +15,8 @@ The legacy ``hooks.pre_tool`` / ``hooks.post_tool`` / ``hooks.on_session_start``
 - Hook leases are read-only, so this plugin touches no state and stages no events.
 
 Which tools a surface applies to is config-driven (``pre_tool_match`` /
-``post_tool_match``), exactly as in the legacy runtime; the registration matches
-``("*",)`` because every tool must reach the plugin to be filtered.
-
-The remaining legacy surfaces (``session_idle``, ``turn_progress``,
-``tool_batch_repeated``, ``approval_requested``, ``question_asked``,
-``before_compact`` and the ``background_task_*`` family) have no core channel
-today, so no config field and no registration exists for them.
+``post_tool_match``); the registration matches ``("*",)`` because every tool
+must reach the plugin to be filtered.
 """
 
 from __future__ import annotations
@@ -266,16 +261,18 @@ class ToolHooks:
 
 
 def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
-    hooks = ToolHooks(parse_hooks_config(config))
+    parsed = parse_hooks_config(config)
+    hooks = ToolHooks(parsed)
+    enabled = parsed.enabled is True
     return Plugin(
-        pre_tool=hooks.pre_tool,
-        pre_tool_match=("*",),
+        pre_tool=hooks.pre_tool if enabled and parsed.pre_tool else None,
+        pre_tool_match=tuple(parsed.pre_tool_match) if parsed.pre_tool_match else ("*",),
         pre_tool_mutating=True,
-        post_tool=hooks.post_tool,
-        post_tool_match=("*",),
+        post_tool=hooks.post_tool if enabled and parsed.post_tool else None,
+        post_tool_match=tuple(parsed.post_tool_match) if parsed.post_tool_match else ("*",),
         post_tool_mutating=True,
-        session_start=hooks.lifecycle,
-        session_end=hooks.lifecycle,
+        session_start=hooks.lifecycle if enabled and parsed.on_session_start else None,
+        session_end=hooks.lifecycle if enabled and parsed.on_session_end else None,
     )
 
 

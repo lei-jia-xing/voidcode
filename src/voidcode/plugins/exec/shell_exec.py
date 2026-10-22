@@ -31,8 +31,7 @@ from voidcode.sdk.tools import (
     ToolSuccess,
 )
 
-from .args import NonEmptyCommand, OptionalDescription, parse_tool_args
-from .artifacts import artifact_uri, create_artifact
+from .args import NonEmptyCommand, OptionalDescription
 
 DEFAULT_TIMEOUT_SECONDS = 120
 MAX_TIMEOUT_SECONDS = 600
@@ -123,7 +122,9 @@ class ShellExecResultBody:
 
 
 def _artifact_reference(artifact: dict[str, object] | None) -> OutputReference | None:
-    artifact_id = artifact.get("artifact_id") if artifact is not None else None
+    if artifact is None:
+        return None
+    artifact_id = artifact.get("artifact_id")
     if not isinstance(artifact_id, str):
         return None
     return OutputReference(f"voidcode://artifact/{artifact_id}", artifact)
@@ -152,18 +153,23 @@ def _preview_truncated(text: str) -> bool:
     return len(text) > _PREVIEW_BYTES * 2
 
 
-def _spill_stream(services: object, stream_name: str, text: str) -> dict[str, object] | None:
-    """The stream's full bounded capture as an artifact; `None` when empty or unserved."""
+def _spill_stream(services: PluginServices, stream_name: str, text: str) -> dict[str, object] | None:
+    """The stream's full bounded capture as an artifact; `None` when empty."""
     if not text:
         return None
-    created = create_artifact(
-        services,
-        kind=stream_name,
-        content=text,
-        mime=_ARTIFACT_MIME,
-        source=_ARTIFACT_SOURCE,
-    )
-    return dict(created) if created is not None else None
+    reference = services.spill_artifact(text, media_type=_ARTIFACT_MIME)
+    uri = f"voidcode://artifact/{reference.sha256}"
+    return {
+        "artifact_id": reference.sha256,
+        "sha256": reference.sha256,
+        "byte_count": reference.bytes,
+        "content_type": reference.media_type,
+        "mime": reference.media_type,
+        "uri": uri,
+        "kind": stream_name,
+        "status": "available",
+        "source": _ARTIFACT_SOURCE,
+    }
 
 
 def _progress_sink(context: ToolContext) -> Callable[[str, bytes], None] | None:
@@ -209,13 +215,11 @@ class ShellExecTool:
 
     def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:
         workspace = context.require_workspace()
-        args = parse_tool_args(
-            ShellExecArgs,
+        args = ShellExecArgs.model_validate(
             {
                 "command": call.arguments.get("command"),
                 "description": call.arguments.get("description"),
-            },
-            tool_name=self.definition.name,
+            }
         )
         command_text = args.command
         # Interception is a pre-flight refusal: a refused command never reaches the lease.
@@ -251,7 +255,7 @@ class ShellExecTool:
         output_truncated = _preview_truncated(result.stdout) or _preview_truncated(result.stderr) or output_limit_exceeded
         output_reference = _artifact_reference(stdout_artifact) or _artifact_reference(stderr_artifact)
         output = f"{stderr}{stdout}" if output_truncated and stderr else f"{stdout}{stderr}"
-        artifact_refs = [uri for artifact in (stdout_artifact, stderr_artifact) if (uri := artifact_uri(artifact)) is not None]
+        artifact_refs = [uri for artifact in (stdout_artifact, stderr_artifact) if isinstance((uri := (artifact or {}).get("uri")), str)]
         if output_truncated and artifact_refs:
             output = "Full process output: " + ", ".join(artifact_refs) + "\n\n" + output
 

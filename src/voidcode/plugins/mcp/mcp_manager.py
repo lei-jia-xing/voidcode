@@ -34,11 +34,6 @@ from .mcp_tool_cache import McpToolCatalogCache, mcp_server_identity
 from .types import (
     MCP_CLIENT_NAME,
     MCP_CLIENT_VERSION,
-    RUNTIME_MCP_SERVER_ACQUIRED,
-    RUNTIME_MCP_SERVER_FAILED,
-    RUNTIME_MCP_SERVER_REUSED,
-    RUNTIME_MCP_SERVER_STARTED,
-    RUNTIME_MCP_SERVER_STOPPED,
     McpCachedToolSurface,
     McpConfig,
     McpConfigState,
@@ -48,7 +43,6 @@ from .types import (
     McpErrorCode,
     McpManager,
     McpManagerState,
-    McpRuntimeEvent,
     McpServerConfig,
     McpServerRuntimeState,
     McpToolCallResult,
@@ -235,11 +229,8 @@ class DisabledMcpManager:
         _ = server_name, tool_name, arguments, workspace
         raise ValueError("MCP support is disabled")
 
-    def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
-        return ()
-
-    def drain_events(self) -> tuple[McpRuntimeEvent, ...]:
-        return ()
+    def shutdown(self) -> None:
+        return None
 
     def retry_connections(self, *, workspace: Path) -> None:
         _ = workspace
@@ -307,7 +298,6 @@ class ManagedMcpManager:
     ) -> None:
         self._configuration = McpConfigState.from_config(config)
         self._running_servers: dict[_McpServerKey, _RunningMcpServer] = {}
-        self._pending_events: list[McpRuntimeEvent] = []
         self._state_lock = threading.RLock()
         self._diagnostics_collector = diagnostics_collector
         self._server_states: dict[str, McpServerRuntimeState] = {
@@ -495,7 +485,7 @@ class ManagedMcpManager:
             is_error=call_result.is_error,
         )
 
-    def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
+    def shutdown(self) -> None:
         with self._state_lock:
             for key in tuple(self._running_servers):
                 self._stop_running_server(key)
@@ -503,13 +493,6 @@ class ManagedMcpManager:
                 self._portal_context.__exit__(None, None, None)
                 self._portal_context = None
                 self._portal = None
-        return self.drain_events()
-
-    def drain_events(self) -> tuple[McpRuntimeEvent, ...]:
-        with self._state_lock:
-            events = tuple(self._pending_events)
-            self._pending_events.clear()
-            return events
 
     def retry_connections(self, *, workspace: Path) -> None:
         for server_name in self._configuration.servers:
@@ -532,12 +515,11 @@ class ManagedMcpManager:
             )
             self._record_diagnostic(diagnostic)
             message = f"MCP[{server_name}]: server not found in configuration. Available servers: {list(self._configuration.servers.keys())}"
-            self._record_failure_event(
+            self._mark_failed(
                 key=_McpServerKey(server_name=server_name),
                 workspace_root=workspace.resolve(),
                 stage="startup",
                 error=message,
-                diagnostic=diagnostic,
             )
             raise ValueError(message)
 
@@ -546,8 +528,6 @@ class ManagedMcpManager:
         with self._state_lock:
             running = self._running_servers.get(key)
             if running is not None:
-                self._record_server_reused(key=key)
-                self._record_server_acquired(key=key)
                 return running
 
         if transport == "stdio" and not server_config.command:
@@ -559,12 +539,11 @@ class ManagedMcpManager:
             )
             self._record_diagnostic(diagnostic)
             message = f"MCP[{server_name}]: command is empty. Please configure mcp.servers.{{server_name}}.command in .voidcode.json"
-            self._record_failure_event(
+            self._mark_failed(
                 key=key,
                 workspace_root=workspace.resolve(),
                 stage="startup",
                 error=message,
-                diagnostic=diagnostic,
             )
             raise ValueError(message)
 
@@ -580,12 +559,11 @@ class ManagedMcpManager:
                 )
                 self._record_diagnostic(diagnostic)
                 message = f"MCP[{server_name}]: url is empty. Please configure mcp.servers.{{server_name}}.url in .voidcode.json"
-                self._record_failure_event(
+                self._mark_failed(
                     key=key,
                     workspace_root=workspace.resolve(),
                     stage="startup",
                     error=message,
-                    diagnostic=diagnostic,
                 )
                 raise ValueError(message)
 
@@ -597,8 +575,6 @@ class ManagedMcpManager:
         with self._state_lock:
             running = self._running_servers.get(key)
             if running is not None:
-                self._record_server_reused(key=key)
-                self._record_server_acquired(key=key)
                 return running
 
             try:
@@ -636,13 +612,13 @@ class ManagedMcpManager:
                 session = pending_session_context.__enter__()
                 session_context = pending_session_context
                 if transport == "stdio":
-                    self._record_server_started(
+                    self._mark_started(
                         key=key,
                         workspace_root=workspace_root,
                         command=list(server_config.command),
                     )
                 else:
-                    self._record_server_started(
+                    self._mark_started(
                         key=key,
                         workspace_root=workspace_root,
                         command=[],
@@ -672,13 +648,12 @@ class ManagedMcpManager:
                 self._record_diagnostic(diagnostic)
                 if transport == "stdio":
                     message = f"MCP[{server_name}]: failed to start server - cmd not found (command not found): {server_config.command[0]}"
-                    self._record_failure_event(
+                    self._mark_failed(
                         key=key,
                         workspace_root=workspace_root,
                         stage="startup",
                         error=message,
                         command=list(server_config.command),
-                        diagnostic=diagnostic,
                     )
                 else:
                     message = self._report_remote_connect_failure(
@@ -718,17 +693,15 @@ class ManagedMcpManager:
                         leaf,
                         fallback=f"MCP[{server_name}]: failed to initialize server",
                     )
-                    self._record_failure_event(
+                    self._mark_failed(
                         key=key,
                         workspace_root=workspace_root,
                         stage="startup",
                         error=message,
-                        method="initialize",
                         command=list(server_config.command) if transport == "stdio" else None,
-                        diagnostic=diagnostic,
                     )
                 if transport_context is not None:
-                    self._record_server_stopped(
+                    self._mark_stopped(
                         key=key,
                         workspace_root=workspace_root,
                         preserve_failed_state=True,
@@ -758,17 +731,15 @@ class ManagedMcpManager:
                         exc,
                         fallback=f"MCP[{server_name}]: failed to initialize server",
                     )
-                    self._record_failure_event(
+                    self._mark_failed(
                         key=key,
                         workspace_root=workspace_root,
                         stage="startup",
                         error=message,
-                        method="initialize",
                         command=list(server_config.command) if transport == "stdio" else None,
-                        diagnostic=diagnostic,
                     )
                 if transport_context is not None:
-                    self._record_server_stopped(
+                    self._mark_stopped(
                         key=key,
                         workspace_root=workspace_root,
                         preserve_failed_state=True,
@@ -786,7 +757,6 @@ class ManagedMcpManager:
                 transport=transport,
             )
             self._running_servers[key] = running
-            self._record_server_acquired(key=key)
             _ = initialize_result
             return running
 
@@ -826,13 +796,11 @@ class ManagedMcpManager:
                 fallback=f"MCP[{running.server_name}]: {method} failed",
             )
             if suppress_failure_event_when is None or not suppress_failure_event_when(exc):
-                self._record_failure_event(
+                self._mark_failed(
                     key=_McpServerKey(server_name=running.server_name),
                     workspace_root=running.workspace_root,
                     stage=stage,
                     error=message,
-                    method=method,
-                    diagnostic=diagnostic,
                 )
             if self._should_stop_running_server(exc, stage=stage):
                 self._stop_running_server_by_name(server_name=running.server_name)
@@ -960,7 +928,7 @@ class ManagedMcpManager:
         if running is None:
             return
         self._terminate_running_server(running)
-        self._record_server_stopped(key=key, workspace_root=running.workspace_root)
+        self._mark_stopped(key=key, workspace_root=running.workspace_root)
 
     def _stop_running_server_by_name(self, *, server_name: str) -> None:
         key = _McpServerKey(server_name=server_name)
@@ -969,39 +937,18 @@ class ManagedMcpManager:
         if running is None:
             return
         self._terminate_running_server(running)
-        self._record_server_stopped(key=key, workspace_root=running.workspace_root)
+        self._mark_stopped(key=key, workspace_root=running.workspace_root)
 
-    def _record_failure_event(
+    def _mark_failed(
         self,
         *,
         key: _McpServerKey,
         workspace_root: Path,
         stage: str,
         error: str,
-        method: str | None = None,
         command: list[str] | None = None,
-        diagnostic: McpDiagnostic | None = None,
     ) -> None:
         server_name = key.server_name
-        payload: dict[str, object] = {
-            "server": server_name,
-            "workspace_root": str(workspace_root),
-            "state": "failed",
-            "stage": stage,
-            "error": error,
-        }
-        if method is not None:
-            payload["method"] = method
-        if command is not None:
-            payload["command"] = list(command)
-            payload["cmd"] = list(command)
-        if diagnostic is not None:
-            payload["diagnostic"] = {
-                "severity": diagnostic.severity,
-                "category": diagnostic.category,
-                "message": diagnostic.message,
-                "details": diagnostic.details or {},
-            }
         with self._state_lock:
             self._server_states[server_name] = McpServerRuntimeState(
                 server_name=server_name,
@@ -1012,9 +959,8 @@ class ManagedMcpManager:
                 command=list(command or self._server_states.get(server_name, McpServerRuntimeState(server_name=server_name)).command),
                 retry_available=True,
             )
-            self._record_event(McpRuntimeEvent(event_type=RUNTIME_MCP_SERVER_FAILED, payload=payload))
 
-    def _record_server_started(
+    def _mark_started(
         self,
         *,
         key: _McpServerKey,
@@ -1033,20 +979,8 @@ class ManagedMcpManager:
                 url=url or existing.url,
                 retry_available=False,
             )
-            self._record_event(
-                McpRuntimeEvent(
-                    event_type=RUNTIME_MCP_SERVER_STARTED,
-                    payload={
-                        "server": server_name,
-                        "workspace_root": str(workspace_root),
-                        "state": "starting",
-                        "client_foundation": "python-mcp-sdk",
-                        **({"url": url} if url else {}),
-                    },
-                )
-            )
 
-    def _record_server_stopped(
+    def _mark_stopped(
         self,
         *,
         key: _McpServerKey,
@@ -1064,35 +998,6 @@ class ManagedMcpManager:
                     command=list(existing_state.command),
                     retry_available=bool(self._configuration.servers),
                 )
-            self._record_event(
-                McpRuntimeEvent(
-                    event_type=RUNTIME_MCP_SERVER_STOPPED,
-                    payload={
-                        "server": server_name,
-                        "workspace_root": str(workspace_root),
-                    },
-                )
-            )
-
-    def _record_server_reused(self, *, key: _McpServerKey) -> None:
-        self._record_event(
-            McpRuntimeEvent(
-                event_type=RUNTIME_MCP_SERVER_REUSED,
-                payload={
-                    "server": key.server_name,
-                },
-            )
-        )
-
-    def _record_server_acquired(self, *, key: _McpServerKey) -> None:
-        self._record_event(
-            McpRuntimeEvent(
-                event_type=RUNTIME_MCP_SERVER_ACQUIRED,
-                payload={
-                    "server": key.server_name,
-                },
-            )
-        )
 
     def _record_diagnostic(self, diagnostic: McpDiagnostic) -> None:
         if self._diagnostics_collector is not None:
@@ -1117,13 +1022,11 @@ class ManagedMcpManager:
         )
         self._record_diagnostic(diagnostic)
         message = f"MCP[{server_name}]: failed to connect to remote server"
-        self._record_failure_event(
+        self._mark_failed(
             key=key,
             workspace_root=workspace_root,
             stage="startup",
             error=message,
-            method="initialize",
-            diagnostic=diagnostic,
         )
         return message
 
@@ -1207,10 +1110,6 @@ class ManagedMcpManager:
             running.transport_context.__exit__(None, None, None)
         if running.stderr_log is not None:
             running.stderr_log.close()
-
-    def _record_event(self, event: McpRuntimeEvent) -> None:
-        with self._state_lock:
-            self._pending_events.append(event)
 
 
 # =============================================================================

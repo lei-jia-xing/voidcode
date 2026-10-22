@@ -48,8 +48,12 @@ from .projection import (
 )
 
 SCHEMA_VERSION = 1
-#: Event that records one applied projection (core-measured bytes, never estimates).
+#: STABLE cumulative fact: staged via ``services.stage_event`` as
+#: ``plugin.compaction.context_compacted``, one event per applied projection (threshold or
+#: manual) carrying core-measured accounting. Consumers count these events for the cumulative
+#: total; ``window_projection()`` is latest-only and never a substitute.
 CONTEXT_COMPACTED_EVENT = "context_compacted"
+COMPACTED_FACT_TYPE = "plugin.compaction.context_compacted"
 #: How many event pages one observation may consume; the prefix is what matters, not the tail.
 _MAX_EVENT_PAGES = 3
 _EVENT_PAGE_SIZE = 200
@@ -499,6 +503,23 @@ class CompactCommand:
         )
 
 
+def prepare_compaction_deactivation(
+    state: Mapping[str, object],
+    scope: str,
+    scope_key: str,
+    tip_sequence: int | None,
+) -> Mapping[str, object]:
+    """Pure deactivation transform: bookkeeping survives; the projection row does not.
+
+    The cursor and last-projection accounting are this plugin's own history, so the parked
+    copy keeps the payload untouched for re-enable. The live projection itself is core-owned
+    and the activation transaction already deletes it (the raw window becomes visible again),
+    so there is no live work for this transform to refuse.
+    """
+    _ = (scope, scope_key, tip_sequence)
+    return state
+
+
 def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
     resolved = parse_compaction_config(config)
     return Plugin(
@@ -529,6 +550,7 @@ def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
                 },
             },
         ),
+        prepare_deactivate=prepare_compaction_deactivation,
     )
 
 

@@ -300,10 +300,10 @@ def test_session_lifecycle_hooks_run_for_their_side_effects(tmp_path: Path) -> N
         assert invoked[1]["note"] == "session finished"
 
 
-def test_read_only_policy_skips_the_gate_and_notes_it_on_the_result(tmp_path: Path) -> None:
+def test_read_only_policy_skips_a_matching_gate_and_notes_it_on_the_result(tmp_path: Path) -> None:
     marker = tmp_path / "gate-ran.txt"
     with _loopback_server(_read_replies()) as server:
-        core = _core(tmp_path, server, {"pre_tool": [_marker_command(marker)]}, read_only=True)
+        core = _core(tmp_path, server, {"post_tool": [_marker_command(marker)]}, read_only=True)
         (tmp_path / "workspace" / "note.txt").write_text("note contents", encoding="utf-8")
         session_id = core.create_session().session_id
         assert core.run("read the note", session_id=session_id).status == "completed"
@@ -316,3 +316,34 @@ def test_read_only_policy_skips_the_gate_and_notes_it_on_the_result(tmp_path: Pa
         # The configured hook command never ran: a mutating argv hook is skipped under read-only.
         assert not marker.exists()
         assert [event.event_type for event in core.events_after(session_id)].count("kernel.tool_completed") == 1
+
+
+def test_read_only_read_ignores_a_write_only_hook(tmp_path: Path) -> None:
+    marker = tmp_path / "gate-ran.txt"
+    with _loopback_server(_read_replies()) as server:
+        core = _core(
+            tmp_path,
+            server,
+            {"post_tool": [_marker_command(marker)], "post_tool_match": ["write"]},
+            read_only=True,
+        )
+        (tmp_path / "workspace" / "note.txt").write_text("note contents", encoding="utf-8")
+        session_id = core.create_session().session_id
+        assert core.run("read the note", session_id=session_id).status == "completed"
+
+        # A write-only hook never touches a read: no note, no run, exact read text.
+        texts = [text for text in _model_messages(server) if "note contents" in text]
+        assert texts == ["note contents"], _model_messages(server)
+        assert not marker.exists()
+
+
+def test_read_only_read_with_no_hooks_configured_is_exact(tmp_path: Path) -> None:
+    with _loopback_server(_read_replies()) as server:
+        core = _core(tmp_path, server, {"timeout_seconds": 5}, read_only=True)
+        (tmp_path / "workspace" / "note.txt").write_text("note contents", encoding="utf-8")
+        session_id = core.create_session().session_id
+        assert core.run("read the note", session_id=session_id).status == "completed"
+
+        # Empty hooks config registers nothing: the read result is byte-exact, no skip-note.
+        texts = [text for text in _model_messages(server) if "note contents" in text]
+        assert texts == ["note contents"], _model_messages(server)

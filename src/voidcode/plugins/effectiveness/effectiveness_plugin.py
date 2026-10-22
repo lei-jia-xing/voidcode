@@ -39,8 +39,10 @@ TOOL_OUTCOME_EVENTS: frozenset[str] = frozenset({"kernel.tool_completed", "kerne
 APPROVAL_REQUESTED_EVENT = "kernel.approval_requested"
 #: One run request: an authentic user prompt, or a run re-driven after a crash.
 RUN_REQUEST_EVENTS: frozenset[str] = frozenset({"kernel.user_message", "kernel.run_resumed"})
-#: Compaction fact (legacy name), owned by the compaction surface, not by this plugin.
-COMPACTED_EVENT = "runtime.context_compacted"
+#: Compaction facts, owned by the compaction surface, not by this plugin. The current name is
+#: the stable cumulative fact (one per applied projection); the legacy name keeps counting
+#: historical sessions whose facts were staged before namespacing.
+COMPACTED_EVENTS: frozenset[str] = frozenset({"plugin.compaction.context_compacted", "runtime.context_compacted"})
 
 READ_TOOL = "read"
 EDIT_TOOL = "edit"
@@ -309,7 +311,7 @@ def project_session_effectiveness(
             if isinstance(model, str) and model:
                 models_by_batch[view.sequence] = model
             continue
-        if event_type == COMPACTED_EVENT:
+        if event_type in COMPACTED_EVENTS:
             compaction_count += 1
             continue
         if event_type == APPROVAL_REQUESTED_EVENT:

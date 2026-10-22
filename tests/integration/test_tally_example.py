@@ -36,7 +36,6 @@ def _configure(workspace: Path, server: OpenAILoopbackServer, plugin: Path) -> N
     disabled = {
         name: {"enabled": False}
         for name in (
-            "agents",
             "ast_grep",
             "btw",
             "compaction",

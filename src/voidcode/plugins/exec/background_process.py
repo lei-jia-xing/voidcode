@@ -37,7 +37,7 @@ from voidcode.sdk.tools import (
     ToolSuccess,
 )
 
-from .args import NonEmptyCommand, NonEmptyProcessId, OptionalDescription, format_validation_error
+from .args import NonEmptyCommand, NonEmptyProcessId, OptionalDescription
 from .shell_exec import _shell_argv
 
 #: Row bound of one `ps` listing, as the legacy command had.
@@ -343,6 +343,24 @@ def _write_records(services: PluginServices, records: Mapping[str, Mapping[str, 
     )
 
 
+def prepare_exec_deactivation(
+    state: Mapping[str, object],
+    scope: str,
+    scope_key: str,
+    tip_sequence: int | None,
+) -> Mapping[str, object]:
+    """Pure deactivation transform: persisted process identities survive untouched as history.
+
+    Records are identities (pid + start time + log paths), not supervision handles: the host
+    owns live processes and supervised background jobs survive a generation swap by design.
+    Disabling exec only drops the control surface until re-enable, when the same identities
+    re-attach to still-supervised ids or report honestly as externally managed. Nothing here
+    stops a process, and a running process never makes exec undisablable.
+    """
+    _ = (scope, scope_key, tip_sequence)
+    return state
+
+
 def _with_exit(record: Mapping[str, object], *, state: str, exit_code: int | None) -> dict[str, object]:
     """The record after a process ended: the state, and its exit code when the host has one."""
     updated = {**record, "state": state}
@@ -565,9 +583,9 @@ class BackgroundProcessTool:
         workspace = context.require_workspace().resolve()
         context.require_session_id()
         try:
-            args = _ARGS_ADAPTER.validate_python(call.arguments)
+            args = _ARGS_ADAPTER.validate_python(dict(call.arguments))
         except ValidationError as exc:
-            raise ValueError(format_validation_error(self.definition.name, exc)) from exc
+            raise ValueError(str(exc)) from exc
         if isinstance(args, _StartArgs):
             return self._start(
                 args,

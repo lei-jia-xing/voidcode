@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import enum
 import json
-from collections.abc import Mapping
 from pathlib import Path
 from typing import ClassVar
 from urllib.parse import unquote, urlparse
@@ -29,7 +28,6 @@ from voidcode.sdk.tools import (
     ToolSuccess,
 )
 
-from .artifacts import create_artifact
 from .lsp_manager import LspManager, LspRequest
 from .lsp_types import LspDocumentState, LspRequester, LspRequestError, LspResponse
 
@@ -460,14 +458,13 @@ class LspTool:
             mime="application/json",
             source=f"lsp:{operation.value}",
         )
-        raw_artifact_uri = None if response_artifact is None else response_artifact.get("uri")
-        artifact_uri = raw_artifact_uri if isinstance(raw_artifact_uri, str) else None
+        artifact_uri = f"voidcode://artifact/{response_artifact['artifact_id']}"
         next_offset = offset + limit if is_truncated else None
         if item_count and offset <= item_count:
             page_summary = f"Items {offset}-{min(offset + limit - 1, item_count)} of {item_count}."
         else:
             page_summary = f"No items on page offset {offset}; total item count {item_count}."
-        output_text = f'Full LSP JSON response: read(path="{artifact_uri}").\n{page_summary}' if artifact_uri is not None else page_summary
+        output_text = f'Full LSP JSON response: read(path="{artifact_uri}").\n{page_summary}'
         if next_offset is not None:
             output_text += f" More results available; next_offset={next_offset}."
         output_text += f"\n{document_summary}\n\n{rendered_text}"
@@ -478,7 +475,7 @@ class LspTool:
                 bounds=OutputBounds(
                     truncated=is_truncated,
                     partial=is_truncated,
-                    reference=(OutputReference(uri=artifact_uri, artifact=response_artifact) if artifact_uri is not None else None),
+                    reference=OutputReference(uri=artifact_uri, artifact=response_artifact),
                 ),
             ),
             body=OpaqueToolBody(
@@ -493,7 +490,7 @@ class LspTool:
                     "next_offset": next_offset,
                     "truncated": is_truncated,
                     "body_artifact": response_artifact,
-                    "artifacts": [] if response_artifact is None else [response_artifact],
+                    "artifacts": [response_artifact],
                     "response_reference": artifact_uri,
                 }
             ),
@@ -510,13 +507,21 @@ def _spill_response_artifact(
     kind: str,
     mime: str,
     source: str,
-) -> Mapping[str, object] | None:
-    """Spill the full JSON-RPC response through the core artifact store.
-
-    Returns ``None`` when the handler has no artifact service: the bounded page
-    stays the tool's only output and no reference is reported.
-    """
-    return create_artifact(services, kind=kind, content=content, mime=mime, source=source)
+) -> dict[str, object]:
+    """Spill the full JSON-RPC response through the core artifact store."""
+    reference = services.spill_artifact(content, media_type=mime)
+    uri = f"voidcode://artifact/{reference.sha256}"
+    return {
+        "artifact_id": reference.sha256,
+        "sha256": reference.sha256,
+        "byte_count": reference.bytes,
+        "content_type": reference.media_type,
+        "mime": reference.media_type,
+        "uri": uri,
+        "kind": kind,
+        "status": "available",
+        "source": source,
+    }
 
 
 def _document_state_result(

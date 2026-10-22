@@ -1,13 +1,8 @@
-"""Hook argv execution, ported from ``src/voidcode/hook/executor.py``.
+"""User argv hook execution: the gate/execute/record loop for the four live surfaces.
 
-Faithful port of the shared gate/execute/record loop: the ``{action, diagnostic,
-guidance}`` stdout JSON protocol, the cancel-honoring surface set, fail-closed
+The ``{action, diagnostic, guidance}`` stdout JSON protocol, fail-closed
 ``pre_tool`` versus fail-open everything else, the read-only policy skip, the
 32-item diagnostic cap with sentinel, and the exact error/status strings.
-
-One deliberate divergence: the legacy loop parsed the command stdout twice (once
-inside the ``try`` and once after it). The second parse was unreachable for
-malformed stdout and value-identical otherwise, so only the first is kept.
 """
 
 from __future__ import annotations
@@ -19,35 +14,20 @@ import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final, Literal
+from typing import Literal
 
-from .hook_config import ResolvedHookPlan, RuntimeHooksConfig, hook_tool_matches
-from .hook_surfaces import RuntimeHookSurface
+from .hook_config import RuntimeHooksConfig, hook_tool_matches
 
 logger = logging.getLogger(__name__)
 
-#: Surfaces where a hook ``cancel`` action takes effect. Gate surfaces
-#: short-circuit the loop on first cancel; every other surface treats cancel
-#: as continue (diagnostic + guidance kept, loop continues).
-_CANCEL_HONORING_SURFACES: Final[frozenset[str]] = frozenset(
-    {
-        "pre_tool",
-        "post_tool",
-        "turn_progress",
-        "tool_batch_repeated",
-        "approval_requested",
-        "before_compact",
-    }
-)
+#: Lifecycle surfaces never honor ``cancel``: session start/end are advisory
+#: (diagnostic + guidance kept, loop continues). Only the tool gate/post loop
+#: short-circuits on first cancel.
 
-#: Diagnostic accumulation bound; mirrors ``_MAX_DIAGNOSTICS`` in ``typed.py``.
-#: The first 32 items are kept, then one sentinel; newer items are dropped.
-_MAX_DIAGNOSTICS: Final[int] = 32
-_DIAGNOSTICS_OMITTED_SENTINEL: Final[str] = "[additional diagnostics omitted]"
-
-
-def _surface_honors_cancel(surface: str) -> bool:
-    return surface in _CANCEL_HONORING_SURFACES
+#: Diagnostic accumulation bound. The first 32 items are kept, then one
+#: sentinel; newer items are dropped.
+_MAX_DIAGNOSTICS = 32
+_DIAGNOSTICS_OMITTED_SENTINEL = "[additional diagnostics omitted]"
 
 
 def _append_diagnostic(diagnostics: list[str], diagnostic: str) -> None:
@@ -87,7 +67,7 @@ class HookPolicyDecision:
 
 @dataclass(frozen=True, slots=True)
 class HookExecutionRequest:
-    hooks: RuntimeHooksConfig | None
+    hooks: RuntimeHooksConfig
     workspace: Path
     session_id: str
     tool_name: str
@@ -96,21 +76,19 @@ class HookExecutionRequest:
     environment: Mapping[str, str]
     sequence_start: int
     policy: HookExecutionPolicy = field(default_factory=HookExecutionPolicy)
-    plan: ResolvedHookPlan | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class LifecycleHookExecutionRequest:
-    hooks: RuntimeHooksConfig | None
+    hooks: RuntimeHooksConfig
     workspace: Path
     session_id: str
-    surface: RuntimeHookSurface
+    surface: Literal["session_start", "session_end"]
     recursion_env_var: str
     environment: Mapping[str, str]
     sequence_start: int
     payload: Mapping[str, object] = field(default_factory=dict)
     policy: HookExecutionPolicy = field(default_factory=HookExecutionPolicy)
-    plan: ResolvedHookPlan | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,25 +107,16 @@ class _HookCommandLoop:
 
 def run_tool_hooks(request: HookExecutionRequest) -> HookExecutionOutcome:
     hooks = request.hooks
-    plan = request.plan
-    if (hooks is None or hooks.enabled is not True) and (plan is None or not plan.enabled):
+    if hooks.enabled is not True:
         return HookExecutionOutcome(events=(), last_sequence=request.sequence_start)
     if request.environment.get(request.recursion_env_var) == "1":
         return HookExecutionOutcome(events=(), last_sequence=request.sequence_start)
 
-    if plan is not None:
-        commands = plan.commands_for_surface("pre_tool" if request.phase == "pre" else "post_tool")
-        timeout_seconds = plan.timeout_seconds
-    else:
-        assert hooks is not None
-        commands = hooks.pre_tool if request.phase == "pre" else hooks.post_tool
-        timeout_seconds = hooks.timeout_seconds
-    if hooks is not None:
-        # Tool glob filters are config-only: plan bindings carry no match field,
-        # so a plan-scoped filter would need `HookPlanBinding` to carry one.
-        match_patterns = hooks.pre_tool_match if request.phase == "pre" else hooks.post_tool_match
-        if not hook_tool_matches(match_patterns, request.tool_name):
-            return HookExecutionOutcome(events=(), last_sequence=request.sequence_start)
+    commands = hooks.pre_tool if request.phase == "pre" else hooks.post_tool
+    timeout_seconds = hooks.timeout_seconds
+    match_patterns = hooks.pre_tool_match if request.phase == "pre" else hooks.post_tool_match
+    if not hook_tool_matches(match_patterns, request.tool_name):
+        return HookExecutionOutcome(events=(), last_sequence=request.sequence_start)
     return _run_hook_commands(
         _HookCommandLoop(
             event_type=_event_type_for_phase(request.phase),
@@ -170,22 +139,13 @@ def run_tool_hooks(request: HookExecutionRequest) -> HookExecutionOutcome:
 
 def run_lifecycle_hooks(request: LifecycleHookExecutionRequest) -> HookExecutionOutcome:
     hooks = request.hooks
-    plan = request.plan
-    if (hooks is None or hooks.enabled is not True) and (plan is None or not plan.enabled):
+    if hooks.enabled is not True:
         return HookExecutionOutcome(events=(), last_sequence=request.sequence_start)
     if request.environment.get(request.recursion_env_var) == "1":
         return HookExecutionOutcome(events=(), last_sequence=request.sequence_start)
-    if request.surface in ("pre_tool", "post_tool"):
-        msg = f"tool hook surface must use run_tool_hooks: {request.surface}"
-        raise ValueError(msg)
 
-    if plan is not None:
-        commands = plan.commands_for_surface(request.surface)
-        timeout_seconds = plan.timeout_seconds
-    else:
-        assert hooks is not None
-        commands = hooks.commands_for_surface(request.surface)
-        timeout_seconds = hooks.timeout_seconds
+    commands = hooks.on_session_start if request.surface == "session_start" else hooks.on_session_end
+    timeout_seconds = hooks.timeout_seconds
     return _run_hook_commands(
         _HookCommandLoop(
             event_type="runtime.lifecycle_hook",
@@ -194,7 +154,7 @@ def run_lifecycle_hooks(request: LifecycleHookExecutionRequest) -> HookExecution
             environment={**request.environment, **_lifecycle_hook_environment(request)},
             fail_closed=False,
             error_label=f"lifecycle hook failed for {request.surface}",
-            honors_cancel=_surface_honors_cancel(request.surface),
+            honors_cancel=False,
             label=request.surface,
         ),
         commands=commands,

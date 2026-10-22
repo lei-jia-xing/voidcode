@@ -94,10 +94,19 @@ before the runtime loads it.
 - Every `(scope, scope_key, owner)` row is transformed at most once per activation, with its own
   optimistic-concurrency version; an owner admitted unchanged with the same schema version is only
   validated, never rewritten.
-- Disabling an owner cancels its pending and claimed continuations and clears its session budgets in
-  the same transaction; its durable state is kept. Re-enabling restores state and constraints but
-  never resumes cancelled work, so re-arming is an explicit owner action that stages its own budget
-  in the same commit. A cancelled continuation is terminal.
+- Disabling an owner cancels its pending and claimed continuations, cancels its pending wakeups,
+  deletes its session overlays and window projections, and clears its session budgets in the same
+  transaction — all narrowed to the switching workspace, so a shared database never loses another
+  workspace's rows. Claimed wakeups already own their run and settle through that run's terminal
+  path, never through the switch. Its durable state is kept, parked by its own
+  `prepare_deactivate`: cron schedules park disabled with no armed wakeup, plan mode parks off,
+  todo keeps its list with reminder counters zeroed, and compaction/skills/delegation/exec keep
+  their history untouched (delegation child mappings and exec process identities resume control
+  on re-enable). Re-enabling restores state and constraints but never resumes cancelled work, so
+  re-arming is an explicit owner action. A cancelled continuation or wakeup is terminal.
+  Delegated children are core-owned sessions, not owner resources: the switch never cancels them,
+  and a `running`/`waiting` child refuses the switch through the ordinary session blockers,
+  naming its session, before any transform runs.
 
 ## The activation transaction
 
@@ -110,9 +119,10 @@ before the runtime loads it.
    the workspace — including the acting `running` session;
 4. every migrated/deactivated state copy with its CAS version and core-owned
    `schema_version`/`revision_id` metadata;
-5. cancellation and budget clearing for owners the candidate does not admit, and retargeting of the
-   acting session's still-enabled queued work to the new revision (owner, source, root id and the
-   shared root budget are preserved);
+5. cancellation of the dropped owners' continuations, wakeups, overlays, projections, and budgets
+   (workspace-scoped; plus explicit budget clears for still-enabled owners the caller names), and
+   retargeting of the acting session's still-enabled queued work to the new revision (owner,
+   source, root id and the shared root budget are preserved);
 6. the activation events and the acting session's projection;
 7. the acting session's checkpoint **with its existing kind preserved** (no checkpoint is invented
    for a session that had none), plus the durable resume intent described below.

@@ -347,6 +347,22 @@ def test_deterministic_replacement_carries_the_legacy_sections_verbatim() -> Non
     )
 
 
+def test_a_todo_result_is_preserved_when_it_is_the_sole_covered_fact() -> None:
+    """No per-tool discard: a lone todo result still reaches the projection text."""
+    todo_call = ToolCall("todo", {"op": "view"}, "call-todo")
+    events = (
+        _event(1, "kernel.user_message", {"content": _USER_MESSAGE}),
+        _intent(2),
+        _model_turn(3, dispatch_sequence=2, tool_calls=(todo_call,)),
+        _tool_completed(4, batch_sequence=3, call=todo_call, content="2 phases, 1 in progress"),
+        _model_turn(5, dispatch_sequence=2, output="noted", input_tokens=9_000),
+    )
+    text = render_deterministic_replacement(_plan(events))
+    assert "Tool result compacted: todo ok" in text
+    assert "2 phases, 1 in progress" in text
+    assert "## Dropped Tool Preview\nCompacted 1 earlier tool results:\n1. todo ok" in text
+
+
 def test_objective_is_previewed_at_160_chars_and_constraints_match_the_legacy_markers() -> None:
     long_prompt = "A" * 200
     events = (
