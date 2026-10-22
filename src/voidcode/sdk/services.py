@@ -13,7 +13,7 @@ from .json_values import json_wire_object, own_json_object
 if TYPE_CHECKING:
     from .hooks import FactPage
     from .tools import ToolDefinition
-    from .transcript import TranscriptPage
+    from .transcript import ContextHistory, TranscriptPage
 
 
 class QueryUnavailable(ValueError):
@@ -557,6 +557,15 @@ class PluginServices(Protocol):
         Limits count source events (1..200). Advance next_sequence even for empty
         pages; has_more, not the fact count, determines whether to continue.
         Recorded facts must satisfy the current contract; incomplete records raise.
+        """
+        ...
+
+    def read_context_history(self, *, limit: int = 600) -> ContextHistory:
+        """Read a certified source prefix (1..2000 records) for compaction.
+
+        Includes bookkeeping sizes and safe prefix boundaries. Records are whole;
+        the bound counts source records, not bytes. The core revalidates any
+        declared projection independently when it is submitted.
         """
         ...
 

@@ -31,8 +31,9 @@ from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandR
 from voidcode.sdk.hooks import PluginFact, RunFinishedFact, UsageFact
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.plugin import Plugin, StateSchema
-from voidcode.sdk.services import EventView, PluginServices
+from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import ToolEffect
+from voidcode.sdk.transcript import ContextRecord
 
 from .projection import (
     DEFAULT_KEEP_RECENT_TOKENS,
@@ -231,22 +232,9 @@ class ProjectionOutcome:
         }
 
 
-def _read_window(services: PluginServices) -> tuple[tuple[EventView, ...], bool]:
-    """Read this session's events from its first one; the flag says the read reached the end."""
-    events: list[EventView] = []
-    cursor = 0
-    reached_end = False
-    for _ in range(_MAX_EVENT_PAGES):
-        page = services.read_events(after_sequence=cursor, limit=_EVENT_PAGE_SIZE, include_payload=True)
-        if not page:
-            reached_end = True
-            break
-        events.extend(page)
-        cursor = max(event.sequence for event in page)
-        if len(page) < _EVENT_PAGE_SIZE:
-            reached_end = True
-            break
-    return tuple(events), reached_end
+def _read_window(services: PluginServices) -> tuple[tuple[ContextRecord, ...], bool]:
+    history = services.read_context_history(limit=_MAX_EVENT_PAGES * _EVENT_PAGE_SIZE)
+    return history.records, history.reached_end
 
 
 def _replacement_text(
@@ -295,7 +283,7 @@ def apply_projection(
     version: int,
     config: CompactionConfig,
     reason: ProjectionReason,
-    events: Sequence[EventView],
+    events: Sequence[ContextRecord],
     reached_end: bool,
     measured_input_tokens: int | None,
 ) -> ProjectionOutcome:

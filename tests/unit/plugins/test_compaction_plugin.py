@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
 
 import pytest
 
+from voidcode.core.storage.store import StoredEvent
+from voidcode.core.transcript import context_records
 from voidcode.plugins.compaction import compaction_plugin as plugin_module
 from voidcode.plugins.compaction.compaction_plugin import (
     CONTEXT_COMPACTED_EVENT,
@@ -29,7 +32,6 @@ from voidcode.plugins.compaction.projection import (
     clip_summary_text,
     continuity_anchor,
     effective_reserve_tokens,
-    event_payload_bytes,
     measured_dispatch_input_tokens,
     measured_tokens_per_character,
     plan_projection,
@@ -46,9 +48,11 @@ from voidcode.sdk.codec import encode_provider_result, encode_tool_call, encode_
 from voidcode.sdk.commands import CommandInvocation
 from voidcode.sdk.hooks import InvocationFinishedFact, RunFinishedFact, UsageFact
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.provider import ProviderTokenUsage, ProviderTurnResult
+from voidcode.sdk.json_values import json_wire_object
+from voidcode.sdk.provider import ProviderMessage, ProviderTokenUsage, ProviderTurnResult
 from voidcode.sdk.services import EventView, PluginServices
-from voidcode.sdk.tools import TextOutput, ToolCall, ToolFailure, ToolSuccess
+from voidcode.sdk.tools import ResourceChange, TextOutput, ToolCall, ToolFailure, ToolSuccess
+from voidcode.sdk.transcript import ContextHistory
 
 SESSION_ID = "session-1"
 RUN_ID = "run-1"
@@ -114,7 +118,11 @@ def _model_turn(
 
 
 def _tool_completed(sequence: int, *, batch_sequence: int, call: ToolCall, content: str = "", error: str | None = None) -> EventView:
-    result = ToolSuccess(call.tool_name, TextOutput(content)) if error is None else ToolFailure(call.tool_name, error, TextOutput(content))
+    result = (
+        ToolSuccess(call.tool_name, TextOutput(content), changes=(ResourceChange("src/parser.py"),) if call == _WRITE_CALL else ())
+        if error is None
+        else ToolFailure(call.tool_name, error, TextOutput(content))
+    )
     return _event(
         sequence,
         "kernel.tool_completed",
@@ -136,9 +144,19 @@ def _session_events() -> tuple[EventView, ...]:
     )
 
 
+def _records(events):
+    return context_records(
+        tuple(StoredEvent(SESSION_ID, e.sequence, e.run_id, e.event_type, e.source, e.actor, e.revision_id, e.payload) for e in events)
+    )
+
+
+def _size(event):
+    return len(json.dumps(json_wire_object(event.payload), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+
+
 def _plan(events: tuple[EventView, ...] = (), **overrides: object):
     planned = plan_projection(
-        events or _session_events(),
+        _records(events or _session_events()),
         previous_covered_to_sequence=overrides.pop("previous_covered_to_sequence", None),  # type: ignore[arg-type]
         keep_recent_tokens=overrides.pop("keep_recent_tokens", 0),  # type: ignore[arg-type]
         reached_end=overrides.pop("reached_end", True),  # type: ignore[arg-type]
@@ -190,9 +208,8 @@ class MockServices(PluginServices):
     def stage_event(self, event_type: str, payload: Mapping[str, object]) -> None:
         self.staged.append((event_type, payload))
 
-    def read_events(self, *, after_sequence: int = 0, limit: int = 100, include_payload: bool = True) -> tuple[EventView, ...]:
-        _ = include_payload
-        return tuple(event for event in self.events if event.sequence > after_sequence)[:limit]
+    def read_context_history(self, *, limit=600):
+        return ContextHistory(_records(self.events[:limit]), len(self.events) <= limit)
 
     # --- window projection ---
 
@@ -200,7 +217,7 @@ class MockServices(PluginServices):
         if self.refuse:
             raise ValueError("core refused the projection")
         covered = tuple(event for event in self.events if event.sequence <= covered_to_sequence)
-        covered_bytes = sum(event_payload_bytes(event) for event in covered)
+        covered_bytes = sum(_size(event) for event in covered)
         replacement_bytes = len(replacement.encode("utf-8"))
         assert replacement_bytes < covered_bytes, "the fake core measures what the real one does"
         self.projections.append(
@@ -319,7 +336,7 @@ def test_deterministic_replacement_carries_the_legacy_sections_verbatim() -> Non
     assert plan.covered_from_sequence == 1
     assert plan.covered_to_sequence == 8
     assert plan.covered_event_count == 8
-    assert plan.covered_bytes == sum(event_payload_bytes(event) for event in _session_events())
+    assert plan.covered_bytes == sum(_size(event) for event in _session_events())
     assert plan.retained_tool_result_count == 0
     # The exact provider-facing text: legacy sections, the dropped preview, and the anchor.
     assert render_deterministic_replacement(plan) == (
@@ -416,38 +433,29 @@ def test_boundary_requires_every_call_of_a_multi_call_batch_to_be_answered() -> 
     assert [fact.tool_name for fact in full.covered_tool_results] == ["write", "bash"]
 
 
-def test_a_truncated_payload_ends_the_covered_prefix() -> None:
+def test_large_payloads_remain_coverable_without_silent_truncation() -> None:
     events = list(_session_events())
-    events[5] = EventView(
-        sequence=6,
-        event_type="kernel.model_turn",
-        run_id=RUN_ID,
-        revision_id=REVISION_ID,
-        source="core",
-        actor="core",
-        payload={"truncated": True, "original_bytes": 4_096},
-        payload_truncated=True,
-    )
+    events[7] = _model_turn(8, dispatch_sequence=5, output="完整正文" * 30_000)
     plan = _plan(tuple(events))
-    # The unreadable turn is never covered; the last balanced boundary before it is the intent.
-    assert plan.covered_to_sequence == 5
-    assert plan.covered_event_count == 5
+    assert plan.covered_to_sequence == 8
+    assert plan.covered_event_count == 8
+    assert plan.covered_bytes == sum(_size(event) for event in events)
 
 
 def test_retention_keeps_the_newest_content_raw_at_the_measured_rate() -> None:
     events = _session_events()
     # 9_000 prompt tokens for 600 measured characters: 15 tokens per character.
-    assert measured_tokens_per_character(events) == 15.0
-    assert measured_dispatch_input_tokens(events) == 9_000
-    assert recent_tail_character_budget(events, keep_recent_tokens=1_500, reached_end=True) == 100
+    assert measured_tokens_per_character(_records(events)) == 15.0
+    assert measured_dispatch_input_tokens(_records(events)) == 9_000
+    assert recent_tail_character_budget(_records(events), keep_recent_tokens=1_500, reached_end=True) == 100
     covered = _plan(events, keep_recent_tokens=1_500)
     # The last model turn is bigger than 100 characters, so it stays raw and the boundary
     # falls back to the last balanced sequence before it (the read batch's report).
     assert covered.covered_to_sequence == 7
     assert covered.retained_tool_result_count == 0
     # Without a measurement there is no honest conversion: nothing is retained.
-    assert recent_tail_character_budget(events, keep_recent_tokens=1_500, reached_end=False) == 0
-    assert recent_tail_character_budget(events[:1], keep_recent_tokens=1_500, reached_end=True) == 0
+    assert recent_tail_character_budget(_records(events), keep_recent_tokens=1_500, reached_end=False) == 0
+    assert recent_tail_character_budget(_records(events[:1]), keep_recent_tokens=1_500, reached_end=True) == 0
 
 
 # --- Plan refusals and no-ops ---
@@ -455,7 +463,7 @@ def test_retention_keeps_the_newest_content_raw_at_the_measured_rate() -> None:
 
 def test_plan_is_none_when_the_window_has_nothing_new_to_cover() -> None:
     events = _session_events()
-    assert plan_projection(events, previous_covered_to_sequence=8, keep_recent_tokens=0, reached_end=True) is None
+    assert plan_projection(_records(events), previous_covered_to_sequence=8, keep_recent_tokens=0, reached_end=True) is None
     assert plan_projection((), previous_covered_to_sequence=None, keep_recent_tokens=0, reached_end=True) is None
 
 
@@ -469,7 +477,7 @@ def test_apply_projection_refuses_a_replacement_that_would_not_shrink_the_window
         version=0,
         config=CompactionConfig(keep_recent_tokens=0),
         reason="manual",
-        events=events,
+        events=_records(events),
         reached_end=True,
         measured_input_tokens=None,
     )
@@ -487,7 +495,7 @@ def test_apply_projection_is_a_noop_when_nothing_is_coverable() -> None:
         version=3,
         config=CompactionConfig(keep_recent_tokens=0),
         reason="manual",
-        events=_session_events(),
+        events=_records(_session_events()),
         reached_end=True,
         measured_input_tokens=12_000,
     )
@@ -510,7 +518,7 @@ def test_apply_projection_reports_the_core_measured_accounting() -> None:
         version=0,
         config=CompactionConfig(keep_recent_tokens=0),
         reason="threshold",
-        events=events,
+        events=_records(events),
         reached_end=True,
         measured_input_tokens=9_000,
     )
@@ -561,7 +569,7 @@ def test_model_summary_lane_replaces_the_text_and_keeps_the_real_accounting() ->
         version=0,
         config=CompactionConfig(keep_recent_tokens=0, summary_enabled=True),
         reason="manual",
-        events=events,
+        events=_records(events),
         reached_end=True,
         measured_input_tokens=9_000,
     )
@@ -587,7 +595,7 @@ def test_model_summary_failure_and_blank_answer_fall_back_to_the_deterministic_t
         version=0,
         config=CompactionConfig(keep_recent_tokens=0, summary_enabled=True),
         reason="manual",
-        events=events,
+        events=_records(events),
         reached_end=True,
         measured_input_tokens=9_000,
     )
@@ -601,7 +609,7 @@ def test_model_summary_failure_and_blank_answer_fall_back_to_the_deterministic_t
         version=0,
         config=CompactionConfig(keep_recent_tokens=0, summary_enabled=True),
         reason="manual",
-        events=events,
+        events=_records(events),
         reached_end=True,
         measured_input_tokens=9_000,
     )
@@ -617,7 +625,7 @@ def test_a_model_summary_that_would_grow_the_window_falls_back_to_the_determinis
         version=0,
         config=CompactionConfig(keep_recent_tokens=0, summary_enabled=True),
         reason="manual",
-        events=events,
+        events=_records(events),
         reached_end=True,
         measured_input_tokens=9_000,
     )
@@ -635,7 +643,7 @@ def test_an_unshrinkable_prefix_is_refused_before_the_model_lane_is_asked() -> N
         version=0,
         config=CompactionConfig(keep_recent_tokens=0, summary_enabled=True),
         reason="threshold",
-        events=events,
+        events=_records(events),
         reached_end=True,
         measured_input_tokens=9_000,
     )
@@ -853,3 +861,27 @@ def test_create_plugin_registers_the_command_and_the_observer() -> None:
     assert plugin.tools == ()
     assert plugin.context is None
     assert plugin.migrate_state is None
+
+
+def test_summary_uses_reported_resources_and_actual_children_with_arbitrary_tool_names():
+    from voidcode.sdk.transcript import ContextRecord, TranscriptChild, TranscriptEntry, TranscriptTool
+
+    call = ToolCall("unrelated_name", {"targets": "actual.py", "path": "misleading.py", "command": "display text"}, "substitute")
+    result = ToolSuccess("unrelated_name", TextOutput("moved"), changes=(ResourceChange("actual.py", "move", "old.py"),))
+    records = (
+        ContextRecord(1, 1_000, True, TranscriptEntry(1, RUN_ID, REVISION_ID, "client", ProviderMessage("user", _USER_MESSAGE))),
+        ContextRecord(2, 1_000, True, TranscriptEntry(2, RUN_ID, REVISION_ID, "custom", TranscriptTool(call, result, False, 1, False))),
+        ContextRecord(3, 1_000, True, TranscriptEntry(3, RUN_ID, REVISION_ID, "custom", TranscriptChild("actual-child"))),
+    )
+    plan = plan_projection(records, previous_covered_to_sequence=None, keep_recent_tokens=0, reached_end=True)
+    assert plan.references == ("file:actual.py", "file:old.py")
+    assert plan.delegated == ("child:actual-child",)
+    assert "file:misleading.py" not in render_deterministic_replacement(plan)
+    assert "command:display text" not in render_deterministic_replacement(plan)
+
+
+def test_interrupted_dispatch_cannot_reuse_an_older_usage_measurement():
+    events = (*_session_events(), _intent(9), _event(10, "kernel.provider_interrupted", {"dispatch_sequence": 9}))
+    records = _records(events)
+    assert measured_dispatch_input_tokens(records) is None
+    assert measured_tokens_per_character(records) is None

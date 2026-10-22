@@ -81,7 +81,7 @@ _TRANSCRIPT = (
         "run",
         "rev",
         "core",
-        TranscriptTool(ToolCall("read", {"path": "a"}, "call-1"), ToolSuccess("read", output=TextOutput("contents of a")), False),
+        TranscriptTool(ToolCall("read", {"path": "a"}, "call-1"), ToolSuccess("read", output=TextOutput("contents of a")), False, 2, False),
     ),
     TranscriptEntry(4, "run", "rev", "core", TranscriptRun("completed")),
 )

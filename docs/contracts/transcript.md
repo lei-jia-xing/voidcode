@@ -6,18 +6,23 @@ consumers do not depend on `kernel.*` names or nested payload layouts. This uses
 the existing SQLite history and adds no bus, dependency or persistence table.
 
 `TranscriptEntry` preserves source sequence, run, revision and source identity.
-Its `content` is one of:
+Provider outcomes preserve their original `dispatch_sequence`. Its `content` is one of:
 
 - `ProviderMessage`: user input, or a durable continuation/wakeup with its declared
   user/system role. User-role text is verbatim; system messages preserve owner
   attribution and the structured payload rendered as text.
 - `ProviderTurnResult`: assistant output, reasoning, tool calls and reported usage.
-- `TranscriptTool`: the original call, typed result and interruption flag. Tool
-  names and argument shapes are data, not a consumer's classification mechanism.
+- `TranscriptTool`: the original call, typed result, interruption flag, committed
+  batch sequence and whether it is a deferred invocation. Tool names and argument
+  shapes are data, not a consumer's classification mechanism.
 - `TranscriptDispatch`: the dispatched provider/model and measured `RequestWindow`.
   It is available before a response completes; absence of a response does not hide
   the dispatch or fabricate usage.
 - `TranscriptRun`: completed, failed or interrupted run status.
+- `TranscriptInterrupted`: a provider dispatch with no usable result; its usage
+  remains unknown.
+- `TranscriptChild`: an actual child-session identity, independent of the tool
+  name or mechanism that spawned it.
 
 This is committed history, not a reconstruction of the current model window.
 Compaction does not remove entries, and in-progress/unanswered calls remain
@@ -41,12 +46,32 @@ identifying the last response.
 The service exposes only the lease's session, is available to read-only/hook
 leases, and rejects revoked or closed leases. It accepts no session-id override.
 
-## Current consumers and next boundary
+## Certified context history
 
-Session information uses the transcript for context, export and copy. Status reads
-only event headers for diagnostic event counts; usage uses the usage service.
+`PluginServices.read_context_history(limit=600)` returns `ContextHistory(records,
+reached_end)`: a prefix starting at the calling session's first source event,
+limited to 1..2000 source records. Unlike display paging, prefix certification
+must inspect calls before the requested boundary. This service deliberately has
+no arbitrary start cursor. The limit counts whole records, not bytes; a large
+record is never silently omitted.
 
-Compaction has not migrated yet. Before doing so, extend this contract with
-certified native-batch boundaries, dispatch/result correlation and resource/child
-observations. A display transcript must not be mistaken for proof that a prefix
-is safe to compact. The core remains the authority that validates projections.
+Each `ContextRecord` contains its source sequence, canonical payload byte count,
+optional typed transcript entry, and `safe_boundary`. Bookkeeping has no transcript
+entry but still contributes bytes and source records. The safety flag applies to
+the **whole prefix** through that sequence. Every native call must have its result
+inside that prefix, matched by batch sequence, call id and tool identity. Duplicate
+or mismatched results cannot make a prefix safe just by equalizing counts.
+Deferred results do not answer native calls and do not unbalance a closed batch.
+
+The core uses the same validator and byte measurement when accepting
+`project_window`; certification is advisory data, never authority to bypass
+validation. A plugin can choose a boundary but cannot forge one.
+
+Compaction now consumes this contract rather than reconstructing private events.
+Its retention and summary policy remain plugin-owned. File references come from
+the result's read observations and resource changes (including the old path of a
+move); delegated work comes from actual child records. Displaying arbitrary tool
+arguments does not establish a resource observation or a delegation fact.
+
+Session information uses the paged transcript for context, export and copy. Status
+reads only event headers for diagnostic event counts; usage uses the usage service.

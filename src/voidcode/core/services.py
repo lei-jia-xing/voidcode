@@ -34,7 +34,7 @@ from voidcode.sdk.services import (
     ToolInvocationReceipt,
     child_completion_notice_id,
 )
-from voidcode.sdk.transcript import TranscriptPage
+from voidcode.sdk.transcript import ContextHistory, TranscriptPage
 
 if TYPE_CHECKING:
     from voidcode.sdk.tools import ToolDefinition
@@ -81,6 +81,7 @@ class RuntimeServices:
             "read_events",
             "read_facts",
             "read_transcript",
+            "read_context_history",
             "read_child_events",
             "session_info",
             "get_usage",
@@ -652,6 +653,12 @@ class RuntimeServices:
         if type(after_sequence) is not int or after_sequence < 0 or type(limit) is not int or not 1 <= limit <= 200:
             raise ValueError("after_sequence must be >= 0 and limit within 1..200")
         return self._runtime.fact_page(lease.session_id, after_sequence, limit)
+
+    def read_context_history(self, *, limit: int = 600) -> ContextHistory:
+        lease = self._active_lease()
+        if type(limit) is not int or not 1 <= limit <= 2000:
+            raise ValueError("limit must be within 1..2000")
+        return self._runtime.context_history(lease.session_id, limit)
 
     def read_transcript(self, *, after_sequence: int = 0, limit: int = 100) -> TranscriptPage:
         lease = self._active_lease()

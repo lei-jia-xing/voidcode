@@ -72,7 +72,7 @@ from voidcode.sdk.tools import (
     ToolResult,
     is_read_tier,
 )
-from voidcode.sdk.transcript import TranscriptEntry, TranscriptPage
+from voidcode.sdk.transcript import ContextHistory, TranscriptEntry, TranscriptPage
 from voidcode.sdk.views import PluginViewDescriptor
 
 from .artifacts import ArtifactStore
@@ -86,9 +86,8 @@ from .storage.store import (
     StagedCancellation,
     StagedContinuationDraft,
     StagedStateUpdate,
-    canonical_json,
 )
-from .transcript import transcript_entry
+from .transcript import context_records, transcript_entry
 
 RESERVED_COMMAND_NAMES: frozenset[str] = frozenset({"run", "resume", "show", "cancel", "close", "init", "help", "status", "sessions", "catalog"})
 RESERVED_COMMAND_PREFIXES: tuple[str, ...] = ("core.", "voidcode.")
@@ -681,18 +680,10 @@ class PluginRuntime:
         covered = [event for event in events if event.sequence <= covered_to_sequence]
         # Integrity: the replaced prefix must be batch-complete, so every assistant tool call it
         # covers is answered inside it and the surviving tail still starts at a message boundary.
-        calls_covered = 0
-        results_covered = 0
-        for event in covered:
-            if event.event_type == "kernel.model_turn":
-                result = dict(event.payload).get("result")
-                calls = result.get("tool_calls") if isinstance(result, Mapping) else None
-                calls_covered += len(calls) if isinstance(calls, (list, tuple)) else 0
-            elif event.event_type in ("kernel.tool_completed", "kernel.tool_interrupted"):
-                results_covered += 1
-        if calls_covered != results_covered:
+        records = context_records(covered)
+        if not records[-1].safe_boundary:
             raise ValueError("a window projection must cover whole native tool batches")
-        covered_bytes = sum(len(canonical_json(dict(event.payload)).encode("utf-8")) for event in covered)
+        covered_bytes = sum(record.payload_bytes for record in records)
         replacement_bytes = len(replacement.encode("utf-8"))
         if replacement_bytes >= covered_bytes:
             raise ValueError("a window projection must be smaller than the window it replaces")
@@ -727,6 +718,10 @@ class PluginRuntime:
                 kind, payload = decoded
                 facts.append(self._typed_fact(kind, payload, event.session_id, event.run_id, event.revision_id, str(payload.get("logical_turn", ""))))
         return FactPage(tuple(facts), page[-1].sequence if page else after, len(source) > limit)
+
+    def context_history(self, session_id: str, limit: int) -> ContextHistory:
+        source = self.require_store().events(session_id, after_sequence=0, limit=limit + 1)
+        return ContextHistory(context_records(source[:limit]), len(source) <= limit)
 
     def transcript_page(self, session_id: str, after: int, limit: int) -> TranscriptPage:
         source = self.require_store().events(session_id, after_sequence=after, limit=limit + 1)

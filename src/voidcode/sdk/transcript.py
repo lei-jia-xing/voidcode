@@ -17,6 +17,8 @@ class TranscriptTool:
     call: ToolCall
     result: ToolResult
     interrupted: bool
+    batch_sequence: int
+    deferred: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,7 +33,19 @@ class TranscriptRun:
     status: Literal["completed", "failed", "interrupted"]
 
 
-type TranscriptContent = ProviderMessage | ProviderTurnResult | TranscriptTool | TranscriptDispatch | TranscriptRun
+@dataclass(frozen=True, slots=True)
+class TranscriptInterrupted:
+    """A dispatch ended without a usable provider result; usage remains unknown."""
+
+
+@dataclass(frozen=True, slots=True)
+class TranscriptChild:
+    child_session_id: str
+
+
+type TranscriptContent = (
+    ProviderMessage | ProviderTurnResult | TranscriptTool | TranscriptDispatch | TranscriptRun | TranscriptInterrupted | TranscriptChild
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +55,7 @@ class TranscriptEntry:
     revision_id: str
     source: str
     content: TranscriptContent
+    dispatch_sequence: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,3 +71,29 @@ class TranscriptPage:
     next_sequence: int
     has_more: bool
     source_events: int
+
+
+@dataclass(frozen=True, slots=True)
+class ContextRecord:
+    """One source record with core-measured size and prefix-boundary certification.
+
+    ``entry`` is absent for bookkeeping. ``safe_boundary`` certifies the prefix
+    from the session's first record through this sequence, never a page suffix.
+    """
+
+    sequence: int
+    payload_bytes: int
+    safe_boundary: bool
+    entry: TranscriptEntry | None
+
+    @property
+    def content(self) -> TranscriptContent | None:
+        return None if self.entry is None else self.entry.content
+
+
+@dataclass(frozen=True, slots=True)
+class ContextHistory:
+    """A bounded prefix starting at the session's first source record."""
+
+    records: tuple[ContextRecord, ...]
+    reached_end: bool

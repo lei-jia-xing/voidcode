@@ -15,16 +15,14 @@ UTF-8-bytes/4 token estimate, which the plugin has no way to make truthful.
 from __future__ import annotations
 
 import hashlib
-import json
 from bisect import bisect_right
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from voidcode.sdk.codec import decode_provider_result, decode_tool_call, decode_tool_result
-from voidcode.sdk.json_values import json_wire_object
-from voidcode.sdk.services import EventView
-from voidcode.sdk.tools import TextOutput, ToolFailure, ToolOutput, ToolResult
+from voidcode.sdk.provider import ProviderMessage, ProviderTurnResult
+from voidcode.sdk.tools import TextOutput, ToolFailure, ToolOutput, ToolResult, ToolSuccess
+from voidcode.sdk.transcript import ContextRecord, TranscriptChild, TranscriptDispatch, TranscriptInterrupted, TranscriptTool
 
 # --- Legacy constants (``runtime/context/window.py``) ---
 
@@ -59,18 +57,6 @@ _CONTINUITY_SUMMARY_INPUT_CHARS = 60_000
 CONTINUITY_SUMMARY_OUTPUT_CHARS = 8_000
 #: ``services.model_query`` accepts one prompt of at most 64 KiB (core-enforced).
 MODEL_QUERY_MAX_BYTES = 64 * 1024
-
-#: Facts from committed events: one dispatch, one provider turn, one tool batch member.
-MODEL_TURN_EVENT = "kernel.model_turn"
-PROVIDER_INTENT_EVENT = "kernel.provider_intent"
-PROVIDER_INTERRUPTED_EVENT = "kernel.provider_interrupted"
-USER_MESSAGE_EVENT = "kernel.user_message"
-TOOL_RESULT_EVENTS: frozenset[str] = frozenset({"kernel.tool_completed", "kernel.tool_interrupted"})
-#: Events the core renders into the provider window (``engine._messages``). Only these make a
-#: prefix worth covering, so this plugin's own bookkeeping can never justify another projection.
-PROVIDER_VISIBLE_EVENTS: frozenset[str] = frozenset(
-    {USER_MESSAGE_EVENT, "kernel.continuation_started", "kernel.wakeup_fired", MODEL_TURN_EVENT} | TOOL_RESULT_EVENTS
-)
 
 SummaryKind = Literal["deterministic", "model"]
 
@@ -206,96 +192,38 @@ def should_compact(measured_tokens: int | None, budget: CompactionBudget) -> boo
 # --- Measurement: the core's own ruler over committed events ---
 
 
-def event_payload_bytes(event: EventView) -> int:
-    """Canonical JSON bytes of one event payload, the ruler the core covers in."""
-    payload = event.payload
-    if not isinstance(payload, Mapping):
-        return 0
-    return len(
-        json.dumps(
-            json_wire_object(payload),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-    )
+def event_payload_bytes(event: ContextRecord) -> int:
+    """Use the core's measured source bytes, never serialize private payloads."""
+    return event.payload_bytes
 
 
-def _completed_turn_usage(event: EventView) -> tuple[int | None, int | None]:
-    """``(input_tokens, dispatch_sequence)`` of one completed provider turn."""
-    payload = event.payload
-    if not isinstance(payload, Mapping):
-        return None, None
-    raw_dispatch = payload.get("dispatch_sequence")
-    dispatch = int(raw_dispatch) if isinstance(raw_dispatch, (int, float)) and not isinstance(raw_dispatch, bool) else None
-    raw = payload.get("result")
-    if not isinstance(raw, Mapping):
-        return None, dispatch
-    try:
-        turn = decode_provider_result(raw)
-    except Exception:  # noqa: BLE001 - a payload this plugin cannot read is simply not a measurement
-        return None, dispatch
-    usage = turn.usage
-    return (None if usage is None else usage.input_tokens), dispatch
-
-
-def measured_dispatch_input_tokens(events: Sequence[EventView]) -> int | None:
-    """Provider-reported prompt tokens of the newest dispatch in this window, if reported.
-
-    The newest dispatch decides: an interrupted or unreadable turn leaves the value unknown
-    rather than reporting an older dispatch's numbers as the current window size.
-    """
+def measured_dispatch_input_tokens(events: Sequence[ContextRecord]) -> int | None:
     for event in reversed(events):
-        if event.event_type == PROVIDER_INTERRUPTED_EVENT:
+        if isinstance(event.content, TranscriptInterrupted):
             return None
-        if event.event_type == MODEL_TURN_EVENT:
-            tokens, _dispatch = _completed_turn_usage(event)
-            return tokens
+        if isinstance(event.content, ProviderTurnResult):
+            return None if event.content.usage is None else event.content.usage.input_tokens
     return None
 
 
-def _request_window_characters(events: Sequence[EventView], dispatch_sequence: int | None) -> int | None:
-    """Measured characters of the request one dispatch sent (core ``request_window``)."""
-    if dispatch_sequence is None:
-        return None
-    for event in events:
-        if event.sequence != dispatch_sequence or event.event_type != PROVIDER_INTENT_EVENT:
-            continue
-        payload = event.payload
-        if not isinstance(payload, Mapping):
-            return None
-        window = payload.get("request_window")
-        if not isinstance(window, Mapping):
-            return None
-        messages = window.get("message_characters")
-        schemas = window.get("tool_schema_characters")
-        characters = 0
-        for value in (messages, schemas):
-            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-                characters += value
-        return characters or None
-    return None
-
-
-def measured_tokens_per_character(events: Sequence[EventView]) -> float | None:
-    """Prompt tokens the provider charged per measured request character, newest dispatch.
-
-    This session's own report is the only honest conversion this plugin has between the
-    legacy token knobs and the character-sized content it can actually measure.
-    """
+def measured_tokens_per_character(events: Sequence[ContextRecord]) -> float | None:
+    """Pair provider usage with the exact dispatched request's measured window."""
     for event in reversed(events):
-        if event.event_type != MODEL_TURN_EVENT:
+        if isinstance(event.content, TranscriptInterrupted):
+            return None
+        if not isinstance(event.content, ProviderTurnResult):
             continue
-        tokens, dispatch = _completed_turn_usage(event)
-        characters = _request_window_characters(events, dispatch)
-        if tokens is None or tokens <= 0 or characters is None:
+        tokens = None if event.content.usage is None else event.content.usage.input_tokens
+        dispatch = None if event.entry is None else event.entry.dispatch_sequence
+        window = next((item.content.window for item in events if item.sequence == dispatch and isinstance(item.content, TranscriptDispatch)), None)
+        characters = None if window is None else window.total_characters
+        if tokens is None or tokens <= 0 or characters is None or characters <= 0:
             return None
         return tokens / characters
     return None
 
 
-def recent_tail_character_budget(events: Sequence[EventView], *, keep_recent_tokens: int, reached_end: bool) -> int:
+def recent_tail_character_budget(events: Sequence[ContextRecord], *, keep_recent_tokens: int, reached_end: bool) -> int:
     """Characters the raw tail may keep, at the rate this session was actually charged.
 
     ``0`` retains nothing, which covers the prefix as far as it can be covered. That is the
@@ -324,6 +252,7 @@ class ToolResultFact:
     arguments: Mapping[str, object]
     #: Result output as the provider saw it, and the failure reason when there was one.
     content: str
+    resource_paths: tuple[str, ...] = ()
     error: str | None = None
     artifact_id: str | None = None
     artifact_byte_count: int | None = None
@@ -333,11 +262,6 @@ class ToolResultFact:
     def text(self) -> str:
         """Provider-visible body (legacy ``result_payload_text``): output, then error."""
         return f"{self.content}\n{self.error}" if self.error else self.content
-
-    def argument_string(self, key: str) -> str | None:
-        """A non-empty string argument, or None: the preview labels only real values."""
-        value = self.arguments.get(key)
-        return value if isinstance(value, str) and value else None
 
     def preview(self, *, max_preview_chars: int = _COMPACTION_PREVIEW_CHAR_LIMIT) -> str:
         """The legacy one-line preview: identity, refs, then a clipped content/error excerpt."""
@@ -349,10 +273,9 @@ class ToolResultFact:
             if self.artifact_line_count is not None:
                 parts.append(f"line_count={self.artifact_line_count}")
             return " ".join(parts)
-        for key in ("path", "pattern", "command"):
-            value = self.argument_string(key)
-            if value is not None:
-                parts.append(f"{key}={value}")
+        for key, value in self.arguments.items():
+            if isinstance(value, str) and value:
+                parts.append(f"{key}={value[:max_preview_chars]}")
         preview_source = self.content or (self.error or "")
         if preview_source:
             clipped = preview_source[:max_preview_chars]
@@ -395,30 +318,31 @@ def _result_error(result: ToolResult) -> str | None:
     return error or None
 
 
-def tool_result_fact(event: EventView) -> ToolResultFact | None:
-    """Decode one tool-result event; ``None`` when its payload cannot be read truthfully."""
-    payload = event.payload
-    if not isinstance(payload, Mapping):
+def tool_result_fact(event: ContextRecord) -> ToolResultFact | None:
+    content = event.content
+    if not isinstance(content, TranscriptTool):
         return None
-    raw_call = payload.get("call")
-    raw_result = payload.get("result")
-    if not isinstance(raw_result, Mapping):
-        return None
-    try:
-        result = decode_tool_result(raw_result)
-        call = decode_tool_call(raw_call) if isinstance(raw_call, Mapping) else None
-    except Exception:  # noqa: BLE001 - an unreadable payload is never reported as a tool result
-        return None
-    tool_name = result.tool_name or (call.tool_name if call is not None else "")
-    if not tool_name:
-        return None
+    result, call = content.result, content.call
+    paths = (
+        tuple(
+            dict.fromkeys(
+                [
+                    *(item.path for item in result.coverage),
+                    *(item.path for item in result.changes),
+                    *(item.old_path for item in result.changes if item.old_path is not None),
+                ]
+            )
+        )
+        if isinstance(result, ToolSuccess)
+        else ()
+    )
     return ToolResultFact(
         sequence=event.sequence,
-        tool_name=tool_name,
-        # An interrupted invocation never completed, so its outcome is an error.
-        status="ok" if event.event_type == "kernel.tool_completed" and not isinstance(result, ToolFailure) else "error",
-        arguments=call.arguments if call is not None else {},
+        tool_name=call.tool_name,
+        status="ok" if not content.interrupted and not isinstance(result, ToolFailure) else "error",
+        arguments=call.arguments,
         content=_output_text(result.output),
+        resource_paths=paths,
         error=_result_error(result),
         artifact_id=_artifact_string(result, "artifact_id"),
         artifact_byte_count=_artifact_int(result, "byte_count") or _artifact_int(result, "original_byte_count"),
@@ -426,26 +350,13 @@ def tool_result_fact(event: EventView) -> ToolResultFact | None:
     )
 
 
-def _model_turn_output(event: EventView) -> str | None:
-    payload = event.payload
-    if not isinstance(payload, Mapping):
-        return None
-    raw = payload.get("result")
-    if not isinstance(raw, Mapping):
-        return None
-    try:
-        turn = decode_provider_result(raw)
-    except Exception:  # noqa: BLE001 - unreadable turns contribute no summary material
-        return None
-    return turn.output or None
+def _model_turn_output(event: ContextRecord) -> str | None:
+    return event.content.output if isinstance(event.content, ProviderTurnResult) else None
 
 
-def _user_message_text(event: EventView) -> str | None:
-    payload = event.payload
-    if not isinstance(payload, Mapping):
-        return None
-    content = payload.get("content")
-    return content if isinstance(content, str) and content.strip() else None
+def _user_message_text(event: ContextRecord) -> str | None:
+    content = event.content
+    return content.content if isinstance(content, ProviderMessage) and content.role == "user" else None
 
 
 # --- The covered prefix: boundary, accounting, and the replacement it earns ---
@@ -468,48 +379,6 @@ class ProjectionPlan:
     references: tuple[str, ...]
     delegated: tuple[str, ...]
     summary_material: tuple[str, ...]
-
-
-def _balanced_boundaries(events: Sequence[EventView]) -> tuple[int, ...]:
-    """Sequences where the prefix up to them holds no half-finished native tool batch.
-
-    The core verifies exactly this on the real payloads (an assistant tool call and its
-    report are covered together or not at all), so the plugin walks the same rule and stops
-    only on a boundary the core will accept.
-    """
-    boundaries: list[int] = []
-    calls = 0
-    results = 0
-    for event in events:
-        if event.event_type == MODEL_TURN_EVENT:
-            payload = event.payload
-            raw = payload.get("result") if isinstance(payload, Mapping) else None
-            if isinstance(raw, Mapping):
-                try:
-                    calls += len(decode_provider_result(raw).tool_calls)
-                except Exception:  # noqa: BLE001 - an unreadable turn cannot be certified as a boundary
-                    return tuple(boundaries)
-        elif event.event_type in TOOL_RESULT_EVENTS:
-            results += 1
-            if tool_result_fact(event) is None:
-                return tuple(boundaries)
-        if calls == results:
-            boundaries.append(event.sequence)
-    return tuple(boundaries)
-
-
-def _readable_prefix(events: Sequence[EventView]) -> tuple[EventView, ...]:
-    """Events up to the first whose payload ``read_events`` truncated.
-
-    A truncated payload is an event this plugin cannot certify: the core would count tool
-    calls from the full payload, so covering blind is exactly how a boundary stops being one.
-    """
-    readable: list[EventView] = []
-    for event in events:
-        if event.payload_truncated or not isinstance(event.payload, Mapping):
-            break
-        readable.append(event)
-    return tuple(readable)
 
 
 def _line_preview(value: str, *, limit: int) -> str:
@@ -552,29 +421,21 @@ def _facts_from_tool_results(
     *,
     preview_item_limit: int,
     preview_char_limit: int,
-) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     progress: list[str] = []
     blockers: list[str] = []
     refs: list[str] = []
-    delegated: list[str] = []
     for result in results[:preview_item_limit]:
         preview = result.preview(max_preview_chars=preview_char_limit)
         if result.status == "ok":
             progress.append(f"Tool result compacted: {preview}")
         else:
             blockers.append(f"Tool error compacted: {preview}")
-        path = result.argument_string("path")
-        command = result.argument_string("command")
-        if path is not None:
-            refs.append(f"file:{path}")
-        if command is not None:
-            refs.append(f"command:{command}")
-        if result.tool_name in {"task", "background_task"}:
-            delegated.append(preview)
-    return tuple(progress), tuple(blockers), tuple(refs), tuple(delegated)
+        refs.extend(f"file:{path}" for path in result.resource_paths)
+    return tuple(progress), tuple(blockers), tuple(refs)
 
 
-def _summary_material(events: Sequence[EventView]) -> tuple[str, ...]:
+def _summary_material(events: Sequence[ContextRecord]) -> tuple[str, ...]:
     """Bounded, oldest-first transcript of the covered prefix for the model lane.
 
     Each item is previewed under its own cap so one oversized payload cannot crowd out the
@@ -583,19 +444,19 @@ def _summary_material(events: Sequence[EventView]) -> tuple[str, ...]:
     parts: list[str] = []
     used = 0
     for index, event in enumerate(events):
-        if event.event_type in TOOL_RESULT_EVENTS:
+        if isinstance(event.content, TranscriptTool):
             fact = tool_result_fact(event)
             if fact is None:
                 continue
             body = f"[{index}] tool={fact.tool_name} status={fact.status}\n{fact.text[:_CONTINUITY_SUMMARY_RESULT_CHARS]}"
             used += min(len(fact.text), _CONTINUITY_SUMMARY_RESULT_CHARS) + _CONTINUITY_SUMMARY_RESULT_CHARS // 2
-        elif event.event_type == USER_MESSAGE_EVENT:
-            text = _user_message_text(event)
+        elif isinstance(event.content, ProviderMessage):
+            text = event.content.content
             if text is None:
                 continue
-            body = f"[{index}] user\n{text[:_CONTINUITY_SUMMARY_RESULT_CHARS]}"
+            body = f"[{index}] {event.content.role}\n{text[:_CONTINUITY_SUMMARY_RESULT_CHARS]}"
             used += min(len(text), _CONTINUITY_SUMMARY_RESULT_CHARS) + _CONTINUITY_SUMMARY_RESULT_CHARS // 2
-        elif event.event_type == MODEL_TURN_EVENT:
+        elif isinstance(event.content, ProviderTurnResult):
             output = _model_turn_output(event)
             if output is None:
                 continue
@@ -610,7 +471,7 @@ def _summary_material(events: Sequence[EventView]) -> tuple[str, ...]:
 
 
 def plan_projection(
-    events: Sequence[EventView],
+    events: Sequence[ContextRecord],
     *,
     previous_covered_to_sequence: int | None,
     keep_recent_tokens: int,
@@ -625,10 +486,10 @@ def plan_projection(
     so the prefix is covered as far as it can be. Extending an existing projection also
     requires newly covering at least one provider-visible event.
     """
-    readable = _readable_prefix(events)
+    readable = tuple(events)
     if not readable:
         return None
-    boundaries = _balanced_boundaries(readable)
+    boundaries = tuple(event.sequence for event in readable if event.safe_boundary)
     if not boundaries:
         return None
     last_boundary = boundaries[-1]
@@ -654,7 +515,7 @@ def plan_projection(
     if previous_covered_to_sequence is not None:
         # A re-projection must newly cover something the provider would actually see. Without
         # this, a projection's own committed events would justify the next one forever.
-        visible = [event.sequence for event in readable if event.event_type in PROVIDER_VISIBLE_EVENTS]
+        visible = [event.sequence for event in readable if isinstance(event.content, (ProviderMessage, ProviderTurnResult, TranscriptTool))]
         candidates = [sequence for sequence in candidates if bisect_right(visible, sequence) > bisect_right(visible, previous_covered_to_sequence)]
     if not candidates:
         return None
@@ -664,19 +525,21 @@ def plan_projection(
 
     covered = tuple(event for event in readable if event.sequence <= covered_to_sequence)
     covered_tool_results = tuple(
-        fact for fact in (tool_result_fact(event) for event in covered if event.event_type in TOOL_RESULT_EVENTS) if fact is not None
+        fact for fact in (tool_result_fact(event) for event in covered if isinstance(event.content, TranscriptTool)) if fact is not None
     )
     retained_tool_results = tuple(
         fact
-        for fact in (tool_result_fact(event) for event in readable if event.sequence > covered_to_sequence and event.event_type in TOOL_RESULT_EVENTS)
+        for fact in (
+            tool_result_fact(event) for event in readable if event.sequence > covered_to_sequence and isinstance(event.content, TranscriptTool)
+        )
         if fact is not None
     )
     user_messages = tuple(
-        text for text in (_user_message_text(event) for event in covered if event.event_type == USER_MESSAGE_EVENT) if text is not None
+        text for text in (_user_message_text(event) for event in covered if isinstance(event.content, ProviderMessage)) if text is not None
     )
     objective = _line_preview(user_messages[0], limit=_CONTINUITY_OBJECTIVE_PREVIEW_CHARS) if user_messages else None
     constraints = _merge_unique_strings(*(_constraint_lines(message) for message in user_messages), limit=12)
-    progress, blockers, refs, delegated = _facts_from_tool_results(
+    progress, blockers, refs = _facts_from_tool_results(
         covered_tool_results,
         preview_item_limit=_COMPACTION_PREVIEW_ITEM_LIMIT,
         preview_char_limit=_COMPACTION_PREVIEW_CHAR_LIMIT,
@@ -693,7 +556,11 @@ def plan_projection(
         progress=tuple(_merge_unique_strings(progress, limit=16)),
         blockers=tuple(_merge_unique_strings(blockers, limit=12)),
         references=tuple(_merge_unique_strings(refs, limit=16)),
-        delegated=tuple(_merge_unique_strings(delegated, limit=12)),
+        delegated=tuple(
+            _merge_unique_strings(
+                tuple(f"child:{event.content.child_session_id}" for event in covered if isinstance(event.content, TranscriptChild)), limit=12
+            )
+        ),
         summary_material=_summary_material(covered),
     )
 
