@@ -33,7 +33,7 @@ def test_sdk_cannot_depend_on_implementation_layers() -> None:
 def test_semantic_consumers_use_public_facts_instead_of_private_event_parsers() -> None:
     plugins = Path(__file__).resolve().parents[3] / "src" / "voidcode" / "plugins"
     violations: list[str] = []
-    for name in ("effectiveness/effectiveness_plugin.py", "skills/skills_plugin.py"):
+    for name in ("effectiveness/effectiveness_plugin.py", "skills/skills_plugin.py", "todo/todo_plugin.py"):
         for node in ast.walk(ast.parse((plugins / name).read_text(encoding="utf-8"))):
             if isinstance(node, ast.Attribute) and node.attr == "read_events":
                 violations.append(f"{name}:{node.lineno}: private event read")

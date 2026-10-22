@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import replace
 from pathlib import Path
 from typing import Literal
 
@@ -37,19 +37,21 @@ from voidcode.plugins.todo.todo_plugin import (
     todo_summary,
 )
 from voidcode.sdk.commands import CommandInvocation
-from voidcode.sdk.hooks import InvocationFinishedFact, RunFinishedFact
+from voidcode.sdk.hooks import FactPage, InvocationFinishedFact, PluginFact, RunFinishedFact, RunRequestedFact
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginBudget, PluginServices, SessionUsageReport
 from voidcode.sdk.tools import ToolCall, ToolFailure, ToolSuccess
 
 
-@dataclass(frozen=True, slots=True)
-class SimpleEvent:
-    """The subset of EventView this plugin reads (sequence/type/run id)."""
-
-    sequence: int
-    event_type: str
-    run_id: str
+def _request(sequence: int, run_id: str, *, resumed: bool = False) -> RunRequestedFact:
+    return RunRequestedFact(
+        session_id="session-1",
+        run_id=run_id,
+        revision_id="rev-1",
+        logical_turn="",
+        event_sequence=sequence,
+        resumed=resumed,
+    )
 
 
 class MockServices(PluginServices):
@@ -59,7 +61,7 @@ class MockServices(PluginServices):
         self.state: dict[tuple[str, str], tuple[Mapping[str, object] | None, int]] = {}
         self.staged_events: list[tuple[str, Mapping[str, object]]] = []
         self.staged_continuations: list[tuple[Mapping[str, object], str | None, str]] = []
-        self.events: list[SimpleEvent] = []
+        self.facts: list[PluginFact] = []
         self.schema_version = 0
 
     def get_state(self, scope: Literal["session", "workspace"] = "session") -> tuple[Mapping[str, object] | None, int]:
@@ -95,15 +97,10 @@ class MockServices(PluginServices):
         self.staged_continuations.append((dict(payload), idempotency_key, role))
         return f"continuation-{len(self.staged_continuations)}"
 
-    def read_events(
-        self,
-        *,
-        after_sequence: int = 0,
-        limit: int = 100,
-        include_payload: bool = True,
-    ) -> tuple[SimpleEvent, ...]:
-        _ = include_payload
-        return tuple(event for event in self.events if event.sequence > after_sequence)[:limit]
+    def read_facts(self, *, after_sequence: int = 0, limit: int = 100) -> FactPage:
+        remaining = tuple(fact for fact in self.facts if fact.event_sequence > after_sequence)
+        page = remaining[:limit]
+        return FactPage(page, page[-1].event_sequence if page else after_sequence, len(remaining) > limit)
 
     def cancel_continuations(self, *, continuation_id: str | None = None) -> None:
         raise AssertionError("todo does not cancel continuations")
@@ -724,7 +721,7 @@ def test_reminder_state_parse_rejects_unknown_and_missing_fields() -> None:
 
 def test_observer_mid_run_nudge_fires_once_at_the_threshold(tmp_path: Path) -> None:
     services = MockServices()
-    services.events = [SimpleEvent(sequence=1, event_type="kernel.user_message", run_id="run-1")]
+    services.facts = [_request(1, "run-1")]
     _invoke(services, tmp_path, {"op": "init", "items": ["one", "two"]})
 
     for _ in range(TODO_MID_RUN_MUTATION_THRESHOLD - 1):
@@ -754,7 +751,7 @@ def test_observer_mid_run_nudge_fires_once_at_the_threshold(tmp_path: Path) -> N
 
 def test_observer_nudge_ignores_read_tier_and_resets_on_todo_touch(tmp_path: Path) -> None:
     services = MockServices()
-    services.events = [SimpleEvent(sequence=1, event_type="kernel.user_message", run_id="run-1")]
+    services.facts = [_request(1, "run-1")]
     _invoke(services, tmp_path, {"op": "init", "items": ["one"]})
 
     for _ in range(20):
@@ -775,7 +772,7 @@ def test_observer_nudge_ignores_read_tier_and_resets_on_todo_touch(tmp_path: Pat
 
 def test_observer_completion_reminder_is_a_user_role_continuation(tmp_path: Path) -> None:
     services = MockServices()
-    services.events = [SimpleEvent(sequence=1, event_type="kernel.user_message", run_id="run-1")]
+    services.facts = [_request(1, "run-1")]
     _invoke(services, tmp_path, {"op": "init", "items": ["one", "two"]})
     _invoke(services, tmp_path, {"op": "block", "task": "two", "reason": "waiting"})
     todo_observer(_invocation_fact("write"), _context(tmp_path), services)
@@ -804,7 +801,7 @@ def test_observer_completion_reminder_is_a_user_role_continuation(tmp_path: Path
 
 def test_observer_skips_reminders_for_unfinished_runs_and_finished_lists(tmp_path: Path) -> None:
     services = MockServices()
-    services.events = [SimpleEvent(sequence=1, event_type="kernel.user_message", run_id="run-1")]
+    services.facts = [_request(1, "run-1")]
     _invoke(services, tmp_path, {"op": "init", "items": ["one"]})
 
     todo_observer(_run_fact(status="failed", stop_cause="error"), _context(tmp_path), services)
@@ -819,7 +816,7 @@ def test_observer_skips_reminders_for_unfinished_runs_and_finished_lists(tmp_pat
 
 def test_new_user_prompt_starts_a_fresh_reminder_cycle(tmp_path: Path) -> None:
     services = MockServices()
-    services.events = [SimpleEvent(sequence=1, event_type="kernel.user_message", run_id="run-1")]
+    services.facts = [_request(1, "run-1")]
     _invoke(services, tmp_path, {"op": "init", "items": ["one"]})
     config = TodoRemindersConfig(max_per_cycle=1)
 
@@ -828,23 +825,51 @@ def test_new_user_prompt_starts_a_fresh_reminder_cycle(tmp_path: Path) -> None:
     todo_observer(_run_fact(), _context(tmp_path), services, config=config)
     assert len(services.staged_continuations) == 1, "the per-cycle budget is exhausted"
 
-    services.events.append(SimpleEvent(sequence=2, event_type="kernel.user_message", run_id="run-2"))
+    services.facts.append(_request(2, "run-2"))
     todo_observer(_run_fact(), _context(tmp_path), services, config=config)
     assert len(services.staged_continuations) == 2, "a new user prompt opens a new cycle"
     assert _stored(services).cycle_run_id == "run-2"
     assert services.staged_continuations[-1][0]["attempt"] == 1
 
-    services.events.append(SimpleEvent(sequence=3, event_type="kernel.continuation_started", run_id="run-3"))
+    services.facts.append(replace(_run_fact(), event_sequence=3, run_id="run-3"))
     todo_observer(_run_fact(), _context(tmp_path), services, config=config)
     assert len(services.staged_continuations) == 2, "a continuation run stays in the same cycle"
+    services.facts.append(_request(4, "run-2", resumed=True))
+    todo_observer(_run_fact(), _context(tmp_path), services, config=config)
+    assert len(services.staged_continuations) == 2, "an explicit resume cannot replenish the cycle budget"
+    assert _stored(services).cycle_run_id == "run-2"
+    assert _stored(services).todo_reminder.attempts == 1
 
 
 def test_disabled_reminders_config_never_enqueues(tmp_path: Path) -> None:
     services = MockServices()
-    services.events = [SimpleEvent(sequence=1, event_type="kernel.user_message", run_id="run-1")]
+    services.facts = [_request(1, "run-1")]
     _invoke(services, tmp_path, {"op": "init", "items": ["one"]})
     config = TodoRemindersConfig(enabled=False)
     for _ in range(TODO_MID_RUN_MUTATION_THRESHOLD + 1):
         todo_observer(_invocation_fact("write"), _context(tmp_path), services, config=config)
     todo_observer(_run_fact(), _context(tmp_path), services, config=config)
     assert services.staged_continuations == []
+
+
+def test_cycle_scan_advances_through_empty_source_pages_without_resetting_on_resume(tmp_path: Path):
+    services = MockServices()
+    services.facts = [_request(1, "run-1")]
+    _invoke(services, tmp_path, {"op": "init", "items": ["one"]})
+    config = TodoRemindersConfig(max_per_cycle=1)
+    todo_observer(_run_fact(), _context(tmp_path), services, config=config)
+    assert len(services.staged_continuations) == 1
+
+    pages = iter((FactPage((), 201, True), FactPage((_request(202, "run-1", resumed=True),), 401, True), FactPage((), 405, False)))
+    cursors = []
+
+    def read_facts(*, after_sequence, limit):
+        cursors.append(after_sequence)
+        return next(pages)
+
+    services.read_facts = read_facts
+    todo_observer(_run_fact(), _context(tmp_path), services, config=config)
+    assert cursors == [1, 201, 401]
+    assert _stored(services).cursor_sequence == 405
+    assert _stored(services).cycle_run_id == "run-1"
+    assert len(services.staged_continuations) == 1

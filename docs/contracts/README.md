@@ -5,6 +5,7 @@ This directory contains the authoritative technical contracts for the VoidCode c
 ## Contracts
 
 - [`facts.md`](./facts.md): Typed durable observations, tool semantics, historical paging, and effectiveness metrics.
+- [`plugin-coupling-audit.md`](./plugin-coupling-audit.md): Remaining implementation dependencies, resolved todo coupling, and the next public contracts to introduce.
 
 - [`optional-queries.md`](./optional-queries.md): Typed, optional plugin collaboration, replacement providers, absence and failure behavior, and capability-based workflow scopes.
 

@@ -17,7 +17,7 @@ continuations carrying the verbatim legacy text under ``payload["text"]``, so a 
 restated as a system message. The mid-run nudge fires on the invocation that crosses the mutation
 threshold and the completion reminder fires when a run finishes with open todos; per-cycle
 budgets, watermarks and the cycle identity (the newest genuine user prompt, read from the
-session's own committed events) reproduce the legacy accounting. The legacy suppression
+session's own public facts) reproduce the legacy accounting. The legacy suppression
 inputs ("delegated child", "runtime waits for user", "pending background task", "todo tool
 advertised") are not exposed to a plugin, so reminders never suppress on them: a parked run
 emits no run-finished fact, so "waits for user" is silent by construction.
@@ -31,7 +31,7 @@ from dataclasses import dataclass, replace
 from typing import ClassVar, Literal, TypedDict
 
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
-from voidcode.sdk.hooks import ContextContribution, InvocationFinishedFact, PluginFact, RunFinishedFact
+from voidcode.sdk.hooks import ContextContribution, InvocationFinishedFact, PluginFact, RunFinishedFact, RunRequestedFact
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.plugin import Plugin, StateSchema
 from voidcode.sdk.services import PluginServices
@@ -881,23 +881,16 @@ def parse_todo_config(config: Mapping[str, object] | None) -> TodoRemindersConfi
 
 
 def _sync_cycle(state: TodoState, services: PluginServices, run_id: str) -> tuple[TodoState, str | None]:
-    """Consume newly committed events; a genuine user prompt starts a fresh reminder cycle.
-
-    The legacy cycle identity was the session's current user-prompt run. The new core gives a
-    continuation its own run, so the cycle is derived from the session's own facts: the newest
-    ``kernel.user_message`` run id, read incrementally from the stored cursor.
-    """
+    """Only a fresh user request starts a reminder cycle; resumes retain its budget."""
     cursor = state.cursor_sequence
     user_run_id: str | None = None
     for _ in range(_MAX_EVENT_PAGES):
-        events = services.read_events(after_sequence=cursor, limit=_EVENT_PAGE_SIZE, include_payload=False)
-        if not events:
-            break
-        for event in events:
-            if event.event_type == "kernel.user_message":
-                user_run_id = event.run_id
-        cursor = max(cursor, max(event.sequence for event in events))
-        if len(events) < _EVENT_PAGE_SIZE:
+        page = services.read_facts(after_sequence=cursor, limit=_EVENT_PAGE_SIZE)
+        for fact in page.facts:
+            if isinstance(fact, RunRequestedFact) and not fact.resumed:
+                user_run_id = fact.run_id
+        cursor = page.next_sequence
+        if not page.has_more:
             break
     if user_run_id is not None:
         fresh = replace(
