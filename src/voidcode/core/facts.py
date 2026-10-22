@@ -21,6 +21,7 @@ FACT_EVENT_TYPES: dict[str, str] = {
     "kernel.approval_requested": "approval_requested",
     "kernel.child_spawned": "child_spawned",
     "kernel.window_projected": "context_projected",
+    "kernel.wakeup_fired": "wakeup_fired",
 }
 
 
@@ -150,6 +151,14 @@ def fact_for_event(ev: StoredEvent, events: Iterable[StoredEvent]) -> tuple[str,
         return kind, {**common, "request_id": ev.payload["request_id"]}
     if kind == "child_spawned":
         return kind, {**common, "child_session_id": ev.payload["child_session_id"]}
+    if kind == "wakeup_fired":
+        return kind, {
+            **common,
+            "owner": ev.payload["owner"],
+            "wakeup_id": ev.payload["wakeup_id"],
+            "role": ev.payload["role"],
+            "payload": _mapping(ev.payload["payload"], "wakeup payload"),
+        }
     if kind == "context_projected":
         return kind, {
             **common,

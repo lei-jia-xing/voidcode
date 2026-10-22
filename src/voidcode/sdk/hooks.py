@@ -6,11 +6,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
+from .json_values import own_json_object
 from .provider import ProviderTokenUsage
 from .tools import ReadObservation, ResourceChange, ToolSemantic
 
 ObservedFactKind = Literal[
-    "usage", "invocation_finished", "run_finished", "run_requested", "approval_requested", "child_spawned", "context_projected"
+    "usage", "invocation_finished", "run_finished", "run_requested", "approval_requested", "child_spawned", "context_projected", "wakeup_fired"
 ]
 
 #: Canonical run status reported to observers.
@@ -145,8 +146,37 @@ class ContextProjectedFact:
     dropped_bytes: int
 
 
+@dataclass(frozen=True, slots=True)
+class WakeupFiredFact:
+    """A durable wakeup claim started its recorded run, not a run completion."""
+
+    session_id: str
+    run_id: str
+    revision_id: str
+    logical_turn: str
+    event_sequence: int
+    owner: str
+    wakeup_id: str
+    role: Literal["system", "user"]
+    payload: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.owner, str) or not self.owner or not isinstance(self.wakeup_id, str) or not self.wakeup_id:
+            raise ValueError("wakeup fact requires owner and wakeup identity")
+        if self.role not in ("system", "user"):
+            raise ValueError("wakeup fact role must be system or user")
+        object.__setattr__(self, "payload", own_json_object(self.payload))
+
+
 type PluginFact = (
-    UsageFact | InvocationFinishedFact | RunFinishedFact | RunRequestedFact | ApprovalRequestedFact | ChildSpawnedFact | ContextProjectedFact
+    UsageFact
+    | InvocationFinishedFact
+    | RunFinishedFact
+    | RunRequestedFact
+    | ApprovalRequestedFact
+    | ChildSpawnedFact
+    | ContextProjectedFact
+    | WakeupFiredFact
 )
 
 

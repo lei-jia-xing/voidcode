@@ -11,6 +11,7 @@ Plugins depend on SDK contracts, rather than another plugin's tool names or the 
 | `ToolSuccess.coverage` | Existing `ReadObservation` records: path, content version, and lines/whole-file window the result reports showing. |
 | `ToolSuccess.changes` | `ResourceChange` records for successful create/update/delete/move operations. One invocation can change several resources. |
 | `InvocationFinishedFact` | Outcome, frozen owner/effects/semantics, model attribution, measured JSON envelope sizes, result bounds, diagnostic category, read/change observations, and declared resource paths. |
+| `WakeupFiredFact` | One atomic wakeup claim, with recorded owner, wakeup identity, declared role and immutable payload. It is not a user request or a run completion. |
 | `ChildSpawnedFact` | One actual child session. A batch with three children yields three source facts, regardless of its tool name. |
 | `RunRequestedFact.resumed` | An explicit resume request. A second user prompt is not a resume. |
 | `ApprovalRequestedFact` | One actual approval request. |
@@ -80,3 +81,20 @@ Only the current persisted fact shape is supported. Invocation outcomes require 
 - Delegated tasks count actual child facts; resumes count explicit resumes; compression counts core projection facts.
 - `result_bytes` measures the canonical UTF-8 JSON result envelope, including its output, body, and observations. It is not provider wire size or token usage.
 - The report retains aggregate counts only. Its source label is `persisted_sdk_facts`; it retains no resource paths, source text, arguments, or output text.
+
+
+## Wakeup ownership and recovery
+
+A wakeup claim atomically records its run identity and eligible observer owners.
+The core delivers `wakeup_fired` before driving that run. If it stops after the
+claim and before delivery, startup replays the same source fact. A committed
+per-owner receipt prevents duplicate callback effects on subsequent restarts.
+
+`WakeupFiredFact.payload` is the owner's scheduled message data, recursively
+immutable; it is not an inferred tool argument or output. A subscriber may observe
+other owners' wakeups in its session, so owner-specific policy checks `fact.owner`
+against `services.owner`, the identity bound to its live lease. This supports
+admitting the same source under a different plugin id without a hardcoded owner.
+Cron additionally requires the tracked current wakeup id, schedule id and its own
+payload kind before settling or rearming a schedule. Stale and foreign firings
+still advance its source cursor but cannot affect its schedules.

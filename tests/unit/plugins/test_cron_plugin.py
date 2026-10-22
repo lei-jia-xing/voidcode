@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import Literal
 
@@ -28,7 +28,7 @@ from voidcode.plugins.cron.cron_plugin import (
 from voidcode.plugins.cron.loop_command import USAGE_MESSAGE, loop_confirmation_message
 from voidcode.plugins.cron.schedule_expr import next_fire_after, parse_schedule
 from voidcode.sdk.commands import CommandInvocation
-from voidcode.sdk.hooks import InvocationFinishedFact, RunFinishedFact
+from voidcode.sdk.hooks import FactPage, InvocationFinishedFact, RunFinishedFact, WakeupFiredFact
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginBudget, PluginServices, SessionUsageReport
 from voidcode.sdk.tools import ToolCall, ToolFailure, ToolSuccess
@@ -40,23 +40,15 @@ NOW_MS = 1_700_000_000_000
 NOW_SECONDS = NOW_MS // 1000
 
 
-@dataclass(frozen=True, slots=True)
-class SimpleEvent:
-    """The subset of EventView this plugin reads."""
-
-    sequence: int
-    event_type: str
-    run_id: str
-    payload: Mapping[str, object]
-
-
 class MockServices(PluginServices):
     """In-memory PluginServices: CAS state, staged events, committed events and wakeups."""
+
+    owner = OWNER
 
     def __init__(self) -> None:
         self.state: dict[tuple[str, str], tuple[Mapping[str, object] | None, int]] = {}
         self.staged_events: list[tuple[str, Mapping[str, object]]] = []
-        self.events: list[SimpleEvent] = []
+        self.events: list[WakeupFiredFact] = []
         self.schema_version = SCHEMA_VERSION
         #: wakeup_id -> {"payload", "due_at_ms", "role", "idempotency_key", "status"}
         self.wakeups: dict[str, dict[str, object]] = {}
@@ -91,17 +83,10 @@ class MockServices(PluginServices):
     def stage_event(self, event_type: str, payload: Mapping[str, object]) -> None:
         self.staged_events.append((event_type, dict(payload)))
 
-    def read_events(
-        self,
-        *,
-        after_sequence: int = 0,
-        limit: int = 100,
-        include_payload: bool = True,
-    ) -> tuple[SimpleEvent, ...]:
-        events = [event for event in self.events if event.sequence > after_sequence]
-        if not include_payload:
-            events = [replace(event, payload={}) for event in events]
-        return tuple(events[:limit])
+    def read_facts(self, *, after_sequence=0, limit=100):
+        remaining = tuple(fact for fact in self.events if fact.event_sequence > after_sequence)
+        page = remaining[:limit]
+        return FactPage(page, page[-1].event_sequence if page else after_sequence, len(remaining) > limit)
 
     # --- wakeups ---
 
@@ -200,18 +185,17 @@ def _entry(services: MockServices, schedule_id: str) -> ScheduleEntry:
     return _stored(services).schedules[schedule_id]
 
 
-def _fired_event(*, sequence: int, run_id: str, schedule_id: str, prompt: str = "keep building", wakeup_id: str = "wakeup-fired") -> SimpleEvent:
-    return SimpleEvent(
-        sequence=sequence,
-        event_type="kernel.wakeup_fired",
+def _fired_event(*, sequence: int, run_id: str, schedule_id: str, prompt: str = "keep building", wakeup_id: str = "wakeup-fired") -> WakeupFiredFact:
+    return WakeupFiredFact(
+        session_id=SESSION_ID,
+        event_sequence=sequence,
         run_id=run_id,
-        payload={
-            "wakeup_id": wakeup_id,
-            "owner": OWNER,
-            "payload": {"kind": "cron", "text": prompt, "schedule_id": schedule_id},
-            "role": "user",
-            "logical_turn": "turn-1",
-        },
+        revision_id="rev-1",
+        logical_turn="turn-1",
+        owner=OWNER,
+        wakeup_id=wakeup_id,
+        role="user",
+        payload={"kind": "cron", "text": prompt, "schedule_id": schedule_id},
     )
 
 
@@ -499,17 +483,8 @@ def test_untracked_or_foreign_firings_are_ignored(services: MockServices, tmp_pa
     services.seed_state(_schedule_payload(schedule_id="sched-1", schedule_text="every 10m", kind="every", expires_at=NOW_MS + 86_400_000))
     # A wakeup this plugin does not track, a foreign wakeup kind, and a wakeup of another run.
     services.events.append(_fired_event(sequence=5, run_id="run-9", schedule_id="sched-unknown"))
-    services.events.append(
-        SimpleEvent(sequence=6, event_type="kernel.wakeup_fired", run_id="run-9", payload={"payload": {"kind": "goal", "goal_id": "g-1"}})
-    )
-    services.events.append(
-        SimpleEvent(
-            sequence=7,
-            event_type="kernel.wakeup_fired",
-            run_id="run-other",
-            payload={"payload": {"kind": "cron", "text": "x", "schedule_id": "sched-1"}},
-        )
-    )
+    services.events.append(replace(_fired_event(sequence=6, run_id="run-9", schedule_id="sched-1"), payload={"kind": "goal", "goal_id": "g-1"}))
+    services.events.append(_fired_event(sequence=7, run_id="run-other", schedule_id="sched-1"))
 
     cron_observer(_run_finished("completed", run_id="run-9"), _context(tmp_path), services)
 
@@ -669,3 +644,38 @@ def test_plugin_registers_tools_loop_command_and_observer() -> None:
     assert plugin.context is None
     assert plugin.providers == ()
     assert plugin.views == ()
+
+
+@pytest.mark.parametrize("foreign", ["owner", "identity"])
+def test_matching_payload_cannot_settle_a_foreign_or_stale_wakeup(services: MockServices, tmp_path: Path, foreign):
+    services.seed_state(_schedule_payload(schedule_id="sched-1", schedule_text="every 10m", kind="every", expires_at=NOW_MS + 86_400_000))
+    fact = _fired_event(sequence=5, run_id="run-9", schedule_id="sched-1")
+    services.events.append(replace(fact, **({"owner": "other"} if foreign == "owner" else {"wakeup_id": "stale"})))
+    cron_observer(_run_finished("completed", run_id="run-9"), _context(tmp_path), services)
+    assert services.wakeups == {} and services.staged_events == []
+    assert _stored(services).cursor_sequence == 5
+    assert _entry(services, "sched-1").wakeup_id == "wakeup-fired"
+
+
+def test_cron_scan_advances_past_empty_fact_pages(services: MockServices, tmp_path: Path):
+    services.seed_state(_schedule_payload(schedule_id="sched-1", schedule_text="every 10m", kind="every", expires_at=NOW_MS + 86_400_000))
+    pages = iter((FactPage((), 200, True), FactPage((_fired_event(sequence=201, run_id="run-9", schedule_id="sched-1"),), 201, False)))
+    cursors = []
+
+    def read_facts(*, after_sequence, limit):
+        cursors.append(after_sequence)
+        return next(pages)
+
+    services.read_facts = read_facts
+    cron_observer(_run_finished("completed", run_id="run-9"), _context(tmp_path), services)
+    assert cursors == [0, 200]
+    assert _stored(services).cursor_sequence == 201
+    assert len(services.wakeups) == 1
+
+
+def test_cron_identity_follows_its_admitted_owner(services: MockServices, tmp_path: Path):
+    services.owner = "renamed-scheduler"
+    services.seed_state(_schedule_payload(schedule_id="sched-1", schedule_text="every 10m", kind="every", expires_at=NOW_MS + 86_400_000))
+    services.events.append(replace(_fired_event(sequence=5, run_id="run-9", schedule_id="sched-1"), owner=services.owner))
+    cron_observer(_run_finished("completed", run_id="run-9"), _context(tmp_path), services)
+    assert len(services.wakeups) == 1

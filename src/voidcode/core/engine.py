@@ -3152,6 +3152,7 @@ class Core:
             run_id=run_id,
             logical_turn=logical_turn,
             revision_id=self.revision_id,
+            eligible_owners=self.plugin_runtime.observer_owners.get("wakeup_fired", ()),
         )
         if claimed is None:
             return {"fired": None}
@@ -3160,6 +3161,7 @@ class Core:
         cursor = _Cursor(root_id=wakeup.wakeup_id, logical_turn=logical_turn, action_budget_remaining=32)
         execution = _Execution(session, cursor, list(self.store.events(session.session_id)), run_id)
         with self._session_lock(session.session_id):
+            self._deliver_facts(execution, (self._event(execution, session.last_event_sequence, "kernel.wakeup_fired"),))
             result = self._drive(execution, max_steps=32)
         if result.status in ("completed", "idle"):
             terminal: Literal["completed", "failed", "cancelled"] = "completed"

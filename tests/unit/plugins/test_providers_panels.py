@@ -8,19 +8,20 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
 from pathlib import Path
 from typing import Literal
 
 import voidcode.plugins.providers as providers_plugin
 from voidcode.capabilities.providers.native.model_catalog import static_catalog_model_ids
 from voidcode.capabilities.providers.native.provider_table import PROVIDER_TABLE
-from voidcode.capabilities.providers.panels import DISPATCH_EVENT
 from voidcode.sdk.commands import Command, CommandInvocation, CommandResult
+from voidcode.sdk.hooks import RequestWindow
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.plugin import Plugin
-from voidcode.sdk.services import EventView, PluginServices, ToolInvocationReceipt
+from voidcode.sdk.provider import ProviderTurnResult
+from voidcode.sdk.services import PluginServices, ToolInvocationReceipt
 from voidcode.sdk.tools import ToolEffect
+from voidcode.sdk.transcript import TranscriptDispatch, TranscriptEntry, TranscriptPage
 from voidcode.sdk.views import PluginViewDescriptor
 
 DEEPSEEK_KEY = "deepseek-secret-credential-value"
@@ -30,15 +31,15 @@ GOOGLE_KEY = "google-secret-credential-value"
 class StubServices(PluginServices):
     """Read-only services: the fed event history, and a loud failure for every write path."""
 
-    def __init__(self, events: Sequence[EventView] = ()) -> None:
+    def __init__(self, events: Sequence[TranscriptEntry] = ()) -> None:
         self.events = tuple(events)
-        self.reads: list[tuple[int, int, bool]] = []
+        self.reads: list[tuple[int, int]] = []
 
-    def read_events(self, *, after_sequence: int = 0, limit: int = 100, include_payload: bool = True) -> tuple[EventView, ...]:
-        self.reads.append((after_sequence, limit, include_payload))
-        page = [event for event in self.events if event.sequence > after_sequence][:limit]
-        # A payload-free read serves no payload, exactly as the core's own event read does.
-        return tuple(event if include_payload else replace(event, payload=None) for event in page)
+    def read_transcript(self, *, after_sequence=0, limit=100):
+        self.reads.append((after_sequence, limit))
+        remaining = tuple(entry for entry in self.events if entry.sequence > after_sequence)
+        page = remaining[:limit]
+        return TranscriptPage(page, page[-1].sequence if page else after_sequence, len(remaining) > limit, len(page))
 
     def replace_state(self, state: Mapping[str, object], expected_version: int, scope: Literal["session", "workspace"] = "session") -> int:
         raise AssertionError("provider panels write no state")
@@ -92,26 +93,14 @@ def _view(plugin: Plugin, name: str) -> PluginViewDescriptor:
     return next(view for view in plugin.views if view.name == name).render("session-1", _services(), client_capabilities=frozenset())
 
 
-def _services(events: Sequence[EventView] = ()) -> StubServices:
+def _services(events: Sequence[TranscriptEntry] = ()) -> StubServices:
     return StubServices(events)
 
 
-def _event(sequence: int, event_type: str, payload: Mapping[str, object], *, source: str = "core", actor: str = "core") -> EventView:
-    return EventView(sequence=sequence, event_type=event_type, run_id="run-1", revision_id="rev-1", source=source, actor=actor, payload=payload)
-
-
-def _dispatch(sequence: int, provider: str, model: str) -> tuple[EventView, ...]:
-    """One real dispatch: the core intent that names it, then its completed model turn."""
-    dispatch_id = f"dispatch-{sequence}"
+def _dispatch(sequence: int, provider: str, model: str) -> tuple[TranscriptEntry, ...]:
     return (
-        _event(sequence, DISPATCH_EVENT, {"provider": provider, "model": model, "dispatch_id": dispatch_id}),
-        _event(
-            sequence + 1,
-            "kernel.model_turn",
-            {"dispatch_sequence": sequence, "dispatch_id": dispatch_id, "result": {"output": "ok"}},
-            source="provider",
-            actor="model",
-        ),
+        TranscriptEntry(sequence, "run-1", "rev-1", "core", TranscriptDispatch(provider, model, RequestWindow(0, 0))),
+        TranscriptEntry(sequence + 1, "run-1", "rev-1", "provider", ProviderTurnResult(output="ok"), dispatch_sequence=sequence),
     )
 
 
@@ -171,7 +160,7 @@ def test_model_reports_no_dispatch_in_an_empty_history() -> None:
     assert result.output is not None and "No provider dispatch recorded in this session yet." in result.output
     assert result.data is not None and result.data["last_dispatch"] is None
     assert _configured_names(result) == ["deepseek", "endpoint", "google"]
-    assert services.reads and not any(read[2] for read in services.reads)
+    assert services.reads == [(0, 200)]
 
 
 def test_model_reports_the_most_recent_dispatch_this_session_made() -> None:
@@ -183,8 +172,7 @@ def test_model_reports_the_most_recent_dispatch_this_session_made() -> None:
     assert result.data is not None
     assert result.data["last_dispatch"] == {"sequence": 9, "provider": "google", "model": "gemini-3-pro"}
     assert result.output is not None and "`google/gemini-3-pro`" in result.output
-    # The payload-free scan finds the intent; only that one event is re-read with its payload.
-    assert any(read[2] for read in services.reads)
+    assert services.reads == [(0, 200)]
 
 
 def test_model_reports_a_turn_without_its_intent_as_no_dispatch() -> None:
@@ -262,3 +250,17 @@ def test_view_render_reports_the_session_dispatch() -> None:
     descriptor = view.render("session-1", services, client_capabilities=frozenset())
 
     assert "`deepseek/deepseek-chat`" in str(descriptor.data["content"])
+
+
+def test_pending_dispatch_remains_visible_after_empty_transcript_pages():
+    class Sparse(StubServices):
+        def read_transcript(self, *, after_sequence=0, limit=100):
+            self.reads.append((after_sequence, limit))
+            if after_sequence == 0:
+                return TranscriptPage((), 200, True, 200)
+            return TranscriptPage((_dispatch(201, "endpoint", "pending-model")[0],), 201, False, 1)
+
+    services = Sparse()
+    result = _invoke(_plugin(), "model", services)
+    assert result.data["last_dispatch"] == {"sequence": 201, "provider": "endpoint", "model": "pending-model"}
+    assert services.reads == [(0, 200), (200, 200)]

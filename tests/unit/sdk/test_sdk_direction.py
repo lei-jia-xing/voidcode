@@ -37,6 +37,7 @@ def test_semantic_consumers_use_public_facts_instead_of_private_event_parsers() 
         "effectiveness/effectiveness_plugin.py",
         "skills/skills_plugin.py",
         "todo/todo_plugin.py",
+        "cron/cron_plugin.py",
         "compaction/compaction_plugin.py",
         "compaction/projection.py",
     ):
@@ -57,3 +58,12 @@ def test_session_panels_only_read_event_headers_and_use_public_transcript_types(
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "read_events":
             payload_flag = next((keyword.value for keyword in node.keywords if keyword.arg == "include_payload"), None)
             assert isinstance(payload_flag, ast.Constant) and payload_flag.value is False
+
+
+def test_provider_panels_use_public_transcript_instead_of_private_events() -> None:
+    source = Path(__file__).resolve().parents[3] / "src/voidcode/capabilities/providers/panels.py"
+    for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Attribute):
+            assert node.attr != "read_events"
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            assert not node.value.startswith("kernel.")

@@ -400,6 +400,11 @@ class SessionUsageReport:
 class PluginServices(Protocol):
     """Scoped services available to a plugin handler during lease callback."""
 
+    @property
+    def owner(self) -> str:
+        """The admitted plugin identity bound to this live invocation lease."""
+        ...
+
     def get_state(self, scope: Literal["session", "workspace"] = "session") -> tuple[Mapping[str, object] | None, int]:
         """Fetch current state and version for the bound owner in the given scope."""
         ...

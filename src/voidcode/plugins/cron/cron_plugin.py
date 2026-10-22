@@ -42,7 +42,7 @@ from typing import ClassVar, Final, Literal, cast
 from uuid import uuid4
 
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
-from voidcode.sdk.hooks import PluginFact, RunFinishedFact
+from voidcode.sdk.hooks import PluginFact, RunFinishedFact, WakeupFiredFact
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.plugin import Plugin, StateSchema
 from voidcode.sdk.services import PluginServices
@@ -520,24 +520,23 @@ class CronLoopCommand:
 
 
 def _consume_fired(state: CronState, services: PluginServices, run_id: str) -> tuple[CronState, tuple[str, ...]]:
-    """Read events this plugin has not consumed yet; return the schedule ids this run fired."""
+    """Consume owned, current wakeup facts for the run that just finished."""
     cursor = state.cursor_sequence
     fired: list[str] = []
     for _ in range(_MAX_EVENT_PAGES):
-        events = services.read_events(after_sequence=cursor, limit=_EVENT_PAGE_SIZE, include_payload=True)
-        if not events:
-            break
-        for event in events:
-            if event.event_type != "kernel.wakeup_fired" or event.run_id != run_id:
+        page = services.read_facts(after_sequence=cursor, limit=_EVENT_PAGE_SIZE)
+        for fact in page.facts:
+            if not isinstance(fact, WakeupFiredFact) or fact.run_id != run_id or fact.owner != services.owner:
                 continue
-            raw_payload = event.payload.get("payload") if isinstance(event.payload, Mapping) else None
-            if not isinstance(raw_payload, Mapping) or raw_payload.get("kind") != WAKEUP_KIND:
+            if fact.payload.get("kind") != WAKEUP_KIND:
                 continue
-            schedule_id = raw_payload.get("schedule_id")
+            schedule_id = fact.payload.get("schedule_id")
             if isinstance(schedule_id, str) and schedule_id:
-                fired.append(schedule_id)
-        cursor = max(cursor, max(event.sequence for event in events))
-        if len(events) < _EVENT_PAGE_SIZE:
+                entry = state.schedules.get(schedule_id)
+                if entry is not None and entry.wakeup_id == fact.wakeup_id and schedule_id not in fired:
+                    fired.append(schedule_id)
+        cursor = page.next_sequence
+        if not page.has_more:
             break
     if cursor == state.cursor_sequence:
         return state, tuple(fired)

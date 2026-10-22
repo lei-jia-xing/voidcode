@@ -51,6 +51,7 @@ from voidcode.sdk.hooks import (
     ToolIntent,
     ToolOutcome,
     UsageFact,
+    WakeupFiredFact,
 )
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
@@ -1345,6 +1346,7 @@ class PluginRuntime:
             "approval_requested": ApprovalRequestedFact,
             "child_spawned": ChildSpawnedFact,
             "context_projected": ContextProjectedFact,
+            "wakeup_fired": WakeupFiredFact,
         }
         if fact_type in extra_types:
             return TypeAdapter(extra_types[fact_type]).validate_python(json_wire_object(fact))

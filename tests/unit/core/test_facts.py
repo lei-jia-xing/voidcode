@@ -131,3 +131,20 @@ def test_corrupt_history_never_becomes_a_successful_or_anonymous_invocation(runt
     append(runtime, event("kernel.tool_completed", **payload))
     with pytest.raises(ValueError):
         runtime.fact_page("session", 0, 10)
+
+
+def test_wakeup_fact_retains_owner_identity_role_and_immutable_payload(runtime):
+    from voidcode.sdk.hooks import WakeupFiredFact
+
+    payload = {"text": "scheduled message", "nested": {"key": [1]}}
+    append(runtime, event("kernel.wakeup_fired", owner="scheduler", wakeup_id="wake-1", role="user", payload=payload))
+    fact = runtime.fact_page("session", 0, 200).facts[0]
+    assert isinstance(fact, WakeupFiredFact)
+    assert fact.owner == "scheduler" and fact.wakeup_id == "wake-1" and fact.role == "user"
+    assert fact.payload["text"] == "scheduled message"
+    payload["nested"]["key"].append(2)
+    assert fact.payload["nested"]["key"] == (1,)
+    with pytest.raises(TypeError):
+        fact.payload["text"] = "changed"
+    with pytest.raises(ValueError):
+        WakeupFiredFact("s", "r", "v", "t", 1, "", "w", "user", {})

@@ -3,7 +3,7 @@
 Both panels report facts this plugin already owns: the provider entries the core injects
 into :func:`create_plugin`, the shipped provider table, the shipped model catalog, and the
 provider/model pairs the calling session actually dispatched with (its committed
-``kernel.provider_intent`` events). Model *selection* is configuration plus hot reload by
+typed transcript dispatch records). Model *selection* is configuration plus hot reload by
 design, so neither panel writes state, events, or invocations; a panel that cannot read a
 dispatch payload says so instead of inventing a model.
 """
@@ -17,16 +17,14 @@ from typing import ClassVar
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import ToolEffect
+from voidcode.sdk.transcript import TranscriptDispatch
 from voidcode.sdk.views import PluginViewDescriptor
 
 from .native.model_catalog import static_catalog_model_ids
 from .native.naming import canonical_provider_id, provider_label
 from .native.provider_table import PROVIDER_TABLE, PROVIDER_TABLE_BY_ID, ProviderTableRow
 
-#: The core fact one dispatch commits before it reaches the wire: its provider and model.
-DISPATCH_EVENT = "kernel.provider_intent"
-
-#: The largest page the core serves per event read (``services.read_events`` bound).
+#: Source-event page limit for the public transcript service.
 READ_PAGE = 200
 
 
@@ -83,42 +81,28 @@ def _configured_provider(name: str, entry: object) -> ConfiguredProvider:
 
 @dataclass(frozen=True, slots=True)
 class LastDispatch:
-    """The newest dispatch this session committed; provider/model are None when unreadable."""
+    """The newest authenticated dispatch this session committed."""
 
     sequence: int
-    provider: str | None
-    model: str | None
+    provider: str
+    model: str
 
     def as_payload(self) -> dict[str, object]:
         return {"sequence": self.sequence, "provider": self.provider, "model": self.model}
 
 
 def last_dispatch(services: PluginServices) -> LastDispatch | None:
-    """The newest ``kernel.provider_intent`` of this session, ``None`` when it committed none.
-
-    Event reads page forward, so the scan stays payload-free — event types and sequences are
-    enough to find the newest intent — and only that one event is re-read with its payload.
-    """
-    newest = 0
+    """Read committed dispatches, including those whose response has not completed."""
+    newest: LastDispatch | None = None
     after = 0
     while True:
-        page = services.read_events(after_sequence=after, limit=READ_PAGE, include_payload=False)
-        if not page:
-            break
-        newest = max((event.sequence for event in page if event.event_type == DISPATCH_EVENT), default=newest)
-        after = page[-1].sequence
-        if len(page) < READ_PAGE:
-            break
-    if newest == 0:
-        return None
-    for event in services.read_events(after_sequence=newest - 1, limit=1, include_payload=True):
-        if event.sequence != newest or event.payload_truncated or not isinstance(event.payload, Mapping):
-            break
-        provider = event.payload.get("provider")
-        model = event.payload.get("model")
-        if isinstance(provider, str) and isinstance(model, str):
-            return LastDispatch(newest, provider, model)
-    return LastDispatch(newest, None, None)
+        page = services.read_transcript(after_sequence=after, limit=READ_PAGE)
+        for entry in page.entries:
+            if isinstance(entry.content, TranscriptDispatch):
+                newest = LastDispatch(entry.sequence, entry.content.provider_name, entry.content.model_name)
+        after = page.next_sequence
+        if not page.has_more:
+            return newest
 
 
 def _counted(count: int, noun: str) -> str:
@@ -165,8 +149,6 @@ def model_panel(services: PluginServices, facts: ProviderFacts, provider: str | 
     lines = ["## This session", ""]
     if dispatch is None:
         lines.append("No provider dispatch recorded in this session yet.")
-    elif dispatch.provider is None or dispatch.model is None:
-        lines.append(f"Event #{dispatch.sequence} recorded a dispatch whose payload was not readable.")
     else:
         lines.append(f"Last dispatch: `{dispatch.provider}/{dispatch.model}` (event #{dispatch.sequence}).")
     lines += ["", "## Configured providers", ""]
@@ -262,7 +244,6 @@ class ModelView:
 
 
 __all__ = [
-    "DISPATCH_EVENT",
     "READ_PAGE",
     "ConfiguredProvider",
     "LastDispatch",

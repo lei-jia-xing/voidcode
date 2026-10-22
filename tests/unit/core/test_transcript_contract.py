@@ -209,7 +209,10 @@ def test_context_history_service_is_readonly_session_scoped_and_revocable(tmp_pa
     runtime = _runtime(())
     runtime.context_history = lambda session_id, limit: (session_id, limit)
     services = RuntimeServices(runtime, lease)
+    assert services.owner == "owner"
     assert services.read_context_history(limit=42) == ("session", 42)
     lease.revoked = True
     with pytest.raises(PermissionError, match="revoked"):
         services.read_context_history()
+    with pytest.raises(PermissionError, match="revoked"):
+        _ = services.owner

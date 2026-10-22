@@ -62,6 +62,10 @@ class RuntimeServices:
         self._runtime = runtime
         self._lease = lease
 
+    @property
+    def owner(self) -> str:
+        return self._active_lease().owner
+
     def _active_lease(self) -> LeaseContext:
         if self._lease.revoked or self._runtime.closed:
             raise PermissionError("Service lease was revoked")

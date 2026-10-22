@@ -881,6 +881,7 @@ class SqliteStore:
         run_id: str,
         logical_turn: str,
         revision_id: str,
+        eligible_owners: Sequence[str],
         action_budget_remaining: int = 32,
     ) -> tuple[WakeupRecord, SessionRecord] | None:
         """Claim ONE due wakeup and create its authentic running session in the same transaction.
@@ -951,6 +952,7 @@ class SqliteStore:
                 new_seq = session.last_event_sequence + 1
                 fired_payload = canonical_json(
                     {
+                        "eligible_owners": list(eligible_owners),
                         "wakeup_id": wakeup.wakeup_id,
                         "owner": wakeup.owner,
                         "payload": json_wire_object(wakeup.payload),
