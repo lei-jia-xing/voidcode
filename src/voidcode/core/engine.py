@@ -3464,10 +3464,13 @@ class Core:
                 else _Cursor()
             )
             execution = _Execution(session, cursor, list(self.store.events(session.session_id)), session.run_id or uuid4().hex)
-            for ev in pending:
-                if ev.event_type == "kernel.provider_intent":
-                    ev = self._record_unknown_dispatch(execution, ev)
-                self._deliver_facts(execution, (ev,), require_complete=require_complete, defer_to_candidate=defer_to_candidate)
+            settled = [self._record_unknown_dispatch(execution, ev) if ev.event_type == "kernel.provider_intent" else ev for ev in pending]
+            self._deliver_facts(
+                execution,
+                sorted(settled, key=lambda event: event.sequence),
+                require_complete=require_complete,
+                defer_to_candidate=defer_to_candidate,
+            )
 
     def _eligible_observers(self, event: StoredEvent) -> tuple[str, ...]:
         """Owners that subscribed this fact type when the event was produced.
@@ -3503,11 +3506,11 @@ class Core:
         *,
         require_complete: bool = False,
         defer_to_candidate: frozenset[str] = frozenset(),
-    ) -> tuple[StoredEvent, ...]:
+    ) -> None:
         """Notify exactly the owners this event's revision registered, then persist those receipts."""
         fact = self._fact_for(execution, ev)
         if fact is None:
-            return ()
+            return
         fact_type, fact_payload = fact
         session_id = ev.session_id
         with self._dispatch(f"observer:{fact_type}") as snapshot:
@@ -3528,7 +3531,7 @@ class Core:
                 )
             active = [o for o in eligible if o in registered and not self.store.has_observer_receipt(session_id, ev.sequence, o)]
             if not active:
-                return ()
+                return
             logical_turn = str(fact_payload.get("logical_turn", ""))
             obs_res = snapshot.plugin_runtime.notify_fact(fact_type, fact_payload, owners=tuple(active), logical_turn=logical_turn)
             receipts = tuple(ObserverReceiptRecord(event_sequence=ev.sequence, owner=o) for o in active)
@@ -3550,7 +3553,7 @@ class Core:
                             payload={"owner": err.get("owner"), "error": err.get("error")},
                         )
                     )
-            committed = self._commit_staged_rebased(
+            self._commit_staged_rebased(
                 execution,
                 status=execution.session.status,
                 kind=None,
@@ -3561,7 +3564,6 @@ class Core:
                 staged_budgets=tuple(staged_budget_updates),
                 observer_receipts=receipts,
             )
-            return committed
 
     def _deliver_facts(
         self,
@@ -3579,8 +3581,9 @@ class Core:
             if event.sequence in seen or event.event_type not in _FACT_EVENT_TYPES:
                 continue
             seen.add(event.sequence)
+            before_delivery = len(execution.events)
             try:
-                committed = self._deliver_fact_for_event(
+                self._deliver_fact_for_event(
                     execution,
                     event,
                     require_complete=require_complete,
@@ -3607,8 +3610,7 @@ class Core:
                     )
                 except StoreConflict, ValueError:
                     pass
-                continue
-            pending.extend(committed)
+            pending.extend(execution.events[before_delivery:])
 
     def _record_unknown_dispatch(self, execution: _Execution, intent: StoredEvent) -> StoredEvent:
         committed = self._commit_staged_rebased(

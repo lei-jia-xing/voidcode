@@ -5,6 +5,7 @@ from dataclasses import asdict
 
 from tests.unit.core.test_nested_tools import _call, _server, _turn
 from voidcode.core.bootstrap import open_core
+from voidcode.core.storage.store import EventDraft
 from voidcode.sdk.hooks import ContextProjectedFact, InvocationFinishedFact
 from voidcode.sdk.json_values import json_wire_value
 
@@ -12,7 +13,7 @@ PLUGIN = """
 from dataclasses import asdict
 from typing import get_args
 from voidcode.sdk.plugin import Plugin
-from voidcode.sdk.hooks import ObservedFactKind, RunFinishedFact
+from voidcode.sdk.hooks import ObservedFactKind, RunFinishedFact, UsageFact
 from voidcode.sdk.tools import (ToolDefinition, ToolEffect, ToolSemantic, ToolSuccess, TextOutput, OutputBounds, ReadObservation, ResourceChange)
 
 class Substitute:
@@ -24,7 +25,13 @@ class Substitute:
             coverage=(ReadObservation("a.py", "a" * 64, (1,), 2),),
             changes=(ResourceChange("a.py"), ResourceChange("b.py")))
 
+_spawned = False
+
 def observe(fact, context, services):
+    global _spawned
+    if context.session_id == "parent" and isinstance(fact, UsageFact) and not _spawned:
+        _spawned = True
+        services.spawn_child("child prompt")
     if isinstance(fact, RunFinishedFact) and services.window_projection() is None:
         services.project_window(covered_from_sequence=1, covered_to_sequence=fact.event_sequence, replacement="summary")
     services.stage_event("seen", {"fact": asdict(fact)})
@@ -55,7 +62,7 @@ def test_live_history_and_restart_preserve_original_declaration_and_observations
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     state_dir = tmp_path / "state"
-    with _server([_turn(_call("call", "replace_any_name", targets=[{"path": "c.py"}])), _turn(output="done")]) as server:
+    with _server([_turn(_call("call", "replace_any_name", targets=[{"path": "c.py"}])), _turn(output="done"), _turn(output="done")]) as server:
         (workspace / "voidcode.json").write_text(
             json.dumps(
                 {
@@ -68,8 +75,13 @@ def test_live_history_and_restart_preserve_original_declaration_and_observations
             )
         )
         with open_core(workspace, state_dir=state_dir) as core:
-            result = core.run("exercise substitute")
+            result = core.run("exercise substitute", session_id="parent")
             assert result.status == "completed", result.error
+            children = [
+                event.payload["child_session_id"] for event in core.store.events(result.session_id) if event.event_type == "kernel.child_spawned"
+            ]
+            assert len(children) == 1
+            core.join_child(result.session_id, children[0], timeout_seconds=15)
             facts = history(core, result.session_id)
             observed = [e.payload["fact"] for e in core.store.events(result.session_id) if e.event_type == "plugin.probe.seen"]
             assert json_wire_value(observed) == json_wire_value([asdict(fact) for fact in facts])
@@ -86,3 +98,41 @@ def test_live_history_and_restart_preserve_original_declaration_and_observations
         with open_core(workspace, state_dir=state_dir) as core:
             assert json_wire_value([asdict(fact) for fact in history(core, result.session_id)]) == expected
             assert len([e for e in core.store.events(result.session_id) if e.event_type == "plugin.probe.seen"]) == len(facts)
+
+            orphan = core.create_session("orphan")
+            core.store.commit_staged(
+                orphan.session_id,
+                run_id="orphan-run",
+                revision_id=core.revision_id,
+                status="interrupted",
+                checkpoint_kind="terminal",
+                checkpoint_payload={"stop_cause": "shutdown"},
+                events=(
+                    EventDraft(
+                        "kernel.provider_intent",
+                        "kernel",
+                        "model",
+                        {
+                            "provider": "endpoint",
+                            "model": "exact-model",
+                            "logical_turn": "orphan-turn",
+                            "eligible_owners": ["probe"],
+                        },
+                    ),
+                    EventDraft(
+                        "kernel.run_interrupted",
+                        "kernel",
+                        "kernel",
+                        {
+                            "stop_cause": "shutdown",
+                            "logical_turn": "orphan-turn",
+                            "eligible_owners": ["probe"],
+                        },
+                    ),
+                ),
+            )
+        with open_core(workspace, state_dir=state_dir) as core:
+            restored = history(core, "orphan")
+            observed = [e.payload["fact"] for e in core.store.events("orphan") if e.event_type == "plugin.probe.seen"]
+            assert json_wire_value(observed) == json_wire_value([asdict(fact) for fact in restored])
+            assert [fact.event_sequence for fact in restored] == sorted(fact.event_sequence for fact in restored)
