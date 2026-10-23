@@ -48,7 +48,7 @@ not establish source review.
 | `providers/native/errors.py` | Pending full source review |
 | `providers/native/google.py` | Pending full source review |
 | `providers/native/google_native.py` | Pending full source review |
-| `providers/native/model_catalog.py` | Pending full source review |
+| `providers/native/model_catalog.py` | Partial: catalog/discovery source reviewed; missing declared fields fixed, dead catalog wrapper removed; strict remote payload/bounds review pending |
 | `providers/native/model_catalog_data.json` | Pending consumer/data-contract review |
 | `providers/native/model_match.py` | Reviewed: five explicit matching semantics; star-only matching intentionally does not add fnmatch question/bracket behavior |
 | `providers/native/model_routing.py` | Reviewed: routed alias/catalog fallback, typed unsupported wires, serialized cache creation and teardown |
@@ -192,3 +192,29 @@ claim that external vendor pricing was refreshed.
 Validation: 117 provider/usage/stream tests passed (32.29s), including table
 thresholds and malformed-number/budget ingress. Ruff, formatting and source type
 checks passed. Local-loopback tests ran with the required network permission.
+
+## Tokenizer reachability and model catalog
+
+Confirmed no runtime/test caller of `tokenizer.count_tokens` or the vendored
+Claude counting engine. Their approximately 1600 lines and binary vocabularies
+are candidates for removal; a user choice is pending because NOTICE explicitly
+states exact counting as a project priority. Catalog generation still consumes
+`tokenizer_routing.json`, so that pipeline is separate from runtime reachability.
+No tokenizer implementation/data was deleted while awaiting the choice.
+
+Static catalog loading accepted seven declared capability fields but omitted them
+from constructed metadata. Added those fields; malformed provider/model rows now
+fail instead of disappearing. Non-finite catalog rates remain unknown. Removed
+the unused `ProviderModelCatalog` dataclass and completed missing remote metadata
+projection fields. Google discovery no longer invents vision/JSON/status values.
+Remote payload strictness and bounded network reads remain to review.
+
+Google generation methods are also not treated as proof of tool support or as
+a negative streaming claim. A listed stream method is affirmative evidence;
+omission leaves support unknown.
+
+Validation: 121 provider tests passed before the final Google inference tightening;
+a follow-up directory test exposed the intentional empty-metadata omission, and
+the corrected fixture with a real context limit passed all 16 directory tests.
+The 21 other auth/catalog tests also passed in that follow-up run. Final Ruff,
+formatting and source type checks passed.

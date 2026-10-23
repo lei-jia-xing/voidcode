@@ -5,6 +5,7 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, fields
 from functools import lru_cache
+from math import isfinite
 from typing import Final, Literal, TypeIs, cast
 from urllib.error import URLError
 from urllib.parse import quote
@@ -98,11 +99,11 @@ def _static_catalog_from_payload(data: object) -> dict[str, dict[str, ProviderMo
     result: dict[str, dict[str, ProviderModelMetadata]] = {}
     for provider, models in cast(dict[str, object], data).items():
         if not isinstance(models, dict):
-            continue
+            raise ValueError(f"model catalog provider {provider!r} must hold an object of models")
         per_provider: dict[str, ProviderModelMetadata] = {}
         for model_id, entry in models.items():
             if not isinstance(entry, dict):
-                continue
+                raise ValueError(f"model catalog entry {provider}/{model_id} must be an object")
             unknown = sorted(set(entry) - _CATALOG_FIELDS)
             if unknown:
                 raise ValueError(f"model catalog entry {provider}/{model_id} carries unknown fields: {unknown}")
@@ -120,6 +121,13 @@ def _static_catalog_from_payload(data: object) -> dict[str, dict[str, ProviderMo
                 default_reasoning_effort=_canonical_effort(entry.get("default_reasoning_effort")),
                 supported_effort_levels=_modalities(entry.get("supported_effort_levels")),
                 supports_vision=_optional_bool(entry.get("supports_vision")),
+                supports_streaming=_optional_bool(entry.get("supports_streaming")),
+                supports_json_mode=_optional_bool(entry.get("supports_json_mode")),
+                supports_reasoning_summary=_optional_bool(entry.get("supports_reasoning_summary")),
+                supports_thinking_budget=_optional_bool(entry.get("supports_thinking_budget")),
+                supports_interleaved_reasoning=_optional_bool(entry.get("supports_interleaved_reasoning")),
+                reasoning_visibility=_optional_str(entry.get("reasoning_visibility")),
+                tool_feedback_mode=tool_feedback_mode(entry.get("tool_feedback_mode")),
                 modalities_input=_modalities(entry.get("modalities_input")),
                 modalities_output=_modalities(entry.get("modalities_output")),
                 model_status=_optional_str(entry.get("model_status")),
@@ -166,22 +174,6 @@ class ModelDiscoveryFetchResult:
 
 
 type ModelCatalogFetcher = Callable[[DiscoveryRequest], tuple[str, ...] | ModelDiscoveryFetchResult]
-
-
-@dataclass(frozen=True, slots=True)
-class ProviderModelCatalog:
-    provider: str
-    models: tuple[str, ...]
-    refreshed: bool
-    model_metadata: dict[str, ProviderModelMetadata] = field(default_factory=dict)
-    source: str = "remote"
-    last_refresh_status: str = "ok"
-    last_error: str | None = None
-    discovery_mode: Literal[
-        "configured_base_url",
-        "disabled",
-        "unavailable",
-    ] = "unavailable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -397,7 +389,7 @@ def _positive_int(value: object) -> int | None:
 
 
 def _non_negative_float(value: object) -> float | None:
-    if isinstance(value, int | float) and not isinstance(value, bool) and value >= 0:
+    if isinstance(value, int | float) and not isinstance(value, bool) and isfinite(value) and value >= 0:
         return float(value)
     return None
 
@@ -451,6 +443,9 @@ def _metadata_from_discovery_item(
         default_reasoning_effort=_canonical_effort(raw.get("default_reasoning_effort")),
         supported_effort_levels=_modalities(raw.get("supported_effort_levels")),
         supports_interleaved_reasoning=_optional_bool(raw.get("supports_interleaved_reasoning")),
+        supports_reasoning_summary=_optional_bool(raw.get("supports_reasoning_summary")),
+        supports_thinking_budget=_optional_bool(raw.get("supports_thinking_budget")),
+        reasoning_visibility=_optional_str(raw.get("reasoning_visibility")),
         modalities_input=input_modalities,
         modalities_output=output_modalities,
         model_status=_optional_str(raw.get("status")),
@@ -459,17 +454,15 @@ def _metadata_from_discovery_item(
     return metadata if metadata.payload() else None
 
 
-def _metadata_from_google_item(item: _GoogleModelItem, *, model_name: str) -> ProviderModelMetadata | None:
+def _metadata_from_google_item(item: _GoogleModelItem) -> ProviderModelMetadata | None:
     context_window = item.inputTokenLimit
     metadata = ProviderModelMetadata(
         context_window=context_window,
         max_input_tokens=item.inputTokenLimit,
         max_output_tokens=item.outputTokenLimit,
-        supports_tools=("generateContent" in item.supportedGenerationMethods if item.supportedGenerationMethods is not None else None),
-        supports_vision=True,
-        supports_streaming=("streamGenerateContent" in item.supportedGenerationMethods if item.supportedGenerationMethods is not None else None),
-        supports_json_mode=True,
-        model_status="preview" if "preview" in model_name.lower() else "active",
+        supports_streaming=(
+            True if item.supportedGenerationMethods is not None and "streamGenerateContent" in item.supportedGenerationMethods else None
+        ),
     )
     return metadata if metadata.payload() else None
 
@@ -510,7 +503,7 @@ def _parse_google_discovery_payload(payload: object) -> ModelDiscoveryFetchResul
         if isinstance(raw_name, str) and raw_name:
             normalized = raw_name[len("models/") :] if raw_name.startswith("models/") else raw_name
             model_ids.append(normalized)
-            metadata = _metadata_from_google_item(item, model_name=normalized)
+            metadata = _metadata_from_google_item(item)
             if metadata is not None:
                 model_metadata[normalized] = metadata
     return ModelDiscoveryFetchResult(models=tuple(model_ids), model_metadata=model_metadata)

@@ -102,3 +102,41 @@ def test_malformed_budget_tables_are_not_discarded(monkeypatch) -> None:
     monkeypatch.setattr(thinking_rules, "load_json", lambda _: {"rows": [], "budget_tables": []})
     with pytest.raises(ValueError, match="budget_tables must be an object"):
         thinking_rules._load()
+
+
+def test_packaged_catalog_preserves_declared_capabilities() -> None:
+    from voidcode.capabilities.providers.native.model_catalog import _static_catalog_from_payload
+
+    fields = {
+        "supports_streaming": False,
+        "supports_json_mode": True,
+        "supports_reasoning_summary": True,
+        "supports_thinking_budget": False,
+        "supports_interleaved_reasoning": True,
+        "reasoning_visibility": "visible",
+        "tool_feedback_mode": "synthetic_user_message",
+    }
+    metadata = _static_catalog_from_payload({"endpoint": {"model": fields}})["endpoint"]["model"]
+    assert metadata.payload() == fields
+
+
+@pytest.mark.parametrize("payload", [{"endpoint": []}, {"endpoint": {"model": []}}])
+def test_packaged_catalog_rejects_malformed_rows(payload) -> None:
+    from voidcode.capabilities.providers.native.model_catalog import _static_catalog_from_payload
+
+    with pytest.raises(ValueError, match="must .*object"):
+        _static_catalog_from_payload(payload)
+
+
+def test_google_model_discovery_does_not_guess_capabilities() -> None:
+    from voidcode.capabilities.providers.native.model_catalog import _parse_google_discovery_payload
+
+    result = _parse_google_discovery_payload(
+        {"models": [{"name": "models/example", "inputTokenLimit": 128, "supportedGenerationMethods": ["generateContent"]}]}
+    )
+    metadata = result.model_metadata["example"]
+    assert metadata.supports_tools is None
+    assert metadata.supports_streaming is None
+    assert metadata.supports_vision is None
+    assert metadata.supports_json_mode is None
+    assert metadata.model_status is None
