@@ -358,7 +358,7 @@ class ManagedMcpManager:
         else:
             raise ValueError("MCP structured content must be a JSON object")
         return McpToolCallResult(
-            content=[item.model_dump(by_alias=True, exclude_none=True) for item in call_result.content],
+            content=[item.model_dump(mode="json", by_alias=True, exclude_none=True) for item in call_result.content],
             structured_content=structured_content,
             is_error=call_result.is_error,
         )

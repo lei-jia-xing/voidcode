@@ -164,3 +164,28 @@ def test_recoverable_rpc_error_keeps_connection_running(tmp_path: Path, monkeypa
         assert pid_file.read_text() == pid
     finally:
         manager.shutdown()
+
+
+def test_sdk_resource_uris_are_projected_as_wire_json(tmp_path: Path) -> None:
+    source, _ = _server_source(tmp_path, expose_tool=False)
+    source.write_text(
+        source.read_text().replace(
+            "server.run()",
+            """
+from mcp.types import CallToolResult, EmbeddedResource, BlobResourceContents
+@server.tool()
+def blob() -> CallToolResult:
+    return CallToolResult(content=[EmbeddedResource(type="resource", resource=BlobResourceContents(uri="custom://bytes", blob="YQ=="))])
+server.run()
+""",
+        ),
+        encoding="utf-8",
+    )
+    manager = build_mcp_manager(_mcp_config({"servers": {"demo": {"command": [sys.executable, str(source)]}}}))
+    try:
+        result = manager.call_tool(server_name="demo", tool_name="blob", arguments={}, workspace=tmp_path)
+        assert result.is_error is False
+        assert result.content == [{"type": "resource", "resource": {"uri": "custom://bytes", "blob": "YQ=="}}]
+        assert json.loads(json.dumps(result.content)) == result.content
+    finally:
+        manager.shutdown()
