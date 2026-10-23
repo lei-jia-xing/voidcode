@@ -34,15 +34,13 @@ from .native.config import (
     ProviderEndpointConfig,
     parse_provider_configs_payload,
 )
-from .native.copilot import GithubCopilotModelProvider
-from .native.endpoint import OpenAIEndpointProvider
-from .native.google import GoogleModelProvider
+from .native.google_native import GoogleGenAIProvider
 from .native.naming import UnknownProviderIdError, canonical_provider_id
-from .native.openai import OpenAIModelProvider
 from .native.openai_native import OpenAIChatCompletionsProvider
 from .native.opencode import OpenCodeZenModelProvider
 from .native.opencode_go import OpenCodeGoModelProvider
 from .native.openrouter import OpenRouterModelProvider
+from .native.provider_config import copilot_provider_config, endpoint_provider_config
 from .native.provider_table import PROVIDER_TABLE
 from .pricing import price_event, price_result
 
@@ -132,13 +130,13 @@ def _materialize(provider_name: str, configuration: object | None) -> TurnProvid
         case "opencode-zen" if entry is None or isinstance(entry, ProviderEndpointConfig):
             return OpenCodeZenModelProvider(config=entry).turn_provider()
         case "openai" if entry is None or isinstance(entry, OpenAIProviderConfig):
-            return OpenAIModelProvider(config=entry).turn_provider()
+            return OpenAIChatCompletionsProvider(config=entry)
         case "google" if entry is None or isinstance(entry, GoogleProviderConfig):
-            return GoogleModelProvider(config=entry).turn_provider()
+            return GoogleGenAIProvider(config=entry)
         case "github-copilot" if entry is None or isinstance(entry, CopilotProviderConfig):
-            return GithubCopilotModelProvider(config=entry).turn_provider()
+            return OpenAIChatCompletionsProvider(name=provider_name, config=copilot_provider_config(entry))
         case "endpoint" if entry is None or isinstance(entry, ProviderEndpointConfig):
-            return OpenAIEndpointProvider(name=provider_name, config=entry).turn_provider()
+            return OpenAIChatCompletionsProvider(name=provider_name, config=endpoint_provider_config(entry))
         case "openrouter" if entry is None or isinstance(entry, ProviderEndpointConfig):
             return OpenRouterModelProvider(config=entry).turn_provider()
         case "opencode-go" if entry is None or isinstance(entry, OpenAICompatibleProviderConfig):
@@ -153,7 +151,7 @@ def _materialize(provider_name: str, configuration: object | None) -> TurnProvid
             return OpenAIChatCompletionsProvider(name=provider_name, config=_endpoint_of(provider_name, entry))
         raise ValueError(f"provider configuration has the wrong type for {provider_name!r}")
     if isinstance(entry, ProviderEndpointConfig):
-        return OpenAIEndpointProvider(name=provider_name, config=entry).turn_provider()
+        return OpenAIChatCompletionsProvider(name=provider_name, config=endpoint_provider_config(entry))
     raise UnknownProviderIdError(provider_name)
 
 

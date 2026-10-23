@@ -1,12 +1,11 @@
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 
 from .config import (
     PROVIDER_WIRES,
     CopilotProviderConfig,
-    GoogleProviderConfig,
-    OpenAIProviderConfig,
     ProviderEndpointConfig,
     openai_compatible_default_base_url,
 )
@@ -32,9 +31,6 @@ _DEFAULT_OPENAI_WIRE_BASE_URLS: dict[str, str] = {
 # own construction default for direct use only.
 _DEFAULT_ANTHROPIC_WIRE_BASE_URLS: dict[str, str] = {row.id: row.default_base_url for row in PROVIDER_TABLE if row.wire == "anthropic-messages"}
 
-# Google's config names no base URL by default -- the SDK resolves its own -- so
-# the listing derives from the Gemini API host the SDK would use.
-_DEFAULT_GOOGLE_BASE_URL = next(row.default_base_url for row in PROVIDER_TABLE if row.wire == "google-generative-ai")
 
 # The endpoint provider is a user-supplied OpenAI-compatible gateway. Without
 # configuration it assumes the conventional local gateway.
@@ -53,20 +49,6 @@ def openai_wire_default_base_url(provider_name: str) -> str | None:
     return openai_compatible_default_base_url(provider_name) or None
 
 
-def openai_provider_config(config: OpenAIProviderConfig | None) -> ProviderEndpointConfig:
-    configured_base_url = None if config is None else config.base_url
-    return ProviderEndpointConfig(
-        api_key=None if config is None else config.api_key,
-        # OpenAI's own host, stated here instead of borrowed from the transport's
-        # construction default.
-        base_url=configured_base_url or _DEFAULT_OPENAI_WIRE_BASE_URLS["openai"],
-        timeout_seconds=None if config is None else config.timeout_seconds,
-        model_map={},
-        openai_organization=None if config is None else config.organization,
-        openai_project=None if config is None else config.project,
-    )
-
-
 def anthropic_wire_default_base_url(provider_name: str) -> str | None:
     """Vendor default base URL for an Anthropic-wire provider that names none.
 
@@ -76,34 +58,11 @@ def anthropic_wire_default_base_url(provider_name: str) -> str | None:
     return _DEFAULT_ANTHROPIC_WIRE_BASE_URLS.get(provider_name)
 
 
-def google_provider_config(config: GoogleProviderConfig | None) -> ProviderEndpointConfig:
-    api_key = None
-    auth_header = None
-    auth_scheme = "bearer"
-    auth = None if config is None else config.auth
-    if auth is not None:
-        if auth.method == "api_key":
-            api_key = auth.api_key
-            auth_header = "x-goog-api-key"
-            auth_scheme = "token"
-        elif auth.method == "oauth":
-            api_key = auth.access_token
-    configured_base_url = None if config is None else config.base_url
-    # A service-account configuration targets Vertex rather than the Gemini API host.
-    base_url = configured_base_url if auth is not None and auth.method == "service_account" else configured_base_url or _DEFAULT_GOOGLE_BASE_URL
-    return ProviderEndpointConfig(
-        api_key=api_key,
-        base_url=base_url,
-        auth_header=auth_header,
-        auth_scheme=auth_scheme,
-        timeout_seconds=None if config is None else config.timeout_seconds,
-        model_map={},
-        wire="google-generative-ai",
-    )
-
-
 def copilot_provider_config(config: CopilotProviderConfig | None) -> ProviderEndpointConfig:
-    token = None if config is None or config.auth is None else config.auth.token
+    auth = None if config is None else config.auth
+    token = None if auth is None else auth.token
+    if token is None and auth is not None and auth.token_env_var is not None:
+        token = os.environ.get(auth.token_env_var)
     configured_base_url = None if config is None else config.base_url
     return ProviderEndpointConfig(
         api_key=token,
@@ -138,7 +97,7 @@ def vendor_endpoint_config(
 
     Unconfigured, the vendor keeps its own host. Configured, every field the
     caller set survives and only the endpoints it left out fall back to the
-    vendor's. The model listing always derives from the resolved base URL.
+    vendor's.
     """
     if config is None:
         return ProviderEndpointConfig(
@@ -146,15 +105,4 @@ def vendor_endpoint_config(
             api_key_env_var=api_key_env_var,
             model_map={},
         )
-    return ProviderEndpointConfig(
-        api_key=config.api_key,
-        api_key_env_var=config.api_key_env_var,
-        base_url=config.base_url or base_url,
-        auth_header=config.auth_header,
-        auth_scheme=config.auth_scheme,
-        auth_scheme_explicit=config.auth_scheme_explicit,
-        ssl_verify=config.ssl_verify,
-        timeout_seconds=config.timeout_seconds,
-        model_map=dict(config.model_map),
-        transient_retry=config.transient_retry,
-    )
+    return replace(config, base_url=config.base_url or base_url)

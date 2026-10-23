@@ -136,3 +136,16 @@ def test_parallel_first_use_keeps_one_owned_resource(monkeypatch, layer):
     assert all(result is created[0] for result in results)
     provider.close()
     assert closed == [1]
+
+
+def test_gateway_defaults_preserve_organization_and_project():
+    from voidcode.capabilities.providers.dispatch import _materialize
+    from voidcode.capabilities.providers.native.config import ProviderEndpointConfig
+
+    provider = _materialize("openrouter", ProviderEndpointConfig(openai_organization="organization", openai_project="project"))
+    try:
+        client = provider._transport()._sdk()
+        assert client.organization == "organization"
+        assert client.project == "project"
+    finally:
+        provider.close()

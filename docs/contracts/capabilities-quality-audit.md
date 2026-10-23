@@ -43,24 +43,20 @@ not establish source review.
 | `providers/native/claude_tokenizer/normalize.py` | Pending full source review |
 | `providers/native/claude_tokenizer/notation.py` | Pending full source review |
 | `providers/native/config.py` | Pending full source review |
-| `providers/native/copilot.py` | Pending full source review |
-| `providers/native/endpoint.py` | Reviewed: direct typed endpoint configuration and chat provider construction; config implementation audited separately |
 | `providers/native/errors.py` | Pending full source review |
-| `providers/native/google.py` | Pending full source review |
 | `providers/native/google_native.py` | Pending full source review |
 | `providers/native/model_catalog.py` | Reviewed static catalog fields/lookups and consumers; removed entire unreferenced remote discovery implementation |
 | `providers/native/model_catalog_data.json` | Pending consumer/data-contract review |
 | `providers/native/model_match.py` | Reviewed: five explicit matching semantics; star-only matching intentionally does not add fnmatch question/bracket behavior |
 | `providers/native/model_routing.py` | Reviewed: routed alias/catalog fallback, typed unsupported wires, serialized cache creation and teardown |
 | `providers/native/naming.py` | Pending full source review |
-| `providers/native/openai.py` | Pending full source review |
 | `providers/native/openai_native.py` | Pending full source review |
 | `providers/native/opencode.py` | Pending full source review |
 | `providers/native/opencode_go.py` | Pending full source review |
 | `providers/native/openrouter.py` | Pending full source review |
 | `providers/native/pricing_rules.json` | Reviewed with parser/consumer and packaged-table tests; source/provenance retained in JSON |
 | `providers/native/pricing_rules.py` | Reviewed: tier thresholds, known/unknown count arithmetic and finite rate ingress; removed unused runtime provenance |
-| `providers/native/provider_config.py` | Pending full source review |
+| `providers/native/provider_config.py` | Reviewed: table-owned wire defaults, endpoint/gateway defaults and Copilot token resolution; removed dead projections |
 | `providers/native/provider_table.json` | Reviewed with parser/consumer and packaged-table tests; source/provenance retained in JSON |
 | `providers/native/provider_table.py` | Reviewed: typed rows, duplicate/unknown IDs and config/catalog consumers; removed unused notes and forwarding helper |
 | `providers/native/reasoning_effort.py` | Pending full source review |
@@ -235,3 +231,18 @@ longer ships. Tokenizer deletion remains a separate pending user choice.
 Validation: all 120 remaining provider/usage/stream tests passed (32.90s).
 Ruff, formatting and source type checks passed. Static catalog and actual wire
 behavior remain exercised; no tokenizer implementation was modified.
+
+## Direct provider construction
+
+Removed OpenAI/Google/endpoint pass-through classes and their unused metadata
+configuration projections. Registry constructs the actual typed native providers.
+Removed Copilot's multi-model routing/cache layer: its current implementation
+serves only the provider-selected chat wire. One native provider now serves all
+models, preserving token environment fallback and provider-owned endpoint.
+Gateway default application uses dataclasses.replace rather than manually copying
+selected endpoint fields (which dropped organization/project/cache configuration).
+The four deleted adapter modules have no SDK/public plugin registration contract.
+
+Validation: 120 provider tests passed (33.02s); the final gateway-default change
+then passed 15 lifecycle tests, including real SDK organization/project preservation.
+Ruff, formatting and source type checks passed.
