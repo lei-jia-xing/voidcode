@@ -296,7 +296,8 @@ class ManagedMcpManager:
         (``call_tool`` discovers before it calls), never connecting on its own.
         """
         key = server_name
-        return self._tool_descriptors_by_server.get(key, {}).get(tool_name)
+        with self._state_lock:
+            return self._tool_descriptors_by_server.get(key, {}).get(tool_name)
 
     def call_tool(
         self,
@@ -443,18 +444,16 @@ class ManagedMcpManager:
                         server_name=server_name,
                     )
                 raise ValueError(message) from exc
-            except (ExceptionGroup, BaseExceptionGroup) as exc:
-                # anyio raises BaseExceptionGroup (NOT an Exception subclass)
-                # when a transport child task fails - e.g. the streamable-http
-                # connect POST on an unreachable endpoint - so neither the
-                # ``except Exception`` clause nor ``suppress(Exception)`` in the
-                # cleanup helpers can see it. Route it through the same clean
-                # diagnostic path as other startup failures.
+            except BaseExceptionGroup as exc:
+                # SDK transport failures may be grouped. Control exceptions must
+                # retain their identity instead of becoming connection errors.
                 self._close_partial_server(
                     session_context=session_context,
                     transport_context=transport_context,
                     stderr_log=stderr_log,
                 )
+                if not isinstance(exc, Exception):
+                    raise
                 leaf = _flatten_exception_group(exc)
                 if transport == "remote-http" and _is_connection_error(leaf):
                     message = self._report_remote_connect_failure(
@@ -515,19 +514,24 @@ class ManagedMcpManager:
         operation: Any,
         suppress_failure_event_when: Callable[[Exception], bool] | None = None,
     ) -> object:
-        try:
-            with running.call_lock:
+        with running.call_lock:
+            with self._state_lock:
+                if self._running_servers.get(running.server_name) is not running:
+                    raise ValueError(f"MCP[{running.server_name}]: connection was replaced before {method}; the request was not sent")
+            try:
                 return self._ensure_portal().call(operation)
-        except Exception as exc:
-            message = self._message_for_exception(
-                exc,
-                fallback=f"MCP[{running.server_name}]: {method} failed",
-            )
-            if not self._is_recoverable_call_error(exc, stage=stage):
-                self._stop_running_server(running.server_name)
-                if suppress_failure_event_when is None or not suppress_failure_event_when(exc):
-                    self._set_server_state(key=running.server_name, status="failed", error=message)
-            raise ValueError(message) from exc
+            except Exception as exc:
+                message = self._message_for_exception(
+                    exc,
+                    fallback=f"MCP[{running.server_name}]: {method} failed",
+                )
+                if not self._is_recoverable_call_error(exc, stage=stage):
+                    self._stop_running_server(running.server_name, expected=running)
+                    if suppress_failure_event_when is None or not suppress_failure_event_when(exc):
+                        with self._state_lock:
+                            if running.server_name not in self._running_servers:
+                                self._set_server_state(key=running.server_name, status="failed", error=message)
+                raise ValueError(message) from exc
 
     def _is_recoverable_call_error(self, exc: Exception, *, stage: str) -> bool:
         if stage != "call" or not isinstance(exc, MCPError) or self._is_timeout_error(exc):
@@ -596,7 +600,7 @@ class ManagedMcpManager:
             # endpoint). That is transient, so retry once with a fresh
             # connection before failing. The failure event was suppressed on
             # the probe attempt and is only recorded if the retry also fails.
-            self._stop_running_server(server_name)
+            self._stop_running_server(server_name, expected=running)
             running = self._ensure_running(server_name=server_name, workspace=workspace)
             result = self._call_sdk(
                 running,
@@ -611,20 +615,24 @@ class ManagedMcpManager:
             descriptor = self._descriptor_from_sdk_tool(server_name=server_name, tool=tool)
             server_descriptors[descriptor.tool_name] = descriptor
             descriptors.append(descriptor)
-        self._tool_descriptors_by_server[key] = server_descriptors
         discovered = tuple(descriptors)
         with self._state_lock:
-            self._discovered_tools[server_name] = discovered
+            if self._running_servers.get(key) is running:
+                self._tool_descriptors_by_server[key] = server_descriptors
+                self._discovered_tools[server_name] = discovered
         return discovered
 
-    def _stop_running_server(self, key: str) -> None:
+    def _stop_running_server(self, key: str, *, expected: _RunningMcpServer | None = None) -> None:
         with self._state_lock:
+            running = self._running_servers.get(key)
+            if running is None or (expected is not None and running is not expected):
+                return
             self._tool_descriptors_by_server.pop(key, None)
-            running = self._running_servers.pop(key, None)
-        if running is None:
-            return
+            self._running_servers.pop(key)
         self._terminate_running_server(running)
-        self._set_server_state(key=key, status="stopped")
+        with self._state_lock:
+            if key not in self._running_servers:
+                self._set_server_state(key=key, status="stopped")
 
     def _set_server_state(self, *, key: str, status: Literal["running", "stopped", "failed"], error: str | None = None) -> None:
         with self._state_lock:
