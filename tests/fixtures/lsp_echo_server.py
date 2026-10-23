@@ -35,6 +35,7 @@ def main() -> int:
     parser.add_argument("--record", required=True)
     parser.add_argument("--grandchild", default=None)
     parser.add_argument("--hang-after", type=int, default=None)
+    parser.add_argument("--initialize-result", default=None)
     args = parser.parse_args()
     encoding = os.environ.get("LSP_ENCODING", "utf-16")
     stdin = sys.stdin.buffer
@@ -83,7 +84,11 @@ def main() -> int:
                 response = {
                     "jsonrpc": "2.0",
                     "id": message.get("id"),
-                    "result": {"capabilities": {"positionEncoding": encoding, "textDocumentSync": {"openClose": True, "change": 1}}},
+                    "result": (
+                        json.loads(args.initialize_result)
+                        if args.initialize_result is not None
+                        else {"capabilities": {"positionEncoding": encoding, "textDocumentSync": {"openClose": True, "change": 1}}}
+                    ),
                 }
             else:
                 response = {"jsonrpc": "2.0", "id": message.get("id"), "result": {"echo": message.get("params")}}

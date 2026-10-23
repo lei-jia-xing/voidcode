@@ -459,3 +459,69 @@ def test_server_eof_is_recorded_as_protocol_failure(harness: tuple[_Services, Pa
     assert failed.status == "failed"
     assert failed.last_error == "No response from LSP server echo for textDocument/hover"
     assert "cancel_process" in services.names()
+
+
+@pytest.mark.parametrize("result", [None, {}, {"capabilities": None}, {"capabilities": []}])
+def test_malformed_initialize_stops_server_and_preserves_failure(harness: tuple[_Services, Path], result: object) -> None:
+    from voidcode.plugins.lsp.lsp_manager import LspProtocolError, LspRequest
+
+    services, tmp_path = harness
+    config = lsp_config_from_mapping(
+        {
+            "servers": {
+                "echo": {
+                    "command": [sys.executable, str(_FIXTURE), "--record", str(tmp_path / "record.jsonl"), "--initialize-result", json.dumps(result)],
+                    "extensions": [".txt"],
+                }
+            }
+        }
+    )
+    manager = build_lsp_manager(config)
+    with pytest.raises(LspProtocolError, match="requires a capabilities object"):
+        manager.request(LspRequest(server_name="echo", method="custom", params={}, workspace=tmp_path, session_id="bad-init", services=services))
+    state = manager.current_state().servers["echo"]
+    assert state.status == "failed"
+    assert "requires a capabilities object" in state.last_error
+    assert all(process.poll() is not None for process in services._entries.values())
+
+
+@pytest.mark.parametrize("header", [b"Content-Length: 2\xff", b"Content-Length: -1", b"Content-Length: invalid", b"Other: value"])
+def test_invalid_lsp_headers_are_explicit_protocol_failures(tmp_path: Path, header: bytes) -> None:
+    from voidcode.plugins.lsp.lsp_manager import LspProtocolError, ManagedLspManager, _RunningLspServer
+
+    frame = header + b"\r\n\r\n{}"
+
+    class Framed:
+        def read_process_output(self, process_id, *, stream, offset, limit):
+            data = frame[offset : offset + limit]
+            return ProcessOutput(
+                process_id=process_id,
+                stream=stream,
+                offset=offset,
+                data=data,
+                total_bytes=len(frame),
+                eof=offset + len(data) >= len(frame),
+                running=False,
+            )
+
+    server = _RunningLspServer(
+        config=build_lsp_manager(_config(tmp_path / "unused")).configuration.servers["echo"], process_id="bad-frame", workspace_root=tmp_path
+    )
+    with pytest.raises(LspProtocolError):
+        ManagedLspManager._read_message(Framed(), server, server_name="echo", abort_signal=None)
+
+
+def test_missing_server_binary_reports_current_configuration_path(harness: tuple[_Services, Path]) -> None:
+    from voidcode.plugins.lsp.lsp_manager import LspRequest
+
+    services, tmp_path = harness
+    manager = build_lsp_manager(lsp_config_from_mapping({"servers": {"missing": {"command": [str(tmp_path / "absent-server")]}}}))
+    with pytest.raises(ValueError, match="plugins.lsp.config.servers.missing.command") as error:
+        manager.request(
+            LspRequest(server_name="missing", method="custom", params={}, workspace=tmp_path, session_id="missing-bin", services=services)
+        )
+    assert "in voidcode.json" in str(error.value)
+    assert ".voidcode.json" not in str(error.value)
+    state = manager.current_state().servers["missing"]
+    assert state.status == "failed"
+    assert state.last_error == str(error.value)

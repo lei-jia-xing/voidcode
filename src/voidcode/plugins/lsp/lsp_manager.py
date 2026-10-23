@@ -26,6 +26,7 @@ from urllib.request import url2pathname
 from lsprotocol import converters as lsp_converters
 from lsprotocol import types as lsp_types
 
+from voidcode.sdk.config import CONFIG_FILE_NAME
 from voidcode.sdk.provider import ProviderAbortSignal
 from voidcode.sdk.services import PluginServices
 
@@ -693,7 +694,7 @@ class ManagedLspManager:
         init_result = response.get("result")
         server_capabilities = init_result.get("capabilities") if isinstance(init_result, dict) else None
         if not isinstance(server_capabilities, dict):
-            server_capabilities = {}
+            raise LspProtocolError(f"LSP initialize response from {server_name} requires a capabilities object")
         position_encoding = server_capabilities.get("positionEncoding")
         if position_encoding is None:
             position_encoding = "utf-16"
@@ -740,11 +741,11 @@ class ManagedLspManager:
         details: str,
     ) -> str:
         binary_name = server_config.command[0] if server_config.command else server_name
-        config_path = f"lsp.servers.{server_name}.command"
+        config_path = f"plugins.lsp.config.servers.{server_name}.command"
         return (
             f"failed to start LSP server {server_name}: {details}. "
             f"Ensure '{binary_name}' is installed and available on PATH, "
-            f"or override '{config_path}' in .voidcode.json with a custom command."
+            f"or override '{config_path}' in {CONFIG_FILE_NAME} with a custom command."
         )
 
     def _workspace_root_for_request(
@@ -908,7 +909,10 @@ class ManagedLspManager:
         header_bytes = bytes(buffer[:header_end])
         if len(header_bytes) > MAX_LSP_HEADER_BYTES:
             raise LspMessageBoundsError(f"LSP header exceeded {MAX_LSP_HEADER_BYTES} bytes")
-        header_text = header_bytes.decode("ascii", errors="ignore")
+        try:
+            header_text = header_bytes.decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise LspProtocolError("invalid ASCII header from LSP server") from exc
         content_length = None
         for line in header_text.split("\r\n"):
             if line.lower().startswith("content-length:"):
