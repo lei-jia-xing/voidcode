@@ -126,17 +126,3 @@ def test_packaged_catalog_rejects_malformed_rows(payload) -> None:
 
     with pytest.raises(ValueError, match="must .*object"):
         _static_catalog_from_payload(payload)
-
-
-def test_google_model_discovery_does_not_guess_capabilities() -> None:
-    from voidcode.capabilities.providers.native.model_catalog import _parse_google_discovery_payload
-
-    result = _parse_google_discovery_payload(
-        {"models": [{"name": "models/example", "inputTokenLimit": 128, "supportedGenerationMethods": ["generateContent"]}]}
-    )
-    metadata = result.model_metadata["example"]
-    assert metadata.supports_tools is None
-    assert metadata.supports_streaming is None
-    assert metadata.supports_vision is None
-    assert metadata.supports_json_mode is None
-    assert metadata.model_status is None

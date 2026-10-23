@@ -48,7 +48,7 @@ not establish source review.
 | `providers/native/errors.py` | Pending full source review |
 | `providers/native/google.py` | Pending full source review |
 | `providers/native/google_native.py` | Pending full source review |
-| `providers/native/model_catalog.py` | Partial: catalog/discovery source reviewed; missing declared fields fixed, dead catalog wrapper removed; strict remote payload/bounds review pending |
+| `providers/native/model_catalog.py` | Reviewed static catalog fields/lookups and consumers; removed entire unreferenced remote discovery implementation |
 | `providers/native/model_catalog_data.json` | Pending consumer/data-contract review |
 | `providers/native/model_match.py` | Reviewed: five explicit matching semantics; star-only matching intentionally does not add fnmatch question/bracket behavior |
 | `providers/native/model_routing.py` | Reviewed: routed alias/catalog fallback, typed unsupported wires, serialized cache creation and teardown |
@@ -218,3 +218,20 @@ a follow-up directory test exposed the intentional empty-metadata omission, and
 the corrected fixture with a real context limit passed all 16 directory tests.
 The 21 other auth/catalog tests also passed in that follow-up run. Final Ruff,
 formatting and source type checks passed.
+
+## Remove unconnected remote model discovery
+
+A repository-wide caller search found that `discover_available_models`, its
+fetchers/plans/protocol parsers and results have no runtime, script or external
+SDK registration consumer. The public provider/model panels only use static
+catalog queries. Removed that entire internal subsystem rather than adding
+response bounds/validation to unused code. Removed its unused endpoint projector,
+listing support predicate and listing-only Anthropic config adapter/constants.
+The previous Google discovery regression tested a removed private parser and was
+removed with it. Existing static metadata regressions remain. This supersedes the
+prior outstanding remote-discovery parser/bounds review: the implementation no
+longer ships. Tokenizer deletion remains a separate pending user choice.
+
+Validation: all 120 remaining provider/usage/stream tests passed (32.90s).
+Ruff, formatting and source type checks passed. Static catalog and actual wire
+behavior remain exercised; no tokenizer implementation was modified.

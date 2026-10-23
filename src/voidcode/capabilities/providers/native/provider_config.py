@@ -4,18 +4,12 @@ from dataclasses import replace
 
 from .config import (
     PROVIDER_WIRES,
-    AnthropicProviderConfig,
     CopilotProviderConfig,
-    EndpointAuthScheme,
     GoogleProviderConfig,
-    OpenAICompatibleProviderConfig,
     OpenAIProviderConfig,
-    ProviderConfigEntry,
     ProviderEndpointConfig,
     openai_compatible_default_base_url,
-    openai_compatible_endpoint_config,
 )
-from .naming import UnknownProviderIdError, canonical_provider_id
 from .provider_table import PROVIDER_TABLE, PROVIDER_TABLE_BY_ID
 
 # Vendor defaults for the providers whose wire is the OpenAI chat protocol, read
@@ -45,32 +39,6 @@ _DEFAULT_GOOGLE_BASE_URL = next(row.default_base_url for row in PROVIDER_TABLE i
 # The endpoint provider is a user-supplied OpenAI-compatible gateway. Without
 # configuration it assumes the conventional local gateway.
 DEFAULT_ENDPOINT_BASE_URL = PROVIDER_TABLE_BY_ID["endpoint"].default_base_url
-
-# The credential header an Anthropic-wire vendor's model listing wants. The wire
-# itself always speaks ``x-api-key`` with the raw key, which is the default; a
-# vendor whose listing names another header overrides it here.
-_ANTHROPIC_WIRE_LISTING_DEFAULT_AUTH: tuple[str, EndpointAuthScheme] = ("x-api-key", "token")
-_ANTHROPIC_WIRE_LISTING_AUTH: dict[str, tuple[str, EndpointAuthScheme]] = {
-    # Kimi's coding subscription lists with ``Authorization: Bearer``.
-    "kimi-code": ("Authorization", "bearer"),
-    # MiniMax CN's listing names its own key header.
-    "minimax-cn": ("X-Api-Key", "token"),
-}
-
-
-def provider_has_model_listing(provider_name: str, config: ProviderEndpointConfig | None) -> bool:
-    """Whether ``provider_name`` serves a model listing its wire can request.
-
-    A vendor's listing lives at its own base URL plus the wire's path, so the
-    only per-vendor discovery fact left is whether the route exists at all:
-    Copilot publishes none, and Google's listing needs a credential the request
-    can send, which a service-account (or absent) config does not resolve.
-    """
-    if provider_name == "github-copilot":
-        return False
-    if provider_name == "google":
-        return config is not None and config.api_key is not None
-    return True
 
 
 def openai_wire_default_base_url(provider_name: str) -> str | None:
@@ -108,30 +76,6 @@ def anthropic_wire_default_base_url(provider_name: str) -> str | None:
     return _DEFAULT_ANTHROPIC_WIRE_BASE_URLS.get(provider_name)
 
 
-def anthropic_compatible_endpoint_config(provider_name: str, config: AnthropicProviderConfig | None) -> ProviderEndpointConfig:
-    """Normalize one Anthropic-wire vendor's configuration.
-
-    The vendor default base URL and the listing's credential header both come
-    from tables keyed by ``provider_name``, so a gateway route that pins its own
-    host keeps that host while an unconfigured vendor resolves to its own
-    endpoint instead of borrowing Anthropic's.
-    """
-    vendor_default_base_url = anthropic_wire_default_base_url(provider_name)
-    if vendor_default_base_url is None:
-        raise ValueError(f"Unknown Anthropic-wire provider: {provider_name!r}")
-    auth_header, auth_scheme = _ANTHROPIC_WIRE_LISTING_AUTH.get(provider_name, _ANTHROPIC_WIRE_LISTING_DEFAULT_AUTH)
-    return ProviderEndpointConfig(
-        api_key=None if config is None else config.api_key,
-        base_url=(None if config is None else config.base_url) or vendor_default_base_url,
-        auth_header=auth_header,
-        auth_scheme=auth_scheme,
-        timeout_seconds=None if config is None else config.timeout_seconds,
-        model_map={},
-        wire="anthropic-messages",
-        cache_retention="short" if config is None else config.cache_retention,
-    )
-
-
 def google_provider_config(config: GoogleProviderConfig | None) -> ProviderEndpointConfig:
     api_key = None
     auth_header = None
@@ -145,9 +89,7 @@ def google_provider_config(config: GoogleProviderConfig | None) -> ProviderEndpo
         elif auth.method == "oauth":
             api_key = auth.access_token
     configured_base_url = None if config is None else config.base_url
-    # A service-account config resolves no credential this discovery path can
-    # send and selects the Vertex surface rather than the Gemini API host, so it
-    # keeps no base URL and ``provider_has_model_listing`` reports no listing.
+    # A service-account configuration targets Vertex rather than the Gemini API host.
     base_url = configured_base_url if auth is not None and auth.method == "service_account" else configured_base_url or _DEFAULT_GOOGLE_BASE_URL
     return ProviderEndpointConfig(
         api_key=api_key,
@@ -216,33 +158,3 @@ def vendor_endpoint_config(
         model_map=dict(config.model_map),
         transient_retry=config.transient_retry,
     )
-
-
-def resolved_provider_endpoint_config(
-    provider_name: str,
-    configuration: ProviderConfigEntry | None,
-) -> ProviderEndpointConfig:
-    """Project native config without constructing or consulting a live adapter."""
-    provider_name = canonical_provider_id(provider_name)
-    wire = PROVIDER_WIRES.get(provider_name)
-    if wire is None:
-        if isinstance(configuration, ProviderEndpointConfig):
-            return endpoint_provider_config(configuration)
-        raise UnknownProviderIdError(provider_name)
-    match wire.shape, configuration:
-        case "openai", OpenAIProviderConfig() | None:
-            return openai_provider_config(configuration)
-        case "anthropic", AnthropicProviderConfig() | None:
-            return anthropic_compatible_endpoint_config(provider_name, configuration)
-        case "google", GoogleProviderConfig() | None:
-            return google_provider_config(configuration)
-        case "copilot", CopilotProviderConfig() | None:
-            return copilot_provider_config(configuration)
-        case "endpoint", ProviderEndpointConfig() | None:
-            return endpoint_provider_config(configuration)
-        case "named_endpoint", ProviderEndpointConfig() | None:
-            row = PROVIDER_TABLE_BY_ID[provider_name]
-            return vendor_endpoint_config(configuration, base_url=row.default_base_url, api_key_env_var=row.env_vars[0])
-        case "openai_compatible", OpenAICompatibleProviderConfig() | None:
-            return openai_compatible_endpoint_config(provider_name, configuration)
-    raise ValueError(f"provider configuration has the wrong type for {provider_name!r}")
