@@ -11,7 +11,6 @@ import pytest
 
 from voidcode.plugins.review.review_plugin import (
     DEFAULT_JOIN_TIMEOUT_SECONDS,
-    MAX_REVIEW_DIFF_BYTES,
     REVIEW_CHILD_LABEL,
     REVIEW_CHILD_MAX_STEPS,
     ReviewCommand,
@@ -23,6 +22,7 @@ from voidcode.plugins.review.review_plugin import (
 from voidcode.plugins.review.workspace_review import WorkspaceReviewService, git_status_snapshot
 from voidcode.sdk.commands import CommandInvocation, CommandResult
 from voidcode.sdk.invocation import ToolContext
+from voidcode.sdk.limits import CHILD_PROMPT_MAX_BYTES
 from voidcode.sdk.services import ChildOutcome, PluginServices
 from voidcode.sdk.tools import ToolEffect
 
@@ -238,7 +238,7 @@ def test_commit_prompt_text_carries_sha_and_diff(tmp_path: Path) -> None:
     )
 
 
-# --- Refusals (the 256 KiB inline budget and the legacy messages) ---
+# --- Refusals: the complete 256 KiB child prompt budget ---
 
 
 def _big_repo(tmp_path: Path) -> Path:
@@ -248,22 +248,21 @@ def _big_repo(tmp_path: Path) -> Path:
     return repo
 
 
-def test_oversized_workspace_diff_is_refused_with_the_legacy_message(tmp_path: Path) -> None:
+def test_oversized_workspace_diff_is_refused(tmp_path: Path) -> None:
     repo = _big_repo(tmp_path)
     diff_bytes = len(_diff_all(repo).encode("utf-8"))
-    assert diff_bytes > MAX_REVIEW_DIFF_BYTES
+    assert diff_bytes > CHILD_PROMPT_MAX_BYTES
 
     services = MockServices()
     result = _review(services, repo, {})
 
     assert result.status == "error"
-    assert result.error == (
-        f"workspace diff is too large ({diff_bytes} bytes) for inline review; reduce working tree changes or review changes incrementally"
-    )
+    assert result.error is not None and result.error.startswith("review prompt is too large (")
+    assert "review changes incrementally" in result.error
     assert services.spawn_calls == []
 
 
-def test_oversized_commit_diff_is_refused_with_the_legacy_message(tmp_path: Path) -> None:
+def test_oversized_commit_diff_is_refused(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     (repo / "big.txt").write_text("".join(f"line {index} {'x' * 60}\n" for index in range(4000)), encoding="utf-8")
     _git(repo, "add", "big.txt")
@@ -271,7 +270,7 @@ def test_oversized_commit_diff_is_refused_with_the_legacy_message(tmp_path: Path
     sha = _git(repo, "rev-parse", "HEAD").strip()
     diff = WorkspaceReviewService(workspace=repo).diff_commit(sha, git=git_status_snapshot(repo)).diff or ""
     diff_bytes = len(diff.encode("utf-8"))
-    assert diff_bytes > MAX_REVIEW_DIFF_BYTES
+    assert diff_bytes > CHILD_PROMPT_MAX_BYTES
 
     with pytest.raises(ValueError) as excinfo:
         build_review_prompt(
@@ -279,7 +278,8 @@ def test_oversized_commit_diff_is_refused_with_the_legacy_message(tmp_path: Path
             target=resolve_review_target({"type": "commit", "sha": sha}, focus=None),
             focus=None,
         )
-    assert str(excinfo.value) == f"commit diff is too large ({diff_bytes} bytes) for inline review; review changes incrementally"
+    assert str(excinfo.value).startswith("review prompt is too large (")
+    assert "review changes incrementally" in str(excinfo.value)
 
 
 @pytest.mark.parametrize(
@@ -493,3 +493,17 @@ def test_review_diff_does_not_execute_configured_text_conversion(tmp_path: Path)
     result = _review(MockServices(), repo, {})
     assert result.status == "ok"
     assert not marker.exists()
+
+
+@pytest.mark.parametrize("focus", [None, "检查" * 50_000], ids=["diff-with-prefix", "utf8-focus"])
+def test_review_budget_counts_instructions_and_diff_in_utf8(tmp_path: Path, focus: str | None) -> None:
+    repo = _repo(tmp_path)
+    # The diff fits on its own; the complete prompt exceeds the child limit.
+    body = "x" * (CHILD_PROMPT_MAX_BYTES - 180) if focus is None else "changed"
+    (repo / "tracked.txt").write_text(body + "\n", encoding="utf-8")
+    assert len(_diff_all(repo).encode("utf-8")) < CHILD_PROMPT_MAX_BYTES
+    services = MockServices()
+    result = _review(services, repo, {} if focus is None else {"focus": focus})
+    assert result.status == "error"
+    assert "review prompt is too large" in (result.error or "")
+    assert not services.spawn_calls

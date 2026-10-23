@@ -22,6 +22,7 @@ class GitStatusSnapshot:
 class ReviewFileDiff:
     state: Literal["changed", "clean", "not_git_repo"]
     diff: str | None = None
+    merge_base: str | None = None
 
 
 def git_status_snapshot(workspace: Path) -> GitStatusSnapshot:
@@ -84,27 +85,7 @@ class WorkspaceReviewService:
             if untracked:
                 parts.append(untracked)
         diff_output = self._join_diffs(parts)
-        return ReviewFileDiff(state="changed" if diff_output else "clean", diff=diff_output or None)
-
-    def merge_base_sha(self, branch: str, *, git: GitStatusSnapshot) -> str | None:
-        root = Path(git.root).resolve() if git.root is not None else self._workspace
-        if git.state != "git_ready":
-            return None
-        rev = self._run_git(root, "rev-parse", "--verify", branch)
-        if rev.returncode != 0:
-            return None
-        preferred_ref = branch
-        upstream_check = self._run_git(root, "rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}")
-        if upstream_check.returncode == 0 and upstream_check.stdout.strip():
-            upstream = upstream_check.stdout.strip()
-            ahead = self._run_git(root, "rev-list", "--count", f"{branch}..{upstream}")
-            if ahead.returncode == 0 and ahead.stdout.strip().isdigit() and (int(ahead.stdout.strip()) > 0):
-                preferred_ref = upstream
-        mb = self._run_git(root, "merge-base", "HEAD", preferred_ref)
-        if mb.returncode == 0 and mb.stdout.strip():
-            return mb.stdout.strip()
-        mb = self._run_git(root, "merge-base", "HEAD", branch)
-        return mb.stdout.strip() if mb.returncode == 0 and mb.stdout.strip() else None
+        return ReviewFileDiff(state="changed" if diff_output else "clean", diff=diff_output or None, merge_base=merge_base_sha)
 
     def diff_commit(self, sha: str, *, git: GitStatusSnapshot) -> ReviewFileDiff:
         root = Path(git.root).resolve() if git.root is not None else self._workspace

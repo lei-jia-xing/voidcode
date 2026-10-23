@@ -8,14 +8,12 @@ from pathlib import Path
 from typing import ClassVar, Literal
 
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
+from voidcode.sdk.limits import CHILD_PROMPT_MAX_BYTES
 from voidcode.sdk.plugin import Plugin
 from voidcode.sdk.services import ChildOutcome, PluginServices
 from voidcode.sdk.tools import ToolEffect
 
 from .workspace_review import GitStatusSnapshot, ReviewFileDiff, WorkspaceReviewService, git_status_snapshot
-
-#: Larger diffs must be reviewed incrementally; never truncate a review input.
-MAX_REVIEW_DIFF_BYTES: int = 256 * 1024
 
 REVIEW_CHILD_LABEL = "review"
 REVIEW_CHILD_MAX_STEPS = 32
@@ -60,7 +58,7 @@ def resolve_review_target(raw: Mapping[str, object] | None, *, focus: str | None
 # --- Prompt construction ---
 
 
-def _review_diff(service: WorkspaceReviewService, git: GitStatusSnapshot, target: ReviewTarget) -> tuple[ReviewFileDiff, int]:
+def _review_diff(service: WorkspaceReviewService, git: GitStatusSnapshot, target: ReviewTarget) -> ReviewFileDiff:
     if target.type == "base_branch":
         diff = service.diff_base_branch(target.branch or "", git=git)
     elif target.type == "commit":
@@ -75,7 +73,7 @@ def _review_diff(service: WorkspaceReviewService, git: GitStatusSnapshot, target
         if target.type == "commit":
             raise ValueError(f"review found no changes in commit {target.sha}")
         raise ValueError("review found no workspace changes")
-    return diff, len(diff.diff.encode("utf-8"))
+    return diff
 
 
 def build_review_prompt(*, workspace: Path, target: ReviewTarget, focus: str | None) -> str:
@@ -85,66 +83,44 @@ def build_review_prompt(*, workspace: Path, target: ReviewTarget, focus: str | N
     if git.state == "git_error":
         raise ValueError(git.error or "git repository inspection failed")
 
-    if target.type == "custom":
-        instructions = (target.instructions or focus or "").strip()
-        if not instructions:
-            raise ValueError("custom review instructions must not be empty")
-        diff, diff_bytes = _review_diff(service, git, target)
-        if diff_bytes > MAX_REVIEW_DIFF_BYTES:
-            raise ValueError(
-                f"workspace diff is too large ({diff_bytes} bytes) for inline review; reduce working tree changes or review changes incrementally"
-            )
-        return "\n\n".join(
-            [
-                "Review the current workspace changes and report concrete correctness, regression, and safety findings.",
-                f"Reviewer focus: {instructions}",
-                f"Aggregate Git diff:\n{diff.diff}",
-                "Return the final review findings in your final answer.",
-            ]
-        )
-
-    if target.type == "uncommitted":
-        diff, diff_bytes = _review_diff(service, git, target)
-        if diff_bytes > MAX_REVIEW_DIFF_BYTES:
-            raise ValueError(
-                f"workspace diff is too large ({diff_bytes} bytes) for inline review; reduce working tree changes or review changes incrementally"
-            )
-        return "\n\n".join(
-            [
-                "Review the current workspace changes (staged, unstaged, and untracked files) and provide prioritized findings.",
-                f"Aggregate Git diff:\n{diff.diff}",
-                "Return the final review findings in your final answer.",
-            ]
-        )
-
-    if target.type == "base_branch":
-        if not target.branch:
-            raise ValueError("base branch target requires a branch name")
-        diff, diff_bytes = _review_diff(service, git, target)
-        if diff_bytes > MAX_REVIEW_DIFF_BYTES:
-            raise ValueError(f"base branch diff is too large ({diff_bytes} bytes) for inline review; review changes incrementally")
-        merge_base = service.merge_base_sha(target.branch, git=git)
-        merge_base_text = f" The merge base commit for this comparison is {merge_base}." if merge_base else ""
-        return "\n\n".join(
-            [
-                f"Review the code changes against the base branch '{target.branch}'.{merge_base_text}",
-                f"Git diff against base branch '{target.branch}':\n{diff.diff}",
-                "Provide prioritized, actionable findings in your final answer.",
-            ]
-        )
-
-    if not target.sha:
+    if target.type == "base_branch" and not target.branch:
+        raise ValueError("base branch target requires a branch name")
+    if target.type == "commit" and not target.sha:
         raise ValueError("commit target requires a commit sha")
-    diff, diff_bytes = _review_diff(service, git, target)
-    if diff_bytes > MAX_REVIEW_DIFF_BYTES:
-        raise ValueError(f"commit diff is too large ({diff_bytes} bytes) for inline review; review changes incrementally")
-    return "\n\n".join(
-        [
+    instructions = (target.instructions or focus or "").strip()
+    if target.type == "custom" and not instructions:
+        raise ValueError("custom review instructions must not be empty")
+    diff = _review_diff(service, git, target)
+    if target.type == "custom":
+        parts = [
+            "Review the current workspace changes and report concrete correctness, regression, and safety findings.",
+            f"Reviewer focus: {instructions}",
+            f"Aggregate Git diff:\n{diff.diff}",
+            "Return the final review findings in your final answer.",
+        ]
+    elif target.type == "uncommitted":
+        parts = [
+            "Review the current workspace changes (staged, unstaged, and untracked files) and provide prioritized findings.",
+            f"Aggregate Git diff:\n{diff.diff}",
+            "Return the final review findings in your final answer.",
+        ]
+    elif target.type == "base_branch":
+        parts = [
+            f"Review the code changes against the base branch '{target.branch}'. The merge base commit for this comparison is {diff.merge_base}.",
+            f"Git diff against base branch '{target.branch}':\n{diff.diff}",
+            "Provide prioritized, actionable findings in your final answer.",
+        ]
+    else:
+        parts = [
             f"Review the code changes introduced by commit {target.sha}.",
             f"Git diff for commit {target.sha}:\n{diff.diff}",
             "Provide prioritized, actionable findings in your final answer.",
         ]
-    )
+    prompt = "\n\n".join(parts)
+    prompt_bytes = len(prompt.encode("utf-8"))
+    if prompt_bytes > CHILD_PROMPT_MAX_BYTES:
+        raise ValueError(f"review prompt is too large ({prompt_bytes} bytes); review changes incrementally")
+    return prompt
 
 
 # --- Command arguments (the core schema stays the first gate; these are second-line messages) ---

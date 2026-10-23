@@ -39,6 +39,7 @@ from ..sdk.config import CoreConfig
 from ..sdk.hooks import RequestWindow, StopCause, WindowSegment
 from ..sdk.invocation import ToolContext
 from ..sdk.json_values import json_wire_object
+from ..sdk.limits import CHILD_PROMPT_MAX_BYTES
 from ..sdk.provider import ProviderExecutionError, ProviderMessage, ProviderTurnRequest
 from ..sdk.services import (
     CHILD_MESSAGE_OWNER,
@@ -223,7 +224,6 @@ CORE_TOOL_NAMES = frozenset(name for name, _d, _s, _e in _CORE_TOOL_SPECS)
 #: Client ingress guard for a prompt typed by a client.
 CLIENT_PROMPT_MAX_BYTES = 64 * 1024
 #: Core guard for a delegated prompt; owners enforce their own tighter product caps.
-CHILD_PROMPT_MAX_BYTES = 256 * 1024
 #: Delegation limits: a chain nests at most this deep and spawns at most this many children in
 #: total. A child inherits the parent's policy unchanged, so delegation never widens it.
 DELEGATION_MAX_DEPTH = 3
