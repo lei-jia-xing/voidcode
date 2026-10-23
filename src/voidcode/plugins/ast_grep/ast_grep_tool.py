@@ -8,7 +8,6 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationInfo, field_validator
 
-from voidcode.capabilities.files.guards import enforce_read_before_write, enforce_seen_lines
 from voidcode.capabilities.files.repair import raise_tool_diagnostic
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices, ProcessResult
@@ -173,7 +172,6 @@ def _preflight_replace_targets(
     matches: list[dict[str, Any]],
     *,
     args: AstGrepArgs,
-    context: ToolContext,
     workspace: Path,
     input_candidate: Path,
 ) -> tuple[dict[Path, str], dict[Path, bytes], dict[Path, str]]:
@@ -206,48 +204,10 @@ def _preflight_replace_targets(
                 content.decode("utf-8")
             except UnicodeDecodeError as exc:
                 raise ValueError(f"ast_grep target is not UTF-8 text: {display_path}") from exc
-            enforce_read_before_write(
-                context=context,
-                tool_name="ast_grep",
-                raw_path=raw_path,
-                candidate=candidate,
-                display_path=display_path,
-            )
             actual_hash = hashlib.sha256(content).hexdigest()
-            resolved_key = candidate.resolve().as_posix()
-            observed_hashes = {content_hash for observed_path, content_hash in context.read_lines if observed_path == resolved_key}
-            observed_hashes.update(content_hash for observed_path, content_hash in context.read_whole_files if observed_path == resolved_key)
-            if context.session_id is not None and actual_hash not in observed_hashes and len(observed_hashes) == 1:
-                observed_hash = next(iter(observed_hashes))
-                raise_tool_diagnostic(
-                    message=f"ast_grep replace rejected because {display_path} changed since it was read (stale edit).",
-                    error_kind="stale_edit",
-                    reason="content_hash_mismatch",
-                    retry_guidance="Read the file again, use the SHA-256 content hash shown in read output, then retry.",
-                    details={"expected_hash": observed_hash, "actual_hash": actual_hash, "path": display_path},
-                )
             display_paths[candidate] = display_path
             original_bytes[candidate] = content
             source_hashes[candidate] = actual_hash
-
-        if context.session_id is not None:
-            range_value = match.get("range")
-            start = range_value.get("start") if isinstance(range_value, dict) else None
-            end = range_value.get("end") if isinstance(range_value, dict) else None
-            start_line = start.get("line") if isinstance(start, dict) else None
-            end_line = end.get("line") if isinstance(end, dict) else None
-            if not isinstance(start_line, int) or not isinstance(end_line, int) or start_line < 0 or end_line < 0:
-                raise ValueError(f"ast_grep native match has an invalid range in {display_path}")
-            enforce_seen_lines(
-                context=context,
-                tool_name="ast_grep",
-                raw_path=raw_path,
-                candidate=candidate,
-                display_path=display_path,
-                start_line=start_line + 1,
-                end_line=end_line + 1,
-                current_hash=hashlib.sha256(candidate.read_bytes()).hexdigest(),
-            )
 
     if args.expectedHash is not None:
         if len(source_hashes) != 1:
@@ -354,16 +314,15 @@ class AstGrepTool:
 
     def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:
         workspace = context.require_workspace()
-        return self._invoke(call, workspace=workspace, timeout_seconds=30, context=context, services=services)
+        return self._invoke(call, workspace=workspace, timeout_seconds=30, services=services)
 
-    def _invoke(self, call: ToolCall, *, workspace: Path, timeout_seconds: int, context: ToolContext, services: PluginServices) -> ToolResult:
+    def _invoke(self, call: ToolCall, *, workspace: Path, timeout_seconds: int, services: PluginServices) -> ToolResult:
         args = AstGrepArgs.model_validate(dict(call.arguments))
         if args.mode == "search":
             return self._invoke_search(args, services=services, workspace=workspace, timeout_seconds=timeout_seconds)
         if args.mode in ("preview", "replace"):
             return self._invoke_preview_replace(
                 args,
-                context=context,
                 services=services,
                 workspace=workspace,
                 timeout_seconds=timeout_seconds,
@@ -425,7 +384,6 @@ class AstGrepTool:
         self,
         args: AstGrepArgs,
         *,
-        context: ToolContext,
         services: PluginServices,
         workspace: Path,
         timeout_seconds: int,
@@ -483,7 +441,6 @@ class AstGrepTool:
         display_paths, original_bytes, source_hashes = _preflight_replace_targets(
             matches,
             args=args,
-            context=context,
             workspace=workspace,
             input_candidate=candidate,
         )

@@ -7,7 +7,7 @@ not a requirement to change every plugin or to add a dependency.
 
 | Plugin | Reviewed areas and changes | Remaining review |
 | --- | --- | --- |
-| `ast_grep` | Shared file guards/diagnostics replace two identical private modules. Strict argument model; lease-owned process execution; reject incomplete/malformed native results before rewrite. Native-result/guard and bundled-dispatch tests. | Whole-tool WRITE declaration also blocks search in read-only sessions; result metadata and rewrite bounds need a final pass. |
+| `ast_grep` | Shared diagnostics replace duplicate private implementations; mandatory read guards removed. Strict argument model; lease-owned process execution; reject incomplete/malformed native results before rewrite. Native-result/semantic and bundled-dispatch tests. | Whole-tool WRITE declaration also blocks search in read-only sessions; result metadata and rewrite bounds need a final pass. |
 | `btw` | Command ingress, provider failures, current conversation window, no transcript pollution, pending tool approval. Uses contextual `model_query`; unit and real-provider integration tests. | No specific finding remains in this small package. |
 | `compaction` | Certified context boundaries, resource references, tool-free model summary, paging and truncation; focused unit/integration tests. | Recheck lifecycle/configuration as part of final package pass. |
 | `cron` | Typed wakeup facts, lease owner/stale wakeup identity, loop parsing and deactivation read. User selected croniter five-field syntax: removed the custom numeric validator and obsolete CLI advice. 164 schedule/plugin/integration tests pass, including named weekdays/months and actual fire dates. | Final state/tool ingress and configuration pass. |
@@ -143,3 +143,17 @@ assertion and all remaining tests pass in this checkpoint.
 
 The package review table still contains unfinished areas and pending user
 choices. A successful full suite does not complete the overall audit.
+
+## File mutation simplification
+
+Removed mandatory session reads, line/whole-file visibility guards and character-level
+provenance tracking. Mutations rely on explicit content hashes, exact replacement/patch
+matching and their existing commit/cancellation behavior. `ast_grep` retains its optional
+explicit hash and preflight-to-commit checks, without inferring authorization from reads.
+Removed unused read fields from `ToolContext` and the per-invocation history reducer.
+Read observations remain durable public facts; model projection bounds remain enforced.
+
+Validation: full Python suite passed with 1451 passed and 1 skipped (371.85s).
+The final focused run passed 55 cases, including added no-history single/batch edits,
+marker/unified patches and deletion, stale-hash refusals, and batch failure without
+partial writes. Ruff, formatting and source type checks passed.

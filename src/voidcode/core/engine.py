@@ -74,7 +74,7 @@ from .activation import (
 )
 from .artifacts import ArtifactStore
 from .child_history import spill_history
-from .coverage import _target_paths, canonical_path, model_result_text, read_coverage
+from .coverage import _target_paths, canonical_path, model_result_text
 from .facts import FACT_EVENT_TYPES as _FACT_EVENT_TYPES
 from .facts import fact_for_event
 from .plugins import LeaseContext, PluginRuntime, PluginSource, ToolInvocationOutcome
@@ -1553,7 +1553,6 @@ class Core:
         # 8. Execution
         run_id = s.run_id or uuid4().hex
         inv_id = uuid4().hex
-        coverage = read_coverage(self.store.events(session_id), workspace=self.workspace, session_id=session_id)
         context = ToolContext(
             workspace=self.workspace,
             session_id=session_id,
@@ -1562,10 +1561,6 @@ class Core:
             revision_id=self.revision_id,
             actor="client",
             logical_turn=uuid4().hex,
-            read_paths=coverage.read_paths,
-            read_lines=coverage.read_lines,
-            read_whole_files=coverage.read_whole_files,
-            read_hash=coverage.read_hash,
         )
         with self._dispatch(f"command:{name}"):
             latest_sess = self.store.session(session_id)
@@ -1732,7 +1727,6 @@ class Core:
         self.store.decide_confirmation(request_id, "allowed")
         run_id = s.run_id or uuid4().hex
         inv_id = uuid4().hex
-        coverage = read_coverage(self.store.events(session_id), workspace=self.workspace, session_id=session_id)
         context = ToolContext(
             workspace=self.workspace,
             session_id=session_id,
@@ -1741,10 +1735,6 @@ class Core:
             revision_id=self.revision_id,
             actor="user",
             logical_turn=uuid4().hex,
-            read_paths=coverage.read_paths,
-            read_lines=coverage.read_lines,
-            read_whole_files=coverage.read_whole_files,
-            read_hash=coverage.read_hash,
         )
 
         with self._dispatch(f"command:{rec.command_name}"):
@@ -4645,13 +4635,6 @@ class Core:
                     ),
                 )
                 return None
-            coverage = read_coverage(
-                execution.events,
-                workspace=self.workspace,
-                session_id=execution.session.session_id,
-                arguments=call.arguments,
-                path_argument_keys=definition.path_argument_keys,
-            )
             context = ToolContext(
                 workspace=self.workspace,
                 session_id=execution.session.session_id,
@@ -4662,10 +4645,6 @@ class Core:
                 logical_turn=execution.cursor.logical_turn,
                 abort_signal=effective_abort,
                 invocation_depth=cursor.deferred_depth,
-                read_paths=coverage.read_paths,
-                read_lines=coverage.read_lines,
-                read_whole_files=coverage.read_whole_files,
-                read_hash=coverage.read_hash,
             )
             try:
                 outcome = snapshot.plugin_runtime.invoke(

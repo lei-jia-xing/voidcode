@@ -28,8 +28,6 @@ from voidcode.sdk.tools import (
 )
 from voidcode.sdk.workspace_queries import DOCUMENT_STATES, DocumentState, DocumentStateRequest
 
-from .guards import enforce_seen_lines
-
 _SHA256_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -326,19 +324,6 @@ class ApplyWorkspaceEditTool:
             if start < 0 or end < start or end > len(current):
                 raise ValueError(f"apply_workspace_edit range is out of bounds: {edit.path}")
 
-            enforce_seen_lines(
-                context=context,
-                tool_name=self.definition.name,
-                raw_path=edit.path,
-                candidate=path,
-                display_path=display_path,
-                start_line=edit.startLine,
-                end_line=edit.endLine,
-                # The expectedHash was already verified against these exact bytes above, so the
-                # seen-lines lookup binds to this version — not to the context's read_hash, which
-                # is None once two versions of the path were observed (read→edit→read→edit).
-                current_hash=actual_hash,
-            )
             grouped.setdefault(path, []).append((start, end, edit.newText))
             display_by_path[path] = display_path
 

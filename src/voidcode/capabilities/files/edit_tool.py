@@ -14,7 +14,6 @@ from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import ResourceChange, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSemantic, ToolSuccess
 
 from .apply_patch import execute_patch
-from .guards import CharProvenanceTracker, enforce_read_before_write, enforce_seen_lines
 from .repair import (
     ToolDiagnosticError,
     bounded_block_preview,
@@ -61,21 +60,6 @@ class EditResultBody:
 
 def _normalize_line_endings(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
-
-
-def _occurrence_line_ranges(content: str, needle: str) -> list[tuple[int, int]]:
-    """1-based inclusive line ranges of every occurrence of ``needle`` in ``content``."""
-    ranges: list[tuple[int, int]] = []
-    start = 0
-    while True:
-        index = content.find(needle, start)
-        if index == -1:
-            break
-        start_line = content.count("\n", 0, index) + 1
-        end_line = content.count("\n", 0, index + len(needle)) + 1
-        ranges.append((start_line, end_line))
-        start = index + len(needle)
-    return ranges
 
 
 def _detect_line_ending(text: str) -> str:
@@ -231,14 +215,7 @@ def _replace(
     new_string: str,
     *,
     replace_all: bool = False,
-    tracker: CharProvenanceTracker | None = None,
-    context: ToolContext | None = None,
-    resolved_path: str | None = None,
-    tool_name: str = "edit",
-    display_path: str = "",
-    raw_path: str = "",
-    is_external: bool = False,
-) -> tuple[str, int, tuple[tuple[int, int], ...]]:
+) -> tuple[str, int]:
     if old_string == new_string:
         raise_tool_diagnostic(
             message="No changes to apply: oldString and newString are identical.",
@@ -281,37 +258,7 @@ def _replace(
             },
         )
 
-    match_ranges = tuple(_occurrence_line_ranges(content, old_string))
-    if not replace_all:
-        match_ranges = match_ranges[:1]
-    if tracker is None:
-        return content.replace(old_string, new_string, -1 if replace_all else 1), match_count if replace_all else 1, match_ranges
-
-    current = content
-    total_replacements = 0
-    start_search = 0
-    while True:
-        idx = current.find(old_string, start_search)
-        if idx == -1:
-            break
-        if context is not None and resolved_path is not None:
-            tracker.check_seen_lines(
-                idx,
-                idx + len(old_string),
-                context=context,
-                resolved_path=resolved_path,
-                tool_name=tool_name,
-                display_path=display_path,
-                raw_path=raw_path,
-                is_external=is_external,
-            )
-        tracker.apply_replacement(idx, idx + len(old_string), new_string)
-        current = tracker.content
-        total_replacements += 1
-        if not replace_all:
-            break
-        start_search = idx + len(new_string)
-    return current, total_replacements, match_ranges
+    return content.replace(old_string, new_string, -1 if replace_all else 1), match_count if replace_all else 1
 
 
 class EditTool:
@@ -420,15 +367,14 @@ class EditTool:
             )
 
         if has_edits:
-            return self._invoke_edits_batch(call, context=context, workspace=workspace)
+            return self._invoke_edits_batch(call, workspace=workspace)
 
-        return self._invoke_single(call, context=context, workspace=workspace)
+        return self._invoke_single(call, workspace=workspace)
 
     def _invoke_edits_batch(
         self,
         call: ToolCall,
         *,
-        context: ToolContext,
         workspace: Path,
     ) -> ToolSuccess[EditResultBody]:
         path_value = call.arguments.get("path")
@@ -449,20 +395,11 @@ class EditTool:
             raise ValueError(f"edit target is not a file: {path_value}")
 
         display_path = candidate.as_posix() if is_external else candidate.relative_to(workspace_root).as_posix()
-        resolved_path = candidate.as_posix()
-
-        enforce_read_before_write(
-            context=context,
-            tool_name=self.definition.name,
-            raw_path=path_value,
-            candidate=candidate,
-            display_path=display_path,
-        )
 
         expected_hash = call.arguments.get("expectedHash")
         if not isinstance(expected_hash, str):
             raise_tool_diagnostic(
-                message="edit requires an expectedHash argument: the file must be read before it is edited.",
+                message="edit requires expectedHash containing the current file content SHA-256.",
                 error_kind="tool_input_mismatch",
                 reason="missing_expected_hash",
                 retry_guidance=(
@@ -499,30 +436,21 @@ class EditTool:
         ending = _detect_line_ending(content_before)
 
         # Preflight all edits against exact current text entirely in memory.
-        tracker = CharProvenanceTracker(content_before)
+        current_content = content_before
         details: list[tuple[int, EditResultBody]] = []
         applied = 0
 
         for idx, (old_str, new_str, rep_all) in enumerate(parsed_edits, start=1):
-            before_step = tracker.content
+            before_step = current_content
 
             try:
-                next_content, match_count, match_ranges = _replace(
-                    tracker.content,
+                next_content, match_count = _replace(
+                    current_content,
                     old_str,
                     new_str,
                     replace_all=rep_all,
-                    tracker=tracker,
-                    context=context,
-                    resolved_path=resolved_path,
-                    tool_name=self.definition.name,
-                    display_path=display_path,
-                    raw_path=path_value,
-                    is_external=is_external,
                 )
             except ValueError as exc:
-                if isinstance(exc, ToolDiagnosticError) and exc.error_details.get("reason") == "unseen_range":
-                    raise exc
                 message = (
                     f"edit failed at edit #{idx} of {len(parsed_edits)} for {display_path}.\n"
                     f"Prepared edits before failure: {idx - 1}; no file changes were written.\n"
@@ -551,6 +479,7 @@ class EditTool:
                     },
                 ) from exc
 
+            current_content = next_content
             diff_step, add_step, del_step = summarize_diff(
                 path=candidate,
                 before=before_step,
@@ -567,7 +496,7 @@ class EditTool:
             details.append((idx, step_body))
 
         # All preflight edits passed in memory! Now write once to disk.
-        final_text = _convert_line_endings(tracker.content, ending)
+        final_text = _convert_line_endings(current_content, ending)
         candidate.write_bytes(final_text.encode("utf-8"))
         final_disk_bytes = candidate.read_bytes()
         final_disk_hash = hashlib.sha256(final_disk_bytes).hexdigest()
@@ -600,7 +529,6 @@ class EditTool:
         self,
         call: ToolCall,
         *,
-        context: ToolContext,
         workspace: Path,
     ) -> ToolSuccess[EditResultBody]:
         path_value = call.arguments.get("path")
@@ -631,18 +559,11 @@ class EditTool:
             raise ValueError(f"edit target is not a file: {path_value}")
 
         display_path = candidate.as_posix() if is_external else candidate.relative_to(workspace_root).as_posix()
-        enforce_read_before_write(
-            context=context,
-            tool_name=self.definition.name,
-            raw_path=path_value,
-            candidate=candidate,
-            display_path=display_path,
-        )
 
         expected_hash = call.arguments.get("expectedHash")
         if not isinstance(expected_hash, str):
             raise_tool_diagnostic(
-                message="edit requires an expectedHash argument: the file must be read before it is edited.",
+                message="edit requires expectedHash containing the current file content SHA-256.",
                 error_kind="tool_input_mismatch",
                 reason="missing_expected_hash",
                 retry_guidance=(
@@ -664,23 +585,12 @@ class EditTool:
 
         ending = _detect_line_ending(content_old)
 
-        new_content, match_count, match_ranges = _replace(
+        new_content, match_count = _replace(
             content_old,
             old_string,
             new_string,
             replace_all=replace_all,
         )
-
-        for start_line, end_line in match_ranges:
-            enforce_seen_lines(
-                context=context,
-                tool_name=self.definition.name,
-                raw_path=path_value,
-                candidate=candidate,
-                display_path=display_path,
-                start_line=start_line,
-                end_line=end_line,
-            )
 
         new_content = _convert_line_endings(new_content, ending)
 

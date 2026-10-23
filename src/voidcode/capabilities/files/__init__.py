@@ -20,8 +20,7 @@ from .write_tool import WriteTool
 class _ModelVisibleTool:
     """Public boundary: a raised file diagnostic becomes the model-visible typed failure.
 
-    The runtime redacts an escaping exception to its class name, so the shared guards' refusals
-    (unseen ranges, write-without-read) must be answered here with their own text.
+    Preserve actionable edit diagnostics such as stale hashes and ambiguous matches.
     """
 
     def __init__(self, inner: Any) -> None:

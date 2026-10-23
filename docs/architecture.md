@@ -39,7 +39,7 @@ graph TD
         Storage["storage/ — append-only SQLite store"]
         Transport["transport/ — HTTP + SSE, served web bundle"]
         Artifacts["artifacts.py — content-addressed core artifacts"]
-        Coverage["coverage.py — committed read coverage"]
+        Coverage["coverage.py — tool result projection"]
     end
 
     subgraph Plugins["Bundled plugins (src/voidcode/plugins/)"]
@@ -83,7 +83,7 @@ graph TD
 - **`storage/` (`store.py`, `schema.sql`)** — the append-only SQLite store: sessions, events, checkpoints, revisions, confirmations, claims, and sessions facts.
 - **`transport/`** — `http.py` serves the core API (`/api/...`), `models.py` holds its wire models, `server.py` binds loopback with a bearer token printed at launch, `static.py` locates the built web bundle served at `/`.
 - **`tui/`** — the inline terminal client (`catalog → invoke → events → views`) with a commit-once ledger: settled rows are never replayed.
-- **`artifacts.py` / `coverage.py`** — content-addressed artifacts the core owns under its state directory, and the derived record of what a session's model has genuinely been shown (whole-file and line-precise reads only).
+- **`artifacts.py` / `coverage.py`** — content-addressed artifacts the core owns under its state directory, and bounded tool result projections and canonical resource paths.
 
 ### SDK (`src/voidcode/sdk/`)
 
@@ -173,7 +173,7 @@ With every bundled plugin disabled, configured model calls and the `read`, `writ
 `apply_workspace_edit`, `glob`, `grep`, and `shell_exec` tools still work. The runtime loads no
 plugin source for those defaults. They share the implementation in `capabilities/` with the
 optional files/exec/providers adapters; there is no second tool algorithm or HTTP adapter.
-Built-ins run through ordinary approval, coverage, process-lease, event, and recovery paths.
+Built-ins run through ordinary approval, process-lease, event, and recovery paths.
 Provider credentials are still required when the endpoint requires authentication.
 
 An admitted plugin replaces a built-in by tool/provider name. Removing it restores the default;

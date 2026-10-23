@@ -81,10 +81,6 @@ def _context(
     workspace: Path,
     *,
     abort_signal: ProviderAbortSignal | None = None,
-    read_paths: frozenset[str] = frozenset(),
-    read_lines: dict[tuple[str, str], frozenset[int]] | None = None,
-    read_whole_files: frozenset[tuple[str, str]] = frozenset(),
-    read_hash: str | None = None,
 ) -> ToolContext:
     return ToolContext(
         workspace=workspace,
@@ -94,10 +90,6 @@ def _context(
         revision_id="rev-test",
         actor="model",
         abort_signal=abort_signal,
-        read_paths=read_paths,
-        read_lines=read_lines or {},
-        read_whole_files=read_whole_files,
-        read_hash=read_hash,
     )
 
 
@@ -330,13 +322,7 @@ def test_read_tool_uri_read_grants_no_coverage(tmp_path: Path) -> None:
     assert result.coverage == ()
 
 
-def test_edit_batch_after_reread_succeeds_with_ambiguous_read_hash(tmp_path: Path) -> None:
-    """Fresh-base coverage: read/edit/read-new/edit works when read_hash is None.
-
-    The core sets read_hash=None once two versions of the path were observed,
-    so the batch guard binds coverage to the SHA-256 of its own verified base
-    content instead of the ambiguous context field.
-    """
+def test_edit_batch_accepts_successive_content_hashes_without_read_history(tmp_path: Path) -> None:
     plugin = create_plugin({})
     edit_tool = next(t for t in plugin.tools if t.definition.name == "edit")
     target = tmp_path / "cycle.txt"
@@ -344,15 +330,7 @@ def test_edit_batch_after_reread_succeeds_with_ambiguous_read_hash(tmp_path: Pat
     target.write_text(v1, encoding="utf-8")
     v1_hash = hashlib.sha256(v1.encode("utf-8")).hexdigest()
 
-    resolved = str(target.resolve())
-    session_reads: dict[tuple[str, str], frozenset[int]] = {(resolved, v1_hash): frozenset({1, 2})}
-    context_v1 = _context(
-        tmp_path,
-        read_paths=frozenset({resolved}),
-        read_lines=dict(session_reads),
-        read_whole_files=frozenset({(resolved, v1_hash)}),
-        read_hash=v1_hash,
-    )
+    context_v1 = _context(tmp_path)
     first = edit_tool.invoke(
         ToolCall(
             tool_name="edit",
@@ -369,14 +347,7 @@ def test_edit_batch_after_reread_succeeds_with_ambiguous_read_hash(tmp_path: Pat
     v2 = target.read_text(encoding="utf-8")
     v2_hash = hashlib.sha256(v2.encode("utf-8")).hexdigest()
     assert v2_hash != v1_hash
-    session_reads[(resolved, v2_hash)] = frozenset({1, 2})
-    context_v2 = _context(
-        tmp_path,
-        read_paths=frozenset({resolved}),
-        read_lines=dict(session_reads),
-        read_whole_files=frozenset({(resolved, v1_hash), (resolved, v2_hash)}),
-        read_hash=None,
-    )
+    context_v2 = _context(tmp_path)
     second = edit_tool.invoke(
         ToolCall(
             tool_name="edit",
@@ -392,32 +363,19 @@ def test_edit_batch_after_reread_succeeds_with_ambiguous_read_hash(tmp_path: Pat
     assert target.read_text(encoding="utf-8") == "alpha\nbeta2\n"
 
 
-def test_single_edit_after_reread_binds_seen_lines_to_current_bytes(tmp_path: Path) -> None:
-    """The single oldString path follows the same cycle: the guard binds to bytes on disk.
-
-    Nothing passes ``current_hash`` here; the shared guard hashes the candidate itself, so the
-    core's ambiguous ``read_hash`` (None once two versions were observed) cannot refuse a
-    second edit whose current version the model just read.
-    """
+def test_single_edit_accepts_successive_content_hashes_without_read_history(tmp_path: Path) -> None:
     plugin = create_plugin({})
     edit_tool = next(t for t in plugin.tools if t.definition.name == "edit")
     target = tmp_path / "single.txt"
     target.write_text("alpha\nbeta\n", encoding="utf-8")
     v1_hash = hashlib.sha256(target.read_bytes()).hexdigest()
-    resolved = str(target.resolve())
 
     first = edit_tool.invoke(
         ToolCall(
             tool_name="edit",
             arguments={"path": "single.txt", "oldString": "beta", "newString": "BETA", "expectedHash": v1_hash},
         ),
-        context=_context(
-            tmp_path,
-            read_paths=frozenset({resolved}),
-            read_lines={(resolved, v1_hash): frozenset({1, 2})},
-            read_whole_files=frozenset({(resolved, v1_hash)}),
-            read_hash=v1_hash,
-        ),
+        context=_context(tmp_path),
     )
     assert isinstance(first, ToolSuccess)
 
@@ -428,39 +386,23 @@ def test_single_edit_after_reread_binds_seen_lines_to_current_bytes(tmp_path: Pa
             tool_name="edit",
             arguments={"path": "single.txt", "oldString": "BETA", "newString": "beta2", "expectedHash": v2_hash},
         ),
-        context=_context(
-            tmp_path,
-            read_paths=frozenset({resolved}),
-            read_lines={(resolved, v1_hash): frozenset({1, 2}), (resolved, v2_hash): frozenset({1, 2})},
-            read_whole_files=frozenset({(resolved, v1_hash), (resolved, v2_hash)}),
-            read_hash=None,
-        ),
+        context=_context(tmp_path),
     )
     assert isinstance(second, ToolSuccess)
     assert target.read_text(encoding="utf-8") == "alpha\nbeta2\n"
 
 
-def test_edit_batch_with_stale_base_refuses_prior_version_lines(tmp_path: Path) -> None:
-    """Stale-base coverage: lines of a prior version never authorize an edit."""
+def test_edit_batch_without_read_history_uses_explicit_hash(tmp_path: Path) -> None:
     plugin = create_plugin({})
     edit_tool = next(t for t in plugin.tools if t.definition.name == "edit")
     target = tmp_path / "stale.txt"
     v1 = "alpha\nbeta\ngamma\n"
     target.write_text(v1, encoding="utf-8")
-    v1_hash = hashlib.sha256(v1.encode("utf-8")).hexdigest()
-    resolved = str(target.resolve())
-    # Only line 3 of v1 was ever shown; v2 (line 3 changed) was never read.
     v2 = "alpha\nbeta\nGAMMA\n"
     v2_hash = hashlib.sha256(v2.encode("utf-8")).hexdigest()
     target.write_text(v2, encoding="utf-8")
 
-    context = _context(
-        tmp_path,
-        read_paths=frozenset({resolved}),
-        read_lines={(resolved, v1_hash): frozenset({3})},
-        read_whole_files=frozenset(),
-        read_hash=None,
-    )
+    context = _context(tmp_path)
     result = edit_tool.invoke(
         ToolCall(
             tool_name="edit",
@@ -472,12 +414,8 @@ def test_edit_batch_with_stale_base_refuses_prior_version_lines(tmp_path: Path) 
         ),
         context=context,
     )
-    assert isinstance(result, ToolFailure)
-    assert "never revealed by read" in result.error
-    assert result.diagnostics is not None
-    assert result.diagnostics.details["reason"] == "unseen_range"
-    assert result.diagnostics.guidance is not None and "Use read on the target path" in result.diagnostics.guidance
-    assert target.read_text(encoding="utf-8") == v2
+    assert isinstance(result, ToolSuccess), result
+    assert target.read_text(encoding="utf-8") == "alpha\nbeta\ngamma2\n"
 
 
 def test_write_tool_creates_new_file_without_expected_hash(tmp_path: Path) -> None:
@@ -810,13 +748,8 @@ class _VersionServices:
 
 
 def _apply_context(workspace: Path, target: Path, content_hash: str):  # type: ignore[no-untyped-def]
-    resolved = str(target.resolve())
     return _context(
         workspace,
-        read_paths=frozenset({resolved}),
-        read_lines={(resolved, content_hash): frozenset({1, 2})},
-        read_whole_files=frozenset({(resolved, content_hash)}),
-        read_hash=content_hash,
     )
 
 
@@ -962,19 +895,12 @@ def test_apply_matched_version_and_hash_only_succeed_with_correct_bytes(tmp_path
     assert target.read_text(encoding="utf-8") == "omega\nBETA\n"
 
 
-def test_apply_read_edit_read_edit_cycle_binds_to_current_version(tmp_path: Path) -> None:
-    """The second edit of a read→edit→read→edit cycle must not refuse on stale binding.
-
-    After two versions of the path were observed the core's `read_hash` is None; the
-    seen-lines guard binds to the verified expectedHash of this edit instead, so a fresh
-    full read of the current content authorizes the second write.
-    """
+def test_workspace_edit_accepts_successive_content_hashes_without_read_history(tmp_path: Path) -> None:
     plugin = create_plugin({})
     tool = next(t for t in plugin.tools if t.definition.name == "apply_workspace_edit")
     target = tmp_path / "uni.py"
     target.write_text("VALUE = 1\n", encoding="utf-8")
     first_hash = hashlib.sha256(target.read_bytes()).hexdigest()
-    resolved = str(target.resolve())
 
     first = tool.invoke(
         ToolCall(
@@ -1000,13 +926,7 @@ def test_apply_read_edit_read_edit_cycle_binds_to_current_version(tmp_path: Path
 
     second_hash = hashlib.sha256(target.read_bytes()).hexdigest()
     assert second_hash != first_hash
-    both_versions = _context(
-        tmp_path,
-        read_paths=frozenset({resolved}),
-        read_lines={(resolved, first_hash): frozenset({1}), (resolved, second_hash): frozenset({1})},
-        read_whole_files=frozenset({(resolved, first_hash), (resolved, second_hash)}),
-        read_hash=None,
-    )
+    both_versions = _context(tmp_path)
     second = tool.invoke(
         ToolCall(
             tool_name="apply_workspace_edit",
@@ -1049,3 +969,58 @@ def test_searches_respect_gitignore_double_star_and_negation(tmp_path: Path, too
     assert "visible.txt" in result.output.text
     assert "b.txt" not in result.output.text
     assert "drop.log" not in result.output.text
+
+
+@pytest.mark.parametrize("operation", ["single", "batch", "marker", "unified", "delete"])
+@pytest.mark.parametrize("stale", [False, True])
+def test_edit_without_read_history_keeps_hash_checks(tmp_path: Path, operation: str, stale: bool) -> None:
+    target = tmp_path / "sample.txt"
+    target.write_text("alpha\nbeta\n", encoding="utf-8")
+    digest = "0" * 64 if stale else hashlib.sha256(target.read_bytes()).hexdigest()
+    if operation == "single":
+        arguments = {"path": target.name, "oldString": "beta", "newString": "BETA", "expectedHash": digest}
+    elif operation == "batch":
+        arguments = {
+            "path": target.name,
+            "edits": [{"oldString": "beta", "newString": "B"}, {"oldString": "B", "newString": "BETA"}],
+            "expectedHash": digest,
+        }
+    else:
+        patch = {
+            "marker": "*** Begin Patch\n*** Update File: sample.txt\n@@\n alpha\n-beta\n+BETA\n*** End Patch\n",
+            "unified": "--- a/sample.txt\n+++ b/sample.txt\n@@ -1,2 +1,2 @@\n alpha\n-beta\n+BETA\n",
+            "delete": "*** Begin Patch\n*** Delete File: sample.txt\n*** End Patch\n",
+        }[operation]
+        arguments = {"patch": patch, "expectedHashes": {target.name: digest}}
+    tool = next(t for t in create_plugin({}).tools if t.definition.name == "edit")
+    result = tool.invoke(ToolCall(tool_name="edit", arguments=arguments), context=_context(tmp_path))
+    if stale:
+        assert isinstance(result, ToolFailure), result
+        assert result.diagnostics is not None
+        assert result.diagnostics.details["reason"] == "content_hash_mismatch"
+        assert target.read_text() == "alpha\nbeta\n"
+    else:
+        assert isinstance(result, ToolSuccess), result
+        if operation == "delete":
+            assert not target.exists()
+        else:
+            assert target.read_text() == "alpha\nBETA\n"
+
+
+def test_batch_failure_keeps_file_unchanged_without_read_history(tmp_path: Path) -> None:
+    target = tmp_path / "sample.txt"
+    target.write_text("alpha\nbeta\n", encoding="utf-8")
+    tool = next(t for t in create_plugin({}).tools if t.definition.name == "edit")
+    result = tool.invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={
+                "path": target.name,
+                "expectedHash": hashlib.sha256(target.read_bytes()).hexdigest(),
+                "edits": [{"oldString": "beta", "newString": "BETA"}, {"oldString": "missing", "newString": "value"}],
+            },
+        ),
+        context=_context(tmp_path),
+    )
+    assert isinstance(result, ToolFailure)
+    assert target.read_text() == "alpha\nbeta\n"

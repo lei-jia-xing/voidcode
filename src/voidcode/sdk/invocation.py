@@ -8,7 +8,6 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -17,15 +16,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class ToolContext:
-    """Explicit invocation facts handed to a tool or command handler.
-
-    The read-coverage fields describe what this session's model has ALREADY been shown, derived
-    by the runtime from committed, model-visible results: `read_paths` is every file some result
-    made visible, `read_lines`/`read_whole_files` are keyed by `(path, content hash)` so lines of
-    two different versions of a file are never merged, and a clipped observation or a partial
-    result grants nothing. They are always present (empty when nothing was read); guards never
-    need a fallback.
-    """
+    """Explicit invocation identity, cancellation and progress callbacks."""
 
     workspace: Path
     session_id: str
@@ -38,12 +29,6 @@ class ToolContext:
     #: request inherits its caller's depth plus one, so a deferred descendant is always counted.
     invocation_depth: int = 0
     abort_signal: ProviderAbortSignal | None = None
-    read_paths: frozenset[str] = frozenset()
-    read_lines: Mapping[tuple[str, str], frozenset[int]] = field(default_factory=lambda: MappingProxyType({}))
-    read_whole_files: frozenset[tuple[str, str]] = frozenset()
-    #: The content version this call targets, when exactly one version of its declared target paths
-    #: was observed; ``None`` when no target path was declared or the versions are ambiguous.
-    read_hash: str | None = None
     #: Mid-invocation progress for the surface that called this tool; observational only, and
     #: absent for callbacks that have no calling surface (hooks, lifecycle, observers).
     emit_tool_progress: Callable[[Mapping[str, object]], None] | None = field(default=None, compare=False, repr=False)
@@ -53,16 +38,6 @@ class ToolContext:
             object.__setattr__(self, "workspace", Path(self.workspace))
         if type(self.invocation_depth) is not int or self.invocation_depth < 0:
             raise ValueError("tool invocation depth must be a non-negative integer")
-        if not isinstance(self.read_paths, frozenset):
-            object.__setattr__(self, "read_paths", frozenset(self.read_paths))
-        if not isinstance(self.read_whole_files, frozenset):
-            object.__setattr__(self, "read_whole_files", frozenset(self.read_whole_files))
-        if not isinstance(self.read_lines, MappingProxyType):
-            object.__setattr__(
-                self,
-                "read_lines",
-                MappingProxyType({(str(path), str(digest)): frozenset(lines) for (path, digest), lines in dict(self.read_lines).items()}),
-            )
 
     def require_workspace(self) -> Path:
         if self.session_id:

@@ -38,7 +38,7 @@ ToolDefinition(
 
 The core freezes the resolved semantics in the tool intent before execution. Failures use that recorded declaration too. Pre-execution refusals resolve against the same invocation arguments without creating an intent; unresolved tools have no declared meanings. History and recovery read the recorded meanings and never re-evaluate a changed catalog's predicates.
 
-Tools report their own successful resource observations. The core records them with invocation identity and the declaration used for that invocation. Consumers must not reconstruct historical semantics from the currently installed catalog. Read observations do not themselves grant write permission: the existing coverage reducer still enforces clipping, version, session, and model visibility constraints.
+Tools report their own successful resource observations. The core records them with invocation identity and the declaration used for that invocation. Consumers must not reconstruct historical semantics from the currently installed catalog. Read observations are historical facts, not write permissions. File mutations validate explicit content hashes and edit matching without requiring a prior read in the session.
 
 A tool can declare paths using `path_argument_keys`, including `edits[].path`. Invocation facts collect those paths and successful read/change paths. Skills uses that surface for touched-file rules; it no longer guesses parameter names or parses patch text. Undeclared shell effects are not inferred from command text. Resource observations are claims by trusted tools, not filesystem monitoring.
 

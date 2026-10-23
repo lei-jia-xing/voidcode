@@ -39,8 +39,6 @@ class NativeResults(PluginServices):
 
 def _invoke(tmp_path: Path, services: NativeResults, *, mode: str = "replace", **extra: object):
     target = services.target
-    content_hash = hashlib.sha256(target.read_bytes()).hexdigest()
-    path = target.resolve().as_posix()
     context = ToolContext(
         workspace=tmp_path,
         session_id="session",
@@ -48,8 +46,6 @@ def _invoke(tmp_path: Path, services: NativeResults, *, mode: str = "replace", *
         invocation_id="invocation",
         revision_id="revision",
         actor="model",
-        read_paths=frozenset({path}),
-        read_lines={(path, content_hash): frozenset({1})},
     )
     arguments = {"mode": mode, "path": target.name, "pattern": "foo()", "rewrite": "bar()", "apply": True, **extra}
     return AstGrepTool().invoke(ToolCall(tool_name="ast_grep", arguments=arguments, tool_call_id="ast-call"), context=context, services=services)
@@ -67,7 +63,7 @@ def _services(tmp_path: Path, **flags: bool) -> NativeResults:
     return NativeResults(ProcessResult(0, json.dumps(match) + "\n", "", 1, **flags), target)
 
 
-def test_replace_uses_shared_hash_bound_guards_and_reports_actual_changes(tmp_path: Path) -> None:
+def test_replace_without_read_history_reports_actual_changes(tmp_path: Path) -> None:
     services = _services(tmp_path)
     result = _invoke(tmp_path, services)
     assert isinstance(result, ToolSuccess)
@@ -112,3 +108,11 @@ def test_invalid_arguments_fail_before_executing_native_process(tmp_path: Path, 
     with pytest.raises(ValidationError):
         _invoke(tmp_path, services, **extra)
     assert services.commands == []
+
+
+def test_replace_rejects_explicit_stale_hash_before_rewrite(tmp_path: Path) -> None:
+    services = _services(tmp_path)
+    with pytest.raises(ValueError, match="stale edit"):
+        _invoke(tmp_path, services, expectedHash="0" * 64)
+    assert services.target.read_text() == "foo()\n"
+    assert len(services.commands) == 1

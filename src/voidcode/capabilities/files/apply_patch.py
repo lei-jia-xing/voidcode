@@ -15,7 +15,6 @@ from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.tools import ResourceChange, TextOutput, ToolSuccess
 
-from .guards import enforce_read_before_write, enforce_seen_lines, enforce_seen_whole_file
 from .repair import format_text_repair_hints, raise_tool_diagnostic
 
 _CHANGE_OPERATIONS: dict[str, Literal["create", "update", "delete", "move"]] = {"A": "create", "M": "update", "D": "delete", "R": "move"}
@@ -243,21 +242,14 @@ def _derive_marker_update_content_from_text(
     *,
     file_path: Path,
     chunks: tuple[_MarkerChunk, ...],
-) -> tuple[str, tuple[tuple[int, int], ...], int]:
-    """Return (derived content, matched 1-based line ranges, line-count delta).
-
-    ``matched_ranges`` are 1-based inclusive ranges (in the input content's
-    coordinates) of the lines each chunk anchored on: the matched old lines for
-    replacement chunks, and the context anchor line for context-anchored
-    insertions. ``delta`` is the change in line count the chunks introduce.
-    """
+) -> str:
+    """Apply exact marker chunks in memory before committing file changes."""
     final_newline = original.endswith("\n")
     original_lines = original.split("\n") if original else []
     if final_newline:
         original_lines.pop()
 
     replacements: list[tuple[int, int, tuple[str, ...]]] = []
-    matched_ranges: list[tuple[int, int]] = []
     line_index = 0
     for chunk in chunks:
         if chunk.change_context is not None:
@@ -282,8 +274,6 @@ def _derive_marker_update_content_from_text(
         if not chunk.old_lines:
             insert_index = len(original_lines) if chunk.is_end_of_file else line_index
             replacements.append((insert_index, 0, chunk.new_lines))
-            if chunk.change_context is not None:
-                matched_ranges.append((context_index + 1, context_index + 1))
             line_index = insert_index
             continue
 
@@ -325,17 +315,15 @@ def _derive_marker_update_content_from_text(
                 },
             )
         replacements.append((found, len(pattern), new_slice))
-        matched_ranges.append((found + 1, found + len(pattern)))
         line_index = found + len(pattern)
 
     next_lines = list(original_lines)
     for start, old_len, new_segment in sorted(replacements, reverse=True):
         next_lines[start : start + old_len] = list(new_segment)
-    delta = len(next_lines) - len(original_lines)
     content = "\n".join(next_lines)
     if final_newline and next_lines:
         content += "\n"
-    return content, tuple(matched_ranges), delta
+    return content
 
 
 def _resolve_patch_path(workspace: Path, raw_path: str) -> Path:
@@ -412,7 +400,6 @@ def _verify_patch_expected_hashes(
 def _apply_marker_patch(
     patch_text: str,
     *,
-    context: ToolContext,
     workspace: Path,
     expected_hashes: dict[str, str] | None = None,
     tool_name: str = "edit",
@@ -421,8 +408,6 @@ def _apply_marker_patch(
     prepared: list[_PreparedMarkerChange] = []
     planned_add_paths: set[str] = set()
     staged_contents: dict[str, str] = {}
-    ranges_by_source: dict[str, list[tuple[int, int]]] = {}
-    shift_by_source: dict[str, int] = {}
     for hunk in hunks:
         if hunk.move_path is not None and hunk.move_path == hunk.path:
             raise ValueError(f"Move destination must differ from source: {hunk.move_path}")
@@ -448,15 +433,11 @@ def _apply_marker_patch(
                     source_content = source_file.read_text(encoding="utf-8")
                 except FileNotFoundError as exc:
                     raise ValueError(f"Failed to read file to update: {source_file}") from exc
-            content, matched_ranges, delta = _derive_marker_update_content_from_text(
+            content = _derive_marker_update_content_from_text(
                 source_content,
                 file_path=source_file,
                 chunks=hunk.chunks,
             )
-            shift = shift_by_source.get(hunk.path, 0)
-            original_ranges = [(start - shift, end - shift) for start, end in matched_ranges if end - shift >= 1]
-            ranges_by_source.setdefault(hunk.path, []).extend(original_ranges)
-            shift_by_source[hunk.path] = shift + delta
             if hunk.move_path is None:
                 staged_contents[hunk.path] = content
                 prepared.append(_PreparedMarkerChange(status="M", path=hunk.path, content=content))
@@ -478,21 +459,6 @@ def _apply_marker_patch(
                     )
                 )
 
-    for change in prepared:
-        if change.status == "A":
-            continue
-        guard_path = change.old_path or change.path
-        target = _resolve_patch_path(workspace, guard_path)
-        is_external = not target.is_relative_to(workspace.resolve())
-        display_path = target.as_posix() if is_external else target.relative_to(workspace.resolve()).as_posix()
-        enforce_read_before_write(
-            context=context,
-            tool_name=tool_name,
-            raw_path=guard_path,
-            candidate=target,
-            display_path=display_path,
-        )
-
     _verify_patch_expected_hashes(
         changes=[
             {
@@ -506,33 +472,6 @@ def _apply_marker_patch(
         workspace=workspace,
         tool_name=tool_name,
     )
-
-    for change in prepared:
-        if change.status == "A":
-            continue
-        guard_path = change.old_path or change.path
-        target = _resolve_patch_path(workspace, guard_path)
-        is_external = not target.is_relative_to(workspace.resolve())
-        display_path = target.as_posix() if is_external else target.relative_to(workspace.resolve()).as_posix()
-        if change.status == "D":
-            enforce_seen_whole_file(
-                context=context,
-                tool_name=tool_name,
-                raw_path=guard_path,
-                candidate=target,
-                display_path=display_path,
-            )
-            continue
-        for start_line, end_line in ranges_by_source.get(guard_path, ()):
-            enforce_seen_lines(
-                context=context,
-                tool_name=tool_name,
-                raw_path=guard_path,
-                candidate=target,
-                display_path=display_path,
-                start_line=start_line,
-                end_line=end_line,
-            )
 
     for change in prepared:
         target = workspace / change.path
@@ -832,74 +771,6 @@ def _invalid_patch_text_error(patch_text: str, *, detail: str | None = None) -> 
     return f"{base}{guidance}"
 
 
-def _guard_changes_before_write(
-    changes: list[dict[str, object]],
-    *,
-    context: ToolContext,
-    workspace: Path,
-    tool_name: str,
-) -> None:
-    for change in changes:
-        status = change.get("status")
-        guard_path = change.get("old_path") if status == "R" else change.get("path")
-        if not isinstance(guard_path, str):
-            continue
-        requested_path = Path(guard_path)
-        candidate = (requested_path if requested_path.is_absolute() else workspace / requested_path).resolve()
-        is_external = not candidate.is_relative_to(workspace.resolve())
-        if status == "A":
-            continue
-        enforce_read_before_write(
-            context=context,
-            tool_name=tool_name,
-            raw_path=guard_path,
-            candidate=candidate,
-            display_path=candidate.as_posix() if is_external else candidate.relative_to(workspace.resolve()).as_posix(),
-        )
-
-
-def _enforce_patch_seen_ranges(
-    *,
-    context: ToolContext,
-    patch_text: str,
-    workspace: Path,
-    tool_name: str,
-) -> None:
-    """Require every source line each unified-diff hunk touches to be seen."""
-    patch_set = PatchSet(patch_text)
-
-    for patched_file in patch_set:
-        old_path = None if patched_file.source_file == "/dev/null" else _strip_diff_prefix(patched_file.source_file)
-        new_path = None if patched_file.target_file == "/dev/null" else _strip_diff_prefix(patched_file.target_file)
-
-        if old_path is not None and '"' in old_path:
-            old_path = None
-        if new_path is not None and '"' in new_path:
-            new_path = None
-
-        if old_path is None and new_path is not None:
-            continue
-        guard_path = old_path if old_path is not None else new_path
-        if guard_path is None:
-            continue
-        candidate = _resolve_patch_path(workspace, guard_path)
-        if not candidate.is_file():
-            continue
-        for hunk in patched_file:
-            length = hunk.source_length
-            if length <= 0:
-                continue
-            enforce_seen_lines(
-                context=context,
-                tool_name=tool_name,
-                raw_path=guard_path,
-                candidate=candidate,
-                display_path=guard_path,
-                start_line=hunk.source_start,
-                end_line=hunk.source_start + length - 1,
-            )
-
-
 def _looks_like_mode_only_patch(patch_text: str) -> bool:
     inside_diff = False
     current_block_is_mode_only = False
@@ -1148,7 +1019,7 @@ def execute_patch(
         )
 
     if _looks_like_marker_patch(patch_text):
-        return _apply_marker_patch(patch_text, workspace=workspace, expected_hashes=expected_hashes, context=context, tool_name=tool_name)
+        return _apply_marker_patch(patch_text, workspace=workspace, expected_hashes=expected_hashes, tool_name=tool_name)
 
     normalized_patch = _normalize_patch_text(patch_text)
     changes = _changes_from_patch(patch_text)
@@ -1162,7 +1033,6 @@ def execute_patch(
             ),
             details={"affected_paths": [], "patch_invalid": True},
         )
-    _guard_changes_before_write(changes, workspace=workspace, tool_name=tool_name, context=context)
     patch_path = workspace / ".voidcode_edit.patch"
     patch_path.write_text(normalized_patch, encoding="utf-8", newline="\n")
     try:
@@ -1191,9 +1061,6 @@ def execute_patch(
             workspace=workspace,
             tool_name=tool_name,
         )
-
-        # Require every source line the hunks touch to have been revealed by read.
-        _enforce_patch_seen_ranges(patch_text=normalized_patch, workspace=workspace, tool_name=tool_name, context=context)
 
         mode_only = _looks_like_mode_only_patch(patch_text)
         mode_only_before = _capture_mode_only_state(changes=changes, workspace=workspace) if mode_only else {}

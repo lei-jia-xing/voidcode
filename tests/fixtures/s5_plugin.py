@@ -201,13 +201,6 @@ def _coverage_context(context):
         "actor": context.actor,
         "logical_turn": context.logical_turn,
         "invocation_depth": context.invocation_depth,
-        "read_paths": sorted(context.read_paths),
-        "read_lines": [
-            {"path": path, "content_hash": sha, "lines": sorted(lines)}
-            for (path, sha), lines in sorted(context.read_lines.items())
-        ],
-        "read_whole_files": [[path, sha] for path, sha in sorted(context.read_whole_files)],
-        "read_hash": context.read_hash,
         "has_progress": context.emit_tool_progress is not None,
     }
 
