@@ -15,7 +15,6 @@ class GitIgnoreMatcher:
     """Root-level ``.gitignore`` matcher with last-match-wins negation."""
 
     def __init__(self, patterns: tuple[str, ...]) -> None:
-        self._patterns = patterns
         self._spec = GitIgnoreSpec.from_lines(patterns)
 
     @classmethod
@@ -29,10 +28,6 @@ class GitIgnoreMatcher:
             return None
         patterns = tuple(lines)
         return cls(patterns) if patterns else None
-
-    @property
-    def patterns(self) -> tuple[str, ...]:
-        return self._patterns
 
     def is_ignored(self, relative_path: str, *, is_directory: bool) -> bool:
         normalized = relative_path.strip("/")

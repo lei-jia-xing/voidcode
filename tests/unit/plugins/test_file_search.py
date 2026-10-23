@@ -88,3 +88,30 @@ def test_search_limit_reports_an_incomplete_page(tmp_path: Path, tool, pattern):
     assert result.status == "ok"
     assert result.output.bounds.truncated is True
     assert result.output.bounds.partial is True
+
+
+@pytest.mark.parametrize("failure", ["walk", "read"])
+def test_grep_reports_io_failure_instead_of_empty_search(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
+    from voidcode.capabilities.files.errors import ToolDiagnosticError
+
+    target = tmp_path / "input.txt"
+    target.write_text("needle\n", encoding="utf-8")
+    if failure == "walk":
+
+        def failed_walk(self, *, on_error, **kwargs):
+            on_error(PermissionError("unreadable directory"))
+            return iter(())
+
+        monkeypatch.setattr(Path, "walk", failed_walk)
+    else:
+        original_open = Path.open
+
+        def failed_open(self, *args, **kwargs):
+            if self == target:
+                raise PermissionError("unreadable file")
+            return original_open(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", failed_open)
+    with pytest.raises(ToolDiagnosticError, match="grep search failed") as caught:
+        invoke(GrepTool(), tmp_path, {"pattern": "needle"})
+    assert caught.value.error_details["reason"] == "search_io_error"

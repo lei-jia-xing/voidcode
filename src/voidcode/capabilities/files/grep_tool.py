@@ -98,10 +98,6 @@ class GrepResultBody:
     match_count: int
     truncated: bool
     matches: tuple[GrepResultMatch, ...]
-    diagnostics: tuple[Mapping[str, object], ...] = ()
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "diagnostics", tuple(own_json_object(item) for item in self.diagnostics))
 
     def as_payload(self) -> dict[str, object]:
         return {
@@ -114,7 +110,6 @@ class GrepResultBody:
             "truncated": self.truncated,
             "partial": self.truncated,
             "matches": [match.as_payload() for match in self.matches],
-            "diagnostics": [json_wire_object(item) for item in self.diagnostics],
         }
 
 
@@ -175,7 +170,10 @@ class GrepTool:
             yield root
             return
 
-        for directory, dirnames, filenames in root.walk(top_down=True):
+        def fail_walk(error: OSError) -> None:
+            raise error
+
+        for directory, dirnames, filenames in root.walk(top_down=True, on_error=fail_walk):
             directory_relative = directory.relative_to(project_root)
             dirnames[:] = sorted(
                 name
@@ -234,7 +232,7 @@ class GrepTool:
                     following.append(next(remaining))
                 except StopIteration:
                     pass
-        except UnicodeDecodeError, OSError:
+        except UnicodeDecodeError:
             return
 
     def invoke(
@@ -286,15 +284,23 @@ class GrepTool:
 
         matches: list[GrepResultMatch] = []
         truncated = False
-        for target in targets:
-            file_display = str(target.resolve()) if is_external else target.relative_to(workspace_root).as_posix()
-            for match in self._iter_matches(target, relative_path=file_display, pattern=pattern, context=args.context):
-                if len(matches) == args.limit:
-                    truncated = True
+        try:
+            for target in targets:
+                file_display = str(target.resolve()) if is_external else target.relative_to(workspace_root).as_posix()
+                for match in self._iter_matches(target, relative_path=file_display, pattern=pattern, context=args.context):
+                    if len(matches) == args.limit:
+                        truncated = True
+                        break
+                    matches.append(match)
+                if truncated:
                     break
-                matches.append(match)
-            if truncated:
-                break
+        except OSError as exc:
+            raise_tool_diagnostic(
+                message=f"grep search failed: {exc}",
+                error_kind="tool_execution_error",
+                reason="search_io_error",
+                details={"path": args.path},
+            )
 
         total_occurrences = sum(len(match.columns) for match in matches)
         path_display = str(candidate.resolve()) if is_external else relative_path
@@ -316,31 +322,6 @@ class GrepTool:
         if truncated:
             summary += f"\n[TRUNCATED] Results truncated at {args.limit} matching lines."
 
-        diagnostics: list[dict[str, object]] = []
-        if total_occurrences == 0:
-            diagnostics.append(
-                {
-                    "source": self.definition.name,
-                    "severity": "info",
-                    "reason": "no_matches",
-                    "message": (
-                        "No matches found. Broaden the path/include filter, verify the search text with read, or use a plain string for literal text."
-                    ),
-                }
-            )
-        if truncated:
-            diagnostics.append(
-                {
-                    "source": self.definition.name,
-                    "severity": "warning",
-                    "reason": "results_truncated",
-                    "message": f"grep stopped after {args.limit} matching lines.",
-                    "retry_guidance": (
-                        "Refine path/include/exclude filters or use a more specific pattern before treating these results as complete."
-                    ),
-                }
-            )
-
         body = GrepResultBody(
             path=path_display,
             pattern=args.pattern,
@@ -350,7 +331,6 @@ class GrepTool:
             match_count=total_occurrences,
             truncated=truncated,
             matches=tuple(matches),
-            diagnostics=tuple(diagnostics),
         )
         return ToolSuccess(
             tool_name=self.definition.name,

@@ -20,7 +20,7 @@ not establish source review.
 | `files/apply_workspace_edit.py` | Pending full source review |
 | `files/edit_tool.py` | Partial: read guards and fuzzy repair hints removed; final mutation/ingress review pending |
 | `files/errors.py` | Reviewed: retain only classified diagnostic exception and raising helper |
-| `files/gitignore.py` | Pending full source review |
+| `files/gitignore.py` | Reviewed: root-only pathspec matching; removed unused pattern snapshot/property; syntax/order/escape tests |
 | `files/glob_tool.py` | Partial: strict search ingress/default path reviewed; traversal completeness pending |
 | `files/grep_tool.py` | Partial: strict search ingress/default path reviewed; traversal completeness pending |
 | `files/read_formats.py` | Pending full source review |
@@ -30,7 +30,7 @@ not establish source review.
 | `providers/__init__.py` | Pending full source review |
 | `providers/dispatch.py` | Pending full source review |
 | `providers/native/__init__.py` | Pending full source review |
-| `providers/native/_resources.py` | Pending full source review |
+| `providers/native/_resources.py` | Reviewed: contained package paths and JSON loading; removed unused installed-data locator/text wrapper |
 | `providers/native/_result_sanitize.py` | Pending full source review |
 | `providers/native/_wire_common.py` | Pending full source review |
 | `providers/native/anthropic_native.py` | Pending full source review |
@@ -103,3 +103,15 @@ executable file with the wrong permissions. Cancellation text says the file has
 not been committed, since parent-directory creation may already have occurred.
 Regression cases inject chmod/replace failure and KeyboardInterrupt during fsync;
 the original content/mode and temporary-file cleanup are checked.
+
+## Search and provider resource simplification
+
+Removed unused gitignore pattern storage and provider installed-data lookup.
+JSON resources use one direct package-contained read. Grep directory traversal
+and text-file I/O errors now become explicit classified failures; non-UTF-8 files
+remain skipped. Removed generic no-match/refinement advice and its diagnostics
+body field. Match counts and truncation bounds already carry the actual facts.
+Glob traversal completeness and search output bounds still need review.
+
+Verification: 43 search/gitignore/provider-data tests passed, including injected
+directory-walk and file-read failures. Ruff, formatting and source type checks passed.
