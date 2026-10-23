@@ -10,7 +10,7 @@ not a requirement to change every plugin or to add a dependency.
 | `ast_grep` | Shared file guards/diagnostics replace two identical private modules. Strict argument model; lease-owned process execution; reject incomplete/malformed native results before rewrite. Native-result/guard and bundled-dispatch tests. | Whole-tool WRITE declaration also blocks search in read-only sessions; result metadata and rewrite bounds need a final pass. |
 | `btw` | Command ingress, provider failures, current conversation window, no transcript pollution, pending tool approval. Uses contextual `model_query`; unit and real-provider integration tests. | No specific finding remains in this small package. |
 | `compaction` | Certified context boundaries, resource references, tool-free model summary, paging and truncation; focused unit/integration tests. | Recheck lifecycle/configuration as part of final package pass. |
-| `cron` | Typed wakeup facts, lease owner and stale wakeup identity; focused tests. | Schedule parser, loop command, configuration and deactivation. |
+| `cron` | Typed wakeup facts, lease owner/stale wakeup identity, loop parsing and deactivation read. User selected croniter five-field syntax: removed the custom numeric validator and obsolete CLI advice. 164 schedule/plugin/integration tests pass, including named weekdays/months and actual fire dates. | Final state/tool ingress and configuration pass. |
 | `delegation` | Scope inheritance, Markdown agent discovery/validation, shared frontmatter and removal of inert profile machinery; unit/integration tests. | Task operations, cancellation, child diagnostics and optional queries. |
 | `effectiveness` | Typed public facts replace classification by tool/event names; focused tests. | State projection, remaining fields, commands and deactivation. |
 | `exec` | Adapter delegates to shared capabilities. | Shared execution implementation and configuration. |
@@ -61,3 +61,17 @@ The MCP change reuses installed Pydantic/jsonschema/MCP SDK packages. `referenci
 was already transitive and is now declared directly to provide a closed reference
 registry; resolving the lock file added no package. The dependency floor now
 reflects the MCP 2.x API used by the implementation.
+
+### Lifecycle, LSP, and schedule checkpoint
+
+Commits `8c67a4b` and `268a4af` passed the full Python suite: **1308 passed,
+1 skipped** (363.63 seconds), with warning details enabled and no warning emitted.
+The earlier unlocated warning did not reproduce. Crash/reconnect and recoverable
+RPC errors are covered by real MCP integration tests; LSP strict configuration
+also retains the existing real-server coverage.
+
+After that checkpoint, the user selected croniter's five-field grammar. The Cron
+change passed **164** schedule/plugin/integration tests. It removes the custom
+numeric-only validator, accepts library aliases/extensions, retains the five-field
+limit and leaves fire-time iteration to the same existing library. The full-suite
+checkpoint above predates this scoped Cron change.

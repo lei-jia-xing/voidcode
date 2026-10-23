@@ -283,7 +283,7 @@ def test_loop_command_creates_a_schedule_and_fires_it_immediately(tmp_path: Path
         assert result.output == (
             f"Scheduled 'check the deploy' on cadence 'every 1s' (job ID: {schedule_id}). "
             "Recurring tasks auto-expire after 7 days. "
-            f"To cancel sooner, use `cron_delete` or run `voidcode cron remove {schedule_id}`."
+            "To cancel sooner, use `cron_delete`."
         )
 
         # Immediate arm: the wakeup is already due when the command returns.

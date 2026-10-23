@@ -148,6 +148,14 @@ fields and invalid values are rejected rather than filtered out. A server needs
 a command or a known preset; an empty server set retains workspace-based default
 discovery. `enabled: false` disables LSP explicitly.
 
+### Scheduled prompts
+
+The bundled Cron tools accept `every <N><s|m|h|d>`, `at <ISO-8601>`, `once`, or
+`cron <minute> <hour> <day> <month> <weekday>`. Cron expressions use croniter's
+five-field syntax, including names such as `JAN`/`MON` and supported modifiers.
+Six/seven-field expressions are refused. Calendar expressions follow the host's
+local timezone. `/loop` accepts intervals; use `cron_delete` to cancel a schedule.
+
 ## API Environment Variables
 
 Export API credentials in the environment of the process that starts VoidCode; no `.env` file is required.

@@ -91,11 +91,6 @@ def test_parse_schedule_at_naive_is_local() -> None:
         "cron",
         "cron 0 9 * *",
         "cron 0 9 * * * *",
-        "cron 0 9 L * *",
-        "cron 0 9 l * *",
-        "cron 0 9 15W * *",
-        "cron 0 9 ? * *",
-        "cron 0 9 * * 1#2",
         "cron @ 9 * * *",
         "cron 60 * * * *",
         "cron * 24 * * *",
@@ -104,7 +99,6 @@ def test_parse_schedule_at_naive_is_local() -> None:
         "cron * * * 0 *",
         "cron * * * 13 *",
         "cron * * * * 8",
-        "cron 5-1 * * * *",
         "cron */0 * * * *",
         "cron */x * * * *",
         "cron x * * * *",
@@ -125,16 +119,10 @@ def test_parse_schedule_rejects(text: str) -> None:
         ("every 0m", "Interval amount must be greater than 0: 'every 0m'."),
         ("at nope", "Invalid ISO-8601 timestamp in schedule 'at nope'"),
         ("cron 0 9 * *", "Cron expression must have exactly 5 fields, got 4 in 'cron 0 9 * *'."),
-        ("cron 0 9 L * *", "Cron dialect does not support 'L' in 'cron 0 9 L * *'."),
-        ("cron 0 9 ? * *", "Cron dialect does not support '?' in 'cron 0 9 ? * *'."),
-        ("cron @ 9 * * *", "Cron dialect does not support '@' in 'cron @ 9 * * *'."),
-        ("cron * * * * 1#2", "Cron dialect does not support '#' in 'cron * * * * 1#2'."),
-        ("cron 0 9 15W * *", "Cron dialect does not support 'W' in 'cron 0 9 15W * *'."),
-        ("cron 60 * * * *", "Value out of bounds (0-59) in minute: 60"),
-        ("cron * * * * 8", "Value out of bounds (0-7) in day-of-week: 8"),
-        ("cron 1,,2 * * * *", "Empty element in minute"),
-        ("cron 5-1 * * * *", "Range out of bounds (0-59) in minute: '5-1'"),
-        ("cron */0 * * * *", "Step in minute must be a positive integer: '0'"),
+        ("cron 60 * * * *", "Invalid cron expression"),
+        ("cron * * * * 8", "Invalid cron expression"),
+        ("cron 1,,2 * * * *", "Invalid cron expression"),
+        ("cron */0 * * * *", "Invalid cron expression"),
     ],
 )
 def test_parse_schedule_error_text(text: str, fragment: str) -> None:
@@ -308,7 +296,7 @@ def test_loop_confirmation_message_text() -> None:
     assert message == (
         "Scheduled 'check the deploy' on cadence 'every 10m' (job ID: abc123). "
         "Recurring tasks auto-expire after 7 days. "
-        "To cancel sooner, use `cron_delete` or run `voidcode cron remove abc123`."
+        "To cancel sooner, use `cron_delete`."
     )
 
 
@@ -318,7 +306,7 @@ def test_loop_confirmation_message_uses_parsed_schedule() -> None:
     expr = parse_schedule(f"every {interval}")
     message = loop_confirmation_message(_Summary(prompt=prompt, human_schedule=human_schedule(expr), id="job-7"))
     assert message.startswith("Scheduled 'check the deploy' on cadence 'every 30m' (job ID: job-7).")
-    assert message.endswith("use `cron_delete` or run `voidcode cron remove job-7`.")
+    assert message.endswith("use `cron_delete`.")
 
 
 def test_cron_leap_day_crosses_non_leap_years() -> None:
@@ -327,7 +315,18 @@ def test_cron_leap_day_crosses_non_leap_years() -> None:
     assert _local_iso(result) == "2028-02-29T09:00:00"
 
 
-@pytest.mark.parametrize("fields", ["0 9 * JAN *", "0 9 * * MON", "H 9 * * *", "R 9 * * *", "0 9 * * 5-1"])
-def test_cron_library_extensions_do_not_expand_public_dialect(fields: str) -> None:
-    with pytest.raises(ValueError):
-        parse_schedule(f"cron {fields}")
+@pytest.mark.parametrize("fields", ["0 9 * JAN *", "0 9 * * MON", "0 9 L * *", "0 9 * * 1#2", "0 9 * * 5-1"])
+def test_cron_uses_library_five_field_syntax(fields: str) -> None:
+    assert parse_schedule(f"cron {fields}") == ScheduleExpr(kind="cron", cron_fields=fields)
+
+
+def test_named_month_and_weekday_compute_the_next_fire_time() -> None:
+    after = _local_epoch(2026, 1, 1, 0, 0, 0)
+    result = next_fire_after(parse_schedule("cron 0 9 * JAN MON"), after)
+    assert _local_iso(result) == "2026-01-05T09:00:00"
+
+
+def test_month_end_and_nth_weekday_compute_actual_dates() -> None:
+    after = _local_epoch(2026, 1, 1, 0, 0, 0)
+    assert _local_iso(next_fire_after(parse_schedule("cron 0 9 L * *"), after)) == "2026-01-31T09:00:00"
+    assert _local_iso(next_fire_after(parse_schedule("cron 0 9 * * MON#2"), after)) == "2026-01-12T09:00:00"

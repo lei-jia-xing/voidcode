@@ -580,7 +580,7 @@ def test_loop_parses_the_argument_and_arms_an_immediate_wakeup(services: MockSer
         f"Scheduled '{prompt}' on cadence 'every {interval}' "
         f"(job ID: {schedule_id}). "
         "Recurring tasks auto-expire after 7 days. "
-        f"To cancel sooner, use `cron_delete` or run `voidcode cron remove {schedule_id}`."
+        "To cancel sooner, use `cron_delete`."
     )
     assert result.output == loop_confirmation_message(
         type("Summary", (), {"id": schedule_id, "prompt": prompt, "human_schedule": f"every {interval}"})()

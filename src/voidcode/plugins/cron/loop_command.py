@@ -1,8 +1,4 @@
-"""Native /loop command parsing and formatting (Claude parity).
-
-Ported verbatim from ``voidcode.command.loop``; the only change is replacing the legacy
-``ScheduleSummary`` import with a structural protocol so the plugin stays dependency-free.
-"""
+"""Parse /loop intervals and render schedule confirmations."""
 
 from __future__ import annotations
 
@@ -103,5 +99,5 @@ def loop_confirmation_message(summary: ScheduleSummaryLike) -> str:
         f"Scheduled '{summary.prompt}' on cadence '{summary.human_schedule}' "
         f"(job ID: {summary.id}). "
         f"Recurring tasks auto-expire after 7 days. "
-        f"To cancel sooner, use `cron_delete` or run `voidcode cron remove {summary.id}`."
+        "To cancel sooner, use `cron_delete`."
     )
