@@ -32,6 +32,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import ClassVar
 
+from voidcode.capabilities.frontmatter import load_frontmatter_mapping, split_frontmatter
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
 from voidcode.sdk.hooks import ContextContribution, InvocationFinishedFact, PluginFact
 from voidcode.sdk.invocation import ToolContext
@@ -48,7 +49,6 @@ from voidcode.sdk.tools import (
 )
 from voidcode.sdk.workspace_queries import RULE_PAGES, RulePage, RulePageRequest
 
-from .frontmatter import FrontmatterError, load_frontmatter_mapping, split_frontmatter
 from .rules import build_rule_catalog, read_rule_page, render_file_rules, rulebook_prompt_context, runtime_file_rule_contexts
 
 SKILL_ENTRY_FILE_NAME = "SKILL.md"
@@ -113,9 +113,7 @@ class SkillManifestParseError(ValueError):
         return self.message
 
 
-def _parse_skill_frontmatter_fields(contents: str) -> dict[str, str]:
-    raw_frontmatter, _body = split_frontmatter(contents)
-    payload = load_frontmatter_mapping(raw_frontmatter)
+def _parse_skill_frontmatter_fields(payload: Mapping[str, object]) -> dict[str, str]:
 
     for key in payload:
         if key not in SUPPORTED_FRONTMATTER_KEYS:
@@ -139,8 +137,8 @@ def _parse_skill_frontmatter_fields(contents: str) -> dict[str, str]:
 
 def parse_skill_manifest(contents: str, *, entry_path: Path) -> SkillMetadata:
     try:
-        parsed = _parse_skill_frontmatter_fields(contents)
-        _raw_frontmatter, body = split_frontmatter(contents)
+        raw_frontmatter, body = split_frontmatter(contents)
+        parsed = _parse_skill_frontmatter_fields(load_frontmatter_mapping(raw_frontmatter))
         if not body.strip():
             raise ValueError("content must be a non-empty string")
         return SkillMetadata(
@@ -153,8 +151,6 @@ def parse_skill_manifest(contents: str, *, entry_path: Path) -> SkillMetadata:
     except ValueError as exc:
         if isinstance(exc, SkillManifestParseError):
             raise SkillManifestParseError(exc.message, path=str(entry_path)) from exc
-        if isinstance(exc, FrontmatterError):
-            raise SkillManifestParseError(str(exc), path=str(entry_path)) from exc
         raise SkillManifestParseError(str(exc), path=str(entry_path)) from exc
 
 

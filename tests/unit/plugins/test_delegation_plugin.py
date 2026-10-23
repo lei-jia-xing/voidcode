@@ -20,8 +20,7 @@ from voidcode.plugins.delegation.delegation_plugin import (
     TaskTool,
     create_plugin,
 )
-from voidcode.plugins.delegation.profiles.prompts import render_agent_prompt
-from voidcode.plugins.delegation.profiles.registry import load_agent_manifest_registry
+from voidcode.plugins.delegation.profiles.registry import load_agent_registry
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import (
     ArtifactPage,
@@ -219,36 +218,22 @@ def _stored(services: MockServices) -> DelegationState:
 
 
 def _builtin_body(workspace: Path, profile_id: str) -> str:
-    manifest = load_agent_manifest_registry(workspace).get(profile_id)
+    manifest = load_agent_registry(workspace).get(profile_id)
     assert manifest is not None
-    rendered = render_agent_prompt(manifest.prompt_materialization)
-    assert rendered is not None
-    return rendered
+    return manifest.prompt
 
 
 def _custom_workspace(tmp_path: Path, filename: str, markdown: str) -> Path:
     workspace = tmp_path / "workspace"
-    project_dir = workspace / ".voidcode" / "agents"
+    project_dir = workspace / ".claude" / "agents"
     project_dir.mkdir(parents=True, exist_ok=True)
     (project_dir / filename).write_text(markdown, encoding="utf-8")
     return workspace
 
 
-def _context_for(workspace: Path) -> ToolContext:
-    return ToolContext(
-        workspace=workspace,
-        session_id="session-1",
-        run_id="run-1",
-        invocation_id="inv-1",
-        revision_id="rev-1",
-        actor="model",
-        logical_turn="turn-1",
-    )
-
-
 def _task_at(services: MockServices, workspace: Path, arguments: Mapping[str, object]) -> ToolResult:
     call = ToolCall(tool_name="task", arguments=arguments, tool_call_id="call-1")
-    return TaskTool().invoke(call, context=_context_for(workspace), services=services)
+    return TaskTool().invoke(call, context=_context(workspace), services=services)
 
 
 # --- State contract ---
@@ -426,21 +411,18 @@ def test_unknown_subagent_type_fails_without_spawning(tmp_path: Path) -> None:
     assert services.get_state("session") == (None, 0)
 
 
-def test_non_subagent_profile_is_not_executable_as_a_child(tmp_path: Path) -> None:
+def test_default_agent_is_a_normal_delegatable_definition(tmp_path: Path) -> None:
     services = MockServices()
-    res = _task(services, tmp_path, {"prompt": "work", "subagent_type": "default"})
-
-    assert isinstance(res, ToolFailure)
-    assert res.error == "task subagent_type 'default' is not executable as a child"
-    assert services.spawn_calls == []
-    assert services.get_state("session") == (None, 0)
+    result = _task(services, tmp_path, {"prompt": "work", "subagent_type": "default"})
+    assert isinstance(result, ToolSuccess)
+    assert services.spawn_calls[0]["prompt"] == f"{_builtin_body(tmp_path, 'default')}\n\nwork"
 
 
 def test_custom_profile_spawns_with_its_own_body_scope_and_writable_stance(tmp_path: Path) -> None:
     workspace = _custom_workspace(
         tmp_path,
         "helper.md",
-        "---\nname: Helper\ndescription: Local helper\nmode: subagent\n---\n\nHelp locally.\n",
+        "---\nname: helper\ndescription: Local helper\n---\n\nHelp locally.\n",
     )
     services = MockServices()
     res = _task_at(services, workspace, {"prompt": "count doors", "subagent_type": "helper"})
@@ -502,22 +484,13 @@ def test_no_profile_keeps_the_calling_allowlist_and_writable_stance(tmp_path: Pa
     assert _stored(services).children == {"child-1": ChildRecord()}
 
 
-def test_a_profile_model_preference_is_reported_instead_of_faked(tmp_path: Path) -> None:
-    """No builtin profile declares one today: a custom with ``model:`` hits the note path."""
-    workspace = _custom_workspace(
-        tmp_path,
-        "picky.md",
-        "---\nname: Picky\ndescription: Choosy helper\nmode: subagent\nmodel: endpoint/gpt-x\n---\n\nPick well.\n",
-    )
+def test_unsupported_profile_model_is_refused_before_spawning(tmp_path: Path) -> None:
+    workspace = _custom_workspace(tmp_path, "picky.md", "---\nname: picky\ndescription: Choosy helper\nmodel: endpoint/gpt-x\n---\nPick well.")
     services = MockServices()
-
-    res = _task_at(services, workspace, {"prompt": "work", "subagent_type": "picky"})
-
-    note = "profile 'picky' prefers model 'endpoint/gpt-x', but every child runs the workspace model; the preference was not applied"
-    assert isinstance(res, ToolSuccess)
-    assert services.spawn_calls[0]["prompt"] == "Pick well.\n\nwork"
-    assert _payload(res)["notes"] == [note]
-    assert note in res.output.text
+    result = _task_at(services, workspace, {"prompt": "work", "subagent_type": "picky"})
+    assert isinstance(result, ToolFailure)
+    assert "per-agent model selection" in result.error
+    assert services.spawn_calls == []
 
 
 # --- task: control ---
@@ -963,3 +936,23 @@ def test_plugin_registers_tools_and_profile_commands() -> None:
         assert tool.definition.replay_policy == "never"
         assert {effect.value for effect in tool.definition.effects} == {"read", "spawn", "session"}
     assert [command.definition.name for command in plugin.commands] == ["agents", "agents.show"]
+
+
+def test_standard_agent_tools_and_max_turns_apply_to_task_and_batch(tmp_path: Path):
+    workspace = _custom_workspace(
+        tmp_path, "helper.md", "---\nname: helper\ndescription: d\ntools: read, grep\nmaxTurns: 3\nmodel: inherit\n---\nHelp."
+    )
+    services = MockServices()
+    result = _task_at(services, workspace, {"prompt": "work", "subagent_type": "helper", "tool_allowlist": ["read", "glob"], "max_steps": 7})
+    assert isinstance(result, ToolSuccess)
+    assert services.spawn_calls[0]["tool_allowlist"] == ("read",)
+    assert services.spawn_calls[0]["max_steps"] == 3
+    tool = TaskBatchTool()
+    result = tool.invoke(
+        ToolCall("task_batch", {"tasks": [{"prompt": "work", "subagent_type": "helper", "max_steps": 2}]}),
+        context=_context(workspace),
+        services=services,
+    )
+    assert isinstance(result, ToolSuccess)
+    assert services.spawn_calls[1]["tool_allowlist"] == ("read", "grep")
+    assert services.spawn_calls[1]["max_steps"] == 2

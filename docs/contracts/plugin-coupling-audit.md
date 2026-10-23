@@ -16,7 +16,7 @@ for decisions before execution.
 | `compaction/projection.py` | Extracted resource references from argument names and recognized delegation by concrete tool names. | Removed: reported resource observations/changes and actual child records supply those facts. |
 | `session_info/panels.py` | Parsed provider intents, messages and outcomes for context and exports. | Removed: context/export/copy use the public typed transcript; usage uses its dedicated service. Status reads only diagnostic event headers. |
 | `capabilities/providers/panels.py` | Read provider intents to identify the latest dispatched provider/model. | Removed: consume typed transcript dispatches, including those still in flight. |
-| `delegation/profiles/` | Profile roles duplicated tool authority using concrete name lists. | Removed: profiles supply prompt/stance; children inherit parent scope, optionally narrowed explicitly by the caller. |
+| `delegation/profiles/` | Profile roles duplicated tool authority using concrete name lists. | Removed: Markdown agents supply effective instructions; default scopes inherit, with optional standard `tools` or caller restrictions. |
 | `review/review_plugin.py` | Fixed inspection-tool names restrict the standalone review workflow. | Still present; review policy needs a separate decision. Delegation simplification does not silently widen this workflow. |
 | `delegation/delegation_plugin.py` | Reads bounded child history through a service and delegates rendering to the SDK. | Legitimate diagnostic contract usage; consolidate rendering with the future transcript projection rather than duplicating event parsing in plugins. |
 
@@ -44,9 +44,9 @@ Remaining concrete findings:
   Those are not peer dependencies, but aliasing the admitted plugin id has not
   been comprehensively checked; cron now uses the lease's actual owner.
 
-Explicit child scope validation remains core authority policy. Delegation profiles
-no longer own tool lists, perform discovery, report missing tools or conflict with
-caller-supplied scopes. The core's inherited scope and read-only stance are retained.
+Explicit child scope validation remains core authority policy. Built-in agents no longer own tool lists or missing-tool fallback machinery.
+Custom definitions use the supported Claude Code format; explicit standard
+`tools` restrictions intersect caller scope. See [agent definitions](./agent-definitions.md). The core's inherited scope and read-only stance are retained.
 
 The public facts/transcript consumers listed above are guarded against private
 event parsing. [Transcript/context history](./transcript.md) and

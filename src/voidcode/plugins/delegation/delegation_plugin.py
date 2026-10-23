@@ -1,30 +1,12 @@
-"""Delegation plugin: parent-owned child sessions behind the ``task`` tools.
+"""Delegate bounded work to ordinary core-owned child sessions.
 
-Ported surface (``legacy tools/delegation``): spawning one child session, reading and cancelling a
-child this session started, and dispatching bounded independent work as one background group. The
-model-facing text keeps the legacy ``task.txt``/``task_batch.txt`` intent for the operations that
-exist here.
+Markdown agents use Claude Code's name/description/body definition. The supported
+options constrain the inherited tool scope and initial run's turn budget; options
+without a runtime implementation fail at file ingress. Agent instructions prefix
+the child task because the current core accepts one user prompt per child.
 
-Legacy features are deliberately absent because the core owns no primitive for them yet, and
-nothing here fakes them: parent roster listing (``operation=ps``), steering (``operation=steer``),
-keep-alive tasks, polling/sleep loops, automatic retry, whole-group cancellation, completion
-reminders, ``outputSchema``/``schemaMode`` structured-output validation, ``load_skills``,
-``full_session``/``message_limit`` transcript reads. Scheduling a child and awaiting it with
-``operation=output`` is the whole control surface.
-
-``subagent_type`` selects one executable child profile from the owned registry in
-``profiles/`` (builtin manifests plus user/project customs): the child's prompt is
-the rendered profile text followed by this call's prompt, its tools inherit the parent scope,
-and its stance is the profile's ``readonly`` (customs declare no stance, so they run writable
-unless the parent lease is read-only). The core has no per-child system prompt seam -- a
-child receives exactly one user prompt -- so the profile text is materialized into that prompt
-rather than sent as a separate system message. The requested profile tools are intersected with
-the session's visible capabilities; omitted names are reported, and an empty scope is refused.
-A failed spawn never retries with a wider parent scope. A profile model preference is reported
-as a note because children always run the workspace model.
-
-Child runs, depth, the chain's spawn budget, tool scope and termination stay core-owned; this
-plugin only records which children its own session started, under which label and group.
+The core owns child authority, lifecycle, budgets and durable history. This plugin
+records parent-owned child identities and exposes task and batch operations.
 """
 
 from __future__ import annotations
@@ -49,9 +31,8 @@ from voidcode.sdk.tools import (
 )
 
 from .profiles.commands import AgentsCommand, AgentShowCommand
-from .profiles.models import AgentManifest
-from .profiles.prompts import render_agent_prompt
-from .profiles.registry import AgentManifestRegistry, load_agent_manifest_registry
+from .profiles.models import AgentDefinition
+from .profiles.registry import AgentRegistry, load_agent_registry
 
 SCHEMA_VERSION = 1
 DEFAULT_MAX_STEPS = 32
@@ -178,20 +159,19 @@ def _load_state(services: PluginServices) -> tuple[DelegationState, int]:
     return DelegationState.from_payload(state_data), version
 
 
-def _load_registry(context: ToolContext) -> AgentManifestRegistry:
+def _load_registry(context: ToolContext) -> AgentRegistry:
     """The executable profile registry for this workspace, or a clear ingress refusal."""
     try:
-        return load_agent_manifest_registry(context.require_workspace())
+        return load_agent_registry(context.require_workspace())
     except (ValueError, OSError) as exc:
         raise ValueError(f"agent profile registry is unavailable: {exc}") from exc
 
 
-def _load_profile(context: ToolContext, subagent_type: str | None, *, where: str) -> tuple[AgentManifest | None, str | None]:
-    """The resolved child profile and its rendered prompt body (None pair when unselected)."""
+def _load_profile(context: ToolContext, subagent_type: str | None, *, where: str) -> AgentDefinition | None:
+    """Resolve the selected profile, if any."""
     if subagent_type is None:
-        return None, None
-    manifest = _resolve_subagent(_load_registry(context), subagent_type, where=where)
-    return manifest, render_agent_prompt(manifest.prompt_materialization)
+        return None
+    return _resolve_subagent(_load_registry(context), subagent_type, where=where)
 
 
 def _with_children(state: DelegationState, created: Sequence[tuple[str, ChildRecord]], *, group_id: str | None) -> DelegationState:
@@ -269,13 +249,11 @@ def _parse_subagent_type(raw: object, *, where: str) -> str | None:
     return raw
 
 
-def _resolve_subagent(registry: AgentManifestRegistry, subagent_type: str, *, where: str) -> AgentManifest:
+def _resolve_subagent(registry: AgentRegistry, subagent_type: str, *, where: str) -> AgentDefinition:
     """The executable child profile behind a parsed id, or a clear ingress refusal."""
     manifest = registry.get(subagent_type)
     if manifest is None:
         raise ValueError(f"{where} unknown subagent_type: {subagent_type!r}")
-    if manifest.mode != "subagent":
-        raise ValueError(f"{where} subagent_type {subagent_type!r} is not executable as a child")
     return manifest
 
 
@@ -449,8 +427,6 @@ class TaskBody:
     stop_cause: str | None = None
     cancelled: bool | None = None
     subagent_type: str | None = None
-    #: Visible caveats about how the child actually ran (preset scope or model downgrade).
-    notes: tuple[str, ...] = ()
     #: Send receipt facts (never a completion claim).
     delivery: str | None = None
     child_status: str | None = None
@@ -502,26 +478,21 @@ class TaskBody:
                 payload[key] = value
         if self.label:
             payload["label"] = self.label
-        if self.notes:
-            payload["notes"] = list(self.notes)
         return payload
 
 
 @dataclass(frozen=True, slots=True)
 class _BatchChild:
-    """One spawned batch item: where it went, the preset it ran under, and how it was downgraded."""
+    """One spawned batch item and the agent definition it used."""
 
     index: int
     task_id: str
     subagent_type: str | None = None
-    notes: tuple[str, ...] = ()
 
     def as_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {"index": self.index, "task_id": self.task_id}
         if self.subagent_type is not None:
             payload["subagent_type"] = self.subagent_type
-        if self.notes:
-            payload["notes"] = list(self.notes)
         return payload
 
 
@@ -560,36 +531,26 @@ def _header(task_id: str, label: str, subagent_type: str | None = None) -> str:
     return header + (f' label="{label}"' if label else "")
 
 
-def _with_notes(text: str, notes: Sequence[str]) -> str:
-    """Append the caveats about how a child actually ran, without hiding them in the body."""
-    return "\n".join([text, *(f"note: {note}" for note in notes)])
-
-
-def _profile_notes(manifest: AgentManifest | None) -> tuple[str, ...]:
-    """The visible caveats a profile adds: a model preference the core cannot honor."""
-    if manifest is None or manifest.model_preference is None:
-        return ()
-    return (
-        f"profile '{manifest.id}' prefers model '{manifest.model_preference}', but every child runs the workspace model; "
-        "the preference was not applied",
-    )
-
-
 def _spawn_child(
     services: PluginServices,
     *,
     prompt: str,
     label: str,
     max_steps: int,
-    profile: AgentManifest | None,
-    profile_body: str | None,
+    profile: AgentDefinition | None,
     tool_allowlist: tuple[str, ...] | None,
     notify_on_completion: bool,
-) -> tuple[str, tuple[str, ...]]:
+) -> str:
     """Apply profile text and stance; only the caller narrows the inherited scope."""
-    body = prompt if profile is None or profile_body is None else f"{profile_body}\n\n{prompt}"
+    body = prompt if profile is None else f"{profile.prompt}\n\n{prompt}"
     readonly = False if profile is None else profile.readonly
-    notes = _profile_notes(profile)
+    if profile is not None:
+        if profile.tools is not None:
+            tool_allowlist = profile.tools if tool_allowlist is None else tuple(name for name in tool_allowlist if name in profile.tools)
+            if not tool_allowlist:
+                raise ValueError(f"agent '{profile.name}' has no tools within the requested scope")
+        if profile.max_turns is not None:
+            max_steps = min(max_steps, profile.max_turns)
     child_id = services.spawn_child(
         body,
         label=label,
@@ -598,7 +559,7 @@ def _spawn_child(
         readonly=readonly,
         notify_on_completion=notify_on_completion,
     )
-    return child_id, notes
+    return child_id
 
 
 def _failure(tool_name: str, message: str) -> ToolResult:
@@ -728,7 +689,6 @@ def _batch_text(group_id: str, created: Sequence[_BatchChild], failed: Sequence[
     lines = [header]
     for entry in created:
         lines.append(f"- [{entry.index}] {entry.task_id}" + (f" profile={entry.subagent_type}" if entry.subagent_type else ""))
-        lines.extend(f"- [{entry.index}] note: {note}" for note in entry.notes)
     lines.extend(f"- [{index}] failed: {message}" for index, message in failed)
     return "\n".join(lines)
 
@@ -833,7 +793,7 @@ class TaskTool:
                     "minLength": 1,
                     "description": (
                         "Optional child profile id (a builtin like execute, review, explore, research, or plan, "
-                        "or a workspace custom profile from .voidcode/agents); the child runs that profile's "
+                        "or a workspace custom profile from .claude/agents); the child runs that profile's "
                         "prompt text, tools, and read-only stance. Unknown ids fail. Omit to inherit your own "
                         "tool scope instead."
                     ),
@@ -912,14 +872,13 @@ class TaskTool:
     def _spawn(self, args: _TaskArgs, state: DelegationState, version: int, context: ToolContext, services: PluginServices) -> ToolResult:
         prompt = args.prompt or ""
         try:
-            profile, profile_body = _load_profile(context, args.subagent_type, where="task")
-            child_id, notes = _spawn_child(
+            profile = _load_profile(context, args.subagent_type, where="task")
+            child_id = _spawn_child(
                 services,
                 prompt=prompt,
                 label=args.label,
                 max_steps=args.max_steps,
                 profile=profile,
-                profile_body=profile_body,
                 tool_allowlist=args.tool_allowlist,
                 notify_on_completion=args.run_in_background,
             )
@@ -944,14 +903,13 @@ class TaskTool:
             )
             return ToolSuccess(
                 self.definition.name,
-                TextOutput(_with_notes(text, notes)),
+                TextOutput(text),
                 body=TaskBody(
                     operation="spawn",
                     task_id=child_id,
                     label=args.label,
                     subagent_type=args.subagent_type,
                     history_uri=_transcript_uri(child_id),
-                    notes=notes,
                 ),
             )
         try:
@@ -962,7 +920,7 @@ class TaskTool:
             return _failure(self.definition.name, str(exc))
         return ToolSuccess(
             self.definition.name,
-            TextOutput(_with_notes(_outcome_text(child_id, args.label, outcome, args.subagent_type, facts=facts), notes)),
+            TextOutput(_outcome_text(child_id, args.label, outcome, args.subagent_type, facts=facts)),
             body=TaskBody(
                 operation="spawn",
                 task_id=child_id,
@@ -972,7 +930,6 @@ class TaskTool:
                 error=outcome.error,
                 stop_cause=outcome.stop_cause,
                 subagent_type=args.subagent_type,
-                notes=notes,
                 run_id=outcome.run_id,
                 output_uri=facts.output_uri,
                 output_offset=facts.output_offset,
@@ -1236,25 +1193,23 @@ class TaskBatchTool:
                 _resolve_subagent(registry, item.subagent_type, where=f"task_batch item {index}") if item.subagent_type is not None else None
                 for index, item in enumerate(items)
             )
-            bodies = tuple(None if profile is None else render_agent_prompt(profile.prompt_materialization) for profile in resolved)
         except ValueError as exc:
             return _failure(self.definition.name, str(exc))
-        for index, (item, profile, profile_body) in enumerate(zip(items, resolved, bodies, strict=True)):
+        for index, (item, profile) in enumerate(zip(items, resolved, strict=True)):
             try:
-                child_id, notes = _spawn_child(
+                child_id = _spawn_child(
                     services,
                     prompt=item.prompt,
                     label=item.label,
                     max_steps=item.max_steps,
                     profile=profile,
-                    profile_body=profile_body,
                     tool_allowlist=item.tool_allowlist,
                     notify_on_completion=True,
                 )
             except (ValueError, PermissionError, RuntimeError) as exc:
                 failed.append((index, str(exc)))
                 continue
-            created.append(_BatchChild(index=index, task_id=child_id, subagent_type=item.subagent_type, notes=notes))
+            created.append(_BatchChild(index=index, task_id=child_id, subagent_type=item.subagent_type))
         if not created:
             return _failure(self.definition.name, f"task_batch created no child session: {failed[0][1]}")
         services.replace_state(

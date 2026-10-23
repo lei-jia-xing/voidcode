@@ -59,19 +59,19 @@ edits remain available without a document-state provider. Malformed answers rema
 
 ## Optional tools in workflow profiles
 
-Delegation profiles supply prompt text and a read-only stance; they do not select
-or discover tools. A child inherits its parent's tool scope unless the caller
-passes an explicit `tool_allowlist`. The caller can combine this narrowing with
-`subagent_type` in either `task` or `task_batch`. The core validates the requested
-subset; unknown tools and wider scopes are errors, never silently filtered.
-Profile frontmatter and manifest payloads reject the removed `tool_allowlist`
-field. There is no translation or compatibility path.
+Delegation uses [Markdown agent definitions](./agent-definitions.md). Built-ins
+have no fixed tool tables. Unless a file declares standard `tools`, children
+inherit the parent's scope. Explicit caller `tool_allowlist` and file `tools`
+restrictions intersect; neither can widen the parent. The core validates names
+and authority, and spawn failures are never retried with a wider scope.
 
-A read-only profile restricts external mutation through the core's existing
-policy, but does not mean filesystem-only inspection. It can see permitted
-network or delegation tools within the inherited scope. Exact tool restrictions
-belong to the caller's explicit scope, not the profile name. Spawn failures are
-never retried with a different scope.
+The former custom profile metadata and serialization paths are removed. Standard
+fields without an execution implementation fail visibly, rather than generating
+warnings that a model preference or skill reference was not applied.
+
+A built-in read-only stance restricts external mutation through core policy; it
+does not mean filesystem-only inspection. Network and delegation tools within
+the inherited scope can remain visible.
 
 The separate review workflow still intersects its fixed inspection list with
 `PluginServices.tool_definition`. This remaining concrete-name policy has not

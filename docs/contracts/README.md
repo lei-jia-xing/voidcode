@@ -4,6 +4,8 @@ This directory contains the authoritative technical contracts for the VoidCode c
 
 ## Contracts
 
+- [`agent-definitions.md`](./agent-definitions.md): Claude Code Markdown agent format, supported execution subset, and discovery rules.
+
 - [`transcript.md`](./transcript.md): Typed, lossless committed conversation paging and session inspection.
 
 - [`facts.md`](./facts.md): Typed durable observations, tool semantics, historical paging, and effectiveness metrics.

@@ -20,11 +20,11 @@ from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.core.activation import BUNDLED_PLUGIN_IDS
 from voidcode.core.bootstrap import open_core
 from voidcode.core.engine import Core
-from voidcode.plugins.delegation.profiles.prompts import render_builtin_prompt_profile
+from voidcode.plugins.delegation.profiles.builtin import EXPLORE_AGENT
 
 _DELEGATION_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "delegation"
 _TODO_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "todo"
-_EXPLORE_PROMPT_BODY = render_builtin_prompt_profile("explore")
+_EXPLORE_PROMPT_BODY = EXPLORE_AGENT.prompt
 
 
 @contextmanager
@@ -249,3 +249,34 @@ def test_profile_child_inherits_parent_scope_or_uses_explicit_narrowing(tmp_path
         children = payload["children"]
         assert isinstance(children, Mapping)
         assert children[child_id]["subagent_type"] == "explore"
+
+
+def test_standard_markdown_agent_applies_its_prompt_tools_and_turn_cap(tmp_path: Path) -> None:
+    replies = [
+        openai_response(
+            message={
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [_task_call("custom", {"prompt": "inspect", "subagent_type": "inspector", "run_in_background": False})],
+            },
+            finish="tool_calls",
+        ),
+        openai_response(message={"role": "assistant", "content": "inspection complete"}, finish="stop"),
+        openai_response(message={"role": "assistant", "content": "done"}, finish="stop"),
+    ]
+    with _loopback_server(replies) as server:
+        core = _core(tmp_path, server, minimal=True)
+        directory = core.workspace / ".claude" / "agents"
+        directory.mkdir(parents=True)
+        (directory / "different-filename.md").write_text(
+            "---\nname: inspector\ndescription: Inspect files\ntools: Read, Grep\nmodel: inherit\nmaxTurns: 1\n---\nInspect carefully.\n"
+        )
+        parent = core.create_session().session_id
+        result = core.run("delegate inspection", session_id=parent)
+        assert result.status == "completed", result.error
+        child_id = next(event.payload["child_session_id"] for event in core.events_after(parent) if event.event_type == "kernel.child_spawned")
+        child = core.session(child_id)
+        assert child.status == "completed" and child.tool_allowlist == ("grep", "read")
+        assert set(_tool_names(server.requests[1])) == {"grep", "read"}
+        assert any(message.get("content") == "Inspect carefully.\n\ninspect" for message in _messages(server.requests[1]))
+        assert len(server.requests) == 3

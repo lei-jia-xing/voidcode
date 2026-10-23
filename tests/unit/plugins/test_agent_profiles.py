@@ -1,473 +1,124 @@
-"""Unit tests for the delegation-owned profile registry: builtins, discovery, rendering."""
+"""Subagent files use Claude Code's names, body, paths and executable options."""
 
-from __future__ import annotations
-
-from collections.abc import Mapping
-from importlib.resources import files as resource_files
-from pathlib import Path
-from typing import Literal, cast
+from importlib.resources import files
 
 import pytest
 
 from voidcode.plugins.delegation.delegation_plugin import create_plugin
-from voidcode.plugins.delegation.profiles.builtin import (
-    DEFAULT_AGENT_MANIFEST,
-    EXECUTE_AGENT_MANIFEST,
-    EXPLORE_AGENT_MANIFEST,
-    PLAN_AGENT_MANIFEST,
-    RESEARCH_AGENT_MANIFEST,
-    REVIEW_AGENT_MANIFEST,
-    get_builtin_agent_manifest,
-    list_builtin_agent_manifests,
-    validate_builtin_agent_manifests,
-)
+from voidcode.plugins.delegation.profiles.builtin import list_builtin_agents
 from voidcode.plugins.delegation.profiles.commands import AgentsCommand, AgentShowCommand
-from voidcode.plugins.delegation.profiles.models import AgentManifest, AgentPromptMaterialization
-from voidcode.plugins.delegation.profiles.prompts import (
-    is_builtin_prompt_profile,
-    render_agent_prompt,
-    render_builtin_prompt_profile,
-)
-from voidcode.plugins.delegation.profiles.registry import (
-    agent_manifest_id_from_name,
-    is_valid_agent_manifest_id,
-    load_agent_manifest_registry,
-    manifest_from_markdown,
-    project_agent_manifest_dir,
-    user_agent_manifest_dir,
-)
+from voidcode.plugins.delegation.profiles.registry import agent_from_markdown, load_agent_registry, project_agent_dir, user_agent_dir
 from voidcode.sdk.commands import CommandInvocation
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.services import PluginServices
-
-_USER_APPEND_HEADING = "User-append: user-authored text is authoritative over generated blocks."
 
 
-def _write_agent_file(directory: Path, filename: str, frontmatter: str, body: str = "Custom agent body.") -> Path:
-    directory.mkdir(parents=True, exist_ok=True)
+def _document(name="helper", extra="", body="Help locally."):
+    return f"---\nname: {name}\ndescription: Local helper\n{extra}---\n{body}"
+
+
+def _write(directory, filename, text):
     path = directory / filename
-    path.write_text(f"---\n{frontmatter}---\n\n{body}\n", encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
     return path
 
 
-def _custom_frontmatter(
-    *,
-    name: str = "Custom Agent",
-    description: str = "Custom profile description.",
-    mode: str = "subagent",
-    extra: str = "",
-) -> str:
-    return f"name: {name}\ndescription: {description}\nmode: {mode}\n{extra}"
+def test_minimal_standard_definition_uses_name_and_body_without_extra_manifest_fields():
+    agent = agent_from_markdown(_document("Exact Name"), scope="project")
+    assert agent.name == "Exact Name" and agent.prompt == "Help locally."
+    assert agent.tools is None and agent.max_turns is None and not agent.readonly
 
 
-def _load_registry(
-    workspace: Path,
-    *,
-    xdg_config_home: Path,
-):
-    return load_agent_manifest_registry(
-        workspace,
-        env={"XDG_CONFIG_HOME": str(xdg_config_home)},
-    )
+@pytest.mark.parametrize("tools", ["tools: read, grep\n", "tools: Read, Grep\n", "tools: [read, grep]\n", "tools:\n  - read\n  - grep\n"])
+def test_standard_tools_and_turn_cap_are_parsed(tools):
+    agent = agent_from_markdown(_document(extra=tools + "model: inherit\nmaxTurns: 4\n"), scope="user")
+    assert agent.tools == ("read", "grep") and agent.max_turns == 4
 
 
-def test_builtin_manifests_expose_prompts_stances_and_refs() -> None:
-    manifests = list_builtin_agent_manifests()
-
-    assert tuple(manifest.id for manifest in manifests) == ("default", "execute", "review", "explore", "research", "plan")
-    for manifest in manifests:
-        assert "tool_allowlist" not in manifest.to_payload()
-        assert manifest.source_scope == "builtin"
-        assert manifest.skill_refs == ()
-        assert manifest.fallback_models == ()
-        assert manifest.prompt_materialization is not None
-        assert manifest.prompt_materialization.source == "builtin"
-        assert manifest.prompt_materialization.profile == manifest.prompt_profile
-
-    assert get_builtin_agent_manifest("default") is DEFAULT_AGENT_MANIFEST
-    assert get_builtin_agent_manifest("execute") is EXECUTE_AGENT_MANIFEST
-    assert get_builtin_agent_manifest("review") is REVIEW_AGENT_MANIFEST
-    assert get_builtin_agent_manifest("explore") is EXPLORE_AGENT_MANIFEST
-    assert get_builtin_agent_manifest("research") is RESEARCH_AGENT_MANIFEST
-    assert get_builtin_agent_manifest("plan") is PLAN_AGENT_MANIFEST
-    assert get_builtin_agent_manifest("missing") is None
-
-
-def test_builtin_readonly_stance_lives_on_the_manifest() -> None:
-    """Review/explore/research/plan children stay read-only; execute and default do not."""
-    assert EXECUTE_AGENT_MANIFEST.readonly is False
-    assert DEFAULT_AGENT_MANIFEST.readonly is False
-    for manifest in (REVIEW_AGENT_MANIFEST, EXPLORE_AGENT_MANIFEST, RESEARCH_AGENT_MANIFEST, PLAN_AGENT_MANIFEST):
-        assert manifest.readonly is True
+@pytest.mark.parametrize(
+    "extra,match",
+    [
+        ("model: sonnet\n", "per-agent model selection"),
+        ("permissionMode: bypassPermissions\n", "unsupported agent field"),
+        ("tools: []\n", "agent tools"),
+        ("tools: read,,grep\n", "agent tools"),
+        ("maxTurns: true\n", "positive integer"),
+        ("maxTurns: 0\n", "positive integer"),
+        ("mode: subagent\n", "unsupported agent field"),
+        ("id: fake\n", "unsupported agent field"),
+        ("fallback_models: [other]\n", "unsupported agent field"),
+        ("skill_refs: [unused]\n", "unsupported agent field"),
+        ("prompt_append: text\n", "unsupported agent field"),
+        ("tool_allowlist: [read]\n", "unsupported agent field"),
+    ],
+)
+def test_unimplemented_or_invalid_fields_fail_instead_of_being_ignored(extra, match):
+    with pytest.raises(ValueError, match=match):
+        agent_from_markdown(_document(extra=extra), scope="project")
 
 
-def test_builtin_manifest_names_descriptions_and_modes() -> None:
-    assert (DEFAULT_AGENT_MANIFEST.name, DEFAULT_AGENT_MANIFEST.mode, DEFAULT_AGENT_MANIFEST.top_level_selectable) == (
-        "Default",
-        "primary",
-        True,
-    )
-    assert DEFAULT_AGENT_MANIFEST.description == "General user-facing assistant; runtime owns policy and tool scope."
-    assert (EXECUTE_AGENT_MANIFEST.name, EXECUTE_AGENT_MANIFEST.description) == (
-        "Execute",
-        "Delegated execution of an assigned task; runtime enforces the active tool scope.",
-    )
-    assert (REVIEW_AGENT_MANIFEST.name, REVIEW_AGENT_MANIFEST.description) == (
-        "Review",
-        "Delegated review of evidence, risks, and options.",
-    )
-    assert (EXPLORE_AGENT_MANIFEST.name, EXPLORE_AGENT_MANIFEST.description) == (
-        "Explore",
-        "Delegated read-only discovery of relevant workspace evidence.",
-    )
-    assert (RESEARCH_AGENT_MANIFEST.name, RESEARCH_AGENT_MANIFEST.description) == (
-        "Research",
-        "Delegated research using public sources and external evidence.",
-    )
-    assert (PLAN_AGENT_MANIFEST.name, PLAN_AGENT_MANIFEST.description) == (
-        "Planning",
-        "Delegated read-only planning grounded in the request and relevant evidence.",
-    )
-    for manifest in (EXECUTE_AGENT_MANIFEST, REVIEW_AGENT_MANIFEST, EXPLORE_AGENT_MANIFEST, RESEARCH_AGENT_MANIFEST, PLAN_AGENT_MANIFEST):
-        assert manifest.mode == "subagent"
-        assert manifest.top_level_selectable is False
+@pytest.mark.parametrize(
+    "text,match",
+    [
+        ("no metadata", "must start"),
+        (_document(body=" "), "empty markdown body"),
+        ("---\nname: one\nname: two\ndescription: d\n---\nbody", "duplicate frontmatter"),
+        ("---\nname: 7\ndescription: d\n---\nbody", "name.*non-empty string"),
+        ("---\nname: one\n---\nbody", "description.*non-empty string"),
+        (_document("reserved:name"), "contain no ':'"),
+    ],
+)
+def test_invalid_metadata_and_framing_are_visible(text, match):
+    with pytest.raises(ValueError, match=match):
+        agent_from_markdown(text, scope="project")
 
 
-def test_builtin_manifests_validate_and_reject_broken_records() -> None:
-    manifests = list_builtin_agent_manifests()
-    assert validate_builtin_agent_manifests(manifests) is manifests
-
-    with pytest.raises(ValueError, match="must not be top-level selectable"):
-        validate_builtin_agent_manifests(
-            (
-                AgentManifest(
-                    id="broken",
-                    name="Broken",
-                    mode="subagent",
-                    description="d",
-                    prompt_profile="plan",
-                    top_level_selectable=True,
-                ),
-            )
-        )
-    with pytest.raises(ValueError, match="has mode='primary' but is not marked top_level_selectable"):
-        validate_builtin_agent_manifests((AgentManifest(id="broken", name="Broken", mode="primary", description="d", prompt_profile="plan"),))
-    with pytest.raises(ValueError, match="references unknown prompt profile 'ghost'"):
-        validate_builtin_agent_manifests((AgentManifest(id="broken", name="Broken", mode="subagent", description="d", prompt_profile="ghost"),))
-
-
-def test_manifest_payload_round_trip() -> None:
-    for manifest in list_builtin_agent_manifests():
-        assert AgentManifest.from_payload(manifest.to_payload()) == manifest
-
-    payload = DEFAULT_AGENT_MANIFEST.prompt_materialization
-    assert payload is not None
-    assert AgentPromptMaterialization.from_payload(payload.to_payload()) == payload
-    with pytest.raises(ValueError, match="invalid current prompt materialization fields"):
-        AgentPromptMaterialization.from_payload({**payload.to_payload(), "unknown": 1})
-
-
-def test_user_and_project_discovery_precedence(tmp_path: Path) -> None:
+def test_project_overrides_user_and_builtin_and_discovers_nested_files(tmp_path):
     workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    xdg_config_home = tmp_path / "config"
-    user_dir = user_agent_manifest_dir({"XDG_CONFIG_HOME": str(xdg_config_home)})
-    assert user_dir == xdg_config_home / "voidcode" / "agents"
-    assert project_agent_manifest_dir(workspace) == workspace.resolve() / ".voidcode" / "agents"
-
-    _write_agent_file(user_dir, "shared.md", _custom_frontmatter(name="Shared", description="user copy"))
-    _write_agent_file(user_dir, "user-only.md", _custom_frontmatter(name="User Only"))
-    _write_agent_file(
-        project_agent_manifest_dir(workspace),
-        "shared.md",
-        _custom_frontmatter(name="Shared", description="project copy", mode="primary"),
-    )
-
-    registry = _load_registry(workspace, xdg_config_home=xdg_config_home)
-
-    shared = registry.get("shared")
-    assert shared is not None
-    assert shared.description == "project copy"
-    assert shared.source_scope == "project"
-    assert shared.mode == "primary"
-    assert shared.top_level_selectable is True
-    user_only = registry.get("user-only")
-    assert user_only is not None
-    assert user_only.source_scope == "user"
-    assert user_only.mode == "subagent"
-    assert user_only.top_level_selectable is False
-    assert [manifest.id for manifest in registry.list_manifests()][:6] == ["default", "execute", "review", "explore", "research", "plan"]
+    user = tmp_path / "user"
+    assert user_agent_dir({"CLAUDE_CONFIG_DIR": str(user)}) == user / "agents"
+    assert project_agent_dir(workspace) == workspace.resolve() / ".claude/agents"
+    _write(user / "agents", "different-filename.md", _document("helper", body="user body"))
+    _write(project_agent_dir(workspace), "nested/work.md", _document("helper", body="project body"))
+    _write(project_agent_dir(workspace), "override.md", _document("explore", body="custom explore"))
+    registry = load_agent_registry(workspace, env={"CLAUDE_CONFIG_DIR": str(user)})
+    assert registry.get("helper").prompt == "project body"
+    assert registry.get("helper").source_scope == "project"
+    assert registry.get("explore").prompt == "custom explore"
+    assert registry.get("missing") is None
 
 
-def test_duplicate_id_in_same_scope_is_rejected(tmp_path: Path) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    xdg_config_home = tmp_path / "config"
-    user_dir = user_agent_manifest_dir({"XDG_CONFIG_HOME": str(xdg_config_home)})
-    _write_agent_file(user_dir, "a.md", _custom_frontmatter(name="Dupe"))
-    _write_agent_file(user_dir, "b.md", _custom_frontmatter(name="Dupe"))
-
-    with pytest.raises(ValueError, match="duplicate custom agent manifest id 'dupe'"):
-        _load_registry(workspace, xdg_config_home=xdg_config_home)
-
-
-def test_builtin_id_cannot_be_replaced(tmp_path: Path) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    xdg_config_home = tmp_path / "config"
-    _write_agent_file(
-        project_agent_manifest_dir(workspace),
-        "default.md",
-        _custom_frontmatter(name="Default Impostor", extra="id: default\n"),
-    )
-
-    with pytest.raises(ValueError, match="uses builtin id 'default'; builtin agent manifests cannot be replaced"):
-        _load_registry(workspace, xdg_config_home=xdg_config_home)
+def test_duplicates_in_one_scope_and_malformed_files_report_paths(tmp_path):
+    project = project_agent_dir(tmp_path)
+    first = _write(project, "one.md", _document())
+    second = _write(project, "nested/two.md", _document())
+    with pytest.raises(ValueError, match="duplicate agent name") as error:
+        load_agent_registry(tmp_path, env={"CLAUDE_CONFIG_DIR": str(tmp_path / "user")})
+    assert str(first) in str(error.value) and str(second) in str(error.value)
+    second.write_text("invalid")
+    with pytest.raises(ValueError, match="invalid agent") as error:
+        load_agent_registry(tmp_path, env={"CLAUDE_CONFIG_DIR": str(tmp_path / "user")})
+    assert str(second) in str(error.value)
 
 
-def test_frontmatter_whitelist_and_required_fields(tmp_path: Path) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    xdg_config_home = tmp_path / "config"
-    user_dir = user_agent_manifest_dir({"XDG_CONFIG_HOME": str(xdg_config_home)})
-
-    _write_agent_file(user_dir, "unknown-key.md", _custom_frontmatter(extra="tools: [read]\n"))
-    with pytest.raises(ValueError, match="unsupported frontmatter field 'tools'; supported fields are: "):
-        _load_registry(workspace, xdg_config_home=xdg_config_home)
-
-    (user_dir / "unknown-key.md").unlink()
-    _write_agent_file(user_dir, "missing-mode.md", "name: Missing Mode\ndescription: no mode here\n")
-    with pytest.raises(ValueError, match="missing required frontmatter field") as missing:
-        _load_registry(workspace, xdg_config_home=xdg_config_home)
-    assert "mode" in str(missing.value)
-
-    (user_dir / "missing-mode.md").unlink()
-    _write_agent_file(user_dir, "bad-mode.md", _custom_frontmatter(mode="all"))
-    with pytest.raises(ValueError, match="frontmatter field 'mode' must be 'primary' or 'subagent'"):
-        _load_registry(workspace, xdg_config_home=xdg_config_home)
-
-    (user_dir / "bad-mode.md").unlink()
-    _write_agent_file(user_dir, "numeric-name.md", "name: 7\ndescription: numeric name\nmode: subagent\n")
-    with pytest.raises(ValueError, match="frontmatter field 'name' must be a non-empty string"):
-        _load_registry(workspace, xdg_config_home=xdg_config_home)
+def test_builtin_prompts_and_stances_are_preserved():
+    resources = files("voidcode.plugins.delegation.profiles").joinpath("texts")
+    for agent in list_builtin_agents():
+        assert agent.prompt == resources.joinpath(f"{agent.name}.txt").read_text().strip()
+        assert agent.tools is None
+        assert agent.readonly == (agent.name in {"review", "explore", "research", "plan"})
 
 
-def test_frontmatter_framing_and_value_rejections(tmp_path: Path) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    xdg_config_home = tmp_path / "config"
-    user_dir = user_agent_manifest_dir({"XDG_CONFIG_HOME": str(xdg_config_home)})
-    user_dir.mkdir(parents=True)
-
-    (user_dir / "no-block.md").write_text(f"{_custom_frontmatter()}\nbody\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="must start with a YAML frontmatter delimiter"):
-        _load_registry(workspace, xdg_config_home=xdg_config_home)
-
-    (user_dir / "no-block.md").write_text(f"---\n{_custom_frontmatter()}---\n\n   \n", encoding="utf-8")
-    with pytest.raises(ValueError, match="must not have an empty markdown body"):
-        _load_registry(workspace, xdg_config_home=xdg_config_home)
-
-    (user_dir / "no-block.md").write_text("---\nname: Dupe\nname: Dupe\ndescription: d\nmode: subagent\n---\n\nbody\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="duplicate frontmatter key 'name'"):
-        _load_registry(workspace, xdg_config_home=xdg_config_home)
-
-    (user_dir / "no-block.md").write_text(f"---\n{_custom_frontmatter(extra='preset_hook_refs: [ghost_guard]\n')}---\n\nbody\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="unsupported frontmatter field 'preset_hook_refs'"):
-        _load_registry(workspace, xdg_config_home=xdg_config_home)
-
-    (user_dir / "no-block.md").write_text(f"---\n{_custom_frontmatter(extra='mcp_binding:\n  profile: main\n')}---\n\nbody\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="unsupported frontmatter field 'mcp_binding'"):
-        _load_registry(workspace, xdg_config_home=xdg_config_home)
-
-
-def test_manifest_id_derivation_and_validation() -> None:
-    assert agent_manifest_id_from_name("  My Fancy_Agent!! ") == "my-fancy-agent"
-    assert agent_manifest_id_from_name("A  B") == "a-b"
-    with pytest.raises(ValueError, match="must contain at least one alphanumeric character"):
-        agent_manifest_id_from_name("---")
-    assert is_valid_agent_manifest_id("plan2") is True
-    assert is_valid_agent_manifest_id("2plan") is False
-    assert is_valid_agent_manifest_id("Plan") is False
-
-    manifest = manifest_from_markdown(
-        "---\nname: My Fancy_Agent\ndescription: derived id\nmode: primary\n---\n\nBody text.\n",
-        scope="project",
-        source_path="/tmp/my.md",
-    )
-    assert manifest.id == "my-fancy-agent"
-    assert manifest.prompt_profile == "my-fancy-agent"
-    assert manifest.source_path == "/tmp/my.md"
-    assert manifest.top_level_selectable is True
-
-
-def test_mode_maps_to_top_level_selectable() -> None:
-    primary = manifest_from_markdown(
-        "---\nname: Primary One\ndescription: selectable\nmode: primary\n---\n\nBody text.\n",
-        scope="user",
-    )
-    subagent = manifest_from_markdown(
-        "---\nname: Sub One\ndescription: not selectable\nmode: subagent\n---\n\nBody text.\n",
-        scope="user",
-    )
-
-    assert (primary.mode, primary.top_level_selectable) == ("primary", True)
-    assert (subagent.mode, subagent.top_level_selectable) == ("subagent", False)
-
-
-def test_builtin_prompt_renders_exact_resource_text() -> None:
-    assert is_builtin_prompt_profile("default") is True
-    assert is_builtin_prompt_profile("ghost") is False
-    assert render_builtin_prompt_profile("ghost") is None
-
-    profiles_dir = resource_files("voidcode.plugins.delegation.profiles").joinpath("texts")
-    for manifest in list_builtin_agent_manifests():
-        profile = cast(str, manifest.prompt_profile)
-        expected = profiles_dir.joinpath(f"{profile}.txt").read_text(encoding="utf-8").strip()
-        assert expected
-        assert render_builtin_prompt_profile(profile) == expected
-        assert render_agent_prompt(manifest.prompt_materialization) == expected
-
-    assert render_agent_prompt(None) is None
-    with pytest.raises(ValueError, match="unknown builtin agent prompt profile: ghost"):
-        render_agent_prompt(AgentPromptMaterialization(profile="ghost"))
-
-
-def test_custom_markdown_prompt_rendering_with_append(tmp_path: Path) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    xdg_config_home = tmp_path / "config"
-    user_dir = user_agent_manifest_dir({"XDG_CONFIG_HOME": str(xdg_config_home)})
-    body = "You are the custom body.\n\nKeep it short."
-    _write_agent_file(
-        user_dir,
-        "custom.md",
-        _custom_frontmatter(name="Custom", extra="prompt_append: Prefer terse answers.\n"),
-        body=body,
-    )
-
-    registry = _load_registry(workspace, xdg_config_home=xdg_config_home)
-    manifest = registry.get("custom")
-    assert manifest is not None
-    materialization = manifest.prompt_materialization
-    assert materialization is not None
-    assert materialization.source == "custom_markdown"
-    assert materialization.profile == "custom"
-    assert materialization.body == body
-    assert materialization.prompt_append == "Prefer terse answers."
-    assert render_agent_prompt(materialization) == f"{body}\n\n{_USER_APPEND_HEADING}\nPrefer terse answers."
-
-    (user_dir / "custom.md").unlink()
-    _write_agent_file(user_dir, "plain.md", _custom_frontmatter(name="Plain"), body=body)
-    plain = _load_registry(workspace, xdg_config_home=xdg_config_home).get("plain")
-    assert plain is not None
-    assert render_agent_prompt(plain.prompt_materialization) == body
-
-
-# --- Plugin command surface ---
-
-
-def _command_context(workspace: Path) -> ToolContext:
-    return ToolContext(
-        workspace=workspace,
-        session_id="session-1",
-        run_id="run-1",
-        invocation_id="inv-1",
-        revision_id="rev-1",
-        actor="user",
-        logical_turn="turn-1",
-    )
-
-
-class _NoServices(PluginServices):
-    def get_state(self, scope: Literal["session", "workspace"] = "session"):
-        raise AssertionError("agents reads no plugin state")
-
-    def get_state_schema_version(self, scope: Literal["session", "workspace"] = "session") -> int:
-        raise AssertionError("agents reads no plugin state")
-
-    def replace_state(
-        self,
-        state: Mapping[str, object],
-        expected_version: int,
-        scope: Literal["session", "workspace"] = "session",
-    ) -> int:
-        raise AssertionError("agents writes no plugin state")
-
-    def stage_event(self, event_type: str, payload: Mapping[str, object]) -> None:
-        raise AssertionError("agents stages no events")
-
-    def enqueue_continuation(self, payload: Mapping[str, object], *, idempotency_key: str | None = None) -> str:
-        raise AssertionError("agents enqueues no continuations")
-
-    def cancel_continuations(self, *, continuation_id: str | None = None) -> None:
-        raise AssertionError("agents cancels no continuations")
-
-
-def test_agents_command_lists_builtin_and_project_profiles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    project_dir = workspace / ".voidcode" / "agents"
-    _write_agent_file(
-        project_dir, "custom.md", _custom_frontmatter(name="Custom", description="Local helper", mode="subagent"), body="Do local work."
-    )
-
-    result = AgentsCommand().invoke(
-        CommandInvocation(context=_command_context(workspace), name="agents", arguments={}),
-        _NoServices(),
-    )
-    assert result.status == "ok"
-    assert result.output is not None
-    assert "[subagent] review —" in result.output
-    assert "[primary] default —" in result.output
-    assert "[subagent] custom — Local helper (project, readonly: False)" in result.output
-    rows = {row["id"]: row for row in result.data["profiles"]}  # type: ignore[index]
-    assert rows["custom"]["source_scope"] == "project"
-    assert rows["execute"]["mode"] == "subagent"
-
-
-def test_agents_show_renders_builtin_prompt_and_rejects_unknown(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    review_prompt_resource = Path(__file__).resolve().parents[3] / "src" / "voidcode" / "plugins" / "delegation" / "profiles" / "texts" / "review.txt"
-    expected_prompt = review_prompt_resource.read_text(encoding="utf-8").strip()
-    command = AgentShowCommand()
-
-    shown = command.invoke(
-        CommandInvocation(context=_command_context(workspace), name="agents.show", arguments={"id": "review"}),
-        _NoServices(),
-    )
-    assert shown.status == "ok"
-    assert shown.output == expected_prompt
-    assert shown.data is not None
-    assert "tool_allowlist" not in shown.data
-    assert shown.data["readonly"] is True
-
-    unknown = command.invoke(
-        CommandInvocation(context=_command_context(workspace), name="agents.show", arguments={"id": "nope"}),
-        _NoServices(),
-    )
+def test_agent_commands_report_actual_definition(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "user"))
+    _write(project_agent_dir(tmp_path), "local.md", _document(extra="maxTurns: 3\n"))
+    context = ToolContext(tmp_path, "session", "run", "invocation", "revision", "user")
+    shown = AgentShowCommand().invoke(CommandInvocation(context, "agents.show", {"name": "helper"}), None)
+    assert shown.status == "ok" and shown.output == "Help locally."
+    assert shown.data["name"] == "helper" and shown.data["maxTurns"] == 3
+    assert "model_preference" not in shown.data and "prompt_materialization" not in shown.data
+    listed = AgentsCommand().invoke(CommandInvocation(context, "agents", {}), None)
+    assert listed.status == "ok" and "helper" in listed.output
+    unknown = AgentShowCommand().invoke(CommandInvocation(context, "agents.show", {"name": "missing"}), None)
     assert unknown.status == "error"
-    assert unknown.error == "unknown agent profile: nope"
-
-    missing = command.invoke(
-        CommandInvocation(context=_command_context(workspace), name="agents.show", arguments={}),
-        _NoServices(),
-    )
-    assert missing.status == "error"
-    assert missing.error == "agents.show requires a profile id"
-
-
-def test_create_plugin_registers_commands_and_tools() -> None:
-    plugin = create_plugin({})
-    assert [command.definition.name for command in plugin.commands] == ["agents", "agents.show"]
-    assert [tool.definition.name for tool in plugin.tools] == ["task", "task_batch"]
-    assert plugin.context is None
-
-
-def test_profile_rejects_removed_tool_scope_fields():
-    with pytest.raises(ValueError, match="unsupported field: tool_allowlist"):
-        AgentManifest.from_payload({**DEFAULT_AGENT_MANIFEST.to_payload(), "tool_allowlist": ["read"]})
-    with pytest.raises(ValueError, match="tool_allowlist"):
-        manifest_from_markdown("---\nname: Old\ndescription: old\nmode: subagent\ntool_allowlist: [read]\n---\nOld profile.", scope="project")
+    assert [tool.definition.name for tool in create_plugin({}).tools] == ["task", "task_batch"]

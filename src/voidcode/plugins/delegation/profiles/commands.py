@@ -6,25 +6,19 @@ from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandR
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import ToolEffect
 
-from .models import AgentManifest
-from .prompts import render_agent_prompt
-from .registry import load_agent_manifest_registry
+from .models import AgentDefinition
+from .registry import load_agent_registry
 
 
-def _manifest_row(manifest: AgentManifest) -> dict[str, object]:
+def _agent_row(agent: AgentDefinition) -> dict[str, object]:
     return {
-        "id": manifest.id,
-        "name": manifest.name,
-        "mode": manifest.mode,
-        "description": manifest.description,
-        "source_scope": manifest.source_scope,
-        "source_path": manifest.source_path,
-        "prompt_profile": manifest.prompt_profile,
-        "model_preference": manifest.model_preference,
-        "fallback_models": list(manifest.fallback_models),
-        "readonly": manifest.readonly,
-        "skill_refs": list(manifest.skill_refs),
-        "top_level_selectable": manifest.top_level_selectable,
+        "name": agent.name,
+        "description": agent.description,
+        "source_scope": agent.source_scope,
+        "source_path": agent.source_path,
+        "readonly": agent.readonly,
+        "tools": None if agent.tools is None else list(agent.tools),
+        "maxTurns": agent.max_turns,
     }
 
 
@@ -41,15 +35,12 @@ class AgentsCommand:
         _ = services
         workspace = invocation.context.require_workspace()
         try:
-            registry = load_agent_manifest_registry(workspace)
+            registry = load_agent_registry(workspace)
         except (ValueError, OSError) as exc:
             return CommandResult(status="error", error=str(exc))
-        manifests = registry.list_manifests()
-        rows = [_manifest_row(manifest) for manifest in manifests]
-        lines = [
-            f"- [{manifest.mode}] {manifest.id} — {manifest.description} ({manifest.source_scope}, readonly: {manifest.readonly})"
-            for manifest in manifests
-        ]
+        agents = registry.list_agents()
+        rows = [_agent_row(agent) for agent in agents]
+        lines = [f"- {agent.name} — {agent.description} ({agent.source_scope}, readonly: {agent.readonly})" for agent in agents]
         return CommandResult(status="ok", output="\n".join(lines) or "No agent profiles found.", data={"profiles": rows})
 
 
@@ -59,8 +50,8 @@ class AgentShowCommand:
         description="Show one agent profile's rendered prompt and read-only stance.",
         argument_schema={
             "type": "object",
-            "properties": {"id": {"type": "string", "description": "Agent profile id."}},
-            "required": ["id"],
+            "properties": {"name": {"type": "string", "description": "Agent name."}},
+            "required": ["name"],
             "additionalProperties": False,
         },
         effects=frozenset({ToolEffect.READ}),
@@ -69,27 +60,23 @@ class AgentShowCommand:
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
         _ = services
-        raw_id = invocation.arguments.get("id")
+        raw_id = invocation.arguments.get("name")
         agent_id = raw_id.strip() if isinstance(raw_id, str) else ""
         if not agent_id:
-            return CommandResult(status="error", error="agents.show requires a profile id")
+            return CommandResult(status="error", error="agents.show requires an agent name")
         workspace = invocation.context.require_workspace()
         try:
-            registry = load_agent_manifest_registry(workspace)
+            registry = load_agent_registry(workspace)
         except (ValueError, OSError) as exc:
             return CommandResult(status="error", error=str(exc))
-        manifest = registry.get(agent_id)
-        if manifest is None:
+        agent = registry.get(agent_id)
+        if agent is None:
             return CommandResult(status="error", error=f"unknown agent profile: {agent_id}")
-        try:
-            prompt = render_agent_prompt(manifest.prompt_materialization)
-        except ValueError as exc:
-            return CommandResult(status="error", error=str(exc))
-        data = _manifest_row(manifest)
-        data["prompt"] = prompt
+        data = _agent_row(agent)
+        data["prompt"] = agent.prompt
         return CommandResult(
             status="ok",
-            output=prompt if prompt is not None else f"(no prompt materialization for {agent_id})",
+            output=agent.prompt,
             data=data,
         )
 

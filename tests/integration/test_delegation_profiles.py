@@ -56,20 +56,20 @@ def _invoke(core: Core, session_id: str, name: str, arguments: dict[str, object]
 def test_agents_command_lists_builtins_and_project_profile(tmp_path: Path) -> None:
     core = _core(tmp_path)
     session_id = core.create_session().session_id
-    project_dir = tmp_path / "workspace" / ".voidcode" / "agents"
+    project_dir = tmp_path / "workspace" / ".claude" / "agents"
     project_dir.mkdir(parents=True)
     (project_dir / "helper.md").write_text(
-        "---\nname: Helper\ndescription: Local helper\nmode: subagent\n---\n\nHelp locally.\n",
+        "---\nname: helper\ndescription: Local helper\n---\n\nHelp locally.\n",
         encoding="utf-8",
     )
 
     listed = _invoke(core, session_id, "agents", {})
     assert listed.status == "ok"
     assert listed.output is not None
-    assert "[primary] default —" in listed.output
-    assert "[subagent] review —" in listed.output
-    assert "[subagent] helper — Local helper" in listed.output
-    ids = [row["id"] for row in listed.data["profiles"]]  # type: ignore[index]
+    assert "default —" in listed.output
+    assert "review —" in listed.output
+    assert "helper — Local helper" in listed.output
+    ids = [row["name"] for row in listed.data["profiles"]]  # type: ignore[index]
     assert {"default", "execute", "review", "explore", "research", "plan", "helper"} <= set(ids)
 
 
@@ -77,10 +77,10 @@ def test_agents_show_reads_packaged_prompt_from_the_admitted_artifact(tmp_path: 
     core = _core(tmp_path)
     session_id = core.create_session().session_id
 
-    shown = _invoke(core, session_id, "agents.show", {"id": "review"})
+    shown = _invoke(core, session_id, "agents.show", {"name": "review"})
     assert shown.status == "ok"
     assert shown.output == _REVIEW_PROMPT
 
-    unknown = _invoke(core, session_id, "agents.show", {"id": "missing"})
+    unknown = _invoke(core, session_id, "agents.show", {"name": "missing"})
     assert unknown.status == "error"
     assert unknown.error == "unknown agent profile: missing"

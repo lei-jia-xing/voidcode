@@ -104,11 +104,10 @@ Each key is a plugin id matching `[a-z][a-z0-9_-]*`.
 
 Bundled plugin ids (those shipped in `src/voidcode/plugins/`) need no entry at all: they are enabled with an empty configuration by default, and an entry only exists to disable one, configure it, or point it at a different source.
 
-> Migration: the `agents` plugin id no longer exists — its profile registry (`/agents`,
-> `/agents.show`) now ships inside `delegation`, which also owns `task`/`task_batch`. The two
-> switches have become one: use `plugins.delegation.enabled`. A stale `plugins.agents` section
-> fails closed (an enabled non-bundled id without a `path` is refused); delete it. Profile
-> discovery roots are unchanged (`.voidcode/agents/*.md`, `$XDG_CONFIG_HOME/voidcode/agents`).
+Agent discovery and `/agents`/`agents.show` belong to `delegation`, along with
+`task`/`task_batch`. Agent files use `.claude/agents/` and the supported Claude Code
+Markdown format. See [agent definitions](contracts/agent-definitions.md) for the
+supported fields and explicit runtime limitations.
 
 ## API Environment Variables
 
