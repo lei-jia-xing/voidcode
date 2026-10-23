@@ -195,3 +195,9 @@ class OwnedTransport[TransportT]:
     """One-slot holder letting a frozen provider own a single transport."""
 
     value: TransportT | None = None
+
+    def close(self) -> None:
+        value, self.value = self.value, None
+        closer = getattr(value, "close", None)
+        if callable(closer):
+            closer()

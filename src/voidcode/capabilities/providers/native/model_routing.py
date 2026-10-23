@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
+from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 
 from voidcode.sdk.provider import (
@@ -13,7 +14,7 @@ from voidcode.sdk.provider import (
 
 from .api_routes import api_route_for
 from .config import RoutedWire
-from .model_catalog import ProviderModelMetadata, static_catalog_metadata
+from .model_catalog import static_catalog_metadata
 from .provider_table import WireSource
 
 
@@ -76,19 +77,6 @@ def _routed_model(model_map: Mapping[str, str], model_name: str) -> str:
     return mapped if mapped else model_name
 
 
-def _catalog_api(provider: str, model: str, metadata: ProviderModelMetadata | None) -> str | None:
-    """The model's wire: carried metadata when given, else the shipped row.
-
-    Request-carried metadata is not a core service (the SDK request has no
-    model_metadata field); the shipped static catalog is the source. Callers
-    pass None; the metadata parameter stays for direct callers with a row.
-    """
-    if metadata is not None and metadata.api:
-        return metadata.api
-    shipped = static_catalog_metadata(provider, model)
-    return None if shipped is None else shipped.api
-
-
 @dataclass(frozen=True, slots=True)
 class RoutedTurnProvider:
     """``TurnProvider`` dispatching each request to the wire its model speaks.
@@ -114,7 +102,8 @@ class RoutedTurnProvider:
     def route_for(self, request: ProviderTurnRequest) -> tuple[str, ModelRoute | None]:
         """Return the routed model name and its route (``None`` == unimplemented wire)."""
         model = _routed_model(self.model_map, request.model_name or "")
-        return self.routing.resolve(model, _catalog_api(self.routing.provider, model, None))
+        metadata = static_catalog_metadata(self.routing.provider, model)
+        return self.routing.resolve(model, None if metadata is None else metadata.api)
 
     def _dispatch(self, request: ProviderTurnRequest) -> tuple[StreamableTurnProvider, ProviderTurnRequest]:
         model, route = self.route_for(request)
@@ -142,6 +131,15 @@ class RoutedTurnProvider:
             # would otherwise send the alias upstream.
             request = replace(request, model_name=model)
         return provider, request
+
+    def close(self) -> None:
+        providers = tuple(self._providers.values())
+        self._providers.clear()
+        with ExitStack() as stack:
+            for provider in providers:
+                closer = getattr(provider, "close", None)
+                if callable(closer):
+                    stack.callback(closer)
 
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         provider, routed = self._dispatch(request)

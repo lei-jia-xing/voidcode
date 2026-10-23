@@ -9,6 +9,7 @@ per-model wire routing, and the catalog cost of the reported usage.
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
+from contextlib import ExitStack
 
 from voidcode.sdk.provider import (
     ProviderExecutionError,
@@ -218,11 +219,13 @@ class RegisteredProvider:
             yield price_event(request, event)
 
     def close(self) -> None:
-        for provider in self._providers.values():
-            closer = getattr(provider, "close", None)
-            if callable(closer):
-                closer()
+        providers = tuple(self._providers.values())
         self._providers.clear()
+        with ExitStack() as stack:
+            for provider in providers:
+                closer = getattr(provider, "close", None)
+                if callable(closer):
+                    stack.callback(closer)
 
 
 def build_registered_providers(config: Mapping[str, object]) -> tuple[RegisteredProvider, ...]:

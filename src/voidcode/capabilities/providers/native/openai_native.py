@@ -187,6 +187,11 @@ class OpenAIChatCompletionsTransport:
             kwargs["extra_headers"] = merged
         return kwargs
 
+    def close(self) -> None:
+        client, self._sdk_client = self._sdk_client, None
+        if client is not None and self.http_client is None:
+            client.close()
+
     def _sdk(self) -> OpenAI:
         if self._sdk_client is None:
             http_client = self.http_client
@@ -427,6 +432,9 @@ class OpenAIChatCompletionsProvider:
         endpoint = self._endpoint_config()
         model_map = endpoint.model_map if endpoint is not None else {}
         return model_map.get(model_name) or model_name
+
+    def close(self) -> None:
+        self._owned_transport.close()
 
     def _transport(self) -> OpenAITransport:
         if self.transport is not None:

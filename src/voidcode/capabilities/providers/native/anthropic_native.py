@@ -125,6 +125,11 @@ class AnthropicMessagesTransport:
             headers["x-api-key"] = cast(str, AnthropicAPIKeyOmit())
         return headers
 
+    def close(self) -> None:
+        client, self._sdk_client = self._sdk_client, None
+        if client is not None and self.http_client is None:
+            client.close()
+
     def _sdk(self) -> Anthropic:
         if self._sdk_client is None:
             # ``max_retries=0`` keeps retry/fallback owned by the runtime.
@@ -298,6 +303,9 @@ class AnthropicMessagesProvider:
 
     def provider_config(self) -> AnthropicProviderConfig | None:
         return self.config
+
+    def close(self) -> None:
+        self._owned_transport.close()
 
     def _transport(self) -> AnthropicTransport:
         if self.transport is not None:

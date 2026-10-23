@@ -7,6 +7,7 @@ registered provider name and never learns which vendor policy answered it.
 """
 
 from collections.abc import Mapping
+from contextlib import ExitStack
 
 from voidcode.sdk.plugin import Plugin
 
@@ -19,8 +20,9 @@ def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
     facts = ProviderFacts.from_config(config)
 
     def close() -> None:
-        for provider in providers:
-            provider.close()
+        with ExitStack() as stack:
+            for provider in providers:
+                stack.callback(provider.close)
 
     return Plugin(
         commands=(

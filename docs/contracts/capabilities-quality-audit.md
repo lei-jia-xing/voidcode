@@ -51,7 +51,7 @@ not establish source review.
 | `providers/native/model_catalog.py` | Pending full source review |
 | `providers/native/model_catalog_data.json` | Pending consumer/data-contract review |
 | `providers/native/model_match.py` | Pending full source review |
-| `providers/native/model_routing.py` | Pending full source review |
+| `providers/native/model_routing.py` | Partial: routed ownership/close chain and alias/catalog routing reviewed; first-use concurrency pending |
 | `providers/native/naming.py` | Pending full source review |
 | `providers/native/openai.py` | Pending full source review |
 | `providers/native/openai_native.py` | Pending full source review |
@@ -128,3 +128,20 @@ parser and its two agent/skill consumers, plus exec argument validator uses.
 
 Verification: 77 search/gitignore/frontmatter/exec tests and 5 built-in/core
 composition integration tests passed. Ruff, formatting and source type checks passed.
+
+## Provider resource lifecycle
+
+Source review found that registered providers attempted teardown, but routed and
+native providers did not propagate it to owned SDK clients. Added close methods
+through routed caches, native transport holders and OpenAI/Anthropic/Google
+clients. Borrowed clients/transports are not closed. Cache cleanup clears owned
+references before closing; ExitStack ensures every cached provider is attempted
+even when one close raises. The plugin-level close uses the same stdlib behavior.
+Removed unused metadata parameter/helper from catalog wire routing.
+
+Seven lifecycle tests passed, including real OpenAI/Anthropic SDK pool closure,
+borrowed-pool preservation, Google ownership and cleanup after a close failure.
+First-use cache/client concurrency and full adapter source review remain pending.
+
+Validation: all 85 existing and new provider tests passed (31.83s); Ruff,
+formatting and source type checks passed.

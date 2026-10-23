@@ -127,6 +127,11 @@ class GoogleGenAIProvider:
     # cheaper. Only the first-use race can drop one losing client.
     _owned_client: _OwnedClient = field(default_factory=_OwnedClient, compare=False, repr=False)
 
+    def close(self) -> None:
+        client, self._owned_client.value = self._owned_client.value, None
+        if client is not None:
+            client.close()
+
     def _client(self, *, provider_name: str, model_name: str) -> Any:
         if self.client is not None:
             return self.client
