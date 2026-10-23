@@ -10,9 +10,9 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+from voidcode.capabilities.files.guards import enforce_seen_lines
+from voidcode.capabilities.files.repair import ToolDiagnosticError
 from voidcode.plugins.ast_grep.ast_grep_tool import AstGrepTool
-from voidcode.plugins.ast_grep.guards import enforce_seen_lines
-from voidcode.plugins.ast_grep.repair import ToolDiagnosticError
 from voidcode.sdk.invocation import ToolContext
 
 

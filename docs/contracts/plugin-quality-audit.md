@@ -7,7 +7,7 @@ not a requirement to change every plugin or to add a dependency.
 
 | Plugin | Reviewed areas and changes | Remaining review |
 | --- | --- | --- |
-| `ast_grep` | Import/coupling scan only. | Tool execution, guards, repair and failure paths. |
+| `ast_grep` | Shared file guards/diagnostics replace two identical private modules. Strict argument model; lease-owned process execution; reject incomplete/malformed native results before rewrite. Native-result/guard and bundled-dispatch tests. | Whole-tool WRITE declaration also blocks search in read-only sessions; result metadata and rewrite bounds need a final pass. |
 | `btw` | Command ingress, provider failures, current conversation window, no transcript pollution, pending tool approval. Uses contextual `model_query`; unit and real-provider integration tests. | No specific finding remains in this small package. |
 | `compaction` | Certified context boundaries, resource references, tool-free model summary, paging and truncation; focused unit/integration tests. | Recheck lifecycle/configuration as part of final package pass. |
 | `cron` | Typed wakeup facts, lease owner and stale wakeup identity; focused tests. | Schedule parser, loop command, configuration and deactivation. |
@@ -19,7 +19,7 @@ not a requirement to change every plugin or to add a dependency.
 | `hooks` | Configuration/executor read; custom argv protocol duplicates process execution and has several one-field wrappers. | Plugin callbacks, policy boundary, command-hook compatibility and process lifecycle. |
 | `lsp` | Registration and supervised-service entry point read. | Manager, protocol failures, inventory and teardown. |
 | `mcp` | Import/coupling scan only. | Manager, cache, protocol failures and teardown. |
-| `plan` | Owner-scoped overlays, state, context and deactivation read. | Finish state/configuration and command checks; instructions refer to `/plan off` instead of the registered `/plan.off`. |
+| `plan` | Owner-scoped overlays, state, context and deactivation read; removed unused owner constant, corrected exit instruction to `/plan.off`. Restart/read-only integration tests. | Finish state/configuration validation. |
 | `providers` | Adapter, typed dispatch panel and dedicated usage surface. | Shared adapters/configuration, errors and teardown. |
 | `review` | Command and scope read; fixed peer tool-name list identified. | Scope decision, target parsing, Git reads, prompt bounds and child outcomes. |
 | `session_info` | Typed context/export/copy, explicit truncation, diagnostic headers; focused tests. | Remaining panel inputs, subprocesses and output semantics. |

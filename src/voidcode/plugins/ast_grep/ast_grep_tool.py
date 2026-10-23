@@ -3,14 +3,15 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
-import subprocess
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, ValidationInfo, field_validator
 
+from voidcode.capabilities.files.guards import enforce_read_before_write, enforce_seen_lines
+from voidcode.capabilities.files.repair import raise_tool_diagnostic
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.services import PluginServices
+from voidcode.sdk.services import PluginServices, ProcessResult
 from voidcode.sdk.tools import (
     OpaqueToolBody,
     OutputBounds,
@@ -20,20 +21,16 @@ from voidcode.sdk.tools import (
     ToolCall,
     ToolDefinition,
     ToolEffect,
-    ToolFailure,
     ToolResult,
     ToolSemantic,
     ToolSuccess,
 )
 
-from .guards import _coverage, enforce_read_before_write, enforce_seen_lines
-from .repair import raise_tool_diagnostic
-
-# ── Unified args model for merged AstGrepTool ───────────────────────────────
-
 
 class AstGrepArgs(BaseModel):
-    mode: str  # "search" | "preview" | "replace"
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    mode: Literal["search", "preview", "replace"]
     pattern: str
     path: str
     rewrite: str | None = None
@@ -41,34 +38,11 @@ class AstGrepArgs(BaseModel):
     apply: bool = False
     expectedHash: str | None = None
 
-    @field_validator("mode", mode="after")
+    @field_validator("pattern", "path", "lang")
     @classmethod
-    def _validate_mode(cls, value: str) -> str:
-        if value not in ("search", "preview", "replace"):
-            raise ValueError("mode must be one of search, preview, replace")
-        return value
-
-    @field_validator("pattern", mode="after")
-    @classmethod
-    def _validate_pattern(cls, value: str, info: ValidationInfo) -> str:
-        if not value.strip():
+    def _nonempty_text(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is not None and not value.strip():
             raise ValueError(f"{info.field_name} must not be empty")
-        return value
-
-    @field_validator("path", mode="after")
-    @classmethod
-    def _validate_path(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("path must be a non-empty string")
-        return value
-
-    @field_validator("lang", mode="after")
-    @classmethod
-    def _validate_lang(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        if not value.strip():
-            raise ValueError("lang must not be empty")
         return value
 
 
@@ -92,8 +66,9 @@ def _parse_stream_output(stdout: str) -> list[dict[str, Any]]:
             parsed = json.loads(stripped)
         except json.JSONDecodeError as exc:
             raise ValueError(f"ast-grep returned invalid JSON stream output: {stripped}") from exc
-        if isinstance(parsed, dict):
-            matches.append(parsed)
+        if not isinstance(parsed, dict):
+            raise ValueError("ast-grep match must be a JSON object")
+        matches.append(parsed)
     return matches
 
 
@@ -240,9 +215,8 @@ def _preflight_replace_targets(
             )
             actual_hash = hashlib.sha256(content).hexdigest()
             resolved_key = candidate.resolve().as_posix()
-            _read_paths, read_lines, read_whole_files, _read_hash = _coverage(context)
-            observed_hashes = {content_hash for observed_path, content_hash in read_lines if observed_path == resolved_key}
-            observed_hashes.update(content_hash for observed_path, content_hash in read_whole_files if observed_path == resolved_key)
+            observed_hashes = {content_hash for observed_path, content_hash in context.read_lines if observed_path == resolved_key}
+            observed_hashes.update(content_hash for observed_path, content_hash in context.read_whole_files if observed_path == resolved_key)
             if context.session_id is not None and actual_hash not in observed_hashes and len(observed_hashes) == 1:
                 observed_hash = next(iter(observed_hashes))
                 raise_tool_diagnostic(
@@ -292,35 +266,24 @@ def _preflight_replace_targets(
     return display_paths, original_bytes, source_hashes
 
 
-def _run_ast_grep(*, cmd: list[str], workspace: Path, timeout_seconds: int = 30) -> ToolFailure | subprocess.CompletedProcess[str]:
-    try:
-        completed = subprocess.run(
-            cmd,
-            cwd=workspace.resolve(),
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-        )
-    except subprocess.TimeoutExpired:
-        return ToolFailure(
-            tool_name=cmd[0].replace("-", "_"),
-            error=f"ast-grep timed out after {timeout_seconds}s",
-        )
-    except OSError as exc:
-        return ToolFailure(
-            tool_name=cmd[0].replace("-", "_"),
-            error=f"ast-grep not found or failed: {exc}",
-        )
-    return completed
+def _run_ast_grep(*, cmd: list[str], workspace: Path, services: PluginServices, timeout_seconds: int = 30) -> ProcessResult:
+    result = services.run_process(cmd, cwd=workspace.resolve(), timeout_seconds=timeout_seconds)
+    if result.cancelled:
+        raise ValueError("ast-grep was cancelled")
+    if result.timed_out:
+        raise ValueError(f"ast-grep timed out after {timeout_seconds}s")
+    if result.truncated:
+        raise ValueError("ast-grep output exceeded the process capture limit; narrow the target or pattern")
+    return result
 
 
-def _raise_on_process_failure(*, completed: subprocess.CompletedProcess[str], fallback_message: str) -> None:
-    if completed.returncode != 0:
+def _raise_on_process_failure(*, completed: ProcessResult, fallback_message: str) -> None:
+    if completed.exit_code != 0:
         raise ValueError(completed.stderr.strip() or fallback_message)
 
 
-def _is_no_match_result(completed: subprocess.CompletedProcess[str]) -> bool:
-    return completed.returncode == 1 and not completed.stdout.strip() and not completed.stderr.strip()
+def _is_no_match_result(completed: ProcessResult) -> bool:
+    return completed.exit_code == 1 and not completed.stdout.strip() and not completed.stderr.strip()
 
 
 def _run_preview_replace(
@@ -330,18 +293,16 @@ def _run_preview_replace(
     path_text: str,
     lang: str | None,
     workspace: Path,
+    services: PluginServices,
     timeout_seconds: int = 30,
-) -> ToolFailure | tuple[str, list[dict[str, Any]], int, str]:
+) -> tuple[str, list[dict[str, Any]], int, str]:
     _, relative_path = _resolve_candidate(workspace=workspace, path_text=path_text)
     preview_cmd = ["ast-grep", "run", "--json=stream", "-p", pattern, "-r", rewrite]
     if lang:
         preview_cmd.extend(["--lang", lang])
     preview_cmd.append(relative_path)
 
-    completed = _run_ast_grep(cmd=preview_cmd, workspace=workspace, timeout_seconds=timeout_seconds)
-    if isinstance(completed, ToolFailure):
-        return completed
-
+    completed = _run_ast_grep(cmd=preview_cmd, workspace=workspace, services=services, timeout_seconds=timeout_seconds)
     if _is_no_match_result(completed):
         matches: list[dict[str, Any]] = []
     else:
@@ -391,15 +352,12 @@ class AstGrepTool:
         },
     )
 
-    def __init__(self) -> None:
-        pass
-
     def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:
         workspace = context.require_workspace()
         return self._invoke(call, workspace=workspace, timeout_seconds=30, context=context, services=services)
 
     def _invoke(self, call: ToolCall, *, workspace: Path, timeout_seconds: int, context: ToolContext, services: PluginServices) -> ToolResult:
-        args = self._validate_call(call)
+        args = AstGrepArgs.model_validate(dict(call.arguments))
         if args.mode == "search":
             return self._invoke_search(args, services=services, workspace=workspace, timeout_seconds=timeout_seconds)
         if args.mode in ("preview", "replace"):
@@ -411,19 +369,6 @@ class AstGrepTool:
                 timeout_seconds=timeout_seconds,
             )
         raise ValueError(f"unknown ast_grep mode: {args.mode}")
-
-    def _validate_call(self, call: ToolCall) -> AstGrepArgs:
-        return AstGrepArgs.model_validate(
-            {
-                "mode": call.arguments.get("mode", "search"),
-                "pattern": call.arguments.get("pattern"),
-                "path": call.arguments.get("path"),
-                "rewrite": call.arguments.get("rewrite"),
-                "lang": call.arguments.get("lang"),
-                "apply": call.arguments.get("apply", False),
-                "expectedHash": call.arguments.get("expectedHash"),
-            }
-        )
 
     def _invoke_search(
         self,
@@ -439,10 +384,7 @@ class AstGrepTool:
             cmd.extend(["--lang", args.lang])
         cmd.append(relative_path)
 
-        completed = _run_ast_grep(cmd=cmd, workspace=workspace, timeout_seconds=timeout_seconds)
-        if isinstance(completed, ToolFailure):
-            return ToolFailure(self.definition.name, error=completed.error)
-
+        completed = _run_ast_grep(cmd=cmd, workspace=workspace, services=services, timeout_seconds=timeout_seconds)
         if _is_no_match_result(completed):
             matches: list[dict[str, Any]] = []
         else:
@@ -494,17 +436,15 @@ class AstGrepTool:
         if rewrite is None:
             raise ValueError(f"ast_grep {args.mode} mode requires rewrite")
 
-        preview = _run_preview_replace(
+        relative_path, matches, replacement_count, native_jsonl = _run_preview_replace(
             pattern=args.pattern,
             rewrite=rewrite,
             path_text=args.path,
             lang=args.lang,
+            services=services,
             workspace=workspace,
             timeout_seconds=timeout_seconds,
         )
-        if isinstance(preview, ToolFailure):
-            return ToolFailure(self.definition.name, error=preview.error)
-        relative_path, matches, replacement_count, native_jsonl = preview
         preview_matches = matches[:_MATCH_PREVIEW_LIMIT]
         truncated = replacement_count > len(preview_matches)
 
@@ -572,9 +512,7 @@ class AstGrepTool:
             if args.lang:
                 apply_cmd.extend(["--lang", args.lang])
             apply_cmd.extend(["-U", *apply_paths])
-            completed = _run_ast_grep(cmd=apply_cmd, workspace=workspace, timeout_seconds=timeout_seconds)
-            if isinstance(completed, ToolFailure):
-                return ToolFailure(self.definition.name, error=completed.error)
+            completed = _run_ast_grep(cmd=apply_cmd, workspace=workspace, services=services, timeout_seconds=timeout_seconds)
             if not _is_no_match_result(completed):
                 _raise_on_process_failure(completed=completed, fallback_message="ast-grep replace failed")
 
