@@ -14,7 +14,7 @@ from voidcode.sdk.hooks import ContextContribution
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices
 
-from .types import McpCachedToolSurface, McpManagerState, McpToolDescriptor
+from .types import McpCachedToolSurface, McpManager, McpManagerState, McpToolDescriptor
 
 #: Servers and tools are bounded so a large remote surface never becomes a wall.
 MAX_SERVERS = 32
@@ -31,7 +31,7 @@ class McpInventoryCommand:
         argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
     )
 
-    def __init__(self, manager: Any) -> None:
+    def __init__(self, manager: McpManager) -> None:
         self._manager = manager
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
@@ -47,7 +47,7 @@ class McpInventoryCommand:
         )
 
 
-def context_contribution(manager: Any, context: ToolContext) -> ContextContribution | None:
+def context_contribution(manager: McpManager, context: ToolContext) -> ContextContribution | None:
     """Name the configured MCP servers and their known tools for the model."""
     workspace = context.require_workspace()
     state = manager.current_state()
@@ -58,7 +58,7 @@ def context_contribution(manager: Any, context: ToolContext) -> ContextContribut
     lines = ["MCP servers (use the `mcp` tool with server and tool names):"]
     for server in servers:
         tools = server["tools"]
-        tool_names = ", ".join(tool["name"] for tool in tools) if tools else "no tools discovered yet"
+        tool_names = ", ".join(tool["name"] for tool in tools) if tools else "no tools" if server["tools_known"] == 0 else "not discovered"
         lines.append(f"- {server['name']} [{server['status']}]: {tool_names}")
     text = "\n".join(lines)
     while len(text.encode("utf-8")) > MAX_CONTEXT_BYTES and len(lines) > 1:
@@ -69,16 +69,17 @@ def context_contribution(manager: Any, context: ToolContext) -> ContextContribut
 
 def _inventory_servers(state: McpManagerState, surface: McpCachedToolSurface) -> list[dict[str, Any]]:
     configured = state.configuration.servers
-    status_by_name = {name: runtime.status for name, runtime in state.servers.items()}
     servers: list[dict[str, Any]] = []
     for name in sorted(set(configured) | set(surface.servers))[:MAX_SERVERS]:
         discovered = surface.servers.get(name, ())
+        runtime = state.servers.get(name)
         servers.append(
             {
                 "name": name,
-                "status": status_by_name.get(name, "configured" if name in configured else "unknown"),
+                "status": runtime.status if runtime is not None else "configured" if name in configured else "unknown",
+                "error": runtime.error if runtime is not None else None,
                 "tools": [_tool_payload(tool) for tool in discovered[:MAX_TOOLS_PER_SERVER]],
-                "tools_known": len(discovered),
+                "tools_known": len(discovered) if name in surface.servers else None,
             }
         )
     return servers
@@ -100,7 +101,8 @@ def _render_inventory(servers: list[dict[str, Any]]) -> str:
     for server in servers:
         tools = server["tools"]
         known = server["tools_known"]
-        rendered = ", ".join(str(tool["name"]) for tool in tools) if tools else "none discovered"
+        rendered = ", ".join(str(tool["name"]) for tool in tools) if tools else "no tools" if known == 0 else "not discovered"
         suffix = f" (+{known - len(tools)} more)" if isinstance(known, int) and known > len(tools) else ""
-        lines.append(f"- {server['name']} [{server['status']}]: {rendered}{suffix}")
+        detail = f" error={server['error']}" if server["error"] else ""
+        lines.append(f"- {server['name']} [{server['status']}]: {rendered}{suffix}{detail}")
     return "\n".join(lines)

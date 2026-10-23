@@ -143,16 +143,10 @@ class McpCachedToolSurface:
 
     servers: dict[str, tuple[McpToolDescriptor, ...]] = field(default_factory=dict)
 
-    def descriptors(self) -> tuple[McpToolDescriptor, ...]:
-        return tuple(tool for tools in self.servers.values() for tool in tools)
-
-    def covers(self, server_names: Any) -> bool:
-        return set(server_names) <= set(self.servers)
-
 
 @dataclass(frozen=True, slots=True)
 class McpManagerState:
-    """Static MCP manager state - does not depend on runtime lifecycle."""
+    """Snapshot of configured servers and their current connection states."""
 
     mode: str = "disabled"
     configuration: McpConfigState = field(default_factory=McpConfigState)
@@ -163,14 +157,8 @@ class McpManagerState:
 class McpServerRuntimeState:
     """Runtime-owned connection state for a configured MCP server."""
 
-    server_name: str
     status: Literal["running", "stopped", "failed"] = "stopped"
-    workspace_root: str | None = None
-    stage: str | None = None
     error: str | None = None
-    command: list[str] = field(default_factory=list)
-    url: str | None = None
-    retry_available: bool = False
 
 
 # Protocol definitions for the plugin manager implementation

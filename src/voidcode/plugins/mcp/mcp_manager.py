@@ -17,7 +17,7 @@ import threading
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, suppress
 from pathlib import Path
-from typing import IO, Any, cast
+from typing import IO, Any, Literal, cast
 
 import httpx2
 from anyio.from_thread import BlockingPortal, start_blocking_portal
@@ -207,14 +207,12 @@ class _RunningMcpServer:
         self,
         *,
         server_name: str,
-        workspace_root: Path,
         transport_context: AbstractContextManager[tuple[object, ...]],
         session_context: AbstractContextManager[ClientSession],
         session: ClientSession,
         stderr_log: IO[str] | None,
     ) -> None:
         self.server_name = server_name
-        self.workspace_root = workspace_root
         self.transport_context = transport_context
         self.session_context = session_context
         self.session = session
@@ -240,15 +238,7 @@ class ManagedMcpManager:
         self._configuration = McpConfigState.from_config(config)
         self._running_servers: dict[str, _RunningMcpServer] = {}
         self._state_lock = threading.RLock()
-        self._server_states: dict[str, McpServerRuntimeState] = {
-            name: McpServerRuntimeState(
-                server_name=name,
-                status="stopped",
-                command=list(server.command),
-                url=server.url,
-            )
-            for name, server in self._configuration.servers.items()
-        }
+        self._server_states = {name: McpServerRuntimeState() for name in self._configuration.servers}
         self._request_timeout_seconds = config.request_timeout_seconds or DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS
         self._portal_context: AbstractContextManager[BlockingPortal] | None = None
         self._portal: BlockingPortal | None = None
@@ -382,12 +372,7 @@ class ManagedMcpManager:
         server_config = self._configuration.servers.get(server_name)
         if server_config is None:
             message = f"MCP[{server_name}]: server not found in configuration. Available servers: {list(self._configuration.servers.keys())}"
-            self._mark_failed(
-                key=server_name,
-                workspace_root=workspace.resolve(),
-                stage="startup",
-                error=message,
-            )
+            self._set_server_state(key=server_name, status="failed", error=message)
             raise ValueError(message)
 
         transport = server_config.transport
@@ -441,19 +426,7 @@ class ManagedMcpManager:
                 )
                 session = pending_session_context.__enter__()
                 session_context = pending_session_context
-                if transport == "stdio":
-                    self._mark_started(
-                        key=key,
-                        workspace_root=workspace_root,
-                        command=list(server_config.command),
-                    )
-                else:
-                    self._mark_started(
-                        key=key,
-                        workspace_root=workspace_root,
-                        command=[],
-                        url=server_config.url,
-                    )
+                self._set_server_state(key=key, status="running")
                 portal.call(session.initialize)
             except FileNotFoundError as exc:
                 self._close_partial_server(
@@ -463,17 +436,10 @@ class ManagedMcpManager:
                 )
                 if transport == "stdio":
                     message = f"MCP[{server_name}]: failed to start server - cmd not found (command not found): {server_config.command[0]}"
-                    self._mark_failed(
-                        key=key,
-                        workspace_root=workspace_root,
-                        stage="startup",
-                        error=message,
-                        command=list(server_config.command),
-                    )
+                    self._set_server_state(key=key, status="failed", error=message)
                 else:
                     message = self._report_remote_connect_failure(
                         key=key,
-                        workspace_root=workspace_root,
                         server_name=server_name,
                     )
                 raise ValueError(message) from exc
@@ -493,7 +459,6 @@ class ManagedMcpManager:
                 if transport == "remote-http" and _is_connection_error(leaf):
                     message = self._report_remote_connect_failure(
                         key=key,
-                        workspace_root=workspace_root,
                         server_name=server_name,
                     )
                 else:
@@ -501,19 +466,7 @@ class ManagedMcpManager:
                         leaf,
                         fallback=f"MCP[{server_name}]: failed to initialize server",
                     )
-                    self._mark_failed(
-                        key=key,
-                        workspace_root=workspace_root,
-                        stage="startup",
-                        error=message,
-                        command=list(server_config.command) if transport == "stdio" else None,
-                    )
-                if transport_context is not None:
-                    self._mark_stopped(
-                        key=key,
-                        workspace_root=workspace_root,
-                        preserve_failed_state=True,
-                    )
+                    self._set_server_state(key=key, status="failed", error=message)
                 raise ValueError(message) from exc
             except Exception as exc:
                 self._close_partial_server(
@@ -524,7 +477,6 @@ class ManagedMcpManager:
                 if transport == "remote-http" and _is_connection_error(exc):
                     message = self._report_remote_connect_failure(
                         key=key,
-                        workspace_root=workspace_root,
                         server_name=server_name,
                     )
                 else:
@@ -532,24 +484,11 @@ class ManagedMcpManager:
                         exc,
                         fallback=f"MCP[{server_name}]: failed to initialize server",
                     )
-                    self._mark_failed(
-                        key=key,
-                        workspace_root=workspace_root,
-                        stage="startup",
-                        error=message,
-                        command=list(server_config.command) if transport == "stdio" else None,
-                    )
-                if transport_context is not None:
-                    self._mark_stopped(
-                        key=key,
-                        workspace_root=workspace_root,
-                        preserve_failed_state=True,
-                    )
+                    self._set_server_state(key=key, status="failed", error=message)
                 raise ValueError(message) from exc
 
             running = _RunningMcpServer(
                 server_name=server_name,
-                workspace_root=workspace_root,
                 transport_context=transport_context,
                 session_context=session_context,
                 session=session,
@@ -587,12 +526,7 @@ class ManagedMcpManager:
             if not self._is_recoverable_call_error(exc, stage=stage):
                 self._stop_running_server(running.server_name)
                 if suppress_failure_event_when is None or not suppress_failure_event_when(exc):
-                    self._mark_failed(
-                        key=running.server_name,
-                        workspace_root=running.workspace_root,
-                        stage=stage,
-                        error=message,
-                    )
+                    self._set_server_state(key=running.server_name, status="failed", error=message)
             raise ValueError(message) from exc
 
     def _is_recoverable_call_error(self, exc: Exception, *, stage: str) -> bool:
@@ -690,86 +624,24 @@ class ManagedMcpManager:
         if running is None:
             return
         self._terminate_running_server(running)
-        self._mark_stopped(key=key, workspace_root=running.workspace_root)
+        self._set_server_state(key=key, status="stopped")
 
-    def _mark_failed(
-        self,
-        *,
-        key: str,
-        workspace_root: Path,
-        stage: str,
-        error: str,
-        command: list[str] | None = None,
-    ) -> None:
-        server_name = key
+    def _set_server_state(self, *, key: str, status: Literal["running", "stopped", "failed"], error: str | None = None) -> None:
         with self._state_lock:
-            self._server_states[server_name] = McpServerRuntimeState(
-                server_name=server_name,
-                status="failed",
-                workspace_root=str(workspace_root),
-                stage=stage,
-                error=error,
-                command=list(command or self._server_states.get(server_name, McpServerRuntimeState(server_name=server_name)).command),
-                retry_available=True,
-            )
-
-    def _mark_started(
-        self,
-        *,
-        key: str,
-        workspace_root: Path,
-        command: list[str] | None = None,
-        url: str | None = None,
-    ) -> None:
-        server_name = key
-        with self._state_lock:
-            existing = self._server_states.get(server_name, McpServerRuntimeState(server_name=server_name))
-            self._server_states[server_name] = McpServerRuntimeState(
-                server_name=server_name,
-                status="running",
-                workspace_root=str(workspace_root),
-                command=list(command or existing.command),
-                url=url or existing.url,
-                retry_available=False,
-            )
-
-    def _mark_stopped(
-        self,
-        *,
-        key: str,
-        workspace_root: Path,
-        preserve_failed_state: bool = False,
-    ) -> None:
-        server_name = key
-        with self._state_lock:
-            existing_state = self._server_states.get(server_name, McpServerRuntimeState(server_name=server_name))
-            if not (preserve_failed_state and existing_state.status == "failed" and existing_state.workspace_root == str(workspace_root)):
-                self._server_states[server_name] = McpServerRuntimeState(
-                    server_name=server_name,
-                    status="stopped",
-                    workspace_root=str(workspace_root),
-                    command=list(existing_state.command),
-                    retry_available=bool(self._configuration.servers),
-                )
+            self._server_states[key] = McpServerRuntimeState(status=status, error=error)
 
     def _report_remote_connect_failure(
         self,
         *,
         key: str,
-        workspace_root: Path,
         server_name: str,
     ) -> str:
-        """Record a startup failure diagnostic/event for an unreachable remote-http endpoint.
+        """Record the startup failure for an unreachable remote-http endpoint.
 
         Returns the clean user-facing message raised as a ``ValueError``.
         """
         message = f"MCP[{server_name}]: failed to connect to remote server"
-        self._mark_failed(
-            key=key,
-            workspace_root=workspace_root,
-            stage="startup",
-            error=message,
-        )
+        self._set_server_state(key=key, status="failed", error=message)
         return message
 
     def _message_for_exception(self, exc: BaseException, *, fallback: str) -> str:
