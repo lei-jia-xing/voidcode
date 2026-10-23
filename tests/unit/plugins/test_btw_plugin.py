@@ -36,7 +36,8 @@ class MockServices(PluginServices):
         self.failure = failure
         self.prompts: list[str] = []
 
-    def model_query(self, prompt: str, *, model: str | None = None, max_output_tokens: int | None = None) -> str:
+    def model_query(self, prompt: str, *, model: str | None = None, max_output_tokens: int | None = None, include_context: bool = False) -> str:
+        assert include_context is True
         self.prompts.append(prompt)
         if self.failure is not None:
             raise self.failure

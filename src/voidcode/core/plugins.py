@@ -253,7 +253,7 @@ class PluginRuntime:
         join_child_callback: Callable[[str, str, float], Mapping[str, object]] | None = None,
         send_child_callback: Callable[[str, str, str, str, bool], Mapping[str, object]] | None = None,
         cancel_child_callback: Callable[[str, str, str], bool] | None = None,
-        model_query_callback: Callable[[str, str, str | None, int | None], str] | None = None,
+        model_query_callback: Callable[[str, str, str | None, int | None, bool], str] | None = None,
         progress_callback: Callable[[LeaseContext, Mapping[str, object]], None] | None = None,
         tool_definition_callback: Callable[[str, str, str], tuple[Mapping[str, object] | None, str]] | None = None,
         artifacts_dir: Path | None = None,

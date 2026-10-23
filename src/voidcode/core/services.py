@@ -787,7 +787,7 @@ class RuntimeServices:
             )
         return ToolInvocationReceipt(request_id=request_id, tool_name=name, depth=depth)
 
-    def model_query(self, prompt: str, *, model: str | None = None, max_output_tokens: int | None = None) -> str:
+    def model_query(self, prompt: str, *, model: str | None = None, max_output_tokens: int | None = None, include_context: bool = False) -> str:
         lease = self._active_lease()
         self._check_hook("model_query")
         callback = self._runtime.model_query_callback
@@ -797,7 +797,9 @@ class RuntimeServices:
             raise ValueError("model must be a string or null")
         if max_output_tokens is not None and type(max_output_tokens) is not int:
             raise ValueError("max_output_tokens must be an integer or null")
-        return callback(lease.session_id, str(prompt), model, max_output_tokens)
+        if type(include_context) is not bool:
+            raise ValueError("include_context must be a boolean")
+        return callback(lease.session_id, str(prompt), model, max_output_tokens, include_context)
 
     def get_usage(self, *, since_sequence: int = 0, until_sequence: int | None = None) -> SessionUsageReport:
         lease = self._active_lease()

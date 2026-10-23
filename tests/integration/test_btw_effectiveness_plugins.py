@@ -84,7 +84,7 @@ def _notes_plugin(workspace: Path) -> Path:
     return root
 
 
-def _core(tmp_path: Path, server: OpenAILoopbackServer, *plugin_ids: str) -> Core:
+def _core(tmp_path: Path, server: OpenAILoopbackServer, *plugin_ids: str, approval_mode: str = "yolo") -> Core:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     state_dir = tmp_path / "state"
@@ -99,7 +99,7 @@ def _core(tmp_path: Path, server: OpenAILoopbackServer, *plugin_ids: str) -> Cor
     config = {
         "schema_version": 1,
         "model": {"model": "endpoint/test-model"},
-        "policy": {"approval_mode": "yolo"},
+        "policy": {"approval_mode": approval_mode},
         "providers": {
             "endpoint": {
                 "api_key": "loopback-test-key",
@@ -141,28 +141,62 @@ def test_btw_answers_without_polluting_history(tmp_path: Path) -> None:
         session_id = core.create_session().session_id
         assert core.run("main question", session_id=session_id).status == "completed"
 
+        conversation_before = [event for event in core.events_after(session_id) if event.event_type in {"kernel.user_message", "kernel.model_turn"}]
         result = _invoke(core, session_id, "btw", {"question": "what is 2+2?"})
         assert result.status == "ok"
         assert result.output == "side answer"
 
-        # The side question is one governed model query: no tools, no session history.
+        # The side question reads the conversation but offers no tools.
         assert len(server.requests) == 2
         btw_messages = _messages(server.requests[1])
-        assert [message["role"] for message in btw_messages] == ["user"]
-        prompt = str(btw_messages[0]["content"])
+        assert [message["role"] for message in btw_messages] == ["user", "assistant", "user"]
+        prompt = str(btw_messages[-1]["content"])
         assert "what is 2+2?" in prompt
         assert "NO tools" in prompt
-        assert "main question" not in prompt
+        assert btw_messages[0]["content"] == "main question"
+        assert btw_messages[1]["content"] == "first answer"
         assert server.requests[1].get("tools") in (None, [])
 
         # The core records the canonical diagnostic fact; the plugin stages nothing.
         event_types = [event.event_type for event in core.events_after(session_id)]
         assert "kernel.model_query" in event_types
+        assert [
+            event for event in core.events_after(session_id) if event.event_type in {"kernel.user_message", "kernel.model_turn"}
+        ] == conversation_before
         assert not [event for event in event_types if event.startswith("plugin.btw.")]
 
         empty = _invoke(core, session_id, "btw", {"question": "   "})
         assert empty.status == "error"
         assert empty.error == "side question must not be empty"
+
+
+def test_btw_uses_complete_context_while_tool_approval_is_pending(tmp_path: Path) -> None:
+    replies = [
+        openai_response(
+            message={
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "pending", "type": "function", "function": {"name": "notes_write", "arguments": "{}"}}],
+            },
+            finish="tool_calls",
+        ),
+        openai_response(message={"role": "assistant", "content": "side answer"}, finish="stop"),
+    ]
+    with _loopback_server(replies) as server:
+        core = _core(tmp_path, server, "btw", approval_mode="ask")
+        session_id = core.create_session().session_id
+        main = core.run("write a note", session_id=session_id)
+        assert main.pending_approval is not None
+        before = core.session(session_id)
+        result = _invoke(core, session_id, "btw", {"question": "what did I request?"})
+        assert result.status == "ok"
+        messages = _messages(server.requests[1])
+        assert [message["role"] for message in messages] == ["user", "user"]
+        assert messages[0]["content"] == "write a note"
+        assert not any(message.get("tool_calls") for message in messages)
+        after = core.session(session_id)
+        assert after.status == before.status
+        assert after.run_id == before.run_id
 
 
 def test_effectiveness_projects_real_session_events(tmp_path: Path) -> None:

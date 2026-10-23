@@ -3191,11 +3191,11 @@ class Core:
         prompt: str,
         model: str | None = None,
         max_output_tokens: int | None = None,
+        include_context: bool = False,
     ) -> str:
-        """One provider turn with no tools and no session history, for plugin-side questions.
+        """A tool-free side turn, optionally reading the current conversation window.
 
-        The turn is truthful: its usage becomes a durable control fact, it cannot see or alter
-        the session's conversation, and cancellation/timeout are the core's.
+        Usage is recorded, but the question and answer never extend the conversation.
         """
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode("utf-8")) > 64 * 1024:
             raise ValueError("model query prompt must be nonempty UTF-8 text within 64 KiB")
@@ -3212,8 +3212,13 @@ class Core:
             if type(max_output_tokens) is not int or max_output_tokens < 1:
                 raise ValueError("max_output_tokens must be a positive integer")
             metadata["max_output_tokens"] = max_output_tokens
+        context: tuple[ProviderMessage, ...] = ()
+        if include_context:
+            session = self.store.session(session_id)
+            execution = _Execution(session, _Cursor(), list(self.store.events(session_id)), session.run_id or uuid4().hex)
+            context = self._messages(execution, completed_only=True)
         request = ProviderTurnRequest(
-            messages=(ProviderMessage("user", prompt),),
+            messages=(*context, ProviderMessage("user", prompt)),
             available_tools=(),
             raw_model=selected,
             provider_name=provider_name,
@@ -4857,10 +4862,11 @@ class Core:
             self._report(execution, call, ToolFailure(call.tool_name, message), interrupted=True)
             first = False
 
-    def _messages(self, execution: _Execution, *, allow_pending: bool = False) -> tuple[ProviderMessage, ...]:
+    def _messages(self, execution: _Execution, *, allow_pending: bool = False, completed_only: bool = False) -> tuple[ProviderMessage, ...]:
         messages: list[ProviderMessage] = []
         pending_calls: tuple[ToolCall, ...] = ()
         pending_index = 0
+        batch_start = 0
         batch_sequence: int | None = None
         # A verified projection replaces a committed prefix with its owner's summary, so a long
         # session keeps a bounded window without rewriting a single historical event.
@@ -4910,6 +4916,7 @@ class Core:
                 if pending_calls:
                     raise ValueError("provider turn crossed an unfinished native batch")
                 turn = decode_provider_result(_wire_object(event.payload["result"], "model turn"))
+                batch_start = len(messages)
                 messages.append(
                     ProviderMessage("assistant", turn.output, reasoning=turn.reasoning, tool_calls=turn.tool_calls, metadata=turn.metadata or {})
                 )
@@ -4946,7 +4953,9 @@ class Core:
                 pending_index += 1
                 if pending_index == len(pending_calls):
                     pending_calls = ()
-        if pending_calls:
+        if pending_calls and completed_only:
+            del messages[batch_start:]
+        elif pending_calls:
             if not allow_pending:
                 raise ValueError("cannot call the provider before completing the pending native batch")
             if execution.cursor.batch_sequence != batch_sequence or execution.cursor.next_call != pending_index:

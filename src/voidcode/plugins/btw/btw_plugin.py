@@ -1,11 +1,4 @@
-"""Btw plugin: answer a side question with one governed provider turn.
-
-Ported from legacy ``RuntimeService.ask_side_question`` (native ``/btw``): the answer
-comes from one tool-free, history-free provider turn, so the session transcript is never
-touched — no history pollution, no tools, and no follow-up turn. The core records the
-canonical ``kernel.model_query`` diagnostic fact for the call, so this plugin stages no
-state and no events of its own.
-"""
+"""Answer a tool-free side question using the current conversation window."""
 
 from __future__ import annotations
 
@@ -17,7 +10,7 @@ from voidcode.sdk.plugin import Plugin
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import ToolEffect
 
-#: Legacy wrapper instruction, verbatim (``runtime/service.py:ask_side_question``).
+#: The side turn has context, but cannot invoke tools or continue autonomously.
 SIDE_QUESTION_WRAPPER = (
     "This is a side question from the user. Answer it directly in a single response.\n"
     "You have NO tools available and there will be no follow-up turns; answer only from the conversation context.\n"
@@ -26,7 +19,7 @@ SIDE_QUESTION_WRAPPER = (
 
 
 def wrap_side_question(question: str) -> str:
-    """The exact prompt the legacy fork sent: the wrapper plus the cleaned question."""
+    """Wrap the cleaned question with the constraints of a side turn."""
     return f"{SIDE_QUESTION_WRAPPER}{question}"
 
 
@@ -46,7 +39,7 @@ class BtwCommand:
         },
         # One provider turn: no session or workspace mutation, so a read-only session keeps it.
         effects=frozenset({ToolEffect.NETWORK}),
-        # Legacy parity: a side question may be asked while the session is busy.
+        # A side question may be asked while the session is busy.
         busy_gate=False,
     )
 
@@ -56,7 +49,7 @@ class BtwCommand:
             return CommandResult(status="error", error="side question must not be empty")
         question = raw_question.strip()
         try:
-            answer = services.model_query(wrap_side_question(question))
+            answer = services.model_query(wrap_side_question(question), include_context=True)
         except Exception as exc:  # noqa: BLE001 - the failure itself is what the user must see
             return CommandResult(status="error", error=f"side question failed: {type(exc).__name__}: {exc}")
         if not answer.strip():

@@ -39,3 +39,12 @@ The core (`src/voidcode/core/`) governs runs over append-only events and durable
 - **Effect classification**: policy admission classifies *external mutation* (`WRITE`, `EXECUTE`, `SPAWN`) through one shared predicate. `read_only` refuses `WRITE` and `EXECUTE` — never `READ`, never `SESSION`, which is internal core/plugin state (a goal status update is not a filesystem or process mutation), and never `SPAWN` on its own, because delegation creates no privilege: a restricted owner may only spawn a child that inherits the restriction, and the core records that stance on the child. Approval mode auto-allows reads and internal state operations in every mode, so only externally mutating work reaches the human gate; `read_only` is checked before approval, so it stays stronger than `yolo`, and a `WRITE` tool still waits under `ask` and is still refused under `read_only`.
 - **Keyed continuations**: a continuation enqueued with an idempotency key gets a deterministic identity derived from `(session, owner, key)`, so two concurrent leases that both stage before either commits return the same id, which names exactly one durable row; unkeyed continuations keep random identities, and an existing durable row for a key keeps its original id.
 - **Budget admission**: every capped metric fails closed when its value is unknown (tokens, cost, and elapsed alike); the final cancellation and budget check runs immediately before the dispatch that reserves the root step and bills the provider.
+
+## Side model queries
+
+`PluginServices.model_query` performs one governed, tool-free provider turn. It defaults
+to an isolated prompt; `include_context=True` reads the current conversation window,
+including its verified compaction summary and contributed plugin context. An unfinished
+native tool batch is omitted as a whole, so providers never receive dangling tool calls.
+The question and answer do not extend the main conversation; usage is recorded in
+`kernel.model_query`. The bundled `/btw` command requests this contextual mode.

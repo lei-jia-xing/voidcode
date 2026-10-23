@@ -777,8 +777,8 @@ class PluginServices(Protocol):
         """Every process this runtime supervises for this session, running or already exited."""
         ...
 
-    def model_query(self, prompt: str, *, model: str | None = None, max_output_tokens: int | None = None) -> str:
-        """One governed provider turn with no tools and no history; returns the text output."""
+    def model_query(self, prompt: str, *, model: str | None = None, max_output_tokens: int | None = None, include_context: bool = False) -> str:
+        """One tool-free provider turn; optionally read the current context without extending it."""
         ...
 
     def cancel_child(self, child_session_id: str, reason: str = "owner cancellation") -> bool:
