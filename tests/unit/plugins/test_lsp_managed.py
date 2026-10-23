@@ -525,3 +525,29 @@ def test_missing_server_binary_reports_current_configuration_path(harness: tuple
     state = manager.current_state().servers["missing"]
     assert state.status == "failed"
     assert state.last_error == str(error.value)
+
+
+@pytest.mark.parametrize("id_kind", ["same", "different", "string"])
+def test_server_requests_receive_errors_without_confusing_client_responses(harness: tuple[_Services, Path], id_kind: str) -> None:
+    from voidcode.plugins.lsp.lsp_manager import LspRequest
+
+    services, tmp_path = harness
+    record = tmp_path / "record.jsonl"
+    manager = build_lsp_manager(
+        lsp_config_from_mapping(
+            {
+                "servers": {
+                    "echo": {
+                        "command": [sys.executable, str(_FIXTURE), "--record", str(record), "--server-request-id", id_kind],
+                    }
+                }
+            }
+        )
+    )
+    response = manager.request(
+        LspRequest(server_name="echo", method="test/echo", params={"value": 42}, workspace=tmp_path, session_id="duplex", services=services)
+    )
+    assert response.response["result"] == {"echo": {"value": 42}}
+    replies = [entry["reply"] for entry in _echo_methods(record) if entry["method"] == "__client_reply__"]
+    expected_id = 1 if id_kind == "same" else 900 if id_kind == "different" else "server-id"
+    assert replies == [{"jsonrpc": "2.0", "id": expected_id, "error": {"code": -32601, "message": "Method not found"}}]

@@ -835,12 +835,28 @@ class ManagedLspManager:
             running_server,
             message={"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
         )
-        response = self._read_message(services, running_server, server_name=server_name, abort_signal=abort_signal)
-        while response is not None and response.get("id") != request_id:
+        while True:
             response = self._read_message(services, running_server, server_name=server_name, abort_signal=abort_signal)
-        if response is None:
-            raise LspProtocolError(f"No response from LSP server {server_name} for {method}")
-        return response
+            if response is None:
+                raise LspProtocolError(f"No response from LSP server {server_name} for {method}")
+            if "method" in response:
+                if not isinstance(response["method"], str):
+                    raise LspProtocolError("LSP method must be a string")
+                if "id" in response:
+                    if type(response["id"]) not in (str, int):
+                        raise LspProtocolError("LSP request id must be an integer or string")
+                    # No server-request capabilities are advertised. Reject unsupported
+                    # requests explicitly; notifications must never receive a response.
+                    self._write_message(
+                        services,
+                        running_server,
+                        message={"jsonrpc": "2.0", "id": response["id"], "error": {"code": -32601, "message": "Method not found"}},
+                    )
+                continue
+            if type(response.get("id")) is int and response["id"] == request_id:
+                if ("result" in response) == ("error" in response):
+                    raise LspProtocolError("LSP response requires exactly one of result or error")
+                return response
 
     def _send_notification(
         self,

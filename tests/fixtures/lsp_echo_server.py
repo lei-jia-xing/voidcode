@@ -30,12 +30,30 @@ def _read_exact(stream, count: int) -> bytes:
     return data
 
 
+def _read_message(stream):
+    header = b""
+    while b"\r\n\r\n" not in header:
+        chunk = stream.read(1)
+        if not chunk:
+            raise EOFError
+        header += chunk
+    length = int(header.decode("ascii").split("Content-Length:")[1].split("\r\n")[0].strip())
+    return json.loads(_read_exact(stream, length).decode("utf-8"))
+
+
+def _write_message(stream, message):
+    body = json.dumps(message).encode("utf-8")
+    stream.write(b"Content-Length: %d\r\n\r\n" % len(body) + body)
+    stream.flush()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--record", required=True)
     parser.add_argument("--grandchild", default=None)
     parser.add_argument("--hang-after", type=int, default=None)
     parser.add_argument("--initialize-result", default=None)
+    parser.add_argument("--server-request-id", choices=("same", "different", "string"))
     args = parser.parse_args()
     encoding = os.environ.get("LSP_ENCODING", "utf-16")
     stdin = sys.stdin.buffer
@@ -49,14 +67,7 @@ def main() -> int:
     responses_sent = 0
     try:
         while True:
-            header = b""
-            while b"\r\n\r\n" not in header:
-                chunk = stdin.read(1)
-                if not chunk:
-                    return 0
-                header += chunk
-            length = int(header.decode("ascii").split("Content-Length:")[1].split("\r\n")[0].strip())
-            message = json.loads(_read_exact(stdin, length).decode("utf-8"))
+            message = _read_message(stdin)
             method = message.get("method", "")
             record.write(json.dumps({"method": method, "id": message.get("id")}) + "\n")
             record.flush()
@@ -80,6 +91,13 @@ def main() -> int:
             if method == "shutdown":
                 response = {"jsonrpc": "2.0", "id": message.get("id"), "result": None}
             elif method == "initialize":
+                if args.server_request_id:
+                    server_id = message["id"] if args.server_request_id == "same" else 900 if args.server_request_id == "different" else "server-id"
+                    _write_message(stdout, {"jsonrpc": "2.0", "method": "window/logMessage", "params": {"type": 3, "message": "notice"}})
+                    _write_message(stdout, {"jsonrpc": "2.0", "id": server_id, "method": "test/unsupported", "params": {}})
+                    reply = _read_message(stdin)
+                    record.write(json.dumps({"method": "__client_reply__", "reply": reply}) + "\n")
+                    record.flush()
                 next_id = message.get("id", 0)
                 response = {
                     "jsonrpc": "2.0",
@@ -92,9 +110,7 @@ def main() -> int:
                 }
             else:
                 response = {"jsonrpc": "2.0", "id": message.get("id"), "result": {"echo": message.get("params")}}
-            body = json.dumps(response).encode("utf-8")
-            stdout.write(b"Content-Length: %d\r\n\r\n" % len(body) + body)
-            stdout.flush()
+            _write_message(stdout, response)
             responses_sent += 1
             _ = next_id
     except EOFError, BrokenPipeError:
