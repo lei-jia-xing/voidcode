@@ -25,6 +25,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
 from voidcode.sdk.invocation import ToolContext
+from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.services import PluginServices, ProcessHandle
 from voidcode.sdk.tools import (
     ConfirmedStop,
@@ -323,15 +324,39 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+class _ProcessRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
+
+    process_id: NonEmptyProcessId
+    pid: int = Field(gt=0)
+    start_time: str = Field(min_length=1)
+    description: str
+    command: NonEmptyCommand
+    stdout_path: str = Field(min_length=1)
+    stderr_path: str = Field(min_length=1)
+    started_at: str = Field(min_length=1)
+    state: Literal["running", "exited"]
+    exit_code: int | None = None
+
+
+class _ProcessState(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
+
+    schema_version: int = Field(ge=_STATE_VERSION, le=_STATE_VERSION)
+    processes: dict[str, _ProcessRecord]
+
+
 def _read_records(services: PluginServices) -> tuple[dict[str, Mapping[str, object]], int]:
-    """The workspace's persisted identities and their version; a missing or empty row is empty."""
+    """Validate persisted identities once; malformed state is never an empty inventory."""
     state, version = services.get_state("workspace")
+    if state is None:
+        return {}, version
+    parsed = _ProcessState.model_validate(json_wire_object(state))
     records: dict[str, Mapping[str, object]] = {}
-    raw = state.get("processes") if state is not None else None
-    if isinstance(raw, Mapping):
-        for process_id, record in raw.items():
-            if isinstance(process_id, str) and isinstance(record, Mapping):
-                records[process_id] = {key: value for key, value in record.items() if isinstance(key, str)}
+    for process_id, record in parsed.processes.items():
+        if record.process_id != process_id:
+            raise ValueError("background process record id does not match its state key")
+        records[process_id] = record.model_dump(exclude_unset=True)
     return records, version
 
 

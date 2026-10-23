@@ -720,3 +720,32 @@ def test_a_handler_without_the_process_service_fails_visibly(tmp_path: Path) -> 
 
     with pytest.raises(ValueError, match="background_process requires the core background process service"):
         _tool().invoke(ToolCall("background_process", {"op": "start", "command": "serve"}), context=_context(tmp_path), services=_StateOnly())  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {},
+        {"schema_version": 1, "processes": []},
+        {"schema_version": True, "processes": {}},
+        {"schema_version": 2, "processes": {}},
+        {"schema_version": 1, "processes": {"broken": None}},
+        _state({**_persisted(_handle("proc-bad", pid=123)), "pid": 0}),
+        _state({**_persisted(_handle("proc-bad", pid=123)), "pid": True}),
+        _state({**_persisted(_handle("proc-bad", pid=123)), "command": ""}),
+        _state({key: value for key, value in _persisted(_handle("proc-bad", pid=123)).items() if key != "start_time"}),
+        {"schema_version": 1, "processes": {"wrong-key": _persisted(_handle("proc-bad", pid=123))}},
+    ],
+)
+def test_corrupt_process_state_is_not_an_empty_or_fabricated_inventory(tmp_path: Path, state: Mapping[str, object]) -> None:
+    services = _FakeServices(state=state)
+    if not state:
+
+        def empty_state(scope="workspace"):
+            services.calls.append(("get_state", {"scope": scope}))
+            return {}, 0
+
+        services.get_state = empty_state
+    with pytest.raises(ValueError):
+        _invoke({"op": "ps"}, tmp_path, services)
+    assert services.names() == ["get_state"]
