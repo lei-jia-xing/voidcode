@@ -886,3 +886,28 @@ def test_unsent_reminder_does_not_consume_cycle_allowance(tmp_path: Path, status
     assert not services.staged_continuations
     todo_observer(_run_fact(), _context(tmp_path), services)
     assert services.staged_continuations[-1][0]["attempt"] == 1
+
+
+@pytest.mark.parametrize("value", [True, 1.0])
+def test_summary_counts_reject_coercible_values(value: object) -> None:
+    payload = _raw_state(({"name": "Tasks", "tasks": [{"content": "one", "status": "pending"}]},), revision=0)
+    payload["summary"]["total"] = value
+    with pytest.raises(ValueError, match="summary does not match"):
+        TodoState.from_payload(payload)
+
+
+def test_todo_schema_version_requires_integer() -> None:
+    payload = _raw_state((), revision=0)
+    payload["schema_version"] = 2.0
+    with pytest.raises(ValueError, match="schema_version"):
+        TodoState.from_payload(payload)
+
+
+def test_unknown_effect_is_not_silently_discarded_as_read_only(tmp_path: Path) -> None:
+    services = MockServices()
+    _invoke(services, tmp_path, {"op": "init", "items": ["one"]})
+    before = services.get_state()
+    with pytest.raises(ValueError, match="unknown-effect"):
+        todo_observer(_invocation_fact("custom", effects=("read", "unknown-effect")), _context(tmp_path), services)
+    assert services.get_state() == before
+    assert not services.staged_continuations

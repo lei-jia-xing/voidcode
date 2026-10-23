@@ -169,14 +169,14 @@ class TodoState:
         missing = sorted(_STATE_KEYS - raw.keys())
         if missing:
             raise ValueError("todo state is missing field(s): " + ", ".join(missing))
-        if raw["schema_version"] != SCHEMA_VERSION:
+        if type(raw["schema_version"]) is not int or raw["schema_version"] != SCHEMA_VERSION:
             raise ValueError(f"todo state schema_version must be {SCHEMA_VERSION}, got {raw['schema_version']!r}")
         revision = raw["revision"]
         if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
             raise ValueError("todo state revision must be a non-negative integer")
         phases = parse_phases(raw["phases"])
         summary = raw["summary"]
-        if not isinstance(summary, Mapping) or dict(summary) != dict(todo_summary(phases)):
+        if not isinstance(summary, Mapping) or any(type(value) is not int for value in summary.values()) or dict(summary) != todo_summary(phases):
             raise ValueError("todo state summary does not match phases")
         reminders = parse_reminders(raw["reminders"])
         return cls(
@@ -881,17 +881,6 @@ def _sync_cycle(state: TodoState, services: PluginServices, run_id: str) -> tupl
     return state, state.cycle_run_id or run_id
 
 
-def _effect_set(effects: Sequence[str]) -> frozenset[ToolEffect]:
-    """Map declared effect names to the SDK enum; an unknown name can never be read-tier."""
-    mapped: set[ToolEffect] = set()
-    for effect in effects:
-        try:
-            mapped.add(ToolEffect(effect))
-        except ValueError:
-            continue
-    return frozenset(mapped)
-
-
 def _incomplete_count(phases: Sequence[TodoPhase]) -> int:
     return sum(1 for phase in phases for task in phase["tasks"] if task["status"] in _INCOMPLETE_STATUSES)
 
@@ -901,7 +890,7 @@ def _account_invocation(state: TodoState, fact: InvocationFinishedFact, cycle: s
     if fact.status == "ok" and fact.tool_name in OWN_TOOL_NAMES and fact.owner == OWNER:
         # A todo touch clears the mutation counter, exactly like the legacy recalculation.
         mid = replace(mid, mutations=0, mutation_baseline=0)
-    elif fact.status == "ok" and fact.tool_name not in OWN_TOOL_NAMES and not is_read_tier(_effect_set(fact.effects)):
+    elif fact.status == "ok" and fact.tool_name not in OWN_TOOL_NAMES and not is_read_tier(frozenset(ToolEffect(effect) for effect in fact.effects)):
         mid = replace(mid, mutations=mid.mutations + 1)
     decision = decide_todo_mid_run_nudge(
         state=mid,
