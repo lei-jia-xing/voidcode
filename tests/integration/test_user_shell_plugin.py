@@ -109,3 +109,28 @@ def test_shell_requires_a_command_argument(tmp_path: Path) -> None:
     assert empty.error == "shell requires a non-empty command"
     # The failure is durable as the command outcome, but nothing was executed.
     assert not [event for event in core.events_after(session_id) if event.event_type == "plugin.user_shell.shell_executed"]
+
+
+def test_shell_captures_stderr_and_retains_bounded_preview(tmp_path: Path) -> None:
+    core = _core(tmp_path, read_only=False, approval_mode="ask")
+    session_id = core.create_session().session_id
+    result = _invoke(core, session_id, "shell", {"command": "printf 'oops\\n' >&2; exit 7"})
+    assert result.output == "oops\n"
+    assert result.data is not None and result.data["exit_code"] == 7
+    long_result = _invoke(core, session_id, "shell", {"command": "head -c 20000 /dev/zero | tr '\\0' a"})
+    assert long_result.output == "a" * 5000 + "…10000 chars truncated…" + "a" * 5000
+    assert long_result.data is not None and long_result.data["truncated"] is True
+    event = [event for event in core.events_after(session_id) if event.event_type == "plugin.user_shell.shell_executed"][-1]
+    assert event.payload["stdout"] == "a" * 20000
+    assert event.payload["cancelled"] is False
+
+
+def test_shell_marks_output_past_the_capture_limit(tmp_path: Path) -> None:
+    core = _core(tmp_path, read_only=False, approval_mode="ask")
+    session_id = core.create_session().session_id
+    result = _invoke(core, session_id, "shell", {"command": "head -c 300000 /dev/zero | tr '\\0' a"})
+    assert result.status == "ok"
+    assert result.data is not None and result.data["truncated"] is True
+    assert "[process output exceeded capture limit]" in (result.output or "")
+    event = [event for event in core.events_after(session_id) if event.event_type == "plugin.user_shell.shell_executed"][-1]
+    assert len(str(event.payload["stdout"])) == 262144

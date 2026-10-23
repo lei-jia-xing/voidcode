@@ -1,17 +1,4 @@
-"""User shell plugin: the ``!`` escape as an ordinary EXECUTE command.
-
-Ports the legacy ``user_shell`` escape (``src/voidcode/runtime/user_shell.py``: one-bang parse,
-login-shell execution, 3600 s timeout, middle-truncated 10k output, the
-``<user_shell_command>`` record) onto the core's command contract:
-
-- the command declares the client syntax ``!``; the core itself never parses
-  the prefix, clients route it from the command catalog;
-- it follows the same effects/read-only rules as every command: EXECUTE is
-  denied under a read-only session or plan overlay, and works otherwise;
-- the invocation is recorded as one durable ``shell_executed`` event with the exit code,
-  duration, truncation and timed-out flags, and the model-visible record text stays available
-  for export.
-"""
+"""The governed ``!`` command, executed through the invocation's process service."""
 
 from __future__ import annotations
 
@@ -25,10 +12,11 @@ from voidcode.sdk.tools import ToolEffect
 
 from .user_shell import (
     USER_SHELL_TIMEOUT_SECONDS,
-    UserShellResult,
-    execute_user_shell_command,
+    USER_SHELL_TRUNCATION_BYTES,
     format_user_shell_record,
+    login_shell_args,
     parse_shell_escape,
+    truncate_middle_chars,
 )
 
 
@@ -39,7 +27,9 @@ def _command_text(value: object) -> str | None:
     if not stripped:
         return None
     # Accept the raw client remainder including a stray leading "!".
-    return parse_shell_escape(stripped) or stripped
+    escaped = parse_shell_escape(stripped)
+    command = stripped if escaped is None else escaped
+    return command if command.strip() else None
 
 
 class ShellCommand:
@@ -64,39 +54,39 @@ class ShellCommand:
         if command is None:
             return CommandResult(status="error", error="shell requires a non-empty command")
         workspace = invocation.context.require_workspace()
-        result: UserShellResult = execute_user_shell_command(
-            command,
+        result = services.run_process(
+            login_shell_args(command),
             cwd=workspace,
             timeout_seconds=USER_SHELL_TIMEOUT_SECONDS,
         )
-        record = format_user_shell_record(command, result)
-        services.stage_event(
-            "shell_executed",
-            {
-                "command": command,
-                "exit_code": result.exit_code,
-                "status": result.status,
-                "duration_seconds": result.duration_seconds,
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-                "output": result.output,
-                "truncated": result.truncated,
-                "timed_out": result.timed_out,
-                "record": record,
-            },
-        )
+        if result.cancelled:
+            status = "cancelled"
+        elif result.timed_out:
+            status = "timed_out"
+        else:
+            status = "completed" if result.exit_code == 0 else "failed"
+        raw_output = result.stdout + result.stderr
+        if result.truncated:
+            raw_output += "\n[process output exceeded capture limit]"
+        if result.cancelled or result.timed_out:
+            raw_output = f"command {status}\n{raw_output}"
+        output = truncate_middle_chars(raw_output, USER_SHELL_TRUNCATION_BYTES)
+        record = format_user_shell_record(command, result, output)
+        data = {
+            "command": command,
+            "exit_code": result.exit_code,
+            "status": status,
+            "duration_seconds": result.duration_ms / 1000,
+            "truncated": result.truncated or output != raw_output,
+            "timed_out": result.timed_out,
+            "cancelled": result.cancelled,
+            "record": record,
+        }
+        services.stage_event("shell_executed", {**data, "stdout": result.stdout, "stderr": result.stderr, "output": output})
         return CommandResult(
             status="ok",
-            output=result.output if result.output else f"(no output; exit code {result.exit_code})",
-            data={
-                "command": command,
-                "exit_code": result.exit_code,
-                "status": result.status,
-                "duration_seconds": result.duration_seconds,
-                "truncated": result.truncated,
-                "timed_out": result.timed_out,
-                "record": record,
-            },
+            output=output or f"(no output; exit code {result.exit_code})",
+            data=data,
         )
 
 

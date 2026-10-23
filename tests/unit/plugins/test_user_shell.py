@@ -1,29 +1,18 @@
-"""Unit tests for the user_shell plugin, including real subprocess execution."""
+"""Shell selection, output presentation, and truthful process outcomes."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from voidcode.plugins.user_shell import (
-    USER_SHELL_HELP_HINT,
-    USER_SHELL_HELP_TITLE,
-    USER_SHELL_TIMEOUT_SECONDS,
-    USER_SHELL_TRUNCATION_BYTES,
-    UserShellResult,
-    execute_user_shell_command,
-    format_user_shell_record,
-    login_shell_args,
-    parse_shell_escape,
-    truncate_middle_chars,
-)
+import pytest
+
 from voidcode.plugins.user_shell import user_shell as user_shell_module
-
-
-def test_constants_match_upstream() -> None:
-    assert USER_SHELL_TIMEOUT_SECONDS == 3600
-    assert USER_SHELL_TRUNCATION_BYTES == 10_000
-    assert USER_SHELL_HELP_TITLE == "Prefix a command with ! to run it locally"
-    assert USER_SHELL_HELP_HINT == "Example: !ls"
+from voidcode.plugins.user_shell.user_shell import login_shell_args, parse_shell_escape, truncate_middle_chars
+from voidcode.plugins.user_shell.user_shell_plugin import ShellCommand
+from voidcode.sdk.commands import CommandInvocation
+from voidcode.sdk.invocation import ToolContext
+from voidcode.sdk.services import PluginServices, ProcessResult
 
 
 def test_parse_shell_escape_detects_bang_prefix() -> None:
@@ -78,111 +67,68 @@ def test_truncate_middle_chars_zero_budget() -> None:
     assert truncate_middle_chars("", 0) == ""
 
 
-def test_format_user_shell_record_exact_xml() -> None:
-    result = UserShellResult(
-        command="echo hi",
-        exit_code=0,
-        stdout="hi\n",
-        stderr="",
-        output="hi\n",
-        truncated=False,
-        duration_seconds=0.0123,
+class ProcessServices(PluginServices):
+    def __init__(self, result: ProcessResult) -> None:
+        self.result = result
+        self.events: list[Mapping[str, object]] = []
+
+    def run_process(self, argv: Sequence[str], **kwargs: object) -> ProcessResult:
+        return self.result
+
+    def stage_event(self, event_type: str, payload: Mapping[str, object]) -> None:
+        assert event_type == "shell_executed"
+        self.events.append(payload)
+
+
+def _invoke(tmp_path: Path, services: ProcessServices, command: str = "echo hi"):
+    context = ToolContext(
+        workspace=tmp_path,
+        session_id="session",
+        run_id="run",
+        invocation_id="invocation",
+        revision_id="revision",
+        actor="user",
+        logical_turn="turn",
     )
-
-    assert format_user_shell_record("echo hi", result) == (
-        "<user_shell_command>\n"
-        "\n<command>\n"
-        "echo hi\n"
-        "</command>\n<result>\n"
-        "Exit code: 0\n"
-        "Duration: 0.0123 seconds\n"
-        "Output:\n"
-        "hi\n"
-        "\n</result>\n"
-        "</user_shell_command>"
-    )
+    return ShellCommand().invoke(CommandInvocation(context=context, name="shell", arguments={"command": command}), services)
 
 
-def test_format_user_shell_record_includes_exit_and_duration() -> None:
-    result = UserShellResult(
-        command="false",
-        exit_code=3,
-        stdout="",
-        stderr="boom\n",
-        output="boom\n",
-        truncated=False,
-        duration_seconds=1.5,
-    )
-
-    record = format_user_shell_record("false", result)
-
-    assert "Exit code: 3" in record
-    assert "Duration: 1.5000 seconds" in record
-    assert "Output:\nboom\n\n</result>" in record
-    assert result.status == "failed"
+@pytest.mark.parametrize("flag", ["timed_out", "cancelled"])
+def test_stopped_process_preserves_unknown_exit_and_partial_output(tmp_path: Path, flag: str) -> None:
+    services = ProcessServices(ProcessResult(None, "partial\n", "", 25, timed_out=flag == "timed_out", cancelled=flag == "cancelled"))
+    result = _invoke(tmp_path, services)
+    assert result.status == "ok"
+    assert result.data is not None
+    assert result.data["exit_code"] is None
+    assert result.data["status"] == flag
+    assert result.data[flag] is True
+    assert result.output == f"command {flag}\npartial\n"
+    assert "Exit code: unknown" in str(result.data["record"])
+    assert services.events[0]["exit_code"] is None
 
 
-def test_execute_echo_success(tmp_path: Path) -> None:
-    result = execute_user_shell_command("echo hi", cwd=tmp_path)
-
-    assert result.exit_code == 0
-    assert result.stdout == "hi\n"
-    assert result.stderr == ""
-    assert result.output == "hi\n"
-    assert result.truncated is False
-    assert result.timed_out is False
-    assert result.status == "completed"
-    assert result.duration_seconds >= 0.0
-
-    record = format_user_shell_record("echo hi", result)
-    assert record.startswith("<user_shell_command>\n\n<command>\necho hi\n</command>\n<result>\n")
-    assert "Exit code: 0" in record
-    assert f"Duration: {result.duration_seconds:.4f} seconds" in record
-    assert "Output:\nhi\n\n</result>\n</user_shell_command>" in record
+def test_capture_truncation_remains_visible_even_with_short_preview(tmp_path: Path) -> None:
+    services = ProcessServices(ProcessResult(0, "retained", "", 0, truncated=True))
+    result = _invoke(tmp_path, services)
+    assert result.data is not None
+    assert result.data["truncated"] is True
+    assert result.output == "retained\n[process output exceeded capture limit]"
 
 
-def test_execute_captures_stderr_and_exit_code(tmp_path: Path) -> None:
-    result = execute_user_shell_command("echo oops >&2; exit 7", cwd=tmp_path)
-
-    assert result.exit_code == 7
-    assert result.stdout == ""
-    assert result.stderr == "oops\n"
-    assert result.output == "oops\n"
-    assert result.status == "failed"
+@pytest.mark.parametrize("command", ["", " ", "!", "!  "])
+def test_empty_escape_never_starts_a_process(tmp_path: Path, command: str) -> None:
+    services = ProcessServices(ProcessResult(0, "unexpected process output", "", 0))
+    result = _invoke(tmp_path, services, command)
+    assert result.status == "error"
+    assert services.events == []
 
 
-def test_execute_middle_truncates_long_output(tmp_path: Path) -> None:
-    command = "head -c 20000 /dev/zero | tr '\\0' a"
-
-    result = execute_user_shell_command(command, cwd=tmp_path)
-
-    assert result.exit_code == 0
-    assert result.truncated is True
-    assert result.stdout == "a" * 20000
-    assert result.output == "a" * 5000 + "…10000 chars truncated…" + "a" * 5000
+def test_truncation_respects_utf8_character_boundaries() -> None:
+    text = "你" * 20
+    assert truncate_middle_chars(text, 12) == "你你…16 chars truncated…你你"
 
 
-def test_execute_timeout_returns_124(tmp_path: Path) -> None:
-    result = execute_user_shell_command("sleep 5", cwd=tmp_path, timeout_seconds=1)
-
-    assert result.timed_out is True
-    assert result.exit_code == 124
-    assert result.output.startswith("command timed out after 1000 milliseconds\n")
-    assert result.status == "failed"
-
-
-def test_execute_spawn_failure_returns_minus_one(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(
-        user_shell_module,
-        "_default_user_shell",
-        lambda: ("/nonexistent/definitely-not-a-shell", "sh"),
-    )
-
-    result = execute_user_shell_command("echo hi", cwd=tmp_path)
-
-    assert result.exit_code == -1
-    assert result.stdout == ""
-    assert result.stderr.startswith("execution error:")
-    assert result.output == result.stderr
-    assert result.truncated is False
-    assert result.timed_out is False
+def test_login_shell_preserves_the_configured_executable_path(monkeypatch) -> None:
+    monkeypatch.setenv("SHELL", "/custom/bin/bash")
+    monkeypatch.setattr(user_shell_module.shutil, "which", lambda name: name if name == "/custom/bin/bash" else "/bin/bash")
+    assert login_shell_args("pwd") == ["/custom/bin/bash", "-lc", "pwd"]
