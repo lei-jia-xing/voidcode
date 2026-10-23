@@ -25,7 +25,7 @@ not establish source review.
 | `files/grep_tool.py` | Partial: strict search ingress/default path reviewed; traversal completeness pending |
 | `files/read_formats.py` | Pending full source review |
 | `files/read_tool.py` | Pending full source review |
-| `files/write_tool.py` | Pending full source review |
+| `files/write_tool.py` | Reviewed: hash/containment/symlink/atomic replace/cancellation; fail visibly on mode errors and always clean temporary files |
 | `frontmatter.py` | Pending full source review |
 | `providers/__init__.py` | Pending full source review |
 | `providers/dispatch.py` | Pending full source review |
@@ -93,3 +93,13 @@ statistics, and live in `files/errors.py` rather than a repair framework.
 Verification: 72 related file, AST and search tests passed; Ruff and source type
 checks passed. The earlier mandatory-read removal independently passed the full
 suite (1451 passed, 1 skipped) and added focused mutation regressions.
+
+## Atomic write cleanup
+
+Replaced the custom streaming hash loop with `hashlib.file_digest`. Removed
+repeated temporary-file deletion in favor of one `finally`, including control
+exceptions. Mode-setting failures now abort instead of silently replacing an
+executable file with the wrong permissions. Cancellation text says the file has
+not been committed, since parent-directory creation may already have occurred.
+Regression cases inject chmod/replace failure and KeyboardInterrupt during fsync;
+the original content/mode and temporary-file cleanup are checked.

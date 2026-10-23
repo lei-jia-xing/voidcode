@@ -529,7 +529,7 @@ def test_write_tool_honors_cancellation_before_side_effects(tmp_path: Path) -> N
         context=_context(tmp_path, abort_signal=abort),
     )
     assert isinstance(result, ToolFailure)
-    assert "cancelled before side effect" in result.error
+    assert "cancelled before committing file" in result.error
     assert isinstance(result.execution, ConfirmedStop)
     assert not target.exists()
 
@@ -1024,3 +1024,32 @@ def test_batch_failure_keeps_file_unchanged_without_read_history(tmp_path: Path)
     )
     assert isinstance(result, ToolFailure)
     assert target.read_text() == "alpha\nbeta\n"
+
+
+@pytest.mark.parametrize("failure", ["chmod", "replace", "interrupt"])
+def test_write_failure_preserves_original_and_removes_temp_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
+    from voidcode.capabilities.files import write_tool
+
+    target = tmp_path / "script.sh"
+    target.write_text("original\n", encoding="utf-8")
+    target.chmod(0o755)
+    expected_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+
+    def fail(*args: object, **kwargs: object) -> None:
+        if failure == "interrupt":
+            raise KeyboardInterrupt
+        raise OSError("injected write failure")
+
+    monkeypatch.setattr(write_tool.os, {"chmod": "chmod", "replace": "replace", "interrupt": "fsync"}[failure], fail)
+    tool = next(t for t in create_plugin({}).tools if t.definition.name == "write")
+    call = ToolCall(tool_name="write", arguments={"path": target.name, "content": "updated\n", "expectedHash": expected_hash})
+    if failure == "interrupt":
+        with pytest.raises(KeyboardInterrupt):
+            tool.invoke(call, context=_context(tmp_path))
+    else:
+        result = tool.invoke(call, context=_context(tmp_path))
+        assert isinstance(result, ToolFailure)
+        assert "injected write failure" in result.error
+    assert target.read_text() == "original\n"
+    assert target.stat().st_mode & 0o777 == 0o755
+    assert list(tmp_path.glob(".voidcode_write_*")) == []

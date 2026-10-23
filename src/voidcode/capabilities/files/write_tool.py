@@ -42,14 +42,10 @@ class WriteResultBody:
 
 
 def _hash_file(path: Path) -> str:
-    hasher = hashlib.sha256()
-    with path.open("rb") as f:
-        while chunk := f.read(65536):
-            hasher.update(chunk)
-    return hasher.hexdigest()
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-# ponytail: atomic tempfile + replace per file; directory locks / transactional edits migrate in P3
 class WriteTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="write",
@@ -80,7 +76,7 @@ class WriteTool:
         if context.abort_signal is not None and context.abort_signal.cancelled:
             return ToolFailure(
                 self.definition.name,
-                error="Invocation cancelled before side effect",
+                error="Invocation cancelled before committing file",
                 execution=ConfirmedStop(cancellation_signalled=True),
             )
 
@@ -140,7 +136,7 @@ class WriteTool:
         if context.abort_signal is not None and context.abort_signal.cancelled:
             return ToolFailure(
                 self.definition.name,
-                error="Invocation cancelled before side effect",
+                error="Invocation cancelled before committing file",
                 execution=ConfirmedStop(cancellation_signalled=True),
             )
 
@@ -159,38 +155,31 @@ class WriteTool:
                 f.flush()
                 os.fsync(f.fileno())
 
-            # Preserve file mode for existing files
-            try:
-                os.chmod(temp_path, target_mode)
-            except OSError:
-                pass
+            os.chmod(temp_path, target_mode)
 
             if context.abort_signal is not None and context.abort_signal.cancelled:
-                temp_path.unlink(missing_ok=True)
                 return ToolFailure(
                     self.definition.name,
-                    error="Invocation cancelled before side effect",
+                    error="Invocation cancelled before committing file",
                     execution=ConfirmedStop(cancellation_signalled=True),
                 )
 
             # Recheck path identity and content hash at replace boundary to reject concurrent modification
             if initial_stat is not None:
                 if not candidate.exists():
-                    temp_path.unlink(missing_ok=True)
                     return ToolFailure(self.definition.name, error=f"File deleted concurrently during write: {raw_path}")
                 cur_stat = candidate.stat()
                 if cur_stat.st_ino != initial_stat.st_ino or _hash_file(candidate) != initial_hash:
-                    temp_path.unlink(missing_ok=True)
                     return ToolFailure(self.definition.name, error=f"File modified concurrently during write: {raw_path}")
             else:
                 if candidate.exists():
-                    temp_path.unlink(missing_ok=True)
                     return ToolFailure(self.definition.name, error=f"File created concurrently during write: {raw_path}")
 
             os.replace(temp_path, candidate)
         except Exception as exc:
-            temp_path.unlink(missing_ok=True)
             return ToolFailure(self.definition.name, error=f"Write failed: {exc}")
+        finally:
+            temp_path.unlink(missing_ok=True)
 
         written_hash = hashlib.sha256(content_bytes).hexdigest()
         display_path = candidate.relative_to(workspace).as_posix()
