@@ -1537,141 +1537,63 @@ def goal_observer(fact: PluginFact, ctx: ToolContext, services: PluginServices) 
     now = int(time.time() * 1000)
 
     if isinstance(fact, UsageFact):
-        # Attribute usage strictly by active dispatch windows.
-        if not goal.in_active_window(fact.dispatch_sequence):
+        window = next((w for w in goal.active_windows if w.contains(fact.dispatch_sequence)), None)
+        if window is None:
             return
-        new_elapsed = _accum_float(goal.time_used_seconds, fact.elapsed_seconds)
-        new_cost = _accum_float(goal.cost_usd, fact.cost_usd)
-        matching_window = next((w for w in goal.active_windows if w.contains(fact.dispatch_sequence)), None)
-        is_closed_window = matching_window is not None and matching_window.end_sequence is not None
-
-        if is_closed_window:
-            if fact.usage is None:
-                has_unknown = True
-                new_tokens_used = None
-                new_input = None
-                new_output = None
-                new_cache = None
-                new_uncached = None
-            else:
-                fact_metric_unknown = fact.usage.input_tokens is None or fact.usage.output_tokens is None
-                has_unknown = goal.has_unknown_usage or fact_metric_unknown
-                new_tokens_used = _accum_int(goal.tokens_used, _fact_total_tokens(fact.usage))
-                new_input = _accum_int(goal.input_tokens, fact.usage.input_tokens)
-                new_output = _accum_int(goal.output_tokens, fact.usage.output_tokens)
-                new_cache = _accum_int(goal.cache_read_tokens, fact.usage.cache_read_tokens)
-                new_uncached = _accum_int(goal.uncached_input_tokens, fact.usage.uncached_input_tokens)
-
-            new_status = goal.status
-            new_allowance = goal.window_allowance
-            if goal.status == "active":
-                open_window = next((w for w in goal.active_windows if w.end_sequence is None), None)
-                if open_window is not None and goal.token_budget is not None:
-                    closed_spend = _get_closed_window_spend(services, goal.active_windows)
-                    if closed_spend is None or has_unknown:
-                        # The true remaining allowance cannot be known, so the owner's hard
-                        # constraint is re-staged on the SAME open baseline with zero
-                        # allowance: no fabricated spend, no baseline reset, and ordinary
-                        # user traffic on this owner cannot bill against a phantom budget.
-                        new_status = "usage-limited"
-                        services.set_budget(since_sequence=open_window.start_sequence, max_total_tokens=0)
-                        new_allowance = 0
-                        services.cancel_continuations()
-                        services.stage_event("goal_usage_limited", {"goal_id": goal.goal_id})
-                    else:
-                        tightened = max(0, goal.token_budget - closed_spend)
-                        services.set_budget(since_sequence=open_window.start_sequence, max_total_tokens=tightened)
-                        new_allowance = tightened
-                        window_spend = goal.window_tokens_used
-                        if window_spend is not None and window_spend >= tightened:
-                            new_status = "budget-limited"
-                            services.cancel_continuations()
-                            services.stage_event(
-                                "goal_budget_limited",
-                                {"goal_id": goal.goal_id, "window_tokens_used": window_spend, "window_allowance": tightened},
-                            )
-            # while PAUSED count lifetime only, never rearm/global block!
-
-            updated = replace(
-                goal,
-                status=new_status,
-                tokens_used=new_tokens_used,
-                input_tokens=new_input,
-                output_tokens=new_output,
-                cache_read_tokens=new_cache,
-                uncached_input_tokens=new_uncached,
-                has_unknown_usage=has_unknown,
-                time_used_seconds=new_elapsed,
-                cost_usd=new_cost,
-                window_allowance=new_allowance,
-                updated_at=now,
-            )
-            services.replace_state(updated.to_dict(), expected_version=version)
-            return
-
-        # Matching window is the OPEN window:
-        if fact.usage is None:
-            new_status = goal.status
-            if goal.window_allowance is not None and goal.status in {"active", "paused", "blocked"}:
-                new_status = "usage-limited"
-                services.cancel_continuations()
-                services.stage_event("goal_usage_limited", {"goal_id": goal.goal_id})
-
-            updated = replace(
-                goal,
-                status=new_status,
-                tokens_used=None,
-                window_tokens_used=None,
-                input_tokens=None,
-                output_tokens=None,
-                cache_read_tokens=None,
-                uncached_input_tokens=None,
-                has_unknown_usage=True,
-                time_used_seconds=new_elapsed,
-                cost_usd=new_cost,
-                updated_at=now,
-            )
-            services.replace_state(updated.to_dict(), expected_version=version)
-            return
-
-        new_tokens_used = _accum_int(goal.tokens_used, _fact_total_tokens(fact.usage))
-        new_window_tokens = _accum_int(goal.window_tokens_used, _fact_total_tokens(fact.usage))
-        new_input = _accum_int(goal.input_tokens, fact.usage.input_tokens)
-        new_output = _accum_int(goal.output_tokens, fact.usage.output_tokens)
-        new_cache = _accum_int(goal.cache_read_tokens, fact.usage.cache_read_tokens)
-        new_uncached = _accum_int(goal.uncached_input_tokens, fact.usage.uncached_input_tokens)
-
-        token_metric_unknown = fact.usage.input_tokens is None or fact.usage.output_tokens is None
-        new_unknown = goal.has_unknown_usage or token_metric_unknown
-
-        new_status = goal.status
-        budget_active = goal.window_allowance is not None and goal.status in {"active", "paused", "blocked"}
-        if budget_active and new_window_tokens is None:
-            new_status = "usage-limited"
-        elif budget_active and new_window_tokens is not None and new_window_tokens >= goal.window_allowance:
-            new_status = "budget-limited"
-
-        if new_status != goal.status and new_status in {"usage-limited", "budget-limited"}:
-            services.cancel_continuations()
-            services.stage_event(
-                "goal_budget_limited" if new_status == "budget-limited" else "goal_usage_limited",
-                {"goal_id": goal.goal_id, "window_tokens_used": new_window_tokens, "window_allowance": goal.window_allowance},
-            )
-
+        # An absent usage report means every token metric is unknown.
+        usage = fact.usage if fact.usage is not None else ProviderTokenUsage()
+        tokens = _fact_total_tokens(usage)
         updated = replace(
             goal,
-            status=new_status,
-            tokens_used=new_tokens_used,
-            window_tokens_used=new_window_tokens,
-            input_tokens=new_input,
-            output_tokens=new_output,
-            cache_read_tokens=new_cache,
-            uncached_input_tokens=new_uncached,
-            has_unknown_usage=new_unknown,
-            time_used_seconds=new_elapsed,
-            cost_usd=new_cost,
+            tokens_used=_accum_int(goal.tokens_used, tokens),
+            input_tokens=_accum_int(goal.input_tokens, usage.input_tokens),
+            output_tokens=_accum_int(goal.output_tokens, usage.output_tokens),
+            cache_read_tokens=_accum_int(goal.cache_read_tokens, usage.cache_read_tokens),
+            uncached_input_tokens=_accum_int(goal.uncached_input_tokens, usage.uncached_input_tokens),
+            has_unknown_usage=goal.has_unknown_usage or tokens is None,
+            time_used_seconds=_accum_float(goal.time_used_seconds, fact.elapsed_seconds),
+            cost_usd=_accum_float(goal.cost_usd, fact.cost_usd),
             updated_at=now,
         )
+        if window.end_sequence is not None:
+            # Late closed-window usage affects lifetime totals. Only an active goal
+            # with a current budget needs its open-window allowance tightened.
+            open_window = next((w for w in goal.active_windows if w.end_sequence is None), None)
+            if goal.is_active and open_window is not None and goal.token_budget is not None:
+                closed_spend = _get_closed_window_spend(services, goal.active_windows)
+                if closed_spend is None or updated.has_unknown_usage:
+                    # Keep the authentic open baseline; unknown spend cannot fund
+                    # an invented remaining allowance.
+                    services.set_budget(since_sequence=open_window.start_sequence, max_total_tokens=0)
+                    updated = replace(updated, status="usage-limited", window_allowance=0)
+                    services.cancel_continuations()
+                    services.stage_event("goal_usage_limited", {"goal_id": goal.goal_id})
+                else:
+                    allowance = max(0, goal.token_budget - closed_spend)
+                    services.set_budget(since_sequence=open_window.start_sequence, max_total_tokens=allowance)
+                    updated = replace(updated, window_allowance=allowance)
+                    if goal.window_tokens_used is not None and goal.window_tokens_used >= allowance:
+                        updated = replace(updated, status="budget-limited")
+                        services.cancel_continuations()
+                        services.stage_event(
+                            "goal_budget_limited",
+                            {"goal_id": goal.goal_id, "window_tokens_used": goal.window_tokens_used, "window_allowance": allowance},
+                        )
+        else:
+            window_tokens = _accum_int(goal.window_tokens_used, tokens)
+            status = goal.status
+            if goal.window_allowance is not None and goal.status in {"active", "paused", "blocked"}:
+                if window_tokens is None:
+                    status = "usage-limited"
+                elif window_tokens >= goal.window_allowance:
+                    status = "budget-limited"
+            updated = replace(updated, status=status, window_tokens_used=window_tokens)
+            if status != goal.status and status in {"usage-limited", "budget-limited"}:
+                services.cancel_continuations()
+                payload: dict[str, object] = {"goal_id": goal.goal_id}
+                if fact.usage is not None:
+                    payload.update(window_tokens_used=window_tokens, window_allowance=goal.window_allowance)
+                services.stage_event("goal_budget_limited" if status == "budget-limited" else "goal_usage_limited", payload)
         services.replace_state(updated.to_dict(), expected_version=version)
 
     elif isinstance(fact, InvocationFinishedFact):

@@ -1283,3 +1283,61 @@ def test_rejected_goal_edit_does_not_write_objective_attachment(tmp_path: Path, 
     assert not (tmp_path / ".voidcode").exists()
     assert not services.staged_events
     assert services.budget is None
+
+
+@pytest.mark.parametrize("closed", [False, True], ids=["open", "closed"])
+@pytest.mark.parametrize(
+    "usage",
+    [None, ProviderTokenUsage(input_tokens=20), ProviderTokenUsage(input_tokens=20, output_tokens=5)],
+    ids=["absent", "partial", "reported"],
+)
+def test_usage_window_updates_share_truthful_lifetime_metrics(
+    tmp_path: Path,
+    closed: bool,
+    usage: ProviderTokenUsage | None,
+) -> None:
+    services = MockServices()
+    goal = GoalState(
+        goal_id="g1",
+        status="paused" if closed else "active",
+        objective="Task",
+        created_at=1,
+        updated_at=1,
+        token_budget=25,
+        window_allowance=25,
+        active_windows=(ActiveWindow(start_sequence=0, end_sequence=10 if closed else None),),
+    )
+    services.replace_state(goal.to_dict(), expected_version=0)
+    fact = UsageFact(
+        session_id="s1",
+        run_id="r1",
+        revision_id="rev1",
+        logical_turn="turn1",
+        event_sequence=12,
+        dispatch_sequence=5,
+        provider_name="test",
+        model_name="m1",
+        usage=usage,
+        elapsed_seconds=1.5,
+        cost_usd=0.1,
+    )
+    goal_observer(fact, _make_context(tmp_path), services)
+    state, _ = services.get_state()
+    assert state is not None
+    known_total = usage is not None and usage.output_tokens is not None
+    assert state["tokens_used"] == (25 if known_total else None)
+    assert state["input_tokens"] == (20 if usage is not None else None)
+    assert state["output_tokens"] == (5 if known_total else None)
+    assert state["has_unknown_usage"] is (not known_total)
+    assert state["time_used_seconds"] == 1.5
+    assert state["cost_usd"] == 0.1
+    assert state["window_tokens_used"] == (0 if closed else state["tokens_used"])
+    if closed:
+        assert state["status"] == "paused"
+        assert not services.staged_events
+        assert not services.cancelled_continuations
+        assert services.budget is None
+    else:
+        assert state["status"] == ("budget-limited" if known_total else "usage-limited")
+        assert len(services.staged_events) == 1
+        assert len(services.cancelled_continuations) == 1
