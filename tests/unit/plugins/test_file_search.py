@@ -115,3 +115,33 @@ def test_grep_reports_io_failure_instead_of_empty_search(tmp_path: Path, monkeyp
     with pytest.raises(ToolDiagnosticError, match="grep search failed") as caught:
         invoke(GrepTool(), tmp_path, {"pattern": "needle"})
     assert caught.value.error_details["reason"] == "search_io_error"
+
+
+@pytest.mark.parametrize("pattern,expected", [("*.py", {"a.py"}), ("**/*.py", {"a.py", "sub/b.py"}), ("sub/*.py", {"sub/b.py"})])
+def test_glob_standard_path_patterns_and_ignored_directories(tmp_path: Path, pattern: str, expected: set[str]) -> None:
+    for name in ["a.py", "sub/b.py", "node_modules/ignored.py", ".git/ignored.py"]:
+        target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("content", encoding="utf-8")
+    result = invoke(GlobTool(), tmp_path, {"pattern": pattern})
+    assert set(result.body.matches) == expected
+
+
+def test_glob_reports_directory_scan_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from voidcode.sdk.tools import ToolFailure
+
+    def failed_walk(self, *, on_error, **kwargs):
+        on_error(PermissionError("unreadable directory"))
+        return iter(())
+
+    monkeypatch.setattr(Path, "walk", failed_walk)
+    result = invoke(GlobTool(), tmp_path, {"pattern": "**/*.py"})
+    assert isinstance(result, ToolFailure)
+    assert "unreadable directory" in result.error
+    assert result.output.bounds.partial is True
+
+
+@pytest.mark.parametrize("pattern", ["../*.py", "/tmp/*.py"])
+def test_glob_requires_patterns_relative_to_search_directory(tmp_path: Path, pattern: str) -> None:
+    with pytest.raises(ValueError, match="must be relative"):
+        invoke(GlobTool(), tmp_path, {"pattern": pattern})

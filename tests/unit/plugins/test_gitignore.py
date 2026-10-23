@@ -47,3 +47,11 @@ def test_load_preserves_escaped_whitespace_and_reads_only_root(tmp_path: Path) -
     assert matcher is not None
     assert matcher.is_ignored("name ", is_directory=False)
     assert not matcher.is_ignored("sub/other", is_directory=False)
+
+
+def test_unreadable_ignore_rules_are_not_treated_as_missing(tmp_path: Path) -> None:
+    from voidcode.capabilities.files.errors import ToolDiagnosticError
+
+    (tmp_path / ".gitignore").write_bytes(b"\xff")
+    with pytest.raises(ToolDiagnosticError, match="Cannot read ignore rules"):
+        GitIgnoreMatcher.load(tmp_path)

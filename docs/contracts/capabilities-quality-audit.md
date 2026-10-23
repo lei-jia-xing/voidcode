@@ -12,7 +12,7 @@ not establish source review.
 | --- | --- |
 | `__init__.py` | Pending full source review |
 | `exec/__init__.py` | Pending full source review |
-| `exec/args.py` | Pending full source review |
+| `exec/args.py` | Reviewed source/consumers: three small nonempty field validators used by strict exec argument models |
 | `exec/background_process.py` | Pending full source review |
 | `exec/shell_exec.py` | Pending full source review |
 | `files/__init__.py` | Pending full source review |
@@ -21,12 +21,12 @@ not establish source review.
 | `files/edit_tool.py` | Partial: read guards and fuzzy repair hints removed; final mutation/ingress review pending |
 | `files/errors.py` | Reviewed: retain only classified diagnostic exception and raising helper |
 | `files/gitignore.py` | Reviewed: root-only pathspec matching; removed unused pattern snapshot/property; syntax/order/escape tests |
-| `files/glob_tool.py` | Partial: strict search ingress/default path reviewed; traversal completeness pending |
+| `files/glob_tool.py` | Partial: strict search ingress and error-visible traversal reviewed; output bounds pending |
 | `files/grep_tool.py` | Partial: strict search ingress/default path reviewed; traversal completeness pending |
 | `files/read_formats.py` | Pending full source review |
 | `files/read_tool.py` | Pending full source review |
 | `files/write_tool.py` | Reviewed: hash/containment/symlink/atomic replace/cancellation; fail visibly on mode errors and always clean temporary files |
-| `frontmatter.py` | Pending full source review |
+| `frontmatter.py` | Reviewed source/consumers: safe YAML, duplicate/string-key validation, framing/body/bounds; shared parser tests |
 | `providers/__init__.py` | Pending full source review |
 | `providers/dispatch.py` | Pending full source review |
 | `providers/native/__init__.py` | Pending full source review |
@@ -44,7 +44,7 @@ not establish source review.
 | `providers/native/claude_tokenizer/notation.py` | Pending full source review |
 | `providers/native/config.py` | Pending full source review |
 | `providers/native/copilot.py` | Pending full source review |
-| `providers/native/endpoint.py` | Pending full source review |
+| `providers/native/endpoint.py` | Reviewed: direct typed endpoint configuration and chat provider construction; config implementation audited separately |
 | `providers/native/errors.py` | Pending full source review |
 | `providers/native/google.py` | Pending full source review |
 | `providers/native/google_native.py` | Pending full source review |
@@ -115,3 +115,16 @@ Glob traversal completeness and search output bounds still need review.
 
 Verification: 43 search/gitignore/provider-data tests passed, including injected
 directory-walk and file-read failures. Ruff, formatting and source type checks passed.
+
+## Glob traversal and shared ingress
+
+Replaced `Path.glob` (which suppresses scan errors internally) with `Path.walk`
+and `Path.full_match`: both standard library, with explicit scan-error handling.
+Ignored/hidden directories are pruned before descending, and selection is stable.
+Patterns must be relative; the `path` argument chooses the search directory.
+Unreadable/invalid UTF-8 `.gitignore` files now fail visibly when ignore handling
+is requested. Root-only scope remains explicit. Reviewed the shared frontmatter
+parser and its two agent/skill consumers, plus exec argument validator uses.
+
+Verification: 77 search/gitignore/frontmatter/exec tests and 5 built-in/core
+composition integration tests passed. Ruff, formatting and source type checks passed.

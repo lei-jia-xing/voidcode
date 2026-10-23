@@ -54,6 +54,8 @@ class GlobArgs(BaseModel):
     def _non_empty(cls, value: str, info: ValidationInfo) -> str:
         if not value.strip():
             raise ValueError(f"glob {info.field_name} must not be empty")
+        if info.field_name == "pattern" and (Path(value).is_absolute() or ".." in Path(value).parts):
+            raise ValueError("glob pattern must be relative to the search directory; use path to choose the directory")
         return value
 
 
@@ -114,44 +116,42 @@ class GlobTool:
 
     @staticmethod
     def _find_files(
-        workspace_root: Path,
+        search_dir: Path,
         pattern: str,
-        search_path: Path | None = None,
-        project_root: Path | None = None,
         *,
+        project_root: Path,
         include_hidden: bool = True,
         gitignore: GitIgnoreMatcher | None = None,
         limit: int = LIMIT,
     ) -> tuple[list[Path], bool, str | None]:
-        search_dir = search_path if search_path else workspace_root
-        root = project_root or workspace_root
-
-        if not search_dir.is_relative_to(root):
-            root = search_dir
-
         matched: list[Path] = []
-        truncated = False
-        error_message: str | None = None
+
+        def fail_walk(error: OSError) -> None:
+            raise error
+
+        def excluded(path: Path, *, is_directory: bool) -> bool:
+            relative = path.relative_to(project_root)
+            return (
+                any(part in DEFAULT_IGNORE_PATTERNS for part in relative.parts)
+                or (not include_hidden and any(part.startswith(".") for part in relative.parts))
+                or (gitignore is not None and gitignore.is_ignored(relative.as_posix(), is_directory=is_directory))
+            )
 
         try:
-            for match in search_dir.glob(pattern):
-                if not match.is_file():
-                    continue
-                relative_parts = match.relative_to(root).parts
-                if any(ignore in relative_parts for ignore in DEFAULT_IGNORE_PATTERNS):
-                    continue
-                if not include_hidden and any(part.startswith(".") for part in relative_parts):
-                    continue
-                if gitignore is not None and gitignore.is_ignored(match.relative_to(root).as_posix(), is_directory=False):
-                    continue
-                if len(matched) == limit:
-                    truncated = True
-                    break
-                matched.append(match)
+            for directory, dirnames, filenames in search_dir.walk(on_error=fail_walk):
+                dirnames[:] = sorted(name for name in dirnames if not excluded(directory / name, is_directory=True))
+                for name in sorted(filenames):
+                    match = directory / name
+                    if not match.relative_to(search_dir).full_match(pattern) or excluded(match, is_directory=False):
+                        continue
+                    if not match.is_file():
+                        continue
+                    if len(matched) == limit:
+                        return matched, True, None
+                    matched.append(match)
         except OSError as exc:
-            error_message = str(exc)
-
-        return matched, truncated, error_message
+            return matched, False, str(exc)
+        return matched, False, None
 
     def invoke(
         self,
@@ -174,9 +174,8 @@ class GlobTool:
         effective_root = search_path if not search_path.is_relative_to(workspace_root) else workspace_root
         gitignore = GitIgnoreMatcher.load(effective_root) if respect_gitignore else None
         matched, truncated, search_error = self._find_files(
-            workspace_root,
-            pattern_value,
             search_path,
+            pattern_value,
             project_root=effective_root,
             include_hidden=include_hidden,
             gitignore=gitignore,
@@ -190,10 +189,10 @@ class GlobTool:
 
         if effective_root == workspace_root:
             relative_matches = [m.relative_to(workspace_root).as_posix() for m in matched]
-            path_display = search_path.relative_to(workspace_root).as_posix() if search_path else "."
+            path_display = search_path.relative_to(workspace_root).as_posix()
         else:
             relative_matches = [str(m.resolve()) for m in matched]
-            path_display = str((search_path or effective_root).resolve())
+            path_display = str(search_path)
 
         output = "\n".join(relative_matches) or "No files found."
         if truncated:

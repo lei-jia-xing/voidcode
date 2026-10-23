@@ -10,6 +10,8 @@ from pathlib import Path
 
 from pathspec import GitIgnoreSpec
 
+from .errors import raise_tool_diagnostic
+
 
 class GitIgnoreMatcher:
     """Root-level ``.gitignore`` matcher with last-match-wins negation."""
@@ -24,8 +26,12 @@ class GitIgnoreMatcher:
             return None
         try:
             lines = gitignore.read_text(encoding="utf-8").splitlines()
-        except OSError, UnicodeDecodeError:
-            return None
+        except (OSError, UnicodeDecodeError) as exc:
+            raise_tool_diagnostic(
+                message=f"Cannot read ignore rules from {gitignore}: {exc}",
+                error_kind="tool_execution_error",
+                reason="ignore_file_read_failed",
+            )
         patterns = tuple(lines)
         return cls(patterns) if patterns else None
 
