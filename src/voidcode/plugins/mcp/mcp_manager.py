@@ -2,7 +2,7 @@
 MCP Manager
 
 This module provides the plugin-owned MCP lifecycle management layer. The
-plugin owns configuration, diagnostics, events, and tool governance while the
+plugin owns configuration, server state, and tool governance while the
 official Python MCP SDK owns protocol framing, initialize negotiation,
 request/response correlation, and stdio process teardown.
 
@@ -18,44 +18,38 @@ from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Any, Literal, cast
+from typing import IO, Any, cast
 
 import httpx2
 from anyio.from_thread import BlockingPortal, start_blocking_portal
+from jsonschema import Draft202012Validator, SchemaError, ValidationError
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.exceptions import MCPError
 from mcp.types import CallToolResult, Implementation, ListToolsResult, Tool
+from referencing import Registry
+from referencing.exceptions import Unresolvable
 
 from voidcode.sdk.json_values import json_wire_object, own_json_object
 
-from .mcp_tool_cache import McpToolCatalogCache, mcp_server_identity
 from .types import (
     MCP_CLIENT_NAME,
     MCP_CLIENT_VERSION,
     McpCachedToolSurface,
     McpConfig,
     McpConfigState,
-    McpDiagnostic,
-    McpDiagnosticsCollector,
-    McpDiagnosticSeverity,
-    McpErrorCode,
     McpManager,
     McpManagerState,
-    McpServerConfig,
     McpServerRuntimeState,
     McpToolCallResult,
     McpToolDescriptor,
     McpToolSafety,
-    create_diagnostic,
 )
 
 DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS = 30.0
 _RECOVERABLE_MCP_CALL_ERROR_CODES = frozenset(
     {
-        McpErrorCode.TOOL_NOT_FOUND,
-        McpErrorCode.INVALID_REQUEST,
         -32602,  # JSON-RPC invalid params
         -32601,  # JSON-RPC method not found
         -32600,  # JSON-RPC invalid request
@@ -75,15 +69,10 @@ def _validate_input_schema(raw_schema: object) -> dict[str, object]:
     schema_type = schema.get("type")
     if schema_type is not None and schema_type != "object":
         raise ValueError("inputSchema type must be 'object'")
-    required = schema.get("required")
-    if required is not None:
-        if not isinstance(required, list):
-            raise ValueError("inputSchema required must be an array of strings")
-        if not all(isinstance(item, str) for item in required):
-            raise ValueError("inputSchema required must be an array of strings")
-    properties = schema.get("properties")
-    if properties is not None and not isinstance(properties, dict):
-        raise ValueError("inputSchema properties must be an object")
+    try:
+        Draft202012Validator.check_schema(schema)
+    except SchemaError as exc:
+        raise ValueError(f"invalid MCP inputSchema: {exc.message}") from exc
     return schema
 
 
@@ -140,40 +129,14 @@ def _validate_call_arguments_against_schema(
     arguments: dict[str, object],
     input_schema: dict[str, object],
 ) -> None:
-    required = input_schema.get("required")
-    if isinstance(required, list):
-        required_names = [name for name in required if isinstance(name, str)]
-        missing = [name for name in required_names if name not in arguments]
-        if missing:
-            joined = ", ".join(missing)
-            raise ValueError(f"MCP[{tool_name}]: missing required arguments: {joined}")
-
-    properties = input_schema.get("properties")
-    if not isinstance(properties, dict):
-        return
-
-    raw_properties: Mapping[str, object] = properties
-    for raw_key, raw_expected_schema in raw_properties.items():
-        if not isinstance(raw_key, str):
-            continue
-        if raw_key not in arguments:
-            continue
-        if not isinstance(raw_expected_schema, dict):
-            continue
-        expected_type = raw_expected_schema.get("type")
-        value = arguments[raw_key]
-        if expected_type == "string" and not isinstance(value, str):
-            raise ValueError(f"MCP[{tool_name}]: argument '{raw_key}' must be a string")
-        if expected_type == "integer" and (isinstance(value, bool) or not isinstance(value, int)):
-            raise ValueError(f"MCP[{tool_name}]: argument '{raw_key}' must be an integer")
-        if expected_type == "number" and (isinstance(value, bool) or not isinstance(value, (int, float))):
-            raise ValueError(f"MCP[{tool_name}]: argument '{raw_key}' must be a number")
-        if expected_type == "boolean" and not isinstance(value, bool):
-            raise ValueError(f"MCP[{tool_name}]: argument '{raw_key}' must be a boolean")
-        if expected_type == "array" and not isinstance(value, list):
-            raise ValueError(f"MCP[{tool_name}]: argument '{raw_key}' must be an array")
-        if expected_type == "object" and not isinstance(value, dict):
-            raise ValueError(f"MCP[{tool_name}]: argument '{raw_key}' must be an object")
+    try:
+        # Schemas may use local definitions, but validation must not fetch remote references.
+        Draft202012Validator(input_schema, registry=Registry()).validate(arguments)
+    except Unresolvable as exc:
+        raise ValueError(f"MCP[{tool_name}]: unresolved schema reference: {exc.ref}") from exc
+    except ValidationError as exc:
+        path = ".".join(str(part) for part in exc.absolute_path) or "arguments"
+        raise ValueError(f"MCP[{tool_name}]: {path}: {exc.message}") from exc
 
 
 # =============================================================================
@@ -232,10 +195,6 @@ class DisabledMcpManager:
     def shutdown(self) -> None:
         return None
 
-    def retry_connections(self, *, workspace: Path) -> None:
-        _ = workspace
-        return None
-
 
 # =============================================================================
 # Runtime MCP Server (SDK session lifecycle)
@@ -244,8 +203,6 @@ class DisabledMcpManager:
 
 class _RunningMcpServer:
     """Runtime-specific SDK session and context-manager handles."""
-
-    transport: Literal["stdio", "remote-http"]
 
     def __init__(
         self,
@@ -256,11 +213,6 @@ class _RunningMcpServer:
         session_context: AbstractContextManager[ClientSession],
         session: ClientSession,
         stderr_log: IO[str] | None,
-        # The SDK's initialize result is retained verbatim for diagnostics; the
-        # runtime never reads its fields, so it is stored as the opaque object
-        # the SDK session returned.
-        initialize_result: object,
-        transport: Literal["stdio", "remote-http"] = "stdio",
     ) -> None:
         self.server_name = server_name
         self.workspace_root = workspace_root
@@ -268,8 +220,6 @@ class _RunningMcpServer:
         self.session_context = session_context
         self.session = session
         self.stderr_log = stderr_log
-        self.initialize_result = initialize_result
-        self.transport = transport
         # The Python SDK ClientSession is shared per configured server process.
         # Serialize list/call operations per server so concurrent runtime and
         # subagent calls do not interleave mutable SDK session state.
@@ -292,14 +242,10 @@ class ManagedMcpManager:
     def __init__(
         self,
         config: McpConfig,
-        *,
-        diagnostics_collector: McpDiagnosticsCollector | None = None,
-        tool_catalog_cache: McpToolCatalogCache | None = None,
     ) -> None:
         self._configuration = McpConfigState.from_config(config)
         self._running_servers: dict[_McpServerKey, _RunningMcpServer] = {}
         self._state_lock = threading.RLock()
-        self._diagnostics_collector = diagnostics_collector
         self._server_states: dict[str, McpServerRuntimeState] = {
             name: McpServerRuntimeState(
                 server_name=name,
@@ -313,7 +259,6 @@ class ManagedMcpManager:
         self._portal_context: AbstractContextManager[BlockingPortal] | None = None
         self._portal: BlockingPortal | None = None
         self._tool_descriptors_by_server: dict[_McpServerKey, dict[str, McpToolDescriptor]] = {}
-        self._tool_catalog_cache = tool_catalog_cache
         self._discovered_tools: dict[str, tuple[McpToolDescriptor, ...]] = {}
 
     @property
@@ -350,58 +295,10 @@ class ManagedMcpManager:
         *,
         workspace: Path,
     ) -> McpCachedToolSurface:
-        """Return the last discovered tool surface without connecting.
-
-        This is the passive read the runtime uses to keep MCP tools advertised
-        across runs: the catalog holds the descriptors discovered by an earlier
-        run, never a live connection. Configured servers the catalog does not
-        cover are absent, which is how the runtime knows it has to discover once.
-        """
-        servers: dict[str, tuple[McpToolDescriptor, ...]] = {}
-        for server_name, server_config in self._configuration.servers.items():
-            descriptors = self._cached_tools_for_server(server_name=server_name, workspace=workspace, config=server_config)
-            if descriptors is not None:
-                servers[server_name] = descriptors
-        return McpCachedToolSurface(servers=servers)
-
-    def _cached_tools_for_server(
-        self,
-        *,
-        server_name: str,
-        workspace: Path,
-        config: McpServerConfig,
-    ) -> tuple[McpToolDescriptor, ...] | None:
-        """Remembered descriptors for one server, or ``None`` when undiscovered."""
-        discovered = self._discovered_tools.get(server_name)
-        if discovered is not None:
-            return discovered
-        if self._tool_catalog_cache is None:
-            return None
-        entry = self._tool_catalog_cache.entry_for(
-            server_name=server_name,
-            identity=mcp_server_identity(server_name, config, workspace_root=workspace),
-        )
-        if entry is None:
-            return None
-        self._discovered_tools[server_name] = entry
-        return entry
-
-    def _remember_discovered_tools(
-        self,
-        *,
-        server_name: str,
-        workspace: Path,
-        descriptors: tuple[McpToolDescriptor, ...],
-    ) -> None:
-        self._discovered_tools[server_name] = descriptors
-        config = self._configuration.servers.get(server_name)
-        if config is None or self._tool_catalog_cache is None:
-            return
-        self._tool_catalog_cache.store(
-            server_name=server_name,
-            identity=mcp_server_identity(server_name, config, workspace_root=workspace),
-            descriptors=descriptors,
-        )
+        """Read discovered tools without connecting; absent servers remain unknown."""
+        _ = workspace
+        with self._state_lock:
+            return McpCachedToolSurface(servers=dict(self._discovered_tools))
 
     def descriptor_for(
         self,
@@ -442,29 +339,16 @@ class ManagedMcpManager:
             raise ValueError(message)
 
         if descriptor is not None:
-            try:
-                _validate_call_arguments_against_schema(
-                    tool_name=f"{server_name}/{tool_name}",
-                    arguments=arguments,
-                    input_schema=descriptor.input_schema,
-                )
-            except ValueError as exc:
-                diagnostic = create_diagnostic(
-                    severity=McpDiagnosticSeverity.ERROR,
-                    category="call",
-                    code="invalid_params",
-                    server_name=server_name,
-                    tool_name=tool_name,
-                    reason=str(exc),
-                )
-                self._record_diagnostic(diagnostic)
-                raise
+            _validate_call_arguments_against_schema(
+                tool_name=f"{server_name}/{tool_name}",
+                arguments=arguments,
+                input_schema=descriptor.input_schema,
+            )
 
         result = self._call_sdk(
             running,
             stage="call",
             method="tools/call",
-            tool_name=tool_name,
             operation=lambda session=running.session: session.call_tool(
                 tool_name,
                 dict(arguments),
@@ -494,10 +378,6 @@ class ManagedMcpManager:
                 self._portal_context = None
                 self._portal = None
 
-    def retry_connections(self, *, workspace: Path) -> None:
-        for server_name in self._configuration.servers:
-            self._ensure_running(server_name=server_name, workspace=workspace)
-
     def _ensure_running(
         self,
         *,
@@ -507,13 +387,6 @@ class ManagedMcpManager:
         """Ensure MCP server is running, start if needed."""
         server_config = self._configuration.servers.get(server_name)
         if server_config is None:
-            diagnostic = create_diagnostic(
-                severity=McpDiagnosticSeverity.ERROR,
-                category="startup",
-                code="server_not_found",
-                server_name=server_name,
-            )
-            self._record_diagnostic(diagnostic)
             message = f"MCP[{server_name}]: server not found in configuration. Available servers: {list(self._configuration.servers.keys())}"
             self._mark_failed(
                 key=_McpServerKey(server_name=server_name),
@@ -530,43 +403,6 @@ class ManagedMcpManager:
             if running is not None:
                 return running
 
-        if transport == "stdio" and not server_config.command:
-            diagnostic = create_diagnostic(
-                severity=McpDiagnosticSeverity.ERROR,
-                category="startup",
-                code="server_command_missing",
-                server_name=server_name,
-            )
-            self._record_diagnostic(diagnostic)
-            message = f"MCP[{server_name}]: command is empty. Please configure mcp.servers.{{server_name}}.command in .voidcode.json"
-            self._mark_failed(
-                key=key,
-                workspace_root=workspace.resolve(),
-                stage="startup",
-                error=message,
-            )
-            raise ValueError(message)
-
-        remote_http_url = ""
-        if transport == "remote-http":
-            remote_http_url = server_config.url or ""
-            if not remote_http_url:
-                diagnostic = create_diagnostic(
-                    severity=McpDiagnosticSeverity.ERROR,
-                    category="startup",
-                    code="server_url_missing",
-                    server_name=server_name,
-                )
-                self._record_diagnostic(diagnostic)
-                message = f"MCP[{server_name}]: url is empty. Please configure mcp.servers.{{server_name}}.url in .voidcode.json"
-                self._mark_failed(
-                    key=key,
-                    workspace_root=workspace.resolve(),
-                    stage="startup",
-                    error=message,
-                )
-                raise ValueError(message)
-
         workspace_root = workspace.resolve()
         stderr_log: IO[str] | None = None
         transport_context: AbstractContextManager[tuple[object, ...]] | None = None
@@ -580,7 +416,7 @@ class ManagedMcpManager:
             try:
                 portal = self._ensure_portal()
                 if transport == "remote-http":
-                    pending_transport_context = portal.wrap_async_context_manager(cast(Any, streamable_http_client(remote_http_url)))
+                    pending_transport_context = portal.wrap_async_context_manager(cast(Any, streamable_http_client(cast(str, server_config.url))))
                     read_stream, write_stream = _read_write_streams(pending_transport_context.__enter__())
                     transport_context = pending_transport_context
                 else:
@@ -624,28 +460,13 @@ class ManagedMcpManager:
                         command=[],
                         url=server_config.url,
                     )
-                initialize_result = self._call_sdk_session(
-                    session,
-                    stage="startup",
-                    method="initialize",
-                    server_name=server_name,
-                    workspace_root=workspace_root,
-                    operation=lambda session=session: session.initialize(),
-                )
+                portal.call(session.initialize)
             except FileNotFoundError as exc:
                 self._close_partial_server(
                     session_context=session_context,
                     transport_context=transport_context,
                     stderr_log=stderr_log,
                 )
-                diagnostic = create_diagnostic(
-                    severity=McpDiagnosticSeverity.ERROR,
-                    category="startup",
-                    code="server_startup_failed",
-                    server_name=server_name,
-                    command=server_config.command[0] if transport == "stdio" else None,
-                )
-                self._record_diagnostic(diagnostic)
                 if transport == "stdio":
                     message = f"MCP[{server_name}]: failed to start server - cmd not found (command not found): {server_config.command[0]}"
                     self._mark_failed(
@@ -682,13 +503,6 @@ class ManagedMcpManager:
                         server_name=server_name,
                     )
                 else:
-                    diagnostic = self._diagnostic_for_exception(
-                        leaf,
-                        server_name=server_name,
-                        stage="startup",
-                        method="initialize",
-                    )
-                    self._record_diagnostic(diagnostic)
                     message = self._message_for_exception(
                         leaf,
                         fallback=f"MCP[{server_name}]: failed to initialize server",
@@ -720,13 +534,6 @@ class ManagedMcpManager:
                         server_name=server_name,
                     )
                 else:
-                    diagnostic = self._diagnostic_for_exception(
-                        exc,
-                        server_name=server_name,
-                        stage="startup",
-                        method="initialize",
-                    )
-                    self._record_diagnostic(diagnostic)
                     message = self._message_for_exception(
                         exc,
                         fallback=f"MCP[{server_name}]: failed to initialize server",
@@ -753,11 +560,8 @@ class ManagedMcpManager:
                 session_context=session_context,
                 session=session,
                 stderr_log=stderr_log,
-                initialize_result=initialize_result,
-                transport=transport,
             )
             self._running_servers[key] = running
-            _ = initialize_result
             return running
 
     def _ensure_portal(self) -> BlockingPortal:
@@ -776,21 +580,12 @@ class ManagedMcpManager:
         stage: str,
         method: str,
         operation: Any,
-        tool_name: str | None = None,
         suppress_failure_event_when: Callable[[Exception], bool] | None = None,
     ) -> object:
         try:
             with running.call_lock:
                 return self._ensure_portal().call(operation)
         except Exception as exc:
-            diagnostic = self._diagnostic_for_exception(
-                exc,
-                server_name=running.server_name,
-                stage=stage,
-                method=method,
-                tool_name=tool_name,
-            )
-            self._record_diagnostic(diagnostic)
             message = self._message_for_exception(
                 exc,
                 fallback=f"MCP[{running.server_name}]: {method} failed",
@@ -813,19 +608,6 @@ class ManagedMcpManager:
         if stage != "call" or not isinstance(exc, MCPError) or self._is_timeout_error(exc):
             return False
         return exc.code in _RECOVERABLE_MCP_CALL_ERROR_CODES
-
-    def _call_sdk_session(
-        self,
-        session: ClientSession,
-        *,
-        stage: str,
-        method: str,
-        server_name: str,
-        workspace_root: Path,
-        operation: Any,
-    ) -> object:
-        _ = session, stage, method, server_name, workspace_root
-        return self._ensure_portal().call(operation)
 
     def _descriptor_from_sdk_tool(self, *, server_name: str, tool: Tool) -> McpToolDescriptor:
         annotations = tool.annotations
@@ -850,15 +632,6 @@ class ManagedMcpManager:
                 enabled=True,
             )
         except ValueError as exc:
-            diagnostic = create_diagnostic(
-                severity=McpDiagnosticSeverity.ERROR,
-                category="discovery",
-                code="invalid_tool_schema",
-                server_name=server_name,
-                tool_name=tool.name,
-                reason=str(exc),
-            )
-            self._record_diagnostic(diagnostic)
             return McpToolDescriptor(
                 server_name=server_name,
                 tool_name=tool.name,
@@ -915,11 +688,8 @@ class ManagedMcpManager:
             descriptors.append(descriptor)
         self._tool_descriptors_by_server[key] = server_descriptors
         discovered = tuple(descriptors)
-        self._remember_discovered_tools(
-            server_name=server_name,
-            workspace=workspace,
-            descriptors=discovered,
-        )
+        with self._state_lock:
+            self._discovered_tools[server_name] = discovered
         return discovered
 
     def _stop_running_server(self, key: _McpServerKey) -> None:
@@ -999,10 +769,6 @@ class ManagedMcpManager:
                     retry_available=bool(self._configuration.servers),
                 )
 
-    def _record_diagnostic(self, diagnostic: McpDiagnostic) -> None:
-        if self._diagnostics_collector is not None:
-            self._diagnostics_collector.record_diagnostic(diagnostic)
-
     def _report_remote_connect_failure(
         self,
         *,
@@ -1014,13 +780,6 @@ class ManagedMcpManager:
 
         Returns the clean user-facing message raised as a ``ValueError``.
         """
-        diagnostic = create_diagnostic(
-            severity=McpDiagnosticSeverity.ERROR,
-            category="startup",
-            code="server_startup_failed",
-            server_name=server_name,
-        )
-        self._record_diagnostic(diagnostic)
         message = f"MCP[{server_name}]: failed to connect to remote server"
         self._mark_failed(
             key=key,
@@ -1029,47 +788,6 @@ class ManagedMcpManager:
             error=message,
         )
         return message
-
-    def _diagnostic_for_exception(
-        self,
-        exc: BaseException,
-        *,
-        server_name: str,
-        stage: str,
-        method: str,
-        tool_name: str | None = None,
-    ) -> McpDiagnostic:
-        if self._is_timeout_error(exc):
-            return create_diagnostic(
-                severity=McpDiagnosticSeverity.ERROR,
-                category="timeout",
-                code="request_timeout",
-                server_name=server_name,
-                tool_name=tool_name,
-                method=method,
-                timeout_seconds=self._request_timeout_seconds,
-            )
-        if isinstance(exc, MCPError):
-            return create_diagnostic(
-                severity=McpDiagnosticSeverity.ERROR,
-                category="communication",
-                code="server_error",
-                server_name=server_name,
-                tool_name=tool_name,
-                stage=stage,
-                method=method,
-                error=str(exc),
-            )
-        return create_diagnostic(
-            severity=McpDiagnosticSeverity.ERROR,
-            category="communication" if stage != "startup" else "startup",
-            code="unexpected_response",
-            server_name=server_name,
-            tool_name=tool_name,
-            stage=stage,
-            method=method,
-            error=str(exc),
-        )
 
     def _message_for_exception(self, exc: BaseException, *, fallback: str) -> str:
         if self._is_timeout_error(exc):
@@ -1119,9 +837,6 @@ class ManagedMcpManager:
 
 def build_mcp_manager(
     config: McpConfig | None,
-    *,
-    diagnostics_collector: McpDiagnosticsCollector | None = None,
-    tool_catalog_cache: McpToolCatalogCache | None = None,
 ) -> McpManager:
     """Build an MCP manager based on configuration.
 
@@ -1136,6 +851,4 @@ def build_mcp_manager(
         return DisabledMcpManager(config)
     return ManagedMcpManager(
         config,
-        diagnostics_collector=diagnostics_collector,
-        tool_catalog_cache=tool_catalog_cache,
     )

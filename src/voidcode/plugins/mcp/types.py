@@ -1,16 +1,12 @@
-"""Static MCP types, config records, and event contracts owned by the plugin.
-
-Ported from ``voidcode.mcp`` (types/contract/observability) and the runtime MCP
-config records, minus every runtime-lifecycle dependency: the plugin may only
-import the SDK and its own modules.
-"""
+"""MCP configuration validation, tool metadata, and manager contracts."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass, field
-from enum import StrEnum
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, Self
+from urllib.parse import urlsplit
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,23 +70,44 @@ class McpToolCallResult:
 type McpTransport = Literal["stdio", "remote-http"]
 
 
-@dataclass(frozen=True, slots=True)
-class McpServerConfig:
-    """One configured MCP server."""
+class McpServerConfig(BaseModel):
+    """Validate one configured server before any process or connection is created."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
 
     transport: McpTransport = "stdio"
-    command: tuple[str, ...] = ()
-    env: dict[str, str] = field(default_factory=dict)
+    command: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict, repr=False)
     url: str | None = None
 
+    @model_validator(mode="after")
+    def _transport_fields(self) -> Self:
+        if self.transport == "stdio":
+            if not self.command or any(not part or "\0" in part for part in self.command):
+                raise ValueError("stdio command must contain non-empty argv strings")
+            if self.url is not None:
+                raise ValueError("stdio servers do not accept url")
+        else:
+            if self.command or self.env:
+                raise ValueError("remote-http servers do not accept command or env")
+            if self.url is None or urlsplit(self.url).scheme not in {"http", "https"} or not urlsplit(self.url).hostname:
+                raise ValueError("remote-http url must be an absolute HTTP(S) URL")
+        return self
 
-@dataclass(frozen=True, slots=True)
-class McpConfig:
-    """The plugin's ``mcp`` configuration section."""
 
-    enabled: bool | None = None
-    servers: Mapping[str, McpServerConfig] | None = None
-    request_timeout_seconds: float | None = None
+class McpConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
+
+    enabled: bool = True
+    servers: dict[str, McpServerConfig] = Field(default_factory=dict)
+    request_timeout_seconds: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+
+    @field_validator("servers")
+    @classmethod
+    def _server_names(cls, servers: dict[str, McpServerConfig]) -> dict[str, McpServerConfig]:
+        if any(not name.strip() for name in servers):
+            raise ValueError("server names must not be empty")
+        return servers
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,106 +121,10 @@ class McpConfigState:
     def from_config(cls, config: McpConfig | None) -> McpConfigState:
         if config is None:
             return cls()
-        # Unset ``enabled`` (None) means enabled by default; only an explicit
-        # ``enabled: false`` disables the capability (the runtime's
-        # ``runtime_capability_enabled`` is the shared convention).
         return cls(
-            configured_enabled=config.enabled is not False,
-            servers=dict(config.servers or {}),
+            configured_enabled=config.enabled,
+            servers=dict(config.servers),
         )
-
-
-# =============================================================================
-# Diagnostics (ported from voidcode.mcp.observability/contract)
-# =============================================================================
-
-
-class McpErrorCode:
-    """Standard MCP error codes used by the runtime."""
-
-    TOOL_NOT_FOUND = "tool_not_found"
-    INVALID_REQUEST = "invalid_request"
-
-
-class McpDiagnosticSeverity(StrEnum):
-    """Diagnostic severity levels."""
-
-    INFO = "info"
-    WARNING = "warning"
-    ERROR = "error"
-
-
-@dataclass(frozen=True)
-class McpDiagnostic:
-    """Represents an MCP diagnostic event."""
-
-    severity: McpDiagnosticSeverity
-    category: str
-    message: str
-    server_name: str | None = None
-    tool_name: str | None = None
-    details: dict[str, Any] | None = None
-
-
-class McpDiagnosticsCollector(Protocol):
-    """Protocol for collecting MCP diagnostics."""
-
-    def record_diagnostic(self, diagnostic: McpDiagnostic) -> None: ...
-
-
-def diagnostic_message(
-    code: str,
-    *,
-    server_name: str | None = None,
-    tool_name: str | None = None,
-    **details: Any,
-) -> str:
-    """Generate a standardized diagnostic message."""
-    messages: dict[str, str] = {
-        "server_startup_failed": "MCP server failed to start",
-        "server_command_missing": "MCP server command is missing",
-        "server_url_missing": "MCP server URL is missing for remote-http transport",
-        "stdio_pipe_failed": "MCP server stdio pipe failed",
-        "json_decode_failed": "MCP server returned invalid JSON",
-        "request_timeout": "MCP server request timed out",
-        "server_not_found": "MCP server not found in configuration",
-        "tool_not_found": "MCP tool not found",
-        "unexpected_response": "MCP server returned unexpected response",
-        "remote_connection_failed": "Failed to connect to remote MCP server",
-        "remote_http_error": "Remote MCP server returned HTTP error",
-        "remote_timeout": "Remote MCP server request timed out",
-    }
-    base = messages.get(code, f"MCP[{code}]")
-    if server_name:
-        base = f"{base} (server: {server_name})"
-    if tool_name:
-        base = f"{base} (tool: {tool_name})"
-    if details:
-        detail_str = ", ".join(f"{k}={v}" for k, v in details.items())
-        base = f"{base} [{detail_str}]"
-    return base
-
-
-def create_diagnostic(
-    severity: McpDiagnosticSeverity,
-    category: str,
-    code: str,
-    *,
-    server_name: str | None = None,
-    tool_name: str | None = None,
-    **details: Any,
-) -> McpDiagnostic:
-    """Factory function to create a diagnostic with standardized message."""
-    message = diagnostic_message(code, server_name=server_name, tool_name=tool_name, **details)
-
-    return McpDiagnostic(
-        severity=severity,
-        category=category,
-        message=message,
-        server_name=server_name,
-        tool_name=tool_name,
-        details=details if details else None,
-    )
 
 
 # =============================================================================
@@ -293,8 +214,6 @@ class McpManager(Protocol):
     ) -> McpToolCallResult: ...
 
     def shutdown(self) -> None: ...
-
-    def retry_connections(self, *, workspace: Any) -> None: ...
 
 
 # Constants
