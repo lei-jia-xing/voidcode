@@ -40,47 +40,7 @@ from voidcode.sdk.commands import CommandInvocation
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices
 
-_WORKSPACE_DISCOVERY_TOOLS = ("read", "glob", "grep", "ast_grep", "lsp")
 _USER_APPEND_HEADING = "User-append: user-authored text is authoritative over generated blocks."
-
-_EXPECTED_TOOL_ALLOWLISTS: dict[str, tuple[str, ...]] = {
-    "default": (
-        *_WORKSPACE_DISCOVERY_TOOLS,
-        "write",
-        "edit",
-        "background_process",
-        "shell_exec",
-        "task",
-        "task_batch",
-        "todo",
-        "get_goal",
-        "create_goal",
-        "update_goal",
-        "skill",
-        "web_search",
-        "mcp",
-    ),
-    "execute": (
-        *_WORKSPACE_DISCOVERY_TOOLS,
-        "write",
-        "edit",
-        "background_process",
-        "shell_exec",
-        "todo",
-        "mcp",
-    ),
-    "review": _WORKSPACE_DISCOVERY_TOOLS,
-    "explore": _WORKSPACE_DISCOVERY_TOOLS,
-    "research": ("web_search",),
-    "plan": (
-        *_WORKSPACE_DISCOVERY_TOOLS,
-        "skill",
-        "web_search",
-    ),
-}
-
-#: Names from the legacy world that no admitted tool answers to.
-_DEAD_TOOL_NAMES = ("yield", "question", "invoke_tool", "mcp/*")
 
 
 def _write_agent_file(directory: Path, filename: str, frontmatter: str, body: str = "Custom agent body.") -> Path:
@@ -111,12 +71,12 @@ def _load_registry(
     )
 
 
-def test_builtin_manifests_expose_exact_allowlists_and_refs() -> None:
+def test_builtin_manifests_expose_prompts_stances_and_refs() -> None:
     manifests = list_builtin_agent_manifests()
 
     assert tuple(manifest.id for manifest in manifests) == ("default", "execute", "review", "explore", "research", "plan")
     for manifest in manifests:
-        assert manifest.tool_allowlist == _EXPECTED_TOOL_ALLOWLISTS[manifest.id]
+        assert "tool_allowlist" not in manifest.to_payload()
         assert manifest.source_scope == "builtin"
         assert manifest.skill_refs == ()
         assert manifest.fallback_models == ()
@@ -131,14 +91,6 @@ def test_builtin_manifests_expose_exact_allowlists_and_refs() -> None:
     assert get_builtin_agent_manifest("research") is RESEARCH_AGENT_MANIFEST
     assert get_builtin_agent_manifest("plan") is PLAN_AGENT_MANIFEST
     assert get_builtin_agent_manifest("missing") is None
-
-
-def test_builtin_allowlists_name_only_admitted_tools() -> None:
-    """The legacy handoff, ask-user, nested-invocation and ``mcp/*`` names are gone."""
-    for manifest in list_builtin_agent_manifests():
-        assert not set(_DEAD_TOOL_NAMES).intersection(manifest.tool_allowlist)
-    assert "mcp" in DEFAULT_AGENT_MANIFEST.tool_allowlist
-    assert "mcp" in EXECUTE_AGENT_MANIFEST.tool_allowlist
 
 
 def test_builtin_readonly_stance_lives_on_the_manifest() -> None:
@@ -202,19 +154,6 @@ def test_builtin_manifests_validate_and_reject_broken_records() -> None:
         validate_builtin_agent_manifests((AgentManifest(id="broken", name="Broken", mode="primary", description="d", prompt_profile="plan"),))
     with pytest.raises(ValueError, match="references unknown prompt profile 'ghost'"):
         validate_builtin_agent_manifests((AgentManifest(id="broken", name="Broken", mode="subagent", description="d", prompt_profile="ghost"),))
-    with pytest.raises(ValueError, match="must not contain duplicate tool patterns"):
-        validate_builtin_agent_manifests(
-            (
-                AgentManifest(
-                    id="broken",
-                    name="Broken",
-                    mode="subagent",
-                    description="d",
-                    prompt_profile="plan",
-                    tool_allowlist=("read", "read"),
-                ),
-            )
-        )
 
 
 def test_manifest_payload_round_trip() -> None:
@@ -481,7 +420,7 @@ def test_agents_command_lists_builtin_and_project_profiles(tmp_path: Path, monke
     assert result.output is not None
     assert "[subagent] review —" in result.output
     assert "[primary] default —" in result.output
-    assert "[subagent] custom — Local helper (project, tools: 0)" in result.output
+    assert "[subagent] custom — Local helper (project, readonly: False)" in result.output
     rows = {row["id"]: row for row in result.data["profiles"]}  # type: ignore[index]
     assert rows["custom"]["source_scope"] == "project"
     assert rows["execute"]["mode"] == "subagent"
@@ -502,9 +441,8 @@ def test_agents_show_renders_builtin_prompt_and_rejects_unknown(tmp_path: Path, 
     assert shown.status == "ok"
     assert shown.output == expected_prompt
     assert shown.data is not None
-    assert shown.data["tool_allowlist"] == ("read", "glob", "grep", "ast_grep", "lsp")
-    assert "write" not in shown.data["tool_allowlist"]
-    assert "yield" not in shown.data["tool_allowlist"]
+    assert "tool_allowlist" not in shown.data
+    assert shown.data["readonly"] is True
 
     unknown = command.invoke(
         CommandInvocation(context=_command_context(workspace), name="agents.show", arguments={"id": "nope"}),
@@ -526,3 +464,10 @@ def test_create_plugin_registers_commands_and_tools() -> None:
     assert [command.definition.name for command in plugin.commands] == ["agents", "agents.show"]
     assert [tool.definition.name for tool in plugin.tools] == ["task", "task_batch"]
     assert plugin.context is None
+
+
+def test_profile_rejects_removed_tool_scope_fields():
+    with pytest.raises(ValueError, match="unsupported field: tool_allowlist"):
+        AgentManifest.from_payload({**DEFAULT_AGENT_MANIFEST.to_payload(), "tool_allowlist": ["read"]})
+    with pytest.raises(ValueError, match="tool_allowlist"):
+        manifest_from_markdown("---\nname: Old\ndescription: old\nmode: subagent\ntool_allowlist: [read]\n---\nOld profile.", scope="project")

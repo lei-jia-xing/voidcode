@@ -59,7 +59,7 @@ def test_agents_command_lists_builtins_and_project_profile(tmp_path: Path) -> No
     project_dir = tmp_path / "workspace" / ".voidcode" / "agents"
     project_dir.mkdir(parents=True)
     (project_dir / "helper.md").write_text(
-        "---\nname: Helper\ndescription: Local helper\nmode: subagent\ntool_allowlist:\n  - read\n---\n\nHelp locally.\n",
+        "---\nname: Helper\ndescription: Local helper\nmode: subagent\n---\n\nHelp locally.\n",
         encoding="utf-8",
     )
 

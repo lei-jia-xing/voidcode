@@ -22,7 +22,7 @@ def _manifest_row(manifest: AgentManifest) -> dict[str, object]:
         "prompt_profile": manifest.prompt_profile,
         "model_preference": manifest.model_preference,
         "fallback_models": list(manifest.fallback_models),
-        "tool_allowlist": list(manifest.tool_allowlist),
+        "readonly": manifest.readonly,
         "skill_refs": list(manifest.skill_refs),
         "top_level_selectable": manifest.top_level_selectable,
     }
@@ -47,7 +47,7 @@ class AgentsCommand:
         manifests = registry.list_manifests()
         rows = [_manifest_row(manifest) for manifest in manifests]
         lines = [
-            f"- [{manifest.mode}] {manifest.id} — {manifest.description} ({manifest.source_scope}, tools: {len(manifest.tool_allowlist)})"
+            f"- [{manifest.mode}] {manifest.id} — {manifest.description} ({manifest.source_scope}, readonly: {manifest.readonly})"
             for manifest in manifests
         ]
         return CommandResult(status="ok", output="\n".join(lines) or "No agent profiles found.", data={"profiles": rows})
@@ -56,7 +56,7 @@ class AgentsCommand:
 class AgentShowCommand:
     definition: ClassVar[CommandDefinition] = CommandDefinition(
         name="agents.show",
-        description="Show one agent profile's rendered prompt and declared tool allowlist.",
+        description="Show one agent profile's rendered prompt and read-only stance.",
         argument_schema={
             "type": "object",
             "properties": {"id": {"type": "string", "description": "Agent profile id."}},

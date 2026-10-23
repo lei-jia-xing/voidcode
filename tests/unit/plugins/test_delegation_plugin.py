@@ -385,7 +385,7 @@ def test_profile_spawn_materializes_the_prompt_and_applies_its_scope(tmp_path: P
         {
             "prompt": f"{_builtin_body(tmp_path, 'explore')}\n\nmap the retry paths",
             "label": "explore",
-            "tool_allowlist": ("read", "glob", "grep", "ast_grep", "lsp"),
+            "tool_allowlist": None,
             "max_steps": 32,
             "readonly": True,
             "notify_on_completion": True,
@@ -440,25 +440,24 @@ def test_custom_profile_spawns_with_its_own_body_scope_and_writable_stance(tmp_p
     workspace = _custom_workspace(
         tmp_path,
         "helper.md",
-        "---\nname: Helper\ndescription: Local helper\nmode: subagent\ntool_allowlist:\n  - read\n---\n\nHelp locally.\n",
+        "---\nname: Helper\ndescription: Local helper\nmode: subagent\n---\n\nHelp locally.\n",
     )
     services = MockServices()
     res = _task_at(services, workspace, {"prompt": "count doors", "subagent_type": "helper"})
 
     assert isinstance(res, ToolSuccess)
     assert services.spawn_calls[0]["prompt"] == "Help locally.\n\ncount doors"
-    assert services.spawn_calls[0]["tool_allowlist"] == ("read",)
+    assert services.spawn_calls[0]["tool_allowlist"] is None
     assert services.spawn_calls[0]["readonly"] is False
     assert _stored(services).children == {"child-1": ChildRecord(subagent_type="helper")}
 
 
-def test_profile_and_explicit_allowlist_cannot_be_combined(tmp_path: Path) -> None:
+def test_profile_and_explicit_allowlist_can_be_combined(tmp_path: Path) -> None:
     services = MockServices()
     res = _task(services, tmp_path, {"prompt": "work", "subagent_type": "plan", "tool_allowlist": ["read"]})
-
-    assert isinstance(res, ToolFailure)
-    assert "accepts either subagent_type or tool_allowlist" in res.error
-    assert services.spawn_calls == []
+    assert isinstance(res, ToolSuccess)
+    assert services.spawn_calls[0]["tool_allowlist"] == ("read",)
+    assert services.spawn_calls[0]["readonly"] is True
 
 
 def test_subagent_type_applies_to_spawns_only(tmp_path: Path) -> None:
@@ -470,14 +469,14 @@ def test_subagent_type_applies_to_spawns_only(tmp_path: Path) -> None:
     assert services.spawn_calls == []
 
 
-def test_profile_scope_omits_unavailable_tools_without_widening(tmp_path: Path) -> None:
+def test_profile_inherits_scope_without_tool_discovery(tmp_path: Path) -> None:
     services = MockServices()
-    services.unavailable_tools = {"lsp", "ast_grep"}
+    services.unavailable_tools = {"read", "glob", "grep", "ast_grep", "lsp"}
     res = _task(services, tmp_path, {"prompt": "map it", "subagent_type": "explore"})
     assert isinstance(res, ToolSuccess)
-    assert [call["tool_allowlist"] for call in services.spawn_calls] == [("read", "glob", "grep")]
+    assert services.spawn_calls[0]["tool_allowlist"] is None
     assert services.spawn_calls[0]["readonly"] is True
-    assert _payload(res)["notes"] == ["profile 'explore' omitted unavailable tools: ast_grep, lsp"]
+    assert "notes" not in _payload(res)
 
 
 @pytest.mark.parametrize("failure", [ValueError("spawn refused"), RuntimeError("host refused")])
@@ -489,15 +488,6 @@ def test_profile_spawn_failure_is_not_retried_with_a_wider_scope(tmp_path: Path,
     assert str(failure) in res.error
     assert len(services.spawn_calls) == 1
     assert services.get_state("session") == (None, 0)
-
-
-def test_profile_with_no_available_tools_fails_before_spawning(tmp_path: Path) -> None:
-    services = MockServices()
-    services.unavailable_tools = {"read", "glob", "grep", "ast_grep", "lsp"}
-    res = _task(services, tmp_path, {"prompt": "map it", "subagent_type": "explore"})
-    assert isinstance(res, ToolFailure)
-    assert "no available tools" in res.error
-    assert services.spawn_calls == []
 
 
 def test_no_profile_keeps_the_calling_allowlist_and_writable_stance(tmp_path: Path) -> None:
@@ -517,7 +507,7 @@ def test_a_profile_model_preference_is_reported_instead_of_faked(tmp_path: Path)
     workspace = _custom_workspace(
         tmp_path,
         "picky.md",
-        "---\nname: Picky\ndescription: Choosy helper\nmode: subagent\nmodel: endpoint/gpt-x\ntool_allowlist:\n  - read\n---\n\nPick well.\n",
+        "---\nname: Picky\ndescription: Choosy helper\nmode: subagent\nmodel: endpoint/gpt-x\n---\n\nPick well.\n",
     )
     services = MockServices()
 
@@ -893,7 +883,7 @@ def test_batch_items_select_their_own_profiles(tmp_path: Path) -> None:
         {
             "prompt": f"{_builtin_body(tmp_path, 'research')}\n\nread the docs",
             "label": "",
-            "tool_allowlist": ("web_search",),
+            "tool_allowlist": None,
             "max_steps": 32,
             "readonly": True,
             "notify_on_completion": True,
@@ -907,21 +897,15 @@ def test_batch_items_select_their_own_profiles(tmp_path: Path) -> None:
     assert "profile=research" in res.output.text
 
 
-def test_batch_item_uses_available_profile_tools_and_preserves_other_failures(tmp_path: Path) -> None:
+def test_batch_combines_profile_and_caller_scope_and_preserves_spawn_failures(tmp_path: Path) -> None:
     services = MockServices()
-    services.unavailable_tools = {"skill"}
     services.spawn_failures = {2: "delegation spawn budget exhausted for this chain"}
-    res = _batch(services, tmp_path, {"tasks": [{"prompt": "plan it", "subagent_type": "plan"}, {"prompt": "doomed"}]})
-    note = "profile 'plan' omitted unavailable tools: skill"
+    res = _batch(services, tmp_path, {"tasks": [{"prompt": "plan it", "subagent_type": "plan", "tool_allowlist": ["read"]}, {"prompt": "doomed"}]})
     payload = _payload(res)
     assert payload["partial"] is True
-    assert payload["created"] == [{"index": 0, "task_id": "child-1", "subagent_type": "plan", "notes": [note]}]
+    assert payload["created"] == [{"index": 0, "task_id": "child-1", "subagent_type": "plan"}]
     assert payload["failed"] == [{"index": 1, "error": "delegation spawn budget exhausted for this chain"}]
-    assert note in res.output.text
-    assert [call["tool_allowlist"] for call in services.spawn_calls] == [
-        ("read", "glob", "grep", "ast_grep", "lsp", "web_search"),
-        None,
-    ]
+    assert [call["tool_allowlist"] for call in services.spawn_calls] == [("read",), None]
 
 
 def test_batch_group_read_reports_each_child_profile(tmp_path: Path) -> None:

@@ -59,14 +59,23 @@ edits remain available without a document-state provider. Malformed answers rema
 
 ## Optional tools in workflow profiles
 
-Delegation profiles and review intersect their desired tools with the session's visible
-catalog using `PluginServices.tool_definition`. Disabling `lsp` or `ast_grep` leaves the
-available file tools usable; delegation reports the omitted names. If none of a profile's
-inspection tools is visible, the workflow fails before spawning a child.
+Delegation profiles supply prompt text and a read-only stance; they do not select
+or discover tools. A child inherits its parent's tool scope unless the caller
+passes an explicit `tool_allowlist`. The caller can combine this narrowing with
+`subagent_type` in either `task` or `task_batch`. The core validates the requested
+subset; unknown tools and wider scopes are errors, never silently filtered.
+Profile frontmatter and manifest payloads reject the removed `tool_allowlist`
+field. There is no translation or compatibility path.
 
-A profile never retries a rejected spawn with an inherited, wider parent scope. Spawn,
-budget, policy, and lifecycle errors are preserved. Explicit caller-supplied allowlists still
-undergo the core's strict validation rather than silently dropping unknown names.
+A read-only profile restricts external mutation through the core's existing
+policy, but does not mean filesystem-only inspection. It can see permitted
+network or delegation tools within the inherited scope. Exact tool restrictions
+belong to the caller's explicit scope, not the profile name. Spawn failures are
+never retried with a different scope.
+
+The separate review workflow still intersects its fixed inspection list with
+`PluginServices.tool_definition`. This remaining concrete-name policy has not
+been migrated as part of delegation simplification.
 
 ## Behavioral verification
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Literal, cast
 
 type AgentManifestId = Literal[
@@ -82,7 +82,6 @@ class AgentManifest:
     prompt_profile: str | None = None
     model_preference: str | None = None
     fallback_models: tuple[str, ...] = ()
-    tool_allowlist: tuple[str, ...] = ()
     skill_refs: tuple[str, ...] = ()
     #: Child read-only stance. Builtins declare it; customs have no stance field so they parse
     #: as False (spawn still ORs the parent lease, so a read-only parent keeps a custom child
@@ -104,7 +103,7 @@ class AgentManifest:
             value = getattr(self, field_name)
             if value is not None and (not isinstance(value, str) or not value.strip()):
                 raise ValueError(f"agent manifest {field_name} must be non-empty")
-        for field_name in ("fallback_models", "tool_allowlist", "skill_refs"):
+        for field_name in ("fallback_models", "skill_refs"):
             values = getattr(self, field_name)
             if not isinstance(values, tuple) or any(not isinstance(value, str) or not value.strip() for value in values):
                 raise ValueError(f"agent manifest {field_name} must be a tuple of non-empty strings")
@@ -130,8 +129,6 @@ class AgentManifest:
             payload["model_preference"] = self.model_preference
         if self.fallback_models:
             payload["fallback_models"] = list(self.fallback_models)
-        if self.tool_allowlist:
-            payload["tool_allowlist"] = list(self.tool_allowlist)
         if self.skill_refs:
             payload["skill_refs"] = list(self.skill_refs)
         if self.readonly:
@@ -144,6 +141,9 @@ class AgentManifest:
     def from_payload(cls, payload: Mapping[str, object]) -> AgentManifest:
         if not isinstance(payload, Mapping):
             raise ValueError("AgentManifest payload must be a mapping")
+        unknown = set(payload) - {field.name for field in fields(cls)}
+        if unknown:
+            raise ValueError(f"AgentManifest payload has unsupported field: {sorted(unknown)[0]}")
         for key in ("id", "name", "mode", "description"):
             if key not in payload or not isinstance(payload[key], str):
                 raise ValueError(f"AgentManifest payload '{key}' must be a string")
@@ -182,7 +182,6 @@ class AgentManifest:
             prompt_profile=_parse_opt_str("prompt_profile"),
             model_preference=_parse_opt_str("model_preference"),
             fallback_models=_parse_tuple("fallback_models"),
-            tool_allowlist=_parse_tuple("tool_allowlist"),
             skill_refs=_parse_tuple("skill_refs"),
             top_level_selectable=raw_selectable,
             readonly=raw_readonly,

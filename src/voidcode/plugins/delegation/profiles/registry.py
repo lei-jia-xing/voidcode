@@ -33,7 +33,6 @@ _SUPPORTED_FRONTMATTER_FIELDS = frozenset(
         "mode",
         "model",
         "fallback_models",
-        "tool_allowlist",
         "skill_refs",
         "prompt_append",
     }
@@ -191,7 +190,6 @@ def _manifest_from_payload(
     if not is_valid_agent_manifest_id(manifest_id):
         raise ValueError(f"frontmatter field 'id' value '{manifest_id}' must match {_AGENT_ID_PATTERN.pattern!r}")
     mode = _parse_mode(_required_string(payload, "mode"))
-    tool_allowlist = _string_list(payload.get("tool_allowlist"), field="tool_allowlist")
     skill_refs = _string_list(payload.get("skill_refs"), field="skill_refs")
     prompt_append = _require_optional_string(payload, "prompt_append")
     return AgentManifest(
@@ -204,7 +202,6 @@ def _manifest_from_payload(
         prompt_profile=manifest_id,
         model_preference=_require_optional_string(payload, "model"),
         fallback_models=_string_list(payload.get("fallback_models"), field="fallback_models"),
-        tool_allowlist=tool_allowlist,
         skill_refs=skill_refs,
         top_level_selectable=mode == "primary",
         prompt_materialization=AgentPromptMaterialization(

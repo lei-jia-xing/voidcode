@@ -192,7 +192,8 @@ def test_parent_spawns_a_real_child_and_receives_its_output(tmp_path: Path) -> N
         assert version >= 1
 
 
-def test_profile_child_gets_the_rendered_prompt_and_builtin_file_scope(tmp_path: Path) -> None:
+@pytest.mark.parametrize("scope", [None, ["read"]])
+def test_profile_child_inherits_parent_scope_or_uses_explicit_narrowing(tmp_path: Path, scope) -> None:
     """Disabling the files adapter keeps baseline discovery available to a child."""
     replies: list[dict[str, object]] = [
         openai_response(
@@ -202,7 +203,12 @@ def test_profile_child_gets_the_rendered_prompt_and_builtin_file_scope(tmp_path:
                 "tool_calls": [
                     _task_call(
                         "call-task-1",
-                        {"prompt": "summarize the visitor guide", "subagent_type": "explore", "run_in_background": False},
+                        {
+                            "prompt": "summarize the visitor guide",
+                            "subagent_type": "explore",
+                            "run_in_background": False,
+                            **({"tool_allowlist": scope} if scope is not None else {}),
+                        },
                     )
                 ],
             },
@@ -226,15 +232,15 @@ def test_profile_child_gets_the_rendered_prompt_and_builtin_file_scope(tmp_path:
         assert body["subagent_type"] == "explore"
         assert body["status"] == "completed"
         assert body["output"] == "child answer: explored"
-        assert body["notes"] == ["profile 'explore' omitted unavailable tools: ast_grep, lsp"]
-        assert {"read", "glob", "grep"} <= set(_tool_names(server.requests[1]))
+        assert "notes" not in body
+        assert set(scope or ["read", "glob", "grep"]) <= set(_tool_names(server.requests[1]))
         assert "write" not in _tool_names(server.requests[1])
         assert "profile=explore" in tool_text
 
         child_id = str(body["task_id"])
         child = core.session(child_id)
         assert child.parent_session_id == parent_id
-        assert child.tool_allowlist == ("glob", "grep", "read")
+        assert child.tool_allowlist == (tuple(scope) if scope is not None else core.session(parent_id).tool_allowlist)
         assert core.store.session_overlays(child_id) == ("read-only",), "a read-only profile keeps its stance"
 
         stored = core.store.plugin_state("delegation", "session", parent_id)

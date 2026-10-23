@@ -14,7 +14,7 @@ reminders, ``outputSchema``/``schemaMode`` structured-output validation, ``load_
 
 ``subagent_type`` selects one executable child profile from the owned registry in
 ``profiles/`` (builtin manifests plus user/project customs): the child's prompt is
-the rendered profile text followed by this call's prompt, its tools are the profile's allowlist,
+the rendered profile text followed by this call's prompt, its tools inherit the parent scope,
 and its stance is the profile's ``readonly`` (customs declare no stance, so they run writable
 unless the parent lease is read-only). The core has no per-child system prompt seam -- a
 child receives exactly one user prompt -- so the profile text is materialized into that prompt
@@ -279,20 +279,6 @@ def _resolve_subagent(registry: AgentManifestRegistry, subagent_type: str, *, wh
     return manifest
 
 
-def _parse_preset_selection(
-    raw_subagent_type: object,
-    raw_allowlist: object,
-    *,
-    where: str,
-) -> tuple[str | None, tuple[str, ...] | None]:
-    """Parse an optional preset id, which is mutually exclusive with an explicit allowlist."""
-    subagent_type = _parse_subagent_type(raw_subagent_type, where=where)
-    tool_allowlist = _parse_allowlist(raw_allowlist, where=where)
-    if subagent_type is not None and tool_allowlist is not None:
-        raise ValueError(f"{where} accepts either subagent_type or tool_allowlist, not both: a profile defines the child scope")
-    return subagent_type, tool_allowlist
-
-
 def _parse_max_steps(raw: object, *, where: str) -> int:
     if raw is None:
         return DEFAULT_MAX_STEPS
@@ -366,11 +352,8 @@ def _parse_task_args(arguments: Mapping[str, object]) -> _TaskArgs:
         if arguments.get("tool_allowlist") is not None:
             raise ValueError("task tool_allowlist applies to a spawn only")
     else:
-        subagent_type, tool_allowlist = _parse_preset_selection(
-            arguments.get("subagent_type"),
-            arguments.get("tool_allowlist"),
-            where="task",
-        )
+        subagent_type = _parse_subagent_type(arguments.get("subagent_type"), where="task")
+        tool_allowlist = _parse_allowlist(arguments.get("tool_allowlist"), where="task")
     return _TaskArgs(
         prompt=prompt,
         label=_parse_label(arguments.get("label"), where="task"),
@@ -411,11 +394,8 @@ def _parse_batch_item(index: int, raw: object) -> _BatchItem:
     prompt = raw.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError(f"{where} requires a non-empty prompt")
-    subagent_type, tool_allowlist = _parse_preset_selection(
-        raw.get("subagent_type"),
-        raw.get("tool_allowlist"),
-        where=where,
-    )
+    subagent_type = _parse_subagent_type(raw.get("subagent_type"), where=where)
+    tool_allowlist = _parse_allowlist(raw.get("tool_allowlist"), where=where)
     return _BatchItem(
         prompt=prompt,
         label=_parse_label(raw.get("label"), where=where),
@@ -606,23 +586,14 @@ def _spawn_child(
     tool_allowlist: tuple[str, ...] | None,
     notify_on_completion: bool,
 ) -> tuple[str, tuple[str, ...]]:
-    """Narrow a profile to currently visible capabilities, then spawn exactly once."""
+    """Apply profile text and stance; only the caller narrows the inherited scope."""
     body = prompt if profile is None or profile_body is None else f"{profile_body}\n\n{prompt}"
-    allowlist = tool_allowlist if profile is None else profile.tool_allowlist
     readonly = False if profile is None else profile.readonly
     notes = _profile_notes(profile)
-    if profile is not None and allowlist is not None:
-        available = tuple(name for name in allowlist if services.tool_definition(name) is not None)
-        missing = tuple(name for name in allowlist if name not in available)
-        if not available:
-            raise ValueError(f"profile '{profile.id}' has no available tools in the current session")
-        if missing:
-            notes = (*notes, f"profile '{profile.id}' omitted unavailable tools: {', '.join(missing)}")
-        allowlist = available
     child_id = services.spawn_child(
         body,
         label=label,
-        tool_allowlist=allowlist,
+        tool_allowlist=tool_allowlist,
         max_steps=max_steps,
         readonly=readonly,
         notify_on_completion=notify_on_completion,
@@ -787,9 +758,9 @@ TASK_DESCRIPTION = (
     "- Pass prompt with the full delegated task text; label is an optional short tag for the child.\n"
     "- subagent_type runs the child under a profile: a builtin (execute, review, explore, "
     "research, plan) or a workspace custom profile. The child's prompt becomes that profile's "
-    "text plus your prompt, its tools become the profile's allowlist, and a read-only profile "
+    "text plus your prompt, its tools inherit your scope, and a read-only profile "
     "keeps the child read-only.\n"
-    "- tool_allowlist narrows the child's tools and can never widen your own scope; pass it without "
+    "- tool_allowlist narrows the child's tools and can never widen your own scope; it can be combined with "
     "subagent_type.\n"
     "- max_steps caps the child's steps (default 32).\n"
     "- run_in_background=true (default) starts the child and returns its task_id immediately. Its "

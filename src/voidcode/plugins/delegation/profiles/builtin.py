@@ -3,39 +3,12 @@ from __future__ import annotations
 from .models import AgentManifest, AgentPromptMaterialization
 from .prompts import render_builtin_prompt_profile
 
-_WORKSPACE_DISCOVERY_TOOLS = (
-    "read",
-    "glob",
-    "grep",
-    "ast_grep",
-    "lsp",
-)
-
-_DEFAULT_TOOL_ALLOWLIST = (
-    *_WORKSPACE_DISCOVERY_TOOLS,
-    "write",
-    "edit",
-    "background_process",
-    "shell_exec",
-    "task",
-    "task_batch",
-    "todo",
-    "get_goal",
-    "create_goal",
-    "update_goal",
-    "skill",
-    "web_search",
-    "mcp",
-)
-
-
 DEFAULT_AGENT_MANIFEST = AgentManifest(
     id="default",
     name="Default",
     mode="primary",
     description="General user-facing assistant; runtime owns policy and tool scope.",
     prompt_profile="default",
-    tool_allowlist=_DEFAULT_TOOL_ALLOWLIST,
     top_level_selectable=True,
     prompt_materialization=AgentPromptMaterialization(
         profile="default",
@@ -49,15 +22,6 @@ EXECUTE_AGENT_MANIFEST = AgentManifest(
     mode="subagent",
     description="Delegated execution of an assigned task; runtime enforces the active tool scope.",
     prompt_profile="execute",
-    tool_allowlist=(
-        *_WORKSPACE_DISCOVERY_TOOLS,
-        "write",
-        "edit",
-        "background_process",
-        "shell_exec",
-        "todo",
-        "mcp",
-    ),
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
         profile="execute",
@@ -72,7 +36,6 @@ REVIEW_AGENT_MANIFEST = AgentManifest(
     mode="subagent",
     description="Delegated review of evidence, risks, and options.",
     prompt_profile="review",
-    tool_allowlist=_WORKSPACE_DISCOVERY_TOOLS,
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
         profile="review",
@@ -87,7 +50,6 @@ EXPLORE_AGENT_MANIFEST = AgentManifest(
     mode="subagent",
     description="Delegated read-only discovery of relevant workspace evidence.",
     prompt_profile="explore",
-    tool_allowlist=_WORKSPACE_DISCOVERY_TOOLS,
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
         profile="explore",
@@ -102,18 +64,11 @@ RESEARCH_AGENT_MANIFEST = AgentManifest(
     mode="subagent",
     description="Delegated research using public sources and external evidence.",
     prompt_profile="research",
-    tool_allowlist=("web_search",),
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
         profile="research",
         source="builtin",
     ),
-)
-
-_PLAN_TOOL_ALLOWLIST = (
-    *_WORKSPACE_DISCOVERY_TOOLS,
-    "skill",
-    "web_search",
 )
 
 PLAN_AGENT_MANIFEST = AgentManifest(
@@ -123,7 +78,6 @@ PLAN_AGENT_MANIFEST = AgentManifest(
     mode="subagent",
     description="Delegated read-only planning grounded in the request and relevant evidence.",
     prompt_profile="plan",
-    tool_allowlist=_PLAN_TOOL_ALLOWLIST,
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
         profile="plan",
@@ -148,8 +102,6 @@ def validate_builtin_agent_manifests(
             raise ValueError(f"builtin agent manifest '{manifest.id}' must declare a builtin prompt_profile")
         if render_builtin_prompt_profile(manifest.prompt_profile) is None:
             raise ValueError(f"builtin agent manifest '{manifest.id}' references unknown prompt profile '{manifest.prompt_profile}'")
-        if len(manifest.tool_allowlist) != len(set(manifest.tool_allowlist)):
-            raise ValueError(f"builtin agent manifest '{manifest.id}' must not contain duplicate tool patterns")
         if manifest.mode == "primary" and not manifest.top_level_selectable:
             raise ValueError(f"builtin agent manifest '{manifest.id}' has mode='primary' but is not marked top_level_selectable")
         if manifest.mode == "subagent" and manifest.top_level_selectable:
