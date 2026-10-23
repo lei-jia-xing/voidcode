@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from pathlib import Path
 
+import pytest
+
 from voidcode.plugins.session_info import create_plugin
 from voidcode.sdk.codec import encode_provider_result, encode_tool_call, encode_tool_result
 from voidcode.sdk.commands import CommandInvocation
@@ -231,7 +233,7 @@ def test_copy_lists_fenced_blocks_from_the_last_response(tmp_path: Path) -> None
     assert result.data is not None
     blocks = result.data["blocks"]
     assert len(blocks) == 1
-    assert blocks[0]["text"] == "print(1)"
+    assert blocks[0]["text"] == "print(1)\n"
     assert "code block 1 (python)" in result.output
 
 
@@ -295,3 +297,50 @@ def test_transcript_scan_passes_empty_pages_and_refuses_to_copy_a_stale_response
     capped = _result(tmp_path, "copy", Capped())
     assert capped.status == "error"
     assert "cannot identify the last assistant response" in capped.error
+
+
+def test_export_supports_nested_immutable_tool_arguments(tmp_path: Path) -> None:
+    entry = TranscriptEntry(
+        1,
+        "run",
+        "rev",
+        "provider",
+        ProviderTurnResult(tool_calls=(ToolCall("custom", {"options": {"names": ["a", "b"]}}),)),
+    )
+
+    class Nested(_FakeServices):
+        def read_transcript(self, **kwargs):
+            return TranscriptPage((entry,), 1, False, 1)
+
+    result = _result(tmp_path, "export", Nested())
+    assert result.status == "ok"
+    assert '{"options": {"names": ["a", "b"]}}' in result.output
+
+
+@pytest.mark.parametrize(
+    "markdown,expected",
+    [
+        ("~~~~python\n    keep = 1  \n\n~~~~\n", "    keep = 1  \n\n"),
+        ("````python\n```nested\n````\n", "```nested\n"),
+        ("```python\n  leading indentation\n```", "  leading indentation\n"),
+    ],
+)
+def test_copy_uses_markdown_fences_and_preserves_code_whitespace(tmp_path: Path, markdown: str, expected: str) -> None:
+    class Fenced(_FakeServices):
+        def read_transcript(self, **kwargs):
+            entry = TranscriptEntry(1, "run", "rev", "provider", ProviderTurnResult(output=markdown))
+            return TranscriptPage((entry,), 1, False, 1)
+
+    result = _result(tmp_path, "copy", Fenced())
+    assert result.status == "ok"
+    assert result.data["blocks"][0]["text"] == expected
+
+
+def test_context_does_not_describe_a_truncated_history_as_latest(tmp_path: Path) -> None:
+    class Capped(_FakeServices):
+        def read_transcript(self, *, after_sequence=0, limit=100):
+            return TranscriptPage((), after_sequence + limit, True, limit)
+
+    result = _result(tmp_path, "context", Capped())
+    assert result.status == "error"
+    assert "cannot identify the latest dispatched context" in result.error

@@ -34,6 +34,7 @@ dependencies = [
   "typing-extensions",
   "regex>=2024.11.6",
   "rich>=15.0.0",
+  "markdown-it-py>=4.0",
   "httpx",
   "httpx2>=2.12.0",
   "jsonschema>=4.18.0",

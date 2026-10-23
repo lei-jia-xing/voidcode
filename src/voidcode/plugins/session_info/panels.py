@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import json
 
+from markdown_it import MarkdownIt
+
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
+from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.provider import ProviderMessage, ProviderTurnResult
 from voidcode.sdk.services import EventView, PluginServices, SessionUsageReport
-from voidcode.sdk.tools import ToolFailure, ToolSuccess
+from voidcode.sdk.tools import TextOutput, ToolResult, ToolSuccess
 from voidcode.sdk.transcript import TranscriptDispatch, TranscriptEntry, TranscriptRun, TranscriptTool
 
 #: One panel reads at most this many events, in pages of READ_PAGE events.
@@ -50,6 +53,8 @@ class SessionInfoCommand:
             return _usage(services, usage)
         entries, truncated, source_events = _read_transcript(services)
         if self._panel == "context":
+            if truncated:
+                return CommandResult(status="error", error="transcript scan limit reached; cannot identify the latest dispatched context")
             return _context(entries, usage, truncated)
         if self._panel == "export":
             return _export(entries, usage, truncated, source_events)
@@ -92,10 +97,6 @@ def _read_transcript(services: PluginServices) -> tuple[tuple[TranscriptEntry, .
     return tuple(entries), True, scanned
 
 
-def _usage_payload(usage: SessionUsageReport) -> dict[str, object]:
-    return usage.as_payload()
-
-
 def _status(
     invocation: CommandInvocation,
     services: PluginServices,
@@ -118,7 +119,7 @@ def _status(
         "last_event_sequence": last.sequence if last is not None else 0,
         "event_counts": counts,
         "events_truncated": truncated,
-        "usage": _usage_payload(usage),
+        "usage": usage.as_payload(),
         "budget": None if budget is None else budget.as_payload(),
     }
     lines = [
@@ -185,7 +186,7 @@ def _context(entries: tuple[TranscriptEntry, ...], usage: SessionUsageReport, tr
 
 def _usage(services: PluginServices, usage: SessionUsageReport) -> CommandResult:
     budget = services.get_budget()
-    data = {"usage": _usage_payload(usage), "budget": None if budget is None else budget.as_payload()}
+    data = {"usage": usage.as_payload(), "budget": None if budget is None else budget.as_payload()}
     lines = [
         f"turns: {usage.turn_count}",
         f"input tokens: {usage.input_tokens} (uncached: {usage.uncached_input_tokens}, cache read: {usage.cache_read_tokens})",
@@ -224,7 +225,9 @@ def _export_entry(entry: TranscriptEntry) -> list[str]:
         block = [f"## assistant ({entry.sequence})", "", content.output or ""]
         if content.tool_calls:
             block.append("")
-            block.extend(f"- tool: {call.tool_name} {json.dumps(dict(call.arguments), ensure_ascii=False)}" for call in content.tool_calls)
+            block.extend(
+                f"- tool: {call.tool_name} {json.dumps(json_wire_object(call.arguments), ensure_ascii=False)}" for call in content.tool_calls
+            )
         return [*block, ""]
     if isinstance(content, TranscriptTool):
         status = "interrupted" if content.interrupted else content.result.status
@@ -248,28 +251,13 @@ def _copy(entries: tuple[TranscriptEntry, ...]) -> CommandResult:
 
 
 def _fenced_blocks(text: str) -> list[tuple[str | None, str]]:
-    blocks: list[tuple[str | None, str]] = []
-    lines = text.splitlines()
-    index = 0
-    while index < len(lines):
-        if lines[index].strip().startswith("```"):
-            language = lines[index].strip()[3:].strip() or None
-            body: list[str] = []
-            index += 1
-            while index < len(lines) and not lines[index].strip().startswith("```"):
-                body.append(lines[index])
-                index += 1
-            blocks.append((language, "\n".join(body).strip()))
-        index += 1
-    return blocks
+    return [(token.info.strip() or None, token.content) for token in MarkdownIt("commonmark").parse(text) if token.type == "fence"]
 
 
-def _result_text(result: object) -> str:
+def _result_text(result: ToolResult) -> str:
     if isinstance(result, ToolSuccess):
         output = result.output
-        text = getattr(output, "text", None) or getattr(output, "presentation", None) or ""
-        body = "" if result.body is None else json.dumps(result.body.as_payload(), ensure_ascii=False)
+        text = (output.text if isinstance(output, TextOutput) else None) or output.presentation or ""
+        body = "" if result.body is None else json.dumps(json_wire_object(result.body.as_payload()), ensure_ascii=False)
         return f"{body}\n{text}".strip()
-    if isinstance(result, ToolFailure):
-        return result.error
-    return ""
+    return result.error

@@ -22,7 +22,7 @@ not a requirement to change every plugin or to add a dependency.
 | `plan` | Owner-scoped overlays, state, context and deactivation read; removed unused owner constant, corrected exit instruction to `/plan.off`. Restart/read-only integration tests. | Finish state/configuration validation. |
 | `providers` | Adapter, typed dispatch panel and dedicated usage surface. | Shared adapters/configuration, errors and teardown. |
 | `review` | Inherit parent scope with core-owned read-only stance; real custom-tool and restricted-parent tests. Removed unused Git tree/branch/history APIs, result wrappers/fields and legacy aliases. Git reads have timeouts and disable text conversion; preserve inspection errors. Child states and incremental-review refusals tested. Complete UTF-8 prompt uses the shared SDK child limit; diff result carries its actual merge base, removing repeated Git reads. 42 unit, 12 integration/SDK and 2 core-bound tests pass. | Final command/configuration ingress pass. |
-| `session_info` | Typed context/export/copy, explicit truncation, diagnostic headers; focused tests. | Remaining panel inputs, subprocesses and output semantics. |
+| `session_info` | All panel dispatch, header/transcript paging, usage, export/copy and bounds read. Uses existing SDK JSON conversion for nested immutable arguments/bodies. Existing markdown-it-py (via Rich) is now direct: replaces the private fence parser and preserves code whitespace. Truncated history cannot be presented as the latest context. 16 panel unit tests pass. | Factory configuration; final repository gate after this change. |
 | `skills` | Shared frontmatter, discovery/enable rules, registry, on-demand tool, catalog, touched-path observer/context and rulebook source read. Removed unused full-body context renderer and unconnected skill selection parameters. Escape catalog XML metadata; malformed/missing rule state fails instead of silently resetting. 52 unit and 6 real-core integration tests pass. | Rulebook custom frontmatter, content/read bounds and final config/discovery validation. |
 | `todo` | Reminder resets use typed fresh-request facts. State/reminder ingress and configuration read; fixed two same-name parsers where command parsing silently replaced strict reminder cycle-ID validation. Empty/non-string IDs in all three reminder sections are rejected. Operations, rendering, reminder policy/observer and deactivation read. Mutations preserve cycle budgets/cursors; failed or stopped runs no longer consume unsent reminders. Removed unused batch mutation counting and source constant, reused table rendering and parsed state. Final state pass rejects coercible summary/version values; unknown declared effects fail visibly instead of being discarded as read-only. 60 unit and 7 real-core integration tests pass on the resulting source. | No specific finding remains; repository-wide final gate pending. |
 | `user_shell` | Replaced private process runner, temporary captures, kill helpers and result wrapper with SDK `run_process`. Honest timeout/cancel/unknown exit status; removed unused help exports. Real command/output and process-lease tests. | Command cancellation wiring is a core concern: ordinary command contexts currently have no abort signal. |
@@ -75,3 +75,14 @@ change passed **164** schedule/plugin/integration tests. It removes the custom
 numeric-only validator, accepts library aliases/extensions, retains the five-field
 limit and leaves fire-time iteration to the same existing library. The full-suite
 checkpoint above predates this scoped Cron change.
+
+### Cross-plugin checkpoint
+
+Commit `a307feb` passed the full Python suite: **1360 passed, 1 skipped**
+(349.32 seconds), with no warning emitted. This includes the recent review,
+goal, todo, exec and skills changes. The subsequent session_info fixes are
+covered separately and are not part of that full-suite checkpoint.
+
+The session_info change declares markdown-it-py directly to parse CommonMark
+fences. It was already installed through Rich; the offline lock update resolves
+the same 97 packages and adds no package.
