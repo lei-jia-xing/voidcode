@@ -438,8 +438,8 @@ def test_observer_ignores_other_facts_and_keeps_the_most_recent_paths(tmp_path: 
     )
     assert services.writes == []
 
-    # A row written by another schema generation is replaced, not trusted.
-    services.state = {"schema_version": 9, "touched_paths": ["stale.txt"]}
+    # Existing paths share the same bounded recency list.
+    services.state = {"schema_version": 1, "cursor_sequence": 0, "touched_paths": ["stale.txt"]}
     services.version = 4
     skills_observer(_invocation_fact(event_sequence=TOUCHED_PATHS_LIMIT + 5), _context(tmp_path), services)  # type: ignore[arg-type]
 
