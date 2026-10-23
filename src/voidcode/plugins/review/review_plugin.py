@@ -1,25 +1,4 @@
-"""Review plugin: the governed ``review`` command over the workspace git surface.
-
-Ported from ``VoidCodeRuntime.review_session`` (``src/voidcode/runtime/service.py``): the target
-resolution (dict aliases included), the per-target prompt parts, the reviewer-focus line, the
-256 KiB inline-diff budget with its refusal messages, and the review child itself.
-
-Where the legacy runtime ran the review through its internal ``run`` with ``read_only`` metadata,
-this plugin uses the core's delegation seam: ``spawn_child(prompt, label="review",
-tool_allowlist=..., max_steps=32, readonly=True)`` followed by ``join_child``, and the child's
-answer is the command's answer. The git surface the prompt needs lives in ``workspace_review.py``.
-
-Read-only enforcement is two layers, neither of them faked here: the review profile's tool
-allowlist (read/glob/grep/ast_grep/lsp), copied as a literal because plugins cannot import
-each other's manifests, plus the core-owned read-only stance declared at spawn. The core
-forces that stance whenever the calling lease is already restrictive, so a plan-mode or frozen
-read-only session can still delegate a review, and the child stays read-only for its whole life.
-
-The legacy 256 KiB inline budget is kept unchanged, so a larger diff is refused with the legacy
-message and never truncated. The core's delegated-prompt bound is 256 KiB as well, so the whole
-legacy band fits; a refusal never leaves a partially prompted child behind.
-instead of being cut down here.
-"""
+"""Review Git changes in a child that inherits tool scope and stays read-only."""
 
 from __future__ import annotations
 
@@ -35,12 +14,8 @@ from voidcode.sdk.tools import ToolEffect
 
 from .workspace_review import GitStatusSnapshot, ReviewFileDiff, WorkspaceReviewService, git_status_snapshot
 
-#: Legacy inline review budget: a larger diff is refused instead of injected into the child prompt.
+#: Larger diffs must be reviewed incrementally; never truncate a review input.
 MAX_REVIEW_DIFF_BYTES: int = 256 * 1024
-
-#: The agents plugin's builtin REVIEW manifest allowlist, copied as a literal (plugins cannot
-#: import each other's manifests). This is the read-only scope of the review child.
-REVIEW_TOOL_ALLOWLIST: tuple[str, ...] = ("read", "glob", "grep", "ast_grep", "lsp")
 
 REVIEW_CHILD_LABEL = "review"
 REVIEW_CHILD_MAX_STEPS = 32
@@ -57,23 +32,22 @@ class ReviewTarget:
     type: ReviewTargetType = "uncommitted"
     branch: str | None = None
     sha: str | None = None
-    title: str | None = None
     instructions: str | None = None
 
 
 def resolve_review_target(raw: Mapping[str, object] | None, *, focus: str | None) -> ReviewTarget:
-    """Resolve a review target the way the legacy review service resolved one."""
+    """Resolve the supported target and optional reviewer instructions."""
     if raw is None:
         if focus and focus.strip():
             return ReviewTarget(type="custom", instructions=focus.strip())
         return ReviewTarget(type="uncommitted")
     raw_type = raw.get("type", "uncommitted")
-    if raw_type in ("uncommittedChanges", "uncommitted"):
+    if raw_type == "uncommitted":
         resolved = ReviewTarget(type="uncommitted")
-    elif raw_type in ("baseBranch", "base_branch"):
+    elif raw_type == "base_branch":
         resolved = ReviewTarget(type="base_branch", branch=str(raw.get("branch") or ""))
     elif raw_type == "commit":
-        resolved = ReviewTarget(type="commit", sha=str(raw.get("sha") or ""), title=str(raw.get("title") or "") or None)
+        resolved = ReviewTarget(type="commit", sha=str(raw.get("sha") or ""))
     elif raw_type == "custom":
         resolved = ReviewTarget(type="custom", instructions=str(raw.get("instructions") or ""))
     else:
@@ -83,15 +57,7 @@ def resolve_review_target(raw: Mapping[str, object] | None, *, focus: str | None
     return resolved
 
 
-# --- Prompt construction (verbatim from the legacy review service) ---
-
-
-@dataclass(frozen=True, slots=True)
-class ReviewRequest:
-    """One resolved review: the target it reviews and the exact prompt its child receives."""
-
-    target: ReviewTarget
-    prompt: str
+# --- Prompt construction ---
 
 
 def _review_diff(service: WorkspaceReviewService, git: GitStatusSnapshot, target: ReviewTarget) -> tuple[ReviewFileDiff, int]:
@@ -112,10 +78,12 @@ def _review_diff(service: WorkspaceReviewService, git: GitStatusSnapshot, target
     return diff, len(diff.diff.encode("utf-8"))
 
 
-def build_review_request(*, workspace: Path, target: ReviewTarget, focus: str | None) -> ReviewRequest:
-    """Build the review child's prompt for one target, refusing exactly as the legacy service did."""
+def build_review_prompt(*, workspace: Path, target: ReviewTarget, focus: str | None) -> str:
+    """Build a complete review prompt or refuse an invalid or oversized target."""
     service = WorkspaceReviewService(workspace=workspace)
     git = git_status_snapshot(workspace)
+    if git.state == "git_error":
+        raise ValueError(git.error or "git repository inspection failed")
 
     if target.type == "custom":
         instructions = (target.instructions or focus or "").strip()
@@ -126,16 +94,13 @@ def build_review_request(*, workspace: Path, target: ReviewTarget, focus: str | 
             raise ValueError(
                 f"workspace diff is too large ({diff_bytes} bytes) for inline review; reduce working tree changes or review changes incrementally"
             )
-        return ReviewRequest(
-            target=target,
-            prompt="\n\n".join(
-                [
-                    "Review the current workspace changes and report concrete correctness, regression, and safety findings.",
-                    f"Reviewer focus: {instructions}",
-                    f"Aggregate Git diff:\n{diff.diff}",
-                    "Return the final review findings in your final answer.",
-                ]
-            ),
+        return "\n\n".join(
+            [
+                "Review the current workspace changes and report concrete correctness, regression, and safety findings.",
+                f"Reviewer focus: {instructions}",
+                f"Aggregate Git diff:\n{diff.diff}",
+                "Return the final review findings in your final answer.",
+            ]
         )
 
     if target.type == "uncommitted":
@@ -144,15 +109,12 @@ def build_review_request(*, workspace: Path, target: ReviewTarget, focus: str | 
             raise ValueError(
                 f"workspace diff is too large ({diff_bytes} bytes) for inline review; reduce working tree changes or review changes incrementally"
             )
-        return ReviewRequest(
-            target=target,
-            prompt="\n\n".join(
-                [
-                    "Review the current workspace changes (staged, unstaged, and untracked files) and provide prioritized findings.",
-                    f"Aggregate Git diff:\n{diff.diff}",
-                    "Return the final review findings in your final answer.",
-                ]
-            ),
+        return "\n\n".join(
+            [
+                "Review the current workspace changes (staged, unstaged, and untracked files) and provide prioritized findings.",
+                f"Aggregate Git diff:\n{diff.diff}",
+                "Return the final review findings in your final answer.",
+            ]
         )
 
     if target.type == "base_branch":
@@ -163,15 +125,12 @@ def build_review_request(*, workspace: Path, target: ReviewTarget, focus: str | 
             raise ValueError(f"base branch diff is too large ({diff_bytes} bytes) for inline review; review changes incrementally")
         merge_base = service.merge_base_sha(target.branch, git=git)
         merge_base_text = f" The merge base commit for this comparison is {merge_base}." if merge_base else ""
-        return ReviewRequest(
-            target=target,
-            prompt="\n\n".join(
-                [
-                    f"Review the code changes against the base branch '{target.branch}'.{merge_base_text}",
-                    f"Git diff against base branch '{target.branch}':\n{diff.diff}",
-                    "Provide prioritized, actionable findings in your final answer.",
-                ]
-            ),
+        return "\n\n".join(
+            [
+                f"Review the code changes against the base branch '{target.branch}'.{merge_base_text}",
+                f"Git diff against base branch '{target.branch}':\n{diff.diff}",
+                "Provide prioritized, actionable findings in your final answer.",
+            ]
         )
 
     if not target.sha:
@@ -179,16 +138,12 @@ def build_review_request(*, workspace: Path, target: ReviewTarget, focus: str | 
     diff, diff_bytes = _review_diff(service, git, target)
     if diff_bytes > MAX_REVIEW_DIFF_BYTES:
         raise ValueError(f"commit diff is too large ({diff_bytes} bytes) for inline review; review changes incrementally")
-    title_text = f' ("{target.title}")' if target.title else ""
-    return ReviewRequest(
-        target=target,
-        prompt="\n\n".join(
-            [
-                f"Review the code changes introduced by commit {target.sha}{title_text}.",
-                f"Git diff for commit {target.sha}:\n{diff.diff}",
-                "Provide prioritized, actionable findings in your final answer.",
-            ]
-        ),
+    return "\n\n".join(
+        [
+            f"Review the code changes introduced by commit {target.sha}.",
+            f"Git diff for commit {target.sha}:\n{diff.diff}",
+            "Provide prioritized, actionable findings in your final answer.",
+        ]
     )
 
 
@@ -247,8 +202,8 @@ def _outcome_result(target: ReviewTarget, child_id: str, outcome: ChildOutcome) 
         return CommandResult(status="ok", output=text, data=data)
     if outcome.status in ("running", "waiting"):
         text = (
-            f"review child {child_id} is still {outcome.status} after the {DEFAULT_JOIN_TIMEOUT_SECONDS:.0f}s wait; "
-            f'await it with task(operation="output", task_id="{child_id}").'
+            f"review child {child_id} is still {outcome.status} after the {DEFAULT_JOIN_TIMEOUT_SECONDS:.0f}s wait. "
+            f"Inspect it with `voidcode show {child_id}`."
         )
         return CommandResult(status="ok", output=text, data=data)
     error = outcome.error or f"review child {child_id} {outcome.status}"
@@ -265,10 +220,7 @@ class ReviewCommand:
                 "focus": {"type": "string", "description": "Optional reviewer focus; a focus alone reviews it as a custom target."},
                 "target": {
                     "type": "string",
-                    "description": (
-                        "Optional target type: uncommitted (default), base_branch, commit, or custom. "
-                        "The legacy aliases uncommittedChanges and baseBranch are accepted too."
-                    ),
+                    "description": ("Optional target type: uncommitted (default), base_branch, commit, or custom. "),
                 },
                 "branch": {"type": "string", "description": "Base branch name, required by target=base_branch."},
                 "sha": {"type": "string", "description": "Commit sha, required by target=commit."},
@@ -284,17 +236,13 @@ class ReviewCommand:
         try:
             args = _parse_review_args(invocation.arguments)
             target = resolve_review_target(_target_input(args), focus=args.focus)
-            request = build_review_request(workspace=workspace, target=target, focus=args.focus)
+            prompt = build_review_prompt(workspace=workspace, target=target, focus=args.focus)
         except ValueError as exc:
             return CommandResult(status="error", error=str(exc))
         try:
-            available_tools = tuple(name for name in REVIEW_TOOL_ALLOWLIST if services.tool_definition(name) is not None)
-            if not available_tools:
-                return CommandResult(status="error", error="review has no available inspection tools in the current session")
             child_id = services.spawn_child(
-                request.prompt,
+                prompt,
                 label=REVIEW_CHILD_LABEL,
-                tool_allowlist=available_tools,
                 max_steps=REVIEW_CHILD_MAX_STEPS,
                 # A review child never mutates: declaring the stance is what lets a read-only or
                 # plan-mode session delegate it at all, and the core forces it anyway whenever

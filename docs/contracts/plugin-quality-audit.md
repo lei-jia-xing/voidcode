@@ -21,7 +21,7 @@ not a requirement to change every plugin or to add a dependency.
 | `mcp` | Import/coupling scan only. | Manager, cache, protocol failures and teardown. |
 | `plan` | Owner-scoped overlays, state, context and deactivation read; removed unused owner constant, corrected exit instruction to `/plan.off`. Restart/read-only integration tests. | Finish state/configuration validation. |
 | `providers` | Adapter, typed dispatch panel and dedicated usage surface. | Shared adapters/configuration, errors and teardown. |
-| `review` | Command and scope read; fixed peer tool-name list identified. | Scope decision, target parsing, Git reads, prompt bounds and child outcomes. |
+| `review` | Inherit parent scope with core-owned read-only stance; real custom-tool and restricted-parent tests. Removed unused Git tree/branch/history APIs, result wrappers/fields and legacy aliases. Git reads have timeouts and disable text conversion; preserve inspection errors. Child states and incremental-review refusals tested. | Final prompt-bound calculation and duplicated base-branch Git reads. |
 | `session_info` | Typed context/export/copy, explicit truncation, diagnostic headers; focused tests. | Remaining panel inputs, subprocesses and output semantics. |
 | `skills` | One strict shared frontmatter parser, discovery and duplicate validation; focused tests. | Activation/rules, context contribution and unused fields. |
 | `todo` | Reminder resets use typed fresh-request facts; focused tests. | Remaining state/commands, mutations and deactivation. |

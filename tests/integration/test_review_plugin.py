@@ -57,7 +57,7 @@ def _dirty_repo(workspace: Path) -> None:
     (workspace / "tracked.txt").write_text("base\ndirty review target\n", encoding="utf-8")
 
 
-def _core(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
+def _core(tmp_path: Path, server: OpenAILoopbackServer, *, custom_reader: bool = False) -> Core:
     workspace = tmp_path / "workspace"
     _dirty_repo(workspace)
     state_dir = tmp_path / "state"
@@ -79,6 +79,22 @@ def _core(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
         },
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    if custom_reader:
+        source = tmp_path / "custom_reader"
+        source.mkdir()
+        (source / "__init__.py").write_text(
+            "from voidcode.sdk.plugin import Plugin\n"
+            "from voidcode.sdk.tools import ToolDefinition, ToolEffect, ToolSuccess, TextOutput\n"
+            "class Inspect:\n"
+            "    definition = ToolDefinition(name='inspect_repository', description='Inspect repository', effects=frozenset({ToolEffect.READ}))\n"
+            "    def invoke(self, call, *, context, services):\n"
+            "        return ToolSuccess(tool_name='inspect_repository', output=TextOutput('inspection complete'))\n"
+            "def create_plugin(config):\n"
+            "    return Plugin(tools=(Inspect(),))\n",
+            encoding="utf-8",
+        )
+        config["plugins"]["custom_reader"] = {"path": str(source)}
+        (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
     core = open_core(workspace, state_dir=state_dir)
     _CREATED_CORES.append(core)
     return core
@@ -127,8 +143,8 @@ def test_review_command_spawns_a_real_child_that_receives_the_git_diff(tmp_path:
         child = core.session(child_id)
         assert child.parent_session_id == parent_id
         assert child.status == "completed"
-        assert child.tool_allowlist is not None
-        assert sorted(child.tool_allowlist) == ["glob", "grep", "read"]
+        assert child.tool_allowlist is None
+        assert core.store.session_overlays(child_id) == ("read-only",)
 
         # Exactly one provider request: the child's, carrying the legacy prompt and the real diff.
         assert len(server.requests) == 1
@@ -258,3 +274,46 @@ def test_review_refuses_a_diff_over_its_legacy_256kib_budget_without_spawning(tm
         events = core.events_after(parent_id)
         assert not [event for event in events if event.event_type == "kernel.child_spawned"]
         assert not [event for event in events if event.event_type == "plugin.review.review_started"]
+
+
+@pytest.mark.parametrize("restricted_parent", [False, True])
+def test_review_inherits_new_inspection_tools_without_widening_parent_scope(tmp_path: Path, restricted_parent: bool) -> None:
+    replies = [
+        openai_response(
+            message={
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "inspect", "type": "function", "function": {"name": "inspect_repository", "arguments": "{}"}}],
+            },
+            finish="tool_calls",
+        ),
+        openai_response(message={"role": "assistant", "content": "review complete"}, finish="stop"),
+    ]
+    with _loopback_server(replies) as server:
+        core = _core(tmp_path, server, custom_reader=True)
+        root = core.create_session("root")
+        parent_id = root.session_id
+        if restricted_parent:
+            parent_id = "restricted"
+            core.store.create_child_session(
+                parent_id,
+                str(core.workspace),
+                core.revision_id,
+                parent_session_id=root.session_id,
+                root_session_id=root.session_id,
+                depth=1,
+                tool_allowlist=("inspect_repository",),
+            )
+        result = _invoke_review(core, parent_id, {})
+        assert result.status == "ok", result.error
+        assert result.output == "review complete"
+        assert result.data is not None
+        child_id = str(result.data["child_session_id"])
+        assert core.session(child_id).tool_allowlist == (("inspect_repository",) if restricted_parent else None)
+        assert core.store.session_overlays(child_id) == ("read-only",)
+        tools = _tool_names(server.requests[0])
+        assert "inspect_repository" in tools
+        assert "write" not in tools and "shell_exec" not in tools
+        if restricted_parent:
+            assert tools == ["inspect_repository"]
+        assert "inspection complete" in json.dumps(server.requests[1]["messages"])

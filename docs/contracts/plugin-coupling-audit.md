@@ -17,7 +17,7 @@ for decisions before execution.
 | `session_info/panels.py` | Parsed provider intents, messages and outcomes for context and exports. | Removed: context/export/copy use the public typed transcript; usage uses its dedicated service. Status reads only diagnostic event headers. |
 | `capabilities/providers/panels.py` | Read provider intents to identify the latest dispatched provider/model. | Removed: consume typed transcript dispatches, including those still in flight. |
 | `delegation/profiles/` | Profile roles duplicated tool authority using concrete name lists. | Removed: Markdown agents supply effective instructions; default scopes inherit, with optional standard `tools` or caller restrictions. |
-| `review/review_plugin.py` | Fixed inspection-tool names restrict the standalone review workflow. | Still present; review policy needs a separate decision. Delegation simplification does not silently widen this workflow. |
+| `review/review_plugin.py` | Fixed inspection-tool names restricted standalone review. | Removed after the scope decision: inherit the parent scope and force the core-owned read-only stance. Custom inspection tools work without editing this plugin. |
 | `delegation/delegation_plugin.py` | Reads bounded child history through a service and delegates rendering to the SDK. | Legitimate diagnostic contract usage; consolidate rendering with the future transcript projection rather than duplicating event parsing in plugins. |
 
 Existing typed optional queries, tool effects, tool semantics, resource observations
@@ -36,7 +36,6 @@ plugin's lifecycle, failure modes or external-process behavior has been audited.
 
 Remaining concrete findings:
 
-- Standalone review still selects a fixed set of inspection tool names.
 - Delegation diagnostic history still reads raw child events and uses the shared
   SDK renderer. It does not parse peer state, but a typed child transcript could
   remove that storage-vocabulary dependency.

@@ -14,10 +14,9 @@ from voidcode.plugins.review.review_plugin import (
     MAX_REVIEW_DIFF_BYTES,
     REVIEW_CHILD_LABEL,
     REVIEW_CHILD_MAX_STEPS,
-    REVIEW_TOOL_ALLOWLIST,
     ReviewCommand,
     ReviewTarget,
-    build_review_request,
+    build_review_prompt,
     create_plugin,
     resolve_review_target,
 )
@@ -25,7 +24,7 @@ from voidcode.plugins.review.workspace_review import WorkspaceReviewService, git
 from voidcode.sdk.commands import CommandInvocation, CommandResult
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import ChildOutcome, PluginServices
-from voidcode.sdk.tools import ToolDefinition, ToolEffect
+from voidcode.sdk.tools import ToolEffect
 
 
 class MockServices(PluginServices):
@@ -33,16 +32,12 @@ class MockServices(PluginServices):
 
     def __init__(self) -> None:
         self.spawn_calls: list[dict[str, object]] = []
-        self.unavailable_tools: set[str] = set()
         self.join_calls: list[tuple[str, float]] = []
         self.staged_events: list[tuple[str, Mapping[str, object]]] = []
         #: Outcome the core's join returns for the spawned child.
         self.join_status: Literal["completed", "failed", "interrupted", "cancelled", "running", "waiting"] = "completed"
         self.join_output: str | None = "review findings: 3 issues"
         self.join_error: str | None = None
-
-    def tool_definition(self, name: str) -> ToolDefinition | None:
-        return None if name in self.unavailable_tools else ToolDefinition(name=name, description="Test capability")
 
     def get_state(self, scope: Literal["session", "workspace"] = "session") -> tuple[Mapping[str, object] | None, int]:
         raise AssertionError("review keeps no state")
@@ -147,11 +142,9 @@ def _diff_all(repo: Path) -> str:
         (None, None, ReviewTarget(type="uncommitted")),
         (None, "   ", ReviewTarget(type="uncommitted")),
         ({"type": "uncommitted"}, None, ReviewTarget(type="uncommitted")),
-        ({"type": "uncommittedChanges"}, None, ReviewTarget(type="uncommitted")),
         ({"type": "base_branch", "branch": "main"}, None, ReviewTarget(type="base_branch", branch="main")),
-        ({"type": "baseBranch", "branch": "main"}, None, ReviewTarget(type="base_branch", branch="main")),
-        ({"type": "commit", "sha": "abc123", "title": "fix it"}, None, ReviewTarget(type="commit", sha="abc123", title="fix it")),
-        ({"type": "commit", "sha": "abc123", "title": ""}, None, ReviewTarget(type="commit", sha="abc123", title=None)),
+        ({"type": "base_branch", "branch": "main"}, None, ReviewTarget(type="base_branch", branch="main")),
+        ({"type": "commit", "sha": "abc123"}, None, ReviewTarget(type="commit", sha="abc123")),
         ({"type": "custom", "instructions": "check the parser"}, None, ReviewTarget(type="custom", instructions="check the parser")),
         ({"type": "custom", "instructions": ""}, "check the parser", ReviewTarget(type="custom", instructions="check the parser")),
         ({"type": "custom", "instructions": "explicit"}, "ignored", ReviewTarget(type="custom", instructions="explicit")),
@@ -177,10 +170,9 @@ def test_uncommitted_prompt_text(tmp_path: Path) -> None:
     diff = _diff_all(repo)
     assert "+changed" in diff and "+fresh" in diff
 
-    request = build_review_request(workspace=repo, target=resolve_review_target(None, focus=None), focus=None)
+    prompt = build_review_prompt(workspace=repo, target=resolve_review_target(None, focus=None), focus=None)
 
-    assert request.target == ReviewTarget(type="uncommitted")
-    assert request.prompt == (
+    assert prompt == (
         "Review the current workspace changes (staged, unstaged, and untracked files) and provide prioritized findings."
         f"\n\nAggregate Git diff:\n{diff}"
         "\n\nReturn the final review findings in your final answer."
@@ -192,14 +184,13 @@ def test_custom_prompt_text_carries_the_reviewer_focus(tmp_path: Path) -> None:
     (repo / "tracked.txt").write_text("base\nchanged\n", encoding="utf-8")
     diff = _diff_all(repo)
 
-    request = build_review_request(
+    prompt = build_review_prompt(
         workspace=repo,
         target=resolve_review_target({"type": "custom", "instructions": ""}, focus="  focus on the parser  "),
         focus="  focus on the parser  ",
     )
 
-    assert request.target == ReviewTarget(type="custom", instructions="focus on the parser")
-    assert request.prompt == (
+    assert prompt == (
         "Review the current workspace changes and report concrete correctness, regression, and safety findings."
         "\n\nReviewer focus: focus on the parser"
         f"\n\nAggregate Git diff:\n{diff}"
@@ -214,13 +205,13 @@ def test_base_branch_prompt_text_names_the_merge_base(tmp_path: Path) -> None:
     diff = WorkspaceReviewService(workspace=repo).diff_base_branch("main", git=git_status_snapshot(repo)).diff or ""
     merge_base = _git(repo, "rev-parse", "main").strip()
 
-    request = build_review_request(
+    prompt = build_review_prompt(
         workspace=repo,
-        target=resolve_review_target({"type": "baseBranch", "branch": "main"}, focus=None),
+        target=resolve_review_target({"type": "base_branch", "branch": "main"}, focus=None),
         focus=None,
     )
 
-    assert request.prompt == (
+    assert prompt == (
         f"Review the code changes against the base branch 'main'. The merge base commit for this comparison is {merge_base}."
         f"\n\nGit diff against base branch 'main':\n{diff}"
         "\n\nProvide prioritized, actionable findings in your final answer."
@@ -234,13 +225,13 @@ def test_commit_prompt_text_carries_sha_and_diff(tmp_path: Path) -> None:
     sha = _git(repo, "rev-parse", "HEAD").strip()
     diff = WorkspaceReviewService(workspace=repo).diff_commit(sha, git=git_status_snapshot(repo)).diff or ""
 
-    request = build_review_request(
+    prompt = build_review_prompt(
         workspace=repo,
         target=resolve_review_target({"type": "commit", "sha": sha}, focus=None),
         focus=None,
     )
 
-    assert request.prompt == (
+    assert prompt == (
         f"Review the code changes introduced by commit {sha}."
         f"\n\nGit diff for commit {sha}:\n{diff}"
         "\n\nProvide prioritized, actionable findings in your final answer."
@@ -283,7 +274,7 @@ def test_oversized_commit_diff_is_refused_with_the_legacy_message(tmp_path: Path
     assert diff_bytes > MAX_REVIEW_DIFF_BYTES
 
     with pytest.raises(ValueError) as excinfo:
-        build_review_request(
+        build_review_prompt(
             workspace=repo,
             target=resolve_review_target({"type": "commit", "sha": sha}, focus=None),
             focus=None,
@@ -352,8 +343,7 @@ def test_review_spawns_the_read_only_profile_child_and_returns_its_answer(tmp_pa
     assert len(services.spawn_calls) == 1
     spawn = services.spawn_calls[0]
     assert spawn["label"] == REVIEW_CHILD_LABEL == "review"
-    assert spawn["tool_allowlist"] == REVIEW_TOOL_ALLOWLIST == ("read", "glob", "grep", "ast_grep", "lsp")
-    assert "yield" not in spawn["tool_allowlist"], "the legacy handoff tool does not exist in the new world"
+    assert spawn["tool_allowlist"] is None
     assert spawn["max_steps"] == REVIEW_CHILD_MAX_STEPS == 32
     assert spawn["readonly"] is True, "a review child is always read-only"
     assert "+changed" in str(spawn["prompt"])
@@ -405,7 +395,7 @@ def test_join_timeout_surfaces_the_running_child(tmp_path: Path) -> None:
     assert result.data is not None
     assert result.data["status"] == "running"
     assert result.output is not None and "still running" in result.output
-    assert 'task(operation="output", task_id="child-1")' in result.output
+    assert "voidcode show child-1" in result.output
     assert services.join_calls == [("child-1", 300.0)]
 
 
@@ -425,21 +415,6 @@ def test_failed_child_is_reported_as_an_error(tmp_path: Path) -> None:
 
 
 # --- Git surface (ported behavior) ---
-
-
-def test_branch_listing_keeps_the_default_branch_first_and_marks_the_current_branch(tmp_path: Path) -> None:
-    repo = _repo(tmp_path)
-    _git(repo, "checkout", "--quiet", "-b", "feature")
-    _git(repo, "checkout", "--quiet", "-b", "another")
-    service = WorkspaceReviewService(workspace=repo)
-    git = git_status_snapshot(repo)
-
-    assert service.list_branches(git=git) == ("main", "another", "feature")
-    assert service.current_branch(git=git) == "another"
-    entries = service.recent_commits(git=git, limit=5)
-    assert len(entries) == 1
-    assert entries[0].subject == "initial commit"
-    assert len(entries[0].sha) == 40
 
 
 def test_commit_without_changes_is_refused(tmp_path: Path) -> None:
@@ -499,100 +474,22 @@ def test_plugin_registers_the_review_command_with_spawn_effects() -> None:
     assert definition.argument_schema["additionalProperties"] is False
 
 
-def test_snapshot_keeps_the_legacy_tree_and_change_shapes(tmp_path: Path) -> None:
+def test_git_inspection_failure_preserves_the_diagnostic(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
-    (repo / "subdir").mkdir()
-    (repo / "subdir" / "inner.txt").write_text("inner\n", encoding="utf-8")
-    (repo / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
-    (repo / "ignored.txt").write_text("ignored\n", encoding="utf-8")
-    (repo / "untracked.txt").write_text("fresh\n", encoding="utf-8")
-    (repo / "tracked.txt").write_text("base\nchanged\n", encoding="utf-8")
-    service = WorkspaceReviewService(workspace=repo)
-    git = git_status_snapshot(repo)
-    assert (git.state, git.root, git.branch) == ("git_ready", str(repo.resolve()), "main")
-
-    snapshot = service.snapshot(git=git)
-
-    assert snapshot.root == str(repo.resolve())
-    assert snapshot.git.state == "git_ready"
-    assert [(item.path, item.change_type) for item in snapshot.changed_files] == [
-        (".gitignore", "untracked"),
-        ("subdir/inner.txt", "untracked"),
-        ("tracked.txt", "modified"),
-        ("untracked.txt", "untracked"),
-    ]
-    # Directories sort before files in the legacy tree, and a directory is changed when a child is.
-    assert [(node.name, node.kind, node.changed) for node in snapshot.tree] == [
-        ("subdir", "directory", True),
-        (".gitignore", "file", True),
-        ("tracked.txt", "file", True),
-        ("untracked.txt", "file", True),
-    ]
-    subdir = next(node for node in snapshot.tree if node.name == "subdir")
-    assert [(child.path, child.kind, child.changed) for child in subdir.children] == [("subdir/inner.txt", "file", True)]
-    assert _tree_paths(snapshot.tree) == {".gitignore", "tracked.txt", "untracked.txt", "subdir", "subdir/inner.txt"}
-
-
-def test_snapshot_in_a_non_repository_workspace_reports_the_plain_tree(tmp_path: Path) -> None:
-    plain = tmp_path / "plain"
-    plain.mkdir()
-    (plain / "notes.txt").write_text("notes\n", encoding="utf-8")
-    service = WorkspaceReviewService(workspace=plain)
-    git = git_status_snapshot(plain)
-    assert git.state == "not_git_repo"
-
-    snapshot = service.snapshot(git=git)
-
-    assert snapshot.git.state == "not_git_repo"
-    assert snapshot.changed_files == ()
-    assert [(node.name, node.kind, node.changed) for node in snapshot.tree] == [("notes.txt", "file", False)]
-    assert service.diff_all(git=git).state == "not_git_repo"
-
-
-def test_file_diff_normalizes_paths_and_reports_clean_states(tmp_path: Path) -> None:
-    repo = _repo(tmp_path)
-    (repo / "tracked.txt").write_text("base\nchanged\n", encoding="utf-8")
-    service = WorkspaceReviewService(workspace=repo)
-    git = git_status_snapshot(repo)
-
-    diff = service.diff(path="tracked.txt", git=git)
-    assert (diff.path, diff.state) == ("tracked.txt", "changed")
-    assert diff.diff is not None and "+changed" in diff.diff
-    assert service.diff(path="subdir", git=git).state == "clean"
-    assert service.diff(path="missing.txt", git=git).state == "clean"
-    with pytest.raises(ValueError) as excinfo:
-        service.diff(path="../outside.txt", git=git)
-    assert str(excinfo.value) == "path must stay within the workspace"
-    with pytest.raises(ValueError) as excinfo:
-        service.diff(path="", git=git)
-    assert str(excinfo.value) == "path must be a non-empty relative path"
-
-
-def _tree_paths(tree) -> set[str]:
-    paths: set[str] = set()
-    for node in tree:
-        paths.add(node.path)
-        paths.update(_tree_paths(node.children))
-    return paths
-
-
-def test_review_does_not_require_optional_inspection_plugins(tmp_path: Path) -> None:
-    repo = _repo(tmp_path)
-    (repo / "tracked.txt").write_text("base\nchanged\n", encoding="utf-8")
+    (repo / ".git" / "config").write_text("invalid config line\n", encoding="utf-8")
     services = MockServices()
-    services.unavailable_tools = {"ast_grep", "lsp"}
-    result = _review(services, repo, {})
-    assert result.status == "ok"
-    assert services.spawn_calls[0]["tool_allowlist"] == ("read", "glob", "grep")
-    assert services.spawn_calls[0]["readonly"] is True
-
-
-def test_review_with_no_visible_tools_does_not_inherit_parent_scope(tmp_path: Path) -> None:
-    repo = _repo(tmp_path)
-    (repo / "tracked.txt").write_text("base\nchanged\n", encoding="utf-8")
-    services = MockServices()
-    services.unavailable_tools = set(REVIEW_TOOL_ALLOWLIST)
     result = _review(services, repo, {})
     assert result.status == "error"
-    assert "no available inspection tools" in result.error
+    assert "bad config line" in (result.error or "")
     assert services.spawn_calls == []
+
+
+def test_review_diff_does_not_execute_configured_text_conversion(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    marker = repo / "textconv-ran"
+    _git(repo, "config", "diff.test.textconv", f"touch {marker}")
+    (repo / ".gitattributes").write_text("tracked.txt diff=test\n", encoding="utf-8")
+    (repo / "tracked.txt").write_text("base\nchanged\n", encoding="utf-8")
+    result = _review(MockServices(), repo, {})
+    assert result.status == "ok"
+    assert not marker.exists()
