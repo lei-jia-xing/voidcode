@@ -252,7 +252,9 @@ def test_effectiveness_projects_real_session_events(tmp_path: Path) -> None:
         usage = result.data["provider_usage"]
         assert usage["input_tokens"] == 90
         assert usage["output_tokens"] == 21
-        assert result.data["privacy"]["stores_source_content"] is False
+        report = str(result.data) + str(result.output)
+        for private_content in ("ok.txt", "boom.txt", "notes written", "refused"):
+            assert private_content not in report
         assert "notes_write" in str(result.output)
 
         empty = _invoke(core, core.create_session().session_id, "effectiveness", {})

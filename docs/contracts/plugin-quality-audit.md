@@ -12,7 +12,7 @@ not a requirement to change every plugin or to add a dependency.
 | `compaction` | Certified context boundaries, resource references, tool-free model summary, paging and truncation; focused unit/integration tests. | Recheck lifecycle/configuration as part of final package pass. |
 | `cron` | Typed wakeup facts, lease owner/stale wakeup identity, loop parsing and deactivation read. User selected croniter five-field syntax: removed the custom numeric validator and obsolete CLI advice. 164 schedule/plugin/integration tests pass, including named weekdays/months and actual fire dates. | Final state/tool ingress and configuration pass. |
 | `delegation` | Scope inheritance, Markdown agent discovery/validation, shared frontmatter and removal of inert profile machinery; unit/integration tests. | Task operations, cancellation, child diagnostics and optional queries. |
-| `effectiveness` | Typed public facts replace classification by tool/event names; focused tests. | State projection, remaining fields, commands and deactivation. |
+| `effectiveness` | Public-fact projection, counters, paging, report fields and command read. Removed constant session count, fabricated unattributed-event count and static privacy claims; integration checks actual absence of arguments/result text. Stateless: no deactivation transform needed. | Factory configuration validation. |
 | `exec` | Adapter delegates to shared capabilities. | Shared execution implementation and configuration. |
 | `files` | Adapter delegates to shared capabilities. | Shared tools, configuration and failures. |
 | `goal` | Import/coupling scan only. | State/accounting, lifecycle and user commands. |

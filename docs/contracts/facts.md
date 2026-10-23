@@ -80,7 +80,7 @@ Only the current persisted fact shape is supported. Invocation outcomes require 
 - Per-model edits include only declared edit attempts or actual recorded changes with model attribution. A missing model attribution is a legitimate unknown, distinct from an invalid record with missing required metadata.
 - Delegated tasks count actual child facts; resumes count explicit resumes; compression counts core projection facts.
 - `result_bytes` measures the canonical UTF-8 JSON result envelope, including its output, body, and observations. It is not provider wire size or token usage.
-- The report retains aggregate counts only. Its source label is `persisted_sdk_facts`; it retains no resource paths, source text, arguments, or output text.
+- The report retains aggregate counts only. It reads persisted public SDK facts and retains no resource paths, source text, arguments, or output text.
 
 
 ## Wakeup ownership and recovery

@@ -108,7 +108,6 @@ class EffectivenessReport:
     approval_request_count: int
     resumed_run_count: int
     delegated_task_count: int
-    unattributed_tool_events: int
     input_tokens: int | None
     output_tokens: int | None
     cache_read_tokens: int | None
@@ -134,8 +133,6 @@ class EffectivenessReport:
             "schema_version": SCHEMA_VERSION,
             "workspace_id": self.workspace_id,
             "session_id": self.session_id,
-            # This projection reads exactly the bound session's own committed events.
-            "session_count": 1,
             "tool_call_count": self.tool_call_count,
             "success_count": self.success_count,
             "error_count": self.error_count,
@@ -146,7 +143,6 @@ class EffectivenessReport:
             "approval_request_count": self.approval_request_count,
             "resumed_run_count": self.resumed_run_count,
             "delegated_task_count": self.delegated_task_count,
-            "unattributed_tool_events": self.unattributed_tool_events,
             "provider_usage": {
                 "input_tokens": self.input_tokens,
                 "output_tokens": self.output_tokens,
@@ -158,12 +154,6 @@ class EffectivenessReport:
             },
             "tools": [tool.to_payload() for tool in self.tools],
             "models": [model.to_payload() for model in self.models],
-            "privacy": {
-                "source": "persisted_sdk_facts",
-                "stores_source_content": False,
-                "stores_arguments": False,
-                "projection": "aggregate_only",
-            },
         }
 
 
@@ -327,7 +317,6 @@ def project_session_effectiveness(
         approval_request_count=approval_request_count,
         resumed_run_count=resumed_run_count,
         delegated_task_count=delegated_task_count,
-        unattributed_tool_events=0,
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
         cache_read_tokens=usage.cache_read_tokens,
@@ -344,7 +333,7 @@ def _format_rate(value: float | None) -> str:
 
 
 def render_summary(report: EffectivenessReport) -> str:
-    """Short human-readable rendering of the projection (legacy ``stats tools`` lines)."""
+    """Short human-readable rendering of the projection."""
     lines = [
         "TOOL EFFECTIVENESS "
         f"calls={report.tool_call_count} success={report.success_count} errors={report.error_count} "
