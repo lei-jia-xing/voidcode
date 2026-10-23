@@ -1254,3 +1254,32 @@ def test_prepare_deactivation_rejects_malformed_input_instead_of_resetting() -> 
     # A workspace-scope row carries no session tip, so an open window cannot be closed truthfully.
     with pytest.raises(ValueError, match="event tip"):
         prepare_goal_deactivation(base, "workspace", "workspace-1", None)
+
+
+@pytest.mark.parametrize("budget", [0, 1000], ids=["invalid-budget", "unknown-prior-usage"])
+def test_rejected_goal_edit_does_not_write_objective_attachment(tmp_path: Path, budget: int) -> None:
+    services = MockServices()
+    goal = GoalState(
+        goal_id="g1",
+        status="active",
+        objective="Original",
+        created_at=1,
+        updated_at=1,
+        tokens_used=None,
+        has_unknown_usage=True,
+    )
+    services.replace_state(goal.to_dict(), expected_version=0)
+    before = services.get_state()
+    result = GoalEditCommand().invoke(
+        CommandInvocation(
+            context=_make_context(tmp_path),
+            name="goal.edit",
+            arguments={"objective": "A" * 5000, "token_budget": budget},
+        ),
+        services,
+    )
+    assert result.status == "error"
+    assert services.get_state() == before
+    assert not (tmp_path / ".voidcode").exists()
+    assert not services.staged_events
+    assert services.budget is None

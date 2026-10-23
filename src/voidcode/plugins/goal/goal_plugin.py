@@ -201,6 +201,22 @@ class GoalState:
             "objective_edited": self.objective_edited,
         }
 
+    def tool_payload(self, session_id: str | None) -> dict[str, object]:
+        """Model-facing goal details shared by create, get and update."""
+        return {
+            "goal": {
+                "threadId": session_id,
+                "objective": self.objective,
+                "status": self.status,
+                "tokenBudget": self.token_budget,
+                "tokensUsed": self.tokens_used,
+                "timeUsedSeconds": self.time_used_seconds,
+                "createdAt": self.created_at,
+                "updatedAt": self.updated_at,
+            },
+            "remainingTokens": self.remaining_tokens,
+        }
+
     @classmethod
     def from_dict(cls, data: Mapping[str, object] | None) -> GoalState | None:
         if data is None or not data:
@@ -575,24 +591,7 @@ class GetGoalTool:
         state_data, _ = services.get_state("session")
         goal = GoalState.from_dict(state_data) if state_data else None
 
-        remaining_tokens = goal.remaining_tokens if goal is not None else None
-        payload: dict[str, object] = {
-            "goal": (
-                {
-                    "threadId": context.session_id,
-                    "objective": goal.objective,
-                    "status": goal.status,
-                    "tokenBudget": goal.token_budget,
-                    "tokensUsed": goal.tokens_used,
-                    "timeUsedSeconds": goal.time_used_seconds,
-                    "createdAt": goal.created_at,
-                    "updatedAt": goal.updated_at,
-                }
-                if goal is not None
-                else None
-            ),
-            "remainingTokens": remaining_tokens,
-        }
+        payload = goal.tool_payload(context.session_id) if goal is not None else {"goal": None, "remainingTokens": None}
         return ToolSuccess(
             tool_name=self.definition.name,
             output=TextOutput(json.dumps(payload, indent=2)),
@@ -686,18 +685,8 @@ class CreateGoalTool:
             created_at=now,
             updated_at=now,
             token_budget=token_budget,
-            tokens_used=0,
-            input_tokens=0,
-            output_tokens=0,
-            cache_read_tokens=0,
-            uncached_input_tokens=0,
-            window_tokens_used=0,
             window_allowance=token_budget,
-            has_unknown_usage=False,
-            time_used_seconds=0.0,
-            cost_usd=0.0,
             active_windows=(ActiveWindow(start_sequence=start_seq),),
-            blocked_turns_count=0,
             last_blocked_logical_turn=None,
         )
 
@@ -716,19 +705,7 @@ class CreateGoalTool:
         )
         services.replace_state(new_goal.to_dict(), expected_version=version)
 
-        payload: dict[str, object] = {
-            "goal": {
-                "threadId": context.session_id,
-                "objective": new_goal.objective,
-                "status": new_goal.status,
-                "tokenBudget": new_goal.token_budget,
-                "tokensUsed": new_goal.tokens_used,
-                "timeUsedSeconds": new_goal.time_used_seconds,
-                "createdAt": new_goal.created_at,
-                "updatedAt": new_goal.updated_at,
-            },
-            "remainingTokens": new_goal.remaining_tokens,
-        }
+        payload = new_goal.tool_payload(context.session_id)
         return ToolSuccess(
             tool_name=self.definition.name,
             output=TextOutput(json.dumps(payload, indent=2)),
@@ -892,19 +869,7 @@ class UpdateGoalTool:
                 {"goal_id": current.goal_id, "tokens_used": current.tokens_used},
             )
 
-        payload: dict[str, object] = {
-            "goal": {
-                "threadId": context.session_id,
-                "objective": new_goal.objective,
-                "status": new_goal.status,
-                "tokenBudget": new_goal.token_budget,
-                "tokensUsed": new_goal.tokens_used,
-                "timeUsedSeconds": new_goal.time_used_seconds,
-                "createdAt": new_goal.created_at,
-                "updatedAt": new_goal.updated_at,
-            },
-            "remainingTokens": new_goal.remaining_tokens,
-        }
+        payload = new_goal.tool_payload(context.session_id)
         if new_goal.status == "complete" and new_goal.token_budget is not None and new_goal.tokens_used is not None:
             payload["completionBudgetReport"] = f"Goal completed. Tokens consumed: {new_goal.tokens_used} / {new_goal.token_budget} budget."
 
@@ -1027,18 +992,8 @@ class GoalSetCommand:
             objective_file_ref=file_ref,
             objective_file_sha256=sha256,
             token_budget=token_budget,
-            tokens_used=0,
-            input_tokens=0,
-            output_tokens=0,
-            cache_read_tokens=0,
-            uncached_input_tokens=0,
-            window_tokens_used=0,
             window_allowance=token_budget,
-            has_unknown_usage=False,
-            time_used_seconds=0.0,
-            cost_usd=0.0,
             active_windows=(ActiveWindow(start_sequence=start_seq),),
-            blocked_turns_count=0,
             last_blocked_logical_turn=None,
         )
 
@@ -1127,10 +1082,8 @@ class GoalEditCommand:
                 return CommandResult(status="error", error="Goal objective must be a non-empty string")
             objective = raw_obj.strip()
             objective_changed = objective != goal.objective
-            prompt_obj, file_ref, sha256 = spill_objective_if_needed(workspace, objective)
 
         new_budget = goal.token_budget
-        window_tokens = goal.window_tokens_used
         window_allowance = goal.window_allowance
         if "token_budget" in invocation.arguments:
             raw_b = invocation.arguments["token_budget"]
@@ -1162,13 +1115,14 @@ class GoalEditCommand:
                         window_allowance = rem
                 else:
                     window_allowance = max(0, new_budget - closed_spend)
+        if "objective" in invocation.arguments:
+            prompt_obj, file_ref, sha256 = spill_objective_if_needed(workspace, objective)
         updated_goal = replace(
             goal,
             objective=prompt_obj,
             objective_file_ref=file_ref,
             objective_file_sha256=sha256,
             token_budget=new_budget,
-            window_tokens_used=window_tokens,
             window_allowance=window_allowance,
             blocked_turns_count=0,
             last_blocked_logical_turn=None,
@@ -1262,17 +1216,7 @@ class GoalResumeCommand:
         if goal.token_budget is None:
             # Resume unbudgeted must clear old constraint
             services.clear_budget()
-            new_windows = closed_windows + (ActiveWindow(start_sequence=close_seq),)
-            resumed_goal = replace(
-                goal,
-                status="active",
-                active_windows=new_windows,
-                window_tokens_used=0,
-                window_allowance=None,
-                blocked_turns_count=0,
-                last_blocked_logical_turn=None,
-                updated_at=now,
-            )
+            remaining_limit = None
         else:
             # When closed-window usage unknown or still pending, finite Remaining cannot be known
             closed_spend = _get_closed_window_spend(services, closed_windows)
@@ -1294,17 +1238,16 @@ class GoalResumeCommand:
                     ),
                 )
             services.set_budget(since_sequence=close_seq, max_total_tokens=remaining_limit)
-            new_windows = closed_windows + (ActiveWindow(start_sequence=close_seq),)
-            resumed_goal = replace(
-                goal,
-                status="active",
-                active_windows=new_windows,
-                window_tokens_used=0,
-                window_allowance=remaining_limit,
-                blocked_turns_count=0,
-                last_blocked_logical_turn=None,
-                updated_at=now,
-            )
+        resumed_goal = replace(
+            goal,
+            status="active",
+            active_windows=closed_windows + (ActiveWindow(start_sequence=close_seq),),
+            window_tokens_used=0,
+            window_allowance=remaining_limit,
+            blocked_turns_count=0,
+            last_blocked_logical_turn=None,
+            updated_at=now,
+        )
 
         services.enqueue_continuation(
             {"action": "pursue_goal", "goal_id": goal.goal_id},
