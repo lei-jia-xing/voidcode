@@ -393,9 +393,30 @@ class LspTool:
         limit: int,
         document_state: LspDocumentState | None = None,
     ) -> ToolSuccess:
+        try:
+            response_type = lsp_types.METHOD_TO_TYPES[operation.value][1]
+            assert response_type is not None
+            if (
+                operation
+                in (
+                    LspOperation.DOCUMENT_SYMBOL,
+                    LspOperation.WORKSPACE_SYMBOL,
+                    LspOperation.FIND_REFERENCES,
+                    LspOperation.CODE_ACTION,
+                    LspOperation.INCOMING_CALLS,
+                    LspOperation.OUTGOING_CALLS,
+                )
+                and response.response.get("result") is not None
+                and not isinstance(response.response["result"], list)
+            ):
+                raise ValueError("expected an array result")
+            validated = self._converter.structure(response.response, response_type)
+        except (ExceptionGroup, TypeError, ValueError) as exc:
+            raise ValueError(f"LSP {operation.value} returned an invalid result") from exc
+        payload = self._converter.unstructure(validated.result)
         rendered_text, item_count, is_truncated = _render_lsp_output(
             operation,
-            response.response.get("result"),
+            payload,
             file_path=file_path,
             workspace_root=workspace_root,
             line=line,
@@ -420,6 +441,8 @@ class LspTool:
         next_offset = offset + limit if is_truncated else None
         if item_count and offset <= item_count:
             page_summary = f"Items {offset}-{min(offset + limit - 1, item_count)} of {item_count}."
+        elif item_count is None:
+            page_summary = "The server did not include an item list in this response."
         else:
             page_summary = f"No items on page offset {offset}; total item count {item_count}."
         output_text = f'Full LSP JSON response: read(path="{artifact_uri}").\n{page_summary}'
@@ -533,12 +556,14 @@ def _render_lsp_output(
     query: str | None = None,
     offset: int = 1,
     limit: int = 50,
-) -> tuple[str, int, bool]:
+) -> tuple[str, int | None, bool]:
     """Render one bounded LSP result page and return its total item count."""
     start = offset - 1
 
     if operation == LspOperation.DIAGNOSTICS:
         if isinstance(payload, dict):
+            if payload.get("kind") == "unchanged":
+                return f"Diagnostics unchanged for {file_path}; the full item list was not included.", None, False
             raw_items = payload.get("items")
             items = raw_items if isinstance(raw_items, list) else []
         else:
@@ -564,8 +589,12 @@ def _render_lsp_output(
             lines.append(f"  [{severity.upper()}] {s_line}:{s_char} - {diag.get('message', '')}{extra}")
         return "\n".join(lines), count, start + len(page) < count
 
-    if operation in (LspOperation.GO_TO_DEFINITION, LspOperation.GO_TO_IMPLEMENTATION):
-        label = "definition" if operation == LspOperation.GO_TO_DEFINITION else "implementation"
+    if operation in (LspOperation.GO_TO_DEFINITION, LspOperation.GO_TO_IMPLEMENTATION, LspOperation.FIND_REFERENCES):
+        label = {
+            LspOperation.GO_TO_DEFINITION: "definition",
+            LspOperation.GO_TO_IMPLEMENTATION: "implementation",
+            LspOperation.FIND_REFERENCES: "reference",
+        }[operation]
         locations = payload if isinstance(payload, list) else ([payload] if payload else [])
         count = len(locations)
         if not count:

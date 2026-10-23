@@ -2,7 +2,7 @@
 
 Reads LSP-framed JSON-RPC from stdin, answers `initialize` with the
 `LSP_ENCODING` position encoding (default utf-16) and full-sync open/close,
-echoes every other request's params back as the result, and records each
+echoes hover params as plaintext and other request params as JSON, and records each
 received method plus didOpen/didChange versions into `--record` (JSON lines).
 Spawns the `--grandchild` command (when given) so cancellation tests can watch
 a real descendant pid die with the server. With `--hang-after N`, the server
@@ -107,6 +107,12 @@ def main() -> int:
                         if args.initialize_result is not None
                         else {"capabilities": {"positionEncoding": encoding, "textDocumentSync": {"openClose": True, "change": 1}}}
                     ),
+                }
+            elif method == "textDocument/hover":
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": message.get("id"),
+                    "result": {"contents": {"kind": "plaintext", "value": json.dumps(message.get("params"))}},
                 }
             else:
                 response = {"jsonrpc": "2.0", "id": message.get("id"), "result": {"echo": message.get("params")}}

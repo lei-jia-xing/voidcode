@@ -207,7 +207,10 @@ def test_request_drives_real_stdio_and_opens_the_document(harness: tuple[_Servic
             abort_signal=_Abort(),  # type: ignore[arg-type]
         )
     )
-    assert result.response["result"] == {"echo": {"textDocument": {"uri": target.as_uri()}, "position": {"line": 0, "character": 1}}}
+    assert json.loads(result.response["result"]["contents"]["value"]) == {
+        "textDocument": {"uri": target.as_uri()},
+        "position": {"line": 0, "character": 1},
+    }
     assert result.position_encoding == "utf-16"
     assert result.document_state is not None
     assert result.document_state.version == 1
@@ -326,7 +329,7 @@ def test_cancelled_second_use_preserves_reason_and_stop_confirmation(
             abort_signal=_Abort(),  # type: ignore[arg-type]
         )
     )
-    assert first.response["result"]["echo"]["position"] == {"line": 0, "character": 1}
+    assert json.loads(first.response["result"]["contents"]["value"])["position"] == {"line": 0, "character": 1}
     deadline = time.monotonic() + 10
     while not grandchild_pid.exists() and time.monotonic() < deadline:
         time.sleep(0.02)

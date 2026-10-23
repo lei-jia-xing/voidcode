@@ -24,7 +24,7 @@ class Manager:
 
     def request(self, request):
         self.requests.append(request)
-        return LspRequestResult(response={"result": next(self.results)})
+        return LspRequestResult(response={"jsonrpc": "2.0", "id": len(self.requests), "result": next(self.results)})
 
 
 def invoke(tmp_path, arguments, manager):
@@ -74,9 +74,60 @@ def test_call_hierarchy_shares_final_request_path(tmp_path: Path, operation: str
     assert manager.requests[1].params == {"item": item}
 
 
-@pytest.mark.parametrize("kind,label", [(26, "TypeParameter"), (999, "Symbol")])
+@pytest.mark.parametrize("kind,label", [(26, "TypeParameter"), (12, "Function")])
 def test_document_symbol_labels_use_protocol_enum(tmp_path: Path, kind: int, label: str):
-    manager = Manager([[{"name": "T", "kind": kind, "range": {"start": {"line": 0}, "end": {"line": 0}}}]])
+    point = {"line": 0, "character": 0}
+    span = {"start": point, "end": point}
+    manager = Manager([[{"name": "T", "kind": kind, "range": span, "selectionRange": span}]])
     result = invoke(tmp_path, {"operation": "documentSymbol", "path": "file.py"}, manager)
     assert result.status == "ok"
     assert f"T ({label})" in result.output.text
+
+
+@pytest.mark.parametrize(
+    "operation,payload",
+    [
+        ("hover", False),
+        ("hover", {"unexpected": True}),
+        ("documentSymbol", {}),
+        ("diagnostics", {}),
+        ("diagnostics", {"kind": "full", "items": [None]}),
+        ("codeAction", {"actions": []}),
+    ],
+)
+def test_malformed_protocol_results_are_not_empty_success(tmp_path: Path, operation: str, payload: object):
+    with pytest.raises(ValueError, match="returned an invalid result"):
+        invoke(tmp_path, {"operation": operation, "path": "file.py", "line": 1, "character": 1}, Manager([payload]))
+
+
+@pytest.mark.parametrize("operation,payload", [("hover", None), ("documentSymbol", []), ("diagnostics", {"kind": "full", "items": []})])
+def test_valid_empty_protocol_results_remain_success(tmp_path: Path, operation: str, payload: object):
+    result = invoke(tmp_path, {"operation": operation, "path": "file.py", "line": 1, "character": 1}, Manager([payload]))
+    assert result.status == "ok"
+
+
+def test_unchanged_diagnostic_report_does_not_invent_zero_items(tmp_path: Path):
+    result = invoke(tmp_path, {"operation": "diagnostics", "path": "file.py"}, Manager([{"kind": "unchanged", "resultId": "previous"}]))
+    assert result.status == "ok"
+    assert result.body.as_payload()["item_count"] is None
+    assert "Diagnostics unchanged" in result.output.text
+    assert "No diagnostics reported" not in result.output.text
+
+
+@pytest.mark.parametrize("payload", [None, []])
+def test_empty_references_report_zero_items(tmp_path: Path, payload: object):
+    result = invoke(tmp_path, {"operation": "findReferences", "path": "file.py", "line": 1, "character": 1}, Manager([payload]))
+    assert result.status == "ok"
+    assert result.body.as_payload()["item_count"] == 0
+    assert "No reference found" in result.output.text
+
+
+def test_references_render_real_locations(tmp_path: Path):
+    span = {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}}
+    result = invoke(
+        tmp_path,
+        {"operation": "findReferences", "path": "file.py", "line": 1, "character": 1},
+        Manager([[{"uri": (tmp_path / "file.py").as_uri(), "range": span}]]),
+    )
+    assert result.body.as_payload()["item_count"] == 1
+    assert "file.py:1:1-1:2" in result.output.text
