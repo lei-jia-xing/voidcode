@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import OutputBounds, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult, ToolSuccess
@@ -36,6 +38,23 @@ LIMIT = 100
 #: Upper bound for an explicit ``limit`` so one call cannot materialize an
 #: unbounded match list.
 MAX_RESULT_LIMIT = 5000
+
+
+class GlobArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    pattern: str
+    path: str = "."
+    include_hidden: bool = True
+    respect_gitignore: bool = False
+    limit: int = Field(default=LIMIT, ge=1, le=MAX_RESULT_LIMIT)
+
+    @field_validator("pattern", "path")
+    @classmethod
+    def _non_empty(cls, value: str, info: ValidationInfo) -> str:
+        if not value.strip():
+            raise ValueError(f"glob {info.field_name} must not be empty")
+        return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,33 +161,17 @@ class GlobTool:
         services: PluginServices,  # noqa: ARG002 - required by the frozen Tool ABI
     ) -> ToolResult:
         workspace = context.require_workspace()
-        pattern_value = call.arguments.get("pattern")
-        if not isinstance(pattern_value, str):
-            raise ValueError("glob requires a string pattern argument")
-
-        if not pattern_value.strip():
-            raise ValueError("glob pattern must not be empty")
-
-        include_hidden = _bool_argument(call, "include_hidden", default=True)
-        respect_gitignore = _bool_argument(call, "respect_gitignore", default=False)
-        limit = _int_argument(call, "limit", default=LIMIT, maximum=MAX_RESULT_LIMIT)
-
-        path_value = call.arguments.get("path")
-        search_path: Path | None = None
-        resolved_candidate: Path | None = None
-        is_external = False
-        if isinstance(path_value, str):
-            workspace_root = workspace.resolve()
-            requested_path = Path(path_value)
-            resolved_candidate = (requested_path if requested_path.is_absolute() else workspace_root / requested_path).resolve()
-            is_external = not resolved_candidate.is_relative_to(workspace_root)
-            search_path = resolved_candidate
-
-            if not search_path.exists():
-                raise ValueError(f"glob path does not exist: {path_value}")
-
+        args = GlobArgs.model_validate(dict(call.arguments))
+        pattern_value = args.pattern
+        include_hidden, respect_gitignore, limit = args.include_hidden, args.respect_gitignore, args.limit
         workspace_root = workspace.resolve()
-        effective_root = resolved_candidate if is_external and resolved_candidate is not None and resolved_candidate.is_dir() else workspace_root
+        requested_path = Path(args.path)
+        search_path = (requested_path if requested_path.is_absolute() else workspace_root / requested_path).resolve()
+        if not search_path.exists():
+            raise ValueError(f"glob path does not exist: {args.path}")
+        if not search_path.is_dir():
+            raise ValueError(f"glob path must be a directory: {args.path}")
+        effective_root = search_path if not search_path.is_relative_to(workspace_root) else workspace_root
         gitignore = GitIgnoreMatcher.load(effective_root) if respect_gitignore else None
         matched, truncated, search_error = self._find_files(
             workspace_root,
@@ -218,19 +221,3 @@ class GlobTool:
             output=TextOutput(output, bounds=OutputBounds(truncated=truncated, partial=truncated)),
             body=body,
         )
-
-
-def _bool_argument(call: ToolCall, key: str, *, default: bool) -> bool:
-    value = call.arguments.get(key, default)
-    if not isinstance(value, bool):
-        raise ValueError(f"glob requires a boolean {key} argument")
-    return value
-
-
-def _int_argument(call: ToolCall, key: str, *, default: int, maximum: int) -> int:
-    value = call.arguments.get(key, default)
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise ValueError(f"glob requires an integer {key} argument")
-    if value < 1:
-        raise ValueError(f"glob {key} must be greater than or equal to 1")
-    return min(value, maximum)

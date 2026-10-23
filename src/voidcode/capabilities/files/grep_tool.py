@@ -9,7 +9,7 @@ from itertools import islice
 from pathlib import Path
 from typing import ClassVar
 
-from pydantic import BaseModel, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
@@ -35,15 +35,17 @@ DEFAULT_IGNORE_PATTERNS = frozenset(
 
 
 class GrepArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     pattern: str
-    path: str
+    path: str = "."
     regex: bool = False
     ignore_case: bool = False
-    context: int = 0
+    context: int = Field(default=0, ge=0)
     include: list[str] | None = None
     exclude: list[str] | None = None
     respect_gitignore: bool = False
-    limit: int = MAX_MATCHES
+    limit: int = Field(default=MAX_MATCHES, ge=1, le=MAX_RESULT_LIMIT)
 
     @field_validator("pattern", "path", mode="after")
     @classmethod
@@ -51,20 +53,6 @@ class GrepArgs(BaseModel):
         if not value.strip():
             raise ValueError(f"{info.field_name} must not be empty")
         return value
-
-    @field_validator("context", mode="after")
-    @classmethod
-    def _validate_context(cls, value: int) -> int:
-        if value < 0:
-            raise ValueError("context must be greater than or equal to 0")
-        return value
-
-    @field_validator("limit", mode="after")
-    @classmethod
-    def _validate_limit(cls, value: int) -> int:
-        if value < 1:
-            raise ValueError("limit must be greater than or equal to 1")
-        return min(value, MAX_RESULT_LIMIT)
 
     @field_validator("include", "exclude", mode="after")
     @classmethod
@@ -156,7 +144,7 @@ class GrepTool:
                 },
                 "limit": {"type": "integer", "minimum": 1, "maximum": 5000, "description": "Maximum matching lines to return; defaults to 200."},
             },
-            "required": ["pattern", "path"],
+            "required": ["pattern"],
             "additionalProperties": False,
         },
         effects=frozenset({ToolEffect.READ}),
@@ -257,19 +245,7 @@ class GrepTool:
         services: PluginServices,  # noqa: ARG002 - required by the frozen Tool ABI
     ) -> ToolResult:
         workspace = context.require_workspace()
-        args = GrepArgs.model_validate(
-            {
-                "pattern": call.arguments.get("pattern"),
-                "path": call.arguments.get("path"),
-                "regex": call.arguments.get("regex", False),
-                "ignore_case": call.arguments.get("ignore_case", False),
-                "context": call.arguments.get("context", 0),
-                "include": call.arguments.get("include"),
-                "exclude": call.arguments.get("exclude"),
-                "respect_gitignore": call.arguments.get("respect_gitignore", False),
-                "limit": call.arguments.get("limit", MAX_MATCHES),
-            }
-        )
+        args = GrepArgs.model_validate(json_wire_object(call.arguments))
 
         workspace_root = workspace.resolve()
         requested_path = Path(args.path)
@@ -280,7 +256,6 @@ class GrepTool:
         if not candidate.exists():
             raise ValueError(f"grep target does not exist: {args.path}")
 
-        workspace_root = workspace.resolve()
         effective_root = candidate if is_external and candidate.is_dir() else workspace_root
 
         try:
