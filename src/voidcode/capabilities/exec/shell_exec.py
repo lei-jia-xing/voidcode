@@ -2,7 +2,7 @@
 
 The lease owns the machine — it spawns the process group, bounds each stream's capture, stops the
 group on timeout or lease cancellation, and hands back the decoded text. This tool owns the
-contract around it: the command interceptor, the timeout clamp, the preview/artifact split per
+contract around it: the command interceptor, timeout validation, the preview/artifact split per
 stream, and the failure shapes a caller reads off the result body.
 """
 
@@ -15,7 +15,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import ClassVar, final
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices
@@ -39,9 +39,9 @@ MAX_TIMEOUT_SECONDS = 600
 #: Per-stream capture bound handed to the lease. What the lease captured is the artifact's copy of
 #: the stream; the body itself carries only a bounded preview of it.
 _CAPTURE_BYTES = 128 * 1024 * 1024
-#: Bytes kept inline from each end of a stream. The middle is omitted from the preview, never from
+#: Characters kept inline from each end of a stream. The middle is omitted from the preview, never from
 #: the capture: the artifact keeps the whole bounded stream.
-_PREVIEW_BYTES = 25 * 1024
+_PREVIEW_CHARS = 25 * 1024
 _ARTIFACT_MIME = "text/plain; charset=utf-8"
 _ARTIFACT_SOURCE = "process_output"
 #: Longest progress chunk forwarded to the context's progress sink.
@@ -131,6 +131,9 @@ def _artifact_reference(artifact: dict[str, object] | None) -> OutputReference |
 
 
 class ShellExecArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    timeout: int = Field(default=DEFAULT_TIMEOUT_SECONDS, ge=1, le=MAX_TIMEOUT_SECONDS)
     command: NonEmptyCommand
     description: OptionalDescription = None
 
@@ -144,13 +147,13 @@ def _shell_argv(command: str) -> list[str]:
 
 def _preview(text: str) -> str:
     """Head and tail of one stream with the omitted middle marked; short streams pass through."""
-    if len(text) <= _PREVIEW_BYTES * 2:
+    if len(text) <= _PREVIEW_CHARS * 2:
         return text
-    return text[:_PREVIEW_BYTES] + "\n... output preview omitted ...\n" + text[-_PREVIEW_BYTES:]
+    return text[:_PREVIEW_CHARS] + "\n... output preview omitted ...\n" + text[-_PREVIEW_CHARS:]
 
 
 def _preview_truncated(text: str) -> bool:
-    return len(text) > _PREVIEW_BYTES * 2
+    return len(text) > _PREVIEW_CHARS * 2
 
 
 def _spill_stream(services: PluginServices, stream_name: str, text: str) -> dict[str, object] | None:
@@ -177,8 +180,8 @@ def _progress_sink(context: ToolContext) -> Callable[[str, bytes], None] | None:
 
     The lease already swallows sink failures, so a broken sink can never alter the command result.
     """
-    emit = getattr(context, "emit_tool_progress", None)
-    if not callable(emit):
+    emit = context.emit_tool_progress
+    if emit is None:
         return None
     run_id = context.run_id
     invocation_id = context.invocation_id
@@ -215,25 +218,17 @@ class ShellExecTool:
 
     def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:
         workspace = context.require_workspace()
-        args = ShellExecArgs.model_validate(
-            {
-                "command": call.arguments.get("command"),
-                "description": call.arguments.get("description"),
-            }
-        )
+        args = ShellExecArgs.model_validate(dict(call.arguments))
         command_text = args.command
         # Interception is a pre-flight refusal: a refused command never reaches the lease.
         intercepted = _check_bash_interception(command_text)
         if intercepted is not None:
             raise ValueError(intercepted)
 
-        timeout_value = call.arguments.get("timeout", DEFAULT_TIMEOUT_SECONDS)
         workspace_root = Path(workspace).resolve()
         if not workspace_root.exists() or not workspace_root.is_dir():
             raise ValueError("shell_exec workspace must be an existing directory")
-        timeout_seconds = (
-            min(int(timeout_value), MAX_TIMEOUT_SECONDS) if isinstance(timeout_value, (int, float)) and timeout_value > 0 else DEFAULT_TIMEOUT_SECONDS
-        )
+        timeout_seconds = args.timeout
 
         run_process = getattr(services, "run_process", None)
         if not callable(run_process):

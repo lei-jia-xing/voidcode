@@ -684,6 +684,11 @@ def test_an_unknown_process_id_fails_clearly(tmp_path: Path, arguments: Mapping[
     "arguments",
     [
         {"op": "restart"},
+        {"op": "start", "command": "serve", "ready_timeout": True},
+        {"op": "start", "command": "serve", "ready_timeout": "5"},
+        {"op": "logs", "process_id": "proc-1", "offset": 1.0},
+        {"op": "logs", "process_id": "proc-1", "limit": "5"},
+        {"op": "send", "process_id": "proc-1", "input": "quit", "newline": "false"},
         {"op": "start"},
         {"op": "start", "command": "   "},
         {"op": "ps", "process_id": "proc-1"},

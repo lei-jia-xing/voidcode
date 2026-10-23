@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Annotated, ClassVar, Literal, final
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices, ProcessHandle
@@ -77,7 +77,7 @@ type _StreamName = Literal["stdout", "stderr"]
 
 
 class _StrictArgs(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class _StartArgs(_StrictArgs):
@@ -582,10 +582,7 @@ class BackgroundProcessTool:
         _require_process_service(services)
         workspace = context.require_workspace().resolve()
         context.require_session_id()
-        try:
-            args = _ARGS_ADAPTER.validate_python(dict(call.arguments))
-        except ValidationError as exc:
-            raise ValueError(str(exc)) from exc
+        args = _ARGS_ADAPTER.validate_python(dict(call.arguments))
         if isinstance(args, _StartArgs):
             return self._start(
                 args,

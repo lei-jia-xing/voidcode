@@ -21,7 +21,6 @@ from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import ProcessResult
 from voidcode.sdk.tools import TextOutput, ToolCall, ToolFailure, ToolSuccess
 
-_PREVIEW_BYTES = 25 * 1024
 _SHELL_WRAPPER = ["cmd.exe", "/c"] if os.name == "nt" else ["/bin/sh", "-c"]
 
 
@@ -253,15 +252,27 @@ def test_shell_exec_cancellation_reports_the_abort_signal(tmp_path: Path) -> Non
     assert body.as_payload()["reason"] == "test abort"
 
 
-def test_shell_exec_clamps_the_timeout_to_the_maximum(tmp_path: Path) -> None:
-    lease = _FakeLease(ProcessResult(exit_code=0, stdout="ok\n", stderr="", duration_ms=3))
+@pytest.mark.parametrize("timeout", [0, -1, 601, True, "5", 1.5])
+def test_shell_exec_rejects_invalid_timeout_before_process_start(tmp_path: Path, timeout: object) -> None:
+    lease = _FakeLease()
+    with pytest.raises(ValueError):
+        _shell_tool().invoke(
+            ToolCall("shell_exec", {"command": "echo ok", "timeout": timeout}),
+            context=_context(tmp_path),
+            services=lease,
+        )
+    assert not lease.calls
 
-    result = _invoke("echo ok", tmp_path, lease, timeout=5000)
 
-    assert isinstance(result, ToolSuccess)
-    assert isinstance(result.body, ShellExecResultBody)
-    assert result.body.timeout == 600
-    assert lease.calls[0]["timeout_seconds"] == 600.0
+def test_shell_exec_rejects_unknown_arguments(tmp_path: Path) -> None:
+    lease = _FakeLease()
+    with pytest.raises(ValueError):
+        _shell_tool().invoke(
+            ToolCall("shell_exec", {"command": "echo ok", "typo": True}),
+            context=_context(tmp_path),
+            services=lease,
+        )
+    assert not lease.calls
 
 
 def test_shell_exec_reports_the_tool_timeout_with_partial_output(tmp_path: Path) -> None:
