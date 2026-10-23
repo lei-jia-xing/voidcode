@@ -26,7 +26,7 @@ not a requirement to change every plugin or to add a dependency.
 | `skills` | One strict shared frontmatter parser, discovery and duplicate validation; focused tests. | Activation/rules, context contribution and unused fields. |
 | `todo` | Reminder resets use typed fresh-request facts; focused tests. | Remaining state/commands, mutations and deactivation. |
 | `user_shell` | Replaced private process runner, temporary captures, kill helpers and result wrapper with SDK `run_process`. Honest timeout/cancel/unknown exit status; removed unused help exports. Real command/output and process-lease tests. | Command cancellation wiring is a core concern: ordinary command contexts currently have no abort signal. |
-| `web` | Entry point read; Exa-only description disagrees with multi-provider implementation. | Providers/configuration, result normalization, bounds and errors. |
+| `web` | All provider adapters, selection, normalization and HTTP errors read. Strict Pydantic arguments now match the declared 1–20 limit and reject coercion/unknown fields; removed unused provider labels, credential names, unreachable fallback and HTTP-error parameter. Corrected Exa-only documentation. 28 mocked HTTP/argument tests pass. | Factory configuration, malformed-item semantics, response/output bounds and external API verification. |
 
 ## User shell output
 

@@ -98,6 +98,20 @@ def test_websearch_tool_rejects_empty_query(tool_context: ToolContext) -> None:
 
 
 @pytest.mark.parametrize(
+    "arguments",
+    [
+        {},
+        {"query": 42},
+        {"query": "test", "unknown": True},
+        *({"query": "test", "numResults": value} for value in (0, -1, 21, True, "5", 5.0, None)),
+    ],
+)
+def test_websearch_rejects_invalid_arguments_before_http(tool_context: ToolContext, arguments: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        _run_search(tool_context, arguments)
+
+
+@pytest.mark.parametrize(
     ("arguments", "expected_num_results"),
     [({"query": "test", "numResults": 5}, 5), ({"query": "test"}, 8)],
 )

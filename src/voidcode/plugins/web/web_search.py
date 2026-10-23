@@ -9,7 +9,7 @@ from typing import ClassVar, final
 from urllib.parse import quote
 
 import httpx
-from pydantic import BaseModel, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices
@@ -19,26 +19,19 @@ logger = logging.getLogger(__name__)
 
 
 class WebSearchArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     query: str
-    numResults: int = 8
+    numResults: int = Field(default=8, ge=1, le=20)
 
     @field_validator("query", mode="after")
     @classmethod
-    def _validate_query(cls, value: str, info: ValidationInfo) -> str:
+    def _validate_query(cls, value: str) -> str:
         if not value.strip():
-            raise ValueError(f"{info.field_name} must not be empty")
-        return value
-
-    @field_validator("numResults", mode="after")
-    @classmethod
-    def _validate_num_results(cls, value: int) -> int:
-        if value < 1:
-            raise ValueError("numResults must be greater than or equal to 1")
+            raise ValueError("query must not be empty")
         return value
 
 
-DEFAULT_NUM_RESULTS = 8
-MAX_NUM_RESULTS = 20
 TIMEOUT_SECONDS = 30
 EMPTY_MESSAGE = "No results found for this query."
 DEEPSEEK_MAX_QUERY_CHARS = 128
@@ -82,7 +75,7 @@ def _render_search_results(results: list[WebSearchItem]) -> str:
     return "\n".join(output_lines)
 
 
-def _bounded_http_error(label: str, exc: httpx.HTTPError, response: httpx.Response | None) -> str:
+def _bounded_http_error(label: str, exc: httpx.HTTPError) -> str:
     """One bounded failure sentence per transport fault; raw details stay in the log."""
     if isinstance(exc, httpx.TimeoutException):
         logger.warning("%s search timed out", label, exc_info=True)
@@ -95,7 +88,6 @@ def _bounded_http_error(label: str, exc: httpx.HTTPError, response: httpx.Respon
         logger.warning("%s search HTTP %s", label, status, exc_info=True)
         return f"{label} search failed with HTTP {status}."
     logger.warning("%s search request failed", label, exc_info=True)
-    _ = response
     return f"{label} search request failed."
 
 
@@ -105,7 +97,7 @@ def _post_json(url: str, payload: Mapping[str, object], headers: Mapping[str, st
             response = client.post(url, json=dict(payload), headers=dict(headers))
             response.raise_for_status()
     except httpx.HTTPError as exc:
-        return None, _bounded_http_error(label, exc, getattr(exc, "response", None))
+        return None, _bounded_http_error(label, exc)
     return _decode_json(response, label)
 
 
@@ -115,7 +107,7 @@ def _get_json(url: str, params: Mapping[str, str | int], headers: Mapping[str, s
             response = client.get(url, params=dict(params), headers=dict(headers))
             response.raise_for_status()
     except httpx.HTTPError as exc:
-        return None, _bounded_http_error(label, exc, getattr(exc, "response", None))
+        return None, _bounded_http_error(label, exc)
     return _decode_json(response, label)
 
 
@@ -360,8 +352,6 @@ def _search_searxng(query: str, num_results: int) -> tuple[list[WebSearchItem], 
 @dataclass(frozen=True, slots=True)
 class SearchProvider:
     id: str
-    label: str
-    env_var: str
     is_available: Callable[[], bool]
     search: Callable[[str, int], tuple[list[WebSearchItem], str | None]]
 
@@ -371,16 +361,16 @@ def _has_env(name: str) -> bool:
 
 
 PROVIDERS: tuple[SearchProvider, ...] = (
-    SearchProvider("exa", "Exa", "EXA_API_KEY", lambda: _has_env("EXA_API_KEY"), _search_exa),
-    SearchProvider("tavily", "Tavily", "TAVILY_API_KEY", lambda: _has_env("TAVILY_API_KEY"), _search_tavily),
-    SearchProvider("brave", "Brave", "BRAVE_API_KEY", lambda: _has_env("BRAVE_API_KEY"), _search_brave),
-    SearchProvider("deepseek", "DeepSeek", "DEEPSEEK_API_KEY", lambda: _has_env("DEEPSEEK_API_KEY"), _search_deepseek),
-    SearchProvider("tinyfish", "TinyFish", "TINYFISH_API_KEY", lambda: _has_env("TINYFISH_API_KEY"), _search_tinyfish),
-    SearchProvider("kagi", "Kagi", "KAGI_API_KEY", lambda: _has_env("KAGI_API_KEY"), _search_kagi),
-    SearchProvider("firecrawl", "Firecrawl", "FIRECRAWL_API_KEY", _is_firecrawl_available, _search_firecrawl),
-    SearchProvider("searxng", "SearXNG", "SEARXNG_ENDPOINT", lambda: _has_env("SEARXNG_ENDPOINT"), _search_searxng),
+    SearchProvider("exa", lambda: _has_env("EXA_API_KEY"), _search_exa),
+    SearchProvider("tavily", lambda: _has_env("TAVILY_API_KEY"), _search_tavily),
+    SearchProvider("brave", lambda: _has_env("BRAVE_API_KEY"), _search_brave),
+    SearchProvider("deepseek", lambda: _has_env("DEEPSEEK_API_KEY"), _search_deepseek),
+    SearchProvider("tinyfish", lambda: _has_env("TINYFISH_API_KEY"), _search_tinyfish),
+    SearchProvider("kagi", lambda: _has_env("KAGI_API_KEY"), _search_kagi),
+    SearchProvider("firecrawl", _is_firecrawl_available, _search_firecrawl),
+    SearchProvider("searxng", lambda: _has_env("SEARXNG_ENDPOINT"), _search_searxng),
     # Jina answers keyless at low volume, so it is the last resort when nothing else has a credential.
-    SearchProvider("jina", "Jina", "JINA_API_KEY", lambda: True, _search_jina),
+    SearchProvider("jina", lambda: True, _search_jina),
 )
 
 
@@ -408,25 +398,10 @@ class WebSearchTool:
         context: ToolContext,
         services: PluginServices,
     ) -> ToolResult:
-        _ = context
-        _ = services
-        args = WebSearchArgs.model_validate(
-            {
-                "query": call.arguments.get("query"),
-                "numResults": call.arguments.get("numResults", DEFAULT_NUM_RESULTS),
-            }
-        )
-        num_results = min(args.numResults, MAX_NUM_RESULTS)
-        provider = next((candidate for candidate in PROVIDERS if candidate.is_available()), None)
-        if provider is None:  # Unreachable while the table keeps a keyless fallback; kept against an empty table.
-            required = ", ".join(candidate.env_var for candidate in PROVIDERS)
-            error = f"web_search has no search backend available: set one of {required}."
-            return ToolFailure(
-                tool_name=self.definition.name,
-                error=error,
-                output=TextOutput(f"Search source: none\n\n{error}", bounds=OutputBounds(source="none")),
-                body=WebSearchResultBody(args.query, num_results, "none", ()),
-            )
+        _ = context, services
+        args = WebSearchArgs.model_validate(dict(call.arguments))
+        num_results = args.numResults
+        provider = next(candidate for candidate in PROVIDERS if candidate.is_available())
         results, error = provider.search(args.query, num_results)
         if error is not None:
             return ToolFailure(
