@@ -10,10 +10,10 @@ from voidcode.sdk.tools import TextOutput, Tool, ToolCall, ToolDiagnostics, Tool
 
 from .apply_workspace_edit import ApplyWorkspaceEditTool
 from .edit_tool import EditTool
+from .errors import ToolDiagnosticError
 from .glob_tool import GlobTool
 from .grep_tool import GrepTool
 from .read_tool import ReadTool
-from .repair import ToolDiagnosticError
 from .write_tool import WriteTool
 
 

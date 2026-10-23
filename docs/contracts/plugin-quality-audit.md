@@ -157,3 +157,9 @@ Validation: full Python suite passed with 1451 passed and 1 skipped (371.85s).
 The final focused run passed 55 cases, including added no-history single/batch edits,
 marker/unified patches and deletion, stale-hash refusals, and batch failure without
 partial writes. Ruff, formatting and source type checks passed.
+
+## Shared capabilities follow-up
+
+The complete shared implementation audit is tracked separately in
+[capabilities quality audit](./capabilities-quality-audit.md). Fuzzy repair hints
+were removed from file edits and patches; classified errors remain in `errors.py`.

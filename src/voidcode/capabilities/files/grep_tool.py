@@ -16,8 +16,8 @@ from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import OutputBounds, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess
 
+from .errors import raise_tool_diagnostic
 from .gitignore import GitIgnoreMatcher
-from .repair import raise_tool_diagnostic
 
 MAX_MATCHES = 200
 #: Upper bound for an explicit ``limit`` so one call cannot materialize an

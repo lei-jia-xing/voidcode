@@ -15,7 +15,7 @@ from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.tools import ResourceChange, TextOutput, ToolSuccess
 
-from .repair import format_text_repair_hints, raise_tool_diagnostic
+from .errors import raise_tool_diagnostic
 
 _CHANGE_OPERATIONS: dict[str, Literal["create", "update", "delete", "move"]] = {"A": "create", "M": "update", "D": "delete", "R": "move"}
 
@@ -296,13 +296,6 @@ def _derive_marker_update_content_from_text(
                 expected,
                 "Retry guidance: re-read this file and rebuild the patch hunk from current text.",
             ]
-            hints = format_text_repair_hints(
-                content="\n".join(original_lines),
-                expected=expected,
-                label="Nearest current file context",
-            )
-            if hints:
-                lines.extend(hints)
             raise_tool_diagnostic(
                 message="\n".join(lines),
                 error_kind="tool_input_mismatch",
@@ -311,7 +304,6 @@ def _derive_marker_update_content_from_text(
                 details={
                     "path": str(file_path),
                     "expected_preview": expected[:500],
-                    "has_candidate_matches": bool(hints),
                 },
             )
         replacements.append((found, len(pattern), new_slice))

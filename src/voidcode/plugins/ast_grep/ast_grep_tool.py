@@ -8,7 +8,7 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationInfo, field_validator
 
-from voidcode.capabilities.files.repair import raise_tool_diagnostic
+from voidcode.capabilities.files.errors import raise_tool_diagnostic
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices, ProcessResult
 from voidcode.sdk.tools import (

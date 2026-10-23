@@ -14,14 +14,7 @@ from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import ResourceChange, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSemantic, ToolSuccess
 
 from .apply_patch import execute_patch
-from .repair import (
-    ToolDiagnosticError,
-    bounded_block_preview,
-    bounded_candidate_diff,
-    line_prefix_retry_guidance,
-    looks_line_number_prefixed,
-    raise_tool_diagnostic,
-)
+from .errors import ToolDiagnosticError, raise_tool_diagnostic
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,34 +66,6 @@ def _convert_line_endings(text: str, ending: str) -> str:
     return normalized if ending == "\n" else normalized.replace("\n", "\r\n")
 
 
-def _near_match_hints(content: str, old_string: str, *, limit: int = 2) -> list[str]:
-    old_lines = old_string.split("\n")
-    if old_lines and old_lines[-1] == "":
-        old_lines = old_lines[:-1]
-    if not old_lines:
-        return []
-
-    lines = content.split("\n")
-    window_size = min(len(old_lines), len(lines))
-    if window_size == 0:
-        return []
-    candidates: list[tuple[float, int, str]] = []
-    for start in range(len(lines) - window_size + 1):
-        block = "\n".join(lines[start : start + window_size])
-        ratio = difflib.SequenceMatcher(None, old_string.strip(), block.strip()).ratio()
-        if ratio >= 0.58:
-            candidates.append((ratio, start, block))
-
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    return [
-        f"  - L{start + 1} ({round(ratio * 100)}% similar; inspect only)\n"
-        f"{bounded_block_preview(lines, start, window_size)}\n"
-        "    Diff (- oldString, + current):\n"
-        f"{bounded_candidate_diff(old_string, block).replace('expected', 'oldString')}"
-        for ratio, start, block in candidates[:limit]
-    ]
-
-
 def _match_locations(content: str, matches: list[str]) -> list[dict[str, object]]:
     """Map each distinct match to 1-based line numbers and a short preview."""
     locations: list[dict[str, object]] = []
@@ -125,25 +90,6 @@ def _match_locations(content: str, matches: list[str]) -> list[dict[str, object]
             }
         )
     return locations
-
-
-def _edit_mismatch_message(*, content: str, old_string: str) -> str:
-    lines = ["Exact oldString was not found in the current file text."]
-    hints = _near_match_hints(content, old_string)
-    if hints:
-        lines.extend(
-            [
-                "Advisory near-match suggestions (not applied):",
-                *hints,
-                "Re-read the shown lines and retry with exact current text, including indentation.",
-            ]
-        )
-    else:
-        lines.append("No similar text found; re-read the file before retrying.")
-
-    if looks_line_number_prefixed(old_string):
-        lines.append(line_prefix_retry_guidance())
-    return "\n".join(lines)
 
 
 def _trim_diff(diff: str) -> str:
@@ -236,13 +182,12 @@ def _replace(
     match_count = content.count(old_string) if old_string else 0
     if match_count == 0:
         raise_tool_diagnostic(
-            message=_edit_mismatch_message(content=content, old_string=old_string),
+            message="Exact oldString was not found in the current file text.",
             error_kind="tool_input_mismatch",
             reason="old_string_not_found",
             retry_guidance="Read the target path and retry with exact current file text, without line-number prefixes.",
             details={
                 "old_string_line_count": len(old_string.splitlines()),
-                "line_number_prefix_suspected": looks_line_number_prefixed(old_string),
             },
         )
     if not replace_all and match_count > 1:
