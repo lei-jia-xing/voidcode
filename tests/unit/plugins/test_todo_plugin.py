@@ -31,7 +31,6 @@ from voidcode.plugins.todo.todo_plugin import (
     render_provider_state,
     todo_context,
     todo_mid_run_nudge_text,
-    todo_mutation_count,
     todo_observer,
     todo_reminder_text,
     todo_summary,
@@ -459,37 +458,6 @@ def test_context_hides_completed_and_abandoned_tasks(tmp_path: Path) -> None:
 # --- Reminder policy ---
 
 
-def _fact(tool: str, *, status: str = "ok", effects: tuple[str, ...] = ("write",)) -> InvocationFinishedFact:
-    return InvocationFinishedFact(
-        session_id="session-1",
-        run_id="run-1",
-        revision_id="rev-1",
-        logical_turn="turn-1",
-        event_sequence=1,
-        tool_name=tool,
-        tool_call_id="c1",
-        status=status,  # type: ignore[arg-type]
-        effects=effects,
-    )
-
-
-def test_mutation_count_uses_declared_effects_and_todo_touch(tmp_path: Path) -> None:
-    _ = tmp_path
-    facts = [
-        _fact("write"),
-        _fact("read", effects=("read",)),
-        _fact("todo", effects=("session",)),
-        _fact("write"),
-        _fact("write", status="error"),
-        _fact("glob", effects=("read",)),
-        _fact("write"),
-    ]
-    assert todo_mutation_count(facts, own_tool_names=frozenset({"todo"})) == 2
-
-    no_touch = [_fact("write"), _fact("read", effects=("read",)), _fact("write")]
-    assert todo_mutation_count(no_touch, own_tool_names=frozenset({"todo"})) == 2
-
-
 def test_mid_run_nudge_threshold_budget_and_reset() -> None:
     silent = decide_todo_mid_run_nudge(
         state=TodoMidRunState(cycle_run_id="run-1"),
@@ -884,3 +852,37 @@ def test_reminder_cycle_ids_reject_empty_or_non_string_state(section: str | None
     target["cycle_run_id"] = value
     with pytest.raises(ValueError, match="non-empty string or null"):
         TodoState.from_payload(payload)
+
+
+def test_todo_mutation_preserves_cycle_budget_and_cursor(tmp_path: Path) -> None:
+    services = MockServices()
+    services.facts = [_request(1, "run-1")]
+    _invoke(services, tmp_path, {"op": "init", "items": ["one", "two"]})
+    config = TodoRemindersConfig(max_per_cycle=1)
+    todo_observer(_run_fact(), _context(tmp_path), services, config=config)
+    before = _stored(services)
+    assert before.todo_reminder.attempts == 1
+    assert before.cursor_sequence == 1
+    _invoke(services, tmp_path, {"op": "done", "task": "one"})
+    after = _stored(services)
+    assert after.todo_reminder == before.todo_reminder
+    assert after.mid_run == before.mid_run
+    assert after.cursor_sequence == before.cursor_sequence
+    assert after.invocations == before.invocations
+    assert after.cycle_run_id == before.cycle_run_id
+    todo_observer(_invocation_fact("todo"), _context(tmp_path), services, config=config)
+    todo_observer(_run_fact(), _context(tmp_path), services, config=config)
+    assert len(services.staged_continuations) == 1
+    assert _stored(services).todo_reminder.attempts == 1
+
+
+@pytest.mark.parametrize("status,stop_cause", [("failed", "error"), ("interrupted", "user_stop"), ("completed", "user_stop")])
+def test_unsent_reminder_does_not_consume_cycle_allowance(tmp_path: Path, status: str, stop_cause: str) -> None:
+    services = MockServices()
+    services.facts = [_request(1, "run-1")]
+    _invoke(services, tmp_path, {"op": "init", "items": ["one"]})
+    todo_observer(_run_fact(status=status, stop_cause=stop_cause), _context(tmp_path), services)
+    assert _stored(services).todo_reminder.attempts == 0
+    assert not services.staged_continuations
+    todo_observer(_run_fact(), _context(tmp_path), services)
+    assert services.staged_continuations[-1][0]["attempt"] == 1

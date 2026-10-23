@@ -623,13 +623,7 @@ def _render(phases: list[TodoPhase], op: str, *, original: list[TodoPhase]) -> s
     if op in {"view", "init"}:
         if not any(phase["tasks"] for phase in phases):
             return "Todo list is empty."
-        lines = [f"Todo {op} applied."]
-        for phase in phases:
-            lines.append(f"{phase['name']}:")
-            for task in phase["tasks"]:
-                blocker = f" — {task['blocker']}" if task.get("blocker") else ""
-                lines.append(f"- [{task['status']}] {task['content']}{blocker}")
-        return "\n".join(lines)
+        return f"Todo {op} applied.\n{_render_table(phases)}"
 
     lines = [f"Todo {op} applied."]
     old_tasks = {(phase["name"], task["content"]): (phase["name"], task) for phase in original for task in phase["tasks"]}
@@ -703,8 +697,6 @@ TODO_MID_RUN_MAX_PER_CYCLE = 2
 DEFAULT_TODO_REMINDER_MAX_PER_CYCLE = 3
 #: Role the reminder must keep: a trailing user message, never a system segment.
 TODO_REMINDER_ROLE: Literal["user"] = "user"
-#: Segment metadata source for the per-call reminder channel.
-TODO_REMINDER_SOURCE = "runtime_reminder"
 #: Reminder kind names.
 TODO_REMINDER_KIND = "todo"
 TODO_MID_RUN_KIND = "todo_mid_run"
@@ -756,24 +748,6 @@ def todo_mid_run_nudge_text(*, mutation_count: int, incomplete_count: int, attem
             f"(Mid-run nudge {attempt}/{max_attempts})",
             "</system-reminder>",
         ]
-    )
-
-
-def todo_mutation_count(facts: Sequence[InvocationFinishedFact], *, own_tool_names: frozenset[str]) -> int:
-    """Successful mutation invocations since the last successful todo call.
-
-    The declared effects the core reports with each finished invocation decide read tier,
-    exactly like the legacy ``is_read_tier`` filter, so a new tool cannot be mis-tiered by a
-    handwritten name list.
-    """
-    last_todo_touch = -1
-    for index, fact in enumerate(facts):
-        if fact.tool_name in own_tool_names and fact.status == "ok":
-            last_todo_touch = index
-    return sum(
-        1
-        for fact in facts[last_todo_touch + 1 :]
-        if fact.status == "ok" and fact.tool_name not in own_tool_names and not is_read_tier(_effect_set(fact.effects))
     )
 
 
@@ -940,6 +914,8 @@ def _account_invocation(state: TodoState, fact: InvocationFinishedFact, cycle: s
 
 
 def _account_run_finish(state: TodoState, fact: RunFinishedFact, cycle: str, max_per_cycle: int) -> tuple[TodoState, str | None]:
+    if fact.status != "completed" or fact.stop_cause not in {"completed", None}:
+        return state, None
     reminder = state.todo_reminder if state.todo_reminder.cycle_run_id == cycle else TodoReminderState(cycle_run_id=cycle)
     decision = decide_todo_reminder(
         max_per_cycle=max_per_cycle,
@@ -949,9 +925,6 @@ def _account_run_finish(state: TodoState, fact: RunFinishedFact, cycle: str, max
         tool_result_count=state.invocations,
     )
     updated = replace(state, todo_reminder=decision.state, cycle_run_id=cycle)
-    if fact.status != "completed":
-        # Only a cleanly completed turn earns a reminder; parked/failed/interrupted turns do not.
-        return updated, None
     return updated, decision.text
 
 
@@ -971,7 +944,7 @@ def todo_observer(
     if not config.enabled:
         return
     state_data, version = services.get_state("session")
-    state = TodoState.from_payload(state_data)
+    original = state = TodoState.from_payload(state_data)
     state, cycle = _sync_cycle(state, services, fact.run_id)
     cycle_id = cycle if cycle is not None else fact.run_id
     reminder_type: str | None = None
@@ -1025,7 +998,7 @@ def todo_observer(
             event["mutation_count"] = mutation_count
         services.stage_event("reminder_injected", event)
 
-    if state != TodoState.from_payload(state_data):
+    if state != original:
         services.replace_state(state.to_payload(), expected_version=version)
 
 
@@ -1124,7 +1097,7 @@ class TodoTool:
         if mutated:
             revision += 1
             services.replace_state(
-                TodoState(revision=revision, phases=tuple(phases)).to_payload(),
+                replace(state, revision=revision, phases=tuple(phases)).to_payload(),
                 expected_version=version,
             )
             services.stage_event("todo_updated", todo_event_payload(phases=phases, revision=revision))
