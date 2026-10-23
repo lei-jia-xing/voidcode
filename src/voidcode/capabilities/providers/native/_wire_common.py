@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from queue import Empty, Full, Queue
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from typing import cast
 
 from voidcode.sdk.provider import ProviderExecutionError
@@ -191,13 +191,15 @@ def iter_stream_with_timeout(
 
 
 @dataclass(slots=True)
-class OwnedTransport[TransportT]:
-    """One-slot holder letting a frozen provider own a single transport."""
+class OwnedResource[TransportT]:
+    """One owned client or transport, with serialized initialization."""
 
     value: TransportT | None = None
+    lock: Lock = field(default_factory=Lock, repr=False, compare=False)
 
     def close(self) -> None:
-        value, self.value = self.value, None
+        with self.lock:
+            value, self.value = self.value, None
         closer = getattr(value, "close", None)
         if callable(closer):
             closer()

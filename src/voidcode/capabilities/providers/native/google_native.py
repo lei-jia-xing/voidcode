@@ -24,7 +24,7 @@ from voidcode.sdk.provider import (
 )
 from voidcode.sdk.tools import ToolCall
 
-from ._wire_common import resolve_extra_request_headers
+from ._wire_common import OwnedResource, resolve_extra_request_headers
 from .config import GoogleProviderConfig
 from .errors import parse_provider_api_error
 from .model_catalog import static_catalog_metadata
@@ -103,13 +103,6 @@ def _service_account_project_id(credentials: Any) -> str | None:
     return project_id if isinstance(project_id, str) and project_id else None
 
 
-@dataclass(slots=True)
-class _OwnedClient:
-    """One-slot holder letting a frozen provider own a single SDK client."""
-
-    value: Any | None = None
-
-
 @dataclass(frozen=True, slots=True)
 class GoogleGenAIProvider:
     name: str = "google"
@@ -124,21 +117,20 @@ class GoogleGenAIProvider:
     # One client -- and therefore one HTTP connection pool -- per provider,
     # reused across every turn. A client owns no conversation state: the headers
     # above are patched per request, so reusing it is correct rather than merely
-    # cheaper. Only the first-use race can drop one losing client.
-    _owned_client: _OwnedClient = field(default_factory=_OwnedClient, compare=False, repr=False)
+    # cheaper. First-use initialization is serialized.
+    _owned_client: OwnedResource[Any] = field(default_factory=OwnedResource, compare=False, repr=False)
 
     def close(self) -> None:
-        client, self._owned_client.value = self._owned_client.value, None
-        if client is not None:
-            client.close()
+        self._owned_client.close()
 
     def _client(self, *, provider_name: str, model_name: str) -> Any:
         if self.client is not None:
             return self.client
         owned = self._owned_client
-        if owned.value is None:
-            owned.value = self._create_client(provider_name=provider_name, model_name=model_name)
-        return owned.value
+        with owned.lock:
+            if owned.value is None:
+                owned.value = self._create_client(provider_name=provider_name, model_name=model_name)
+            return owned.value
 
     def _create_client(self, *, provider_name: str, model_name: str) -> Any:
         config = self.config

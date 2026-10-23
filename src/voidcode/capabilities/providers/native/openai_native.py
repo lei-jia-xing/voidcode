@@ -5,6 +5,7 @@ import json
 import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
+from threading import Lock
 from typing import Any, Protocol, cast
 
 import httpx2
@@ -29,7 +30,7 @@ from voidcode.sdk.tools import ToolCall
 
 from ._wire_common import (
     DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS,
-    OwnedTransport,
+    OwnedResource,
     abort_signal_cancelled,
     iter_stream_with_timeout,
     normalize_tool_call_id,
@@ -150,6 +151,7 @@ class OpenAIChatCompletionsTransport:
         self.auth_scheme = auth_scheme
         self.ssl_verify = ssl_verify
         self.http_client = http_client
+        self._client_lock = Lock()
         self._sdk_client: OpenAI | None = None
 
     def _auth_headers(self) -> dict[str, str]:
@@ -188,28 +190,30 @@ class OpenAIChatCompletionsTransport:
         return kwargs
 
     def close(self) -> None:
-        client, self._sdk_client = self._sdk_client, None
+        with self._client_lock:
+            client, self._sdk_client = self._sdk_client, None
         if client is not None and self.http_client is None:
             client.close()
 
     def _sdk(self) -> OpenAI:
-        if self._sdk_client is None:
-            http_client = self.http_client
-            if http_client is None and self.ssl_verify is not None:
-                http_client = httpx2.Client(verify=self.ssl_verify)
-            # ``default_headers`` wins over the SDK's own auth header, so the
-            # configured scheme stays authoritative. ``max_retries=0`` keeps
-            # retry/fallback owned by the runtime instead of the SDK.
-            self._sdk_client = OpenAI(
-                api_key=self.api_key or _PLACEHOLDER_API_KEY,
-                base_url=self.base_url,
-                organization=self.organization,
-                project=self.project,
-                default_headers=self._auth_headers(),
-                http_client=http_client,
-                max_retries=0,
-            )
-        return self._sdk_client
+        with self._client_lock:
+            if self._sdk_client is None:
+                http_client = self.http_client
+                if http_client is None and self.ssl_verify is not None:
+                    http_client = httpx2.Client(verify=self.ssl_verify)
+                # ``default_headers`` wins over the SDK's own auth header, so the
+                # configured scheme stays authoritative. ``max_retries=0`` keeps
+                # retry/fallback owned by the runtime instead of the SDK.
+                self._sdk_client = OpenAI(
+                    api_key=self.api_key or _PLACEHOLDER_API_KEY,
+                    base_url=self.base_url,
+                    organization=self.organization,
+                    project=self.project,
+                    default_headers=self._auth_headers(),
+                    http_client=http_client,
+                    max_retries=0,
+                )
+            return self._sdk_client
 
     @staticmethod
     def _api_error_payload(exc: OpenAIAPIError) -> dict[str, object]:
@@ -407,8 +411,8 @@ class OpenAIChatCompletionsProvider:
     extra_request_headers: Mapping[str, str] = field(default_factory=dict)
     # One transport -- and therefore one SDK client and HTTP connection pool --
     # per provider, reused across every turn. Building it per request leaked a
-    # pool per turn. Only the first-use race can drop one losing transport.
-    _owned_transport: OwnedTransport[OpenAITransport] = field(default_factory=OwnedTransport, compare=False, repr=False)
+    # pool per turn. First-use initialization is serialized.
+    _owned_transport: OwnedResource[OpenAITransport] = field(default_factory=OwnedResource, compare=False, repr=False)
 
     def provider_config(self) -> OpenAIProviderConfig | ProviderEndpointConfig | None:
         return self.config
@@ -440,52 +444,53 @@ class OpenAIChatCompletionsProvider:
         if self.transport is not None:
             return self.transport
         owned = self._owned_transport
-        if owned.value is None:
-            # Credentials come only from resolved provider config: an ambient
-            # ``OPENAI_API_KEY`` must never be attached to another vendor's endpoint
-            # (or to the default base URL when the provider block is absent).
-            # ``provider_configs_from_env`` already resolves that variable into
-            # ``providers.openai``. A missing key means "send no credential" -- the
-            # transport still hands the SDK a placeholder so it never sends an empty one.
-            config = self.config
-            endpoint = config if isinstance(config, ProviderEndpointConfig) else None
-            openai_config = config if isinstance(config, OpenAIProviderConfig) else None
-            base_url = None if config is None else config.base_url
-            if not base_url:
-                # A provider whose config names no endpoint resolves to its own
-                # vendor default; one without a default must not borrow another
-                # vendor's host. ``OpenAIChatCompletionsTransport``'s class
-                # default is for direct construction only, never a provider-level
-                # fallback, so an endpoint-less provider fails here instead.
-                base_url = openai_wire_default_base_url(self.name)
-            if not base_url:
-                raise ProviderExecutionError(
-                    kind="not_configured",
-                    provider_name=self.name,
-                    model_name="unknown",
-                    message=f"provider '{self.name}' has no endpoint configured; set providers.{self.name}.base_url and its API key",
-                    retryable=False,
-                    fallback_allowed=True,
+        with owned.lock:
+            if owned.value is None:
+                # Credentials come only from resolved provider config: an ambient
+                # ``OPENAI_API_KEY`` must never be attached to another vendor's endpoint
+                # (or to the default base URL when the provider block is absent).
+                # ``provider_configs_from_env`` already resolves that variable into
+                # ``providers.openai``. A missing key means "send no credential" -- the
+                # transport still hands the SDK a placeholder so it never sends an empty one.
+                config = self.config
+                endpoint = config if isinstance(config, ProviderEndpointConfig) else None
+                openai_config = config if isinstance(config, OpenAIProviderConfig) else None
+                base_url = None if config is None else config.base_url
+                if not base_url:
+                    # A provider whose config names no endpoint resolves to its own
+                    # vendor default; one without a default must not borrow another
+                    # vendor's host. ``OpenAIChatCompletionsTransport``'s class
+                    # default is for direct construction only, never a provider-level
+                    # fallback, so an endpoint-less provider fails here instead.
+                    base_url = openai_wire_default_base_url(self.name)
+                if not base_url:
+                    raise ProviderExecutionError(
+                        kind="not_configured",
+                        provider_name=self.name,
+                        model_name="unknown",
+                        message=f"provider '{self.name}' has no endpoint configured; set providers.{self.name}.base_url and its API key",
+                        retryable=False,
+                        fallback_allowed=True,
+                    )
+                # The two config shapes spell these two credentials differently:
+                # OpenAI's own config names them ``organization``/``project``, an
+                # endpoint config ``openai_organization``/``openai_project``. Only an
+                # endpoint config carries the auth header/scheme and the TLS switch.
+                organization = None if openai_config is None else openai_config.organization
+                project = None if openai_config is None else openai_config.project
+                if endpoint is not None:
+                    organization = endpoint.openai_organization
+                    project = endpoint.openai_project
+                owned.value = OpenAIChatCompletionsTransport(
+                    base_url=base_url,
+                    api_key=None if config is None else config.api_key,
+                    organization=organization,
+                    project=project,
+                    auth_header=endpoint.auth_header if endpoint is not None else None,
+                    auth_scheme=endpoint.auth_scheme if endpoint is not None else "bearer",
+                    ssl_verify=endpoint.ssl_verify if endpoint is not None else None,
                 )
-            # The two config shapes spell these two credentials differently:
-            # OpenAI's own config names them ``organization``/``project``, an
-            # endpoint config ``openai_organization``/``openai_project``. Only an
-            # endpoint config carries the auth header/scheme and the TLS switch.
-            organization = None if openai_config is None else openai_config.organization
-            project = None if openai_config is None else openai_config.project
-            if endpoint is not None:
-                organization = endpoint.openai_organization
-                project = endpoint.openai_project
-            owned.value = OpenAIChatCompletionsTransport(
-                base_url=base_url,
-                api_key=None if config is None else config.api_key,
-                organization=organization,
-                project=project,
-                auth_header=endpoint.auth_header if endpoint is not None else None,
-                auth_scheme=endpoint.auth_scheme if endpoint is not None else "bearer",
-                ssl_verify=endpoint.ssl_verify if endpoint is not None else None,
-            )
-        return owned.value
+            return owned.value
 
     @staticmethod
     def _tool_maps(request: ProviderTurnRequest) -> tuple[dict[str, str], dict[str, str]]:

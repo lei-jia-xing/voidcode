@@ -5,6 +5,7 @@ import json
 import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
+from threading import Lock
 from typing import Any, Protocol, cast
 
 import httpx2
@@ -31,7 +32,7 @@ from voidcode.sdk.tools import ToolCall
 from ._result_sanitize import sanitize_tool_result_data
 from ._wire_common import (
     DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS,
-    OwnedTransport,
+    OwnedResource,
     abort_signal_cancelled,
     iter_stream_with_timeout,
     normalize_tool_call_id,
@@ -97,6 +98,7 @@ class AnthropicMessagesTransport:
         self.auth_header = auth_header
         self.bearer_token = bearer_token
         self.http_client = http_client
+        self._client_lock = Lock()
         self._sdk_client: Anthropic | None = None
 
     def _default_headers(self) -> dict[str, str]:
@@ -126,21 +128,23 @@ class AnthropicMessagesTransport:
         return headers
 
     def close(self) -> None:
-        client, self._sdk_client = self._sdk_client, None
+        with self._client_lock:
+            client, self._sdk_client = self._sdk_client, None
         if client is not None and self.http_client is None:
             client.close()
 
     def _sdk(self) -> Anthropic:
-        if self._sdk_client is None:
-            # ``max_retries=0`` keeps retry/fallback owned by the runtime.
-            self._sdk_client = Anthropic(
-                api_key=self.api_key or _PLACEHOLDER_API_KEY,
-                base_url=self.base_url,
-                default_headers=self._default_headers(),
-                http_client=self.http_client,
-                max_retries=0,
-            )
-        return self._sdk_client
+        with self._client_lock:
+            if self._sdk_client is None:
+                # ``max_retries=0`` keeps retry/fallback owned by the runtime.
+                self._sdk_client = Anthropic(
+                    api_key=self.api_key or _PLACEHOLDER_API_KEY,
+                    base_url=self.base_url,
+                    default_headers=self._default_headers(),
+                    http_client=self.http_client,
+                    max_retries=0,
+                )
+            return self._sdk_client
 
     @staticmethod
     def _api_error_payload(exc: AnthropicAPIError) -> dict[str, object]:
@@ -298,8 +302,8 @@ class AnthropicMessagesProvider:
     extra_request_headers: Mapping[str, str] = field(default_factory=dict)
     # One transport -- and therefore one SDK client and HTTP connection pool --
     # per provider, reused across every turn. Building it per request leaked a
-    # pool per turn. Only the first-use race can drop one losing transport.
-    _owned_transport: OwnedTransport[AnthropicTransport] = field(default_factory=OwnedTransport, compare=False, repr=False)
+    # pool per turn. First-use initialization is serialized.
+    _owned_transport: OwnedResource[AnthropicTransport] = field(default_factory=OwnedResource, compare=False, repr=False)
 
     def provider_config(self) -> AnthropicProviderConfig | None:
         return self.config
@@ -311,35 +315,36 @@ class AnthropicMessagesProvider:
         if self.transport is not None:
             return self.transport
         owned = self._owned_transport
-        if owned.value is None:
-            config = self.config
-            # A provider whose config names no endpoint resolves to its own vendor
-            # default from the Anthropic wire table; one without a default must not
-            # borrow Anthropic's host just because its SDK has one. That class
-            # default is for direct construction only, never a provider-level
-            # fallback, so an endpoint-less provider fails here instead.
-            base_url = config.base_url if config and config.base_url else anthropic_wire_default_base_url(self.name)
-            if not base_url:
-                raise ProviderExecutionError(
-                    kind="not_configured",
-                    provider_name=self.name,
-                    model_name="unknown",
-                    message=f"provider '{self.name}' has no endpoint configured; set providers.{self.name}.base_url and its API key",
-                    retryable=False,
-                    fallback_allowed=True,
+        with owned.lock:
+            if owned.value is None:
+                config = self.config
+                # A provider whose config names no endpoint resolves to its own vendor
+                # default from the Anthropic wire table; one without a default must not
+                # borrow Anthropic's host just because its SDK has one. That class
+                # default is for direct construction only, never a provider-level
+                # fallback, so an endpoint-less provider fails here instead.
+                base_url = config.base_url if config and config.base_url else anthropic_wire_default_base_url(self.name)
+                if not base_url:
+                    raise ProviderExecutionError(
+                        kind="not_configured",
+                        provider_name=self.name,
+                        model_name="unknown",
+                        message=f"provider '{self.name}' has no endpoint configured; set providers.{self.name}.base_url and its API key",
+                        retryable=False,
+                        fallback_allowed=True,
+                    )
+                owned.value = AnthropicMessagesTransport(
+                    base_url=base_url,
+                    # Credentials come only from resolved provider config: an ambient
+                    # ``ANTHROPIC_API_KEY`` must never be attached to another
+                    # Anthropic-wire vendor's endpoint (or to the default base URL when
+                    # the provider block is absent). ``provider_configs_from_env``
+                    # already resolves that variable into ``providers.anthropic``.
+                    api_key=config.api_key if config else None,
+                    version=config.version if config and config.version else _DEFAULT_ANTHROPIC_VERSION,
+                    beta_headers=config.beta_headers if config else (),
                 )
-            owned.value = AnthropicMessagesTransport(
-                base_url=base_url,
-                # Credentials come only from resolved provider config: an ambient
-                # ``ANTHROPIC_API_KEY`` must never be attached to another
-                # Anthropic-wire vendor's endpoint (or to the default base URL when
-                # the provider block is absent). ``provider_configs_from_env``
-                # already resolves that variable into ``providers.anthropic``.
-                api_key=config.api_key if config else None,
-                version=config.version if config and config.version else _DEFAULT_ANTHROPIC_VERSION,
-                beta_headers=config.beta_headers if config else (),
-            )
-        return owned.value
+            return owned.value
 
     @staticmethod
     def _session_id(request: ProviderTurnRequest) -> str | None:

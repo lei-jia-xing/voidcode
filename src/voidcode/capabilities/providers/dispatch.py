@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from contextlib import ExitStack
+from threading import Lock
 
 from voidcode.sdk.provider import (
     ProviderExecutionError,
@@ -169,6 +170,7 @@ class RegisteredProvider:
         self._name = name
         self._configs = configs
         self._providers: dict[str, TurnProvider] = {}
+        self._lock = Lock()
 
     @property
     def name(self) -> str:
@@ -176,19 +178,20 @@ class RegisteredProvider:
 
     def _provider_for(self, provider_name: str) -> TurnProvider:
         canonical = canonical_provider_id(provider_name)
-        provider = self._providers.get(canonical)
-        if provider is None:
-            try:
-                provider = _materialize(canonical, _entry_for(self._configs, canonical))
-            except UnknownProviderIdError as exc:
-                raise ProviderExecutionError(
-                    kind="not_configured",
-                    provider_name=canonical,
-                    model_name="",
-                    message=str(exc),
-                ) from None
-            self._providers[canonical] = provider
-        return provider
+        with self._lock:
+            provider = self._providers.get(canonical)
+            if provider is None:
+                try:
+                    provider = _materialize(canonical, _entry_for(self._configs, canonical))
+                except UnknownProviderIdError as exc:
+                    raise ProviderExecutionError(
+                        kind="not_configured",
+                        provider_name=canonical,
+                        model_name="",
+                        message=str(exc),
+                    ) from None
+                self._providers[canonical] = provider
+            return provider
 
     def _selected(self, request: ProviderTurnRequest) -> TurnProvider:
         provider_name = request.provider_name
@@ -219,8 +222,9 @@ class RegisteredProvider:
             yield price_event(request, event)
 
     def close(self) -> None:
-        providers = tuple(self._providers.values())
-        self._providers.clear()
+        with self._lock:
+            providers = tuple(self._providers.values())
+            self._providers.clear()
         with ExitStack() as stack:
             for provider in providers:
                 closer = getattr(provider, "close", None)

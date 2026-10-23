@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
+from threading import Lock
 
 from voidcode.sdk.provider import (
     ProviderExecutionError,
@@ -85,8 +86,7 @@ class RoutedTurnProvider:
     credential and the tool-feedback rules of that gateway); ``RoutedTurnProvider``
     knows only the table. Sub-providers are built lazily per routed model and
     cached, so every wire keeps one SDK client and connection pool for the
-    process. Only the first-use race can build a losing sub-provider, which is
-    dropped exactly like the adapters' owned transports.
+    process. Cache construction is serialized to avoid losing an owned client.
 
     ``model_map`` aliases resolve here, before dispatch, so a routed model always
     reaches its wire under the name the table routed: only the chat wire applies
@@ -98,6 +98,7 @@ class RoutedTurnProvider:
     build: Callable[[str, ModelRoute], StreamableTurnProvider]
     model_map: Mapping[str, str] = field(default_factory=dict)
     _providers: dict[str, StreamableTurnProvider] = field(default_factory=dict, compare=False, repr=False)
+    _lock: Lock = field(default_factory=Lock, compare=False, repr=False)
 
     def route_for(self, request: ProviderTurnRequest) -> tuple[str, ModelRoute | None]:
         """Return the routed model name and its route (``None`` == unimplemented wire)."""
@@ -121,10 +122,11 @@ class RoutedTurnProvider:
                 retryable=False,
                 fallback_allowed=True,
             )
-        provider = self._providers.get(model)
-        if provider is None:
-            provider = self.build(model, route)
-            self._providers[model] = provider
+        with self._lock:
+            provider = self._providers.get(model)
+            if provider is None:
+                provider = self.build(model, route)
+                self._providers[model] = provider
         if request.model_name and model != request.model_name:
             # The routed model is the identity the sub-provider was built for, and
             # only the chat wire applies ``model_map`` itself: every other wire
@@ -133,8 +135,9 @@ class RoutedTurnProvider:
         return provider, request
 
     def close(self) -> None:
-        providers = tuple(self._providers.values())
-        self._providers.clear()
+        with self._lock:
+            providers = tuple(self._providers.values())
+            self._providers.clear()
         with ExitStack() as stack:
             for provider in providers:
                 closer = getattr(provider, "close", None)

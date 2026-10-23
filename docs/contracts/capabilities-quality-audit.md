@@ -51,7 +51,7 @@ not establish source review.
 | `providers/native/model_catalog.py` | Pending full source review |
 | `providers/native/model_catalog_data.json` | Pending consumer/data-contract review |
 | `providers/native/model_match.py` | Pending full source review |
-| `providers/native/model_routing.py` | Partial: routed ownership/close chain and alias/catalog routing reviewed; first-use concurrency pending |
+| `providers/native/model_routing.py` | Reviewed: routed alias/catalog fallback, typed unsupported wires, serialized cache creation and teardown |
 | `providers/native/naming.py` | Pending full source review |
 | `providers/native/openai.py` | Pending full source review |
 | `providers/native/openai_native.py` | Pending full source review |
@@ -145,3 +145,18 @@ First-use cache/client concurrency and full adapter source review remain pending
 
 Validation: all 85 existing and new provider tests passed (31.83s); Ruff,
 formatting and source type checks passed.
+
+## Provider first-use concurrency
+
+Serialized first-use registered/routed provider caches, native transports and SDK
+clients with stdlib locks. Request execution runs outside initialization locks.
+The same locks protect detach-on-close; normal runtime draining remains responsible
+for waiting for active requests before teardown. Google now reuses the shared
+owned-resource holder instead of maintaining a duplicate one-slot class.
+Eight concurrent workers exercise each of seven initialization layers, asserting
+one retained resource and one close. Fourteen lifecycle tests pass. Full wire
+adapter source/error/stream review is still pending.
+
+Validation: 92 provider tests passed (33.19s); Ruff, formatting and source type
+checks passed. Shared stream-helper review identified duplicate timeout cleanup
+and numeric usage edge cases for the next batch.
