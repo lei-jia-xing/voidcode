@@ -873,3 +873,14 @@ def test_cycle_scan_advances_through_empty_source_pages_without_resetting_on_res
     assert _stored(services).cursor_sequence == 405
     assert _stored(services).cycle_run_id == "run-1"
     assert len(services.staged_continuations) == 1
+
+
+@pytest.mark.parametrize("section", [None, "todo", "todo_mid_run"], ids=["cycle", "completion", "mid-run"])
+@pytest.mark.parametrize("value", ["", 42, False])
+def test_reminder_cycle_ids_reject_empty_or_non_string_state(section: str | None, value: object) -> None:
+    payload = _raw_state((), revision=0)
+    reminders = payload["reminders"]
+    target = reminders if section is None else reminders[section]
+    target["cycle_run_id"] = value
+    with pytest.raises(ValueError, match="non-empty string or null"):
+        TodoState.from_payload(payload)

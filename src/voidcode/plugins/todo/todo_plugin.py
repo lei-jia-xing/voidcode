@@ -230,7 +230,7 @@ def _non_negative_int(value: object, *, field: str) -> int:
     return value
 
 
-def _optional_str(value: object, *, field: str) -> str | None:
+def _cycle_run_id(value: object, *, field: str) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str) or not value:
@@ -265,17 +265,17 @@ def parse_reminders(raw: object) -> _Reminders:
             attempts=_non_negative_int(todo_raw.get("attempts"), field="todo.attempts"),
             awaiting_progress=awaiting,
             progress_watermark=_non_negative_int(todo_raw.get("progress_watermark"), field="todo.progress_watermark"),
-            cycle_run_id=_optional_str(todo_raw.get("cycle_run_id"), field="todo.cycle_run_id"),
+            cycle_run_id=_cycle_run_id(todo_raw.get("cycle_run_id"), field="todo.cycle_run_id"),
         ),
         mid_run=TodoMidRunState(
             attempts=_non_negative_int(mid_raw.get("attempts"), field="todo_mid_run.attempts"),
             mutations=_non_negative_int(mid_raw.get("mutations"), field="todo_mid_run.mutations"),
             mutation_baseline=_non_negative_int(mid_raw.get("mutation_baseline"), field="todo_mid_run.mutation_baseline"),
-            cycle_run_id=_optional_str(mid_raw.get("cycle_run_id"), field="todo_mid_run.cycle_run_id"),
+            cycle_run_id=_cycle_run_id(mid_raw.get("cycle_run_id"), field="todo_mid_run.cycle_run_id"),
         ),
         invocations=_non_negative_int(raw["invocations"], field="invocations"),
         cursor_sequence=_non_negative_int(raw["cursor_sequence"], field="cursor_sequence"),
-        cycle_run_id=_optional_str(raw["cycle_run_id"], field="cycle_run_id"),
+        cycle_run_id=_cycle_run_id(raw["cycle_run_id"], field="cycle_run_id"),
     )
 
 
