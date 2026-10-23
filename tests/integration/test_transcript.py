@@ -79,7 +79,7 @@ def test_public_transcript_and_panels_survive_restart_without_clipping_messages(
                 if command == "export":
                     assert prompt in panel.output and "lookup result" in panel.output
                 elif command == "copy":
-                    assert panel.data["blocks"][0]["text"] == "print('complete')"
+                    assert panel.data["blocks"][0]["text"] == "print('complete')\n"
                 elif command == "context":
                     assert panel.data["dispatch_sequence"] == dispatches[-1].sequence
         with open_core(workspace, state_dir=state) as core:
