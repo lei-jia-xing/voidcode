@@ -16,7 +16,6 @@ import os
 import threading
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, suppress
-from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, cast
 
@@ -226,11 +225,6 @@ class _RunningMcpServer:
         self.call_lock = threading.RLock()
 
 
-@dataclass(frozen=True, slots=True)
-class _McpServerKey:
-    server_name: str
-
-
 # =============================================================================
 # Managed MCP Manager
 # =============================================================================
@@ -244,7 +238,7 @@ class ManagedMcpManager:
         config: McpConfig,
     ) -> None:
         self._configuration = McpConfigState.from_config(config)
-        self._running_servers: dict[_McpServerKey, _RunningMcpServer] = {}
+        self._running_servers: dict[str, _RunningMcpServer] = {}
         self._state_lock = threading.RLock()
         self._server_states: dict[str, McpServerRuntimeState] = {
             name: McpServerRuntimeState(
@@ -258,7 +252,7 @@ class ManagedMcpManager:
         self._request_timeout_seconds = config.request_timeout_seconds or DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS
         self._portal_context: AbstractContextManager[BlockingPortal] | None = None
         self._portal: BlockingPortal | None = None
-        self._tool_descriptors_by_server: dict[_McpServerKey, dict[str, McpToolDescriptor]] = {}
+        self._tool_descriptors_by_server: dict[str, dict[str, McpToolDescriptor]] = {}
         self._discovered_tools: dict[str, tuple[McpToolDescriptor, ...]] = {}
 
     @property
@@ -311,7 +305,7 @@ class ManagedMcpManager:
         Passive: it answers only for a surface this manager already discovered
         (``call_tool`` discovers before it calls), never connecting on its own.
         """
-        key = _McpServerKey(server_name=server_name)
+        key = server_name
         return self._tool_descriptors_by_server.get(key, {}).get(tool_name)
 
     def call_tool(
@@ -324,7 +318,7 @@ class ManagedMcpManager:
     ) -> McpToolCallResult:
         if self._configuration.servers.get(server_name) is None:
             raise ValueError(f"MCP[{server_name}]: server not found in configuration")
-        key = _McpServerKey(server_name=server_name)
+        key = server_name
         running = self._ensure_running(server_name=server_name, workspace=workspace)
         descriptor = self._tool_descriptors_by_server.get(key, {}).get(tool_name)
         if descriptor is None:
@@ -389,7 +383,7 @@ class ManagedMcpManager:
         if server_config is None:
             message = f"MCP[{server_name}]: server not found in configuration. Available servers: {list(self._configuration.servers.keys())}"
             self._mark_failed(
-                key=_McpServerKey(server_name=server_name),
+                key=server_name,
                 workspace_root=workspace.resolve(),
                 stage="startup",
                 error=message,
@@ -397,7 +391,7 @@ class ManagedMcpManager:
             raise ValueError(message)
 
         transport = server_config.transport
-        key = _McpServerKey(server_name=server_name)
+        key = server_name
         with self._state_lock:
             running = self._running_servers.get(key)
             if running is not None:
@@ -590,19 +584,16 @@ class ManagedMcpManager:
                 exc,
                 fallback=f"MCP[{running.server_name}]: {method} failed",
             )
-            if suppress_failure_event_when is None or not suppress_failure_event_when(exc):
-                self._mark_failed(
-                    key=_McpServerKey(server_name=running.server_name),
-                    workspace_root=running.workspace_root,
-                    stage=stage,
-                    error=message,
-                )
-            if self._should_stop_running_server(exc, stage=stage):
-                self._stop_running_server_by_name(server_name=running.server_name)
+            if not self._is_recoverable_call_error(exc, stage=stage):
+                self._stop_running_server(running.server_name)
+                if suppress_failure_event_when is None or not suppress_failure_event_when(exc):
+                    self._mark_failed(
+                        key=running.server_name,
+                        workspace_root=running.workspace_root,
+                        stage=stage,
+                        error=message,
+                    )
             raise ValueError(message) from exc
-
-    def _should_stop_running_server(self, exc: Exception, *, stage: str) -> bool:
-        return not self._is_recoverable_call_error(exc, stage=stage)
 
     def _is_recoverable_call_error(self, exc: Exception, *, stage: str) -> bool:
         if stage != "call" or not isinstance(exc, MCPError) or self._is_timeout_error(exc):
@@ -651,7 +642,7 @@ class ManagedMcpManager:
         server_config = self._configuration.servers.get(server_name)
         if server_config is None:
             return ()
-        key = _McpServerKey(server_name=server_name)
+        key = server_name
         running = self._ensure_running(server_name=server_name, workspace=workspace)
         try:
             result = self._call_sdk(
@@ -671,7 +662,7 @@ class ManagedMcpManager:
             # endpoint). That is transient, so retry once with a fresh
             # connection before failing. The failure event was suppressed on
             # the probe attempt and is only recorded if the retry also fails.
-            self._stop_running_server_by_name(server_name=server_name)
+            self._stop_running_server(server_name)
             running = self._ensure_running(server_name=server_name, workspace=workspace)
             result = self._call_sdk(
                 running,
@@ -692,17 +683,9 @@ class ManagedMcpManager:
             self._discovered_tools[server_name] = discovered
         return discovered
 
-    def _stop_running_server(self, key: _McpServerKey) -> None:
-        self._tool_descriptors_by_server.pop(key, None)
-        running = self._running_servers.pop(key, None)
-        if running is None:
-            return
-        self._terminate_running_server(running)
-        self._mark_stopped(key=key, workspace_root=running.workspace_root)
-
-    def _stop_running_server_by_name(self, *, server_name: str) -> None:
-        key = _McpServerKey(server_name=server_name)
+    def _stop_running_server(self, key: str) -> None:
         with self._state_lock:
+            self._tool_descriptors_by_server.pop(key, None)
             running = self._running_servers.pop(key, None)
         if running is None:
             return
@@ -712,13 +695,13 @@ class ManagedMcpManager:
     def _mark_failed(
         self,
         *,
-        key: _McpServerKey,
+        key: str,
         workspace_root: Path,
         stage: str,
         error: str,
         command: list[str] | None = None,
     ) -> None:
-        server_name = key.server_name
+        server_name = key
         with self._state_lock:
             self._server_states[server_name] = McpServerRuntimeState(
                 server_name=server_name,
@@ -733,12 +716,12 @@ class ManagedMcpManager:
     def _mark_started(
         self,
         *,
-        key: _McpServerKey,
+        key: str,
         workspace_root: Path,
         command: list[str] | None = None,
         url: str | None = None,
     ) -> None:
-        server_name = key.server_name
+        server_name = key
         with self._state_lock:
             existing = self._server_states.get(server_name, McpServerRuntimeState(server_name=server_name))
             self._server_states[server_name] = McpServerRuntimeState(
@@ -753,11 +736,11 @@ class ManagedMcpManager:
     def _mark_stopped(
         self,
         *,
-        key: _McpServerKey,
+        key: str,
         workspace_root: Path,
         preserve_failed_state: bool = False,
     ) -> None:
-        server_name = key.server_name
+        server_name = key
         with self._state_lock:
             existing_state = self._server_states.get(server_name, McpServerRuntimeState(server_name=server_name))
             if not (preserve_failed_state and existing_state.status == "failed" and existing_state.workspace_root == str(workspace_root)):
@@ -772,7 +755,7 @@ class ManagedMcpManager:
     def _report_remote_connect_failure(
         self,
         *,
-        key: _McpServerKey,
+        key: str,
         workspace_root: Path,
         server_name: str,
     ) -> str:

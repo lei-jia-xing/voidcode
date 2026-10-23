@@ -112,3 +112,55 @@ def test_admitted_mcp_tool_reaches_the_model_and_updates_inventory(tmp_path: Pat
         server.shutdown()
         worker.join(timeout=5)
         server.server_close()
+
+
+def test_connection_loss_preserves_failure_and_next_call_restarts(tmp_path: Path) -> None:
+    source = tmp_path / "crashing_server.py"
+    source.write_text(
+        "import os\nfrom mcp.server.mcpserver import MCPServer\n"
+        "server = MCPServer('crash-test')\n"
+        "@server.tool()\ndef crash() -> str:\n    os._exit(7)\n"
+        "@server.tool()\ndef echo(text: str) -> str:\n    return text\n"
+        "server.run()\n",
+        encoding="utf-8",
+    )
+    manager = build_mcp_manager(_mcp_config({"servers": {"demo": {"command": [sys.executable, str(source)]}}}))
+    try:
+        with pytest.raises(ValueError):
+            manager.call_tool(server_name="demo", tool_name="crash", arguments={}, workspace=tmp_path)
+        state = manager.current_state().servers["demo"]
+        assert state.status == "failed"
+        assert state.error
+        result = manager.call_tool(server_name="demo", tool_name="echo", arguments={"text": "restarted"}, workspace=tmp_path)
+        assert result.content[0]["text"] == "restarted"
+        assert manager.current_state().servers["demo"].status == "running"
+        assert manager.current_state().servers["demo"].error is None
+    finally:
+        manager.shutdown()
+
+
+def test_recoverable_rpc_error_keeps_connection_running(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from mcp import ClientSession
+    from mcp.shared.exceptions import MCPError
+
+    source, pid_file = _server_source(tmp_path)
+    original = ClientSession.call_tool
+
+    async def fail_bad_call(self, name, *args, **kwargs):
+        if name == "bad":
+            raise MCPError(-32602, "invalid params")
+        return await original(self, name, *args, **kwargs)
+
+    monkeypatch.setattr(ClientSession, "call_tool", fail_bad_call)
+    manager = build_mcp_manager(_mcp_config({"servers": {"demo": {"command": [sys.executable, str(source)]}}}))
+    try:
+        manager.list_tools(workspace=tmp_path)
+        pid = pid_file.read_text()
+        with pytest.raises(ValueError, match="invalid params"):
+            manager.call_tool(server_name="demo", tool_name="bad", arguments={}, workspace=tmp_path)
+        assert manager.current_state().servers["demo"].status == "running"
+        result = manager.call_tool(server_name="demo", tool_name="echo", arguments={"text": "still alive"}, workspace=tmp_path)
+        assert result.content[0]["text"] == "echo: still alive"
+        assert pid_file.read_text() == pid
+    finally:
+        manager.shutdown()
