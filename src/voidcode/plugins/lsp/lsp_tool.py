@@ -306,6 +306,8 @@ class LspTool:
             )
 
         document_state = None
+        response = None
+        response_operation = operation
         if operation in (LspOperation.INCOMING_CALLS, LspOperation.OUTGOING_CALLS):
             assert position is not None
             try:
@@ -332,33 +334,29 @@ class LspTool:
             if prepare_error is not None:
                 raise ValueError(f"LSP prepareCallHierarchy error: {prepare_error}")
 
-            prepare_payload = prepare_response.get("result")
-            item: dict[str, object] | None = None
-            if isinstance(prepare_payload, list) and prepare_payload:
-                first = prepare_payload[0]
-                if isinstance(first, dict):
-                    item = first
-            elif isinstance(prepare_payload, dict):
-                item = prepare_payload
-            if item is None:
-                raise ValueError("LSP prepareCallHierarchy returned no item")
-            params = {"item": item}
-
+            prepare_payload = self._validated_result(prepare_result, LspOperation.PREPARE_CALL_HIERARCHY)
+            if not prepare_payload:
+                response = prepare_result
+                response_operation = LspOperation.PREPARE_CALL_HIERARCHY
+            else:
+                assert isinstance(prepare_payload, list)
+                params = {"item": prepare_payload[0]}
             document_state = prepare_result.document_state
 
-        try:
-            response = self._invoke_requester(
-                requester,
-                server_name=server,
-                method=operation.value,
-                params=params,
-                workspace=workspace_root,
-                services=services,
-                session_id=context.require_session_id(),
-                abort_signal=context.abort_signal,
-            )
-        except ValueError as exc:
-            return self._request_failure(exc)
+        if response is None:
+            try:
+                response = self._invoke_requester(
+                    requester,
+                    server_name=server,
+                    method=operation.value,
+                    params=params,
+                    workspace=workspace_root,
+                    services=services,
+                    session_id=context.require_session_id(),
+                    abort_signal=context.abort_signal,
+                )
+            except ValueError as exc:
+                return self._request_failure(exc)
         error_value = response.response.get("error")
         if error_value is not None:
             raise ValueError(f"LSP error: {error_value}")
@@ -375,7 +373,32 @@ class LspTool:
             offset=offset_value,
             limit=limit_value,
             document_state=document_state,
+            response_operation=response_operation,
         )
+
+    def _validated_result(self, response: LspResponse, operation: LspOperation) -> object:
+        try:
+            response_type = lsp_types.METHOD_TO_TYPES[operation.value][1]
+            assert response_type is not None
+            if (
+                operation
+                in (
+                    LspOperation.DOCUMENT_SYMBOL,
+                    LspOperation.WORKSPACE_SYMBOL,
+                    LspOperation.FIND_REFERENCES,
+                    LspOperation.CODE_ACTION,
+                    LspOperation.PREPARE_CALL_HIERARCHY,
+                    LspOperation.INCOMING_CALLS,
+                    LspOperation.OUTGOING_CALLS,
+                )
+                and response.response.get("result") is not None
+                and not isinstance(response.response["result"], list)
+            ):
+                raise ValueError("expected an array result")
+            validated = self._converter.structure(response.response, response_type)
+        except (ExceptionGroup, TypeError, ValueError) as exc:
+            raise ValueError(f"LSP {operation.value} returned an invalid result") from exc
+        return self._converter.unstructure(validated.result)
 
     def _success_result(
         self,
@@ -392,28 +415,10 @@ class LspTool:
         offset: int,
         limit: int,
         document_state: LspDocumentState | None = None,
+        response_operation: LspOperation | None = None,
     ) -> ToolSuccess:
-        try:
-            response_type = lsp_types.METHOD_TO_TYPES[operation.value][1]
-            assert response_type is not None
-            if (
-                operation
-                in (
-                    LspOperation.DOCUMENT_SYMBOL,
-                    LspOperation.WORKSPACE_SYMBOL,
-                    LspOperation.FIND_REFERENCES,
-                    LspOperation.CODE_ACTION,
-                    LspOperation.INCOMING_CALLS,
-                    LspOperation.OUTGOING_CALLS,
-                )
-                and response.response.get("result") is not None
-                and not isinstance(response.response["result"], list)
-            ):
-                raise ValueError("expected an array result")
-            validated = self._converter.structure(response.response, response_type)
-        except (ExceptionGroup, TypeError, ValueError) as exc:
-            raise ValueError(f"LSP {operation.value} returned an invalid result") from exc
-        payload = self._converter.unstructure(validated.result)
+        source_operation = response_operation or operation
+        payload = self._validated_result(response, source_operation)
         rendered_text, item_count, is_truncated = _render_lsp_output(
             operation,
             payload,
@@ -435,7 +440,7 @@ class LspTool:
             content=json.dumps(response.response, ensure_ascii=False, indent=2),
             kind="lsp_response",
             mime="application/json",
-            source=f"lsp:{operation.value}",
+            source=f"lsp:{source_operation.value}",
         )
         artifact_uri = f"voidcode://artifact/{response_artifact['artifact_id']}"
         next_offset = offset + limit if is_truncated else None
@@ -470,9 +475,6 @@ class LspTool:
                     "limit": limit,
                     "next_offset": next_offset,
                     "truncated": is_truncated,
-                    "body_artifact": response_artifact,
-                    "artifacts": [response_artifact],
-                    "response_reference": artifact_uri,
                 }
             ),
         )

@@ -66,7 +66,9 @@ def test_code_action_accepts_nested_immutable_diagnostics(tmp_path: Path):
 
 @pytest.mark.parametrize("operation", ["incomingCalls", "outgoingCalls"])
 def test_call_hierarchy_shares_final_request_path(tmp_path: Path, operation: str):
-    item = {"name": "function"}
+    point = {"line": 0, "character": 0}
+    span = {"start": point, "end": point}
+    item = {"name": "function", "kind": 12, "uri": (tmp_path / "file.py").as_uri(), "range": span, "selectionRange": span}
     manager = Manager([[item], []])
     result = invoke(tmp_path, {"operation": operation, "path": "file.py", "line": 1, "character": 1}, manager)
     assert result.status == "ok"
@@ -131,3 +133,23 @@ def test_references_render_real_locations(tmp_path: Path):
     )
     assert result.body.as_payload()["item_count"] == 1
     assert "file.py:1:1-1:2" in result.output.text
+
+
+@pytest.mark.parametrize("operation", ["incomingCalls", "outgoingCalls"])
+@pytest.mark.parametrize("prepared", [None, []])
+def test_empty_call_hierarchy_preparation_is_success_without_followup(tmp_path: Path, operation: str, prepared: object):
+    manager = Manager([prepared])
+    result = invoke(tmp_path, {"operation": operation, "path": "file.py", "line": 1, "character": 1}, manager)
+    assert result.status == "ok"
+    assert result.body.as_payload()["item_count"] == 0
+    assert "No call hierarchy results" in result.output.text
+    assert [request.method for request in manager.requests] == ["textDocument/prepareCallHierarchy"]
+    assert result.output.bounds.reference.artifact["source"] == "lsp:textDocument/prepareCallHierarchy"
+
+
+@pytest.mark.parametrize("prepared", [{}, {"name": "old-shape"}, [None], [{"name": "missing-fields"}]])
+def test_malformed_call_hierarchy_preparation_is_not_empty_success(tmp_path: Path, prepared: object):
+    manager = Manager([prepared])
+    with pytest.raises(ValueError, match="prepareCallHierarchy returned an invalid result"):
+        invoke(tmp_path, {"operation": "incomingCalls", "path": "file.py", "line": 1, "character": 1}, manager)
+    assert len(manager.requests) == 1
