@@ -35,3 +35,29 @@ def test_transport_error_after_partial_output_preserves_caller_intent(cancelled:
         with pytest.raises(TimeoutError) as exc:
             list(stream)
         assert exc.value is failure
+
+
+def test_queue_timeout_closes_stream_once_and_releases_worker() -> None:
+    release = Event()
+    stopped = Event()
+    closed = []
+
+    class Stream:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            try:
+                assert release.wait(timeout=5)
+                raise StopIteration
+            finally:
+                stopped.set()
+
+        def close(self):
+            closed.append(1)
+            release.set()
+
+    with pytest.raises(ProviderExecutionError, match="first-event timeout"):
+        list(iter_stream_with_timeout(Stream(), timeout_seconds=0.01, provider_name="test", model_name="model"))
+    assert stopped.wait(timeout=5)
+    assert closed == [1]

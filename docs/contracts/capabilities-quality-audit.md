@@ -32,7 +32,7 @@ not establish source review.
 | `providers/native/__init__.py` | Pending full source review |
 | `providers/native/_resources.py` | Reviewed: contained package paths and JSON loading; removed unused installed-data locator/text wrapper |
 | `providers/native/_result_sanitize.py` | Pending full source review |
-| `providers/native/_wire_common.py` | Pending full source review |
+| `providers/native/_wire_common.py` | Reviewed: usage counts, tool IDs, request headers, bounded queue/stream timeout/error cleanup, owned-resource initialization |
 | `providers/native/anthropic_native.py` | Pending full source review |
 | `providers/native/api_routes.json` | Pending consumer/data-contract review |
 | `providers/native/api_routes.py` | Pending full source review |
@@ -50,7 +50,7 @@ not establish source review.
 | `providers/native/google_native.py` | Pending full source review |
 | `providers/native/model_catalog.py` | Pending full source review |
 | `providers/native/model_catalog_data.json` | Pending consumer/data-contract review |
-| `providers/native/model_match.py` | Pending full source review |
+| `providers/native/model_match.py` | Reviewed: five explicit matching semantics; star-only matching intentionally does not add fnmatch question/bracket behavior |
 | `providers/native/model_routing.py` | Reviewed: routed alias/catalog fallback, typed unsupported wires, serialized cache creation and teardown |
 | `providers/native/naming.py` | Pending full source review |
 | `providers/native/openai.py` | Pending full source review |
@@ -160,3 +160,19 @@ adapter source/error/stream review is still pending.
 Validation: 92 provider tests passed (33.19s); Ruff, formatting and source type
 checks passed. Shared stream-helper review identified duplicate timeout cleanup
 and numeric usage edge cases for the next batch.
+
+## Shared stream and usage review
+
+Removed timeout-branch cleanup duplicated by `finally`, and removed a completion
+sentinel whose value was never inspected (the queue already tags completion).
+The queue remains bounded and worker errors/control exceptions propagate.
+Usage counts accept nonnegative integers and integral floats; booleans, negative,
+fractional and non-finite values remain unknown without raising conversion errors.
+Google uses this common parser and no longer invents zero cache reads when deriving
+uncached usage. Unknown cache counts leave uncached usage unknown, matching pricing.
+Seventeen focused count/stream tests passed, including timeout cleanup exactly once
+and worker release. Reviewed shared model matching and its policy-table callers;
+kept its small explicit star-only matcher because fnmatch adds different syntax.
+
+Validation: 109 provider/usage/stream tests passed (32.31s). Ruff, formatting
+and source type checks passed.

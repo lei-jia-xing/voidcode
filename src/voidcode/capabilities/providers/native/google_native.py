@@ -24,7 +24,7 @@ from voidcode.sdk.provider import (
 )
 from voidcode.sdk.tools import ToolCall
 
-from ._wire_common import OwnedResource, resolve_extra_request_headers
+from ._wire_common import OwnedResource, resolve_extra_request_headers, usage_int
 from .config import GoogleProviderConfig
 from .errors import parse_provider_api_error
 from .model_catalog import static_catalog_metadata
@@ -435,22 +435,20 @@ class GoogleGenAIProvider:
         usage = getattr(response, "usage_metadata", None)
         if usage is None:
             return None
-        input_tokens = getattr(usage, "prompt_token_count", None)
-        output_tokens = getattr(usage, "candidates_token_count", None)
-        cache_read = getattr(usage, "cached_content_token_count", None)
-        if not any(isinstance(value, int) for value in (input_tokens, output_tokens, cache_read)):
+        input_tokens = usage_int(getattr(usage, "prompt_token_count", None))
+        output_tokens = usage_int(getattr(usage, "candidates_token_count", None))
+        cache_read = usage_int(getattr(usage, "cached_content_token_count", None))
+        if all(value is None for value in (input_tokens, output_tokens, cache_read)):
             return None
         # ``prompt_token_count`` is the inclusive prompt total (``cached_content_token_count``
         # is a component of it), so it is stored as-is and the uncached bucket is the
         # remainder: without it every Google turn would price its input at zero (the
         # provider reports no separate uncached count).
-        uncached = None
-        if isinstance(input_tokens, int):
-            uncached = max(0, input_tokens - (cache_read if isinstance(cache_read, int) else 0))
+        uncached = max(0, input_tokens - cache_read) if input_tokens is not None and cache_read is not None else None
         return ProviderTokenUsage(
-            input_tokens=input_tokens if isinstance(input_tokens, int) else None,
-            output_tokens=output_tokens if isinstance(output_tokens, int) else None,
-            cache_read_tokens=cache_read if isinstance(cache_read, int) else None,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read,
             uncached_input_tokens=uncached,
         )
 

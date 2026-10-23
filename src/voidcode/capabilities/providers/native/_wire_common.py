@@ -23,14 +23,13 @@ from voidcode.sdk.provider import ProviderExecutionError
 # resolved per request instead.
 _SESSION_ID_PLACEHOLDER = "{session_id}"
 
-_STREAM_TIMEOUT_SENTINEL = object()
-
 
 def usage_int(value: object) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
-    result = int(value)
-    return result if result >= 0 else None
+    if value < 0 or (isinstance(value, float) and not value.is_integer()):
+        return None
+    return int(value)
 
 
 def normalize_tool_call_id(value: str | None, *, fallback: str) -> str:
@@ -124,7 +123,7 @@ def iter_stream_with_timeout(
                 if stop_event.is_set():
                     return
                 enqueue("item", item)
-            enqueue("done", _STREAM_TIMEOUT_SENTINEL)
+            enqueue("done", None)
         except BaseException as exc:
             enqueue("error", exc)
 
@@ -146,9 +145,6 @@ def iter_stream_with_timeout(
             try:
                 kind, value = queue.get(timeout=wait_seconds)
             except Empty as exc:
-                stop_event.set()
-                close_stream()
-                thread.join(timeout=min(wait_seconds, 0.1))
                 if aborted is not None and aborted():
                     raise ProviderExecutionError(
                         kind="cancelled",
