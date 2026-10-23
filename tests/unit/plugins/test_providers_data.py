@@ -59,3 +59,46 @@ def test_usage_cost_oracle_and_unknown_provider_stays_unknown() -> None:
         )
         is None
     )
+
+
+@pytest.mark.parametrize("number", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("field", ["rates", "multiplier"])
+def test_pricing_rules_reject_nonfinite_rates(number: float, field: str) -> None:
+    from voidcode.capabilities.providers.native.pricing_rules import _row
+
+    row = {"provider": "openai", "match": {"type": "prefix", "value": "model"}, "threshold": 100}
+    row[field] = {"input": number, "output": 1, "cache_read": 1, "cache_write": 1} if field == "rates" else number
+    with pytest.raises(ValueError, match="must be a .*number"):
+        _row(row)
+
+
+def test_long_context_prices_respect_threshold_and_unknown_counts() -> None:
+    from unittest.mock import patch
+
+    from voidcode.capabilities.providers.native import pricing_rules
+    from voidcode.capabilities.providers.native.model_catalog import ProviderModelMetadata
+    from voidcode.capabilities.providers.native.pricing_rules import LongContextRates, PricingRuleRow
+
+    metadata = ProviderModelMetadata(cost_per_input_token=1, cost_per_output_token=0, cost_per_cache_read_token=0, cost_per_cache_write_token=0)
+    rule = PricingRuleRow("openai", "prefix", "model", 100, False, LongContextRates(2, 0, 0, 0), None)
+    with patch.dict(pricing_rules.PRICING_RULES, {"openai": (rule,)}):
+
+        def cost(count, cache_write):
+            return usage_cost_usd(
+                provider_id="openai",
+                model_id="model",
+                metadata=metadata,
+                usage=ProviderTokenUsage(input_tokens=count, cache_read_tokens=0, cache_write_tokens=cache_write, output_tokens=0),
+            )
+
+        assert cost(100, 0) == 100
+        assert cost(101, 0) == 202
+        assert cost(100, None) is None
+
+
+def test_malformed_budget_tables_are_not_discarded(monkeypatch) -> None:
+    from voidcode.capabilities.providers.native import thinking_rules
+
+    monkeypatch.setattr(thinking_rules, "load_json", lambda _: {"rows": [], "budget_tables": []})
+    with pytest.raises(ValueError, match="budget_tables must be an object"):
+        thinking_rules._load()

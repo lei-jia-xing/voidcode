@@ -60,7 +60,6 @@ class ProviderTableRow:
     env_vars: tuple[str, ...]
     models_dev_keys: tuple[str, ...]
     wire_source: WireSource = "model"
-    notes: str = ""
 
 
 def _string_tuple(value: object, *, field: str, provider_id: str) -> tuple[str, ...]:
@@ -88,7 +87,6 @@ def _row(raw: object) -> ProviderTableRow:
     wire_source = entry.get("wire_source", "model")
     if not _is_wire_source(wire_source):
         raise ValueError(f"provider table entry {provider_id!r} has an unknown wire_source: {wire_source!r}")
-    notes = entry.get("notes")
     return ProviderTableRow(
         id=provider_id,
         label=label,
@@ -97,12 +95,7 @@ def _row(raw: object) -> ProviderTableRow:
         env_vars=_string_tuple(entry.get("env_vars", []), field="env_vars", provider_id=provider_id),
         models_dev_keys=_string_tuple(entry.get("models_dev_keys", []), field="models_dev_keys", provider_id=provider_id),
         wire_source=wire_source,
-        notes=notes if isinstance(notes, str) else "",
     )
-
-
-def _load_payload() -> object:
-    return load_json("provider_table.json")
 
 
 def _rows_from_payload(payload: object) -> tuple[ProviderTableRow, ...]:
@@ -117,7 +110,7 @@ def _rows_from_payload(payload: object) -> tuple[ProviderTableRow, ...]:
     return rows
 
 
-PROVIDER_TABLE: Final[tuple[ProviderTableRow, ...]] = _rows_from_payload(_load_payload())
+PROVIDER_TABLE: Final[tuple[ProviderTableRow, ...]] = _rows_from_payload(load_json("provider_table.json"))
 
 PROVIDER_TABLE_BY_ID: Final[Mapping[str, ProviderTableRow]] = {row.id: row for row in PROVIDER_TABLE}
 

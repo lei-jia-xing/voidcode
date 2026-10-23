@@ -34,8 +34,8 @@ not establish source review.
 | `providers/native/_result_sanitize.py` | Pending full source review |
 | `providers/native/_wire_common.py` | Reviewed: usage counts, tool IDs, request headers, bounded queue/stream timeout/error cleanup, owned-resource initialization |
 | `providers/native/anthropic_native.py` | Pending full source review |
-| `providers/native/api_routes.json` | Pending consumer/data-contract review |
-| `providers/native/api_routes.py` | Pending full source review |
+| `providers/native/api_routes.json` | Reviewed with parser/consumer and packaged-table tests; source/provenance retained in JSON |
+| `providers/native/api_routes.py` | Reviewed: validated provider/matcher pins, first-match routing and prefix stripping; unused runtime source field removed |
 | `providers/native/auth.py` | Pending full source review |
 | `providers/native/claude_tokenizer/__init__.py` | Pending full source review |
 | `providers/native/claude_tokenizer/constants.py` | Pending full source review |
@@ -58,14 +58,14 @@ not establish source review.
 | `providers/native/opencode.py` | Pending full source review |
 | `providers/native/opencode_go.py` | Pending full source review |
 | `providers/native/openrouter.py` | Pending full source review |
-| `providers/native/pricing_rules.json` | Pending consumer/data-contract review |
-| `providers/native/pricing_rules.py` | Pending full source review |
+| `providers/native/pricing_rules.json` | Reviewed with parser/consumer and packaged-table tests; source/provenance retained in JSON |
+| `providers/native/pricing_rules.py` | Reviewed: tier thresholds, known/unknown count arithmetic and finite rate ingress; removed unused runtime provenance |
 | `providers/native/provider_config.py` | Pending full source review |
-| `providers/native/provider_table.json` | Pending consumer/data-contract review |
-| `providers/native/provider_table.py` | Pending full source review |
+| `providers/native/provider_table.json` | Reviewed with parser/consumer and packaged-table tests; source/provenance retained in JSON |
+| `providers/native/provider_table.py` | Reviewed: typed rows, duplicate/unknown IDs and config/catalog consumers; removed unused notes and forwarding helper |
 | `providers/native/reasoning_effort.py` | Pending full source review |
-| `providers/native/thinking_rules.json` | Pending consumer/data-contract review |
-| `providers/native/thinking_rules.py` | Pending full source review |
+| `providers/native/thinking_rules.json` | Reviewed with parser/consumer and packaged-table tests; source/provenance retained in JSON |
+| `providers/native/thinking_rules.py` | Reviewed: default/scoped overlays, shared budgets, effort maps and output caps; malformed budget tables rejected |
 | `providers/native/tokenizer.py` | Pending full source review |
 | `providers/native/tokenizer_data/Cl100kBase.utok1.bz2` | Pending consumer/data-contract review |
 | `providers/native/tokenizer_data/DeepSeekV3.utok1.bz2` | Pending consumer/data-contract review |
@@ -80,7 +80,7 @@ not establish source review.
 | `providers/native/tokenizer_routing.json` | Pending consumer/data-contract review |
 | `providers/native/trace.py` | Pending full source review |
 | `providers/panels.py` | Pending full source review |
-| `providers/pricing.py` | Pending full source review |
+| `providers/pricing.py` | Reviewed: price once at report time, preserve prepriced/unknown usage, event/result wrappers |
 
 ## Removed heuristic repair hints
 
@@ -176,3 +176,19 @@ kept its small explicit star-only matcher because fnmatch adds different syntax.
 
 Validation: 109 provider/usage/stream tests passed (32.31s). Ruff, formatting
 and source type checks passed.
+
+## Policy tables and pricing
+
+Reviewed route selection, provider-table consumers, thinking default/scoped
+application and pricing thresholds/unknown buckets. Removed runtime `source`
+fields and provider `notes` that have no consumer, keeping citations in shipped
+JSON. Removed the provider-table payload forwarding function and redundant checks
+after thinking values have already been validated. Non-finite price rates and
+multipliers are rejected; malformed budget-table containers fail rather than
+silently becoming empty. Added threshold-boundary/unknown-count and malformed
+policy ingress tests. Data review covers packaged contracts and consumers, not a
+claim that external vendor pricing was refreshed.
+
+Validation: 117 provider/usage/stream tests passed (32.29s), including table
+thresholds and malformed-number/budget ingress. Ruff, formatting and source type
+checks passed. Local-loopback tests ran with the required network permission.

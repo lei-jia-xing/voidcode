@@ -98,7 +98,6 @@ class ThinkingRuleRow:
     requires_effort: bool | None
     reasoning_content_field: str | None
     requires_reasoning_content_for_tool_calls: bool | None
-    source: str
 
     def selects(self, model_id: str) -> bool:
         if self.matcher is None or self.value is None:
@@ -180,7 +179,6 @@ def _row(raw: object, tables: Mapping[str, Mapping[str, int]]) -> ThinkingRuleRo
     rc_field = entry.get("reasoning_content_field")
     if rc_field is not None and (not isinstance(rc_field, str) or not rc_field):
         raise ValueError(f"thinking rule for provider {provider!r} field 'reasoning_content_field' must be a non-empty string")
-    source = entry.get("source")
     return ThinkingRuleRow(
         provider=provider,
         matcher=matcher,
@@ -190,10 +188,9 @@ def _row(raw: object, tables: Mapping[str, Mapping[str, int]]) -> ThinkingRuleRo
         disable_mode=_literal(entry.get("disable_mode"), _DISABLE_MODES, key="disable_mode", provider=provider),
         effort_map=_str_map(entry.get("effort_map"), key="effort_map", provider=provider),
         max_tokens_field=_literal(entry.get("max_tokens_field"), _MAX_TOKENS_FIELDS, key="max_tokens_field", provider=provider),
-        requires_effort=requires_effort if isinstance(requires_effort, bool) else None,
-        reasoning_content_field=rc_field if isinstance(rc_field, str) else None,
-        requires_reasoning_content_for_tool_calls=rc_required if isinstance(rc_required, bool) else None,
-        source=source if isinstance(source, str) else "",
+        requires_effort=requires_effort,
+        reasoning_content_field=rc_field,
+        requires_reasoning_content_for_tool_calls=rc_required,
     )
 
 
@@ -202,6 +199,8 @@ def _load() -> Mapping[str, tuple[ThinkingRuleRow, ...]]:
     if not isinstance(payload, dict) or not isinstance(payload.get("rows"), list):
         raise ValueError("thinking_rules.json must hold a 'rows' list")
     raw_tables = payload.get("budget_tables")
+    if raw_tables is not None and not isinstance(raw_tables, dict):
+        raise ValueError("thinking_rules.json budget_tables must be an object")
     tables = {
         name: _int_map(table, key=f"budget_tables.{name}", provider=name, tables={})
         for name, table in cast(dict[str, object], raw_tables if isinstance(raw_tables, dict) else {}).items()

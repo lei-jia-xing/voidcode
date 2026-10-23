@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from math import isfinite
 from typing import Final, cast
 
 from voidcode.sdk.provider import ProviderTokenUsage
@@ -49,7 +50,6 @@ class PricingRuleRow:
     inclusive: bool
     rates: LongContextRates | None
     multiplier: float | None
-    source: str
 
     def selects(self, model_id: str) -> bool:
         return matches(self.matcher, self.value, model_id)
@@ -81,7 +81,7 @@ def _rates(value: object, *, provider: str, model: str) -> LongContextRates | No
     numbers: dict[str, float] = {}
     for key in ("input", "output", "cache_read", "cache_write"):
         raw = entry.get(key)
-        if not isinstance(raw, (int, float)) or isinstance(raw, bool) or raw < 0:
+        if not isinstance(raw, (int, float)) or isinstance(raw, bool) or not isfinite(raw) or raw < 0:
             raise ValueError(f"pricing rule for {provider!r}/{model!r} rates.{key} must be a non-negative number")
         numbers[key] = float(raw) / _PER_MILLION
     return LongContextRates(**numbers)
@@ -112,12 +112,13 @@ def _row(raw: object) -> PricingRuleRow:
     if not isinstance(inclusive, bool):
         raise ValueError(f"pricing rule for {provider!r}/{value!r} field 'inclusive' must be a boolean")
     multiplier = entry.get("multiplier")
-    if multiplier is not None and (not isinstance(multiplier, (int, float)) or isinstance(multiplier, bool) or multiplier <= 0):
+    if multiplier is not None and (
+        not isinstance(multiplier, (int, float)) or isinstance(multiplier, bool) or not isfinite(multiplier) or multiplier <= 0
+    ):
         raise ValueError(f"pricing rule for {provider!r}/{value!r} field 'multiplier' must be a positive number")
     rates = _rates(entry.get("rates"), provider=provider, model=value)
     if rates is None and multiplier is None:
         raise ValueError(f"pricing rule for {provider!r}/{value!r} needs either 'rates' or 'multiplier'")
-    source = entry.get("source")
     return PricingRuleRow(
         provider=provider,
         matcher=matcher,
@@ -126,7 +127,6 @@ def _row(raw: object) -> PricingRuleRow:
         inclusive=inclusive,
         rates=rates,
         multiplier=float(multiplier) if multiplier is not None else None,
-        source=source if isinstance(source, str) else "",
     )
 
 

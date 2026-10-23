@@ -28,7 +28,6 @@ class ApiRoute:
     value: str
     api: str
     strip_prefix: bool = False
-    source: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,14 +65,12 @@ def _route(raw: object) -> ApiRoute:
     strip_prefix = match_entry.get("strip_prefix", False)
     if not isinstance(strip_prefix, bool):
         raise ValueError(f"api route for provider {provider!r} has a non-boolean 'strip_prefix'")
-    source = entry.get("source")
     return ApiRoute(
         provider=provider,
         matcher=matcher,
         value=_string(match_entry, "value", provider),
         api=api,
         strip_prefix=strip_prefix,
-        source=source if isinstance(source, str) else "",
     )
 
 
