@@ -6,10 +6,21 @@ runtime server states, so listing servers never spawns one.
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import ClassVar, TypedDict
 
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
 from voidcode.sdk.services import PluginServices
+
+from .lsp_manager import LspManager
+
+
+class _ServerRow(TypedDict):
+    name: str
+    status: str
+    command: list[str]
+    extensions: list[str]
+    languages: list[str]
+    last_error: str | None
 
 
 class LspInventoryCommand:
@@ -21,15 +32,15 @@ class LspInventoryCommand:
         argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
     )
 
-    def __init__(self, manager: Any) -> None:
+    def __init__(self, manager: LspManager) -> None:
         self._manager = manager
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
         _ = services
         workspace = invocation.context.require_workspace()
         state = self._manager.current_state()
-        configuration = self._manager.configuration_for(workspace) if hasattr(self._manager, "configuration_for") else state.configuration
-        servers: list[dict[str, Any]] = [
+        configuration = self._manager.configuration_for(workspace)
+        servers: list[_ServerRow] = [
             {
                 "name": name,
                 "status": state.servers[name].status if name in state.servers else "stopped",
@@ -47,7 +58,7 @@ class LspInventoryCommand:
         )
 
 
-def _render_servers(servers: list[dict[str, Any]], *, mode: str, enabled: bool) -> str:
+def _render_servers(servers: list[_ServerRow], *, mode: str, enabled: bool) -> str:
     if not enabled:
         return "LSP support is disabled by configuration."
     if not servers:

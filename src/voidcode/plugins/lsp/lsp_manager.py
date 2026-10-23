@@ -90,9 +90,7 @@ class LspConfigState:
 @dataclass(frozen=True, slots=True)
 class LspServerState:
     name: str
-    configured: bool = True
     status: Literal["stopped", "starting", "running", "failed"] = "stopped"
-    available: bool = False
     last_error: str | None = None
 
 
@@ -131,6 +129,8 @@ class LspManager(Protocol):
     @property
     def configuration(self) -> LspConfigState: ...
 
+    def configuration_for(self, workspace: Path) -> LspConfigState: ...
+
     def current_state(self) -> LspManagerState: ...
 
     def request(self, request: LspRequest) -> LspRequestResult: ...
@@ -146,6 +146,10 @@ class DisabledLspManager:
 
     @property
     def configuration(self) -> LspConfigState:
+        return self._configuration
+
+    def configuration_for(self, workspace: Path) -> LspConfigState:
+        _ = workspace
         return self._configuration
 
     def resolve(self, server_name: str) -> ResolvedLspServerConfig | None:
@@ -348,17 +352,18 @@ class ManagedLspManager:
                     abort_signal=request.abort_signal,
                 )
             except (LspRuntimeError, TimeoutError) as exc:
-                failed = (request.services, lease_key, running_server, server_name, exc)
+                failed = (request.services, lease_key, running_server, exc)
             else:
                 return LspRequestResult(
                     response=response,
                     document_state=document_state,
                     position_encoding=running_server.position_encoding,
                 )
-        failed_services, failed_key, failed_server, failed_name, failure = failed
-        self._cancel_own_server(failed_services, failed_key, failed_server)
+        failed_services, failed_key, failed_server, failure = failed
+        stopped = self._cancel_own_server(failed_services, failed_key, failed_server, error=str(failure))
         if isinstance(failure, TimeoutError):
-            raise ValueError(f"LSP request to {failed_name} timed out; the server was stopped") from failure
+            stop_status = "the server was stopped" if stopped else "the server could not be confirmed stopped"
+            raise ValueError(f"{failure}; {stop_status}") from failure
         raise failure
 
     def document_state(self, *, session_id: str, file_path: Path, workspace: Path) -> LspDocumentState | None:
@@ -498,7 +503,6 @@ class ManagedLspManager:
         self._server_states[server_name] = LspServerState(
             name=server_name,
             status="starting",
-            available=False,
         )
         try:
             running_server, lease, outcome = _SESSION_SCOPED_LSP_REGISTRY.acquire(
@@ -533,7 +537,6 @@ class ManagedLspManager:
         self._server_states[server_name] = LspServerState(
             name=server_name,
             status="running",
-            available=True,
         )
         return running_server, lease_key
 
@@ -577,7 +580,7 @@ class ManagedLspManager:
         if lease is not None:
             _SESSION_SCOPED_LSP_REGISTRY.release(lease=lease)
 
-    def _cancel_own_server(self, services: PluginServices, lease_key: _LspRegistryKey, running_server: _RunningLspServer) -> None:
+    def _cancel_own_server(self, services: PluginServices, lease_key: _LspRegistryKey, running_server: _RunningLspServer, *, error: str) -> bool:
         """Stop a failing/cancelled server's tree and forget it; races surface as the next error."""
         process_id = running_server.process_id
         try:
@@ -592,9 +595,9 @@ class ManagedLspManager:
         self._server_states[lease_key.server_name] = LspServerState(
             name=lease_key.server_name,
             status="failed",
-            available=False,
-            last_error=(None if stopped else f"LSP server {lease_key.server_name} could not be confirmed stopped"),
+            last_error=error if stopped else f"{error}; LSP server {lease_key.server_name} could not be confirmed stopped",
         )
+        return stopped
 
     def _start_running_server(
         self,
@@ -720,14 +723,12 @@ class ManagedLspManager:
         self._server_states[server_name] = LspServerState(
             name=server_name,
             status="running",
-            available=True,
         )
 
     def _mark_failed(self, *, server_name: str, error: str) -> None:
         self._server_states[server_name] = LspServerState(
             name=server_name,
             status="failed",
-            available=False,
             last_error=error,
         )
 
@@ -837,7 +838,7 @@ class ManagedLspManager:
         while response is not None and response.get("id") != request_id:
             response = self._read_message(services, running_server, server_name=server_name, abort_signal=abort_signal)
         if response is None:
-            raise ValueError(f"No response from LSP server {server_name} for {method}")
+            raise LspProtocolError(f"No response from LSP server {server_name} for {method}")
         return response
 
     def _send_notification(

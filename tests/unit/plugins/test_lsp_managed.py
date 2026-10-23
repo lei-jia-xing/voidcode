@@ -193,7 +193,6 @@ def test_request_drives_real_stdio_and_opens_the_document(harness: tuple[_Servic
     target.write_text("hello\n", encoding="utf-8")
     record = tmp_path / "record.jsonl"
     manager = build_lsp_manager(_config(record))
-    assert not isinstance(manager, object) or True
     from voidcode.plugins.lsp.lsp_manager import LspRequest, ManagedLspManager
 
     assert isinstance(manager, ManagedLspManager)
@@ -296,7 +295,12 @@ def test_document_version_query_answers_strict_shape_or_none(harness: tuple[_Ser
         _document_version_query(manager).handler({"path": 3}, caller)
 
 
-def test_cancelled_second_use_stops_server_and_descendant(harness: tuple[_Services, Path]) -> None:
+@pytest.mark.parametrize("stop_confirmed", [True, False])
+def test_cancelled_second_use_preserves_reason_and_stop_confirmation(
+    harness: tuple[_Services, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    stop_confirmed: bool,
+) -> None:
     services, tmp_path = harness
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -328,7 +332,10 @@ def test_cancelled_second_use_stops_server_and_descendant(harness: tuple[_Servic
         time.sleep(0.02)
     descendant = int(grandchild_pid.read_text(encoding="utf-8").strip())
     abort = _Abort(cancelled=True)
-    with pytest.raises(ValueError, match="timed out; the server was stopped"):
+    if not stop_confirmed:
+        monkeypatch.setattr(services, "cancel_process", lambda *args, **kwargs: False)
+    expected_stop = "the server was stopped" if stop_confirmed else "the server could not be confirmed stopped"
+    with pytest.raises(ValueError, match=f"was cancelled; {expected_stop}"):
         manager.request(
             LspRequest(
                 server_name="echo",
@@ -340,8 +347,15 @@ def test_cancelled_second_use_stops_server_and_descendant(harness: tuple[_Servic
                 abort_signal=abort,  # type: ignore[arg-type]
             )
         )
-    assert "cancel_process" in services.names()
-    assert all(entry.poll() is not None for entry in services._entries.values())
+    failed = manager.current_state().servers["echo"]
+    assert failed.status == "failed"
+    if stop_confirmed:
+        assert failed.last_error == "LSP request to echo was cancelled"
+        assert "cancel_process" in services.names()
+        assert all(entry.poll() is not None for entry in services._entries.values())
+    else:
+        assert failed.last_error == "LSP request to echo was cancelled; LSP server echo could not be confirmed stopped"
+        assert any(entry.poll() is None for entry in services._entries.values())
     # The fake lease only terminates the leader; the host-owned tree kill is the
     # coordinated smoke's proof. The descendant must at least be reaped there.
     _ = descendant
@@ -400,3 +414,48 @@ def test_each_session_gets_its_own_server(harness: tuple[_Services, Path]) -> No
             )
         )
     assert services.names().count("spawn_service_process") == 2
+
+
+def test_disabled_inventory_uses_the_same_configuration_contract(tmp_path: Path) -> None:
+    from voidcode.sdk.commands import CommandInvocation
+
+    plugin = create_plugin({"enabled": False})
+    command = next(command for command in plugin.commands if command.definition.name == "lsp")
+    services = _Services(tmp_path)
+    result = command.invoke(CommandInvocation(context=_context(tmp_path, "sess-1", _Abort()), name="lsp"), services)
+    assert result.status == "ok"
+    assert result.data["enabled"] is False
+    assert "disabled by configuration" in result.output
+    assert not services.calls
+
+
+def test_server_eof_is_recorded_as_protocol_failure(harness: tuple[_Services, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    from voidcode.plugins.lsp.lsp_manager import LspProtocolError, LspRequest
+
+    services, tmp_path = harness
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    manager = build_lsp_manager(_config(tmp_path / "record.jsonl"))
+    request = LspRequest(
+        server_name="echo",
+        method="textDocument/hover",
+        params={},
+        workspace=workspace,
+        session_id="sess-eof",
+        services=services,
+    )
+    manager.request(request)
+
+    def exit_before_reply(process_id, data):
+        process = services._entries[process_id]
+        process.kill()
+        process.wait(timeout=5)
+        return len(data)
+
+    monkeypatch.setattr(services, "write_process", exit_before_reply)
+    with pytest.raises(LspProtocolError, match="No response from LSP server echo"):
+        manager.request(request)
+    failed = manager.current_state().servers["echo"]
+    assert failed.status == "failed"
+    assert failed.last_error == "No response from LSP server echo for textDocument/hover"
+    assert "cancel_process" in services.names()
