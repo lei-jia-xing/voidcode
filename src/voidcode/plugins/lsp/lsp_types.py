@@ -3,13 +3,17 @@
 There are no core-wide LSP contracts to import: this module defines the small
 part the LSP plugin needs: the document-state record, the request-error base
 class, the request boundary the tool calls, and the plugin's LSP config carrying
-the ``enabled`` tri-state.
+validated server configuration.
 """
 
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from voidcode.sdk.json_values import json_wire_object
 
 from .contracts import LspServerConfigOverride
 
@@ -54,61 +58,22 @@ class LspRequester(Protocol):
     ) -> LspResponse: ...
 
 
-@dataclass(frozen=True, slots=True)
-class RuntimeLspConfig:
-    """The plugin's own LSP section: ``enabled`` plus per-server overrides."""
+class RuntimeLspConfig(BaseModel):
+    """Validate the plugin-owned configuration once at admission."""
 
-    enabled: bool | None = None
-    servers: Mapping[str, LspServerConfigOverride] | None = None
+    model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
 
+    enabled: bool = True
+    servers: dict[str, LspServerConfigOverride] = Field(default_factory=dict)
 
-def runtime_capability_enabled(enabled: bool | None) -> bool:
-    """Resolve a capability ``enabled`` tri-state to a boolean.
-
-    LSP tooling is enabled by default: ``None`` (unset) means enabled, and only
-    an explicit ``enabled: false`` disables the capability. Server startup stays
-    gated on a workspace actually resolving to a server, so a default-on plugin
-    with no configured servers is a safe no-op that spawns no process.
-    """
-    return enabled is not False
+    @field_validator("servers")
+    @classmethod
+    def _server_names(cls, servers: dict[str, LspServerConfigOverride]) -> dict[str, LspServerConfigOverride]:
+        if any(not name.strip() for name in servers):
+            raise ValueError("server names must not be empty")
+        return servers
 
 
 def lsp_config_from_mapping(config: Mapping[str, object] | None) -> RuntimeLspConfig:
-    """Build the plugin's LSP config from its untrusted config mapping."""
-    if not isinstance(config, Mapping):
-        return RuntimeLspConfig()
-    raw_enabled = config.get("enabled")
-    enabled = raw_enabled if isinstance(raw_enabled, bool) else None
-    raw_servers = config.get("servers")
-    if not isinstance(raw_servers, Mapping):
-        return RuntimeLspConfig(enabled=enabled)
-    servers = {name: _server_override(raw) for name, raw in raw_servers.items() if isinstance(name, str) and isinstance(raw, Mapping)}
-    return RuntimeLspConfig(enabled=enabled, servers=servers or None)
-
-
-def _server_override(raw: Mapping[str, object]) -> LspServerConfigOverride:
-    return LspServerConfigOverride(
-        preset=_optional_str(raw.get("preset")),
-        command=_string_tuple(raw.get("command")),
-        extensions=_string_tuple(raw.get("extensions")),
-        languages=_string_tuple(raw.get("languages")),
-        root_markers=_string_tuple(raw.get("root_markers")),
-        settings=_plain_mapping(raw.get("settings")),
-        init_options=_plain_mapping(raw.get("init_options")),
-    )
-
-
-def _optional_str(value: object) -> str | None:
-    return value if isinstance(value, str) and value else None
-
-
-def _string_tuple(value: object) -> tuple[str, ...]:
-    if isinstance(value, str):
-        return (value,)
-    if not isinstance(value, (list, tuple)):
-        return ()
-    return tuple(item for item in value if isinstance(item, str))
-
-
-def _plain_mapping(value: object) -> dict[str, object]:
-    return dict(value) if isinstance(value, Mapping) else {}
+    raw = {key: value for key, value in (config or {}).items() if key != "providers"}
+    return RuntimeLspConfig.model_validate(json_wire_object(raw))

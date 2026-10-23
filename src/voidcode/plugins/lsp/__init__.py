@@ -39,12 +39,9 @@ def _document_version_query(manager: LspManager) -> PluginQuery:
 def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
     manager = build_lsp_manager(lsp_config_from_mapping(config))
 
-    def close() -> None:
-        manager.shutdown()
-
     return Plugin(
         tools=(LspTool(manager),),
         commands=(LspInventoryCommand(manager),),
         queries=(_document_version_query(manager),),
-        close=close,
+        close=manager.shutdown,
     )

@@ -25,7 +25,7 @@ def resolve_lsp_server_config(
     return ResolvedLspServerConfig(
         id=server_name,
         preset=preset.id if preset is not None else None,
-        command=command,
+        command=tuple(command),
         extensions=_merge_string_sequences(
             _normalize_extensions(preset.extensions if preset is not None else ()),
             _normalize_extensions(effective_override.extensions),

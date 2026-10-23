@@ -139,6 +139,15 @@ discovered when used. Discovery is remembered only for the current plugin runtim
 Tool schemas use JSON Schema Draft 2020-12; local references work, while external
 schema references are never fetched during argument validation.
 
+### LSP servers
+
+`plugins.lsp.config` accepts `enabled` (boolean, default `true`) and `servers`.
+Each server may declare `preset`, argv `command`, string arrays `extensions`,
+`languages`, `root_markers`, and objects `settings` and `init_options`. Unknown
+fields and invalid values are rejected rather than filtered out. A server needs
+a command or a known preset; an empty server set retains workspace-based default
+discovery. `enabled: false` disables LSP explicitly.
+
 ## API Environment Variables
 
 Export API credentials in the environment of the process that starts VoidCode; no `.env` file is required.
