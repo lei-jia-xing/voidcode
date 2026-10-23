@@ -18,7 +18,7 @@ not a requirement to change every plugin or to add a dependency.
 | `goal` | Import/coupling scan only. | State/accounting, lifecycle and user commands. |
 | `hooks` | Configuration/executor read; custom argv protocol duplicates process execution and has several one-field wrappers. | Plugin callbacks, policy boundary, command-hook compatibility and process lifecycle. |
 | `lsp` | Registration and supervised-service entry point read. | Manager, protocol failures, inventory and teardown. |
-| `mcp` | Import/coupling scan only. | Manager, cache, protocol failures and teardown. |
+| `mcp` | Read configuration, types, cache, SDK-manager startup/discovery/call/teardown and inventory entry points. Official MCP SDK already handles transport. Config silently discards invalid entries; partial hand-written JSON Schema validation duplicates the existing library. Disk catalog cache and diagnostics collector are never connected by the plugin factory; initialize result and some wrappers have no consumer. | Simplify these unused paths, strict configuration/schema validation, review complete content rendering, add dedicated MCP protocol/failure/lifecycle tests. |
 | `plan` | Owner-scoped overlays, state, context and deactivation read; removed unused owner constant, corrected exit instruction to `/plan.off`. Restart/read-only integration tests. | Finish state/configuration validation. |
 | `providers` | Adapter, typed dispatch panel and dedicated usage surface. | Shared adapters/configuration, errors and teardown. |
 | `review` | Inherit parent scope with core-owned read-only stance; real custom-tool and restricted-parent tests. Removed unused Git tree/branch/history APIs, result wrappers/fields and legacy aliases. Git reads have timeouts and disable text conversion; preserve inspection errors. Child states and incremental-review refusals tested. | Final prompt-bound calculation and duplicated base-branch Git reads. |
@@ -39,3 +39,11 @@ an unknown exit code and a separate status, never a fabricated child exit code.
 See also [the coupling audit](./plugin-coupling-audit.md). Final completion requires
 reviewing the remaining areas above and running the repository's checks on the
 resulting source.
+
+## Verified checkpoint
+
+On 2026-10-23, source commits `522d2d9`, `a187f6b`, and `2acf759` passed the
+full Python suite: **1269 passed, 1 skipped** (369.59 seconds). Ruff lint/format,
+source type checking, generated API checks and commit hooks also passed.
+This verifies the changes made so far; the remaining package review areas in the
+table still prevent claiming that the complete audit is finished.
