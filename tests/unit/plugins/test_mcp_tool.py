@@ -131,3 +131,19 @@ def test_large_binary_does_not_hide_result_reference_from_model(tmp_path: Path):
     assert encoded not in text
     original = json.loads(services.artifacts[reference["artifact_id"]])
     assert original["content"][0]["data"] == encoded
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        [{"type": "embedded_resource", "resource": {"uri": "custom://text", "text": "legacy"}}],
+        [{"type": "resource", "uri": "custom://text", "text": "legacy"}],
+        [{"type": "resource", "resource": {"uri": "custom://missing-content"}}],
+    ],
+)
+def test_nonstandard_or_incomplete_resources_are_explicit_projection_failures(tmp_path: Path, content):
+    result, services = invoke(tmp_path, content)
+    assert result.status == "error"
+    assert result.output.bounds.partial is True
+    artifact = result.body.as_payload()["result_artifact"]
+    assert json.loads(services.artifacts[artifact["artifact_id"]])["content"] == content

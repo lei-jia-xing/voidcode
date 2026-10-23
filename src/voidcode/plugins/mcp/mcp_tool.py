@@ -208,12 +208,10 @@ class McpTool:
                     rendered.append(description)
                     if ref is not None:
                         artifacts.append(ref)
-                elif kind in {"resource", "embedded_resource"}:
+                elif kind == "resource":
                     resource = item.get("resource")
                     if not isinstance(resource, Mapping):
-                        if kind == "embedded_resource":
-                            raise ValueError(f"MCP {kind} item {index} has an invalid resource payload")
-                        resource = item
+                        raise ValueError(f"MCP resource item {index} has an invalid resource payload")
                     ref, description = _media_item(resource, index=index, services=services, source=source)
                     rendered.append(description)
                     if ref is not None:
@@ -338,7 +336,7 @@ def _media_item(
 ) -> tuple[dict[str, object] | None, str]:
     """Decode one embedded image/audio/resource item; returns (artifact, description).
 
-    Text and remote-only resources return no binary artifact.
+    Text resources return no binary artifact.
     """
     kind = item.get("type")
     if kind is None and ("text" in item or "blob" in item):
@@ -365,8 +363,6 @@ def _media_item(
 
     encoded = item.get("blob") if kind == "resource" else item.get("data")
     if encoded is None:
-        if kind == "resource":
-            return None, description + "; remote resource is not fetched]"
         raise ValueError(f"MCP {kind} item {index} has no base64 data")
     if not isinstance(encoded, str):
         raise ValueError(f"MCP {kind} item {index} has invalid base64 data")

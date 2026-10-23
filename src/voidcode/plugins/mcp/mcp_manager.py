@@ -82,14 +82,7 @@ def _read_write_streams(transport_streams: tuple[object, ...]) -> tuple[object, 
 
 
 def _flatten_exception_group(exc: BaseExceptionGroup) -> BaseException:
-    """Return a representative leaf exception from an exception group.
-
-    anyio's ``TaskGroup.__aexit__`` raises ``BaseExceptionGroup`` (NOT an
-    ``Exception`` subclass) for failures in child tasks, so ``except Exception``
-    handlers and ``contextlib.suppress(Exception)`` do not catch it. Unwrap the
-    group to its first leaf so the runtime's diagnostic helpers can inspect a
-    concrete error; nested groups are unwrapped recursively.
-    """
+    """Select the first leaf for diagnostics; callers preserve control exceptions."""
     leaf: BaseException = exc
     while isinstance(leaf, BaseExceptionGroup) and leaf.exceptions:
         leaf = leaf.exceptions[0]
