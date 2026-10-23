@@ -109,6 +109,36 @@ Agent discovery and `/agents`/`agents.show` belong to `delegation`, along with
 Markdown format. See [agent definitions](contracts/agent-definitions.md) for the
 supported fields and explicit runtime limitations.
 
+### MCP servers
+
+The bundled `mcp` plugin validates `plugins.mcp.config` strictly. Unknown fields,
+incorrect types and non-positive/non-finite request timeouts are rejected before
+connecting. For example:
+
+```json
+{
+  "plugins": {
+    "mcp": {
+      "config": {
+        "request_timeout_seconds": 30,
+        "servers": {
+          "local": {"command": ["python", "server.py"]},
+          "remote": {"transport": "remote-http", "url": "http://127.0.0.1:8000/mcp"}
+        }
+      }
+    }
+  }
+}
+```
+
+`stdio` is the default transport and requires a non-empty argv `command`; it may
+also declare a string-to-string `env` map. `remote-http` requires an absolute
+HTTP(S) `url` and does not accept `command` or `env`. A server entry has no other
+fields. `/mcp` reads the currently known inventory without connecting; tools are
+discovered when used. Discovery is remembered only for the current plugin runtime.
+Tool schemas use JSON Schema Draft 2020-12; local references work, while external
+schema references are never fetched during argument validation.
+
 ## API Environment Variables
 
 Export API credentials in the environment of the process that starts VoidCode; no `.env` file is required.

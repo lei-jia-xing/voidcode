@@ -17,8 +17,8 @@ not a requirement to change every plugin or to add a dependency.
 | `files` | Adapter delegates to shared capabilities. | Shared tools, configuration and failures. |
 | `goal` | Import/coupling scan only. | State/accounting, lifecycle and user commands. |
 | `hooks` | Configuration/executor read; custom argv protocol duplicates process execution and has several one-field wrappers. | Plugin callbacks, policy boundary, command-hook compatibility and process lifecycle. |
-| `lsp` | Registration and supervised-service entry point read. | Manager, protocol failures, inventory and teardown. |
-| `mcp` | Strict Pydantic configuration, complete Draft 2020-12 validation with local-only references, and real SDK stdio/core integration tests. Removed unused disk cache, diagnostic collector, initialization metadata and forwarding/retry methods. Startup failures remain inspectable; unknown and known-empty inventories remain distinct; shutdown reaps the child. | Remote HTTP failure/teardown, complete content/media rendering, remaining state fields and concurrency. |
+| `lsp` | Registration, configuration/contracts, server/preset resolution, root discovery and supervised-service entry point read. Configuration currently discards invalid values; standardize strict ingress next. | Strict configuration, manager, protocol failures, inventory and teardown. |
+| `mcp` | Strict Pydantic configuration, complete Draft 2020-12 validation with local-only references, and real SDK stdio/core integration tests. Removed unused disk cache, diagnostic collector, initialization metadata and forwarding/retry methods. Startup failures remain inspectable; unknown and known-empty inventories remain distinct; shutdown reaps the child. | Remote HTTP failure/teardown, complete content/media rendering, remaining state fields and concurrency. Inspect call-error state: stopping a failed connection currently calls `_mark_stopped` without preserving the failure. |
 | `plan` | Owner-scoped overlays, state, context and deactivation read; removed unused owner constant, corrected exit instruction to `/plan.off`. Restart/read-only integration tests. | Finish state/configuration validation. |
 | `providers` | Adapter, typed dispatch panel and dedicated usage surface. | Shared adapters/configuration, errors and teardown. |
 | `review` | Inherit parent scope with core-owned read-only stance; real custom-tool and restricted-parent tests. Removed unused Git tree/branch/history APIs, result wrappers/fields and legacy aliases. Git reads have timeouts and disable text conversion; preserve inspection errors. Child states and incremental-review refusals tested. | Final prompt-bound calculation and duplicated base-branch Git reads. |
@@ -47,3 +47,17 @@ full Python suite: **1269 passed, 1 skipped** (369.59 seconds). Ruff lint/format
 source type checking, generated API checks and commit hooks also passed.
 This verifies the changes made so far; the remaining package review areas in the
 table still prevent claiming that the complete audit is finished.
+
+### MCP checkpoint
+
+Source commit `6c6d2a9` passed the full Python suite: **1295 passed, 1 skipped,
+1 warning** (404.78 seconds). The run suppressed warning details, so that warning's
+origin remains unverified. The 26 dedicated MCP tests then passed with normal
+warning reporting and produced no warning. A separate diagnostic run with global
+`-W error` hit the already-known Google SDK `_UnionGenericAlias` deprecation during
+core bootstrap; this does not identify the full-suite warning.
+
+The MCP change reuses installed Pydantic/jsonschema/MCP SDK packages. `referencing`
+was already transitive and is now declared directly to provide a closed reference
+registry; resolving the lock file added no package. The dependency floor now
+reflects the MCP 2.x API used by the implementation.
