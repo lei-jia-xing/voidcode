@@ -11,8 +11,10 @@ from urllib.request import url2pathname
 
 from lsprotocol import converters as lsp_converters
 from lsprotocol import types as lsp_types
+from pydantic import BaseModel, ConfigDict, Field
 
 from voidcode.sdk.invocation import ToolContext
+from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.provider import ProviderAbortSignal
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import (
@@ -93,6 +95,24 @@ def _bound_requester(manager: LspManager) -> LspRequester:
     return request
 
 
+class _LspArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    operation: str
+    path: str
+    line: int | None = Field(default=None, ge=1)
+    character: int | None = Field(default=None, ge=1)
+    query: str | None = None
+    server: str | None = None
+    newName: str | None = Field(default=None, min_length=1)
+    newPath: str | None = Field(default=None, min_length=1)
+    endLine: int | None = Field(default=None, ge=1)
+    endCharacter: int | None = Field(default=None, ge=1)
+    diagnostics: list[dict[str, object]] = Field(default_factory=list)
+    offset: int = Field(default=1, ge=1)
+    limit: int = Field(default=50, ge=1, le=50)
+
+
 class LspTool:
     """Read-only adapter over the plugin-owned LSP manager; this class also owns the invocation schema/effects."""
 
@@ -124,9 +144,14 @@ class LspTool:
                     ),
                 },
                 "path": {"type": "string", "description": "Workspace-relative file path used for target selection and server resolution."},
-                "line": {"type": "integer", "description": "1-based line number as shown in editors. Required for position-based operations."},
+                "line": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "1-based line number as shown in editors. Required for position-based operations.",
+                },
                 "character": {
                     "type": "integer",
+                    "minimum": 1,
                     "description": "1-based character number as shown in editors. Required for position-based operations.",
                 },
                 "query": {"type": "string", "description": "Optional workspaceSymbol search query. Empty string requests all symbols."},
@@ -196,47 +221,12 @@ class LspTool:
 
         workspace = context.require_workspace()
         requester = self._requester
-        op_value = call.arguments.get("operation")
-        file_path = call.arguments.get("path")
-        line = call.arguments.get("line")
-        character = call.arguments.get("character")
-        query = call.arguments.get("query")
-        server = call.arguments.get("server")
-        new_name = call.arguments.get("newName")
-        end_line = call.arguments.get("endLine")
-        end_character = call.arguments.get("endCharacter")
-        offset = call.arguments.get("offset", 1)
-        limit = call.arguments.get("limit", 50)
-        offset_value = max(1, int(offset)) if isinstance(offset, (int, float)) else 1
-        limit_value = min(50, max(1, int(limit))) if isinstance(limit, (int, float)) else 50
-        diagnostics = call.arguments.get("diagnostics", [])
-        new_path = call.arguments.get("newPath")
-
-        if server is not None and not isinstance(server, str):
-            raise ValueError("lsp requires a string 'server' argument when provided")
-        if query is not None and not isinstance(query, str):
-            raise ValueError("lsp requires a string 'query' argument when provided")
-        if new_name is not None and not isinstance(new_name, str):
-            raise ValueError("lsp requires a string 'newName' argument when provided")
-        if not isinstance(diagnostics, list) or not all(isinstance(item, dict) for item in diagnostics):
-            raise ValueError("lsp diagnostics must be an array of objects")
-        if new_path is not None and not isinstance(new_path, str):
-            raise ValueError("lsp requires a string 'newPath' argument when provided")
-        if not isinstance(file_path, str):
-            raise ValueError("lsp requires a string 'path' argument")
-        if isinstance(line, (int, float)):
-            line_value = int(line)
-        else:
-            line_value = None
-
-        if isinstance(character, (int, float)):
-            character_value = int(character)
-        else:
-            character_value = None
-        if op_value is None:
-            raise ValueError("lsp invocation requires 'operation' argument")
-
-        operation = self._parse_operation(op_value)
+        args = _LspArgs.model_validate(json_wire_object(call.arguments))
+        file_path = args.path
+        line_value, character_value = args.line, args.character
+        query, server, new_name, new_path = args.query, args.server, args.newName, args.newPath
+        offset_value, limit_value = args.offset, args.limit
+        operation = self._parse_operation(args.operation)
         position_required = operation not in (
             LspOperation.DIAGNOSTICS,
             LspOperation.DOCUMENT_SYMBOL,
@@ -249,11 +239,6 @@ class LspTool:
             raise ValueError("lsp willRenameFiles requires a string 'newPath' argument")
         if position_required and (line_value is None or character_value is None):
             raise ValueError("lsp requires numeric 'line' and 'character' arguments (1-based)")
-        if line_value is not None and line_value < 1:
-            raise ValueError("lsp line and character must be >= 1")
-        if character_value is not None and character_value < 1:
-            raise ValueError("lsp line and character must be >= 1")
-
         relative_path = Path(file_path)
         workspace_root = workspace.resolve()
         candidate = (workspace_root / relative_path).resolve()
@@ -290,8 +275,8 @@ class LspTool:
                 unstructure_as=lsp_types.RenameParams,
             )
         elif operation == LspOperation.CODE_ACTION and position is not None:
-            end_line_value = int(end_line) if isinstance(end_line, (int, float)) else line_value
-            end_character_value = int(end_character) if isinstance(end_character, (int, float)) else character_value
+            end_line_value = args.endLine if args.endLine is not None else line_value
+            end_character_value = args.endCharacter if args.endCharacter is not None else character_value
             if end_line_value is None or end_character_value is None or end_line_value < 1 or end_character_value < 1:
                 raise ValueError("lsp codeAction endLine and endCharacter must be >= 1")
             params = self._converter.unstructure(
@@ -302,7 +287,7 @@ class LspTool:
                         end=lsp_types.Position(line=end_line_value - 1, character=end_character_value - 1),
                     ),
                     context=lsp_types.CodeActionContext(
-                        diagnostics=[self._converter.structure(item, lsp_types.Diagnostic) for item in diagnostics],
+                        diagnostics=[self._converter.structure(item, lsp_types.Diagnostic) for item in args.diagnostics],
                     ),
                 ),
                 unstructure_as=lsp_types.CodeActionParams,
@@ -320,6 +305,7 @@ class LspTool:
                 unstructure_as=lsp_types.WorkspaceSymbolParams,
             )
 
+        document_state = None
         if operation in (LspOperation.INCOMING_CALLS, LspOperation.OUTGOING_CALLS):
             assert position is not None
             try:
@@ -358,36 +344,7 @@ class LspTool:
                 raise ValueError("LSP prepareCallHierarchy returned no item")
             params = {"item": item}
 
-            try:
-                response = self._invoke_requester(
-                    requester,
-                    server_name=server,
-                    method=operation.value,
-                    params=params,
-                    workspace=workspace_root,
-                    services=services,
-                    session_id=context.require_session_id(),
-                    abort_signal=context.abort_signal,
-                )
-            except ValueError as exc:
-                return self._request_failure(exc)
-            error_value = response.response.get("error")
-            if error_value is not None:
-                raise ValueError(f"LSP error: {error_value}")
-            return self._success_result(
-                response,
-                services=services,
-                operation=operation,
-                file_path=file_path,
-                workspace_root=workspace_root,
-                line=line_value,
-                character=character_value,
-                new_name=new_name if isinstance(new_name, str) else None,
-                query=query,
-                offset=offset_value,
-                limit=limit_value,
-                document_state=prepare_result.document_state,
-            )
+            document_state = prepare_result.document_state
 
         try:
             response = self._invoke_requester(
@@ -417,6 +374,7 @@ class LspTool:
             query=query,
             offset=offset_value,
             limit=limit_value,
+            document_state=document_state,
         )
 
     def _success_result(
@@ -553,34 +511,7 @@ def _uri_to_rel_path(uri: str, workspace_root: Path) -> str:
     return uri
 
 
-_SYMBOL_KIND_NAMES: dict[int, str] = {
-    1: "File",
-    2: "Module",
-    3: "Namespace",
-    4: "Package",
-    5: "Class",
-    6: "Method",
-    7: "Property",
-    8: "Field",
-    9: "Constructor",
-    10: "Enum",
-    11: "Interface",
-    12: "Function",
-    13: "Variable",
-    14: "Constant",
-    15: "String",
-    16: "Number",
-    17: "Boolean",
-    18: "Array",
-    19: "Object",
-    20: "Key",
-    21: "Null",
-    22: "EnumMember",
-    23: "Struct",
-    24: "Event",
-    25: "Operator",
-    26: "TypeParameter",
-}
+_SYMBOL_KIND_NAMES = {kind.value: kind.name for kind in lsp_types.SymbolKind}
 
 _SEVERITY_NAMES: dict[int, str] = {
     1: "error",

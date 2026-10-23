@@ -1,0 +1,82 @@
+"""LSP tool ingress and request construction over real SDK immutable arguments."""
+
+from hashlib import sha256
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from voidcode.plugins.lsp.lsp_manager import LspRequestResult
+from voidcode.plugins.lsp.lsp_tool import LspTool
+from voidcode.sdk.invocation import ToolContext
+from voidcode.sdk.tools import ToolCall
+
+
+class Services:
+    def spill_artifact(self, content, *, media_type):
+        return SimpleNamespace(sha256=sha256(content.encode()).hexdigest(), bytes=len(content.encode()), media_type=media_type)
+
+
+class Manager:
+    def __init__(self, results):
+        self.results = iter(results)
+        self.requests = []
+
+    def request(self, request):
+        self.requests.append(request)
+        return LspRequestResult(response={"result": next(self.results)})
+
+
+def invoke(tmp_path, arguments, manager):
+    (tmp_path / "file.py").write_text("x = 1\n", encoding="utf-8")
+    context = ToolContext(workspace=tmp_path, session_id="session", run_id="run", invocation_id="inv", revision_id="rev", actor="model")
+    return LspTool(manager).invoke(ToolCall("lsp", arguments), context=context, services=Services())
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"limit": 51},
+        {"limit": True},
+        {"offset": 0},
+        {"offset": "2"},
+        {"line": 1.5},
+        {"character": True},
+        {"endLine": 0},
+        {"unknown": True},
+    ],
+)
+def test_invalid_arguments_fail_before_server_request(tmp_path: Path, extra: dict[str, object]):
+    manager = Manager([])
+    with pytest.raises(ValueError):
+        invoke(tmp_path, {"operation": "hover", "path": "file.py", "line": 1, "character": 1, **extra}, manager)
+    assert manager.requests == []
+
+
+def test_code_action_accepts_nested_immutable_diagnostics(tmp_path: Path):
+    diagnostic = {"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}}, "message": "example"}
+    manager = Manager([[]])
+    result = invoke(tmp_path, {"operation": "codeAction", "path": "file.py", "line": 1, "character": 1, "diagnostics": [diagnostic]}, manager)
+    assert result.status == "ok"
+    request = manager.requests[0]
+    assert request.method == "textDocument/codeAction"
+    assert request.params["context"]["diagnostics"] == [diagnostic]
+    assert request.params["range"] == {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}
+
+
+@pytest.mark.parametrize("operation", ["incomingCalls", "outgoingCalls"])
+def test_call_hierarchy_shares_final_request_path(tmp_path: Path, operation: str):
+    item = {"name": "function"}
+    manager = Manager([[item], []])
+    result = invoke(tmp_path, {"operation": operation, "path": "file.py", "line": 1, "character": 1}, manager)
+    assert result.status == "ok"
+    assert [request.method for request in manager.requests] == ["textDocument/prepareCallHierarchy", f"callHierarchy/{operation}"]
+    assert manager.requests[1].params == {"item": item}
+
+
+@pytest.mark.parametrize("kind,label", [(26, "TypeParameter"), (999, "Symbol")])
+def test_document_symbol_labels_use_protocol_enum(tmp_path: Path, kind: int, label: str):
+    manager = Manager([[{"name": "T", "kind": kind, "range": {"start": {"line": 0}, "end": {"line": 0}}}]])
+    result = invoke(tmp_path, {"operation": "documentSymbol", "path": "file.py"}, manager)
+    assert result.status == "ok"
+    assert f"T ({label})" in result.output.text
