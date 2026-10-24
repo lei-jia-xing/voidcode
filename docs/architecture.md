@@ -127,6 +127,10 @@ core admits, validates, approves, dispatches, and records every call. The
 engine-owned model tool `core_reload` is not plugin-declared; `core.reload`
 is the corresponding user command. Product tools belong in plugins, not in a
 legacy tools directory.
+`edit` accepts exact text replacements or `*** Begin Patch` marker patches for
+add/update/delete/move operations. File editing uses Python filesystem operations
+and does not require Git; unified diffs are output previews, not edit input.
+
 `read` also serves bounded derived views: `voidcode://tool/<name>` renders the definition the
 core's active dispatch snapshot advertises to this session (plugin plus reserved core tools,
 with profile scope and read-only stance applied); `voidcode://transcript/<session>` composes a

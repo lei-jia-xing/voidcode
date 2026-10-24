@@ -1438,15 +1438,6 @@ wheels = [
 ]
 
 [[package]]
-name = "unidiff"
-version = "1.0.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/9f/7a/f891dba8225c20cce4417443073e67f33e01fae9715a6477f59eb32654ae/unidiff-1.0.1.tar.gz", hash = "sha256:d9425bc516390c54743a1045b2c1c97f02d245a913a241dd499f958adb2df998", size = 31800, upload-time = "2026-09-15T01:39:10.847Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/af/c9/a0529375e0162327fd1cb0dc6785c7a6e56dfae011c2d7b57d611ff84347/unidiff-1.0.1-py3-none-any.whl", hash = "sha256:5e2ca461eda8a4c761ad0922e3e8a65742f359dc60301a3a055b70fd7c158680", size = 18733, upload-time = "2026-09-15T01:39:09.395Z" },
-]
-
-[[package]]
 name = "urllib3"
 version = "2.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1512,7 +1503,6 @@ dependencies = [
     { name = "rich" },
     { name = "tiktoken" },
     { name = "typing-extensions" },
-    { name = "unidiff" },
     { name = "uvicorn" },
 ]
 
@@ -1567,7 +1557,6 @@ requires-dist = [
     { name = "tree-sitter-language-pack", marker = "extra == 'syntax'", specifier = ">=0.4" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.33" },
     { name = "typing-extensions" },
-    { name = "unidiff", specifier = ">=0.7.5" },
     { name = "uvicorn" },
     { name = "zstandard", marker = "extra == 'dev'" },
 ]

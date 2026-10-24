@@ -17,7 +17,7 @@ not establish source review.
 | `exec/shell_exec.py` | Partial: typed SDK artifact references and consumers reviewed; interception policy, progress boundaries and remaining result semantics pending |
 | `files/__init__.py` | Reviewed: typed Tool wrapper preserves diagnostic failures; shared core/plugin factory |
 | `files/_replace.py` | Reviewed: checked replacement and exclusive atomic creation; cleanup, permissions and race regressions; documented metadata/compare-window limits |
-| `files/apply_patch.py` | Partial: stdin unified diffs, typed change pipeline, marker preflight/checked commits, partial results and cancellation boundaries reviewed; marker grammar/EOF, path whitespace and heredoc handling reviewed; unified subprocess ownership and remaining path-parser reconciliation pending |
+| `files/apply_patch.py` | Reviewed: marker-only grammar, exact staged preflight, hash/checked commits, cancellation and truthful partial operations; removed unified/Git execution, path decoding and format adapters |
 | `files/apply_workspace_edit.py` | Partial: strict generated schema, frozen-argument conversion, checked replacement, commit projections, LSP coordinates, query-failure flow, cooperative cancellation and structured partial commits reviewed; final ingress/bounds reconciliation pending |
 | `files/edit_tool.py` | Partial: strict generated ingress, exact replacement, checked commit, diagnostic bounds and cancellation reviewed; diff formatting/bounds and patch delegation review pending |
 | `files/errors.py` | Reviewed: retain only classified diagnostic exception and raising helper |
@@ -1307,3 +1307,30 @@ paths, heredoc unified input, and trailing-space filename stale-hash rejection
 followed by a valid update. Ruff, formatting, source type checking and CodeGraph
 sync passed. Net implementation reduction: 87 lines. Remaining native path-parser
 reconciliation and subprocess ownership are not yet marked complete.
+
+
+## Marker-only patch scope; remove Git dependency from file editing
+
+Following the user's request to reconsider complexity and the Git requirement,
+removed unified-diff input entirely. `edit` now advertises only marker patches;
+`execute_patch` has one parser/planner/commit path. Removed all Git execution,
+unified path/escape decoding, secondary metadata parsing, format detection and
+heredoc wrapping. Removed the unidiff dependency and its isolated lock package.
+Unified diff output previews elsewhere remain supported. Git-based review tools
+are separate product features; this change removes Git from basic file editing.
+
+Marker add/update/delete/move operations retain exact context/hash checks,
+preflight staging, per-file atomic replacements, cancellation and actual-prefix
+failure results. Prepared chunks already follow document order, so reverse that
+sequence directly rather than sorting whole replacement tuples (which could
+reorder insertions at the same offset by text). The module shrank from 820 to
+503 lines. Deleted obsolete unified-input test cases; no tests added.
+
+Validation: 88 existing file/codec/fact/core-builtins/optional-query tests passed
+(7.49s). A manual marker batch completed add/update/move/delete with PATH empty;
+unified input was rejected explicitly. Ruff, formatting, source type checking,
+CodeGraph sync and `uv lock --check --offline` passed (96 packages). Lock removal
+was pruned from the existing resolved graph after offline regeneration could not
+access unrelated cached provider metadata; the resulting lock passed uv's check.
+The retained marker implementation is now marked reviewed. This does not complete
+the broader capabilities audit.

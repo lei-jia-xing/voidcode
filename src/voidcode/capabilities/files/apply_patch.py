@@ -1,16 +1,16 @@
+"""Apply marker patches through exact preflight and checked file commits.
+
+Supports add/update/delete/move operations without external commands.
+"""
+
 from __future__ import annotations
 
 import errno
 import hashlib
-import re
-import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
-
-from unidiff import PatchSet
-from unidiff.errors import UnidiffParseError
 
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.tools import ConfirmedStop, OutputBounds, ResourceChange, TextOutput, ToolFailure, ToolResult, ToolSuccess
@@ -95,22 +95,6 @@ def _patch_result(
     return ToolSuccess(tool_name=tool_name, output=TextOutput(summary or "patch applied"), body=body, changes=resources)
 
 
-def _strip_heredoc(input_text: str) -> str:
-    heredoc_match = re.match(
-        r"^(?:cat\s+)?<<['\"]?(\w+)['\"]?\s*\n([\s\S]*?)\n\1\s*$",
-        input_text,
-    )
-    if heredoc_match is None:
-        return input_text
-    return heredoc_match.group(2) + "\n"
-
-
-def _looks_like_marker_patch(patch_text: str) -> bool:
-    lines = _strip_heredoc(patch_text.strip()).split("\n")
-    envelope_lines = [line.strip() for line in lines if line.strip()]
-    return len(envelope_lines) >= 2 and envelope_lines[0] == "*** Begin Patch" and envelope_lines[-1] == "*** End Patch"
-
-
 def _parse_marker_header(lines: list[str], index: int) -> tuple[str, str, str | None, int] | None:
     line = lines[index]
     if line.startswith("*** Add File:"):
@@ -189,7 +173,7 @@ def _parse_marker_update_chunks(lines: list[str], index: int) -> tuple[tuple[_Ma
 
 
 def _parse_marker_patch(patch_text: str) -> tuple[_MarkerHunk, ...]:
-    lines = _strip_heredoc(patch_text.strip()).strip().replace("\r\n", "\n").split("\n")
+    lines = patch_text.strip().replace("\r\n", "\n").split("\n")
     if len(lines) < 2 or lines[0].strip() != "*** Begin Patch" or lines[-1].strip() != "*** End Patch":
         raise ValueError("Invalid patch format: missing Begin/End markers")
     end_index = len(lines) - 1
@@ -319,7 +303,7 @@ def _derive_marker_update_content_from_text(
         line_index = found + len(pattern)
 
     next_lines = list(original_lines)
-    for start, old_len, new_segment in sorted(replacements, reverse=True):
+    for start, old_len, new_segment in reversed(replacements):
         next_lines[start : start + old_len] = list(new_segment)
     content = "\n".join(next_lines)
     if final_newline and next_lines:
@@ -490,243 +474,13 @@ def _apply_marker_patch(
     return _patch_result(changes, tool_name=tool_name)
 
 
-def _decode_c_quoted_path(token: str) -> str | None:
-    if not token.startswith('"'):
-        return token if '"' not in token else None
-    if len(token) < 2 or not token.endswith('"'):
-        return None
-    raw = token[1:-1]
-    decoded: bytearray = bytearray()
-    index = 0
-    escapes = {
-        "a": b"\a",
-        "b": b"\b",
-        "f": b"\f",
-        "n": b"\n",
-        "r": b"\r",
-        "t": b"\t",
-        "v": b"\v",
-        "\\": b"\\",
-        '"': b'"',
-    }
-    while index < len(raw):
-        char = raw[index]
-        if char != "\\":
-            decoded.extend(char.encode("utf-8"))
-            index += 1
-            continue
-        index += 1
-        if index >= len(raw):
-            return None
-        escaped = raw[index]
-        if escaped in escapes:
-            decoded.extend(escapes[escaped])
-            index += 1
-            continue
-        if escaped not in "01234567":
-            return None
-        end = index + 1
-        while end < len(raw) and end < index + 3 and raw[end] in "01234567":
-            end += 1
-        decoded.append(int(raw[index:end], 8))
-        index = end
-    try:
-        return decoded.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
-
-
-def _consume_path_token(text: str) -> tuple[str, int] | None:
-    if not text:
-        return None
-    if text.startswith('"'):
-        escaped = False
-        index = 1
-        while index < len(text):
-            char = text[index]
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                decoded = _decode_c_quoted_path(text[: index + 1])
-                return (decoded, index + 1) if decoded is not None else None
-            index += 1
-        return None
-    index = 0
-    while index < len(text) and not text[index].isspace():
-        if text[index] == '"':
-            return None
-        index += 1
-    return (text[:index], index) if index else None
-
-
-def _strip_diff_prefix(path_text: str) -> str:
-    path = path_text
-    if path.startswith('"'):
-        decoded = _decode_c_quoted_path(path)
-        if decoded is not None:
-            path = decoded
-    if path.startswith("a/") or path.startswith("b/"):
-        return path[2:]
-    return path
-
-
-def _parse_diff_git_paths(line: str) -> tuple[str, str] | None:
-    prefix = "diff --git "
-    if not line.startswith(prefix):
-        return None
-    remainder = line[len(prefix) :]
-    if remainder.startswith('"'):
-        first = _consume_path_token(remainder)
-        if first is None:
-            return None
-        old_token, index = first
-        while index < len(remainder) and remainder[index].isspace():
-            index += 1
-        second = _consume_path_token(remainder[index:])
-        if second is None:
-            return None
-        new_token, consumed = second
-        if remainder[index + consumed :].strip():
-            return None
-    else:
-        split_index = remainder.rfind(" b/")
-        if split_index <= 0:
-            return None
-        old_token = remainder[:split_index]
-        new_token = remainder[split_index + 1 :]
-        if not old_token.startswith("a/") or not new_token or '"' in old_token or '"' in new_token:
-            return None
-    if not old_token.startswith("a/") or not new_token.startswith("b/"):
-        return None
-    return old_token[2:], new_token[2:]
-
-
-def _parse_patch_file_path(raw_value: str) -> str | None:
-    value = raw_value
-    if not value:
-        return None
-    if value.startswith('"'):
-        token = _consume_path_token(value)
-        if token is None:
-            return None
-        path, consumed = token
-        remainder = value[consumed:]
-        if remainder and not remainder.startswith("\t"):
-            return None
-        return path
-    if '"' in value:
-        return None
-    return value.split("\t", 1)[0]
-
-
-def _run_git_command(args: list[str], cwd: Path, *, patch: str) -> subprocess.CompletedProcess[str]:
-    try:
-        return subprocess.run(
-            args,
-            cwd=str(cwd),
-            input=patch,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-    except FileNotFoundError as exc:
-        raise ValueError("git is required to apply an edit patch") from exc
-
-
-def _changes_from_unified_diff(patch_text: str) -> list[PatchChange]:
-    try:
-        patch_set = PatchSet(patch_text)
-    except UnidiffParseError, ValueError:
-        return []
-
-    changes: list[PatchChange] = []
-    for patched_file in patch_set:
-        old_path = None if patched_file.source_file == "/dev/null" else _strip_diff_prefix(patched_file.source_file)
-        new_path = None if patched_file.target_file == "/dev/null" else _strip_diff_prefix(patched_file.target_file)
-
-        if old_path is None and new_path is not None:
-            changes.append(PatchChange(path=new_path, status="A"))
-        elif old_path is not None and new_path is None:
-            changes.append(PatchChange(path=old_path, status="D"))
-        elif old_path is not None and new_path is not None and old_path != new_path:
-            changes.append(PatchChange(path=new_path, old_path=old_path, status="R"))
-        elif new_path is not None:
-            changes.append(PatchChange(path=new_path, status="M"))
-
-    return changes
-
-
-def _changes_from_patch_metadata(patch_text: str) -> list[PatchChange]:
-    changes: list[PatchChange] = []
-    block_old_path: str | None = None
-    block_new_path: str | None = None
-    patch_old_path: str | None = None
-
-    def flush_block() -> None:
-        if block_new_path is None:
-            if block_old_path is not None:
-                changes.append(PatchChange(path=block_old_path, status="D"))
-        elif block_old_path is None:
-            changes.append(PatchChange(path=block_new_path, status="A"))
-        elif block_old_path == block_new_path:
-            changes.append(PatchChange(path=block_new_path, status="M"))
-        else:
-            changes.append(PatchChange(path=block_new_path, old_path=block_old_path, status="R"))
-
-    for line in patch_text.splitlines():
-        if line.startswith("diff --git "):
-            flush_block()
-            diff_paths = _parse_diff_git_paths(line)
-            if diff_paths is None:
-                block_old_path = None
-                block_new_path = None
-            else:
-                block_old_path, block_new_path = diff_paths
-            patch_old_path = None
-            continue
-
-        if line.startswith("rename from "):
-            block_old_path = _parse_patch_file_path(line[len("rename from ") :])
-            continue
-
-        if line.startswith("rename to "):
-            block_new_path = _parse_patch_file_path(line[len("rename to ") :])
-            continue
-
-        if line.startswith("--- "):
-            old_marker = _parse_patch_file_path(line[4:])
-            patch_old_path = None if old_marker in {None, "/dev/null"} else _strip_diff_prefix(old_marker)
-            continue
-
-        if not line.startswith("+++ "):
-            continue
-
-        new_marker = _parse_patch_file_path(line[4:])
-        patch_new_path = None if new_marker in {None, "/dev/null"} else _strip_diff_prefix(new_marker)
-        block_old_path = patch_old_path
-        block_new_path = patch_new_path
-        patch_old_path = None
-
-    flush_block()
-
-    return changes
-
-
-def _changes_from_patch(patch_text: str) -> list[PatchChange]:
-    changes = _changes_from_unified_diff(patch_text)
-    changes.extend(_changes_from_patch_metadata(patch_text))
-    return list(dict.fromkeys(changes))
-
-
 def execute_patch(
     arguments: Mapping[str, object],
     *,
     context: ToolContext,
     tool_name: str = "edit",
 ) -> ToolResult:
-    workspace = context.require_workspace()
+    context.require_workspace()
     if context.abort_signal is not None and context.abort_signal.cancelled:
         return _patch_result([], tool_name=tool_name, error="patch cancelled before committing files", cancelled=True)
     patch_text = arguments.get("patch")
@@ -743,78 +497,7 @@ def execute_patch(
     else:
         raise ValueError(f"{tool_name} expectedHashes must be an object mapping path strings to SHA-256 hash strings")
 
-    patch_text = _strip_heredoc(patch_text)
-    if not patch_text.strip():
-        raise_tool_diagnostic(
-            message=f"{tool_name} received empty patch text.",
-            error_kind="parse_error",
-            reason="empty_patch",
-            retry_guidance=(
-                "Provide a non-empty patch: a structured *** Begin Patch envelope with at least "
-                "one file operation, or a unified diff that git apply can parse."
-            ),
-            details={"patch_empty": True},
-        )
-
-    if _looks_like_marker_patch(patch_text):
-        return _apply_marker_patch(patch_text, context=context, expected_hashes=expected_hashes, tool_name=tool_name)
-
-    changes = _changes_from_patch(patch_text)
-    if not changes:
-        raise_tool_diagnostic(
-            message=f"{tool_name} received malformed patch text: no valid file operations were found.",
-            error_kind="parse_error",
-            reason="invalid_patch_text",
-            retry_guidance=(
-                "Provide a structured *** Begin Patch envelope with at least one file operation, or a valid unified diff that git apply can parse."
-            ),
-            details={"affected_paths": [], "patch_invalid": True},
-        )
-    check = _run_git_command(["git", "apply", "--check", "-"], workspace, patch=patch_text)
-    if check.returncode != 0:
-        error = check.stdout or "Patch check failed"
-        raise_tool_diagnostic(
-            message=error,
-            error_kind="parse_error",
-            reason="patch_apply_failed",
-            retry_guidance=(
-                "Re-read the affected file(s) with read and rebuild the patch hunks from "
-                f"the current content, then retry {tool_name}. Prefer the structured "
-                "*** Begin Patch envelope to avoid manual hunk counts."
-            ),
-            details={
-                "affected_paths": [c.path for c in changes],
-            },
-        )
-
-    # Verify expected hashes for every existing file the patch modifies, before writing.
-    _verify_patch_expected_hashes(
-        changes=changes,
-        expected_hashes=expected_hashes,
-        workspace=workspace,
-        tool_name=tool_name,
-    )
-
-    if context.abort_signal is not None and context.abort_signal.cancelled:
-        return _patch_result([], tool_name=tool_name, error="patch cancelled before committing files", cancelled=True)
-    apply = _run_git_command(["git", "apply", "-"], workspace, patch=patch_text)
-    if apply.returncode != 0:
-        error = apply.stdout or "Patch apply failed"
-        raise_tool_diagnostic(
-            message=error,
-            error_kind="parse_error",
-            reason="patch_apply_failed",
-            retry_guidance=(
-                "Re-read the affected file(s) with read and rebuild the patch hunks from "
-                f"the current content, then retry {tool_name}. Prefer the structured "
-                "*** Begin Patch envelope to avoid manual hunk counts."
-            ),
-            details={
-                "affected_paths": [c.path for c in changes],
-            },
-        )
-
-    return _patch_result(changes, tool_name=tool_name)
+    return _apply_marker_patch(patch_text, context=context, expected_hashes=expected_hashes, tool_name=tool_name)
 
 
 __all__ = ["ApplyPatchResultBody", "PatchChange", "execute_patch"]

@@ -204,7 +204,7 @@ class _BatchEdit(BaseModel):
 class _PatchEdit(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
-    patch: str = Field(min_length=1)
+    patch: str = Field(min_length=1, description="*** Begin Patch / *** End Patch text with Add File, Update File or Delete File operations.")
     expectedHashes: dict[str, str] | None = None
 
 
@@ -216,7 +216,7 @@ class EditTool:
         name="edit",
         description=(
             "Edit files by replacing text (single replacement or ordered batch) or applying a patch. "
-            "Replacements require exact current file text. Patches accept unified diff or *** Begin Patch marker format. "
+            "Replacements require exact current file text. Patches use *** Begin Patch marker format with add, update, delete and move operations. "
             "When constructing oldString from read output, omit any leading line-number prefix such as '42: ' and pass only the file's actual text."
         ),
         input_schema={"type": "object", **_EDIT_ARGS.json_schema()},

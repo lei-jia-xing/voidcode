@@ -41,7 +41,6 @@ dependencies = [
   "referencing>=0.37.0",
   "uvicorn",
   "rapidfuzz>=3.14.5",
-  "unidiff>=0.7.5",
   "mcp>=2.0.0",
   "openai>=3.14.0",
   "anthropic>=1.6.0",

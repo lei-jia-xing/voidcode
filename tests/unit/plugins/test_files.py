@@ -971,7 +971,7 @@ def test_searches_respect_gitignore_double_star_and_negation(tmp_path: Path, too
     assert "drop.log" not in result.output.text
 
 
-@pytest.mark.parametrize("operation", ["single", "batch", "marker", "unified", "delete"])
+@pytest.mark.parametrize("operation", ["single", "batch", "marker", "delete"])
 @pytest.mark.parametrize("stale", [False, True])
 def test_edit_without_read_history_keeps_hash_checks(tmp_path: Path, operation: str, stale: bool) -> None:
     target = tmp_path / "sample.txt"
@@ -988,7 +988,6 @@ def test_edit_without_read_history_keeps_hash_checks(tmp_path: Path, operation: 
     else:
         patch = {
             "marker": "*** Begin Patch\n*** Update File: sample.txt\n@@\n alpha\n-beta\n+BETA\n*** End Patch\n",
-            "unified": "--- a/sample.txt\n+++ b/sample.txt\n@@ -1,2 +1,2 @@\n alpha\n-beta\n+BETA\n",
             "delete": "*** Begin Patch\n*** Delete File: sample.txt\n*** End Patch\n",
         }[operation]
         arguments = {"patch": patch, "expectedHashes": {target.name: digest}}
@@ -1237,28 +1236,6 @@ def test_edit_replace_all_preserves_single_and_batch_result_counts(tmp_path: Pat
     else:
         assert result.body.applied is None
         assert result.body.edits is None
-
-
-@pytest.mark.parametrize("matches", [True, False])
-def test_unified_patch_never_overwrites_workspace_scratch_filename(tmp_path: Path, matches: bool) -> None:
-    from voidcode.capabilities.files.apply_patch import execute_patch
-
-    scratch = tmp_path / ".voidcode_edit.patch"
-    scratch.write_bytes(b"existing user content\x00\r\n")
-    target = tmp_path / "target.txt"
-    target.write_text("old\n", encoding="utf-8")
-    old_line = "old" if matches else "does not match"
-    patch = f"--- a/target.txt\n+++ b/target.txt\n@@ -1 +1 @@\n-{old_line}\n+new\n"
-    arguments = {"patch": patch, "expectedHashes": {"target.txt": hashlib.sha256(target.read_bytes()).hexdigest()}}
-    if matches:
-        result = execute_patch(arguments, context=_context(tmp_path))
-        assert isinstance(result, ToolSuccess)
-    else:
-        with pytest.raises(ValueError):
-            execute_patch(arguments, context=_context(tmp_path))
-    assert scratch.read_bytes() == b"existing user content\x00\r\n"
-    assert target.read_text(encoding="utf-8") == ("new\n" if matches else "old\n")
-    assert sorted(p.name for p in tmp_path.iterdir()) == [".voidcode_edit.patch", "target.txt"]
 
 
 @pytest.mark.parametrize("operation", ["add", "update", "delete", "move"])
