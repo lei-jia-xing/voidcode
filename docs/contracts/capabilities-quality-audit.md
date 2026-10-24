@@ -590,3 +590,23 @@ race windows remain pending. Full capability audit is not complete.
 Validation: 81 files/artifact unit tests and 6 core-builtins/optional-query
 integration tests passed. Ruff/source type checks passed; CodeGraph synchronized.
 Full-suite completion gate remains outstanding.
+
+## Notebook views: preserve output truncation across cell selection modes
+
+Notebook output pagination previously computed a continuation only with an explicit
+cell selector. Reading a whole notebook with output_limit omitted remaining outputs
+while reporting outputs_truncated=False and, on the last cell page, partial=False.
+Each cell now reports its own next_output_offset and omission flag; a single bool
+aggregates output truncation across the page. The top-level output continuation
+remains meaningful only with an explicit cell selector. Models can use the omitted
+cell's index plus its continuation to recover remaining outputs.
+
+Regressions cover both full-notebook and single-cell reads, including following
+the returned cursor until the view becomes complete. Replaced the local streaming
+hash loop with hashlib.file_digest. Notebook total-output limit behavior, SQLite
+budget accounting, PDF process lifetime/pagination and generic read paths still
+need audit; no completion claim for read_formats as a whole.
+
+Validation: 86 read-format/files/artifact/coverage unit tests and 7 read-loopback/
+core-builtins tests passed. Ruff/source type checks passed; CodeGraph synchronized.
+Complete capability audit and full-suite gate remain outstanding.

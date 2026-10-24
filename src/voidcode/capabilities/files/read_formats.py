@@ -220,6 +220,7 @@ def render_notebook(
     output_count = 0
     image_bytes = 0
     next_output_offset: int | None = None
+    outputs_truncated = False
     clipped_text = [False]
     raw_reference_required = False
     for index in indexes:
@@ -328,14 +329,17 @@ def render_notebook(
                     view["image"] = image_info
                 output_views.append(view)
             output_end = output_offset - 1 + len(output_views)
-            next_output_offset = output_end + 1 if cell is not None and output_end < len(outputs) else None
+            cell_next_output = output_end + 1 if output_end < len(outputs) else None
+            outputs_truncated |= cell_next_output is not None
+            if cell is not None:
+                next_output_offset = cell_next_output
             cell_view["outputs"] = output_views
             cell_view["output_offset"] = output_offset
-            cell_view["next_output_offset"] = next_output_offset
-            cell_view["outputs_truncated"] = next_output_offset is not None
+            cell_view["next_output_offset"] = cell_next_output
+            cell_view["outputs_truncated"] = cell_next_output is not None
         rendered.append(cell_view)
     next_offset = None if cell is not None or offset - 1 + len(rendered) >= len(cells) else offset + len(rendered)
-    truncated = next_offset is not None or next_output_offset is not None or clipped_text[0]
+    truncated = next_offset is not None or outputs_truncated or clipped_text[0]
     return {
         "type": "notebook",
         "source_bytes": raw,
@@ -488,11 +492,8 @@ def _extract_pdf(
 
 
 def _hash_file(path: Path) -> str:
-    digest = hashlib.sha256()
     with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(65536), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+        return hashlib.file_digest(source, "sha256").hexdigest()
 
 
 def _valid_image(data: bytes, mime: str) -> bool:
