@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Annotated, Literal, get_args
 
@@ -141,10 +141,6 @@ BoundaryStringMapping = Annotated[
 _CUSTOM_PROVIDER_KEY_PATTERN = rf"^(?!(?:{'|'.join(PROVIDER_LABELS)})$)(?!.*[/]).+$"
 
 
-def _prefer_primary[T](primary: T | None, fallback: T | None) -> T | None:
-    return primary if primary is not None else fallback
-
-
 class _ProviderPayloadModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -264,11 +260,6 @@ class ProviderConfigsPayload(_ProviderPayloadModel):
         default_factory=dict,
         json_schema_extra={"propertyNames": {"pattern": _CUSTOM_PROVIDER_KEY_PATTERN}},
     )
-
-
-class _ProviderFallbackPayload(_ProviderPayloadModel):
-    preferred_model: BoundaryRequiredString
-    fallback_models: BoundaryStringList = ()
 
 
 def _provider_config_fields() -> dict[str, tuple[str, str]]:
@@ -499,14 +490,6 @@ class AnthropicProviderConfig:
     beta_headers: tuple[str, ...] = ()
     cache_retention: Literal["none", "short", "long"] = "short"
     timeout_seconds: float | None = None
-    beta_headers_explicit: bool = field(default=False, compare=False, repr=False)
-    cache_retention_explicit: bool = field(default=False, compare=False, repr=False)
-
-    def __post_init__(self) -> None:
-        if self.beta_headers and not self.beta_headers_explicit:
-            object.__setattr__(self, "beta_headers_explicit", True)
-        if self.cache_retention != "short" and not self.cache_retention_explicit:
-            object.__setattr__(self, "cache_retention_explicit", True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -524,9 +507,6 @@ class GoogleProviderConfig:
     project: str | None = None
     region: str | None = None
     timeout_seconds: float | None = None
-
-
-type CopilotAuthMethod = Literal["token", "oauth"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -572,11 +552,6 @@ class ProviderEndpointConfig:
     openai_project: str | None = None
     wire: RoutedWire = "openai-chat-completions"
     cache_retention: Literal["none", "short", "long"] = "none"
-    auth_scheme_explicit: bool = field(default=False, compare=False, repr=False)
-
-    def __post_init__(self) -> None:
-        if self.auth_scheme != "bearer" and not self.auth_scheme_explicit:
-            object.__setattr__(self, "auth_scheme_explicit", True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -664,12 +639,6 @@ def _parse_endpoint_auth_scheme(raw_scheme: str, *, field_path: str) -> Endpoint
     raise ValueError(f"{_nested_config_field(field_path, 'auth_scheme')} must be one of: {allowed}")
 
 
-@dataclass(frozen=True, slots=True)
-class ProviderFallbackConfig:
-    preferred_model: str
-    fallback_models: tuple[str, ...] = ()
-
-
 def _provider_configs_from_entries(
     entries: Mapping[str, ProviderConfigEntry | None],
     *,
@@ -687,225 +656,6 @@ def _provider_configs_from_entries(
     if custom is not None:
         object.__setattr__(providers, "custom", custom)
     return providers
-
-
-def _provider_config_from_env(wire: _ProviderWire, env: Mapping[str, str]) -> ProviderConfigEntry | None:
-    """The config ``wire``'s credential environment variables imply, ``None`` when unset."""
-    match wire.shape:
-        case "endpoint":
-            return _endpoint_provider_config_from_env(
-                env,
-                api_key_env_var=wire.env_vars[0],
-                base_url_env_var=wire.env_vars[1],
-            )
-        case "named_endpoint":
-            api_key = env.get(wire.env_vars[0])
-            return None if not api_key else ProviderEndpointConfig(api_key=api_key)
-        case "openai":
-            api_key = env.get(wire.env_vars[0])
-            return None if not api_key else OpenAIProviderConfig(api_key=api_key)
-        case "anthropic":
-            api_key = env.get(wire.env_vars[0])
-            return None if not api_key else AnthropicProviderConfig(api_key=api_key)
-        case "google":
-            api_key = env.get(wire.env_vars[0])
-            if not api_key:
-                return None
-            return GoogleProviderConfig(auth=GoogleProviderAuthConfig(method="api_key", api_key=api_key))
-        case "copilot":
-            token = env.get(wire.env_vars[0])
-            if not token:
-                return None
-            return CopilotProviderConfig(auth=CopilotProviderAuthConfig(method="token", token=token))
-        case "openai_compatible":
-            return _openai_compatible_provider_config_from_env(env, *wire.env_vars)
-
-
-def provider_configs_from_env(env: Mapping[str, str]) -> ProviderConfigs | None:
-    """Build provider config from credential environment variables alone.
-
-    This keeps first-run provider setup lightweight: setting VOIDCODE_MODEL plus
-    the provider's standard API-key environment variable is enough for runtime
-    provider resolution without requiring a .voidcode.json providers block.
-    """
-    providers = _provider_configs_from_entries({wire.field_name: _provider_config_from_env(wire, env) for wire in PROVIDER_WIRES.values()})
-    if _provider_configs_has_entries(providers):
-        return providers
-    return None
-
-
-def merge_provider_configs(
-    primary: ProviderConfigs | None,
-    fallback: ProviderConfigs | None,
-) -> ProviderConfigs | None:
-    """Merge provider configs, preserving primary values over fallback values."""
-    if primary is None:
-        return fallback
-    if fallback is None:
-        return primary
-    return _provider_configs_from_entries(
-        {
-            wire.field_name: _MERGE_PROVIDER_CONFIG_BY_SHAPE[wire.shape](
-                getattr(primary, wire.field_name),
-                getattr(fallback, wire.field_name),
-            )
-            for wire in PROVIDER_WIRES.values()
-        },
-        custom={**fallback.custom, **primary.custom},
-    )
-
-
-def _merge_openai_provider_config(
-    primary: OpenAIProviderConfig | None,
-    fallback: OpenAIProviderConfig | None,
-) -> OpenAIProviderConfig | None:
-    if primary is None:
-        return fallback
-    if fallback is None:
-        return primary
-    return OpenAIProviderConfig(
-        api_key=_prefer_primary(primary.api_key, fallback.api_key),
-        base_url=_prefer_primary(primary.base_url, fallback.base_url),
-        organization=_prefer_primary(primary.organization, fallback.organization),
-        project=_prefer_primary(primary.project, fallback.project),
-        timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
-    )
-
-
-def _merge_anthropic_provider_config(
-    primary: AnthropicProviderConfig | None,
-    fallback: AnthropicProviderConfig | None,
-) -> AnthropicProviderConfig | None:
-    if primary is None:
-        return fallback
-    if fallback is None:
-        return primary
-    return AnthropicProviderConfig(
-        api_key=_prefer_primary(primary.api_key, fallback.api_key),
-        base_url=_prefer_primary(primary.base_url, fallback.base_url),
-        version=_prefer_primary(primary.version, fallback.version),
-        beta_headers=(primary.beta_headers if primary.beta_headers_explicit else fallback.beta_headers),
-        # Provenance rides on ``*_explicit``: the field default is never a
-        # sentinel, so an unset primary inherits the fallback while an explicit
-        # ``none`` still disables caching for the merged config.
-        cache_retention=(primary.cache_retention if primary.cache_retention_explicit else fallback.cache_retention),
-        beta_headers_explicit=primary.beta_headers_explicit or fallback.beta_headers_explicit,
-        cache_retention_explicit=primary.cache_retention_explicit or fallback.cache_retention_explicit,
-        timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
-    )
-
-
-def _merge_google_provider_config(
-    primary: GoogleProviderConfig | None,
-    fallback: GoogleProviderConfig | None,
-) -> GoogleProviderConfig | None:
-    if primary is None:
-        return fallback
-    if fallback is None:
-        return primary
-    return GoogleProviderConfig(
-        auth=_prefer_primary(primary.auth, fallback.auth),
-        base_url=_prefer_primary(primary.base_url, fallback.base_url),
-        project=_prefer_primary(primary.project, fallback.project),
-        region=_prefer_primary(primary.region, fallback.region),
-        timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
-    )
-
-
-def _merge_copilot_provider_config(
-    primary: CopilotProviderConfig | None,
-    fallback: CopilotProviderConfig | None,
-) -> CopilotProviderConfig | None:
-    if primary is None:
-        return fallback
-    if fallback is None:
-        return primary
-    return CopilotProviderConfig(
-        auth=_prefer_primary(primary.auth, fallback.auth),
-        base_url=_prefer_primary(primary.base_url, fallback.base_url),
-        timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
-    )
-
-
-def _merge_endpoint_provider_config(
-    primary: ProviderEndpointConfig | None,
-    fallback: ProviderEndpointConfig | None,
-) -> ProviderEndpointConfig | None:
-    if primary is None:
-        return fallback
-    if fallback is None:
-        return primary
-    return ProviderEndpointConfig(
-        api_key=_prefer_primary(primary.api_key, fallback.api_key),
-        api_key_env_var=_prefer_primary(primary.api_key_env_var, fallback.api_key_env_var),
-        base_url=_prefer_primary(primary.base_url, fallback.base_url),
-        auth_header=_prefer_primary(primary.auth_header, fallback.auth_header),
-        auth_scheme=(primary.auth_scheme if primary.auth_scheme_explicit else fallback.auth_scheme),
-        auth_scheme_explicit=primary.auth_scheme_explicit or fallback.auth_scheme_explicit,
-        ssl_verify=_prefer_primary(primary.ssl_verify, fallback.ssl_verify),
-        timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
-        model_map={**fallback.model_map, **primary.model_map},
-    )
-
-
-def _merge_openai_compatible_provider_config(
-    primary: OpenAICompatibleProviderConfig | None,
-    fallback: OpenAICompatibleProviderConfig | None,
-) -> OpenAICompatibleProviderConfig | None:
-    if primary is None:
-        return fallback
-    if fallback is None:
-        return primary
-    return OpenAICompatibleProviderConfig(
-        api_key=_prefer_primary(primary.api_key, fallback.api_key),
-        api_key_env_var=_prefer_primary(primary.api_key_env_var, fallback.api_key_env_var),
-        base_url=_prefer_primary(primary.base_url, fallback.base_url),
-        ssl_verify=_prefer_primary(primary.ssl_verify, fallback.ssl_verify),
-        timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
-        model_map={**fallback.model_map, **primary.model_map},
-    )
-
-
-#: How two entries of one shape merge, primary winning. Each merge function
-#: takes its own config type, so the table is heterogeneous and is called with
-#: entries that came from ``getattr`` on the two ``ProviderConfigs``.
-_MERGE_PROVIDER_CONFIG_BY_SHAPE: Mapping[_ProviderShape, Callable[..., ProviderConfigEntry | None]] = {
-    "openai": _merge_openai_provider_config,
-    "anthropic": _merge_anthropic_provider_config,
-    "google": _merge_google_provider_config,
-    "copilot": _merge_copilot_provider_config,
-    "endpoint": _merge_endpoint_provider_config,
-    "named_endpoint": _merge_endpoint_provider_config,
-    "openai_compatible": _merge_openai_compatible_provider_config,
-}
-
-
-def _endpoint_provider_config_from_env(
-    env: Mapping[str, str],
-    *,
-    api_key_env_var: str,
-    base_url_env_var: str,
-) -> ProviderEndpointConfig | None:
-    api_key = env.get(api_key_env_var)
-    base_url = env.get(base_url_env_var)
-    if api_key is None and base_url is None:
-        return None
-    return ProviderEndpointConfig(api_key=api_key, base_url=base_url)
-
-
-def _openai_compatible_provider_config_from_env(
-    env: Mapping[str, str],
-    *api_key_env_vars: str,
-) -> OpenAICompatibleProviderConfig | None:
-    for api_key_env_var in api_key_env_vars:
-        api_key = env.get(api_key_env_var)
-        if api_key is not None:
-            return OpenAICompatibleProviderConfig(api_key=api_key)
-    return None
-
-
-def _provider_configs_has_entries(providers: ProviderConfigs) -> bool:
-    return any(getattr(providers, wire.field_name) for wire in PROVIDER_WIRES.values()) or bool(providers.custom)
 
 
 def _runtime_config_field_name(field_path: str) -> str | None:
@@ -1065,88 +815,6 @@ def parse_provider_configs_payload(
     )
 
 
-def _serialize_provider_config_entry(
-    entry: ProviderConfigEntry,
-    *,
-    include_secrets: bool,
-) -> dict[str, object]:
-    """Serialize one provider's config through its own shape's serializer."""
-    match entry:
-        case OpenAIProviderConfig():
-            return _serialize_openai_provider_config(entry, include_secrets=include_secrets)
-        case AnthropicProviderConfig():
-            return _serialize_anthropic_provider_config(entry, include_secrets=include_secrets)
-        case GoogleProviderConfig():
-            return _serialize_google_provider_config(entry, include_secrets=include_secrets)
-        case CopilotProviderConfig():
-            return _serialize_copilot_provider_config(entry, include_secrets=include_secrets)
-        case ProviderEndpointConfig():
-            return _serialize_endpoint_provider_config(entry, include_secrets=include_secrets)
-        case OpenAICompatibleProviderConfig():
-            return _serialize_openai_compatible_provider_config(entry, include_secrets=include_secrets)
-
-
-def serialize_provider_configs(
-    providers: ProviderConfigs | None,
-    *,
-    include_secrets: bool = False,
-) -> dict[str, object] | None:
-    if providers is None:
-        return None
-    serialized: dict[str, object] = {}
-    for wire in PROVIDER_WIRES.values():
-        entry = getattr(providers, wire.field_name)
-        if entry is None:
-            continue
-        serialized[wire.payload_key] = _serialize_provider_config_entry(
-            entry,
-            include_secrets=include_secrets,
-        )
-    if providers.custom:
-        serialized["custom"] = {
-            provider_name: _serialize_endpoint_provider_config(
-                custom_config,
-                include_secrets=include_secrets,
-            )
-            for provider_name, custom_config in providers.custom.items()
-        }
-    return serialized
-
-
-def parse_provider_fallback_payload(
-    raw_provider_fallback: object,
-    *,
-    source: str,
-) -> ProviderFallbackConfig | None:
-    if raw_provider_fallback is None:
-        return None
-    payload = _validate_provider_payload_model(
-        raw_provider_fallback,
-        field_path=source,
-        model_type=_ProviderFallbackPayload,
-    )
-    preferred_model = payload.preferred_model
-    fallback_models = payload.fallback_models
-    ordered_models = (preferred_model, *fallback_models)
-    if len(set(ordered_models)) != len(ordered_models):
-        raise ValueError("provider fallback chain must not contain duplicate models")
-    return ProviderFallbackConfig(
-        preferred_model=preferred_model,
-        fallback_models=fallback_models,
-    )
-
-
-def serialize_provider_fallback_config(
-    provider_fallback: ProviderFallbackConfig | None,
-) -> dict[str, object] | None:
-    if provider_fallback is None:
-        return None
-    return {
-        "preferred_model": provider_fallback.preferred_model,
-        "fallback_models": list(provider_fallback.fallback_models),
-    }
-
-
 def _parse_openai_provider_config(
     raw_value: object,
     *,
@@ -1206,8 +874,6 @@ def _parse_anthropic_provider_config(
         version=payload.version,
         beta_headers=payload.beta_headers or (),
         cache_retention=payload.cache_retention,
-        beta_headers_explicit="beta_headers" in payload.model_fields_set,
-        cache_retention_explicit="cache_retention" in payload.model_fields_set,
         timeout_seconds=payload.timeout_seconds,
     )
 
@@ -1439,7 +1105,6 @@ def _parse_endpoint_provider_config(
         base_url=base_url,
         auth_header=payload.auth_header,
         auth_scheme=auth_scheme,
-        auth_scheme_explicit=raw_auth_scheme is not None,
         ssl_verify=payload.ssl_verify,
         timeout_seconds=payload.timeout_seconds,
         model_map=payload.model_map or {},
@@ -1485,160 +1150,6 @@ def _parse_openai_compatible_provider_config(
         timeout_seconds=payload.timeout_seconds,
         model_map=payload.model_map or {},
     )
-
-
-def _serialize_openai_provider_config(
-    provider: OpenAIProviderConfig,
-    *,
-    include_secrets: bool,
-) -> dict[str, object]:
-    payload: dict[str, object] = {}
-    if include_secrets and provider.api_key is not None:
-        payload["api_key"] = provider.api_key
-    if provider.base_url is not None:
-        payload["base_url"] = provider.base_url
-    if provider.organization is not None:
-        payload["organization"] = provider.organization
-    if provider.project is not None:
-        payload["project"] = provider.project
-    if provider.timeout_seconds is not None:
-        payload["timeout_seconds"] = provider.timeout_seconds
-    return payload
-
-
-def _serialize_anthropic_provider_config(
-    provider: AnthropicProviderConfig,
-    *,
-    include_secrets: bool,
-) -> dict[str, object]:
-    payload: dict[str, object] = {}
-    if include_secrets and provider.api_key is not None:
-        payload["api_key"] = provider.api_key
-    if provider.base_url is not None:
-        payload["base_url"] = provider.base_url
-    if provider.version is not None:
-        payload["version"] = provider.version
-    if provider.beta_headers or provider.beta_headers_explicit:
-        payload["beta_headers"] = list(provider.beta_headers)
-    if provider.cache_retention != "none":
-        payload["cache_retention"] = provider.cache_retention
-    if provider.timeout_seconds is not None:
-        payload["timeout_seconds"] = provider.timeout_seconds
-    return payload
-
-
-def _serialize_google_provider_config(
-    provider: GoogleProviderConfig,
-    *,
-    include_secrets: bool,
-) -> dict[str, object]:
-    payload: dict[str, object] = {}
-    if provider.auth is not None:
-        payload["auth"] = _serialize_google_auth_config(provider.auth, include_secrets=include_secrets)
-    if provider.base_url is not None:
-        payload["base_url"] = provider.base_url
-    if provider.project is not None:
-        payload["project"] = provider.project
-    if provider.region is not None:
-        payload["region"] = provider.region
-    if provider.timeout_seconds is not None:
-        payload["timeout_seconds"] = provider.timeout_seconds
-    return payload
-
-
-def _serialize_google_auth_config(
-    auth: GoogleProviderAuthConfig,
-    *,
-    include_secrets: bool,
-) -> dict[str, object]:
-    payload: dict[str, object] = {"method": auth.method}
-    if include_secrets and auth.api_key is not None:
-        payload["api_key"] = auth.api_key
-    if include_secrets and auth.access_token is not None:
-        payload["access_token"] = auth.access_token
-    if auth.service_account_json_path is not None:
-        payload["service_account_json_path"] = auth.service_account_json_path
-    return payload
-
-
-def _serialize_copilot_provider_config(
-    provider: CopilotProviderConfig,
-    *,
-    include_secrets: bool,
-) -> dict[str, object]:
-    payload: dict[str, object] = {}
-    if provider.auth is not None:
-        payload["auth"] = _serialize_copilot_auth_config(
-            provider.auth,
-            include_secrets=include_secrets,
-        )
-    if provider.base_url is not None:
-        payload["base_url"] = provider.base_url
-    if provider.timeout_seconds is not None:
-        payload["timeout_seconds"] = provider.timeout_seconds
-    return payload
-
-
-def _serialize_copilot_auth_config(
-    auth: CopilotProviderAuthConfig,
-    *,
-    include_secrets: bool,
-) -> dict[str, object]:
-    payload: dict[str, object] = {"method": auth.method}
-    if include_secrets and auth.token is not None:
-        payload["token"] = auth.token
-    if auth.token_env_var is not None:
-        payload["token_env_var"] = auth.token_env_var
-    if include_secrets and auth.refresh_token is not None:
-        payload["refresh_token"] = auth.refresh_token
-    if auth.refresh_leeway_seconds is not None:
-        payload["refresh_leeway_seconds"] = auth.refresh_leeway_seconds
-    return payload
-
-
-def _serialize_endpoint_provider_config(
-    provider: ProviderEndpointConfig,
-    *,
-    include_secrets: bool,
-) -> dict[str, object]:
-    payload: dict[str, object] = {}
-    if include_secrets and provider.api_key is not None:
-        payload["api_key"] = provider.api_key
-    if provider.api_key_env_var is not None:
-        payload["api_key_env_var"] = provider.api_key_env_var
-    if provider.base_url is not None:
-        payload["base_url"] = provider.base_url
-    if provider.auth_header is not None:
-        payload["auth_header"] = provider.auth_header
-    payload["auth_scheme"] = provider.auth_scheme
-    if provider.ssl_verify is not None:
-        payload["ssl_verify"] = provider.ssl_verify
-    if provider.timeout_seconds is not None:
-        payload["timeout_seconds"] = provider.timeout_seconds
-    if provider.model_map:
-        payload["model_map"] = dict(provider.model_map)
-    return payload
-
-
-def _serialize_openai_compatible_provider_config(
-    provider: OpenAICompatibleProviderConfig,
-    *,
-    include_secrets: bool,
-) -> dict[str, object]:
-    payload: dict[str, object] = {}
-    if include_secrets and provider.api_key is not None:
-        payload["api_key"] = provider.api_key
-    if provider.api_key_env_var is not None:
-        payload["api_key_env_var"] = provider.api_key_env_var
-    if provider.base_url is not None:
-        payload["base_url"] = provider.base_url
-    if provider.ssl_verify is not None:
-        payload["ssl_verify"] = provider.ssl_verify
-    if provider.timeout_seconds is not None:
-        payload["timeout_seconds"] = provider.timeout_seconds
-    if provider.model_map:
-        payload["model_map"] = dict(provider.model_map)
-    return payload
 
 
 def _parse_custom_endpoint_provider_configs(

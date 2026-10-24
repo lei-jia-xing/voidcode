@@ -448,8 +448,7 @@ class OpenAIChatCompletionsProvider:
                 # Credentials come only from resolved provider config: an ambient
                 # ``OPENAI_API_KEY`` must never be attached to another vendor's endpoint
                 # (or to the default base URL when the provider block is absent).
-                # ``provider_configs_from_env`` already resolves that variable into
-                # ``providers.openai``. A missing key means "send no credential" -- the
+                # A missing configured key means "send no credential" -- the
                 # transport still hands the SDK a placeholder so it never sends an empty one.
                 config = self.config
                 endpoint = config if isinstance(config, ProviderEndpointConfig) else None

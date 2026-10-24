@@ -266,3 +266,24 @@ Tenacity, but adding it during cleanup would expand product behavior.
 Validation: 131 provider tests passed (33.04s), followed by 11 focused error
 tests including rejection of the ineffective transient_retry setting. Ruff,
 formatting and source type checks passed.
+
+## Provider configuration dead-path removal and repository checkpoint
+
+Full suite at `7654b13`: 1527 passed, 1 skipped (361.55s), with a
+CoreActivationDriver/store-closed thread warning in SDK facts teardown.
+Removed unreferenced environment-only config construction, config merging,
+serialization and fallback config parsing/serialization. Removed merge-only
+explicitness flags and their post-init mutation, plus a duplicate auth type alias.
+Active typed config ingress and auth resolution remain. Config module loses
+approximately 490 lines; its remaining ingress helpers still need final review.
+
+Validation after removal: 136 provider/built-in/SDK-fact tests passed (39.96s).
+The same core shutdown warning reproduced; it is not hidden or counted as a
+clean gate. It is a separate core teardown issue to resolve before final auditing.
+Ruff, formatting and source type checks passed.
+
+Public catalog follow-up: the existing generator reads a third-party models.dev
+mirror and has no scheduled refresh workflow. User requested upstream model data
+to reduce manual JSON maintenance. Investigated official models.dev JSON APIs
+and OpenRouter model metadata; automated snapshot generation is the proposed next
+step. No source/refresh behavior has been changed yet.

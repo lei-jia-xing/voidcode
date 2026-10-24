@@ -337,8 +337,7 @@ class AnthropicMessagesProvider:
                     # Credentials come only from resolved provider config: an ambient
                     # ``ANTHROPIC_API_KEY`` must never be attached to another
                     # Anthropic-wire vendor's endpoint (or to the default base URL when
-                    # the provider block is absent). ``provider_configs_from_env``
-                    # already resolves that variable into ``providers.anthropic``.
+                    # the provider block is absent).
                     api_key=config.api_key if config else None,
                     version=config.version if config and config.version else _DEFAULT_ANTHROPIC_VERSION,
                     beta_headers=config.beta_headers if config else (),
