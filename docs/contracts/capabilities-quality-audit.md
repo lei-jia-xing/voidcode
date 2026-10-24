@@ -10,12 +10,12 @@ not establish source review.
 
 | File | Current audit status |
 | --- | --- |
-| `__init__.py` | Pending full source review |
+| `__init__.py` | Reviewed: documentation-only shared capability boundary |
 | `exec/__init__.py` | Pending full source review |
 | `exec/args.py` | Reviewed source/consumers: three small nonempty field validators used by strict exec argument models |
 | `exec/background_process.py` | Pending full source review |
 | `exec/shell_exec.py` | Pending full source review |
-| `files/__init__.py` | Pending full source review |
+| `files/__init__.py` | Reviewed: typed Tool wrapper preserves diagnostic failures; shared core/plugin factory |
 | `files/apply_patch.py` | Partial: read guards and fuzzy repair hints removed; final mutation/ingress review pending |
 | `files/apply_workspace_edit.py` | Pending full source review |
 | `files/edit_tool.py` | Partial: read guards and fuzzy repair hints removed; final mutation/ingress review pending |
@@ -29,12 +29,11 @@ not establish source review.
 | `frontmatter.py` | Reviewed source/consumers: safe YAML, duplicate/string-key validation, framing/body/bounds; shared parser tests |
 | `providers/__init__.py` | Pending full source review |
 | `providers/dispatch.py` | Pending full source review |
-| `providers/native/__init__.py` | Pending full source review |
+| `providers/native/__init__.py` | Reviewed: documentation-only namespace, no side effects |
 | `providers/native/_resources.py` | Reviewed: contained package paths and JSON loading; removed unused installed-data locator/text wrapper |
 | `providers/native/_result_sanitize.py` | Pending full source review |
 | `providers/native/_wire_common.py` | Reviewed: usage counts, tool IDs, request headers, bounded queue/stream timeout/error cleanup, owned-resource initialization |
 | `providers/native/anthropic_native.py` | Pending full source review |
-| `providers/native/auth.py` | Pending full source review |
 | `providers/native/claude_tokenizer/__init__.py` | Pending full source review |
 | `providers/native/claude_tokenizer/constants.py` | Pending full source review |
 | `providers/native/claude_tokenizer/engine.py` | Pending full source review |
@@ -366,3 +365,23 @@ remains a protocol quirk pending its final review.
 Validation: 136 generator/provider/thinking/usage/stream tests passed (32.09s),
 including Google unnamed-model level selection and Anthropic adaptive/off payloads.
 Ruff, formatting and source type checks passed.
+
+## Remove unused authorization framework
+
+Repository-wide consumer audit found ProviderAuthResolver and its authorize/
+callback/method/result types only referenced by their own module and unit tests.
+They are absent from CLI, HTTP, SDK contracts and plugin registration. Removed
+that unconnected 771-line framework and its isolated callback tests, retaining
+registered-provider credential/header/redaction tests and active config parsing.
+Removed Copilot refresh_token/refresh_leeway_seconds fields that no executor reads,
+and their orphan positive-number validator. Supplied OAuth access tokens and
+service-account loading remain supported by the actual adapters.
+
+Unified Copilot token/token_env_var exclusivity for both labels. Fixed the old env
+resolution path setting both a token value and its variable reference, which then
+rejected its own result. New active-ingress tests reject unsupported refresh fields
+and verify the environment token path. Files diagnostic wrapper now accepts the
+SDK Tool protocol instead of Any. Namespace docstrings reflect shared capabilities.
+
+Validation: 135 generator/provider/auth-ingress/thinking/usage/stream tests passed
+(32.67s). Ruff, formatting and source type checks passed.

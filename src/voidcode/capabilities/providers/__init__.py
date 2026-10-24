@@ -1,9 +1,7 @@
-"""The official ``providers`` plugin: every provider policy artifact.
+"""Shared provider adapters and the optional provider information plugin.
 
-Owns the provider table, thinking/pricing/API-routing rules, model catalog
-datasets, tokenizer routing, the native wire adapters, provider dispatch, and the
-read-only ``providers``/``model`` information panels. The core selects a
-registered provider name and never learns which vendor policy answered it.
+Catalog/protocol data, SDK wire adapters and registered providers are shared by
+core defaults and plugin admission. The factory adds read-only information views.
 """
 
 from collections.abc import Mapping

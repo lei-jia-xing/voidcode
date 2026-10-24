@@ -38,14 +38,6 @@ def _parse_optional_boundary_timeout(value: object) -> float | None:
     return float(value)
 
 
-def _parse_optional_boundary_positive_int(value: object) -> int | None:
-    if value is None:
-        return None
-    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-        raise ValueError("must be an integer greater than or equal to 1 when provided")
-    return value
-
-
 def _parse_optional_boundary_bool(value: object) -> bool | None:
     if value is None:
         return None
@@ -112,7 +104,6 @@ type RoutedWire = Literal["openai-chat-completions", "anthropic-messages", "goog
 # deciding acceptance and its messages, exactly as before these models were made
 # public for schema generation.
 BoundarySchemaNumber = Annotated[float, Field(json_schema_extra={"exclusiveMinimum": 0})]
-BoundarySchemaPositiveInt = Annotated[int, Field(json_schema_extra={"minimum": 1})]
 BoundarySchemaString = Annotated[str, Field()]
 #: The endpoint auth scheme publishes its enum inside the string branch so the
 #: field also accepts an explicit null (which the parser normalises).
@@ -124,7 +115,6 @@ BoundarySchemaNonEmptyString = Annotated[str, Field(json_schema_extra={"minLengt
 BoundaryOptionalString = Annotated[BoundarySchemaString | None, BeforeValidator(_parse_optional_boundary_string)]
 BoundaryRequiredString = Annotated[str, BeforeValidator(_parse_required_boundary_string)]
 BoundaryOptionalTimeout = Annotated[BoundarySchemaNumber | None, BeforeValidator(_parse_optional_boundary_timeout)]
-BoundaryOptionalPositiveInt = Annotated[BoundarySchemaPositiveInt | None, BeforeValidator(_parse_optional_boundary_positive_int)]
 BoundaryOptionalBool = Annotated[bool | None, BeforeValidator(_parse_optional_boundary_bool)]
 BoundaryStringList = Annotated[tuple[str, ...], BeforeValidator(_parse_boundary_string_list)]
 BoundaryStringMapping = Annotated[
@@ -187,8 +177,6 @@ class _CopilotProviderAuthConfigPayload(_ProviderPayloadModel):
     )
     token: BoundaryOptionalString = None
     token_env_var: BoundaryOptionalString = None
-    refresh_token: BoundaryOptionalString = None
-    refresh_leeway_seconds: BoundaryOptionalPositiveInt = None
 
 
 class _CopilotProviderConfigPayload(_ProviderPayloadModel):
@@ -514,8 +502,6 @@ class CopilotProviderAuthConfig:
     method: CopilotAuthMethod
     token: str | None = None
     token_env_var: str | None = None
-    refresh_token: str | None = None
-    refresh_leeway_seconds: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1025,40 +1011,15 @@ def _parse_copilot_auth_config(
     token_env_var = payload.token_env_var
     if token is None and token_env_var is None:
         token = env.get(default_token_env_var)
-        if token is not None:
-            token_env_var = default_token_env_var
-    refresh_token = payload.refresh_token
-    refresh_leeway_seconds = payload.refresh_leeway_seconds
-
-    if method == "token":
-        if token is None and token_env_var is None:
-            raise ValueError(
-                f"{_nested_config_field(field_path, 'token')} or "
-                f"{_nested_config_field(field_path, 'token_env_var')} "
-                "must be provided when method is token"
-            )
-        if token is not None and token_env_var is not None:
-            raise ValueError(
-                f"{_nested_config_field(field_path, 'token')} and {_nested_config_field(field_path, 'token_env_var')} must not both be set"
-            )
-        if refresh_token is not None:
-            raise ValueError(f"{_nested_config_field(field_path, 'refresh_token')} must not be set when method is token")
-        if refresh_leeway_seconds is not None:
-            raise ValueError(f"{_nested_config_field(field_path, 'refresh_leeway_seconds')} must not be set when method is token")
-    else:
-        if token is None and token_env_var is None:
-            raise ValueError(
-                f"{_nested_config_field(field_path, 'token')} or "
-                f"{_nested_config_field(field_path, 'token_env_var')} "
-                "must be provided when method is oauth"
-            )
+    if token is None and token_env_var is None:
+        raise ValueError(f"{field_path} requires token or token_env_var")
+    if token is not None and token_env_var is not None:
+        raise ValueError(f"{field_path} token and token_env_var must not both be set")
 
     return CopilotProviderAuthConfig(
         method=method,
         token=token,
         token_env_var=token_env_var,
-        refresh_token=refresh_token,
-        refresh_leeway_seconds=refresh_leeway_seconds,
     )
 
 

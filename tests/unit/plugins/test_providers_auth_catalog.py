@@ -29,23 +29,6 @@ from cryptography.x509.oid import NameOID
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.capabilities.providers.dispatch import RegisteredProvider, build_registered_providers
-from voidcode.capabilities.providers.native.auth import (
-    ProviderAuthAuthorizeRequest,
-    ProviderAuthCallbackRequest,
-    ProviderAuthResolutionError,
-    ProviderAuthResolver,
-)
-from voidcode.capabilities.providers.native.config import (
-    AnthropicProviderConfig,
-    CopilotProviderAuthConfig,
-    CopilotProviderConfig,
-    GoogleProviderAuthConfig,
-    GoogleProviderConfig,
-    OpenAICompatibleProviderConfig,
-    OpenAIProviderConfig,
-    ProviderConfigs,
-    ProviderEndpointConfig,
-)
 from voidcode.capabilities.providers.native.model_catalog import static_catalog_metadata
 from voidcode.capabilities.providers.pricing import price_usage, usage_cost_usd
 from voidcode.sdk.provider import (
@@ -498,134 +481,6 @@ def test_endpoint_ssl_verify_passes_through_to_the_http_client(servers: _Servers
 # ---------------------------------------------------------------------------
 
 
-def test_auth_authorize_material_follows_each_providers_own_header_shape() -> None:
-    resolver = ProviderAuthResolver(
-        providers=ProviderConfigs(
-            openai=OpenAIProviderConfig(api_key="openai-key"),
-            anthropic=AnthropicProviderConfig(api_key="anthropic-key"),
-            google=GoogleProviderConfig(auth=GoogleProviderAuthConfig(method="api_key", api_key="google-key")),
-            github_copilot=CopilotProviderConfig(auth=CopilotProviderAuthConfig(method="token", token="copilot-token")),
-            deepseek=OpenAICompatibleProviderConfig(api_key="deepseek-key"),
-            endpoint=ProviderEndpointConfig(api_key="endpoint-key"),
-        )
-    )
-
-    openai = resolver.authorize(ProviderAuthAuthorizeRequest(provider="openai"))
-    anthropic = resolver.authorize(ProviderAuthAuthorizeRequest(provider="anthropic"))
-    google = resolver.authorize(ProviderAuthAuthorizeRequest(provider="google"))
-    copilot = resolver.authorize(ProviderAuthAuthorizeRequest(provider="github-copilot"))
-    compatible = resolver.authorize(ProviderAuthAuthorizeRequest(provider="deepseek"))
-    endpoint = resolver.authorize(ProviderAuthAuthorizeRequest(provider="endpoint"))
-
-    assert openai.status == "authorized" and openai.material is not None
-    assert openai.material.headers == {"Authorization": "Bearer openai-key"}
-    assert anthropic.material is not None and anthropic.material.headers == {"x-api-key": "anthropic-key"}
-    # Google's key travels as auth metadata: its wire spells the credential itself.
-    assert google.material is not None and google.material.headers == {} and google.material.metadata == {"api_key": "google-key"}
-    assert copilot.material is not None and copilot.material.headers == {"Authorization": "Bearer copilot-token"}
-    assert compatible.material is not None and compatible.material.headers == {"Authorization": "Bearer deepseek-key"}
-    assert endpoint.material is not None and endpoint.material.headers == {"Authorization": "Bearer endpoint-key"}
-
-
-def test_auth_methods_report_the_default_each_provider_configuration_declares() -> None:
-    resolver = ProviderAuthResolver(
-        providers=ProviderConfigs(
-            google=GoogleProviderConfig(auth=GoogleProviderAuthConfig(method="service_account")),
-            github_copilot=CopilotProviderConfig(auth=CopilotProviderAuthConfig(method="oauth")),
-            endpoint=ProviderEndpointConfig(auth_scheme="none", api_key="unused"),
-        )
-    )
-
-    openai = resolver.methods("openai")
-    google = resolver.methods("google")
-    copilot = resolver.methods("github-copilot")
-    endpoint = resolver.methods("endpoint")
-
-    assert [method.id for method in openai.methods] == ["api_key"]
-    assert [method.id for method in google.methods] == ["api_key", "oauth", "service_account"]
-    assert google.default_method == "service_account"
-    assert [method.id for method in copilot.methods] == ["token", "oauth"]
-    assert copilot.default_method == "oauth"
-    assert [method.id for method in endpoint.methods] == ["api_key", "none"]
-    # A ``none`` scheme is the endpoint's configured default: it must never ask for a key.
-    assert endpoint.default_method == "none"
-    keyless = resolver.authorize(ProviderAuthAuthorizeRequest(provider="endpoint"))
-    assert keyless.status == "authorized" and keyless.material is not None
-    assert keyless.material.headers == {}
-
-
-def test_google_and_copilot_oauth_round_trip_through_a_single_use_callback() -> None:
-    resolver = ProviderAuthResolver(providers=ProviderConfigs())
-
-    google = resolver.authorize(ProviderAuthAuthorizeRequest(provider="google", method="oauth"))
-    assert google.status == "needs_callback"
-    assert google.callback is not None
-    google_material = resolver.callback(
-        ProviderAuthCallbackRequest(
-            provider="google",
-            method="oauth",
-            state=google.callback.state,
-            payload={"access_token": "google-oauth-token"},
-        )
-    )
-    assert google_material.headers == {"Authorization": "Bearer google-oauth-token"}
-
-    copilot = resolver.authorize(ProviderAuthAuthorizeRequest(provider="github-copilot", method="oauth"))
-    assert copilot.status == "needs_callback" and copilot.callback is not None
-    copilot_material = resolver.callback(
-        ProviderAuthCallbackRequest(
-            provider="github-copilot",
-            method="oauth",
-            state=copilot.callback.state,
-            payload={"token": "copilot-oauth-token", "refresh_token": "refresh-1"},
-        )
-    )
-    assert copilot_material.headers == {"Authorization": "Bearer copilot-oauth-token"}
-    assert copilot_material.metadata == {"refresh_token": "refresh-1"}
-
-    with pytest.raises(ProviderAuthResolutionError) as reused:
-        resolver.callback(
-            ProviderAuthCallbackRequest(
-                provider="github-copilot",
-                method="oauth",
-                state=copilot.callback.state,
-                payload={"token": "copilot-oauth-token"},
-            )
-        )
-    assert reused.value.code == "invalid_state"
-
-
-def test_auth_authorize_and_callback_reject_forged_or_unsupported_requests() -> None:
-    resolver = ProviderAuthResolver(providers=ProviderConfigs(google=GoogleProviderConfig(auth=GoogleProviderAuthConfig(method="oauth"))))
-
-    with pytest.raises(ProviderAuthResolutionError) as forged_state:
-        resolver.callback(
-            ProviderAuthCallbackRequest(
-                provider="google",
-                method="oauth",
-                state="voidcode:google:oauth:callback:forged",
-                payload={"access_token": "attacker"},
-            )
-        )
-    assert forged_state.value.code == "invalid_state"
-    assert forged_state.value.provider_error_kind == "invalid_model"
-
-    with pytest.raises(ProviderAuthResolutionError) as unsupported_callback:
-        resolver.callback(ProviderAuthCallbackRequest(provider="google", method="api_key", state="whatever"))
-    assert unsupported_callback.value.code == "callback_not_supported"
-
-    # A request that names a method other than the configured one is refused rather than guessed at.
-    with pytest.raises(ProviderAuthResolutionError) as mismatched:
-        resolver.authorize(ProviderAuthAuthorizeRequest(provider="google", method="api_key", payload={"api_key": "submitted"}))
-    assert mismatched.value.code == "invalid_payload"
-    assert mismatched.value.message == "provider auth method 'api_key' for provider 'google' must match configured method 'oauth'"
-
-    with pytest.raises(ProviderAuthResolutionError) as missing:
-        ProviderAuthResolver(providers=ProviderConfigs()).authorize(ProviderAuthAuthorizeRequest(provider="deepseek"))
-    assert missing.value.code == "missing_credentials"
-    assert missing.value.message == "provider auth field 'deepseek.api_key' must be provided for deepseek api_key auth"
-
-
 # ---------------------------------------------------------------------------
 # Credential confinement
 # ---------------------------------------------------------------------------
@@ -656,18 +511,6 @@ def test_credentials_never_appear_in_a_registered_provider_repr_or_in_an_error(s
     assert excinfo.value.kind == "not_configured"
     assert secret not in f"{excinfo.value.message} {excinfo.value.details} {excinfo.value!r}"
     assert server.requests == []
-
-    resolver = ProviderAuthResolver(providers=ProviderConfigs(deepseek=OpenAICompatibleProviderConfig(api_key=secret)))
-    with pytest.raises(ProviderAuthResolutionError) as auth_error:
-        resolver.authorize(ProviderAuthAuthorizeRequest(provider="deepseek", method="none"))
-    assert secret not in f"{auth_error.value.message} {auth_error.value!r}"
-
-    # A rejected payload is named by field, never echoed back.
-    with pytest.raises(ProviderAuthResolutionError) as invalid_payload:
-        ProviderAuthResolver(providers=ProviderConfigs()).authorize(ProviderAuthAuthorizeRequest(provider="deepseek", payload={"api_key": 12345}))
-    assert invalid_payload.value.code == "invalid_payload"
-    assert invalid_payload.value.message == "provider auth authorize payload.api_key must be a string when provided"
-    assert "12345" not in f"{invalid_payload.value.message} {invalid_payload.value!r}"
 
 
 # ---------------------------------------------------------------------------

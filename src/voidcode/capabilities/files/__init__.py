@@ -1,8 +1,6 @@
-"""Files plugin: workspace read, write, edit, and search tools (patch runs inside edit)."""
+"""Shared workspace read, write, edit and search tools."""
 
 from __future__ import annotations
-
-from typing import Any
 
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices
@@ -23,7 +21,7 @@ class _ModelVisibleTool:
     Preserve actionable edit diagnostics such as stale hashes and ambiguous matches.
     """
 
-    def __init__(self, inner: Any) -> None:
+    def __init__(self, inner: Tool) -> None:
         self._inner = inner
         self.definition = inner.definition
 

@@ -43,3 +43,21 @@ def test_unsupported_retry_configuration_is_rejected():
 
     with pytest.raises(ValueError, match="transient_retry"):
         provider_configs({"providers": {"openai": {"transient_retry": {"max_retries": 3}}}})
+
+
+@pytest.mark.parametrize("field", ["refresh_token", "refresh_leeway_seconds"])
+def test_unimplemented_token_refresh_configuration_is_rejected(field):
+    from voidcode.capabilities.providers.dispatch import provider_configs
+
+    with pytest.raises(ValueError, match=field):
+        provider_configs({"providers": {"github-copilot": {"auth": {"method": "oauth", "token": "supplied-token", field: "unused"}}}})
+
+
+def test_copilot_environment_token_resolves_without_an_ambiguous_reference():
+    from voidcode.capabilities.providers.native.config import parse_provider_configs_payload
+    from voidcode.capabilities.providers.native.provider_table import PROVIDER_TABLE_BY_ID
+
+    name = PROVIDER_TABLE_BY_ID["github-copilot"].env_vars[0]
+    configs = parse_provider_configs_payload({"github-copilot": {"auth": {"method": "token"}}}, source="test", env={name: "test-token"})
+    assert configs.github_copilot.auth.token == "test-token"
+    assert configs.github_copilot.auth.token_env_var is None
