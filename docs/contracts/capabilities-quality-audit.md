@@ -961,3 +961,38 @@ Validation: 212 provider/generator/stream tests passed, followed by all 14 final
 registered-dispatch cases after chronological call-id handling. Seven core-builtins/
 read-loopback tests passed. Ruff/source type checks passed; CodeGraph synchronized.
 Complete capability audit and final full-suite gate remain outstanding.
+
+## Validation blocker: core coordination worker/resource shutdown order
+
+Reproduced the previously recorded SDK facts warning as a failing test with
+PytestUnhandledThreadExceptionWarning promoted to error. CoreActivationDriver
+called store.sessions after the store was closed. Core.close closed its resource
+stack before joining driver/ticker, and CoreAdmitDriver was not tracked at all.
+
+Moved coordination worker ownership into the existing ExitStack, before runtime/
+store callbacks unwind. One background worker list covers activation, ticker and
+admit passes; a separate started flag preserves one-time background startup.
+Thread start/registration happens under the existing session-lock guard, preventing
+shutdown from joining an unstarted thread or missing an admitted coordinator.
+Completed admit workers are pruned when a new pass starts. Joining is complete
+before resource release, including failure during final constructor revision
+recording. No background framework or exception-suppression workaround added.
+
+Four synchronized regressions verify store readability until each coordinator
+finishes and safe failed-start cleanup/reopening of the workspace lease. The SDK
+facts reproduction plus upgrade drain/admit tests passed (13 tests), with thread
+warnings still treated as failures. Shutdown waits for admitted coordination work;
+noncooperative trusted code can delay it, as with the existing session-drain rule.
+The separate child-session threads remain governed by their session lifecycle;
+this change does not claim a full audit of unrelated core concurrency.
+
+Inventory reconciliation found every current capabilities file represented in the
+ledger, with 34 entries still partial/pending. Full-suite validation of this repair
+is an audit checkpoint; remaining source/data reviews retain their scope.
+
+Full Python checkpoint: 1660 passed, 1 skipped in 367.78s with
+-W error::pytest.PytestUnhandledThreadExceptionWarning. No warnings were reported;
+the original store-closed thread failure is resolved. Ruff/format/source type checks
+passed and CodeGraph synchronized. This supersedes the earlier warning-bearing
+full-suite checkpoint. The full capabilities objective remains open with the source/
+data entries above still partial/pending; frontend/full project gate is not claimed.

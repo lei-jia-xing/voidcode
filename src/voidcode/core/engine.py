@@ -562,8 +562,9 @@ class Core:
             # Initialization work still owns the resources: a failure here unwinds the stack
             # (runtime, store, workspace lease) instead of leaking an already-detached core.
             self._replay_pending_observers()
-            self._driver: threading.Thread | None = None
-            self._ticker: threading.Thread | None = None
+            self._background_started = False
+            self._background_workers: list[threading.Thread] = []
+            resources.callback(self._stop_background_work)
             if self.auto_drain:
                 self._start_background_work()
             # Adopt the generation LAST: a failed cold start must leave the workspace unadopted, so
@@ -595,15 +596,22 @@ class Core:
     def _start_background_work(self) -> None:
         """Start the continuation driver and the wakeup ticker, exactly once."""
         with self._session_locks_guard:
-            if self._closed or self._driver is not None:
+            if self._closed or self._background_started:
                 return
-            # A crash between a commit and its automatic continuation leaves a
-            # durable resume intent; this driver is what actually finishes that work.
-            self._driver = threading.Thread(target=self._drive_pending_activations, name="CoreActivationDriver", daemon=True)
-            self._ticker = threading.Thread(target=self._wakeup_loop, name="CoreWakeupTicker", daemon=True)
-            driver, ticker = self._driver, self._ticker
-        driver.start()
-        ticker.start()
+            self._background_started = True
+            for target, name in ((self._drive_pending_activations, "CoreActivationDriver"), (self._wakeup_loop, "CoreWakeupTicker")):
+                worker = threading.Thread(target=target, name=name, daemon=True)
+                worker.start()
+                self._background_workers.append(worker)
+
+    def _stop_background_work(self) -> None:
+        """Join coordination workers before runtime/store callbacks close their resources."""
+        self.cancel("core shutdown", cause="shutdown")
+        with self._session_locks_guard:
+            self._closed = True
+            workers, self._background_workers = self._background_workers, []
+        for worker in workers:
+            worker.join()
 
     @contextmanager
     def _session_lock(self, session_id: str) -> Iterator[None]:
@@ -900,8 +908,12 @@ class Core:
         with self._aborts_lock:
             self._draining = False
             self._pause_intent = None
-        worker = threading.Thread(target=self._drive_pending_activations, name="CoreAdmitDriver", daemon=True)
-        worker.start()
+        with self._session_locks_guard:
+            self._ensure_open()
+            self._background_workers = [worker for worker in self._background_workers if worker.is_alive()]
+            worker = threading.Thread(target=self._drive_pending_activations, name="CoreAdmitDriver", daemon=True)
+            worker.start()
+            self._background_workers.append(worker)
         return {"admitting": True}
 
     def promote(self) -> dict[str, object]:
@@ -915,14 +927,10 @@ class Core:
 
     def close(self) -> None:
         self.cancel("core shutdown", cause="shutdown")
-        driver: threading.Thread | None = None
-        ticker: threading.Thread | None = None
         with self._session_locks_guard:
             if self._closed:
                 return
             self._closed = True
-            driver = self._driver
-            ticker = self._ticker
         # No new session work can start (run/resume check `_closed` under their lock), so
         # draining every session lock now waits only for work that was already admitted.
         self._drain_session_locks()
@@ -932,10 +940,6 @@ class Core:
             # with it. A reload keeps them: the runtime swap is not the owner going away.
             snapshot.plugin_runtime.stop_background_processes()
         self._resources.close()
-        if driver is not None:
-            driver.join(timeout=5)
-        if ticker is not None:
-            ticker.join(timeout=5)
 
     def run(self, prompt: str, *, session_id: str | None = None, max_steps: int = 32) -> CoreResult:
         return self._run(prompt, session_id=session_id, max_steps=max_steps, prompt_max_bytes=CLIENT_PROMPT_MAX_BYTES)
