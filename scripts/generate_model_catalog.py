@@ -68,6 +68,7 @@ def _reasoning_effort_fields(raw: dict[str, object]) -> dict[str, object]:
         None,
     )
     if isinstance(values, list):
+        fields["supports_reasoning_off"] = "none" in values
         levels = [level for level in CANONICAL_EFFORTS if level in values]
         if levels:
             fields["supported_effort_levels"] = levels
@@ -152,6 +153,9 @@ def _model_entry(raw: dict[str, object], api: str) -> dict[str, object] | None:
     status = raw.get("status")
     if isinstance(status, str) and status:
         entry["model_status"] = status
+    interleaved = raw.get("interleaved")
+    if isinstance(interleaved, dict) and isinstance(interleaved.get("field"), str):
+        entry["reasoning_content_field"] = interleaved["field"]
     entry.update(_reasoning_effort_fields(raw))
     return entry
 

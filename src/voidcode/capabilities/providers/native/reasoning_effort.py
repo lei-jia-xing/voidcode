@@ -96,9 +96,8 @@ def reasoning_kwargs(
     ``effort`` is already clamped to the model's own ladder by
     `clamp_effort_to_supported`; this function only chooses the field and the
     vendor spelling. ``off`` is the "reasoning disabled" request state, never a
-    ladder member: it resolves through the row's ``disable_mode`` (OMP's
-    ``encodeChatCompletionsDisabledReasoning``), and a model whose row says it
-    always reasons (``requires_effort``) is clamped to its lowest level instead.
+    ladder member: it resolves through the protocol default, overridden when
+    upstream explicitly declares a none effort.
     """
     if effort == REASONING_EFFORT_OFF:
         return disabled_reasoning_kwargs(rule=rule, supported_levels=supported_levels)
@@ -106,7 +105,7 @@ def reasoning_kwargs(
         # The vendor reads its thinking switch from the request body, so the
         # ladder level never reaches the wire as an effort value.
         return _binary_thinking_kwargs(rule.disable_mode, enabled=True)
-    return {"reasoning_effort": rule.mapped_effort(effort)}
+    return {"reasoning_effort": effort}
 
 
 def disabled_reasoning_kwargs(
@@ -115,15 +114,10 @@ def disabled_reasoning_kwargs(
     supported_levels: tuple[str, ...] | None,
 ) -> dict[str, object]:
     """Request kwargs for an explicit ``off`` (do not reason), per the row's spelling."""
-    if rule.requires_effort:
-        # The model always reasons: ask for as little as it can rather than
-        # disabling, which its API does not accept (``thinking.requiresEffort``).
-        lowest = lowest_supported_effort(supported_levels)
-        return {"reasoning_effort": rule.mapped_effort(lowest)} if lowest is not None else {}
     match rule.disable_mode:
         case "lowest-effort":
             lowest = lowest_supported_effort(supported_levels)
-            return {"reasoning_effort": rule.mapped_effort(lowest)} if lowest is not None else {}
+            return {"reasoning_effort": lowest} if lowest is not None else {}
         case "none-effort":
             return {"reasoning_effort": "none"}
         case "openrouter-enabled-false":

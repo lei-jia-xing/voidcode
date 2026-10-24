@@ -56,6 +56,8 @@ class ProviderModelMetadata:
     cost_per_cache_read_token: float | None = None
     cost_per_cache_write_token: float | None = None
     context_price_tiers: tuple[ContextPriceTier, ...] = ()
+    supports_reasoning_off: bool | None = None
+    reasoning_content_field: str | None = None
     supports_reasoning_effort: bool | None = None
     default_reasoning_effort: str | None = None
     supported_effort_levels: tuple[str, ...] | None = None
@@ -130,6 +132,8 @@ def _static_catalog_from_payload(data: object) -> dict[str, dict[str, ProviderMo
                 supports_tools=_optional_bool(entry.get("supports_tools")),
                 supports_reasoning=_optional_bool(entry.get("supports_reasoning")),
                 context_price_tiers=_CONTEXT_PRICE_TIERS.validate_python(entry.get("context_price_tiers", ())),
+                supports_reasoning_off=_optional_bool(entry.get("supports_reasoning_off")),
+                reasoning_content_field=_optional_str(entry.get("reasoning_content_field")),
                 supports_reasoning_effort=_optional_bool(entry.get("supports_reasoning_effort")),
                 default_reasoning_effort=_canonical_effort(entry.get("default_reasoning_effort")),
                 supported_effort_levels=_modalities(entry.get("supported_effort_levels")),

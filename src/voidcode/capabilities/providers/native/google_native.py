@@ -37,7 +37,6 @@ from .reasoning_effort import (
     REASONING_EFFORT_OFF,
     REASONING_EFFORT_XHIGH,
     clamp_effort_to_supported,
-    lowest_supported_effort,
     normalize_reasoning_effort,
 )
 from .thinking_rules import thinking_rule_for
@@ -341,11 +340,6 @@ class GoogleGenAIProvider:
         effort = normalize_reasoning_effort(request.reasoning_effort)
         supported = metadata.supported_effort_levels if metadata is not None else None
         effort = clamp_effort_to_supported(effort, supported)
-        if effort == REASONING_EFFORT_OFF and rule.requires_effort:
-            # The model always reasons: ask for as little as it can instead.
-            lowest = lowest_supported_effort(supported)
-            if lowest is not None:
-                effort = lowest
         if rule.mode == "google-level":
             if effort == REASONING_EFFORT_OFF:
                 # Gemini 3 has no fully disabled level below MINIMAL, so "off"

@@ -50,3 +50,9 @@ def test_upstream_model_protocol_overrides_provider_without_name_rules():
 
 def test_unknown_upstream_protocol_is_preserved_instead_of_guessed():
     assert generator._model_api("opencode-go", {"npm": "@vendor/new-protocol"}, {}) == "@vendor/new-protocol"
+
+
+def test_upstream_thinking_controls_need_no_model_name_rules():
+    fields = generator._reasoning_effort_fields({"reasoning_options": [{"type": "effort", "values": ["none", "low", "high"]}]})
+    assert fields["supports_reasoning_off"] is True
+    assert fields["supported_effort_levels"] == ["low", "high"]

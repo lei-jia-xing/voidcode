@@ -46,7 +46,7 @@ from .errors import (
 from .model_catalog import static_catalog_metadata
 from .provider_config import anthropic_wire_default_base_url
 from .provider_table import PROVIDER_TABLE_BY_ID
-from .reasoning_effort import clamp_effort_to_supported, lowest_supported_effort, normalize_reasoning_effort
+from .reasoning_effort import clamp_effort_to_supported, normalize_reasoning_effort
 from .thinking_rules import ThinkingRule, thinking_rule_for
 from .trace import write_provider_trace
 
@@ -862,13 +862,12 @@ def _thinking_payload(payload: dict[str, object], *, request: ProviderTurnReques
     supported = metadata.supported_effort_levels if metadata is not None else None
     clamped = clamp_effort_to_supported(effort, supported)
     if clamped == "off":
-        if not rule.requires_effort:
-            return None
-        # The model always reasons: ask for as little as it can instead.
-        lowest = lowest_supported_effort(supported)
-        if lowest is None:
-            return None
-        clamped = lowest
+        payload["thinking"] = {"type": "disabled"}
+        return None
+    if metadata is not None and metadata.supports_reasoning_effort:
+        payload["thinking"] = {"type": "adaptive"}
+        payload["output_config"] = {"effort": clamped}
+        return None
     if rule.mode != "budget":
         return None
     budget = rule.budget_for(clamped)

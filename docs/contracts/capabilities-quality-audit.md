@@ -45,7 +45,6 @@ not establish source review.
 | `providers/native/google_native.py` | Pending full source review |
 | `providers/native/model_catalog.py` | Reviewed static catalog fields/lookups and consumers; removed entire unreferenced remote discovery implementation |
 | `providers/native/model_catalog_data.json` | Pending consumer/data-contract review |
-| `providers/native/model_match.py` | Reviewed: five explicit matching semantics; star-only matching intentionally does not add fnmatch question/bracket behavior |
 | `providers/native/model_routing.py` | Reviewed: routed alias/catalog fallback, typed unsupported wires, serialized cache creation and teardown |
 | `providers/native/naming.py` | Pending full source review |
 | `providers/native/openai_native.py` | Pending full source review |
@@ -340,3 +339,30 @@ WireRouting method resolves only protocols; model identity is not rewritten ther
 Validation: 130 provider tests passed (33.20s); 30 focused generator/data/lifecycle
 tests passed after flag cleanup. Unsupported upstream protocols have an explicit
 regression that forbids guessing the chat wire. Static checks passed.
+
+## Thinking controls from upstream capabilities
+
+Removed per-model name match rows from thinking_rules.json and deleted the shared
+custom model matcher. The remaining 14 entries describe protocol body spellings,
+output-cap fields and budget conversions only. Upstream reasoning_options provide
+explicit none support/effort levels, and interleaved.field supplies reasoning field
+names. Protocol identity selects Anthropic budgets or Google levels; advertised
+effort support replaces provider binary-mode guesses. Removed unused effort-map
+and requires-effort state. Dropped redundant default-only protocol rows.
+
+Replaced custom ThinkingRuleRow parsers, literal validators, map parsers and
+multi-pass overlays with one Pydantic-validated dataclass/type adapter. Positive
+budget and strict boolean validation remain. Named budget-table expansion stays
+small and explicit. Updated Grok off test: official data declares none, rather
+than the old manual assumption that it must reason at low.
+
+Anthropic effort-capable models now receive thinking=adaptive/output_config.effort;
+explicit off receives thinking=disabled. This follows the official thinking docs
+https://platform.claude.com/docs/en/build-with-claude/thinking and the installed
+SDK parameter types. No live vendor credentials were used; tests verify actual
+payload construction and local-loopback SDK requests. Kimi output-cap convention
+remains a protocol quirk pending its final review.
+
+Validation: 136 generator/provider/thinking/usage/stream tests passed (32.09s),
+including Google unnamed-model level selection and Anthropic adaptive/off payloads.
+Ruff, formatting and source type checks passed.

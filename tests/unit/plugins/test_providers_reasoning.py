@@ -268,14 +268,14 @@ def test_a_binary_thinking_provider_spells_effort_as_its_own_thinking_switch(loo
     assert "reasoning_effort" not in _wire_requests(loopback_server)[0]
 
 
-def test_an_explicit_off_clamps_to_the_lowest_level_a_model_accepts(loopback_server: OpenAILoopbackServer) -> None:
-    """A model that always reasons cannot be turned off, so ``off`` asks for as little as it accepts."""
+def test_explicit_off_uses_the_none_level_declared_upstream(loopback_server: OpenAILoopbackServer) -> None:
+    """The current upstream Grok effort list explicitly supports none."""
     provider = _provider(_entries(loopback_server, provider="xai"), name="xai")
     loopback_server.replies.append(openai_response(message={"content": "ok"}, finish="stop"))
 
     provider.propose_turn(_request(ProviderMessage("user", "hi"), provider_name="xai", model_name="grok-4.3", reasoning_effort="off"))
 
-    assert _wire_requests(loopback_server)[0]["reasoning_effort"] == "low"
+    assert _wire_requests(loopback_server)[0]["reasoning_effort"] == "none"
     assert "thinking" not in _wire_requests(loopback_server)[0]
 
 

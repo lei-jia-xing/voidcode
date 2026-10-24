@@ -254,5 +254,6 @@ the packaged snapshot and does not need network access for catalog lookup.
 manually. It validates the generated data and provider behavior, then creates or
 updates one catalog refresh PR. GitHub Actions must be allowed to create PRs in
 the repository settings. No automatic merge is configured. Protocol identifiers also come from upstream model/provider metadata.
-Thinking parameter quirks remain separate. Long-context price tiers are generated
+Thinking effort/none/interleaved fields are also generated upstream; only SDK
+parameter spellings and budget conversions remain as local protocol defaults. Long-context price tiers are generated
 from the same models.dev response as each model's base rates.
