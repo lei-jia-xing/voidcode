@@ -75,6 +75,7 @@ from .activation import (
 from .artifacts import ArtifactStore
 from .child_history import spill_history
 from .coverage import _target_paths, canonical_path, model_result_text
+from .events import EventType
 from .facts import FACT_EVENT_TYPES as _FACT_EVENT_TYPES
 from .facts import fact_for_event
 from .plugins import LeaseContext, PluginRuntime, PluginSource, ToolInvocationOutcome
@@ -146,22 +147,22 @@ def _wire_object(value: object, what: str) -> Mapping[str, object]:
 
 _PARKED_INTERVENING_TYPES = frozenset(
     {
-        "kernel.command_completed",
-        "kernel.command_intent",
-        "kernel.confirmation_requested",
-        "kernel.confirmation_decided",
-        "kernel.child_spawned",
-        "kernel.child_finished",
-        "kernel.model_query",
-        "kernel.tool_deferred",
-        "kernel.tool_progress",
-        "kernel.observer_error",
-        "kernel.window_projected",
-        "kernel.provider_interrupted",
-        "kernel.activation_requested",
-        "kernel.activation_committed",
-        "kernel.activation_failed",
-        "kernel.activation_blocked",
+        EventType.COMMAND_COMPLETED,
+        EventType.COMMAND_INTENT,
+        EventType.CONFIRMATION_REQUESTED,
+        EventType.CONFIRMATION_DECIDED,
+        EventType.CHILD_SPAWNED,
+        EventType.CHILD_FINISHED,
+        EventType.MODEL_QUERY,
+        EventType.TOOL_DEFERRED,
+        EventType.TOOL_PROGRESS,
+        EventType.OBSERVER_ERROR,
+        EventType.WINDOW_PROJECTED,
+        EventType.PROVIDER_INTERRUPTED,
+        EventType.ACTIVATION_REQUESTED,
+        EventType.ACTIVATION_COMMITTED,
+        EventType.ACTIVATION_FAILED,
+        EventType.ACTIVATION_BLOCKED,
     }
 )
 
@@ -585,12 +586,7 @@ class Core:
                 state = states.get(row.owner)
                 if state is None or state.version == row.schema_version:
                     continue
-                raise ValueError(
-                    f"plugin {row.owner} state is at schema version {row.schema_version} but the current source "
-                    f"declares {state.version}: this build will not reinterpret stored state. Run the controlled "
-                    "upgrade `voidcode upgrade run --candidate <install> --session-id <id>` so the migration "
-                    "transaction applies the owner's transform."
-                )
+                raise ValueError(f"plugin {row.owner} state schema mismatch: stored v{row.schema_version}, declared v{state.version}")
 
     def _start_background_work(self) -> None:
         """Start the continuation driver and the wakeup ticker, exactly once."""
@@ -735,7 +731,7 @@ class Core:
                 "interrupted",
                 "terminal",
                 EventDraft(
-                    "kernel.run_interrupted",
+                    EventType.RUN_INTERRUPTED,
                     "kernel",
                     "kernel",
                     {
@@ -888,9 +884,9 @@ class Core:
                 request_id = event.payload.get("request_id")
                 if not isinstance(request_id, str) or not request_id:
                     continue
-                if event.event_type == "kernel.activation_requested":
+                if event.event_type == EventType.ACTIVATION_REQUESTED:
                     requested.add(request_id)
-                elif event.event_type in {"kernel.activation_committed", "kernel.activation_failed", "kernel.activation_blocked"}:
+                elif event.event_type in {EventType.ACTIVATION_COMMITTED, EventType.ACTIVATION_FAILED, EventType.ACTIVATION_BLOCKED}:
                     answered.add(request_id)
             for request_id in sorted(requested - answered):
                 blockers.append({"session_id": session.session_id, "status": session.status, "reason": "pending_activation", "detail": request_id})
@@ -997,7 +993,9 @@ class Core:
                     # The new user turn owns its own fresh root budget: the stopped
                     # chain's exhausted root is never reused or reset.
                     execution.cursor = _Cursor(root_id=root_id, action_budget_remaining=max_steps)
-                self._commit(execution, "running", "ready", EventDraft("kernel.user_message", "client", "user", {"content": prompt}), start_turn=True)
+                self._commit(
+                    execution, "running", "ready", EventDraft(EventType.USER_MESSAGE, "client", "user", {"content": prompt}), start_turn=True
+                )
                 result = self._drive(execution, max_steps=max_steps)
             finally:
                 with self._aborts_lock:
@@ -1042,13 +1040,13 @@ class Core:
                 execution = _Execution(session, cursor, list(self.store.events(session_id)), uuid4().hex)
                 self._messages(execution, allow_pending=True)
                 if cursor.intent_sequence is not None:
-                    intent = self._event(execution, cursor.intent_sequence, "kernel.tool_intent")
+                    intent = self._event(execution, cursor.intent_sequence, EventType.TOOL_INTENT)
                     batch, call = self._pending(execution)
                     if intent.payload["batch_sequence"] != batch.sequence or json_wire_object(intent.payload)["call"] != encode_tool_call(call):
                         raise ValueError("pending intent does not match its native batch member")
                 approval: StoredEvent | None = None
                 if cursor.approval_sequence is not None:
-                    approval = self._event(execution, cursor.approval_sequence, "kernel.approval_requested")
+                    approval = self._event(execution, cursor.approval_sequence, EventType.APPROVAL_REQUESTED)
                     if decision not in {"allow", "deny"} or approval_request_id != approval.payload["request_id"]:
                         raise ValueError("approval resume requires the exact pending request identity and decision")
                     batch, call = self._pending(execution)
@@ -1056,14 +1054,14 @@ class Core:
                         raise ValueError("pending approval does not match its native batch member")
                 elif approval_request_id is not None or decision is not None:
                     raise ValueError("session is not waiting for approval")
-                self._commit(execution, "running", "ready", EventDraft("kernel.run_resumed", "kernel", "user", {}))
+                self._commit(execution, "running", "ready", EventDraft(EventType.RUN_RESUMED, "kernel", "user", {}))
                 if approval is not None:
                     cursor.approval_sequence = None
                     self._commit(
                         execution,
                         "running",
                         "ready",
-                        EventDraft("kernel.approval_decided", "client", "user", {"request_id": approval_request_id, "decision": decision}),
+                        EventDraft(EventType.APPROVAL_DECIDED, "client", "user", {"request_id": approval_request_id, "decision": decision}),
                     )
                     _, call = self._pending(execution)
                     if decision == "deny":
@@ -1087,7 +1085,7 @@ class Core:
                 elif cursor.abandon_batch:
                     self._interrupt_batch(execution)
                 elif cursor.intent_sequence is not None:
-                    intent = self._event(execution, cursor.intent_sequence, "kernel.tool_intent")
+                    intent = self._event(execution, cursor.intent_sequence, EventType.TOOL_INTENT)
                     _, call = self._pending(execution)
                     if json_wire_object(intent.payload)["call"] != encode_tool_call(call):
                         raise ValueError("pending intent does not match its native batch member")
@@ -1166,7 +1164,7 @@ class Core:
             with self._aborts_lock:
                 self._session_aborts[session_id] = abort
             try:
-                self._commit(execution, "running", "ready", EventDraft("kernel.tool_deferred_started", "kernel", "plugin", {}))
+                self._commit(execution, "running", "ready", EventDraft(EventType.TOOL_DEFERRED_STARTED, "kernel", "plugin", {}))
                 self._drive(execution, max_steps=32)
             finally:
                 with self._aborts_lock:
@@ -1334,11 +1332,11 @@ class Core:
                 # Only events already inside the captured session tip are reported,
                 # so through_sequence never claims less than what was included.
                 break
-            if ev.event_type == "kernel.provider_intent":
+            if ev.event_type == EventType.PROVIDER_INTENT:
                 seq = ev.sequence
                 if seq > since_sequence and (until_sequence is None or seq <= until_sequence):
                     dispatches_in_window.append(seq)
-            elif ev.event_type in ("kernel.model_turn", "kernel.provider_interrupted"):
+            elif ev.event_type in (EventType.MODEL_TURN, EventType.PROVIDER_INTERRUPTED):
                 disp_seq = ev.payload.get("dispatch_sequence")
                 if disp_seq is not None and isinstance(disp_seq, (int, float)):
                     completions_by_dispatch[int(disp_seq)] = ev
@@ -1375,7 +1373,7 @@ class Core:
 
         for disp_seq in dispatches_in_window:
             comp_ev = completions_by_dispatch.get(disp_seq)
-            if comp_ev is None or comp_ev.event_type == "kernel.provider_interrupted":
+            if comp_ev is None or comp_ev.event_type == EventType.PROVIDER_INTERRUPTED:
                 unknown_input = True
                 unknown_output = True
                 unknown_cache = True
@@ -1389,7 +1387,7 @@ class Core:
                         unknown_elapsed = True
                 else:
                     unknown_elapsed = True
-            elif comp_ev.event_type == "kernel.model_turn":
+            elif comp_ev.event_type == EventType.MODEL_TURN:
                 turn_count += 1
                 turn = decode_provider_result(_wire_object(comp_ev.payload["result"], "model turn"))
                 u = turn.usage
@@ -1561,7 +1559,7 @@ class Core:
         with self._dispatch(f"command:{name}"):
             latest_sess = self.store.session(session_id)
             intent_event = EventDraft(
-                event_type="kernel.command_intent",
+                event_type=EventType.COMMAND_INTENT,
                 source="client",
                 actor=context.actor,
                 payload={
@@ -1602,7 +1600,7 @@ class Core:
                     revision_id=self.revision_id,
                     events=(
                         EventDraft(
-                            "kernel.confirmation_requested",
+                            EventType.CONFIRMATION_REQUESTED,
                             f"plugin.{cmd_desc.owner}",
                             "client",
                             req.as_payload(),
@@ -1636,7 +1634,7 @@ class Core:
             if cmd_result.status in ("ok", "error"):
                 latest_session = self.store.session(session_id)
                 completion_event = EventDraft(
-                    event_type="kernel.command_completed",
+                    event_type=EventType.COMMAND_COMPLETED,
                     source=f"plugin.{cmd_desc.owner}",
                     actor=context.actor,
                     payload={"name": name, "result": cmd_result.as_payload()},
@@ -1668,7 +1666,7 @@ class Core:
                         f"owner {cmd_desc.owner} cancelled its durable work",
                     )
 
-        if any(event.event_type == "kernel.tool_deferred" for event in staged_events):
+        if any(event.event_type == EventType.TOOL_DEFERRED for event in staged_events):
             self._drain_deferred_requests(session_id)
         return cmd_result
 
@@ -1749,14 +1747,14 @@ class Core:
             if cmd_result.status in ("ok", "error"):
                 latest_session = self.store.session(session_id)
                 completion_event = EventDraft(
-                    event_type="kernel.command_completed",
+                    event_type=EventType.COMMAND_COMPLETED,
                     source=f"plugin.{cmd_desc.owner}",
                     actor="user",
                     payload={"name": rec.command_name, "result": cmd_result.as_payload()},
                 )
                 all_events = tuple(staged_events) + (
                     EventDraft(
-                        "kernel.confirmation_decided",
+                        EventType.CONFIRMATION_DECIDED,
                         f"plugin.{cmd_desc.owner}",
                         "user",
                         {"request_id": request_id, "command_name": rec.command_name, "decision": "allow"},
@@ -1789,7 +1787,7 @@ class Core:
                         f"owner {cmd_desc.owner} cancelled its durable work",
                     )
 
-        if any(event.event_type == "kernel.tool_deferred" for event in staged_events):
+        if any(event.event_type == EventType.TOOL_DEFERRED for event in staged_events):
             self._drain_deferred_requests(session_id)
         return cmd_result
 
@@ -1805,7 +1803,7 @@ class Core:
                 revision_id=self.revision_id,
                 events=(
                     EventDraft(
-                        "kernel.confirmation_decided",
+                        EventType.CONFIRMATION_DECIDED,
                         "kernel",
                         "user",
                         {"request_id": request_id, "command_name": command_name, "decision": decision},
@@ -2029,7 +2027,7 @@ class Core:
 
     def _check_session(self, session: SessionRecord) -> None:
         if session.workspace != str(self.workspace) or session.active_revision_id != self.revision_id:
-            raise ValueError("session workspace/revision differs; implicit capability upgrades are forbidden")
+            raise ValueError("session workspace or revision mismatch")
 
     def _check_expected_revision(self, expected_revision: str) -> None:
         """Bind a client action to the catalog generation it displayed."""
@@ -2109,7 +2107,7 @@ class Core:
         encoded = encode_tool_call(call)
         target: str | None = None
         for event in execution.events:
-            if event.event_type != "kernel.approval_requested":
+            if event.event_type != EventType.APPROVAL_REQUESTED:
                 continue
             payload = event.payload if isinstance(event.payload, Mapping) else {}
             bound = payload.get("target_revision_id")
@@ -2127,9 +2125,9 @@ class Core:
             request_id = payload.get("request_id")
             if not isinstance(request_id, str) or not request_id:
                 continue
-            if event.event_type == "kernel.activation_requested":
+            if event.event_type == EventType.ACTIVATION_REQUESTED:
                 request = payload
-            elif event.event_type in {"kernel.activation_committed", "kernel.activation_failed", "kernel.activation_blocked"}:
+            elif event.event_type in {EventType.ACTIVATION_COMMITTED, EventType.ACTIVATION_FAILED, EventType.ACTIVATION_BLOCKED}:
                 answered.add(request_id)
         if request is None:
             return None
@@ -2155,7 +2153,7 @@ class Core:
         if checkpoint is not None and isinstance(checkpoint.payload, Mapping):
             cursor = _Cursor.model_validate(json_wire_object(checkpoint.payload))
         execution = _Execution(session, cursor, list(self.store.events(session_id)), session.run_id or request_id)
-        kind = "kernel.activation_blocked" if blockers else "kernel.activation_failed"
+        kind = EventType.ACTIVATION_BLOCKED if blockers else EventType.ACTIVATION_FAILED
         try:
             self._commit(
                 execution,
@@ -2338,7 +2336,7 @@ class Core:
         self._commit_control_event(
             parent.session_id,
             EventDraft(
-                "kernel.child_spawned",
+                EventType.CHILD_SPAWNED,
                 "kernel",
                 "plugin",
                 {
@@ -2734,7 +2732,7 @@ class Core:
                 )
             committed = self._commit_child_fact(
                 parent_session_id,
-                EventDraft("kernel.child_finished", "kernel", "plugin", payload),
+                EventDraft(EventType.CHILD_FINISHED, "kernel", "plugin", payload),
                 notice,
             )
             if not committed:
@@ -2910,7 +2908,7 @@ class Core:
 
     def _child_fact(self, parent_session_id: str, child_id: str, run_id: str) -> dict[str, object] | None:
         for event in reversed(self.store.events(parent_session_id)):
-            if event.event_type != "kernel.child_finished" or event.payload.get("child_session_id") != child_id:
+            if event.event_type != EventType.CHILD_FINISHED or event.payload.get("child_session_id") != child_id:
                 continue
             fact_run = event.payload.get("run_id")
             if fact_run is None or str(fact_run) == run_id:
@@ -2933,7 +2931,7 @@ class Core:
 
     def _child_label(self, parent_session_id: str, child_id: str) -> str:
         for event in reversed(self.store.events(parent_session_id)):
-            if event.event_type == "kernel.child_spawned" and event.payload.get("child_session_id") == child_id:
+            if event.event_type == EventType.CHILD_SPAWNED and event.payload.get("child_session_id") == child_id:
                 label = event.payload.get("label")
                 return label if isinstance(label, str) else ""
         return ""
@@ -2941,7 +2939,7 @@ class Core:
     def _child_run_label(self, parent_id: str | None, child_id: str, run_id: str, events: Sequence[StoredEvent]) -> str:
         """Label of one run: the follow-up payload's label, else the spawn label."""
         for event in reversed(events):
-            if event.event_type != "kernel.continuation_started" or event.run_id != run_id:
+            if event.event_type != EventType.CONTINUATION_STARTED or event.run_id != run_id:
                 continue
             inner = event.payload.get("payload")
             inner_map = inner if isinstance(inner, Mapping) else {}
@@ -2953,7 +2951,7 @@ class Core:
         """Whether one child run asked for a completion notice, from durable facts only."""
         target = run_id or session.run_id
         for event in reversed(events):
-            if event.event_type != "kernel.continuation_started" or event.run_id != target:
+            if event.event_type != EventType.CONTINUATION_STARTED or event.run_id != target:
                 continue
             inner = event.payload.get("payload")
             inner_map = inner if isinstance(inner, Mapping) else {}
@@ -2962,7 +2960,7 @@ class Core:
         parent = session.parent_session_id
         if parent is not None:
             for event in reversed(self.store.events(parent)):
-                if event.event_type == "kernel.child_spawned" and event.payload.get("child_session_id") == session.session_id:
+                if event.event_type == EventType.CHILD_SPAWNED and event.payload.get("child_session_id") == session.session_id:
                     return bool(event.payload.get("notify_on_completion", False))
         return False
 
@@ -2970,11 +2968,11 @@ class Core:
     def _terminal_child_event(run_events: Sequence[StoredEvent]) -> tuple[str, StoredEvent] | None:
         """The genuine terminal event of one run; late same-run control rows never qualify."""
         for event in reversed(run_events):
-            if event.event_type == "kernel.run_completed":
+            if event.event_type == EventType.RUN_COMPLETED:
                 return "completed", event
-            if event.event_type == "kernel.run_failed":
+            if event.event_type == EventType.RUN_FAILED:
                 return "failed", event
-            if event.event_type == "kernel.run_interrupted":
+            if event.event_type == EventType.RUN_INTERRUPTED:
                 raw_cause = event.payload.get("stop_cause")
                 if raw_cause in ("user_stop", "owner_cancel"):
                     return "cancelled", event
@@ -2994,7 +2992,7 @@ class Core:
         stop_cause: str | None = "completed" if status == "completed" else "error"
         if status == "completed":
             for event in reversed(run_events):
-                if event.event_type != "kernel.model_turn":
+                if event.event_type != EventType.MODEL_TURN:
                     continue
                 wire = event.payload.get("result")
                 if isinstance(wire, Mapping):
@@ -3040,7 +3038,7 @@ class Core:
             events = self.store.events(session.session_id)
             run_ids: dict[str, None] = {}
             for event in events:
-                if event.event_type in ("kernel.run_completed", "kernel.run_failed", "kernel.run_interrupted") and event.run_id:
+                if event.event_type in (EventType.RUN_COMPLETED, EventType.RUN_FAILED, EventType.RUN_INTERRUPTED) and event.run_id:
                     run_ids.setdefault(event.run_id, None)
             for run_id in run_ids:
                 if self._child_fact_exists(parent_id, session.session_id, run_id):
@@ -3140,7 +3138,7 @@ class Core:
         cursor = _Cursor(root_id=wakeup.wakeup_id, logical_turn=logical_turn, action_budget_remaining=32)
         execution = _Execution(session, cursor, list(self.store.events(session.session_id)), run_id)
         with self._session_lock(session.session_id):
-            self._deliver_facts(execution, (self._event(execution, session.last_event_sequence, "kernel.wakeup_fired"),))
+            self._deliver_facts(execution, (self._event(execution, session.last_event_sequence, EventType.WAKEUP_FIRED),))
             result = self._drive(execution, max_steps=32)
         if result.status in ("completed", "idle"):
             terminal: Literal["completed", "failed", "cancelled"] = "completed"
@@ -3213,7 +3211,7 @@ class Core:
         self._commit_control_event(
             session_id,
             EventDraft(
-                "kernel.model_query",
+                EventType.MODEL_QUERY,
                 "kernel",
                 "plugin",
                 {
@@ -3251,7 +3249,7 @@ class Core:
         self._commit_control_event(
             lease.session_id,
             EventDraft(
-                "kernel.tool_progress",
+                EventType.TOOL_PROGRESS,
                 f"plugin.{lease.owner}",
                 lease.actor,
                 {
@@ -3328,7 +3326,7 @@ class Core:
         # transaction only answers it (a client-initiated switch answers no staged request).
         events = (
             EventDraft(
-                "kernel.activation_committed",
+                EventType.ACTIVATION_COMMITTED,
                 "kernel",
                 "kernel",
                 {
@@ -3415,13 +3413,13 @@ class Core:
         events = self.store.events(session_id)
         completed_dispatches: set[int] = set()
         for event in events:
-            if event.event_type in ("kernel.model_turn", "kernel.provider_interrupted"):
+            if event.event_type in (EventType.MODEL_TURN, EventType.PROVIDER_INTERRUPTED):
                 dispatch_seq = event.payload.get("dispatch_sequence")
                 if isinstance(dispatch_seq, (int, float)):
                     completed_dispatches.add(int(dispatch_seq))
         pending: list[StoredEvent] = []
         for event in events:
-            if event.event_type == "kernel.provider_intent":
+            if event.event_type == EventType.PROVIDER_INTENT:
                 if event.sequence not in completed_dispatches:
                     pending.append(event)
             elif event.event_type in _FACT_EVENT_TYPES:
@@ -3450,7 +3448,7 @@ class Core:
                 else _Cursor()
             )
             execution = _Execution(session, cursor, list(self.store.events(session.session_id)), session.run_id or uuid4().hex)
-            settled = [self._record_unknown_dispatch(execution, ev) if ev.event_type == "kernel.provider_intent" else ev for ev in pending]
+            settled = [self._record_unknown_dispatch(execution, ev) if ev.event_type == EventType.PROVIDER_INTENT else ev for ev in pending]
             self._deliver_facts(
                 execution,
                 sorted(settled, key=lambda event: event.sequence),
@@ -3475,7 +3473,7 @@ class Core:
     def _observer_gap_event(self, event: StoredEvent, missing: Sequence[str]) -> EventDraft:
         """A durable diagnostic for a fact that its own revision's owner can no longer receive."""
         return EventDraft(
-            "kernel.observer_error",
+            EventType.OBSERVER_ERROR,
             source="kernel",
             actor="kernel",
             payload={
@@ -3533,7 +3531,7 @@ class Core:
                 for err in obs_res.errors:
                     staged_events.append(
                         EventDraft(
-                            "kernel.observer_error",
+                            EventType.OBSERVER_ERROR,
                             source=f"plugin.{err.get('owner', 'observer')}",
                             actor="plugin",
                             payload={"owner": err.get("owner"), "error": err.get("error")},
@@ -3587,7 +3585,7 @@ class Core:
                         kind=None,
                         events=(
                             EventDraft(
-                                "kernel.observer_error",
+                                EventType.OBSERVER_ERROR,
                                 "plugin.observer",
                                 "plugin",
                                 {"owner": None, "error": f"observer proposals rejected: {exc}"},
@@ -3605,7 +3603,7 @@ class Core:
             kind=None,
             events=(
                 EventDraft(
-                    "kernel.provider_interrupted",
+                    EventType.PROVIDER_INTERRUPTED,
                     "kernel",
                     "kernel",
                     {
@@ -3622,12 +3620,12 @@ class Core:
         """Settle dispatches of this run that never produced a completion event."""
         completed: set[int] = set()
         for event in execution.events:
-            if event.event_type in ("kernel.model_turn", "kernel.provider_interrupted"):
+            if event.event_type in (EventType.MODEL_TURN, EventType.PROVIDER_INTERRUPTED):
                 dispatch_seq = event.payload.get("dispatch_sequence")
                 if isinstance(dispatch_seq, (int, float)):
                     completed.add(int(dispatch_seq))
         for event in execution.events:
-            if event.event_type == "kernel.provider_intent" and event.sequence not in completed:
+            if event.event_type == EventType.PROVIDER_INTENT and event.sequence not in completed:
                 settled = self._record_unknown_dispatch(execution, event)
                 self._deliver_facts(execution, (settled,))
 
@@ -3786,7 +3784,7 @@ class Core:
         owners = self.plugin_runtime.observer_owners
         stamped: list[EventDraft] = []
         for event in events:
-            fact_type = "usage" if event.event_type == "kernel.provider_intent" else _FACT_EVENT_TYPES.get(event.event_type)
+            fact_type = "usage" if event.event_type == EventType.PROVIDER_INTENT else _FACT_EVENT_TYPES.get(event.event_type)
             if fact_type is None or "eligible_owners" in event.payload:
                 stamped.append(event)
                 continue
@@ -3807,7 +3805,7 @@ class Core:
         """Stamp the duration this process actually measured for the run, if it dispatched at all."""
         starts: list[float] = []
         for event in execution.events:
-            if event.run_id != execution.run_id or event.event_type != "kernel.provider_intent":
+            if event.run_id != execution.run_id or event.event_type != EventType.PROVIDER_INTENT:
                 continue
             start_ms = event.payload.get("start_time_ms")
             if isinstance(start_ms, (int, float)) and not isinstance(start_ms, bool):
@@ -3923,11 +3921,11 @@ class Core:
     def _pending(self, execution: _Execution) -> tuple[StoredEvent, ToolCall]:
         cursor = execution.cursor
         if cursor.deferred_sequence is not None:
-            event = self._event(execution, cursor.deferred_sequence, "kernel.tool_deferred")
+            event = self._event(execution, cursor.deferred_sequence, EventType.TOOL_DEFERRED)
             return event, decode_tool_call(_wire_object(event.payload["call"], "deferred tool call"))
         if cursor.batch_sequence is None:
             raise ValueError("checkpoint has no pending batch")
-        event = self._event(execution, cursor.batch_sequence, "kernel.model_turn")
+        event = self._event(execution, cursor.batch_sequence, EventType.MODEL_TURN)
         turn = decode_provider_result(_wire_object(event.payload["result"], "model turn"))
         if cursor.next_call >= len(turn.tool_calls):
             raise ValueError("checkpoint is outside its native batch")
@@ -3938,13 +3936,13 @@ class Core:
         completed = {
             event.payload["batch_sequence"]
             for event in execution.events
-            if event.event_type in {"kernel.tool_completed", "kernel.tool_interrupted"} and event.payload.get("deferred") is True
+            if event.event_type in {EventType.TOOL_COMPLETED, EventType.TOOL_INTERRUPTED} and event.payload.get("deferred") is True
         }
         return next(
             (
                 event
                 for event in execution.events
-                if event.event_type == "kernel.tool_deferred"
+                if event.event_type == EventType.TOOL_DEFERRED
                 and event.sequence not in completed
                 and event.payload.get("root_id", "") in {"", execution.cursor.root_id}
             ),
@@ -4075,12 +4073,12 @@ class Core:
                 if note:
                     payload["note"] = note
             payload["logical_turn"] = execution.cursor.logical_turn
-            events.append(EventDraft("kernel.hook_invoked", "plugin", "plugin", payload))
+            events.append(EventDraft(EventType.HOOK_INVOKED, "plugin", "plugin", payload))
         return tuple(events)
 
     def _lifecycle_fired(self, execution: _Execution, kind: str) -> bool:
         return any(
-            event.event_type == "kernel.hook_invoked"
+            event.event_type == EventType.HOOK_INVOKED
             and dict(event.payload).get("hook_kind") == kind
             and dict(event.payload).get("run_id") == execution.run_id
             for event in execution.events
@@ -4209,7 +4207,7 @@ class Core:
                             "running",
                             "ready",
                             EventDraft(
-                                "kernel.tool_deferred_claimed",
+                                EventType.TOOL_DEFERRED_CLAIMED,
                                 "kernel",
                                 "plugin",
                                 {"request_id": request.payload["request_id"], "depth": cursor.deferred_depth},
@@ -4256,7 +4254,7 @@ class Core:
                         "completed",
                         "terminal",
                         EventDraft(
-                            "kernel.run_completed",
+                            EventType.RUN_COMPLETED,
                             "kernel",
                             "plugin",
                             {"output": None, "logical_turn": cursor.logical_turn, **self._measured_run_elapsed_fields(execution)},
@@ -4335,7 +4333,7 @@ class Core:
                             "running",
                             "ready",
                             EventDraft(
-                                "kernel.provider_intent",
+                                EventType.PROVIDER_INTENT,
                                 "kernel",
                                 "kernel",
                                 {
@@ -4354,7 +4352,7 @@ class Core:
                         )
                     except RootBudgetExhausted:
                         return self._stop(execution, "root action budget exhausted", stop_cause="limit_reached")
-                    intent_seq = next(ev.sequence for ev in intent_events if ev.event_type == "kernel.provider_intent")
+                    intent_seq = next(ev.sequence for ev in intent_events if ev.event_type == EventType.PROVIDER_INTENT)
 
                     t0 = time.monotonic()
                     try:
@@ -4367,7 +4365,7 @@ class Core:
                             "interrupted",
                             "interrupted",
                             EventDraft(
-                                "kernel.provider_interrupted",
+                                EventType.PROVIDER_INTERRUPTED,
                                 "kernel",
                                 "kernel",
                                 {
@@ -4397,7 +4395,7 @@ class Core:
                             "interrupted",
                             "interrupted",
                             EventDraft(
-                                "kernel.provider_interrupted",
+                                EventType.PROVIDER_INTERRUPTED,
                                 "kernel",
                                 "kernel",
                                 {
@@ -4432,7 +4430,7 @@ class Core:
                             execution,
                             "failed",
                             "terminal",
-                            EventDraft("kernel.model_turn", "provider", "model", model_turn_payload),
+                            EventDraft(EventType.MODEL_TURN, "provider", "model", model_turn_payload),
                             completed_continuation_id=execution.cursor.continuation_id,
                             completed_continuation_status="failed",
                         )
@@ -4443,7 +4441,7 @@ class Core:
                             execution,
                             "failed",
                             "terminal",
-                            EventDraft("kernel.model_turn", "provider", "model", model_turn_payload),
+                            EventDraft(EventType.MODEL_TURN, "provider", "model", model_turn_payload),
                             completed_continuation_id=execution.cursor.continuation_id,
                             completed_continuation_status="failed",
                         )
@@ -4458,17 +4456,17 @@ class Core:
                             execution,
                             "running",
                             "ready",
-                            EventDraft("kernel.model_turn", "provider", "model", model_turn_payload),
-                            checkpoint_bindings=(("batch_sequence", "kernel.model_turn"),),
+                            EventDraft(EventType.MODEL_TURN, "provider", "model", model_turn_payload),
+                            checkpoint_bindings=(("batch_sequence", EventType.MODEL_TURN),),
                         )
                     else:
                         self._commit(
                             execution,
                             "completed",
                             "terminal",
-                            EventDraft("kernel.model_turn", "provider", "model", model_turn_payload),
+                            EventDraft(EventType.MODEL_TURN, "provider", "model", model_turn_payload),
                             EventDraft(
-                                "kernel.run_completed",
+                                EventType.RUN_COMPLETED,
                                 "kernel",
                                 "kernel",
                                 {"logical_turn": execution.cursor.logical_turn, **self._measured_run_elapsed_fields(execution)},
@@ -4524,8 +4522,8 @@ class Core:
                     execution,
                     "waiting",
                     "approval_wait",
-                    EventDraft("kernel.approval_requested", "kernel", "plugin" if cursor.deferred_sequence is not None else "model", payload),
-                    checkpoint_bindings=(("approval_sequence", "kernel.approval_requested"),),
+                    EventDraft(EventType.APPROVAL_REQUESTED, "kernel", "plugin" if cursor.deferred_sequence is not None else "model", payload),
+                    checkpoint_bindings=(("approval_sequence", EventType.APPROVAL_REQUESTED),),
                 )
                 return self._result(execution, pending_approval=payload)
             stopped = self._invoke(execution, call, definition)
@@ -4550,7 +4548,7 @@ class Core:
             "interrupted",
             "interrupted",
             EventDraft(
-                "kernel.upgrade_paused",
+                EventType.UPGRADE_PAUSED,
                 "kernel",
                 "kernel",
                 {"upgrade_id": intent, "run_id": execution.run_id, "logical_turn": execution.cursor.logical_turn},
@@ -4568,7 +4566,7 @@ class Core:
                     "running",
                     "ready",
                     EventDraft(
-                        "kernel.tool_intent",
+                        EventType.TOOL_INTENT,
                         "kernel",
                         "plugin" if cursor.deferred_sequence is not None else "model",
                         {
@@ -4583,10 +4581,10 @@ class Core:
                             "depth": cursor.deferred_depth,
                         },
                     ),
-                    checkpoint_bindings=(("intent_sequence", "kernel.tool_intent"),),
+                    checkpoint_bindings=(("intent_sequence", EventType.TOOL_INTENT),),
                 )
             else:
-                intent = self._event(execution, cursor.intent_sequence, "kernel.tool_intent")
+                intent = self._event(execution, cursor.intent_sequence, EventType.TOOL_INTENT)
                 invocation_id = str(intent.payload["invocation_id"])
 
             session_abort = None
@@ -4609,7 +4607,7 @@ class Core:
                     result,
                     staged_events=(
                         EventDraft(
-                            "kernel.activation_requested",
+                            EventType.ACTIVATION_REQUESTED,
                             "kernel",
                             "model",
                             {
@@ -4709,7 +4707,7 @@ class Core:
         invocation_id: str | None = None
         intent: StoredEvent | None = None
         if cursor.intent_sequence is not None:
-            intent = self._event(execution, cursor.intent_sequence, "kernel.tool_intent")
+            intent = self._event(execution, cursor.intent_sequence, EventType.TOOL_INTENT)
             raw_invocation = intent.payload.get("invocation_id")
             invocation_id = raw_invocation if isinstance(raw_invocation, str) else None
         cursor.intent_sequence = None
@@ -4719,7 +4717,7 @@ class Core:
         diagnostic = result.diagnostics if isinstance(result, ToolFailure) else None
         _, projection_clipped = model_result_text(result)
         model_event = next(
-            (event for event in reversed(execution.events) if event.sequence == batch_sequence and event.event_type == "kernel.model_turn"), None
+            (event for event in reversed(execution.events) if event.sequence == batch_sequence and event.event_type == EventType.MODEL_TURN), None
         )
         metadata: dict[str, object] = {
             "semantics": declaration.get("semantics", []) if intent is not None else [],
@@ -4766,7 +4764,7 @@ class Core:
         else:
             cursor.next_call += 1
             turn = decode_provider_result(
-                _wire_object(self._event(execution, batch_sequence or 0, "kernel.model_turn").payload["result"], "model turn")
+                _wire_object(self._event(execution, batch_sequence or 0, EventType.MODEL_TURN).payload["result"], "model turn")
             )
             if cursor.next_call == len(turn.tool_calls):
                 cursor.batch_sequence = None
@@ -4780,14 +4778,14 @@ class Core:
             "logical_turn": execution.cursor.logical_turn,
         }
         if deferred:
-            request = self._event(execution, batch_sequence or 0, "kernel.tool_deferred")
+            request = self._event(execution, batch_sequence or 0, EventType.TOOL_DEFERRED)
             payload["deferred"] = True
             payload["request_id"] = request.payload["request_id"]
             payload["depth"] = request.payload["depth"]
         if invocation_id is not None:
             payload["invocation_id"] = invocation_id
         report_event = EventDraft(
-            "kernel.tool_interrupted" if interrupted else "kernel.tool_completed",
+            EventType.TOOL_INTERRUPTED if interrupted else EventType.TOOL_COMPLETED,
             "kernel" if interrupted else "tool",
             "plugin" if deferred else "model",
             payload,
@@ -4847,11 +4845,11 @@ class Core:
         for event in execution.events:
             if event.sequence <= projected_through:
                 continue
-            if event.event_type == "kernel.user_message":
+            if event.event_type == EventType.USER_MESSAGE:
                 if pending_calls:
                     raise ValueError("user message crossed an unfinished native batch")
                 messages.append(ProviderMessage("user", str(event.payload["content"])))
-            elif event.event_type == "kernel.continuation_started":
+            elif event.event_type == EventType.CONTINUATION_STARTED:
                 if pending_calls:
                     raise ValueError("continuation crossed an unfinished native batch")
                 p_payload = event.payload.get("payload")
@@ -4863,7 +4861,7 @@ class Core:
                     messages.append(ProviderMessage("user", text if isinstance(text, str) else payload_str))
                 else:
                     messages.append(ProviderMessage("system", f"[Durable continuation from {event.source}]\n{payload_str}"))
-            elif event.event_type == "kernel.wakeup_fired":
+            elif event.event_type == EventType.WAKEUP_FIRED:
                 if pending_calls:
                     raise ValueError("wakeup crossed an unfinished native batch")
                 w_payload = event.payload.get("payload")
@@ -4875,7 +4873,7 @@ class Core:
                 else:
                     owner_label = str(event.payload.get("owner", event.source))
                     messages.append(ProviderMessage("system", f"[Durable wakeup from {owner_label}]\n{payload_str}"))
-            elif event.event_type == "kernel.model_turn":
+            elif event.event_type == EventType.MODEL_TURN:
                 if pending_calls:
                     raise ValueError("provider turn crossed an unfinished native batch")
                 turn = decode_provider_result(_wire_object(event.payload["result"], "model turn"))
@@ -4887,9 +4885,9 @@ class Core:
                     pending_calls = turn.tool_calls
                     pending_index = 0
                     batch_sequence = event.sequence
-            elif event.event_type in {"kernel.tool_completed", "kernel.tool_interrupted"}:
+            elif event.event_type in {EventType.TOOL_COMPLETED, EventType.TOOL_INTERRUPTED}:
                 if event.payload.get("deferred") is True:
-                    request = self._event(execution, cast(int, event.payload["batch_sequence"]), "kernel.tool_deferred")
+                    request = self._event(execution, cast(int, event.payload["batch_sequence"]), EventType.TOOL_DEFERRED)
                     if event.payload["call"] != request.payload["call"]:
                         raise ValueError("deferred tool result does not match its committed request")
                     result = decode_tool_result(_wire_object(event.payload["result"], "tool result"))
@@ -5049,10 +5047,10 @@ class Core:
             execution = _Execution(session, cursor, list(self.store.events(session_id)), session.run_id or intent)
             cause = "activation"
             for event in reversed(execution.events):
-                if event.event_type == "kernel.upgrade_paused" and event.payload.get("upgrade_id") == intent:
+                if event.event_type == EventType.UPGRADE_PAUSED and event.payload.get("upgrade_id") == intent:
                     cause = "upgrade"
                     break
-                if event.event_type == "kernel.activation_requested" and event.payload.get("request_id") == intent:
+                if event.event_type == EventType.ACTIVATION_REQUESTED and event.payload.get("request_id") == intent:
                     cause = "activation"
                     break
             consumed: dict[str, object] = {"intent": intent, "cause": cause}
@@ -5063,7 +5061,7 @@ class Core:
                     execution,
                     "running",
                     "ready",
-                    EventDraft("kernel.continuation_consumed", "kernel", "kernel", consumed),
+                    EventDraft(EventType.CONTINUATION_CONSUMED, "kernel", "kernel", consumed),
                 )
             except StoreConflict:
                 return
@@ -5097,12 +5095,12 @@ class Core:
                 # Only the run that asked for the switch is told about it; later turns are not
                 # re-fed an old decision as if it were news.
                 continue
-            if event.event_type == "kernel.activation_requested":
+            if event.event_type == EventType.ACTIVATION_REQUESTED:
                 request_id = candidate
                 outcome = None
-            elif event.event_type == "kernel.activation_committed" and candidate == request_id:
+            elif event.event_type == EventType.ACTIVATION_COMMITTED and candidate == request_id:
                 outcome = ("committed", str(payload.get("to_revision_id", "")))
-            elif outcome is None and candidate == request_id and event.event_type in {"kernel.activation_failed", "kernel.activation_blocked"}:
+            elif outcome is None and candidate == request_id and event.event_type in {EventType.ACTIVATION_FAILED, EventType.ACTIVATION_BLOCKED}:
                 outcome = ("refused", str(payload.get("error", "")))
         if request_id is None or outcome is None:
             return None
@@ -5118,7 +5116,7 @@ class Core:
         deliberate = stop_cause in ("user_stop", "owner_cancel")
         checkpoint_kind = "terminal" if deliberate else "interrupted"
         stop_event = EventDraft(
-            "kernel.run_interrupted",
+            EventType.RUN_INTERRUPTED,
             "kernel",
             "kernel",
             {
@@ -5148,7 +5146,7 @@ class Core:
             "failed",
             "terminal",
             EventDraft(
-                "kernel.run_failed",
+                EventType.RUN_FAILED,
                 "kernel",
                 "kernel",
                 {"error": message, "logical_turn": execution.cursor.logical_turn, **self._measured_run_elapsed_fields(execution)},

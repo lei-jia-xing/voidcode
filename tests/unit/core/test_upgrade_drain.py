@@ -195,7 +195,7 @@ def test_drain_waits_for_an_admitted_run_and_a_stuck_run_times_out(tmp_path: Pat
         outcome: dict[str, object] = {}
         worker = threading.Thread(target=lambda: outcome.update(result=core.run("probe it", session_id=session.session_id)))
         worker.start()
-        _wait_for(core, session.session_id, "kernel.tool_intent")
+        _wait_for(core, session.session_id, "core.tool_intent")
         assert core.begin_drain(timeout_seconds=30)["drained"] is True
         worker.join(timeout=30)
         assert worker.is_alive() is False
@@ -214,7 +214,7 @@ def test_drain_timeout_reports_the_running_session_and_admit_unfences(tmp_path: 
 
         worker = threading.Thread(target=lambda: core.run("block", session_id=session.session_id), daemon=True)
         worker.start()
-        _wait_for(core, session.session_id, "kernel.tool_intent")
+        _wait_for(core, session.session_id, "core.tool_intent")
         refused = core.begin_drain(timeout_seconds=1)
         assert refused["drained"] is False
         blockers = refused["blockers"]
@@ -238,38 +238,38 @@ def test_pause_at_a_committed_batch_resumes_exactly_once(tmp_path: Path) -> None
 
         worker = threading.Thread(target=lambda: core.run("probe it", session_id=session.session_id))
         worker.start()
-        _wait_for(core, session.session_id, "kernel.tool_completed")
+        _wait_for(core, session.session_id, "core.tool_completed")
         drained = core.begin_drain(timeout_seconds=30, pause_at_batch_boundary=True, pause_intent="upg-1")
         assert drained["drained"] is True
         worker.join(timeout=30)
         assert worker.is_alive() is False
 
         events = core.store.events(session.session_id)
-        paused = [event for event in events if event.event_type == "kernel.upgrade_paused"]
+        paused = [event for event in events if event.event_type == "core.upgrade_paused"]
         assert len(paused) == 1 and paused[0].payload["upgrade_id"] == "upg-1"
         assert core.session(session.session_id).status == "interrupted"
         checkpoint = core.store.checkpoint(session.session_id)
         assert checkpoint is not None and isinstance(checkpoint.payload, Mapping)
         assert checkpoint.payload["resume_intent"] == "upg-1"
-        completed = [event for event in events if event.event_type == "kernel.tool_completed"]
+        completed = [event for event in events if event.event_type == "core.tool_completed"]
         assert len(completed) == 2
 
         assert core.admit() == {"admitting": True}
         deadline = time.monotonic() + 30.0
         while time.monotonic() < deadline:
             after = core.store.events(session.session_id)
-            if any(event.event_type == "kernel.continuation_consumed" for event in after):
+            if any(event.event_type == "core.continuation_consumed" for event in after):
                 break
             time.sleep(0.05)
         after = core.store.events(session.session_id)
-        consumed = [event for event in after if event.event_type == "kernel.continuation_consumed"]
+        consumed = [event for event in after if event.event_type == "core.continuation_consumed"]
         assert len(consumed) == 1
         assert consumed[0].payload["cause"] == "upgrade" and consumed[0].payload["intent"] == "upg-1"
         deadline = time.monotonic() + 30.0
         while time.monotonic() < deadline and core.session(session.session_id).status == "running":
             time.sleep(0.05)
         after = core.store.events(session.session_id)
-        assert len([event for event in after if event.event_type == "kernel.tool_completed"]) == 2
+        assert len([event for event in after if event.event_type == "core.tool_completed"]) == 2
         assert core.session(session.session_id).status == "completed"
 
 
@@ -334,11 +334,11 @@ def test_promote_consumes_a_durable_intent_exactly_once(tmp_path: Path) -> None:
         deadline = time.monotonic() + 30.0
         while time.monotonic() < deadline:
             events = core.store.events(session.session_id)
-            if any(event.event_type == "kernel.continuation_consumed" for event in events):
+            if any(event.event_type == "core.continuation_consumed" for event in events):
                 break
             time.sleep(0.05)
         events = core.store.events(session.session_id)
-        consumed = [event for event in events if event.event_type == "kernel.continuation_consumed"]
+        consumed = [event for event in events if event.event_type == "core.continuation_consumed"]
         assert len(consumed) == 1
         checkpoint = core.store.checkpoint(session.session_id)
         assert checkpoint is not None and isinstance(checkpoint.payload, Mapping)

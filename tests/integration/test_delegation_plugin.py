@@ -169,8 +169,8 @@ def test_parent_spawns_a_real_child_and_receives_its_output(tmp_path: Path) -> N
         assert child.status == "completed"
 
         parent_events = core.events_after(parent_id)
-        spawned = [event for event in parent_events if event.event_type == "kernel.child_spawned"]
-        finished = [event for event in parent_events if event.event_type == "kernel.child_finished"]
+        spawned = [event for event in parent_events if event.event_type == "core.child_spawned"]
+        finished = [event for event in parent_events if event.event_type == "core.child_finished"]
         assert len(spawned) == 1
         assert spawned[0].payload["child_session_id"] == child_id
         assert spawned[0].payload["label"] == "doors"
@@ -274,7 +274,7 @@ def test_standard_markdown_agent_applies_its_prompt_tools_and_turn_cap(tmp_path:
         parent = core.create_session().session_id
         result = core.run("delegate inspection", session_id=parent)
         assert result.status == "completed", result.error
-        child_id = next(event.payload["child_session_id"] for event in core.events_after(parent) if event.event_type == "kernel.child_spawned")
+        child_id = next(event.payload["child_session_id"] for event in core.events_after(parent) if event.event_type == "core.child_spawned")
         child = core.session(child_id)
         assert child.status == "completed" and child.tool_allowlist == ("grep", "read")
         assert set(_tool_names(server.requests[1])) == {"grep", "read"}

@@ -102,7 +102,7 @@ def test_existing_revision_restores_without_live_config_and_reload_stays_strict(
 
         reloaded = core.invoke_command("restored-live", "core.reload", {}, expected_revision=revision)
         assert reloaded.status == "error"
-        assert "core configuration is required" in (reloaded.error or "")
+        assert "configuration not found" in (reloaded.error or "")
         assert core.revision_id == revision
         assert not config_path.exists()
 
@@ -112,16 +112,8 @@ def test_existing_database_without_a_workspace_revision_stays_strict(tmp_path: P
     state.mkdir(parents=True)
     with SqliteStore(state / "kernel-v1.sqlite3") as store:
         assert store.workspace_current(str(workspace)) is None
-    with pytest.raises(FileNotFoundError, match="core configuration is required"):
+    with pytest.raises(FileNotFoundError, match="configuration not found"):
         open_core(workspace, state_dir=state)
-
-
-def test_legacy_file_still_rejected_and_trust_still_needs_a_real_config(tmp_path: Path) -> None:
-    workspace, state = _fresh_workspace(tmp_path)
-    (workspace / ".voidcode.json").write_text("{}", encoding="utf-8")
-    with pytest.raises(ValueError, match=r"legacy \.voidcode\.json is not supported"):
-        open_core(workspace, state_dir=state)
-    assert not (state / "kernel-v1.sqlite3").exists()
 
 
 def test_unknown_config_field_stays_strict(tmp_path: Path) -> None:

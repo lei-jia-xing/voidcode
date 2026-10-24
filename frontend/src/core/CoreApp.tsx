@@ -58,6 +58,7 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
       type: string;
       revision_id: string;
       payload: Record<string, unknown>;
+      transcript?: Record<string, unknown> | null;
     }>
   >([]);
   const [viewScope, setViewScope] = useState<{
@@ -152,7 +153,6 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
     fenced: boolean;
     stage: string;
     coreVersion: string;
-    imageDigest: string;
     generation: number;
     activeUpgrade: { upgrade_id: string; stage: string } | null;
   } | null>(null);
@@ -163,7 +163,6 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
     fenced: boolean;
     stage: string;
     coreVersion: string;
-    imageDigest: string;
     generation: number;
     activeUpgrade: { upgrade_id: string; stage: string } | null;
   } | null>(null);
@@ -194,8 +193,8 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
    *
    * The event carries `revision_id`: the generation that produced it, so a
    * request-level fact (a confirmation request) binds to it, never to the
-   * current catalog. `kernel.confirmation_requested` opens the modal and
-   * `kernel.confirmation_decided` ({request_id, decision}) reduces it, so a
+   * current catalog. `core.confirmation_requested` opens the modal and
+   * `core.confirmation_decided` ({request_id, decision}) reduces it, so a
    * still-pending request survives a reload and a decided one never resurrects.
    */
   const projectEvent = useCallback(
@@ -205,12 +204,13 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
         type: string;
         revision_id: string;
         payload: Record<string, unknown>;
+        transcript?: Record<string, unknown> | null;
       },
       session: string,
       epoch: number,
       clientKey: string,
     ) => {
-      if (ev.type === "kernel.approval_requested") {
+      if (ev.type === "core.approval_requested") {
         const approval = ev.payload as {
           request_id?: string;
           call?: { tool_name?: string; arguments?: unknown };
@@ -228,21 +228,21 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
         }
         return;
       }
-      if (ev.type === "kernel.approval_decided") {
+      if (ev.type === "core.approval_decided") {
         setPendingApproval(null);
         return;
       }
       if (
-        ev.type === "kernel.run_interrupted" ||
-        ev.type === "kernel.run_failed" ||
-        ev.type === "kernel.run_completed"
+        ev.type === "core.run_interrupted" ||
+        ev.type === "core.run_failed" ||
+        ev.type === "core.run_completed"
       ) {
         // An authentic terminal fact means nothing is parked any more; a stale
         // approval modal must never outlive the run that asked for it.
         setPendingApproval(null);
         return;
       }
-      if (ev.type === "kernel.confirmation_requested") {
+      if (ev.type === "core.confirmation_requested") {
         const p = ev.payload;
         const requestId = typeof p.request_id === "string" ? p.request_id : "";
         const uiType = typeof p.ui_type === "string" ? p.ui_type : "";
@@ -270,7 +270,7 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
         }
         return;
       }
-      if (ev.type === "kernel.confirmation_decided") {
+      if (ev.type === "core.confirmation_decided") {
         const decided = ev.payload;
         const requestId =
           typeof decided.request_id === "string" ? decided.request_id : "";
@@ -355,7 +355,6 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
             fenced: snapshot.fenced === true,
             stage: String(snapshot.stage ?? ""),
             coreVersion: String(snapshot.core_version ?? ""),
-            imageDigest: String(snapshot.image_digest ?? ""),
             generation:
               typeof snapshot.generation === "number"
                 ? snapshot.generation
@@ -402,7 +401,6 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
             fenced: snapshot.fenced === true,
             stage: String(snapshot.stage ?? ""),
             coreVersion: String(snapshot.core_version ?? ""),
-            imageDigest: String(snapshot.image_digest ?? ""),
             generation:
               typeof snapshot.generation === "number"
                 ? snapshot.generation
@@ -426,7 +424,6 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
             prev.generation !== -1 &&
             next.generation !== -1 &&
             (prev.generation !== next.generation ||
-              prev.imageDigest !== next.imageDigest ||
               prev.coreVersion !== next.coreVersion)
           ) {
             // The server changed under us: nothing displayed stays
@@ -692,6 +689,7 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
                 type: e.type,
                 revision_id: e.revision_id,
                 payload: e.payload,
+                transcript: e.transcript,
               })),
             ].sort((a, b) => a.sequence - b.sequence);
           });
@@ -705,8 +703,8 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
           // under another revision is dropped — never relabelled, never re-sent.
           const commits = fresh.filter(
             (e) =>
-              e.type === "kernel.activation_committed" ||
-              e.type === "kernel.revision_adopted",
+              e.type === "core.activation_committed" ||
+              e.type === "core.revision_adopted",
           );
           if (commits.length > 0) {
             const committed = commits[commits.length - 1];
@@ -943,7 +941,7 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
           requestId
         ) {
           retainPendingConfirmation(requestId, {
-            owner: "kernel",
+            owner: "core",
             name: "pending_confirmation",
             title: t("core.approvalRequired"),
             view_type: confirmation.ui_type,
@@ -1212,7 +1210,14 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
           {/* Transcript */}
           <div className="flex-1 overflow-y-auto p-4 space-y-3">
             {events.map((ev) => {
-              if (ev.type === "kernel.user_message") {
+              if (ev.type === "core.user_message") {
+                const transcriptContent = (
+                  ev.transcript?.content as { content?: unknown } | undefined
+                )?.content;
+                const userText =
+                  typeof transcriptContent === "string"
+                    ? transcriptContent
+                    : String(ev.payload.content || "");
                 return (
                   <div
                     key={ev.sequence}
@@ -1220,7 +1225,7 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
                     className="flex flex-col items-end"
                   >
                     <div className="max-w-2xl px-4 py-2.5 rounded-2xl bg-cyan-700/80 text-white text-sm whitespace-pre-wrap">
-                      {String(ev.payload.content || "")}
+                      {userText}
                     </div>
                   </div>
                 );
@@ -1229,7 +1234,17 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
               // payload.result (output / reasoning / tool_calls[].tool_name|arguments),
               // commands under payload.name + payload.result.{status,output,error,data},
               // and tool results under payload.result.{status,tool_name,output,error}.
-              if (ev.type === "kernel.model_turn") {
+              if (ev.type === "core.model_turn") {
+                const transcriptTurn = ev.transcript?.content as
+                  | {
+                      output?: string | null;
+                      reasoning?: string | null;
+                      tool_calls?: Array<{
+                        tool_name?: string;
+                        arguments?: unknown;
+                      }>;
+                    }
+                  | undefined;
                 const turn = (ev.payload.result ?? {}) as {
                   output?: string | null;
                   reasoning?: string | null;
@@ -1238,18 +1253,21 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
                     arguments?: unknown;
                   }>;
                 };
-                const toolCalls = Array.isArray(turn.tool_calls)
-                  ? turn.tool_calls
-                  : [];
+                const output = transcriptTurn?.output ?? turn.output;
+                const toolCalls = Array.isArray(transcriptTurn?.tool_calls)
+                  ? transcriptTurn.tool_calls
+                  : Array.isArray(turn.tool_calls)
+                    ? turn.tool_calls
+                    : [];
                 return (
                   <div
                     key={ev.sequence}
                     data-testid={`event-${ev.sequence}`}
                     className="flex flex-col items-start space-y-2 max-w-2xl"
                   >
-                    {turn.output && (
+                    {output && (
                       <div className="px-4 py-2.5 rounded-2xl bg-neutral-800 text-neutral-100 text-sm whitespace-pre-wrap">
-                        {turn.output}
+                        {output}
                       </div>
                     )}
                     {toolCalls.map((tc, idx) => (
@@ -1268,25 +1286,57 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
                 );
               }
               if (
-                ev.type === "kernel.tool_completed" ||
-                ev.type === "kernel.tool_interrupted"
+                ev.type === "core.tool_completed" ||
+                ev.type === "core.tool_interrupted"
               ) {
+                const transcriptTool = ev.transcript?.content as
+                  | {
+                      call?: { tool_name?: string; arguments?: unknown };
+                      result?: {
+                        status?: string;
+                        tool_name?: string;
+                        output?: {
+                          type?: string;
+                          text?: string;
+                          mime?: string;
+                          presentation?: string;
+                        };
+                        error?: string | null;
+                      };
+                      interrupted?: boolean;
+                    }
+                  | undefined;
                 const toolResult = (ev.payload.result ?? {}) as {
                   status?: string;
                   tool_name?: string;
-                  output?: { type?: string; text?: string; mime?: string };
+                  output?: {
+                    type?: string;
+                    text?: string;
+                    mime?: string;
+                    presentation?: string;
+                  };
                   error?: string | null;
                 };
-                const output = toolResult.output ?? {};
+                const toolName =
+                  transcriptTool?.call?.tool_name ??
+                  transcriptTool?.result?.tool_name ??
+                  toolResult.tool_name ??
+                  t("core.unknownLabel");
+                const output =
+                  transcriptTool?.result?.output ?? toolResult.output ?? {};
                 const text =
                   output.type === "text"
                     ? (output.text ?? "")
                     : output.type === "attachment"
                       ? `[${output.mime ?? "attachment"}]`
-                      : "";
+                      : (output.text ?? output.presentation ?? "");
                 const failed =
-                  ev.type === "kernel.tool_interrupted" ||
+                  ev.type === "core.tool_interrupted" ||
+                  transcriptTool?.interrupted === true ||
+                  transcriptTool?.result?.status === "error" ||
                   toolResult.status === "error";
+                const errorMsg =
+                  transcriptTool?.result?.error ?? toolResult.error;
                 return (
                   <div
                     key={ev.sequence}
@@ -1297,15 +1347,14 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
                         : "text-emerald-400 bg-emerald-950/20 border-emerald-900/50"
                     }`}
                   >
-                    {failed ? "✖" : "✔"} {t("core.toolLabel")} [
-                    {toolResult.tool_name ?? t("core.unknownLabel")}]:{" "}
-                    {failed ? (toolResult.error ?? text ?? "") : text}
+                    {failed ? "✖" : "✔"} {t("core.toolLabel")} [{toolName}]:{" "}
+                    {failed ? (errorMsg ?? text ?? "") : text}
                   </div>
                 );
               }
               if (
-                ev.type === "kernel.command_intent" ||
-                ev.type === "kernel.command_completed"
+                ev.type === "core.command_intent" ||
+                ev.type === "core.command_completed"
               ) {
                 const command = (ev.payload ?? {}) as {
                   name?: string;
@@ -1315,7 +1364,7 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
                     error?: string | null;
                   };
                 };
-                if (ev.type === "kernel.command_intent") {
+                if (ev.type === "core.command_intent") {
                   return (
                     <div
                       key={ev.sequence}
@@ -1350,7 +1399,7 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
                   </div>
                 );
               }
-              if (ev.type === "kernel.approval_decided") {
+              if (ev.type === "core.approval_decided") {
                 return (
                   <div
                     key={ev.sequence}
@@ -1365,7 +1414,14 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
                   </div>
                 );
               }
-              if (ev.type === "kernel.run_interrupted") {
+              if (ev.type === "core.run_interrupted") {
+                const cause =
+                  typeof ev.payload.stop_cause === "string"
+                    ? ev.payload.stop_cause
+                    : ((
+                        ev.transcript?.content as
+                          { status?: string } | undefined
+                      )?.status ?? t("core.unknownLabel"));
                 return (
                   <div
                     key={ev.sequence}
@@ -1373,16 +1429,14 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
                     className="text-xs font-mono text-amber-300 bg-amber-950/20 px-3 py-1.5 rounded border border-amber-900/50 max-w-2xl"
                   >
                     {t("core.runInterrupted", {
-                      cause: String(
-                        ev.payload.stop_cause ?? t("core.unknownLabel"),
-                      ),
+                      cause: String(cause),
                     })}
                   </div>
                 );
               }
               if (
-                ev.type === "kernel.activation_committed" ||
-                ev.type === "kernel.revision_adopted"
+                ev.type === "core.activation_committed" ||
+                ev.type === "core.revision_adopted"
               ) {
                 // Generation changes are user-visible transcript facts (the TUI
                 // renders the same row): an upgrade must be observable, not

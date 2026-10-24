@@ -370,7 +370,7 @@ def compaction_observer(
     ``usage`` is the per-dispatch measurement and the timely trigger; ``run_finished`` catches
     the end of a run, where the newest dispatch in the window supplies the same measurement.
     A projection this plugin refuses raises, so the core records an owned
-    ``kernel.observer_error`` instead of the observation silently doing nothing.
+    ``core.observer_error`` instead of the observation silently doing nothing.
     """
     _ = context
     if not isinstance(fact, (UsageFact, RunFinishedFact)) or not config.enabled:

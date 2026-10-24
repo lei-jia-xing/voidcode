@@ -48,8 +48,8 @@ function storedEvent(sequence: number, type: string, payload: object) {
     type,
     run_id: "run-1",
     revision_id: "rev-1",
-    source: "kernel",
-    actor: "kernel",
+    source: "core",
+    actor: "core",
     payload,
   };
 }
@@ -73,11 +73,11 @@ describe("gate preservation across upgrade_pending", () => {
       JSON.stringify({
         session: { session_id: SESSION },
         events: [
-          storedEvent(1, "kernel.approval_requested", {
+          storedEvent(1, "core.approval_requested", {
             request_id: "appr-1",
             call: { tool_name: "write", arguments: { path: "a.txt" } },
           }),
-          storedEvent(2, "kernel.confirmation_requested", {
+          storedEvent(2, "core.confirmation_requested", {
             request_id: "conf-9",
             ui_type: "confirmation",
             ui_data: {
@@ -190,11 +190,11 @@ describe("gate preservation across upgrade_pending", () => {
     const liveFrame = (sequence: number, type: string, payload: object) =>
       `data: ${JSON.stringify({ kind: "event", session_id: SESSION, event: storedEvent(sequence, type, payload) })}\n\n`;
     const decidedBytes = new TextEncoder().encode(
-      liveFrame(3, "kernel.approval_decided", {
+      liveFrame(3, "core.approval_decided", {
         request_id: "appr-1",
         decision: "allow",
       }) +
-        liveFrame(4, "kernel.confirmation_decided", {
+        liveFrame(4, "core.confirmation_decided", {
           request_id: "conf-9",
           decision: "allow",
         }),
@@ -278,7 +278,7 @@ describe("gate preservation across upgrade_pending", () => {
         if (connections === 1) {
           // Initial connection: one head, stays open until the test EOFs it.
           return sseResponse(
-            [head([storedEvent(1, "kernel.user_message", { content: "hi" })])],
+            [head([storedEvent(1, "core.user_message", { content: "hi" })])],
             liveControllers,
           );
         }
@@ -288,7 +288,7 @@ describe("gate preservation across upgrade_pending", () => {
           // though no error announced the drop.
           return sseResponse(
             [
-              head([storedEvent(1, "kernel.user_message", { content: "hi" })]),
+              head([storedEvent(1, "core.user_message", { content: "hi" })]),
               JSON.stringify({
                 kind: "server_restart",
                 session_id: SESSION,
@@ -304,8 +304,8 @@ describe("gate preservation across upgrade_pending", () => {
         return sseResponse(
           [
             head([
-              storedEvent(1, "kernel.user_message", { content: "hi" }),
-              storedEvent(2, "kernel.model_turn", {
+              storedEvent(1, "core.user_message", { content: "hi" }),
+              storedEvent(2, "core.model_turn", {
                 result: { output: "hello" },
               }),
             ]),

@@ -125,5 +125,5 @@ def test_example_command_and_tool_share_durable_session_state(tmp_path: Path) ->
                 stored, _version = store.plugin_state("tally-counter", "session", "tally-session")
                 assert stored == {"schema_version": 1, "total": 8, "updates": 2}, stored
                 assert type(stored["total"]) is int
-                completions = [event for event in store.events("tally-session") if event.event_type == "kernel.tool_completed"]
+                completions = [event for event in store.events("tally-session") if event.event_type == "core.tool_completed"]
                 assert completions and completions[0].payload["result"]["status"] == "ok"

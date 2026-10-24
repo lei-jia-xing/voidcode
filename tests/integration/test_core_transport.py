@@ -264,7 +264,7 @@ def test_cli_show_rescues_history_with_broken_config_and_broken_plugin(tmp_path:
     shown = _cli(workspace, state, "show", "rescue-1", "--events")
     assert shown["session_id"] == "rescue-1"
     assert shown["status"] == "completed"
-    assert any(event["type"] == "kernel.user_message" for event in shown["events"])
+    assert any(event["type"] == "core.user_message" for event in shown["events"])
 
 
 def test_cli_rejects_malformed_arguments_before_opening_core(tmp_path: Path) -> None:
@@ -517,7 +517,7 @@ def test_observer_counts_real_provider_usage_facts(tmp_path: Path) -> None:
         assert stored["data"]["usage_facts_seen"] == 2, stored
         # Loud-failure proof: no observer error was swallowed along the way.
         shown = _cli(workspace, state, "show", "obs-1", "--events")
-        assert not [event for event in shown["events"] if event["type"] == "kernel.observer_error"], shown["events"]
+        assert not [event for event in shown["events"] if event["type"] == "core.observer_error"], shown["events"]
 
 
 def test_continuation_runs_automatically_as_real_followup_work(tmp_path: Path) -> None:
@@ -538,8 +538,8 @@ def test_continuation_runs_automatically_as_real_followup_work(tmp_path: Path) -
         assert len(server.requests) == 1, server.requests
         shown = _cli(workspace, state, "show", "cont-1", "--events")
         types = [event["type"] for event in shown["events"]]
-        assert "kernel.continuation_started" in types, types
-        assert "kernel.run_completed" in types, types
+        assert "core.continuation_started" in types, types
+        assert "core.run_completed" in types, types
 
         # Claim-once: nothing is left to drain afterwards.
         drained_again = _cli(workspace, state, "drain", "cont-1")

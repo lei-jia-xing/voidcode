@@ -79,7 +79,7 @@ def _messages(request: Mapping[str, object]) -> list[Mapping[str, object]]:
 
 def _tool_result(core: Core, session_id: str, tool_name: str) -> str:
     for event in reversed(core.events_after(session_id)):
-        if event.event_type != "kernel.tool_completed":
+        if event.event_type != "core.tool_completed":
             continue
         call = event.payload.get("call")
         if not isinstance(call, Mapping) or call.get("tool_name") != tool_name:
@@ -153,7 +153,7 @@ def test_bounded_event_read_and_governed_model_query(tmp_path: Path) -> None:
             request for request in reversed(server.requests) if _messages(request) == [{"role": "user", "content": "summarize the workspace"}]
         )
         assert not query_request.get("tools")
-        facts = [event for event in core.events_after("sess-read") if event.event_type == "kernel.model_query"]
+        facts = [event for event in core.events_after("sess-read") if event.event_type == "core.model_query"]
         assert facts and facts[0].payload["model"] == "exact-model"
 
         scheduled_far = core.store.schedule_wakeup(
@@ -185,7 +185,7 @@ def test_wakeup_claim_is_atomic_and_never_replayed(tmp_path: Path) -> None:
 
         # Whoever claimed it (a caller or the core ticker), exactly one authentic fire exists.
         fired_facts = [
-            event for session in core.sessions() for event in core.events_after(session.session_id) if event.event_type == "kernel.wakeup_fired"
+            event for session in core.sessions() for event in core.events_after(session.session_id) if event.event_type == "core.wakeup_fired"
         ]
         assert len(fired_facts) == 1
         assert core.store.pending_wakeups() == ()

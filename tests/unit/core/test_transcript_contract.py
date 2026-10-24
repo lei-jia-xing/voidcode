@@ -13,7 +13,7 @@ from voidcode.sdk.provider import ProviderMessage
 from voidcode.sdk.transcript import TranscriptPage
 
 
-def _event(sequence, event_type="kernel.user_message", payload=None):
+def _event(sequence, event_type="core.user_message", payload=None):
     return StoredEvent("session", sequence, "run", event_type, "owner", "user", "revision", {"content": "hello"} if payload is None else payload)
 
 
@@ -45,7 +45,7 @@ def test_pages_preserve_oversized_unicode_records_and_resume_after_empty_pages()
     assert PluginRuntime.transcript_page(runtime, "session", 3, 200) == TranscriptPage((), 3, False, 0)
 
 
-@pytest.mark.parametrize("event_type", ["kernel.continuation_started", "kernel.wakeup_fired"])
+@pytest.mark.parametrize("event_type", ["core.continuation_started", "core.wakeup_fired"])
 @pytest.mark.parametrize("role", ["user", "system"])
 def test_owner_messages_retain_role_and_verbatim_text(event_type, role):
     event = _event(7, event_type, {"owner": "owner", "role": role, "payload": {"text": "do this"}})
@@ -64,7 +64,7 @@ def test_malformed_conversation_is_an_error_instead_of_a_missing_message():
     with pytest.raises(ValueError, match="content must be a string"):
         transcript_entry(_event(1, payload={"content": None}))
     with pytest.raises(KeyError):
-        transcript_entry(_event(2, "kernel.model_turn", {}))
+        transcript_entry(_event(2, "core.model_turn", {}))
 
 
 @pytest.mark.parametrize("after,limit", [(-1, 1), (True, 1), (0, 0), (0, 201), (0, True)])
@@ -94,7 +94,7 @@ def test_pending_dispatch_is_visible_without_fabricating_a_completed_turn():
     from voidcode.sdk.transcript import TranscriptDispatch
 
     measured = RequestWindow(message_characters=42, tool_schema_characters=7, tool_count=1, segments=())
-    event = _event(10, "kernel.provider_intent", {"provider": "provider", "model": "model", "request_window": measured.as_payload()})
+    event = _event(10, "core.provider_intent", {"provider": "provider", "model": "model", "request_window": measured.as_payload()})
     runtime = _runtime((event,))
     page = PluginRuntime.transcript_page(runtime, "session", 0, 200)
     assert page.entries[0].content == TranscriptDispatch("provider", "model", measured)
@@ -111,11 +111,11 @@ def _batch():
     calls = (ToolCall("lookup", {}, "one"), ToolCall("replace", {}, "two"))
     return (
         _event(1, payload={"content": "long prompt " * 500}),
-        _event(2, "kernel.model_turn", {"dispatch_sequence": 1, "result": encode_provider_result(ProviderTurnResult(tool_calls=calls))}),
+        _event(2, "core.model_turn", {"dispatch_sequence": 1, "result": encode_provider_result(ProviderTurnResult(tool_calls=calls))}),
         *(
             _event(
                 index + 3,
-                "kernel.tool_completed",
+                "core.tool_completed",
                 {"batch_sequence": 2, "call": encode_tool_call(call), "result": encode_tool_result(ToolSuccess(call.tool_name, TextOutput("done")))},
             )
             for index, call in enumerate(calls)

@@ -3,7 +3,7 @@
 One `PluginRuntime` is one capability generation: it imports each configured plugin
 package (`__init__.py:create_plugin`), registers the returned `Plugin` objects, and
 dispatches tool, command, provider, hook, view, observer, and migration calls by direct
-synchronous invocation — no subprocess, no transport, no wire codecs on this path.
+synchronous invocation.
 
 Module identity: each plugin root is imported under a unique namespace derived from its
 id plus this runtime's identity, so two generations can coexist (a candidate is built
@@ -77,6 +77,7 @@ from voidcode.sdk.transcript import ContextHistory, TranscriptEntry, TranscriptP
 from voidcode.sdk.views import PluginViewDescriptor
 
 from .artifacts import ArtifactStore
+from .events import EventType
 from .facts import fact_for_event
 from .processes import ProcessRegistry
 from .services import RuntimeServices
@@ -689,7 +690,7 @@ class PluginRuntime:
             raise ValueError("a window projection must be smaller than the window it replaces")
         lease.staged_events.append(
             EventDraft(
-                "kernel.window_projected",
+                EventType.WINDOW_PROJECTED,
                 "kernel",
                 "plugin",
                 {
@@ -711,7 +712,7 @@ class PluginRuntime:
         for event in page:
             context = ()
             dispatch = event.payload.get("dispatch_sequence")
-            if event.event_type in ("kernel.model_turn", "kernel.provider_interrupted") and type(dispatch) is int:
+            if event.event_type in (EventType.MODEL_TURN, EventType.PROVIDER_INTERRUPTED) and type(dispatch) is int:
                 context = store.events(session_id, after_sequence=dispatch - 1, limit=1)
             decoded = fact_for_event(event, context)
             if decoded is not None:

@@ -30,6 +30,7 @@ from .activation import (
     write_private_snapshot,
 )
 from .engine import Core
+from .events import EventType
 from .plugins import PluginRuntime, PluginSource
 from .storage.store import SCHEMA_VERSION, EventDraft, SqliteStore, canonical_json, inspect_existing_workspace
 
@@ -43,17 +44,15 @@ def state_directory(workspace: Path) -> Path:
 def load_config(workspace: Path, *, allow_missing: bool = False) -> CoreConfig:
     path = workspace / CONFIG_FILE_NAME
     if not path.exists():
-        if (workspace / ".voidcode.json").exists():
-            raise ValueError("legacy .voidcode.json is not supported; create voidcode.json explicitly (no conversion is performed)")
         if allow_missing:
             # First boot of a truly fresh state: bundled plugins already have documented empty
             # defaults, and model execution stays unavailable until a real file is written.
             return CoreConfig()
-        raise FileNotFoundError(f"core configuration is required: {path}")
+        raise FileNotFoundError(f"configuration not found: {path.name}")
     if not path.is_file():
-        raise ValueError(f"core configuration is not a file: {path}")
+        raise ValueError(f"not a regular file: {path.name}")
     if path.stat().st_size > 256 * 1024:
-        raise ValueError("core configuration exceeds 256 KiB")
+        raise ValueError("configuration file too large")
     return parse_core_config(json.loads(path.read_text(encoding="utf-8")))
 
 
@@ -75,15 +74,9 @@ def open_core(
     # configuration is validated.
     current_revision, current_payload, recorded_schema = inspect_existing_workspace(database, str(workspace))
     # Empty in-memory defaults are legal ONLY for a truly absent database with no adopted
-    # revision, no recorded schema, and no legacy file. Any existing DB (even without a
-    # workspace row), foreign schema, or legacy file keeps the strict required-file behavior.
-    fresh_first_adoption = (
-        current_revision is None
-        and current_payload is None
-        and recorded_schema is None
-        and not database.exists()
-        and not (workspace / ".voidcode.json").exists()
-    )
+    # revision and no recorded schema. Any existing DB (even without a workspace row)
+    # or foreign schema keeps the strict required-file behavior.
+    fresh_first_adoption = current_revision is None and current_payload is None and recorded_schema is None and not database.exists()
 
     def admit_current(*, config: CoreConfig | None = None, revision_id: str | None = None) -> Admission:
         """Re-admit a configuration as a generation of this workspace.
@@ -221,7 +214,7 @@ def adopt_generation(*, workspace: Path, state_dir: Path, session_id: str | None
                     logical_turn = checkpoint_payload.get("logical_turn", "") if checkpoint_payload is not None else ""
                     drafts.append(
                         EventDraft(
-                            "kernel.run_interrupted",
+                            EventType.RUN_INTERRUPTED,
                             "core",
                             "core",
                             {
@@ -237,7 +230,7 @@ def adopt_generation(*, workspace: Path, state_dir: Path, session_id: str | None
                     status = session.status
                 drafts.append(
                     EventDraft(
-                        "kernel.revision_adopted",
+                        EventType.REVISION_ADOPTED,
                         "core",
                         "core",
                         {

@@ -141,7 +141,7 @@ def test_btw_answers_without_polluting_history(tmp_path: Path) -> None:
         session_id = core.create_session().session_id
         assert core.run("main question", session_id=session_id).status == "completed"
 
-        conversation_before = [event for event in core.events_after(session_id) if event.event_type in {"kernel.user_message", "kernel.model_turn"}]
+        conversation_before = [event for event in core.events_after(session_id) if event.event_type in {"core.user_message", "core.model_turn"}]
         result = _invoke(core, session_id, "btw", {"question": "what is 2+2?"})
         assert result.status == "ok"
         assert result.output == "side answer"
@@ -159,9 +159,9 @@ def test_btw_answers_without_polluting_history(tmp_path: Path) -> None:
 
         # The core records the canonical diagnostic fact; the plugin stages nothing.
         event_types = [event.event_type for event in core.events_after(session_id)]
-        assert "kernel.model_query" in event_types
+        assert "core.model_query" in event_types
         assert [
-            event for event in core.events_after(session_id) if event.event_type in {"kernel.user_message", "kernel.model_turn"}
+            event for event in core.events_after(session_id) if event.event_type in {"core.user_message", "core.model_turn"}
         ] == conversation_before
         assert not [event for event in event_types if event.startswith("plugin.btw.")]
 

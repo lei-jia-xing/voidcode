@@ -11,7 +11,7 @@ offers:
   that already succeeded.
 - ``session_start`` / ``session_end`` run for their side effects only: the returned
   note (guidance and diagnostics, bounded) is recorded as the durable
-  ``kernel.hook_invoked`` event and is never injected into the prompt.
+  ``core.hook_invoked`` event and is never injected into the prompt.
 - Hook leases are read-only, so this plugin touches no state and stages no events.
 
 Which tools a surface applies to is config-driven (``pre_tool_match`` /

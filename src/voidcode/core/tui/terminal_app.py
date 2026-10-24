@@ -10,6 +10,7 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
+from ..events import EventType
 from .client import CoreClientError, CoreHttpClient, StreamCancellation
 from .composer import Composer, ComposerAction
 from .keys import Key, KeyDecoder
@@ -103,7 +104,7 @@ def _command_result_text(result: Mapping[str, Any]) -> str:
 def _command_result_rows(name: str, result: Mapping[str, Any]) -> list[str]:
     """One visible command-result block shared by direct receipts and events.
 
-    A direct core read receipt and a durable plugin ``kernel.command_completed``
+    A direct core read receipt and a durable plugin ``core.command_completed``
     payload are the same ``CommandResult`` shape. Rendering both here keeps the
     format, error precedence, and multi-line handling identical; no command
     name needs a branch. Unknown statuses never render as success.
@@ -497,12 +498,12 @@ class CoreTuiApp:
         if not isinstance(payload, dict):
             payload = {}
 
-        if etype == "kernel.user_message":
+        if etype == EventType.USER_MESSAGE:
             # The durable event is the single source of the prompt row: the
             # composer never commits it optimistically, and duplicates are
             # excluded by the per-session cursor above (not by a first-only flag).
             rows.append(f"\x1b[1;36mUser>\x1b[0m {_safe(payload.get('content'))}")
-        elif etype == "kernel.model_turn":
+        elif etype == EventType.MODEL_TURN:
             raw_turn = payload.get("result")
             turn: dict[str, Any] = raw_turn if isinstance(raw_turn, dict) else {}
             output = turn.get("output")
@@ -519,29 +520,29 @@ class CoreTuiApp:
                     name = _safe(call.get("tool_name") or "tool")
                     arguments = json.dumps(json_safe(call.get("arguments")), ensure_ascii=False, allow_nan=False)
                     rows.append(f"\x1b[33m▶ Tool call {name}\x1b[0m {_safe(arguments)}")
-        elif etype in ("kernel.tool_completed", "kernel.tool_interrupted"):
+        elif etype in (EventType.TOOL_COMPLETED, EventType.TOOL_INTERRUPTED):
             raw_call = payload.get("call")
             call: dict[str, Any] = raw_call if isinstance(raw_call, dict) else {}
             raw_result = payload.get("result")
             result: dict[str, Any] = raw_result if isinstance(raw_result, dict) else {}
             name = _safe(result.get("tool_name") or "unknown")
-            failed = etype == "kernel.tool_interrupted" or result.get("status") == "error"
+            failed = etype == EventType.TOOL_INTERRUPTED or result.get("status") == "error"
             body = _tool_output_text(result)
             if failed:
                 error = _safe(result.get("error") or body or "interrupted")
                 rows.append(f"\x1b[31m✖ Tool {name} failed:\x1b[0m {error}")
             else:
                 rows.append(f"\x1b[32m✔ Tool {name}:\x1b[0m {body}")
-        elif etype in ("kernel.command_completed", "kernel.command_intent"):
+        elif etype in (EventType.COMMAND_COMPLETED, EventType.COMMAND_INTENT):
             raw_command_result = payload.get("result")
             command_result: dict[str, Any] = raw_command_result if isinstance(raw_command_result, dict) else {}
             raw_name = str(payload.get("name") or "command")
             name = _safe(raw_name)
-            if etype == "kernel.command_intent":
+            if etype == EventType.COMMAND_INTENT:
                 rows.append(f"\x1b[36m▷ Command /{name} started\x1b[0m")
             else:
                 rows.extend(_command_result_rows(raw_name, command_result))
-        elif etype in ("kernel.activation_committed", "kernel.revision_adopted"):
+        elif etype in (EventType.ACTIVATION_COMMITTED, EventType.REVISION_ADOPTED):
             # The displayed generation changed: the command catalog is
             # refetched and anything captured under the previous revision is
             # dropped — never relabelled, never retried. Optional views are
@@ -560,14 +561,14 @@ class CoreTuiApp:
             self._present_queued_confirmation()
             suffix = " (stale action discarded)" if dropped else ""
             rows.append(f"\x1b[33m[Capabilities changed: command catalog refreshed{suffix}]\x1b[0m")
-        elif etype == "kernel.confirmation_requested":
+        elif etype == EventType.CONFIRMATION_REQUESTED:
             # Durable pending fact: restores the modal after a reload, bound to
             # the revision that created the request (never the current one).
             request_id = _safe(payload.get("request_id"))
             ui_data = payload.get("ui_data")
             if request_id and str(payload.get("ui_type", "")) == "confirmation" and isinstance(ui_data, dict):
                 self._show_or_queue_confirmation(InteractiveConfirmation(ui_data, revision_id=str(event.get("revision_id", ""))))
-        elif etype == "kernel.confirmation_decided":
+        elif etype == EventType.CONFIRMATION_DECIDED:
             # Durable reduction: the request is closed whether or not its modal
             # is on screen, so replayed history never resurrects it.
             decided = _safe(payload.get("request_id"))
@@ -579,7 +580,7 @@ class CoreTuiApp:
                     self.active_overlay = None
                     self.status_line = "Confirmation resolved"
                     self._present_queued_confirmation()
-        elif etype == "kernel.approval_requested":
+        elif etype == EventType.APPROVAL_REQUESTED:
             raw_call = payload.get("call")
             call: dict[str, Any] = raw_call if isinstance(raw_call, dict) else {}
             request_id = _safe(payload.get("request_id"))
@@ -590,7 +591,7 @@ class CoreTuiApp:
                     "arguments": call.get("arguments"),
                 }
                 self.status_line = f"Tool approval required: {self.pending_approval['tool_name']}"
-        elif etype == "kernel.approval_decided":
+        elif etype == EventType.APPROVAL_DECIDED:
             decision = _safe(payload.get("decision"))
             rows.append(f"\x1b[33m[Approval {decision}]\x1b[0m")
             # Durable reduction: the decided request closes whether the gate is
@@ -601,17 +602,17 @@ class CoreTuiApp:
             if decided_approval and str(current.get("request_id", "")) == decided_approval:
                 self.pending_approval = None
                 self._present_queued_confirmation()
-        elif etype == "kernel.run_interrupted":
+        elif etype == EventType.RUN_INTERRUPTED:
             rows.append(f"\x1b[33m[Run interrupted: {_safe(payload.get('stop_cause'))}]\x1b[0m")
             # An authentic terminal fact means nothing is parked any more; a
             # stale gate must never outlive the run that asked for it.
             self.pending_approval = None
             self._present_queued_confirmation()
-        elif etype == "kernel.run_failed":
+        elif etype == EventType.RUN_FAILED:
             rows.append("\x1b[31m[Run failed]\x1b[0m")
             self.pending_approval = None
             self._present_queued_confirmation()
-        elif etype == "kernel.observer_error":
+        elif etype == EventType.OBSERVER_ERROR:
             rows.append(f"\x1b[31m[Plugin observer error]\x1b[0m {_safe(payload.get('error'))}")
 
     def _show_or_queue_confirmation(self, overlay: InteractiveConfirmation) -> None:
@@ -852,7 +853,7 @@ class CoreTuiApp:
         """Run one command off the UI thread under the revision the user saw.
 
         Only a core read-only receipt is surfaced directly. Plugin commands
-        project their result through the durable ``kernel.command_completed``
+        project their result through the durable ``core.command_completed``
         event, and run/resume project through run events; rendering those direct
         answers too would duplicate settled rows. ``surface_result`` comes from
         catalog metadata (owner plus effects), never a client command list.
@@ -1055,7 +1056,7 @@ class CoreTuiApp:
                 self._dispatch_user_prompt(line)
 
     def _dispatch_user_prompt(self, prompt: str) -> None:
-        # No optimistic commit: the durable kernel.user_message event is the one
+        # No optimistic commit: the durable core.user_message event is the one
         # and only source of the prompt row on screen.
         if isinstance(self.upgrade, dict) and self.upgrade.get("fenced") is True:
             # Never queue a prompt behind a fence: the user re-sends after

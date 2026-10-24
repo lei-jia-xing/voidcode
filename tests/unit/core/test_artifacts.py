@@ -143,7 +143,7 @@ def test_spill_writes_the_bytes_under_their_digest_before_the_result_commits(tmp
         assert stored.stat().st_mode & 0o777 == 0o600
 
         # The reference is what the durable result carries, and the artifact predates it.
-        completed = [event for event in core.events_after("sess-spill") if event.event_type == "kernel.tool_completed"]
+        completed = [event for event in core.events_after("sess-spill") if event.event_type == "core.tool_completed"]
         assert completed and expected in json.dumps(dict(completed[0].payload), default=str)
 
 

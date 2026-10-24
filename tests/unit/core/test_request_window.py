@@ -75,7 +75,7 @@ def _windows(core: Core, session_id: str) -> list[Mapping[str, object]]:
     return [
         window
         for event in core.events_after(session_id)
-        if event.event_type == "kernel.provider_intent"
+        if event.event_type == "core.provider_intent"
         for window in [dict(event.payload).get("request_window")]
         if isinstance(window, Mapping)
     ]

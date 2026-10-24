@@ -4,9 +4,8 @@ The core owns the process, its group, and its bounded output. The core's own
 governance already decided whether the calling tool may execute at all; the lease adds
 stance only: a read-only or hook lease is refused by the caller.
 
-Every child this registry starts lives in its OWN process group — never the core's
-group, which the core shares with the supervisor, the UI, and the test driver. Group
-signals therefore touch exactly the owned tree. Service processes (one per generation,
+Every child this registry starts lives in its own process group, so group
+signals touch exactly the owned tree. Service processes (one per generation,
 stopped at generation retire) run behind a foster-parent intermediate in their own
 session: grandchildren that outlive the server reparent to the intermediate and stay
 observable until the whole service stops. Detached background jobs (user jobs that
@@ -47,11 +46,10 @@ _CANCEL_RESPONSE_SECONDS: Final[float] = 0.75
 #: core's log fds, reports the server pid, then lingers as the foster parent so grandchildren
 #: that outlive the server reparent here (observable) instead of to init (invisible). It exits
 #: once the server and all fostered children are gone; the registry also signals it on cancel.
-#: The intermediate opens its OWN session (never the core's group, which is shared with the
-#: supervisor); the server shares the intermediate's group so one group signal stops the whole
-#: tree. argv[3] is the expected core pid, checked before the server spawns and during both
-#: wait loops: a changed parent (hard core death) kills the foster's OWN group and exits,
-#: so no service outlives its core.
+#: The intermediate opens its own session; the server shares the intermediate's group
+#: so one group signal stops the whole tree. argv[3] is the expected core pid, checked
+#: before the server spawns and during both wait loops: a changed parent (hard core death)
+#: kills the foster's own group and exits, so no service outlives its core.
 _SERVICE_INTERMEDIATE: Final[str] = (
     "import ctypes,os,signal,subprocess,sys,time\n"
     "control=int(sys.argv[1])\n"
@@ -195,8 +193,7 @@ def _group_pids(leader_pid: int) -> tuple[int, ...]:
         if pgrp is None or pgrp != leader_pid:
             continue
         # Every group this helper serves was opened with the leader as its pgid, so that id still
-        # names live members after the leader was reaped. Refuse the core's own group outright:
-        # signalling it would hit the supervisor, the UI, or the test driver.
+        # names live members after the leader was reaped. Refuse the core's own group outright.
         if pgrp == own_pgid:
             return ()
         members.append(pid)

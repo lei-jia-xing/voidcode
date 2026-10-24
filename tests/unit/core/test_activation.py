@@ -116,7 +116,7 @@ def _events(core: Core, session_id: str) -> list:
 def _tool_outputs(core: Core, session_id: str) -> list[str]:
     outputs: list[str] = []
     for event in _events(core, session_id):
-        if event.event_type != "kernel.tool_completed":
+        if event.event_type != "core.tool_completed":
             continue
         payload = event.payload
         if not isinstance(payload, Mapping):
@@ -152,14 +152,14 @@ def test_same_session_reload_switches_generation_and_migrates_state(tmp_path: Pa
         assert result.revision_id != before
         events = _events(core, session.session_id)
         types = [event.event_type for event in events]
-        assert types.count("kernel.activation_requested") == 1
-        assert types.count("kernel.activation_committed") == 1
+        assert types.count("core.activation_requested") == 1
+        assert types.count("core.activation_committed") == 1
         # The whole first batch belongs to the old generation, results included.
-        first_batch = [event for event in events if event.event_type == "kernel.tool_completed"][:2]
+        first_batch = [event for event in events if event.event_type == "core.tool_completed"][:2]
         assert [event.revision_id for event in first_batch] == [before, before]
         staged_note = "activation request recorded; it is applied after this tool batch finishes"
         assert _tool_outputs(core, session.session_id)[:2] == ["probe=v1", staged_note]
-        committed = next(event for event in events if event.event_type == "kernel.activation_committed")
+        committed = next(event for event in events if event.event_type == "core.activation_committed")
         assert committed.payload["from_revision_id"] == before
         assert committed.payload["to_revision_id"] == result.revision_id
         assert list(committed.payload["migrated_owners"]) == [PLUGIN_ID]
@@ -208,8 +208,8 @@ def test_failed_candidate_keeps_the_old_generation(tmp_path: Path, defect: str) 
         assert first.status == "completed"
         assert first.revision_id == before
         types = [event.event_type for event in _events(core, session.session_id)]
-        assert "kernel.activation_failed" in types
-        assert "kernel.activation_committed" not in types
+        assert "core.activation_failed" in types
+        assert "core.activation_committed" not in types
 
         # Ordinary work continues on the old generation, with its own code and state.
         second = core.run("probe again", session_id=session.session_id)
@@ -249,11 +249,11 @@ def test_activation_is_blocked_by_a_waiting_session(tmp_path: Path) -> None:
         assert "blocked" in (outcome.error or "")
         assert "sess-parked" in (outcome.error or "")
         assert core.revision_id == before
-        blocked_events = [event for event in _events(core, idle.session_id) if event.event_type == "kernel.activation_blocked"]
+        blocked_events = [event for event in _events(core, idle.session_id) if event.event_type == "core.activation_blocked"]
         assert blocked_events and blocked_events[0].payload["blockers"]
 
         # Nothing was cancelled: the parked approval still resolves and completes on v1.
-        approval = next(event for event in _events(core, parked.session_id) if event.event_type == "kernel.approval_requested")
+        approval = next(event for event in _events(core, parked.session_id) if event.event_type == "core.approval_requested")
         resumed = core.resume(parked.session_id, approval_request_id=approval.payload["request_id"], decision="allow")
         assert resumed.status == "completed"
         assert _tool_outputs(core, parked.session_id)[0] == "probe=v1"
@@ -404,7 +404,7 @@ def test_new_observer_subscription_never_receives_old_facts(tmp_path: Path) -> N
         assert core.run("write v2", session_id=session.session_id).status == "completed"
 
         with SqliteStore(tmp_path / "state" / "kernel-v1.sqlite3") as store:
-            facts = [event.sequence for event in store.events(session.session_id) if event.event_type == "kernel.tool_completed"]
+            facts = [event.sequence for event in store.events(session.session_id) if event.event_type == "core.tool_completed"]
             old_facts = [sequence for sequence in facts if sequence <= pre_activation_tip]
             new_facts = [sequence for sequence in facts if sequence > pre_activation_tip]
             assert old_facts and new_facts

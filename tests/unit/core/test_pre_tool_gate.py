@@ -86,7 +86,7 @@ def _run_with_gate(tmp_path: Path, gate: str) -> tuple[Core, list[Mapping[str, o
         results = [
             payload
             for event in core.events_after("sess-gate")
-            if event.event_type == "kernel.tool_completed"
+            if event.event_type == "core.tool_completed"
             for payload in [dict(event.payload).get("result")]
             if isinstance(payload, Mapping)
         ]
@@ -105,7 +105,7 @@ def test_gate_denies_before_the_invocation_runs(tmp_path: Path) -> None:
     # Denied before effects: the probe never wrote its state note, and no intent was recorded.
     state = {row.owner: row for row in core.store.plugin_state_rows("session", "sess-gate")}
     assert PLUGIN_ID not in state
-    assert not [event for event in core.events_after("sess-gate") if event.event_type == "kernel.tool_intent"]
+    assert not [event for event in core.events_after("sess-gate") if event.event_type == "core.tool_intent"]
 
 
 def test_gate_failure_denies_the_call(tmp_path: Path) -> None:

@@ -545,8 +545,6 @@ export interface components {
             fenced: boolean;
             /** Generation */
             generation: number;
-            /** Image Digest */
-            image_digest: string;
             /** Launch Protocol */
             launch_protocol: number;
             /** Pid */
@@ -557,8 +555,6 @@ export interface components {
             stage: string;
             /** Status */
             status: string;
-            /** Supervisor Pid */
-            supervisor_pid: number;
             /** Web Bundle */
             web_bundle: string | null;
             /** Workspace */
@@ -751,6 +747,10 @@ export interface components {
             sequence: number;
             /** Source */
             source: string;
+            /** Transcript */
+            transcript?: {
+                [key: string]: unknown;
+            } | null;
             /** Type */
             type: string;
         };

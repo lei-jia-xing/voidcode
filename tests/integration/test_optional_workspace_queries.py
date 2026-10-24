@@ -98,7 +98,7 @@ def test_file_tools_use_any_optional_workspace_provider(tmp_path: Path, mode: st
             answers = [
                 decode_tool_result(event.payload["result"])
                 for event in core.store.events(result.session_id)
-                if event.event_type == "kernel.tool_completed"
+                if event.event_type == "core.tool_completed"
             ]
             assert len(answers) == 3 and isinstance(answers[0], ToolSuccess)
             expected = ToolSuccess if mode == "replacement" else ToolFailure

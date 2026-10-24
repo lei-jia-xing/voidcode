@@ -81,7 +81,7 @@ def test_claim_fact_is_live_before_dispatch_and_recovery_delivers_it_once(tmp_pa
             assert fact.payload == {"text": "wake up", "kind": "probe"} and fact.role == "user"
             seen = _seen(core, live)
             assert len(seen) == 1 and seen[0].payload["sequence"] == fact.event_sequence
-            dispatch = next(event for event in core.store.events(live) if event.event_type == "kernel.provider_intent")
+            dispatch = next(event for event in core.store.events(live) if event.event_type == "core.provider_intent")
             assert fact.event_sequence < seen[0].sequence < dispatch.sequence
             fired = core.store.events(live)[fact.event_sequence - 1]
             assert tuple(fired.payload["eligible_owners"]) == ("probe",)

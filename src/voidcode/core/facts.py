@@ -6,22 +6,23 @@ from typing import get_args
 from voidcode.sdk.codec import decode_provider_result
 from voidcode.sdk.hooks import StopCause
 
+from .events import EventType
 from .storage.store import StoredEvent
 
 FACT_EVENT_TYPES: dict[str, str] = {
-    "kernel.model_turn": "usage",
-    "kernel.provider_interrupted": "usage",
-    "kernel.tool_completed": "invocation_finished",
-    "kernel.tool_interrupted": "invocation_finished",
-    "kernel.run_completed": "run_finished",
-    "kernel.run_failed": "run_finished",
-    "kernel.run_interrupted": "run_finished",
-    "kernel.user_message": "run_requested",
-    "kernel.run_resumed": "run_requested",
-    "kernel.approval_requested": "approval_requested",
-    "kernel.child_spawned": "child_spawned",
-    "kernel.window_projected": "context_projected",
-    "kernel.wakeup_fired": "wakeup_fired",
+    EventType.MODEL_TURN: "usage",
+    EventType.PROVIDER_INTERRUPTED: "usage",
+    EventType.TOOL_COMPLETED: "invocation_finished",
+    EventType.TOOL_INTERRUPTED: "invocation_finished",
+    EventType.RUN_COMPLETED: "run_finished",
+    EventType.RUN_FAILED: "run_finished",
+    EventType.RUN_INTERRUPTED: "run_finished",
+    EventType.USER_MESSAGE: "run_requested",
+    EventType.RUN_RESUMED: "run_requested",
+    EventType.APPROVAL_REQUESTED: "approval_requested",
+    EventType.CHILD_SPAWNED: "child_spawned",
+    EventType.WINDOW_PROJECTED: "context_projected",
+    EventType.WAKEUP_FIRED: "wakeup_fired",
 }
 
 
@@ -32,13 +33,13 @@ def _mapping(value: object, label: str) -> Mapping[str, object]:
 
 
 def fact_for_event(ev: StoredEvent, events: Iterable[StoredEvent]) -> tuple[str, dict[str, object]] | None:
-    if ev.event_type in ("kernel.model_turn", "kernel.provider_interrupted"):
+    if ev.event_type in (EventType.MODEL_TURN, EventType.PROVIDER_INTERRUPTED):
         d_seq = ev.payload.get("dispatch_sequence")
         disp_seq_val = int(d_seq) if isinstance(d_seq, (int, float)) else None
         if disp_seq_val is None:
             raise ValueError(f"usage fact at sequence {ev.sequence} has no dispatch sequence")
         intent_ev = next(
-            (e for e in events if e.sequence == disp_seq_val and e.event_type == "kernel.provider_intent"),
+            (e for e in events if e.sequence == disp_seq_val and e.event_type == EventType.PROVIDER_INTENT),
             None,
         )
         if intent_ev is None:
@@ -52,7 +53,7 @@ def fact_for_event(ev: StoredEvent, events: Iterable[StoredEvent]) -> tuple[str,
         elapsed_sec = (ms / 1000.0) if ms is not None and isinstance(ms, (int, float)) else None
         usage_payload: Mapping[str, object] | None = None
         cost_usd: float | None = None
-        if ev.event_type == "kernel.model_turn":
+        if ev.event_type == EventType.MODEL_TURN:
             turn = decode_provider_result(_mapping(ev.payload["result"], "model turn"))
             usage_payload = turn.usage.metadata_payload() if turn.usage else None
             cost_usd = turn.usage.cost_usd if turn.usage is not None else None
@@ -69,7 +70,7 @@ def fact_for_event(ev: StoredEvent, events: Iterable[StoredEvent]) -> tuple[str,
             "elapsed_seconds": elapsed_sec,
             "cost_usd": cost_usd,
         }
-    if ev.event_type in ("kernel.tool_completed", "kernel.tool_interrupted"):
+    if ev.event_type in (EventType.TOOL_COMPLETED, EventType.TOOL_INTERRUPTED):
         call_dict = _mapping(ev.payload.get("call"), "invocation call")
         res_dict = _mapping(ev.payload.get("result"), "invocation result")
         tool_name = call_dict.get("tool_name")
@@ -77,7 +78,7 @@ def fact_for_event(ev: StoredEvent, events: Iterable[StoredEvent]) -> tuple[str,
             raise ValueError(f"invocation fact at {ev.sequence} lacks a tool identity")
         if res_dict.get("status") not in ("ok", "error"):
             raise ValueError(f"invocation fact at {ev.sequence} lacks an outcome")
-        tool_status = "error" if (ev.event_type == "kernel.tool_interrupted" or res_dict["status"] == "error") else "ok"
+        tool_status = "error" if (ev.event_type == EventType.TOOL_INTERRUPTED or res_dict["status"] == "error") else "ok"
         metadata = _mapping(ev.payload.get("fact_metadata"), "invocation fact metadata")
         required = {
             "owner",
@@ -114,12 +115,12 @@ def fact_for_event(ev: StoredEvent, events: Iterable[StoredEvent]) -> tuple[str,
             "error": str(res_dict["error"]) if "error" in res_dict and res_dict["error"] is not None else None,
             **metadata,
         }
-    if ev.event_type in ("kernel.run_completed", "kernel.run_failed", "kernel.run_interrupted"):
-        if ev.event_type == "kernel.run_interrupted":
+    if ev.event_type in (EventType.RUN_COMPLETED, EventType.RUN_FAILED, EventType.RUN_INTERRUPTED):
+        if ev.event_type == EventType.RUN_INTERRUPTED:
             stop_cause = ev.payload.get("stop_cause")
             if stop_cause not in get_args(StopCause):
                 raise ValueError(f"interrupted run event at {ev.sequence} lacks an authentic stop cause")
-        elif ev.event_type == "kernel.run_failed":
+        elif ev.event_type == EventType.RUN_FAILED:
             stop_cause = "error"
         else:
             stop_cause = "completed"
@@ -133,7 +134,11 @@ def fact_for_event(ev: StoredEvent, events: Iterable[StoredEvent]) -> tuple[str,
             "revision_id": ev.revision_id,
             "logical_turn": str(ev.payload.get("logical_turn", "")),
             "event_sequence": ev.sequence,
-            "status": ev.event_type.replace("kernel.run_", ""),
+            "status": "completed"
+            if ev.event_type == EventType.RUN_COMPLETED
+            else "failed"
+            if ev.event_type == EventType.RUN_FAILED
+            else "interrupted",
             "stop_cause": stop_cause,
             "elapsed_seconds": elapsed_seconds,
         }
@@ -146,7 +151,7 @@ def fact_for_event(ev: StoredEvent, events: Iterable[StoredEvent]) -> tuple[str,
         "event_sequence": ev.sequence,
     }
     if kind == "run_requested":
-        return kind, {**common, "resumed": ev.event_type == "kernel.run_resumed"}
+        return kind, {**common, "resumed": ev.event_type == EventType.RUN_RESUMED}
     if kind == "approval_requested":
         return kind, {**common, "request_id": ev.payload["request_id"]}
     if kind == "child_spawned":

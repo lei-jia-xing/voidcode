@@ -81,7 +81,7 @@ def _tools_in_request(request: dict[str, object]) -> set[str]:
 def _tool_outputs(core: Core, session_id: str) -> list[str]:
     outputs = []
     for event in core.events_after(session_id):
-        if event.event_type != "kernel.tool_completed":
+        if event.event_type != "core.tool_completed":
             continue
         result = event.payload.get("result")
         if isinstance(result, Mapping):
@@ -132,8 +132,8 @@ def test_delegated_children_run_and_join_with_a_narrowed_tool_scope(tmp_path: Pa
         for request in child_requests:
             assert _tools_in_request(request) == {PROBE_TOOL}
 
-        spawned = [event for event in core.events_after("parent") if event.event_type == "kernel.child_spawned"]
-        finished = [event for event in core.events_after("parent") if event.event_type == "kernel.child_finished"]
+        spawned = [event for event in core.events_after("parent") if event.event_type == "core.child_spawned"]
+        finished = [event for event in core.events_after("parent") if event.event_type == "core.child_finished"]
         assert len(spawned) == 2
         assert len(finished) == 2
 
@@ -201,6 +201,6 @@ def test_child_cannot_call_a_tool_outside_its_scope(tmp_path: Path) -> None:
         denied = [
             event
             for event in child_events
-            if event.event_type == "kernel.tool_completed" and "profile scope" in json.dumps(json_wire_object(event.payload))
+            if event.event_type == "core.tool_completed" and "profile scope" in json.dumps(json_wire_object(event.payload))
         ]
         assert denied, "the out-of-scope call must be denied inside the child"

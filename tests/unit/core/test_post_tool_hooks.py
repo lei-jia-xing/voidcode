@@ -98,7 +98,7 @@ def test_post_tool_hook_note_lands_in_the_same_invocation(tmp_path: Path) -> Non
         tool_texts = _tool_messages(server.requests[1])
         assert any(HOOK_NOTE in text for text in tool_texts)
         # The durable event carries the same result shape the model read.
-        completed = [event for event in core.events_after("sess-hook") if event.event_type == "kernel.tool_completed"]
+        completed = [event for event in core.events_after("sess-hook") if event.event_type == "core.tool_completed"]
         assert len(completed) == 1
         payload = json.dumps(dict(completed[0].payload), default=str)
         assert HOOK_NOTE in payload

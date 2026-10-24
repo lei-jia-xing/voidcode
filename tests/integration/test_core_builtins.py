@@ -67,7 +67,7 @@ def test_zero_plugins_read_write_execute_and_restart(tmp_path: Path, monkeypatch
             assert result.status == "completed", result.error
             session_id = result.session_id
             completed = [
-                decode_tool_result(event.payload["result"]) for event in core.store.events(session_id) if event.event_type == "kernel.tool_completed"
+                decode_tool_result(event.payload["result"]) for event in core.store.events(session_id) if event.event_type == "core.tool_completed"
             ]
             assert [item.tool_name for item in completed] == ["read", "write", "shell_exec"]
             assert all(isinstance(item, ToolSuccess) for item in completed), completed
@@ -95,7 +95,7 @@ def test_zero_plugins_write_still_requires_approval(tmp_path: Path) -> None:
             result = core.run("Write a file")
             assert result.status == "waiting", result.error
             assert not (workspace / "result.txt").exists()
-            assert any(event.event_type == "kernel.approval_requested" for event in core.store.events(result.session_id))
+            assert any(event.event_type == "core.approval_requested" for event in core.store.events(result.session_id))
     finally:
         server.shutdown()
         worker.join(timeout=5)

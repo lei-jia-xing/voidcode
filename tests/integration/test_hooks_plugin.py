@@ -217,8 +217,8 @@ def test_pre_tool_hook_denies_the_write_before_it_runs(tmp_path: Path) -> None:
 
         # Denied before effects: no intent was recorded, the call never completed ok, and no file exists.
         events = list(core.events_after(session_id))
-        assert not [event for event in events if event.event_type == "kernel.tool_intent"]
-        results = [dict(event.payload)["result"] for event in events if event.event_type == "kernel.tool_completed"]
+        assert not [event for event in events if event.event_type == "core.tool_intent"]
+        results = [dict(event.payload)["result"] for event in events if event.event_type == "core.tool_completed"]
         assert [result["status"] for result in results] == ["error"]  # type: ignore[index]
         assert diagnostic in str(results[0]["error"])  # type: ignore[index]
         assert not (tmp_path / "workspace" / "note.txt").exists()
@@ -294,7 +294,7 @@ def test_session_lifecycle_hooks_run_for_their_side_effects(tmp_path: Path) -> N
         assert end_marker.read_text(encoding="utf-8") == "ran"
 
         # Each fired exactly once and left its note as the durable record (never prompt context).
-        invoked = [dict(event.payload) for event in core.events_after(session_id) if event.event_type == "kernel.hook_invoked"]
+        invoked = [dict(event.payload) for event in core.events_after(session_id) if event.event_type == "core.hook_invoked"]
         assert [payload["hook_kind"] for payload in invoked] == ["session_start", "session_end"]
         assert {payload["owner"] for payload in invoked} == {"hooks"}
         assert invoked[1]["note"] == "session finished"
@@ -315,7 +315,7 @@ def test_read_only_policy_skips_a_matching_gate_and_notes_it_on_the_result(tmp_p
 
         # The configured hook command never ran: a mutating argv hook is skipped under read-only.
         assert not marker.exists()
-        assert [event.event_type for event in core.events_after(session_id)].count("kernel.tool_completed") == 1
+        assert [event.event_type for event in core.events_after(session_id)].count("core.tool_completed") == 1
 
 
 def test_read_only_read_ignores_a_write_only_hook(tmp_path: Path) -> None:

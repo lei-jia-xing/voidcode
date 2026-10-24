@@ -277,7 +277,7 @@ class ServicesProbe:
             boundaries = [
                 event.sequence
                 for event in events
-                if event.event_type in ("kernel.user_message", "kernel.continuation_started", "kernel.wakeup_fired", "kernel.tool_completed")
+                if event.event_type in ("core.user_message", "core.continuation_started", "core.wakeup_fired", "core.tool_completed")
                 and event.sequence < events[-1].sequence
             ]
             services.project_window(

@@ -1,9 +1,7 @@
 """Direct in-process plugin services: the PluginServices protocol over core state.
 
 One `RuntimeServices` instance is bound to one lease (owner + session + stance) for the
-duration of a single plugin callback. Every method below is the direct equivalent of one
-former reverse-RPC: same validation, same errors, same staged side effects — with no
-transport, no tokens on the wire, and no chunking. Artifact spills write whole payloads;
+duration of a single plugin callback. Artifact spills write whole payloads;
 process management delegates to the core-owned `ProcessRegistry`.
 """
 
@@ -35,6 +33,8 @@ from voidcode.sdk.services import (
     child_completion_notice_id,
 )
 from voidcode.sdk.transcript import ContextHistory, TranscriptPage
+
+from .events import EventType
 
 if TYPE_CHECKING:
     from voidcode.sdk.tools import ToolDefinition
@@ -591,7 +591,7 @@ class RuntimeServices:
     def window_projection(self) -> Mapping[str, object] | None:
         lease = self._active_lease()
         for event in reversed(lease.staged_events):
-            if event.event_type == "kernel.window_projected":
+            if event.event_type == EventType.WINDOW_PROJECTED:
                 return dict(event.payload)
         record = self._runtime.require_store().window_projection(lease.session_id)
         return None if record is None else asdict(record)
@@ -771,7 +771,7 @@ class RuntimeServices:
                 raise PermissionError("Service lease was revoked")
             lease.staged_events.append(
                 EventDraft(
-                    "kernel.tool_deferred",
+                    EventType.TOOL_DEFERRED,
                     "core",
                     "plugin",
                     {

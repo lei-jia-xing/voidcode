@@ -144,7 +144,7 @@ def _user_texts(request: dict[str, object]) -> list[str]:
 
 
 def _fires(core: Core, session_id: str) -> list[StoredEvent]:
-    return [event for event in core.events_after(session_id) if event.event_type == "kernel.wakeup_fired"]
+    return [event for event in core.events_after(session_id) if event.event_type == "core.wakeup_fired"]
 
 
 def _plugin_events(core: Core, session_id: str, event_type: str) -> list[StoredEvent]:

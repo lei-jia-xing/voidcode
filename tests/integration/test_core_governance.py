@@ -1150,9 +1150,9 @@ def test_command_committed_during_context_rpc_does_not_shift_dispatch_refs(tmp_p
 
     with SqliteStore(state / "kernel-v1.sqlite3") as store:
         events = store.events("context-race")
-        intent = next(event for event in events if event.event_type == "kernel.provider_intent")
-        model_turn = next(event for event in events if event.event_type == "kernel.model_turn")
-        command = next(event for event in events if event.event_type == "kernel.command_completed")
+        intent = next(event for event in events if event.event_type == "core.provider_intent")
+        model_turn = next(event for event in events if event.event_type == "core.model_turn")
+        command = next(event for event in events if event.event_type == "core.command_completed")
         # The dispatch really happened after the intervening command commit, and the
         # model turn references that intent sequence - not the command's events.
         assert intent.sequence > command.sequence, [(event.sequence, event.event_type) for event in events]
@@ -1412,11 +1412,11 @@ def test_invalid_provider_finish_fails_loudly_but_keeps_the_bill(tmp_path: Path)
 
         with SqliteStore(state / "kernel-v1.sqlite3") as store:
             events = store.events("finish-session")
-            assert [event.event_type for event in events if event.event_type == "kernel.model_turn"]
+            assert [event.event_type for event in events if event.event_type == "core.model_turn"]
             receipt_owner_events = [
                 event.sequence
                 for event in events
-                if event.event_type == "kernel.model_turn" and not store.has_observer_receipt("finish-session", event.sequence, _GOV_PLUGIN_ID)
+                if event.event_type == "core.model_turn" and not store.has_observer_receipt("finish-session", event.sequence, _GOV_PLUGIN_ID)
             ]
             assert receipt_owner_events == [], receipt_owner_events
 
@@ -1789,7 +1789,7 @@ def test_root_action_budget_shares_main_and_child_dispatches(tmp_path: Path) -> 
         assert root, checkpoint.payload
         assert store.root_budget_state(root) == (3, 3), store.root_budget_state(root)
         events = store.events("fanout-session")
-        intents = [event for event in events if event.event_type == "kernel.provider_intent"]
+        intents = [event for event in events if event.event_type == "core.provider_intent"]
         assert len(intents) == 3, intents
     with sqlite3.connect(state / "kernel-v1.sqlite3") as conn:
         rows = conn.execute(
@@ -1950,7 +1950,7 @@ def test_two_same_owner_facts_in_one_commit_do_not_cas_conflict(tmp_path: Path) 
         assert stored.get("usage_facts_seen", 0) == 2, snapshot
 
         shown = _cli(workspace, state, "show", "two-fact-session", "--events")
-        diagnostics = [event for event in shown["events"] if event["type"] == "kernel.observer_error"]
+        diagnostics = [event for event in shown["events"] if event["type"] == "core.observer_error"]
         assert diagnostics == [], diagnostics
 
         # Every fact-carrying event has its own receipt row, so neither fact can
@@ -1959,7 +1959,7 @@ def test_two_same_owner_facts_in_one_commit_do_not_cas_conflict(tmp_path: Path) 
             facts = [
                 event
                 for event in store.events("two-fact-session")
-                if event.event_type in {"kernel.model_turn", "kernel.tool_completed", "kernel.tool_interrupted"}
+                if event.event_type in {"core.model_turn", "core.tool_completed", "core.tool_interrupted"}
             ]
             assert len(facts) == 4, [(event.sequence, event.event_type) for event in facts]
             for event in facts:
@@ -2006,7 +2006,7 @@ def test_observer_receipt_survives_core_kill_exactly_once(tmp_path: Path) -> Non
         # The bill/fact is already durable even though the observer never returned.
         with SqliteStore(state / "kernel-v1.sqlite3") as store:
             events = store.events("obs-kill-session")
-            assert [event.event_type for event in events if event.event_type == "kernel.model_turn"]
+            assert [event.event_type for event in events if event.event_type == "core.model_turn"]
             checkpoint = store.checkpoint("obs-kill-session")
             assert checkpoint is not None
             assert checkpoint.kind == "terminal"
@@ -2020,7 +2020,7 @@ def test_observer_receipt_survives_core_kill_exactly_once(tmp_path: Path) -> Non
 
         # A real receipt row now exists for the delivered fact (durable dedupe authority).
         with SqliteStore(state / "kernel-v1.sqlite3") as store:
-            model_turn = next(event for event in store.events("obs-kill-session") if event.event_type == "kernel.model_turn")
+            model_turn = next(event for event in store.events("obs-kill-session") if event.event_type == "core.model_turn")
             assert store.has_observer_receipt("obs-kill-session", model_turn.sequence, _GOV_PLUGIN_ID)
 
         # A second reopen of the same committed fact must not increment again.
@@ -2291,14 +2291,14 @@ def test_crash_after_turn_append_resumes_the_authentic_native_batch(tmp_path: Pa
         # one checkpoint, and the effect did not happen yet.
         with SqliteStore(state / "kernel-v1.sqlite3") as store:
             events = store.events("crash-batch")
-            turn = next(event for event in events if event.event_type == "kernel.model_turn")
+            turn = next(event for event in events if event.event_type == "core.model_turn")
             checkpoint = store.checkpoint("crash-batch")
             assert checkpoint is not None
             assert checkpoint.kind == "ready"
             assert checkpoint.payload["batch_sequence"] == turn.sequence, checkpoint.payload
             assert checkpoint.payload["next_call"] == 0, checkpoint.payload
             assert store.session("crash-batch").status == "running"
-            intents = [event for event in events if event.event_type == "kernel.provider_intent"]
+            intents = [event for event in events if event.event_type == "core.provider_intent"]
             assert len(intents) == 1, [(event.sequence, event.event_type) for event in events]
         assert not (workspace / "crash_batch.txt").exists()
 
@@ -2311,7 +2311,7 @@ def test_crash_after_turn_append_resumes_the_authentic_native_batch(tmp_path: Pa
     assert len(server.requests) == 2, server.requests
     assert (workspace / "crash_batch.txt").read_text(encoding="utf-8") == "mutated\n"
     with SqliteStore(state / "kernel-v1.sqlite3") as store:
-        intents = [event for event in store.events("crash-batch") if event.event_type == "kernel.provider_intent"]
+        intents = [event for event in store.events("crash-batch") if event.event_type == "core.provider_intent"]
         assert len(intents) == 2, [(event.sequence, event.payload["dispatch_id"]) for event in intents]
         assert len({event.payload["dispatch_id"] for event in intents}) == 2
 
@@ -2355,7 +2355,7 @@ def test_crash_after_approval_append_keeps_the_native_ask(tmp_path: Path) -> Non
                     time.sleep(0.01)
                     continue
                 try:
-                    row = probe.execute("SELECT count(*) FROM session_events WHERE event_type = 'kernel.approval_requested'").fetchone()
+                    row = probe.execute("SELECT count(*) FROM session_events WHERE event_type = 'core.approval_requested'").fetchone()
                 finally:
                     probe.close()
                 if row is not None and row[0] == 1:
@@ -2373,7 +2373,7 @@ def test_crash_after_approval_append_keeps_the_native_ask(tmp_path: Path) -> Non
 
         with SqliteStore(state / "kernel-v1.sqlite3") as store:
             events = store.events("crash-ask")
-            approval = next(event for event in events if event.event_type == "kernel.approval_requested")
+            approval = next(event for event in events if event.event_type == "core.approval_requested")
             request_id = approval.payload["request_id"]
             checkpoint = store.checkpoint("crash-ask")
             assert checkpoint is not None
@@ -2381,7 +2381,7 @@ def test_crash_after_approval_append_keeps_the_native_ask(tmp_path: Path) -> Non
             assert checkpoint.payload["approval_sequence"] == approval.sequence, checkpoint.payload
             assert checkpoint.payload["batch_sequence"] == approval.payload["batch_sequence"], checkpoint.payload
             assert store.session("crash-ask").status == "waiting"
-            assert len([event for event in events if event.event_type == "kernel.provider_intent"]) == 1
+            assert len([event for event in events if event.event_type == "core.provider_intent"]) == 1
         assert not (workspace / "crash_ask.txt").exists()
 
         # The ask cannot be bypassed: a bare resume refuses, and the exact identity
@@ -2602,10 +2602,10 @@ def test_terminal_interruption_auto_drives_queued_continuation(tmp_path: Path) -
         assert store.pending_continuations("terminal-cancel") == ()
         assert store.claimed_continuations("terminal-cancel") == ()
         events = store.events("terminal-cancel")
-        started = next(event for event in events if event.event_type == "kernel.continuation_started")
+        started = next(event for event in events if event.event_type == "core.continuation_started")
         assert started.run_id != burned["run_id"], (started.run_id, burned["run_id"])
-        assert [event.event_type for event in events].count("kernel.continuation_started") == 1
-        intents = [event for event in events if event.event_type == "kernel.provider_intent"]
+        assert [event.event_type for event in events].count("core.continuation_started") == 1
+        intents = [event for event in events if event.event_type == "core.provider_intent"]
         assert [event.run_id for event in intents] == [burned["run_id"], started.run_id], intents
 
 
@@ -2632,8 +2632,8 @@ def test_two_owner_partial_receipt_delivers_only_the_missing_owner(tmp_path: Pat
         assert first["status"] == "completed", first
 
         with SqliteStore(state / "kernel-v1.sqlite3") as store:
-            turn = next(event for event in store.events("two-owner") if event.event_type == "kernel.model_turn")
-            dispatch = next(event for event in store.events("two-owner") if event.event_type == "kernel.provider_intent")
+            turn = next(event for event in store.events("two-owner") if event.event_type == "core.model_turn")
+            dispatch = next(event for event in store.events("two-owner") if event.event_type == "core.provider_intent")
             assert store.has_observer_receipt("two-owner", turn.sequence, _GOV_PLUGIN_ID)
             assert store.has_observer_receipt("two-owner", turn.sequence, _OBSERVER_PLUGIN_ID)
             first_owner_state, _ = store.plugin_state(_GOV_PLUGIN_ID, "session", "two-owner")
@@ -2796,9 +2796,9 @@ def test_internal_session_effects_need_no_read_only_waiver_or_approval(tmp_path:
         goal_state, _ = store.plugin_state("goal", "session", "session-effects-goal")
         assert goal_state is not None and goal_state["status"] == "complete", goal_state
         goal_events = [event.event_type for event in store.events("session-effects-goal")]
-        assert "kernel.tool_intent" in goal_events, goal_events
+        assert "core.tool_intent" in goal_events, goal_events
         assert "plugin.goal.goal_created" in goal_events and "plugin.goal.goal_completed" in goal_events, goal_events
-        assert "kernel.approval_requested" not in goal_events, goal_events
+        assert "core.approval_requested" not in goal_events, goal_events
         write_events = [event.event_type for event in store.events("session-effects-write")]
 
     # Internal state work never touched the workspace, and the external write did
@@ -2808,8 +2808,8 @@ def test_internal_session_effects_need_no_read_only_waiver_or_approval(tmp_path:
     if policy == "read-only":
         assert write_run["status"] == "completed", write_run
         assert write_run["pending_approval"] is None, write_run
-        assert "kernel.tool_intent" not in write_events, write_events
-        assert "kernel.approval_requested" not in write_events, write_events
+        assert "core.tool_intent" not in write_events, write_events
+        assert "core.approval_requested" not in write_events, write_events
     else:
         assert write_run["status"] == "waiting", write_run
         assert write_run["pending_approval"] is not None, write_run
@@ -2896,14 +2896,14 @@ def test_native_tool_cancellation_is_scoped_to_its_owner(tmp_path: Path, case: s
         assert claims[0]["run_status"] == "completed", claims
         assert row_status == "completed", row_status
         assert len(server.requests) == 2, server.requests
-        assert "kernel.run_interrupted" not in events, events
+        assert "core.run_interrupted" not in events, events
     else:
         # The claim's own owner stopped its own claim: no next turn was billed.
         assert claims[0]["run_status"] == "interrupted", claims
         assert claims[0]["stop_cause"] == "owner_cancel", claims
         assert row_status == "cancelled", row_status
         assert len(server.requests) == 1, server.requests
-        assert "kernel.run_interrupted" in events, events
+        assert "core.run_interrupted" in events, events
 
 
 def test_context_failure_finishes_the_run_failed_without_a_dispatch(tmp_path: Path) -> None:
@@ -2935,8 +2935,8 @@ def test_context_failure_finishes_the_run_failed_without_a_dispatch(tmp_path: Pa
             checkpoint = store.checkpoint("context-fail")
             assert checkpoint is not None and checkpoint.kind == "terminal"
             events = [event.event_type for event in store.events("context-fail")]
-            assert "kernel.run_failed" in events, events
-            assert "kernel.provider_intent" not in events, events
+            assert "core.run_failed" in events, events
+            assert "core.provider_intent" not in events, events
 
         (workspace / "context.fail").unlink()
         fresh = _cli(workspace, state, "run", "context works now", "--session-id", "context-fail")
@@ -2967,7 +2967,7 @@ def test_replayed_run_finished_fact_keeps_its_measured_elapsed(tmp_path: Path) -
 
         with SqliteStore(state / "kernel-v1.sqlite3") as store:
             events = store.events("timing-session")
-            finished = next(event for event in events if event.event_type == "kernel.run_completed")
+            finished = next(event for event in events if event.event_type == "core.run_completed")
             original_ms = finished.payload["elapsed_ms"]
             owner_state, _ = store.plugin_state(_GOV_PLUGIN_ID, "session", "timing-session")
             assert owner_state is not None
@@ -3043,8 +3043,8 @@ def test_observer_budget_is_settled_before_the_next_dispatch(tmp_path: Path) -> 
 
         with SqliteStore(state / "kernel-v1.sqlite3") as store:
             events = store.events("settled-budget")
-            assert [event.event_type for event in events].count("kernel.provider_intent") == 1
-            assert not any(event.event_type == "kernel.model_turn" for event in events)
+            assert [event.event_type for event in events].count("core.provider_intent") == 1
+            assert not any(event.event_type == "core.model_turn" for event in events)
             assert store.session("settled-budget").status == "running"
 
         # The observer caps its owner on the fact it observes while that dead
@@ -3106,5 +3106,5 @@ def test_unknown_elapsed_budget_stops_before_any_provider_dispatch(tmp_path: Pat
     assert len(server.arrivals) == 1, server.arrivals
     with SqliteStore(state / "kernel-v1.sqlite3") as store:
         events = store.events("unknown-elapsed")
-        assert [event.event_type for event in events].count("kernel.provider_intent") == 1
-        assert not any(event.event_type == "kernel.model_turn" for event in events)
+        assert [event.event_type for event in events].count("core.provider_intent") == 1
+        assert not any(event.event_type == "core.model_turn" for event in events)

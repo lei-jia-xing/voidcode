@@ -92,9 +92,9 @@ def render_event_block(event: HistoryEvent) -> str | None:
     payload = event.payload or {}
     header = f"## {event_type} [{event.sequence}]"
     try:
-        if event_type == "kernel.user_message":
+        if event_type == "core.user_message":
             return f"## user [{event.sequence}]\n{payload.get('content', '')}"
-        if event_type == "kernel.model_turn":
+        if event_type == "core.model_turn":
             wire = _as_mapping(payload.get("result"))
             if wire is None:
                 return f"{header}\n{_json(payload)}"
@@ -105,34 +105,34 @@ def render_event_block(event: HistoryEvent) -> str | None:
                 lines.append(f"### call {call.tool_name}")
                 lines.append(_json(encoded.get("function", encoded)))
             return "\n".join(lines)
-        if event_type in {"kernel.tool_completed", "kernel.tool_interrupted"}:
+        if event_type in {"core.tool_completed", "core.tool_interrupted"}:
             wire = _as_mapping(payload.get("result"))
             if wire is None:
                 return f"{header}\n{_json(payload)}"
             result = decode_tool_result(wire)
             state = "error" if event_type.endswith("interrupted") else "result"
             return f"## tool {result.tool_name} ({state}) [{event.sequence}]\n{_result_text(result)}"
-        if event_type == "kernel.continuation_started":
+        if event_type == "core.continuation_started":
             inner = _as_mapping(payload.get("payload")) or {}
             role = payload.get("role")
             text = inner.get("text") if role == "user" and isinstance(inner.get("text"), str) else _json(inner)
             return f"## message from {event.source} [{event.sequence}]\n{text}"
-        if event_type == "kernel.wakeup_fired":
+        if event_type == "core.wakeup_fired":
             inner = _as_mapping(payload.get("payload")) or {}
             role = payload.get("role")
             text = inner.get("text") if role == "user" and isinstance(inner.get("text"), str) else _json(inner)
             return f"## wakeup from {payload.get('owner', event.source)} [{event.sequence}]\n{text}"
-        if event_type == "kernel.tool_progress":
+        if event_type == "core.tool_progress":
             return f"## progress from {payload.get('owner', event.source)} [{event.sequence}]\n{_json(payload.get('progress', payload))}"
-        if event_type == "kernel.child_spawned":
+        if event_type == "core.child_spawned":
             return f"## child started [{event.sequence}]\n{_json(payload)}"
-        if event_type == "kernel.child_finished":
+        if event_type == "core.child_finished":
             return f"## child finished [{event.sequence}]\n{_json(payload)}"
     except TypeError, ValueError, KeyError:
         return f"{header}\n{_json(payload)}"
     if event_type.startswith("plugin."):
         return f"## event {event_type} from {event.source} [{event.sequence}]\n{_json(payload)}"
-    if event_type.startswith("kernel."):
+    if event_type.startswith("core."):
         return None
     return f"{header}\n{_json(payload)}"
 

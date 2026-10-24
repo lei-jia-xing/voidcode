@@ -105,7 +105,7 @@ def test_fact_owners_are_frozen_on_the_event_across_restart_with_changed_source(
         core = open_core(workspace, state_dir=tmp_path / "state", auto_drain=False)
         core.create_session("s")
         assert core.run("one", session_id="s").status == "completed"
-        old = next(event for event in core.events_after("s") if event.event_type == "kernel.run_completed")
+        old = next(event for event in core.events_after("s") if event.event_type == "core.run_completed")
         assert old.payload["eligible_owners"] == ("observer",)
         revision = core.revision_id
         core.close()
@@ -117,8 +117,8 @@ def test_fact_owners_are_frozen_on_the_event_across_restart_with_changed_source(
         assert core._eligible_observers(old) == ("observer",)
         assert core.run("two", session_id="s").status == "completed"
         events = core.events_after("s")
-        new_run = [event for event in events if event.event_type == "kernel.run_completed"][-1]
-        new_usage = [event for event in events if event.event_type == "kernel.model_turn"][-1]
+        new_run = [event for event in events if event.event_type == "core.run_completed"][-1]
+        new_usage = [event for event in events if event.event_type == "core.model_turn"][-1]
         assert new_run.payload["eligible_owners"] == ()
         assert new_usage.payload["eligible_owners"] == ("observer",)
         core.close()
@@ -150,7 +150,7 @@ def test_plain_restart_refuses_reinterpretation_and_adoption_migrates(tmp_path: 
     try:
         open_core(workspace, state_dir=state, auto_drain=False)
     except ValueError as exc:
-        assert "will not reinterpret" in str(exc)
+        assert "state schema mismatch" in str(exc)
     else:  # pragma: no cover - the guard is the subject
         raise AssertionError("plain restart reinterpreted stored state under a newer schema")
 

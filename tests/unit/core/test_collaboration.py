@@ -169,7 +169,7 @@ def _wait_for(predicate: Callable[[], bool], *, timeout: float = 15.0, what: str
 
 
 def _child_facts(core: Core, parent: str) -> list[dict[str, object]]:
-    return [dict(event.payload) for event in core.events_after(parent) if event.event_type == "kernel.child_finished"]
+    return [dict(event.payload) for event in core.events_after(parent) if event.event_type == "core.child_finished"]
 
 
 def _join(core: Core, parent: str, child: str, *, timeout: float = 30.0) -> ChildOutcome:
@@ -229,7 +229,7 @@ def test_completion_notice_is_acked_with_the_tool_result_that_consumed_it(tmp_pa
         # The ack cancelled the notice in the same commit as the consuming tool result.
         assert core.store.continuation_status(notice_id) == "cancelled"
         assert core.store.pending_continuations(parent, limit=10) == ()
-        started = [event for event in core.events_after(parent) if event.event_type == "kernel.continuation_started"]
+        started = [event for event in core.events_after(parent) if event.event_type == "core.continuation_started"]
         assert all(event.payload.get("continuation_id") != notice_id for event in started)
 
         # The next request never re-delivers the consumed notice.
@@ -348,7 +348,7 @@ def _completions(core: Core, session_id: str, tool: str) -> list[dict[str, objec
     return [
         dict(event.payload)
         for event in core.events_after(session_id)
-        if event.event_type == "kernel.tool_completed"
+        if event.event_type == "core.tool_completed"
         and isinstance(event.payload.get("call"), Mapping)
         and event.payload["call"].get("tool_name") == tool
     ]
@@ -479,9 +479,9 @@ def test_concurrent_child_publication_does_not_duplicate_the_parent_prefix(tmp_p
                 record = original_commit_staged(session_id, **kwargs)  # type: ignore[arg-type]
                 events = kwargs.get("events") or ()
                 kinds = {getattr(event, "event_type", "") for event in events}  # type: ignore[union-attr]
-                if session_id == parent and "kernel.child_finished" in kinds:
+                if session_id == parent and "core.child_finished" in kinds:
                     fact_committed.set()
-                if not gated_once and session_id == parent and "kernel.model_turn" in kinds:
+                if not gated_once and session_id == parent and "core.model_turn" in kinds:
                     gated_once = True
                     # Block INSIDE the parent's rebase, between its own commit tip and the
                     # post-commit tail read, until the real publisher commits the next sequence.
@@ -507,11 +507,11 @@ def test_concurrent_child_publication_does_not_duplicate_the_parent_prefix(tmp_p
         assert {message["tool_call_id"] for message in tool_messages} == {"cron-0", "cron-1"}
 
         kinds = _assert_contiguous_prefix(core, parent)
-        assert kinds.count("kernel.child_finished") == 1
+        assert kinds.count("core.child_finished") == 1
         events = list(core.events_after(parent))
-        first_turn = next(event.sequence for event in events if event.event_type == "kernel.model_turn")
-        fact_seq = next(event.sequence for event in events if event.event_type == "kernel.child_finished")
-        first_intent = next(event.sequence for event in events if event.event_type == "kernel.tool_intent")
+        first_turn = next(event.sequence for event in events if event.event_type == "core.model_turn")
+        fact_seq = next(event.sequence for event in events if event.event_type == "core.child_finished")
+        first_intent = next(event.sequence for event in events if event.event_type == "core.tool_intent")
         assert first_turn < fact_seq < first_intent, "the fact landed inside the parent's rebase window"
         facts = _child_facts(core, parent)
         assert len(facts) == 1 and facts[0]["child_session_id"] == child
@@ -535,7 +535,7 @@ def test_child_fact_between_batches_does_not_leave_a_merge_hole(tmp_path: Path) 
         with _gated_publication(core, release) as publication_ready:
             child = core.spawn_child(parent, "CHILD TASK", notify_on_completion=True)
             assert publication_ready.wait(timeout=30), "child publication never reached the gate"
-            with _commit_signals(core, parent, "kernel.tool_completed", "kernel.child_finished") as signals:
+            with _commit_signals(core, parent, "core.tool_completed", "core.child_finished") as signals:
                 original_claim = core.store.claim_child_messages
                 merge_gate_used = False
 
@@ -545,7 +545,7 @@ def test_child_fact_between_batches_does_not_leave_a_merge_hole(tmp_path: Path) 
                         return original_claim(*args, **kwargs)  # type: ignore[return-value,arg-type]
                     merge_gate_used = True
                     release.set()
-                    assert signals["kernel.child_finished"].wait(timeout=30), "child fact never committed at merge entry"
+                    assert signals["core.child_finished"].wait(timeout=30), "child fact never committed at merge entry"
                     fact_committed.set()
                     return original_claim(*args, **kwargs)  # type: ignore[return-value,arg-type]
 
@@ -553,7 +553,7 @@ def test_child_fact_between_batches_does_not_leave_a_merge_hole(tmp_path: Path) 
                 try:
 
                     def mark_first_batch() -> None:
-                        assert signals["kernel.tool_completed"].wait(timeout=30), "first batch never reported"
+                        assert signals["core.tool_completed"].wait(timeout=30), "first batch never reported"
                         first_batch_reported.set()
 
                     marker = threading.Thread(target=mark_first_batch, daemon=True)
@@ -569,7 +569,7 @@ def test_child_fact_between_batches_does_not_leave_a_merge_hole(tmp_path: Path) 
         assert len(_completions(core, parent, "cron_list")) == 2
 
         kinds = _assert_contiguous_prefix(core, parent)
-        assert kinds.index("kernel.child_finished") < kinds.index("kernel.continuation_started"), "the fact precedes its claimed notice"
+        assert kinds.index("core.child_finished") < kinds.index("core.continuation_started"), "the fact precedes its claimed notice"
         facts = _child_facts(core, parent)
         assert len(facts) == 1 and facts[0]["child_session_id"] == child
 
@@ -599,9 +599,9 @@ def test_provider_intent_survives_a_concurrent_child_fact_commit(tmp_path: Path)
                 nonlocal gated
                 events = kwargs.get("events") or ()
                 kinds = {getattr(event, "event_type", "") for event in events}  # type: ignore[union-attr]
-                if session_id == parent and "kernel.child_finished" in kinds:
+                if session_id == parent and "core.child_finished" in kinds:
                     fact_committed.set()
-                if not gated and session_id == parent and "kernel.provider_intent" in kinds:
+                if not gated and session_id == parent and "core.provider_intent" in kinds:
                     gated = True
                     release.set()
                     assert fact_committed.wait(timeout=30), "child fact never committed inside the CAS window"
@@ -621,7 +621,7 @@ def test_provider_intent_survives_a_concurrent_child_fact_commit(tmp_path: Path)
         parent_requests = [request for request in server.requests if "PARENT TASK" in json.dumps(request.get("messages", []))]
         assert len(parent_requests) == 3, "two cron batches plus the closing turn"
         kinds = [event.event_type for event in core.events_after(parent)]
-        assert "kernel.provider_intent" in kinds
+        assert "core.provider_intent" in kinds
         facts = _child_facts(core, parent)
         assert len(facts) == 1 and facts[0]["child_session_id"] == child
 
@@ -753,8 +753,8 @@ def test_late_same_run_control_event_does_not_extend_the_history_snapshot(tmp_pa
         assert len(facts) == 1 and facts[0]["run_id"] == run_a
 
         events = list(core.events_after(child))
-        terminal_seq = next(event.sequence for event in events if event.event_type == "kernel.run_completed")
-        late_seq = next(event.sequence for event in events if event.event_type == "kernel.child_finished")
+        terminal_seq = next(event.sequence for event in events if event.event_type == "core.run_completed")
+        late_seq = next(event.sequence for event in events if event.event_type == "core.child_finished")
         assert terminal_seq < late_seq, "the grandchild fact genuinely landed after the terminal event"
 
         history = _history_text(core, facts[0])
@@ -843,7 +843,7 @@ def test_restart_with_out_of_order_facts_publishes_nothing_twice(tmp_path: Path)
         statuses = {notice_id: reopened.store.continuation_status(notice_id) for notice_id in notice_ids}
         assert all(status in ("completed", "claimed", "pending") for status in statuses.values()), statuses
         started = [
-            str(event.payload.get("continuation_id")) for event in reopened.events_after(parent) if event.event_type == "kernel.continuation_started"
+            str(event.payload.get("continuation_id")) for event in reopened.events_after(parent) if event.event_type == "core.continuation_started"
         ]
         for notice_id in notice_ids:
             assert started.count(notice_id) <= 1, "no notice delivered twice"
@@ -906,9 +906,9 @@ def test_concurrent_sends_to_a_finished_child_start_exactly_one_run(tmp_path: Pa
         assert outcome.run_id == started[0].run_id, "the executed run is the started receipt's run"
         assert started[0].run_id != initial.run_id, "the follow-up is a new run, not the initial one"
         child_events = list(core.events_after(child))
-        started_runs = {event.run_id for event in child_events if event.event_type == "kernel.continuation_started"}
+        started_runs = {event.run_id for event in child_events if event.event_type == "core.continuation_started"}
         assert started_runs == {started[0].run_id}, "exactly one follow-up run was claimed"
-        followup_intents = [event for event in child_events if event.event_type == "kernel.provider_intent" and event.run_id != initial.run_id]
+        followup_intents = [event for event in child_events if event.event_type == "core.provider_intent" and event.run_id != initial.run_id]
         assert followup_intents, "the follow-up run really dispatched its provider turn"
         assert {event.run_id for event in followup_intents} == {started[0].run_id}
         facts = [fact for fact in _child_facts(core, parent) if fact["run_id"] == started[0].run_id]

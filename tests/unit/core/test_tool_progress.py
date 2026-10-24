@@ -48,7 +48,7 @@ def test_live_tool_progress_uses_existing_session_sse_stream(tmp_path: Path) -> 
                     for frame in frames:
                         events = [frame["event"]] if frame.get("kind") == "event" else frame.get("events", [])
                         for event in events:
-                            if event.get("type") == "kernel.tool_progress":
+                            if event.get("type") == "core.tool_progress":
                                 reports.append(event)
                                 observed.set()
                                 return

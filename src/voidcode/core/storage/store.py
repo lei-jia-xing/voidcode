@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from ...sdk.json_values import json_wire_object, own_json_object
 from ...sdk.services import CHILD_MESSAGE_OWNER, PluginBudget, SessionInfo
+from ..events import EventType
 
 SCHEMA_MAGIC = "voidcode-kernel-v1"
 SCHEMA_VERSION = 5
@@ -319,7 +320,7 @@ def _load_schema_sql() -> str:
 
 
 def _verify_existing_file(path: Path, *, supported: frozenset[int] | None = None, enforce_version: bool = True) -> int:
-    """Preflight check on an existing file without altering a single byte.
+    """Verify an existing file without altering a single byte.
 
     Returns the recorded schema version. ``supported`` names every version this caller
     understands (tables are checked after the version, so a recorded version that is not
@@ -465,12 +466,9 @@ def read_recorded_schema(database: Path) -> int | None:
 
 def open_read_only(database: Path) -> sqlite3.Connection:
     """Open one core database for inspection, with writes refused by the connection itself.
-
-    The single read-only reader behind preflight, supervisor probes, and the ``show`` rescue path:
-    a ``mode=ro`` URI plus ``PRAGMA query_only``, after the same identity check a writer runs.
+    Uses a ``mode=ro`` URI plus ``PRAGMA query_only``, after the same identity check a writer runs.
     Accepts any recorded version whose magic and table matrix verify; foreign files raise.
-    Callers that need version semantics (preflight plans, writers) classify the recorded
-    version themselves instead of relying on the open to refuse it.
+    Callers that need version semantics classify the recorded version themselves.
     """
     _verify_existing_file(database, supported=READABLE_SCHEMA_VERSIONS, enforce_version=False)
     connection = sqlite3.connect(f"{database.resolve().as_uri()}?mode=ro", uri=True)
@@ -964,9 +962,9 @@ class SqliteStore:
                     """
                     INSERT INTO session_events (
                         session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json
-                    ) VALUES (?, ?, ?, 'kernel.wakeup_fired', ?, 'plugin', ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, 'plugin', ?, ?)
                     """,
-                    (session.session_id, new_seq, run_id, f"plugin.{wakeup.owner}", revision_id, fired_payload),
+                    (session.session_id, new_seq, run_id, EventType.WAKEUP_FIRED, f"plugin.{wakeup.owner}", revision_id, fired_payload),
                 )
                 checkpoint_payload = canonical_json(
                     {
@@ -1180,12 +1178,12 @@ class SqliteStore:
                 LEFT JOIN checkpoints c ON c.session_id = s.session_id AND c.run_id = s.run_id
                 LEFT JOIN session_events a ON a.session_id = s.session_id
                     AND a.sequence = json_extract(c.payload_json, '$.approval_sequence')
-                    AND c.kind = 'approval_wait' AND a.event_type = 'kernel.approval_requested'
+                    AND c.kind = 'approval_wait' AND a.event_type = ?
                 LEFT JOIN root_budgets r ON r.root_id = json_extract(c.payload_json, '$.root_id')
                 LEFT JOIN session_budgets b ON b.session_id = s.session_id AND b.owner = ?
                 WHERE s.session_id = ?
                 """,
-                (owner, session_id),
+                (EventType.APPROVAL_REQUESTED, owner, session_id),
             ).fetchone()
             if row is None:
                 raise KeyError(f"unknown session: {session_id}")
@@ -1626,7 +1624,7 @@ class SqliteStore:
                 current_seq = curr_seq
                 first_sequence_by_type: dict[str, int] = {}
                 for draft in events:
-                    if draft.event_type == "kernel.window_projected":
+                    if draft.event_type == EventType.WINDOW_PROJECTED:
                         projection = draft.payload
                         self.set_window_projection(
                             session_id,
@@ -1933,7 +1931,7 @@ class SqliteStore:
                 current_seq = curr_seq
                 first_sequence_by_type: dict[str, int] = {}
                 for draft in events:
-                    if draft.event_type == "kernel.window_projected":
+                    if draft.event_type == EventType.WINDOW_PROJECTED:
                         projection = draft.payload
                         self.set_window_projection(
                             session_id,
@@ -2349,7 +2347,7 @@ class SqliteStore:
 
         Only ``running`` rows of ``workspace`` are touched, and only because the caller proved no
         core owns it. Each becomes ``interrupted`` at its last committed boundary with one
-        ``kernel.run_interrupted`` fact. The checkpoint payload (cursor, batch references, replay
+        ``core.run_interrupted`` fact. The checkpoint payload (cursor, batch references, replay
         policies) is preserved byte-for-byte: native effects and unsettled dispatches stay exactly
         as unknown as they were, so an explicit resume applies the ordinary replay-policy and
         unknown-usage settlement instead of this transaction inventing a replay or a stop.
@@ -2378,12 +2376,13 @@ class SqliteStore:
                 """
                 INSERT INTO session_events (
                     session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json
-                ) VALUES (?, ?, ?, 'kernel.run_interrupted', 'core', 'core', ?, ?)
+                ) VALUES (?, ?, ?, ?, 'core', 'core', ?, ?)
                 """,
                 (
                     str(session_id),
                     sequence,
                     str(run_id),
+                    EventType.RUN_INTERRUPTED,
                     target_revision_id,
                     canonical_json(
                         {
@@ -2784,12 +2783,13 @@ class SqliteStore:
                         """
                         INSERT INTO session_events (
                             session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json
-                        ) VALUES (?, ?, ?, 'kernel.continuation_started', ?, 'plugin', ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, 'plugin', ?, ?)
                         """,
                         (
                             session_id,
                             sequence,
                             run_id,
+                            EventType.CONTINUATION_STARTED,
                             source,
                             revision_id,
                             canonical_json({"continuation_id": continuation_id, "payload": payload, "role": str(role)}),
@@ -2800,7 +2800,7 @@ class SqliteStore:
                             session_id=session_id,
                             sequence=sequence,
                             run_id=run_id,
-                            event_type="kernel.continuation_started",
+                            event_type=EventType.CONTINUATION_STARTED,
                             source=source,
                             actor="plugin",
                             revision_id=revision_id,
@@ -3207,9 +3207,9 @@ class SqliteStore:
                     """
                     INSERT INTO session_events (
                         session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json
-                    ) VALUES (?, ?, ?, 'kernel.continuation_started', ?, 'plugin', ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, 'plugin', ?, ?)
                     """,
-                    (session_id, new_seq, run_id, f"plugin.{cont_record.owner}", revision_id, disp_payload),
+                    (session_id, new_seq, run_id, EventType.CONTINUATION_STARTED, f"plugin.{cont_record.owner}", revision_id, disp_payload),
                 )
 
                 new_turn = curr_turn + 1

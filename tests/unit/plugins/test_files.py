@@ -618,7 +618,7 @@ def test_read_transcript_returns_readable_pages_with_a_cursor_and_reports_core_r
     views = (
         EventView(
             sequence=1,
-            event_type="kernel.user_message",
+            event_type="core.user_message",
             run_id="r",
             revision_id="v",
             source="user",
@@ -662,7 +662,7 @@ def test_read_transcript_returns_readable_pages_with_a_cursor_and_reports_core_r
     child_views = (
         EventView(
             sequence=1,
-            event_type="kernel.user_message",
+            event_type="core.user_message",
             run_id="r",
             revision_id="v",
             source="user",

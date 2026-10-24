@@ -83,7 +83,7 @@ def _results(core: Core, session_id: str) -> list[Mapping[str, object]]:
     return [
         payload
         for event in core.events_after(session_id)
-        if event.event_type in ("kernel.tool_completed", "kernel.tool_interrupted")
+        if event.event_type in ("core.tool_completed", "core.tool_interrupted")
         for payload in [dict(event.payload).get("result")]
         if isinstance(payload, Mapping)
     ]
@@ -105,8 +105,8 @@ def test_child_prompt_bound_is_a_guard_not_a_product_budget(tmp_path: Path) -> N
         assert child
         core.join_child("sess-parent", child, timeout_seconds=60)
         child_events = core.events_after(child)
-        assert not [event for event in child_events if event.event_type == "kernel.run_failed"]
-        assert [event for event in child_events if event.event_type == "kernel.user_message"]
+        assert not [event for event in child_events if event.event_type == "core.run_failed"]
+        assert [event for event in child_events if event.event_type == "core.user_message"]
         with pytest.raises(ValueError, match="256 KiB"):
             core.spawn_child("sess-parent", "y" * (CHILD_PROMPT_MAX_BYTES + 1), label="too-big")
 
@@ -134,7 +134,7 @@ def test_read_only_stance_may_only_delegate_read_only_work(tmp_path: Path) -> No
         assert len(results) == 2
         # Without the declaration the core refuses: a read-only owner cannot widen a child.
         assert results[0]["status"] == "error"
-        spawned = [event for event in core.events_after("sess-plan-parent") if event.event_type == "kernel.child_spawned"]
+        spawned = [event for event in core.events_after("sess-plan-parent") if event.event_type == "core.child_spawned"]
         assert len(spawned) == 1, "only the read-only child was ever created"
         # With `readonly=True` the child is allowed and recorded as restricted by the core.
         assert results[1]["status"] == "ok", results[1]

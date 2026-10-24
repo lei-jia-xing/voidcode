@@ -268,7 +268,7 @@ def _tool_texts(state: Path, session_id: str) -> list[str]:
     connection = sqlite3.connect(f"{(state / 'kernel-v1.sqlite3').resolve().as_uri()}?mode=ro", uri=True)
     try:
         rows = connection.execute(
-            "SELECT payload_json FROM session_events WHERE session_id = ? AND event_type = 'kernel.tool_completed'",
+            "SELECT payload_json FROM session_events WHERE session_id = ? AND event_type = 'core.tool_completed'",
             (session_id,),
         ).fetchall()
         return [str(row[0]) for row in rows]
@@ -293,7 +293,7 @@ def _activation_commits(state: Path, session_id: str) -> int:
     connection = sqlite3.connect(f"{(state / 'kernel-v1.sqlite3').resolve().as_uri()}?mode=ro", uri=True)
     try:
         row = connection.execute(
-            "SELECT COUNT(*) FROM session_events WHERE session_id = ? AND event_type = 'kernel.activation_committed'",
+            "SELECT COUNT(*) FROM session_events WHERE session_id = ? AND event_type = 'core.activation_committed'",
             (session_id,),
         ).fetchone()
         return int(row[0]) if row is not None else 0
@@ -369,8 +369,8 @@ def test_crash_after_the_commit_keeps_exactly_one_committed_target(tmp_path: Pat
         assert committed_revision != before
         assert _revision_of(state) == committed_revision
         assert (
-            max(_event_sequences(state, "crash-session", "kernel.provider_intent"))
-            < _event_sequences(state, "crash-session", "kernel.activation_committed")[0]
+            max(_event_sequences(state, "crash-session", "core.provider_intent"))
+            < _event_sequences(state, "crash-session", "core.activation_committed")[0]
         )
         _version, payload = _state_row(state, "crash-session")
         assert json.loads(payload).get("migrated_to") == 2
@@ -434,14 +434,14 @@ def test_crash_during_candidate_validation_keeps_the_previous_generation(tmp_pat
 
         # A plain start against the edited source refuses to reinterpret the old row.
         refused = _cli(workspace, state, "catalog", code=1)
-        assert "will not reinterpret" in refused["error"]
+        assert "state schema mismatch" in refused["error"]
 
         # The explicit same-image adoption recovers the dead run: the held workspace lease
         # proves no core owns it, so the orphan settles as interrupted in the SAME transaction
         # that migrates the state. Its cursor is preserved for an explicit resume.
         write_reload_plugin(source, tool_output="v2", state_schema_version=2, migration="ok")
         still_refused = _cli(workspace, state, "catalog", code=1)
-        assert "will not reinterpret" in still_refused["error"]
+        assert "state schema mismatch" in still_refused["error"]
         from voidcode.core.bootstrap import adopt_generation
 
         report = adopt_generation(workspace=workspace, state_dir=state, session_id="crash-pre")
@@ -451,7 +451,7 @@ def test_crash_during_candidate_validation_keeps_the_previous_generation(tmp_pat
         _version, payload = _state_row(state, "crash-pre")
         assert json.loads(payload).get("migrated_to") == 2
         assert _session_status(state, "crash-pre") == "interrupted"
-        recovery = _event_payloads(state, "crash-pre", "kernel.run_interrupted")
+        recovery = _event_payloads(state, "crash-pre", "core.run_interrupted")
         assert recovery, "the orphan recovery fact is durable"
         assert recovery[-1]["stop_cause"] == "shutdown"
         assert isinstance(recovery[-1]["eligible_owners"], list), "fact eligibility is frozen, never guessed"
@@ -506,10 +506,10 @@ def test_adoption_recovers_a_non_acting_orphaned_run(tmp_path: Path) -> None:
         assert report["migrated_owners"] == [PLUGIN_ID]
         assert _session_status(state, "victim") == "interrupted"
         assert _session_status(state, "crash-pre") == "completed"
-        recovery = _event_payloads(state, "victim", "kernel.run_interrupted")
+        recovery = _event_payloads(state, "victim", "core.run_interrupted")
         assert recovery and recovery[-1]["stop_cause"] == "shutdown"
         assert isinstance(recovery[-1]["eligible_owners"], list)
-        assert _event_payloads(state, "crash-pre", "kernel.run_interrupted") == []
+        assert _event_payloads(state, "crash-pre", "core.run_interrupted") == []
 
 
 def test_core_crash_inside_migration_commits_nothing_and_keeps_the_previous_generation(tmp_path: Path) -> None:
@@ -543,7 +543,7 @@ def test_core_crash_inside_migration_commits_nothing_and_keeps_the_previous_gene
         # The crashed source still declares v2, so a plain start refuses; restoring a
         # valid v2 migration and adopting explicitly recovers the new generation.
         refused = _cli(workspace, state, "catalog", code=1)
-        assert "will not reinterpret" in refused["error"]
+        assert "state schema mismatch" in refused["error"]
         write_reload_plugin(source, tool_output="v2", state_schema_version=2, migration="ok")
         from voidcode.core.bootstrap import adopt_generation
 

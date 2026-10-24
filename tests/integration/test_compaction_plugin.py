@@ -268,10 +268,10 @@ def test_a_crossed_threshold_projects_the_window_and_keeps_history(tmp_path: Pat
         assert sequences == list(range(sequences[0], sequences[0] + len(sequences)))
         assert sequences[: len(first_sequences)] == first_sequences
         assert len(sequences) > len(first_sequences)
-        user_messages = [str(event.payload["content"]) for event in events if event.event_type == "kernel.user_message"]
+        user_messages = [str(event.payload["content"]) for event in events if event.event_type == "core.user_message"]
         assert user_messages == [first_prompt, second_prompt]
         # The durable tool result still carries the whole text the projection replaced.
-        stored = json.dumps([dict(event.payload) for event in events if event.event_type == "kernel.tool_completed"], default=str)
+        stored = json.dumps([dict(event.payload) for event in events if event.event_type == "core.tool_completed"], default=str)
         assert _NOTES_TEXT.splitlines()[-1] in stored
         assert any(event.event_type == "plugin.compaction.context_compacted" for event in events)
 
@@ -359,4 +359,4 @@ def test_manual_compact_projects_on_demand_then_noops(tmp_path: Path) -> None:
         assert f"({row.covered_bytes} bytes -> {row.dropped_bytes} dropped)]" in summaries[0]
         assert first_prompt not in [str(message.get("content", "")) for message in _messages(server.requests[-1]) if message.get("role") == "user"]
         events = core.events_after(session_id)
-        assert any(str(event.payload.get("content", "")) == first_prompt for event in events if event.event_type == "kernel.user_message")
+        assert any(str(event.payload.get("content", "")) == first_prompt for event in events if event.event_type == "core.user_message")

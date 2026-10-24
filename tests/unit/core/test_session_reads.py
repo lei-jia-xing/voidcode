@@ -74,7 +74,7 @@ def _results(core: Core, session_id: str, tool_name: str) -> list[Mapping[str, o
     """Every committed result one tool produced in this session, in commit order."""
     results: list[Mapping[str, object]] = []
     for event in core.events_after(session_id):
-        if event.event_type != "kernel.tool_completed":
+        if event.event_type != "core.tool_completed":
             continue
         call = event.payload.get("call")
         result = event.payload.get("result")
@@ -216,12 +216,12 @@ def test_child_event_reads_are_bounded_cursor_scoped_and_descendant_checked(tmp_
         history = bounded["views"]
         assert [view["sequence"] for view in history] == list(range(1, len(history) + 1))
         assert len(history) == core.session(child).last_event_sequence
-        assert history[0]["event_type"] == "kernel.user_message"
+        assert history[0]["event_type"] == "core.user_message"
         assert history[0]["payload_truncated"] is True
         assert history[0]["payload"]["truncated"] is True
         assert history[0]["payload"]["original_bytes"] > 65536
         assert not any(view["payload_truncated"] for view in history[1:])
-        assert any(view["event_type"] == "kernel.tool_completed" and "own descendants" in json.dumps(view["payload"]) for view in history), history
+        assert any(view["event_type"] == "core.tool_completed" and "own descendants" in json.dumps(view["payload"]) for view in history), history
 
         # The cursor continues exactly where the first page stopped.
         sequences = [view["sequence"] for view in rest["views"]]

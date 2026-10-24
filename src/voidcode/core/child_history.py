@@ -19,7 +19,7 @@ from .storage.store import StoredEvent
 MEDIA_TYPE = "text/markdown; charset=utf-8"
 #: The artifact store's owner label for core-generated snapshots; it scopes unfinished spills.
 SPILL_OWNER = "core"
-_HASH_NAME = "kernel.child_history"
+_HASH_NAME = "core.child_history"
 
 
 def snapshot_id(child_session_id: str, run_id: str) -> str:

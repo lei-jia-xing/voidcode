@@ -17,7 +17,7 @@ from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from fastapi import FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -27,6 +27,7 @@ from starlette.responses import FileResponse, JSONResponse, Response, StreamingR
 from starlette.types import Receive, Scope, Send
 
 from ... import __version__
+from ...sdk.codec import _wire
 from ...sdk.commands import CommandCatalog, CommandResult
 from ...sdk.json_values import json_wire_object
 from ...sdk.services import SessionUsageReport
@@ -34,6 +35,7 @@ from ...sdk.views import ViewsSnapshot
 from ..bootstrap import open_core
 from ..engine import Core, CoreResult, DrainRefused
 from ..storage.store import SessionRecord, StoredEvent, inspect_existing_workspace
+from ..transcript import transcript_entry
 from .models import (
     CheckpointBody,
     ConfirmRequest,
@@ -160,6 +162,10 @@ def _session_payload(record: SessionRecord) -> dict[str, object]:
 
 
 def _event_payload(session_id: str, event: StoredEvent) -> dict[str, object]:
+    try:
+        entry = transcript_entry(event)
+    except Exception:
+        entry = None
     return {
         "session_id": session_id,
         "sequence": event.sequence,
@@ -169,6 +175,7 @@ def _event_payload(session_id: str, event: StoredEvent) -> dict[str, object]:
         "source": event.source,
         "actor": event.actor,
         "payload": json_wire_object(event.payload),
+        "transcript": _wire(entry) if entry is not None else None,
     }
 
 
@@ -616,9 +623,7 @@ class CoreTransportApp(FastAPI):
                 "revision_id": revision_id,
                 "launch_protocol": LAUNCH_PROTOCOL_VERSION,
                 "core_version": __version__,
-                "image_digest": "",
                 "web_bundle": None,
-                "supervisor_pid": os.getppid(),
                 "generation": self._generation,
                 "active_upgrade": None if self._upgrade_id is None else {"upgrade_id": self._upgrade_id, "stage": self._stage},
             }
@@ -730,6 +735,10 @@ def _checkpoint_view(checkpoint: Any) -> dict[str, object] | None:
 
 
 def _stored_event_view(event: Any) -> dict[str, object]:
+    try:
+        entry = transcript_entry(event)
+    except Exception:
+        entry = None
     body = StoredEventBody(
         sequence=event.sequence,
         type=event.event_type,
@@ -738,6 +747,7 @@ def _stored_event_view(event: Any) -> dict[str, object]:
         source=event.source,
         actor=event.actor,
         payload=json_wire_object(event.payload),
+        transcript=cast(dict[str, Any], _wire(entry)) if entry is not None else None,
     )
     return body.model_dump()  # type: ignore[return-value]
 

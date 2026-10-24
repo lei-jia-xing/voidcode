@@ -104,6 +104,6 @@ def test_a_blocked_session_does_not_serialize_another_session(tmp_path: Path) ->
         assert not blocked.is_alive()
         blocked_result = outcome["result"]
         events = [event.event_type for event in core.events_after(blocked_session.session_id)]
-        assert "kernel.run_interrupted" in events
+        assert "core.run_interrupted" in events
         assert other_session.session_id in {record.session_id for record in core.sessions()}
         assert blocked_result is not None

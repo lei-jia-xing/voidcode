@@ -2,7 +2,7 @@
 
 An artifact's path is its own digest, so identity and integrity are the same fact, a repeated spill
 is free, and nothing is ever rewritten. Spill-then-commit is the contract that matters: the bytes
-land at their final path before the RPC returns, so any durable result that references an artifact
+land at their final path before returning, so any durable result that references an artifact
 commits strictly after the artifact exists. Nothing is garbage collected, and a spilled blob can
 never be confused with an admitted plugin artifact (that is a directory, this is a file).
 """
@@ -19,11 +19,11 @@ from typing import Any, BinaryIO, Final
 
 #: Content address: a sha256 digest, and nothing else — never a caller-supplied path.
 SHA256_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{64}$")
-#: One spill chunk is bounded so a single RPC frame always fits the 1 MiB stdio protocol.
+#: Bounded chunk size for streaming artifact spills.
 CHUNK_BYTES: Final[int] = 256 * 1024
 #: One artifact is bounded so a runaway producer cannot exhaust the disk through this service.
 MAX_ARTIFACT_BYTES: Final[int] = 256 * 1024 * 1024
-#: One page read is bounded so a read never exceeds a frame either.
+#: Bounded page size for reading artifact chunks.
 MAX_PAGE_BYTES: Final[int] = 256 * 1024
 
 _MODE: Final[int] = 0o600

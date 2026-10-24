@@ -71,7 +71,7 @@ def _open(tmp_path: Path) -> Core:
 def _bodies(core: Core, session_id: str) -> list[dict[str, object]]:
     bodies: list[dict[str, object]] = []
     for event in core.store.events(session_id):
-        if event.event_type != "kernel.tool_completed":
+        if event.event_type != "core.tool_completed":
             continue
         result = decode_tool_result(event.payload["result"])
         if isinstance(result, ToolSuccess) and isinstance(result.output, TextOutput):
@@ -91,9 +91,9 @@ def test_receipt_returns_before_same_session_target_and_projects_no_synthetic_ca
             result = core.run("Request the context through the tool service.")
             assert result.status == "completed", result.error
             events = core.store.events(result.session_id)
-            completed = [event for event in events if event.event_type == "kernel.tool_completed"]
-            request = next(event for event in events if event.event_type == "kernel.tool_deferred")
-            claim = next(event for event in events if event.event_type == "kernel.tool_deferred_claimed")
+            completed = [event for event in events if event.event_type == "core.tool_completed"]
+            request = next(event for event in events if event.event_type == "core.tool_deferred")
+            claim = next(event for event in events if event.event_type == "core.tool_deferred_claimed")
             caller, target = _bodies(core, result.session_id)
             assert caller["receipt"] == {"request_id": request.payload["request_id"], "tool_name": PROBE_TOOL, "depth": 1}
             assert completed[0].sequence < claim.sequence < completed[1].sequence
@@ -115,7 +115,7 @@ def test_receipt_returns_before_same_session_target_and_projects_no_synthetic_ca
             paired = next(message for message in messages if message.get("role") == "tool")
             assert native["tool_calls"][0]["id"] == paired["tool_call_id"] == "request"
             assert "tool_calls" not in note and "tool_call_id" not in note
-            last_intent = [event for event in events if event.event_type == "kernel.provider_intent"][-1]
+            last_intent = [event for event in events if event.event_type == "core.provider_intent"][-1]
             assert any(
                 segment["role"] == "user"
                 and segment["characters"] == len(note["content"])
@@ -167,7 +167,7 @@ def test_nested_write_parks_and_resumes_exact_approval_after_restart(tmp_path: P
             target = next(
                 event
                 for event in core.store.events(waiting.session_id)
-                if event.event_type == "kernel.tool_completed" and event.payload.get("deferred")
+                if event.event_type == "core.tool_completed" and event.payload.get("deferred")
             )
             decoded = decode_tool_result(target.payload["result"])
             if decision == "deny":
@@ -206,9 +206,7 @@ def test_deferred_target_keeps_scope_stance_gate_and_schema(tmp_path: Path, deni
             assert result.status == "completed", result.error
             assert not (workspace / "forbidden.txt").exists()
             target_event = next(
-                event
-                for event in core.store.events(result.session_id)
-                if event.event_type == "kernel.tool_completed" and event.payload.get("deferred")
+                event for event in core.store.events(result.session_id) if event.event_type == "core.tool_completed" and event.payload.get("deferred")
             )
             failure = decode_tool_result(target_event.payload["result"])
             expected = {
@@ -219,7 +217,7 @@ def test_deferred_target_keeps_scope_stance_gate_and_schema(tmp_path: Path, deni
                 "unknown": "active capability revision",
             }[denial]
             assert expected in failure.error
-            assert not any(event.event_type == "kernel.approval_requested" for event in core.store.events(result.session_id))
+            assert not any(event.event_type == "core.approval_requested" for event in core.store.events(result.session_id))
 
 
 def test_stale_revision_and_hook_lease_cannot_stage_tool_requests(tmp_path: Path) -> None:
@@ -245,7 +243,7 @@ def test_stale_revision_and_hook_lease_cannot_stage_tool_requests(tmp_path: Path
             assert result.status == "completed", result.error
             assert "expected_revision" in _bodies(core, result.session_id)[0]["refused"]
             assert "hook" in (workspace / HOOK_DIAGNOSTIC).read_text(encoding="utf-8").lower()
-            assert not any(event.event_type == "kernel.tool_deferred" for event in core.store.events(result.session_id))
+            assert not any(event.event_type == "core.tool_deferred" for event in core.store.events(result.session_id))
             assert not (workspace / "no.txt").exists()
 
 
@@ -288,8 +286,8 @@ def test_thrown_callback_discards_its_staged_tool_request(tmp_path: Path) -> Non
             assert result.status == "completed", result.error
             assert not (workspace / "discarded.txt").exists()
             events = core.store.events(result.session_id)
-            assert not any(event.event_type == "kernel.tool_deferred" for event in events)
-            assert sum(event.event_type == "kernel.tool_completed" for event in events) == 1
+            assert not any(event.event_type == "core.tool_deferred" for event in events)
+            assert sum(event.event_type == "core.tool_completed" for event in events) == 1
 
 
 def test_command_receipt_drains_after_its_callback_without_a_model_turn(tmp_path: Path) -> None:
@@ -311,8 +309,8 @@ def test_command_receipt_drains_after_its_callback_without_a_model_turn(tmp_path
             assert result.status == "completed", result.error
             assert (workspace / "command.txt").read_text(encoding="utf-8") == "command write"
             events = core.store.events(session.session_id)
-            completion = next(event for event in events if event.event_type == "kernel.command_completed")
-            claim = next(event for event in events if event.event_type == "kernel.tool_deferred_claimed")
+            completion = next(event for event in events if event.event_type == "core.command_completed")
+            claim = next(event for event in events if event.event_type == "core.tool_deferred_claimed")
             assert completion.sequence < claim.sequence
             assert len(server.requests) == 0
 
@@ -339,8 +337,8 @@ def test_untrusted_deferred_target_stays_a_data_note_and_native_pairing_is_untou
             result = core.run("Run an untrusted command through the tool service.")
             assert result.status == "completed", result.error
             events = core.store.events(result.session_id)
-            deferred = next(event for event in events if event.event_type == "kernel.tool_deferred")
-            completed = next(event for event in events if event.event_type == "kernel.tool_completed" and event.payload.get("deferred"))
+            deferred = next(event for event in events if event.event_type == "core.tool_deferred")
+            completed = next(event for event in events if event.event_type == "core.tool_completed" and event.payload.get("deferred"))
             target = decode_tool_result(completed.payload["result"])
             assert isinstance(target, ToolSuccess)
             messages = server.requests[1]["messages"]

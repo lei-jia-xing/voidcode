@@ -79,7 +79,7 @@ def test_bundle_dispatches_one_tool_per_tool_plugin(tmp_path: Path) -> None:
             result = core.run("Exercise every bundled tool provider.")
             assert result.status == "completed", result.error
             assert result.output == "bundle dispatch complete"
-            completed = [event for event in core.store.events(result.session_id) if event.event_type == "kernel.tool_completed"]
+            completed = [event for event in core.store.events(result.session_id) if event.event_type == "core.tool_completed"]
             assert len(completed) == len(_REPRESENTATIVE_CALLS)
             expected_by_tool = {name: expected for name, _arguments, expected in _REPRESENTATIVE_CALLS}
             for event in completed:

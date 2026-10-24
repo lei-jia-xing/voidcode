@@ -18,6 +18,7 @@ from voidcode.sdk.transcript import (
     TranscriptTool,
 )
 
+from .events import EventType
 from .storage.store import StoredEvent
 
 
@@ -31,52 +32,56 @@ def transcript_entry(event: StoredEvent) -> TranscriptEntry | None:
     payload = event.payload
     content: TranscriptContent
     match event.event_type:
-        case "kernel.user_message":
+        case EventType.USER_MESSAGE:
             text = payload["content"]
             if not isinstance(text, str):
                 raise ValueError("user message content must be a string")
             content = ProviderMessage("user", text)
-        case "kernel.continuation_started" | "kernel.wakeup_fired":
+        case EventType.CONTINUATION_STARTED | EventType.WAKEUP_FIRED:
             inner = _mapping(payload["payload"])
             rendered = json.dumps(json_wire_object(inner), ensure_ascii=False)
             if payload["role"] == "user":
                 text = inner.get("text")
                 content = ProviderMessage("user", text if isinstance(text, str) else rendered)
             else:
-                wakeup = event.event_type == "kernel.wakeup_fired"
+                wakeup = event.event_type == EventType.WAKEUP_FIRED
                 label = str(payload["owner"]) if wakeup else event.source
                 origin = "wakeup" if wakeup else "continuation"
                 content = ProviderMessage("system", f"[Durable {origin} from {label}]\n{rendered}")
-        case "kernel.model_turn":
+        case EventType.MODEL_TURN:
             content = decode_provider_result(_mapping(payload["result"]))
-        case "kernel.tool_completed" | "kernel.tool_interrupted":
+        case EventType.TOOL_COMPLETED | EventType.TOOL_INTERRUPTED:
             content = TranscriptTool(
                 decode_tool_call(_mapping(payload["call"])),
                 decode_tool_result(_mapping(payload["result"])),
-                interrupted=event.event_type == "kernel.tool_interrupted",
+                interrupted=event.event_type == EventType.TOOL_INTERRUPTED,
                 batch_sequence=_sequence(payload["batch_sequence"]),
                 deferred=payload.get("deferred", False) is True,
             )
-        case "kernel.provider_interrupted":
+        case EventType.PROVIDER_INTERRUPTED:
             content = TranscriptInterrupted()
-        case "kernel.child_spawned":
+        case EventType.CHILD_SPAWNED:
             child = payload["child_session_id"]
             if not isinstance(child, str) or not child:
                 raise ValueError("child identity must be a non-empty string")
             content = TranscriptChild(child)
-        case "kernel.provider_intent":
+        case EventType.PROVIDER_INTENT:
             provider, model = payload["provider"], payload["model"]
             if not isinstance(provider, str) or not provider or not isinstance(model, str) or not model:
                 raise ValueError("dispatch requires provider and model identities")
             content = TranscriptDispatch(provider, model, RequestWindow.from_payload(_mapping(payload["request_window"])))
-        case "kernel.run_completed" | "kernel.run_failed" | "kernel.run_interrupted":
+        case EventType.RUN_COMPLETED | EventType.RUN_FAILED | EventType.RUN_INTERRUPTED:
             status = (
-                "completed" if event.event_type == "kernel.run_completed" else "failed" if event.event_type == "kernel.run_failed" else "interrupted"
+                "completed"
+                if event.event_type == EventType.RUN_COMPLETED
+                else "failed"
+                if event.event_type == EventType.RUN_FAILED
+                else "interrupted"
             )
             content = TranscriptRun(status)
         case _:
             return None
-    dispatch = _sequence(payload["dispatch_sequence"]) if event.event_type in {"kernel.model_turn", "kernel.provider_interrupted"} else None
+    dispatch = _sequence(payload["dispatch_sequence"]) if event.event_type in {EventType.MODEL_TURN, EventType.PROVIDER_INTERRUPTED} else None
     return TranscriptEntry(event.sequence, event.run_id, event.revision_id, event.source, content, dispatch)
 
 

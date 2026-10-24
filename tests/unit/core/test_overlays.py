@@ -79,7 +79,7 @@ def _advertised(request: Mapping[str, object]) -> set[str]:
 def _results(core: Core, session_id: str) -> list[Mapping[str, object]]:
     results: list[Mapping[str, object]] = []
     for event in core.events_after(session_id):
-        if event.event_type in ("kernel.tool_completed", "kernel.tool_interrupted"):
+        if event.event_type in ("core.tool_completed", "core.tool_interrupted"):
             payload = event.payload.get("result")
             if isinstance(payload, Mapping):
                 results.append(payload)

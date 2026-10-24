@@ -87,9 +87,7 @@ def _hook_events(core: Core, session_id: str, kind: str) -> list[dict[str, objec
     return [
         dict(event.payload)
         for event in core.events_after(session_id)
-        if event.event_type == "kernel.hook_invoked"
-        and dict(event.payload).get("hook_kind") == kind
-        and dict(event.payload).get("owner") == PLUGIN_ID
+        if event.event_type == "core.hook_invoked" and dict(event.payload).get("hook_kind") == kind and dict(event.payload).get("owner") == PLUGIN_ID
     ]
 
 

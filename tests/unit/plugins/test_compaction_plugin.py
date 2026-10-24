@@ -78,7 +78,7 @@ def _event(sequence: int, event_type: str, payload: Mapping[str, object] | None)
 def _intent(sequence: int, *, message_characters: int = 400, tool_schema_characters: int = 100) -> EventView:
     return _event(
         sequence,
-        "kernel.provider_intent",
+        "core.provider_intent",
         {
             "provider": "endpoint",
             "model": "test-model",
@@ -102,7 +102,7 @@ def _model_turn(
 ) -> EventView:
     return _event(
         sequence,
-        "kernel.model_turn",
+        "core.model_turn",
         {
             "dispatch_sequence": dispatch_sequence,
             "result": encode_provider_result(
@@ -124,7 +124,7 @@ def _tool_completed(sequence: int, *, batch_sequence: int, call: ToolCall, conte
     )
     return _event(
         sequence,
-        "kernel.tool_completed",
+        "core.tool_completed",
         {"batch_sequence": batch_sequence, "call": encode_tool_call(call), "result": encode_tool_result(result)},
     )
 
@@ -132,7 +132,7 @@ def _tool_completed(sequence: int, *, batch_sequence: int, call: ToolCall, conte
 def _session_events() -> tuple[EventView, ...]:
     """One complete session: prompt, a write batch, a failing read batch, and a final answer."""
     return (
-        _event(1, "kernel.user_message", {"content": _USER_MESSAGE}),
+        _event(1, "core.user_message", {"content": _USER_MESSAGE}),
         _intent(2),
         _model_turn(3, dispatch_sequence=2, tool_calls=(_WRITE_CALL,)),
         _tool_completed(4, batch_sequence=3, call=_WRITE_CALL, content="wrote 42 bytes to src/parser.py"),
@@ -283,7 +283,7 @@ def test_a_todo_result_is_preserved_when_it_is_the_sole_covered_fact() -> None:
     """No per-tool discard: a lone todo result still reaches the projection text."""
     todo_call = ToolCall("todo", {"op": "view"}, "call-todo")
     events = (
-        _event(1, "kernel.user_message", {"content": _USER_MESSAGE}),
+        _event(1, "core.user_message", {"content": _USER_MESSAGE}),
         _intent(2),
         _model_turn(3, dispatch_sequence=2, tool_calls=(todo_call,)),
         _tool_completed(4, batch_sequence=3, call=todo_call, content="2 phases, 1 in progress"),
@@ -298,9 +298,9 @@ def test_a_todo_result_is_preserved_when_it_is_the_sole_covered_fact() -> None:
 def test_objective_is_previewed_at_160_chars_and_constraints_match_the_legacy_markers() -> None:
     long_prompt = "A" * 200
     events = (
-        _event(1, "kernel.user_message", {"content": long_prompt}),
-        _event(2, "kernel.user_message", {"content": "Always keep the public API stable."}),
-        _event(3, "kernel.user_message", {"content": "Keep it boring."}),
+        _event(1, "core.user_message", {"content": long_prompt}),
+        _event(2, "core.user_message", {"content": "Always keep the public API stable."}),
+        _event(3, "core.user_message", {"content": "Keep it boring."}),
         _intent(4),
         _model_turn(5, dispatch_sequence=4, output="ok"),
     )
@@ -320,7 +320,7 @@ def test_objective_is_previewed_at_160_chars_and_constraints_match_the_legacy_ma
 
 def test_boundary_stops_before_an_unanswered_tool_call() -> None:
     events = (
-        _event(1, "kernel.user_message", {"content": _USER_MESSAGE}),
+        _event(1, "core.user_message", {"content": _USER_MESSAGE}),
         _intent(2),
         _model_turn(3, dispatch_sequence=2, tool_calls=(_WRITE_CALL,)),
         _intent(4),
@@ -336,7 +336,7 @@ def test_boundary_stops_before_an_unanswered_tool_call() -> None:
 def test_boundary_requires_every_call_of_a_multi_call_batch_to_be_answered() -> None:
     second_call = ToolCall("bash", {"command": "pytest -q"}, "call-3")
     events = (
-        _event(1, "kernel.user_message", {"content": _USER_MESSAGE}),
+        _event(1, "core.user_message", {"content": _USER_MESSAGE}),
         _intent(2),
         _model_turn(3, dispatch_sequence=2, tool_calls=(_WRITE_CALL, second_call)),
         _tool_completed(4, batch_sequence=3, call=_WRITE_CALL, content="wrote 42 bytes"),
@@ -384,7 +384,7 @@ def test_plan_is_none_when_the_window_has_nothing_new_to_cover() -> None:
 
 def test_apply_projection_refuses_a_replacement_that_would_not_shrink_the_window() -> None:
     # One tiny event: any labelled projection of it is bigger than the event itself.
-    events = (_event(1, "kernel.user_message", {"content": "hi"}),)
+    events = (_event(1, "core.user_message", {"content": "hi"}),)
     services = FakeServices(events)
     outcome = apply_projection(
         services,
@@ -550,7 +550,7 @@ def test_a_model_summary_that_would_grow_the_window_falls_back_to_the_determinis
 
 
 def test_an_unshrinkable_prefix_is_refused_before_the_model_lane_is_asked() -> None:
-    events = (_event(1, "kernel.user_message", {"content": "hi"}),)
+    events = (_event(1, "core.user_message", {"content": "hi"}),)
     services = FakeServices(events, model_answer="SHORT")
     outcome = apply_projection(
         services,
@@ -577,7 +577,7 @@ def test_summary_output_is_clipped_at_the_legacy_bound() -> None:
 
 def test_summary_prompt_stays_inside_the_model_query_bound() -> None:
     huge = "Z" * 70_000
-    events = (_event(1, "kernel.user_message", {"content": huge}), _intent(2), _model_turn(3, dispatch_sequence=2, output=huge))
+    events = (_event(1, "core.user_message", {"content": huge}), _intent(2), _model_turn(3, dispatch_sequence=2, output=huge))
     prompt = summary_prompt(_plan(events))
     assert len(prompt.encode("utf-8")) <= 64 * 1024
     assert prompt.startswith(CONTINUITY_SUMMARY_SYSTEM_PROMPT)
@@ -691,7 +691,7 @@ def test_compact_command_reports_accounting_and_noops_on_a_second_call() -> None
 
 
 def test_compact_command_refusal_and_empty_session_are_visible() -> None:
-    events = (_event(1, "kernel.user_message", {"content": "hi"}),)
+    events = (_event(1, "core.user_message", {"content": "hi"}),)
     services = FakeServices(events)
     command = CompactCommand(CompactionConfig(keep_recent_tokens=0))
     invocation = CommandInvocation(context=_context(), name="compact", arguments={})
@@ -796,7 +796,7 @@ def test_summary_uses_reported_resources_and_actual_children_with_arbitrary_tool
 
 
 def test_interrupted_dispatch_cannot_reuse_an_older_usage_measurement():
-    events = (*_session_events(), _intent(9), _event(10, "kernel.provider_interrupted", {"dispatch_sequence": 9}))
+    events = (*_session_events(), _intent(9), _event(10, "core.provider_interrupted", {"dispatch_sequence": 9}))
     records = _records(events)
     assert measured_dispatch_input_tokens(records) is None
     assert measured_tokens_per_character(records) is None

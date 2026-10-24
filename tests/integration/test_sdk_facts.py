@@ -78,7 +78,7 @@ def test_live_history_and_restart_preserve_original_declaration_and_observations
             result = core.run("exercise substitute", session_id="parent")
             assert result.status == "completed", result.error
             children = [
-                event.payload["child_session_id"] for event in core.store.events(result.session_id) if event.event_type == "kernel.child_spawned"
+                event.payload["child_session_id"] for event in core.store.events(result.session_id) if event.event_type == "core.child_spawned"
             ]
             assert len(children) == 1
             core.join_child(result.session_id, children[0], timeout_seconds=15)
@@ -109,7 +109,7 @@ def test_live_history_and_restart_preserve_original_declaration_and_observations
                 checkpoint_payload={"stop_cause": "shutdown"},
                 events=(
                     EventDraft(
-                        "kernel.provider_intent",
+                        "core.provider_intent",
                         "kernel",
                         "model",
                         {
@@ -121,7 +121,7 @@ def test_live_history_and_restart_preserve_original_declaration_and_observations
                         },
                     ),
                     EventDraft(
-                        "kernel.run_interrupted",
+                        "core.run_interrupted",
                         "kernel",
                         "kernel",
                         {

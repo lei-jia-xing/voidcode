@@ -416,7 +416,7 @@ def test_history_pages_through_the_cursor_without_loss(tmp_path: Path) -> None:
     services.child_events["child-1"] = tuple(
         EventView(
             sequence=index + 1,
-            event_type="kernel.user_message",
+            event_type="core.user_message",
             run_id="run-1",
             revision_id="rev-1",
             source="user",
@@ -427,7 +427,7 @@ def test_history_pages_through_the_cursor_without_loss(tmp_path: Path) -> None:
     ) + (
         EventView(
             sequence=4,
-            event_type="kernel.user_message",
+            event_type="core.user_message",
             run_id="run-1",
             revision_id="rev-1",
             source="user",

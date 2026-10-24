@@ -115,7 +115,7 @@ def _core(
 
 
 def _completed(core: Core, session_id: str) -> list[object]:
-    return [decode_tool_result(event.payload["result"]) for event in core.store.events(session_id) if event.event_type == "kernel.tool_completed"]
+    return [decode_tool_result(event.payload["result"]) for event in core.store.events(session_id) if event.event_type == "core.tool_completed"]
 
 
 def _record_methods(record: Path) -> list[dict[str, object]]:

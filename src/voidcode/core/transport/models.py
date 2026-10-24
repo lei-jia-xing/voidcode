@@ -5,7 +5,7 @@ storage dataclasses directly as ``response_model`` documentation — including t
 ``CommandCatalog``/``ViewsSnapshot`` envelopes, which are SDK-owned — and
 handlers return their own ``Response`` built from ``as_payload()``, so FastAPI
 never re-serializes ``MappingProxy`` payloads. Only list envelopes, the
-``kernel.show`` dict shape (which has no SDK dataclass), and the error
+``core.show`` dict shape (which has no SDK dataclass), and the error
 envelope live here — no second copy of SDK DTOs.
 """
 
@@ -70,9 +70,7 @@ class HealthBody(CoreHttpModel):
     revision_id: str
     launch_protocol: int
     core_version: str
-    image_digest: str
     web_bundle: str | None
-    supervisor_pid: int
     generation: int
     active_upgrade: dict[str, Any] | None
 
@@ -98,6 +96,7 @@ class StoredEventBody(CoreHttpModel):
     source: str
     actor: str
     payload: dict[str, Any]
+    transcript: dict[str, Any] | None = None
 
 
 class ShowBody(CoreHttpModel):

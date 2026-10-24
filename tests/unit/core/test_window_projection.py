@@ -128,7 +128,7 @@ def test_projection_is_refused_when_it_would_not_shrink_the_window(tmp_path: Pat
         core.create_session("sess-refuse")
         assert core.run("first prompt " + "detail " * 40, session_id="sess-refuse").status == "completed"
         assert core.store.window_projection("sess-refuse") is None
-        results = [dict(event.payload).get("result") for event in core.events_after("sess-refuse") if event.event_type == "kernel.tool_completed"]
+        results = [dict(event.payload).get("result") for event in core.events_after("sess-refuse") if event.event_type == "core.tool_completed"]
         assert results and isinstance(results[0], Mapping)
         assert results[0]["status"] == "error"
 

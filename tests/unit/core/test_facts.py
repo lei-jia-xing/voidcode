@@ -43,7 +43,7 @@ def test_pages_advance_over_private_events_and_keep_batch_observations_together(
         event("private.one"),
         event("private.two"),
         event(
-            "kernel.tool_completed",
+            "core.tool_completed",
             call={"tool_name": "arbitrary_name"},
             result={"status": "ok"},
             fact_metadata={
@@ -80,16 +80,16 @@ def test_pages_advance_over_private_events_and_keep_batch_observations_together(
 
 @pytest.mark.parametrize("metadata", [None, {}, {"semantics": []}])
 def test_invocation_without_current_metadata_is_rejected(runtime, metadata):
-    append(runtime, event("kernel.tool_completed", call={"tool_name": "read"}, result={"status": "ok"}, fact_metadata=metadata))
+    append(runtime, event("core.tool_completed", call={"tool_name": "read"}, result={"status": "ok"}, fact_metadata=metadata))
     with pytest.raises(ValueError, match="invocation fact.*metadata"):
         runtime.fact_page("session", 0, 10)
 
 
 def test_unknown_usage_is_visible_after_cursor_passes_inflight_intent(runtime):
-    append(runtime, event("kernel.provider_intent", provider="endpoint", model="model", logical_turn="turn"))
+    append(runtime, event("core.provider_intent", provider="endpoint", model="model", logical_turn="turn"))
     first = runtime.fact_page("session", 0, 10)
     assert not first.facts and first.next_sequence == 1
-    append(runtime, event("kernel.provider_interrupted", dispatch_sequence=1))
+    append(runtime, event("core.provider_interrupted", dispatch_sequence=1))
     fact = runtime.fact_page("session", first.next_sequence, 10).facts[0]
     assert isinstance(fact, UsageFact) and fact.usage is None
     assert fact.dispatch_sequence == 1 and fact.event_sequence == 2 and fact.elapsed_seconds is None
@@ -107,7 +107,7 @@ def test_resource_changes_roundtrip_and_failures_cannot_claim_successful_changes
 
 
 def test_projection_and_fact_commit_or_rollback_together(runtime):
-    append(runtime, event("kernel.user_message", content="large input " * 100))
+    append(runtime, event("core.user_message", content="large input " * 100))
     lease = LeaseContext("token", "compressor", "session", runtime.workspace, "run", runtime.revision_id, "inv", False)
     runtime.store_window_projection(lease, 1, 1, "summary")
     store = runtime.require_store()
@@ -118,7 +118,7 @@ def test_projection_and_fact_commit_or_rollback_together(runtime):
     fact = runtime.fact_page("session", 1, 10).facts[0]
     assert isinstance(fact, ContextProjectedFact)
     assert fact.owner == "compressor" and fact.dropped_bytes == projection.dropped_bytes
-    bad = event("kernel.window_projected", **{**lease.staged_events[0].payload, "replacement": "different"})
+    bad = event("core.window_projected", **{**lease.staged_events[0].payload, "replacement": "different"})
     with pytest.raises(IntegrityError):
         # An invalid event insert rolls back the projection upsert in the same transaction.
         append(runtime, bad, EventDraft(None, "kernel", "kernel", {}))
@@ -128,7 +128,7 @@ def test_projection_and_fact_commit_or_rollback_together(runtime):
 
 @pytest.mark.parametrize("payload", [{}, {"call": {}, "result": {"status": "ok"}}, {"call": {"tool_name": "read"}, "result": {}}])
 def test_corrupt_history_never_becomes_a_successful_or_anonymous_invocation(runtime, payload):
-    append(runtime, event("kernel.tool_completed", **payload))
+    append(runtime, event("core.tool_completed", **payload))
     with pytest.raises(ValueError):
         runtime.fact_page("session", 0, 10)
 
@@ -137,7 +137,7 @@ def test_wakeup_fact_retains_owner_identity_role_and_immutable_payload(runtime):
     from voidcode.sdk.hooks import WakeupFiredFact
 
     payload = {"text": "scheduled message", "nested": {"key": [1]}}
-    append(runtime, event("kernel.wakeup_fired", owner="scheduler", wakeup_id="wake-1", role="user", payload=payload))
+    append(runtime, event("core.wakeup_fired", owner="scheduler", wakeup_id="wake-1", role="user", payload=payload))
     fact = runtime.fact_page("session", 0, 200).facts[0]
     assert isinstance(fact, WakeupFiredFact)
     assert fact.owner == "scheduler" and fact.wakeup_id == "wake-1" and fact.role == "user"

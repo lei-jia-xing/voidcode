@@ -19,11 +19,11 @@ from voidcode.sdk.transcript import TranscriptDispatch, TranscriptEntry, Transcr
 
 _EVENTS: tuple[EventView, ...] = (
     EventView(
-        sequence=1, event_type="kernel.user_message", run_id="run", revision_id="rev", source="client", actor="user", payload={"content": "read a"}
+        sequence=1, event_type="core.user_message", run_id="run", revision_id="rev", source="client", actor="user", payload={"content": "read a"}
     ),
     EventView(
         sequence=2,
-        event_type="kernel.model_turn",
+        event_type="core.model_turn",
         run_id="run",
         revision_id="rev",
         source="provider",
@@ -36,7 +36,7 @@ _EVENTS: tuple[EventView, ...] = (
     ),
     EventView(
         sequence=3,
-        event_type="kernel.tool_completed",
+        event_type="core.tool_completed",
         run_id="run",
         revision_id="rev",
         source="core",
@@ -46,12 +46,12 @@ _EVENTS: tuple[EventView, ...] = (
             "result": encode_tool_result(ToolSuccess("read", output=TextOutput("contents of a"))),
         },
     ),
-    EventView(sequence=4, event_type="kernel.run_completed", run_id="run", revision_id="rev", source="core", actor="core", payload={}),
+    EventView(sequence=4, event_type="core.run_completed", run_id="run", revision_id="rev", source="core", actor="core", payload={}),
 )
 
 _WINDOW_EVENT = EventView(
     sequence=5,
-    event_type="kernel.provider_intent",
+    event_type="core.provider_intent",
     run_id="run",
     revision_id="rev",
     source="core",
@@ -166,7 +166,7 @@ def test_session_status_reports_identity_counts_and_budget(tmp_path: Path) -> No
     assert "session-1" in result.output
     assert result.data is not None
     assert result.data["last_event_sequence"] == 4
-    assert result.data["event_counts"]["kernel.model_turn"] == 1
+    assert result.data["event_counts"]["core.model_turn"] == 1
     assert result.data["budget"]["max_total_tokens"] == 1000
     assert result.data["usage"]["total_cost_usd"] == 0.0123
 

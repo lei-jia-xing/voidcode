@@ -226,7 +226,7 @@ def test_commit_atomic_cas_and_stale_writer_protection(tmp_path: Path) -> None:
         store.create_session("sess-cas", "/ws", rev_id)
 
         # 1. First valid commit
-        draft_1 = EventDraft("kernel.turn_start", "core", "user", {"turn": 1})
+        draft_1 = EventDraft("core.turn_start", "core", "user", {"turn": 1})
         draft_2 = EventDraft("tool.call", "core", "model", {"tool": "read"})
         session = store.commit(
             "sess-cas",
@@ -251,7 +251,7 @@ def test_commit_atomic_cas_and_stale_writer_protection(tmp_path: Path) -> None:
         assert isinstance(events[0], StoredEvent)
         assert events[0].sequence == 1
         assert events[0].run_id == "run-1"
-        assert events[0].event_type == "kernel.turn_start"
+        assert events[0].event_type == "core.turn_start"
         assert events[1].sequence == 2
 
         cp = store.checkpoint("sess-cas")

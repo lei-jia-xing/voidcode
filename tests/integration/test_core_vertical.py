@@ -138,7 +138,7 @@ def test_native_batch_prefix_survives_approval_restart(tmp_path: Path, decision:
         assert all(request["model"] == "exact-model" and "tool_choice" not in request for request in server.requests)
     with SqliteStore(state / "kernel-v1.sqlite3") as store:
         events = store.events(first["session_id"])
-        intents = [event for event in events if event.event_type == "kernel.tool_intent"]
+        intents = [event for event in events if event.event_type == "core.tool_intent"]
         assert [event.payload["call"]["tool_name"] for event in intents] == (["read", "write", "read"] if decision == "allow" else ["read", "read"])
         assert "loopback-secret-not-for-storage" not in json.dumps(dict(store.revision(first["revision_id"])), default=dict)
         assert store.checkpoint(first["session_id"]).kind == "terminal"
@@ -155,7 +155,7 @@ def test_read_only_overrides_yolo_without_dispatch(tmp_path: Path) -> None:
         assert not (workspace / "forbidden.txt").exists()
         assert "read-only" in server.requests[1]["messages"][-1]["content"]
     with SqliteStore(state / "kernel-v1.sqlite3") as store:
-        assert not any(event.event_type == "kernel.tool_intent" for event in store.events(result["session_id"]))
+        assert not any(event.event_type == "core.tool_intent" for event in store.events(result["session_id"]))
 
 
 def test_unknown_tool_argument_typo_is_rejected_without_side_effect(tmp_path: Path) -> None:
@@ -174,7 +174,7 @@ def test_unknown_tool_argument_typo_is_rejected_without_side_effect(tmp_path: Pa
         assert not (workspace / "typo.txt").exists()
         assert "admitted JSON schema" in server.requests[1]["messages"][-1]["content"]
     with SqliteStore(state / "kernel-v1.sqlite3") as store:
-        assert not any(event.event_type == "kernel.tool_intent" for event in store.events(result["session_id"]))
+        assert not any(event.event_type == "core.tool_intent" for event in store.events(result["session_id"]))
 
 
 def _counter_plugin(source: Path, *, safe: bool = False) -> None:

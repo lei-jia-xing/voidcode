@@ -168,8 +168,8 @@ def test_review_command_spawns_a_real_child_that_receives_the_git_diff(tmp_path:
             "focus": None,
             "child_session_id": child_id,
         }
-        spawned = [event for event in events if event.event_type == "kernel.child_spawned"]
-        finished = [event for event in events if event.event_type == "kernel.child_finished"]
+        spawned = [event for event in events if event.event_type == "core.child_spawned"]
+        finished = [event for event in events if event.event_type == "core.child_finished"]
         assert len(spawned) == 1 and len(finished) == 1
         assert spawned[0].payload["label"] == "review"
         assert spawned[0].payload["child_session_id"] == child_id
@@ -209,7 +209,7 @@ def test_review_command_refuses_an_unknown_target_without_touching_the_provider(
         assert result.error == "unknown review target type 'nonsense'"
         assert server.requests == []
         assert core.events_after(parent_id)  # the refusal is committed, nothing spawned
-        assert not [event for event in core.events_after(parent_id) if event.event_type == "kernel.child_spawned"]
+        assert not [event for event in core.events_after(parent_id) if event.event_type == "core.child_spawned"]
 
 
 def test_review_command_reviews_a_commit_sha(tmp_path: Path) -> None:
@@ -254,7 +254,7 @@ def test_review_reaches_the_child_for_a_diff_in_the_64kib_256kib_band(tmp_path: 
         diff_text = json.dumps(server.requests[0].get("messages"), ensure_ascii=False)
         assert "diff --git a/big.txt b/big.txt" in diff_text
         events = core.events_after(parent_id)
-        assert [event for event in events if event.event_type == "kernel.child_spawned"]
+        assert [event for event in events if event.event_type == "core.child_spawned"]
         assert [event for event in events if event.event_type == "plugin.review.review_started"]
 
 
@@ -272,7 +272,7 @@ def test_review_refuses_a_diff_over_its_legacy_256kib_budget_without_spawning(tm
         assert result.error is not None and "too large" in result.error
         assert server.requests == []
         events = core.events_after(parent_id)
-        assert not [event for event in events if event.event_type == "kernel.child_spawned"]
+        assert not [event for event in events if event.event_type == "core.child_spawned"]
         assert not [event for event in events if event.event_type == "plugin.review.review_started"]
 
 

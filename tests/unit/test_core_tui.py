@@ -452,7 +452,7 @@ class _CommandClient(_StubClient):
         return dict(self.results.get(name, {"status": "ok"}))
 
 
-def _event(sequence: int, event_type: str = "kernel.user_message", **payload: object) -> dict[str, object]:
+def _event(sequence: int, event_type: str = "core.user_message", **payload: object) -> dict[str, object]:
     return {"sequence": sequence, "type": event_type, "revision_id": "rev-1", "payload": dict(payload)}
 
 
@@ -583,19 +583,15 @@ def test_real_503_handlers_keep_both_gates_then_decided_facts_close_each_once() 
     assert app.pending_approval is not None and app.pending_approval["request_id"] == "appr-2"
     # The canonical decided facts close each gate exactly once.
     app.event_queue.put(
-        {"kind": "event", "event": _event(11, "kernel.approval_decided", decision="allow", request_id="appr-2"), "generation": 0, "session_id": "s1"}
+        {"kind": "event", "event": _event(11, "core.approval_decided", decision="allow", request_id="appr-2"), "generation": 0, "session_id": "s1"}
     )
-    app.event_queue.put(
-        {"kind": "event", "event": _event(12, "kernel.confirmation_decided", request_id="conf-9"), "generation": 0, "session_id": "s1"}
-    )
+    app.event_queue.put({"kind": "event", "event": _event(12, "core.confirmation_decided", request_id="conf-9"), "generation": 0, "session_id": "s1"})
     app._drain_events()
     assert app.pending_approval is None
     assert "conf-9" in app.resolved_confirmations
     assert app.active_overlay is None
     # Replayed decided facts never resurrect either gate.
-    app.event_queue.put(
-        {"kind": "event", "event": _event(12, "kernel.confirmation_decided", request_id="conf-9"), "generation": 0, "session_id": "s1"}
-    )
+    app.event_queue.put({"kind": "event", "event": _event(12, "core.confirmation_decided", request_id="conf-9"), "generation": 0, "session_id": "s1"})
     app._drain_events()
     assert app.active_overlay is None
     assert list(app.queued_confirmations) == []
@@ -665,7 +661,7 @@ def test_activation_refresh_is_silent_for_optional_views() -> None:
     app = CoreTuiApp(client, session_id="s1", terminal=terminal)
 
     rows: list[str] = []
-    app._handle_single_event(_event(1, "kernel.activation_committed", to_revision_id="rev-2"), rows)
+    app._handle_single_event(_event(1, "core.activation_committed", to_revision_id="rev-2"), rows)
     app._render_frame()
     assert app.active_overlay is None
     assert not any("No active goal" in row for row in rows)
@@ -710,7 +706,7 @@ def test_durable_gates_survive_automatic_view_refresh() -> None:
     rows: list[str] = []
 
     app._handle_single_event(
-        _event(1, "kernel.approval_requested", request_id="appr-1", call={"tool_name": "write", "arguments": {}}),
+        _event(1, "core.approval_requested", request_id="appr-1", call={"tool_name": "write", "arguments": {}}),
         rows,
     )
     assert app.pending_approval is not None and app.pending_approval["request_id"] == "appr-1"
@@ -723,7 +719,7 @@ def test_durable_gates_survive_automatic_view_refresh() -> None:
     app._handle_single_event(
         _event(
             2,
-            "kernel.confirmation_requested",
+            "core.confirmation_requested",
             request_id="conf-1",
             owner="goal",
             command_name="goal.set",
@@ -819,7 +815,7 @@ def test_long_settled_command_result_wraps_without_losing_content() -> None:
         app.event_queue.put(
             {
                 "kind": "event",
-                "event": _event(1, "kernel.command_completed", name="providers", result={"status": "ok", "output": payload}),
+                "event": _event(1, "core.command_completed", name="providers", result={"status": "ok", "output": payload}),
                 "session_id": "s1",
                 "generation": 0,
             }
@@ -849,7 +845,7 @@ def test_plugin_command_event_renders_multiple_lines_with_error_precedence() -> 
             "kind": "event",
             "event": _event(
                 1,
-                "kernel.command_completed",
+                "core.command_completed",
                 name="usage",
                 result={"status": "ok", "output": "turns: 0\ninput tokens: 0"},
             ),
@@ -867,7 +863,7 @@ def test_plugin_command_event_renders_multiple_lines_with_error_precedence() -> 
             "kind": "event",
             "event": _event(
                 2,
-                "kernel.command_completed",
+                "core.command_completed",
                 name="broken",
                 result={"status": "error", "error": "boom", "output": "partial"},
             ),
@@ -935,7 +931,7 @@ def test_run_failure_error_is_rendered_once_from_the_response_path() -> None:
     app.event_queue.put(
         {
             "kind": "event",
-            "event": _event(1, "kernel.run_failed", error="boom", logical_turn="turn-1"),
+            "event": _event(1, "core.run_failed", error="boom", logical_turn="turn-1"),
             "session_id": "s1",
             "generation": 0,
         }

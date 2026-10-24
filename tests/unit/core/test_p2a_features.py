@@ -366,8 +366,8 @@ def test_p2a_hello_state_with_context_and_persistence(tmp_path: Path) -> None:
         # Check stored events include user_message, model_turn, and command completion
         events = core.events_after("sess-p2a-main", after_sequence=0)
         types = [e.event_type for e in events]
-        assert "kernel.command_completed" in types
-        assert "kernel.model_turn" in types
+        assert "core.command_completed" in types
+        assert "core.model_turn" in types
 
 
 def test_p2a_confirmation_lifecycle_observes_state_and_version(tmp_path: Path) -> None:
@@ -421,19 +421,19 @@ def test_p2a_confirmation_lifecycle_observes_state_and_version(tmp_path: Path) -
             return [
                 (event.event_type, dict(event.payload))
                 for event in core.events_after(session_id)
-                if event.event_type.startswith("kernel.confirmation_")
+                if event.event_type.startswith("core.confirmation_")
             ]
 
         deny_facts = _confirmation_facts("sess-deny")
-        assert [kind for kind, _ in deny_facts] == ["kernel.confirmation_requested", "kernel.confirmation_decided"]
+        assert [kind for kind, _ in deny_facts] == ["core.confirmation_requested", "core.confirmation_decided"]
         assert deny_facts[0][1]["request_id"] == req_id_deny
         assert deny_facts[0][1]["ui_type"] == "confirmation"
         assert deny_facts[1][1] == {"request_id": req_id_deny, "command_name": "confirm_action", "decision": "deny"}
         stale_facts = _confirmation_facts("sess-stale")
-        assert stale_facts[-1][0] == "kernel.confirmation_decided"
+        assert stale_facts[-1][0] == "core.confirmation_decided"
         assert stale_facts[-1][1]["decision"] == "stale"
         allow_facts = _confirmation_facts("sess-allow")
-        assert [fact[1].get("decision") for fact in allow_facts if fact[0] == "kernel.confirmation_decided"] == ["allow"]
+        assert [fact[1].get("decision") for fact in allow_facts if fact[0] == "core.confirmation_decided"] == ["allow"]
 
 
 def test_p2a_durable_continuation_executes_real_governed_run_and_recovers(tmp_path: Path) -> None:
@@ -459,8 +459,8 @@ def test_p2a_durable_continuation_executes_real_governed_run_and_recovers(tmp_pa
         # Check continuation run facts recorded in event stream
         events = core.events_after("sess-cont", after_sequence=0)
         event_types = [e.event_type for e in events]
-        assert "kernel.continuation_started" in event_types
-        assert "kernel.model_turn" in event_types
+        assert "core.continuation_started" in event_types
+        assert "core.model_turn" in event_types
 
 
 def test_p2a_usage_windowing_and_unknown_semantics(tmp_path: Path) -> None:
@@ -503,13 +503,13 @@ def test_p2a_usage_windowing_and_unknown_semantics(tmp_path: Path) -> None:
             revision_id=core.revision_id,
             events=(
                 EventDraft(
-                    "kernel.provider_intent",
+                    "core.provider_intent",
                     "kernel",
                     "kernel",
                     {"attempt": 1, "start_time_ms": 1000},
                 ),
                 EventDraft(
-                    "kernel.provider_interrupted",
+                    "core.provider_interrupted",
                     "kernel",
                     "kernel",
                     {"dispatch_sequence": latest_s.last_event_sequence + 1, "error": "simulated transport loss"},
@@ -539,7 +539,7 @@ def test_declarative_client_syntax_reaches_the_catalog(tmp_path: Path) -> None:
         core.create_session("sess-syntax")
         result = core.invoke_command("sess-syntax", "shell_like", {}, expected_revision=core.revision_id)
         assert result.status == "ok"
-        events = [event for event in core.events_after("sess-syntax") if event.event_type == "kernel.command_completed"]
+        events = [event for event in core.events_after("sess-syntax") if event.event_type == "core.command_completed"]
         assert events and events[0].actor == "client"
 
 
@@ -608,10 +608,10 @@ def test_p2a_busy_gate_and_waiting_session_lifecycle(tmp_path: Path) -> None:
 
         # Verify an event was committed after the parked checkpoint
         events = core.events_after("sess-busy")
-        assert any(e.event_type == "kernel.command_completed" for e in events)
+        assert any(e.event_type == "core.command_completed" for e in events)
 
         # 4. Resume via approval decision across intervening command
-        app_ev = next(e for e in events if e.event_type == "kernel.approval_requested")
+        app_ev = next(e for e in events if e.event_type == "core.approval_requested")
         req_id = app_ev.payload["request_id"]
 
         resume_res = core.resume("sess-busy", approval_request_id=req_id, decision="allow")
@@ -641,9 +641,9 @@ def test_p2a_observer_failure_is_diagnostic_not_fatal(tmp_path: Path) -> None:
         types = [e.event_type for e in events]
 
         # The observed fact stays durable; the failure is a diagnostic event
-        assert "kernel.model_turn" in types
-        assert "kernel.run_completed" in types
-        err_events = [e for e in events if e.event_type == "kernel.observer_error"]
+        assert "core.model_turn" in types
+        assert "core.run_completed" in types
+        err_events = [e for e in events if e.event_type == "core.observer_error"]
         assert err_events, "observer failure must surface as core.observer_error"
         assert err_events[0].payload["owner"] == "hello-state"
         assert "observer exploded" in str(err_events[0].payload["error"])

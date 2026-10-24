@@ -46,6 +46,7 @@ export interface SseEventFrame {
     source: string;
     actor: string;
     payload: Record<string, unknown>;
+    transcript?: Record<string, unknown> | null;
   };
   session?: SessionRecord;
   events?: Array<{
@@ -57,6 +58,7 @@ export interface SseEventFrame {
     source: string;
     actor: string;
     payload: Record<string, unknown>;
+    transcript?: Record<string, unknown> | null;
   }>;
   error?: string;
 }
