@@ -21,19 +21,12 @@ from ._resources import load_json
 
 type ProviderWire = Literal["openai-completions", "anthropic-messages", "google-generative-ai"]
 
-type WireSource = Literal["model", "provider"]
 
 _WIRES: Final[tuple[ProviderWire, ...]] = ("openai-completions", "anthropic-messages", "google-generative-ai")
-
-_WIRE_SOURCES: Final[tuple[WireSource, ...]] = ("model", "provider")
 
 
 def _is_wire(value: object) -> TypeIs[ProviderWire]:
     return value in _WIRES
-
-
-def _is_wire_source(value: object) -> TypeIs[WireSource]:
-    return value in _WIRE_SOURCES
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,10 +40,6 @@ class ProviderTableRow:
     models.dev keys the model-catalog generator reads; an empty tuple means the
     provider has no generated catalog entry.
 
-    ``wire_source`` says which wire dispatch uses: ``model`` means the catalog
-    row's ``api`` decides (a per-model-routing gateway), ``provider`` means the
-    provider's own ``wire`` decides and the row's ``api`` is recorded upstream
-    truth we do not serve yet.
     """
 
     id: str
@@ -59,7 +48,6 @@ class ProviderTableRow:
     default_base_url: str
     env_vars: tuple[str, ...]
     models_dev_keys: tuple[str, ...]
-    wire_source: WireSource = "model"
 
 
 def _string_tuple(value: object, *, field: str, provider_id: str) -> tuple[str, ...]:
@@ -84,9 +72,6 @@ def _row(raw: object) -> ProviderTableRow:
         raise ValueError(f"provider table entry {provider_id!r} has an unknown wire: {wire!r}")
     if not isinstance(default_base_url, str) or not default_base_url:
         raise ValueError(f"provider table entry {provider_id!r} is missing a non-empty 'default_base_url'")
-    wire_source = entry.get("wire_source", "model")
-    if not _is_wire_source(wire_source):
-        raise ValueError(f"provider table entry {provider_id!r} has an unknown wire_source: {wire_source!r}")
     return ProviderTableRow(
         id=provider_id,
         label=label,
@@ -94,7 +79,6 @@ def _row(raw: object) -> ProviderTableRow:
         default_base_url=default_base_url,
         env_vars=_string_tuple(entry.get("env_vars", []), field="env_vars", provider_id=provider_id),
         models_dev_keys=_string_tuple(entry.get("models_dev_keys", []), field="models_dev_keys", provider_id=provider_id),
-        wire_source=wire_source,
     )
 
 
@@ -118,7 +102,7 @@ PROVIDER_TABLE_BY_ID: Final[Mapping[str, ProviderTableRow]] = {row.id: row for r
 def require_provider_id(provider_id: str, *, source: str) -> str:
     """``provider_id`` when the table declares it, else a loud import-time failure.
 
-    The rule files (``api_routes``, ``thinking_rules``) address
+    The thinking rules address
     providers by id; a typo there would otherwise become a table nothing ever
     consults, so the citation is checked against the one provider table instead.
     """
@@ -132,6 +116,5 @@ __all__ = [
     "PROVIDER_TABLE_BY_ID",
     "ProviderTableRow",
     "ProviderWire",
-    "WireSource",
     "require_provider_id",
 ]

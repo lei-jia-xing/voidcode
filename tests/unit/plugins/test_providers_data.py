@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from voidcode.capabilities.providers.native.api_routes import api_route_for
 from voidcode.capabilities.providers.native.model_catalog import ProviderModelMetadata, static_catalog_metadata
 from voidcode.capabilities.providers.native.provider_table import PROVIDER_TABLE
 from voidcode.capabilities.providers.native.thinking_rules import thinking_rule_for
@@ -30,13 +29,6 @@ def test_deepseek_requires_authentic_reasoning_for_tool_calls() -> None:
     assert rule.requires_reasoning_content_for_tool_calls is True
     assert rule.reasoning_content_field == "reasoning_content"
     assert rule.max_tokens_field_or_default() == "max_tokens"
-
-
-def test_copilot_claude_models_are_pinned_to_the_anthropic_wire() -> None:
-    route = api_route_for("github-copilot", "claude-sonnet-4-5")
-
-    assert route is not None
-    assert route.api == "anthropic-messages"
 
 
 def test_usage_cost_oracle_and_unknown_provider_stays_unknown() -> None:

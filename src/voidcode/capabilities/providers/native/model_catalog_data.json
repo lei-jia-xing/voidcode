@@ -5124,7 +5124,7 @@
   },
   "groq": {
     "openai/gpt-oss-120b": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/groq",
       "context_window": 131072,
       "cost_per_cache_read_token": 7.5e-08,
       "cost_per_input_token": 1.5e-07,
@@ -5149,7 +5149,7 @@
       "supports_vision": false
     },
     "openai/gpt-oss-20b": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/groq",
       "context_window": 131072,
       "cost_per_cache_read_token": 3.75e-08,
       "cost_per_input_token": 7.5e-08,
@@ -5174,7 +5174,7 @@
       "supports_vision": false
     },
     "openai/gpt-oss-safeguard-20b": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/groq",
       "context_window": 131072,
       "cost_per_cache_read_token": 3.75e-08,
       "cost_per_input_token": 7.5e-08,
@@ -5200,7 +5200,7 @@
       "supports_vision": false
     },
     "qwen/qwen3.8-27b": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/groq",
       "context_window": 131072,
       "cost_per_input_token": 8.000000000000001e-07,
       "cost_per_output_token": 4e-06,
@@ -14687,7 +14687,7 @@
   },
   "minimax": {
     "minimax-m3": {
-      "api": "openai-completions",
+      "api": "anthropic-messages",
       "context_price_tiers": [
         {
           "cache_read": 1.2e-07,
@@ -14717,7 +14717,7 @@
       "supports_vision": true
     },
     "minimax-m3.1-flash": {
-      "api": "openai-completions",
+      "api": "anthropic-messages",
       "context_window": 1000000,
       "cost_per_cache_read_token": 1.5e-08,
       "cost_per_input_token": 1.5e-07,
@@ -14809,7 +14809,7 @@
   },
   "mistral": {
     "codestral-2508": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/mistral",
       "context_window": 256000,
       "cost_per_cache_read_token": 3e-08,
       "cost_per_input_token": 3e-07,
@@ -14829,7 +14829,7 @@
       "supports_vision": false
     },
     "codestral-latest": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/mistral",
       "context_window": 256000,
       "cost_per_cache_read_token": 3e-08,
       "cost_per_input_token": 3e-07,
@@ -14849,7 +14849,7 @@
       "supports_vision": false
     },
     "ministral-14b-2512": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/mistral",
       "context_window": 262144,
       "cost_per_cache_read_token": 2e-08,
       "cost_per_input_token": 2.0000000000000002e-07,
@@ -14870,7 +14870,7 @@
       "supports_vision": true
     },
     "ministral-3b-2512": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/mistral",
       "context_window": 131072,
       "cost_per_cache_read_token": 1e-08,
       "cost_per_input_token": 1.0000000000000001e-07,
@@ -14891,7 +14891,7 @@
       "supports_vision": true
     },
     "ministral-3b-latest": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/mistral",
       "context_window": 131072,
       "cost_per_cache_read_token": 1e-08,
       "cost_per_input_token": 1.0000000000000001e-07,
@@ -14912,7 +14912,7 @@
       "supports_vision": true
     },
     "ministral-8b-2512": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/mistral",
       "context_window": 262144,
       "cost_per_cache_read_token": 1.5e-08,
       "cost_per_input_token": 1.5e-07,
@@ -14933,7 +14933,7 @@
       "supports_vision": true
     },
     "ministral-8b-latest": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/mistral",
       "context_window": 262144,
       "cost_per_cache_read_token": 1.5e-08,
       "cost_per_input_token": 1.5e-07,
@@ -14954,7 +14954,7 @@
       "supports_vision": true
     },
     "mistral-large-2512": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/mistral",
       "context_window": 262144,
       "cost_per_cache_read_token": 5.0000000000000004e-08,
       "cost_per_input_token": 5e-07,
@@ -14975,7 +14975,7 @@
       "supports_vision": true
     },
     "mistral-large-4": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/mistral",
       "context_window": 1048576,
       "cost_per_cache_read_token": 1.4e-07,
       "cost_per_input_token": 1.3600000000000001e-06,
@@ -15001,7 +15001,7 @@
       "supports_vision": true
     },
     "mistral-large-latest": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/mistral",
       "context_window": 262144,
       "cost_per_cache_read_token": 5.0000000000000004e-08,
       "cost_per_input_token": 5e-07,
@@ -15022,7 +15022,7 @@
       "supports_vision": true
     },
     "mistral-medium-2604": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/mistral",
       "context_window": 262144,
       "cost_per_cache_read_token": 1.5e-07,
       "cost_per_input_token": 1.5e-06,
@@ -15047,7 +15047,7 @@
       "supports_vision": true
     },
     "mistral-medium-latest": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/mistral",
       "context_window": 262144,
       "cost_per_cache_read_token": 1.5e-07,
       "cost_per_input_token": 1.5e-06,
@@ -15072,7 +15072,7 @@
       "supports_vision": true
     },
     "mistral-small-2603": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/mistral",
       "context_window": 262144,
       "cost_per_cache_read_token": 1.5e-08,
       "cost_per_input_token": 1.5e-07,
@@ -15097,7 +15097,7 @@
       "supports_vision": true
     },
     "mistral-small-latest": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/mistral",
       "context_window": 262144,
       "cost_per_cache_read_token": 1.5e-08,
       "cost_per_input_token": 1.5e-07,
@@ -15122,7 +15122,7 @@
       "supports_vision": true
     },
     "voxtral-small-2507": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/mistral",
       "context_window": 32768,
       "cost_per_input_token": 1.0000000000000001e-07,
       "cost_per_output_token": 4.0000000000000003e-07,
@@ -15142,7 +15142,7 @@
       "supports_vision": false
     },
     "voxtral-small-latest": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/mistral",
       "context_window": 32768,
       "cost_per_input_token": 1.0000000000000001e-07,
       "cost_per_output_token": 4.0000000000000003e-07,
@@ -15162,7 +15162,7 @@
       "supports_vision": false
     },
     "zai-glm-5-3": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/mistral",
       "context_window": 1048576,
       "cost_per_cache_read_token": 1.4e-07,
       "cost_per_input_token": 1.4e-06,
@@ -15187,7 +15187,7 @@
       "supports_vision": false
     },
     "zai-glm-5-3-flash": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/mistral",
       "context_window": 1048576,
       "cost_per_cache_read_token": 3e-08,
       "cost_per_input_token": 1.5e-07,
@@ -17265,7 +17265,7 @@
   },
   "openai": {
     "gpt-4.1": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_window": 1047576,
       "cost_per_cache_read_token": 5e-07,
       "cost_per_input_token": 2e-06,
@@ -17286,7 +17286,7 @@
       "supports_vision": true
     },
     "gpt-4.1-mini": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_window": 1047576,
       "cost_per_cache_read_token": 1.0000000000000001e-07,
       "cost_per_input_token": 4.0000000000000003e-07,
@@ -17307,7 +17307,7 @@
       "supports_vision": true
     },
     "gpt-4o": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_window": 128000,
       "cost_per_cache_read_token": 1.25e-06,
       "cost_per_input_token": 2.5e-06,
@@ -17328,7 +17328,7 @@
       "supports_vision": true
     },
     "gpt-4o-2024-08-06": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_window": 128000,
       "cost_per_cache_read_token": 1.25e-06,
       "cost_per_input_token": 2.5e-06,
@@ -17348,7 +17348,7 @@
       "supports_vision": true
     },
     "gpt-4o-2024-11-20": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_window": 128000,
       "cost_per_cache_read_token": 1.25e-06,
       "cost_per_input_token": 2.5e-06,
@@ -17368,7 +17368,7 @@
       "supports_vision": true
     },
     "gpt-4o-mini": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_window": 128000,
       "cost_per_cache_read_token": 7.5e-08,
       "cost_per_input_token": 1.5e-07,
@@ -17389,7 +17389,7 @@
       "supports_vision": true
     },
     "gpt-5": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_window": 400000,
       "cost_per_cache_read_token": 1.25e-07,
       "cost_per_input_token": 1.25e-06,
@@ -17417,7 +17417,7 @@
       "supports_vision": true
     },
     "gpt-5-mini": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_window": 400000,
       "cost_per_cache_read_token": 2.5000000000000002e-08,
       "cost_per_input_token": 2.5e-07,
@@ -17445,7 +17445,7 @@
       "supports_vision": true
     },
     "gpt-5-nano": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_window": 400000,
       "cost_per_cache_read_token": 5e-09,
       "cost_per_input_token": 5.0000000000000004e-08,
@@ -17473,7 +17473,7 @@
       "supports_vision": true
     },
     "gpt-5-pro": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_window": 400000,
       "cost_per_input_token": 1.5e-05,
       "cost_per_output_token": 0.00012,
@@ -17497,7 +17497,7 @@
       "supports_vision": true
     },
     "gpt-5.1": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_window": 400000,
       "cost_per_cache_read_token": 1.25e-07,
       "cost_per_input_token": 1.25e-06,
@@ -17524,7 +17524,7 @@
       "supports_vision": true
     },
     "gpt-5.2": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_window": 400000,
       "cost_per_cache_read_token": 1.75e-07,
       "cost_per_input_token": 1.75e-06,
@@ -17552,7 +17552,7 @@
       "supports_vision": true
     },
     "gpt-5.2-pro": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_window": 400000,
       "cost_per_input_token": 2.1e-05,
       "cost_per_output_token": 0.000168,
@@ -17578,7 +17578,7 @@
       "supports_vision": true
     },
     "gpt-5.3-codex": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_window": 400000,
       "cost_per_cache_read_token": 1.75e-07,
       "cost_per_input_token": 1.75e-06,
@@ -17607,7 +17607,7 @@
       "supports_vision": true
     },
     "gpt-5.3-codex-spark": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_window": 128000,
       "cost_per_cache_read_token": 1.75e-07,
       "cost_per_input_token": 1.75e-06,
@@ -17636,7 +17636,7 @@
       "supports_vision": true
     },
     "gpt-5.4": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_price_tiers": [
         {
           "cache_read": 5e-07,
@@ -17673,7 +17673,7 @@
       "supports_vision": true
     },
     "gpt-5.4-mini": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_window": 400000,
       "cost_per_cache_read_token": 7.5e-08,
       "cost_per_input_token": 7.5e-07,
@@ -17701,7 +17701,7 @@
       "supports_vision": true
     },
     "gpt-5.4-nano": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_window": 400000,
       "cost_per_cache_read_token": 2e-08,
       "cost_per_input_token": 2.0000000000000002e-07,
@@ -17729,7 +17729,7 @@
       "supports_vision": true
     },
     "gpt-5.4-pro": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_price_tiers": [
         {
           "input": 6e-05,
@@ -17762,7 +17762,7 @@
       "supports_vision": true
     },
     "gpt-5.5": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_price_tiers": [
         {
           "cache_read": 1e-06,
@@ -17799,7 +17799,7 @@
       "supports_vision": true
     },
     "gpt-5.5-pro": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_price_tiers": [
         {
           "input": 6e-05,
@@ -17833,7 +17833,7 @@
       "supports_vision": true
     },
     "gpt-5.6": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_price_tiers": [
         {
           "cache_read": 8.000000000000001e-07,
@@ -17873,7 +17873,7 @@
       "supports_vision": true
     },
     "gpt-5.6-luna": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_price_tiers": [
         {
           "cache_read": 4e-08,
@@ -17913,7 +17913,7 @@
       "supports_vision": true
     },
     "gpt-5.6-sol": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_price_tiers": [
         {
           "cache_read": 8.000000000000001e-07,
@@ -17953,7 +17953,7 @@
       "supports_vision": true
     },
     "gpt-5.6-terra": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_price_tiers": [
         {
           "cache_read": 4.0000000000000003e-07,
@@ -17993,7 +17993,7 @@
       "supports_vision": true
     },
     "gpt-6-astra": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_price_tiers": [
         {
           "cache_read": 2e-06,
@@ -18033,7 +18033,7 @@
       "supports_vision": true
     },
     "gpt-6-luna": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_price_tiers": [
         {
           "cache_read": 2e-08,
@@ -18073,7 +18073,7 @@
       "supports_vision": true
     },
     "gpt-6-sol": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_price_tiers": [
         {
           "cache_read": 4.0000000000000003e-07,
@@ -18113,7 +18113,7 @@
       "supports_vision": true
     },
     "gpt-6.1-sol": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_price_tiers": [
         {
           "cache_read": 2.0000000000000002e-07,
@@ -18153,7 +18153,7 @@
       "supports_vision": true
     },
     "gpt-daybreak-blue-latest": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_price_tiers": [
         {
           "cache_read": 8.000000000000001e-07,
@@ -18193,7 +18193,7 @@
       "supports_vision": true
     },
     "gpt-daybreak-red-latest": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_window": 400000,
       "cost_per_cache_read_token": 1.25e-06,
       "cost_per_cache_write_token": 1.5625e-05,
@@ -18223,7 +18223,7 @@
       "supports_vision": true
     },
     "gpt-realtime-2.1": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_window": 128000,
       "cost_per_cache_read_token": 4.0000000000000003e-07,
       "cost_per_input_token": 4e-06,
@@ -18254,7 +18254,7 @@
       "supports_vision": true
     },
     "o3": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_window": 200000,
       "cost_per_cache_read_token": 5e-07,
       "cost_per_input_token": 2e-06,
@@ -18281,7 +18281,7 @@
       "supports_vision": true
     },
     "o3-pro": {
-      "api": "openai-completions",
+      "api": "openai-responses",
       "context_window": 200000,
       "cost_per_input_token": 2e-05,
       "cost_per_output_token": 8e-05,
@@ -18872,7 +18872,7 @@
       "supports_vision": true
     },
     "minimax-m3": {
-      "api": "openai-completions",
+      "api": "anthropic-messages",
       "context_price_tiers": [
         {
           "cache_read": 1.2e-07,
@@ -21160,7 +21160,7 @@
       "supports_vision": true
     },
     "mistral-large-4": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/mistral",
       "context_window": 524288,
       "cost_per_cache_read_token": 7e-08,
       "cost_per_input_token": 6.800000000000001e-07,
@@ -22395,7 +22395,7 @@
   },
   "together": {
     "deepseek-ai/deepseek-v4-pro-0813": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/togetherai",
       "context_window": 1048576,
       "cost_per_cache_read_token": 1.3e-07,
       "cost_per_input_token": 1.32e-06,
@@ -22419,7 +22419,7 @@
       "supports_vision": false
     },
     "deepseek-ai/deepseek-v4.1-flash": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/togetherai",
       "context_window": 1048576,
       "cost_per_cache_read_token": 6e-09,
       "cost_per_input_token": 3e-07,
@@ -22445,7 +22445,7 @@
       "supports_vision": true
     },
     "meta-models/muse-spark-open-816b-a42b": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/togetherai",
       "context_window": 1048576,
       "cost_per_cache_read_token": 1.5e-07,
       "cost_per_input_token": 1.25e-06,
@@ -22473,7 +22473,7 @@
       "supports_vision": true
     },
     "minimaxai/minimax-m3": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/togetherai",
       "context_window": 524288,
       "cost_per_cache_read_token": 6e-08,
       "cost_per_input_token": 3e-07,
@@ -22495,7 +22495,7 @@
       "supports_vision": true
     },
     "moonshotai/kimi-k3": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/togetherai",
       "context_window": 1048576,
       "cost_per_cache_read_token": 3e-07,
       "cost_per_input_token": 3e-06,
@@ -22521,7 +22521,7 @@
       "supports_vision": true
     },
     "nvidia/nvidia-nemotron-3.5-super-vl": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/togetherai",
       "context_window": 262144,
       "cost_per_cache_read_token": 2e-08,
       "cost_per_input_token": 1.5e-07,
@@ -22543,7 +22543,7 @@
       "supports_vision": true
     },
     "openai/gpt-oss-120b": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/togetherai",
       "context_window": 131072,
       "cost_per_input_token": 1.5e-07,
       "cost_per_output_token": 6e-07,
@@ -22567,7 +22567,7 @@
       "supports_vision": false
     },
     "qwen/qwen3.5-9b": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/togetherai",
       "context_window": 262144,
       "cost_per_input_token": 1.7000000000000001e-07,
       "cost_per_output_token": 2.5e-07,
@@ -22588,7 +22588,7 @@
       "supports_vision": true
     },
     "qwen/qwen3.6-plus": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/togetherai",
       "context_window": 1000000,
       "cost_per_input_token": 5e-07,
       "cost_per_output_token": 3e-06,
@@ -22607,7 +22607,7 @@
       "supports_vision": false
     },
     "qwen/qwen3.7-max": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/togetherai",
       "context_window": 1000000,
       "cost_per_cache_read_token": 5e-07,
       "cost_per_input_token": 2.5e-06,
@@ -22627,7 +22627,7 @@
       "supports_vision": false
     },
     "reflection/beam-1.0-501b-a23b": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/togetherai",
       "context_window": 1048576,
       "cost_per_cache_read_token": 4e-08,
       "cost_per_input_token": 4.0000000000000003e-07,
@@ -22655,7 +22655,7 @@
       "supports_vision": false
     },
     "thinkingmachines/inkling": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/togetherai",
       "context_window": 524288,
       "cost_per_cache_read_token": 1.7000000000000001e-07,
       "cost_per_input_token": 1e-06,
@@ -22685,7 +22685,7 @@
       "supports_vision": true
     },
     "zai-org/glm-5.2": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/togetherai",
       "context_window": 1048575,
       "cost_per_cache_read_token": 2.6e-07,
       "cost_per_input_token": 1.4e-06,
@@ -22709,7 +22709,7 @@
       "supports_vision": false
     },
     "zai-org/glm-5.3": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/togetherai",
       "context_window": 1048575,
       "cost_per_cache_read_token": 2.6e-07,
       "cost_per_input_token": 1.4e-06,
@@ -22734,7 +22734,7 @@
       "supports_vision": false
     },
     "zai-org/glm-5.3-flash": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/togetherai",
       "context_window": 1048575,
       "cost_per_cache_read_token": 3e-08,
       "cost_per_input_token": 1.5e-07,
@@ -22763,7 +22763,7 @@
   },
   "venice": {
     "abliteration-abliterated-model-large-flash": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 1.25e-07,
       "cost_per_input_token": 1.25e-06,
@@ -22784,7 +22784,7 @@
       "supports_vision": true
     },
     "abliteration-abliterated-model-large-v2": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 3e-07,
       "cost_per_input_token": 3e-06,
@@ -22804,7 +22804,7 @@
       "supports_vision": false
     },
     "aion-labs-aion-3-0": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 128000,
       "cost_per_cache_read_token": 9.375e-07,
       "cost_per_input_token": 3.75e-06,
@@ -22824,7 +22824,7 @@
       "supports_vision": false
     },
     "aion-labs-aion-3-0-mini": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 128000,
       "cost_per_cache_read_token": 2.2500000000000002e-07,
       "cost_per_input_token": 8.75e-07,
@@ -22844,7 +22844,7 @@
       "supports_vision": false
     },
     "aion-labs-aion-3-5": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 262144,
       "cost_per_cache_read_token": 9.375e-07,
       "cost_per_input_token": 3.75e-06,
@@ -22864,7 +22864,7 @@
       "supports_vision": false
     },
     "aion-labs-aion-3-5-mini": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 262144,
       "cost_per_cache_read_token": 2.2500000000000002e-07,
       "cost_per_input_token": 8.75e-07,
@@ -22884,7 +22884,7 @@
       "supports_vision": false
     },
     "claude-fable-5": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 1e-06,
       "cost_per_cache_write_token": 1.25e-05,
@@ -22913,7 +22913,7 @@
       "supports_vision": true
     },
     "claude-fable-5-1": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 2.5e-07,
       "cost_per_cache_write_token": 1.25e-05,
@@ -22942,7 +22942,7 @@
       "supports_vision": true
     },
     "claude-haiku-5-5": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_price_tiers": [
         {
           "cache_read": 5.0000000000000004e-08,
@@ -22980,7 +22980,7 @@
       "supports_vision": true
     },
     "claude-opus-4-5": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 198000,
       "cost_per_cache_read_token": 5e-07,
       "cost_per_cache_write_token": 6.25e-06,
@@ -23002,7 +23002,7 @@
       "supports_vision": true
     },
     "claude-opus-4-6": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 5e-07,
       "cost_per_cache_write_token": 6.25e-06,
@@ -23030,7 +23030,7 @@
       "supports_vision": true
     },
     "claude-opus-4-7": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 5e-07,
       "cost_per_cache_write_token": 6.25e-06,
@@ -23059,7 +23059,7 @@
       "supports_vision": true
     },
     "claude-opus-4-8": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 5e-07,
       "cost_per_cache_write_token": 6.25e-06,
@@ -23088,7 +23088,7 @@
       "supports_vision": true
     },
     "claude-opus-4-8-fast": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 1e-06,
       "cost_per_cache_write_token": 1.25e-05,
@@ -23117,7 +23117,7 @@
       "supports_vision": true
     },
     "claude-opus-5": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 5e-07,
       "cost_per_cache_write_token": 6.25e-06,
@@ -23146,7 +23146,7 @@
       "supports_vision": true
     },
     "claude-opus-5-5": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 2.0000000000000002e-07,
       "cost_per_cache_write_token": 5e-06,
@@ -23175,7 +23175,7 @@
       "supports_vision": true
     },
     "claude-opus-5-5-fast": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 4.0000000000000003e-07,
       "cost_per_cache_write_token": 1e-05,
@@ -23204,7 +23204,7 @@
       "supports_vision": true
     },
     "claude-opus-5-fast": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 1e-06,
       "cost_per_cache_write_token": 1.25e-05,
@@ -23233,7 +23233,7 @@
       "supports_vision": true
     },
     "claude-sonnet-4-6": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 3e-07,
       "cost_per_cache_write_token": 3.75e-06,
@@ -23261,7 +23261,7 @@
       "supports_vision": true
     },
     "claude-sonnet-5": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 2.0000000000000002e-07,
       "cost_per_cache_write_token": 2.5e-06,
@@ -23290,7 +23290,7 @@
       "supports_vision": true
     },
     "claude-sonnet-5-5": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 1.0000000000000001e-07,
       "cost_per_cache_write_token": 2.5e-06,
@@ -23319,7 +23319,7 @@
       "supports_vision": true
     },
     "deepseek-v4-1-flash": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 7.5e-09,
       "cost_per_input_token": 3e-07,
@@ -23345,7 +23345,7 @@
       "supports_vision": true
     },
     "deepseek-v4-1-flash-1017": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 7.5e-09,
       "cost_per_input_token": 3e-07,
@@ -23371,7 +23371,7 @@
       "supports_vision": true
     },
     "deepseek-v4-1-flash-uncensored": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 8.250000000000001e-09,
       "cost_per_input_token": 3.3e-07,
@@ -23397,7 +23397,7 @@
       "supports_vision": true
     },
     "deepseek-v4-flash": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 2.8e-08,
       "cost_per_input_token": 1.3800000000000002e-07,
@@ -23422,7 +23422,7 @@
       "supports_vision": false
     },
     "deepseek-v4-flash-0731": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 2.8e-08,
       "cost_per_input_token": 1.3e-07,
@@ -23447,7 +23447,7 @@
       "supports_vision": false
     },
     "deepseek-v4-flash-0731-fast": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 8.75e-08,
       "cost_per_input_token": 3.5e-07,
@@ -23472,7 +23472,7 @@
       "supports_vision": false
     },
     "deepseek-v4-pro": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 3.3e-07,
       "cost_per_input_token": 1.6499999999999999e-06,
@@ -23497,7 +23497,7 @@
       "supports_vision": false
     },
     "deepseek-v4-pro-0813": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 1.65e-07,
       "cost_per_input_token": 1.6499999999999999e-06,
@@ -23522,7 +23522,7 @@
       "supports_vision": false
     },
     "gemini-3-1-pro-preview": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_price_tiers": [
         {
           "cache_read": 5e-07,
@@ -23560,7 +23560,7 @@
       "supports_vision": true
     },
     "gemini-3-5-flash": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 1.55e-07,
       "cost_per_cache_write_token": 8.599999999999999e-08,
@@ -23589,7 +23589,7 @@
       "supports_vision": true
     },
     "gemini-3-5-flash-lite": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 3.75e-08,
       "cost_per_input_token": 3.75e-07,
@@ -23612,7 +23612,7 @@
       "supports_vision": true
     },
     "gemini-3-6-flash": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 9.375e-08,
       "cost_per_input_token": 9.375e-07,
@@ -23635,7 +23635,7 @@
       "supports_vision": true
     },
     "gemini-3-7-flash": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 9.375e-08,
       "cost_per_input_token": 9.375e-07,
@@ -23658,7 +23658,7 @@
       "supports_vision": true
     },
     "gemini-3-8-flash": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 9.375e-08,
       "cost_per_input_token": 9.375e-07,
@@ -23681,7 +23681,7 @@
       "supports_vision": true
     },
     "gemini-3-flash-preview": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 256000,
       "cost_per_cache_read_token": 7e-08,
       "cost_per_input_token": 7e-07,
@@ -23710,7 +23710,7 @@
       "supports_vision": true
     },
     "gemini-4-argon": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 1.25e-07,
       "cost_per_input_token": 2.5e-06,
@@ -23733,7 +23733,7 @@
       "supports_vision": true
     },
     "gemma-4-uncensored": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 256000,
       "cost_per_input_token": 1.625e-07,
       "cost_per_output_token": 5e-07,
@@ -23752,7 +23752,7 @@
       "supports_vision": true
     },
     "google-gemma-3-27b-it": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 198000,
       "cost_per_input_token": 1.2e-07,
       "cost_per_output_token": 2.0000000000000002e-07,
@@ -23771,7 +23771,7 @@
       "supports_vision": true
     },
     "google-gemma-4-26b-a4b-it": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 256000,
       "cost_per_cache_read_token": 5.0000000000000004e-08,
       "cost_per_input_token": 1.3e-07,
@@ -23798,7 +23798,7 @@
       "supports_vision": true
     },
     "google-gemma-4-31b-it": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 256000,
       "cost_per_cache_read_token": 9e-08,
       "cost_per_input_token": 1.2e-07,
@@ -23825,7 +23825,7 @@
       "supports_vision": true
     },
     "grok-4-20": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_price_tiers": [
         {
           "cache_read": 4.5000000000000003e-07,
@@ -23854,7 +23854,7 @@
       "supports_vision": true
     },
     "grok-4-3": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_price_tiers": [
         {
           "cache_read": 4.5000000000000003e-07,
@@ -23888,7 +23888,7 @@
       "supports_vision": true
     },
     "grok-4-5": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_price_tiers": [
         {
           "cache_read": 6.800000000000001e-07,
@@ -23922,7 +23922,7 @@
       "supports_vision": true
     },
     "grok-4-6": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_price_tiers": [
         {
           "cache_read": 1.13e-06,
@@ -23957,7 +23957,7 @@
       "supports_vision": true
     },
     "grok-4-7": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_price_tiers": [
         {
           "cache_read": 1.13e-06,
@@ -23992,7 +23992,7 @@
       "supports_vision": true
     },
     "grok-build-0-1": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_price_tiers": [
         {
           "cache_read": 4.0000000000000003e-07,
@@ -24021,7 +24021,7 @@
       "supports_vision": true
     },
     "hy4-preview": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1048576,
       "cost_per_cache_read_token": 5.25e-08,
       "cost_per_input_token": 1.0425e-06,
@@ -24045,7 +24045,7 @@
       "supports_vision": false
     },
     "kimi-k2-5": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 256000,
       "cost_per_cache_read_token": 2.2e-07,
       "cost_per_input_token": 5.6e-07,
@@ -24071,7 +24071,7 @@
       "supports_vision": true
     },
     "kimi-k2-6": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 256000,
       "cost_per_cache_read_token": 1.6e-07,
       "cost_per_input_token": 7.5e-07,
@@ -24097,7 +24097,7 @@
       "supports_vision": true
     },
     "kimi-k2-7-code": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 256000,
       "cost_per_cache_read_token": 1.6e-07,
       "cost_per_input_token": 7.5e-07,
@@ -24123,7 +24123,7 @@
       "supports_vision": true
     },
     "kimi-k3": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 3.75e-07,
       "cost_per_input_token": 3.75e-06,
@@ -24149,7 +24149,7 @@
       "supports_vision": true
     },
     "kimi-k3-1-pro": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 3.0000000000000004e-07,
       "cost_per_input_token": 3e-06,
@@ -24175,7 +24175,7 @@
       "supports_vision": true
     },
     "kimi-k3-1-pro-highspeed": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 6.000000000000001e-07,
       "cost_per_input_token": 6e-06,
@@ -24201,7 +24201,7 @@
       "supports_vision": true
     },
     "kimi-k3-fast-api": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 4.5000000000000003e-07,
       "cost_per_input_token": 4.5e-06,
@@ -24227,7 +24227,7 @@
       "supports_vision": true
     },
     "llama-3.2-3b": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 128000,
       "cost_per_input_token": 1.5e-07,
       "cost_per_output_token": 6e-07,
@@ -24244,7 +24244,7 @@
       "supports_vision": false
     },
     "llama-3.3-70b": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 128000,
       "cost_per_input_token": 7e-07,
       "cost_per_output_token": 2.8e-06,
@@ -24261,7 +24261,7 @@
       "supports_vision": false
     },
     "mercury-2": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 128000,
       "cost_per_cache_read_token": 3.125e-08,
       "cost_per_input_token": 3.125e-07,
@@ -24286,7 +24286,7 @@
       "supports_vision": false
     },
     "mercury-2-5": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 260000,
       "cost_per_cache_read_token": 2.5000000000000002e-08,
       "cost_per_input_token": 2.5e-07,
@@ -24311,7 +24311,7 @@
       "supports_vision": false
     },
     "mercury-3": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 1e-08,
       "cost_per_input_token": 1.0000000000000001e-07,
@@ -24336,7 +24336,7 @@
       "supports_vision": false
     },
     "minimax-m25": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 198000,
       "cost_per_cache_read_token": 3e-08,
       "cost_per_input_token": 2.7e-07,
@@ -24360,7 +24360,7 @@
       "supports_vision": false
     },
     "minimax-m27": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 198000,
       "cost_per_cache_read_token": 6.875e-08,
       "cost_per_input_token": 3.75e-07,
@@ -24384,7 +24384,7 @@
       "supports_vision": false
     },
     "minimax-m3-1-flash": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 1.875e-08,
       "cost_per_input_token": 1.875e-07,
@@ -24412,7 +24412,7 @@
       "supports_vision": true
     },
     "minimax-m3-preview": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 524288,
       "cost_per_cache_read_token": 6e-08,
       "cost_per_input_token": 3e-07,
@@ -24433,7 +24433,7 @@
       "supports_vision": true
     },
     "mistral-small-3-2-24b-instruct": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 256000,
       "cost_per_input_token": 9.375e-08,
       "cost_per_output_token": 2.5e-07,
@@ -24452,7 +24452,7 @@
       "supports_vision": true
     },
     "muse-spark-open": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1048576,
       "cost_per_cache_read_token": 1.875e-07,
       "cost_per_input_token": 1.5625e-06,
@@ -24479,7 +24479,7 @@
       "supports_vision": true
     },
     "muse-wonder": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1048576,
       "cost_per_cache_read_token": 2.5e-07,
       "cost_per_input_token": 5e-06,
@@ -24508,7 +24508,7 @@
       "supports_vision": true
     },
     "nvidia-nemotron-3-5-super-vl-120b-a12b": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 262144,
       "cost_per_cache_read_token": 1.25e-07,
       "cost_per_input_token": 2.5e-07,
@@ -24535,7 +24535,7 @@
       "supports_vision": true
     },
     "nvidia-nemotron-3-nano-30b-a3b": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 128000,
       "cost_per_input_token": 7.5e-08,
       "cost_per_output_token": 3e-07,
@@ -24553,7 +24553,7 @@
       "supports_vision": false
     },
     "nvidia-nemotron-3-ultra-550b-a55b": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 256000,
       "cost_per_cache_read_token": 1.875e-07,
       "cost_per_input_token": 6.25e-07,
@@ -24578,7 +24578,7 @@
       "supports_vision": false
     },
     "olafangensan-glm-4.7-flash-heretic": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 200000,
       "cost_per_cache_read_token": 3.5e-08,
       "cost_per_input_token": 7e-08,
@@ -24603,7 +24603,7 @@
       "supports_vision": false
     },
     "openai-gpt-4o-2024-11-20": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 128000,
       "cost_per_cache_read_token": 1.25e-06,
       "cost_per_input_token": 2.5e-06,
@@ -24623,7 +24623,7 @@
       "supports_vision": true
     },
     "openai-gpt-4o-mini-2024-07-18": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 128000,
       "cost_per_cache_read_token": 7.5e-08,
       "cost_per_input_token": 1.5e-07,
@@ -24643,7 +24643,7 @@
       "supports_vision": true
     },
     "openai-gpt-52": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 256000,
       "cost_per_cache_read_token": 1.75e-07,
       "cost_per_input_token": 1.75e-06,
@@ -24670,7 +24670,7 @@
       "supports_vision": false
     },
     "openai-gpt-53-codex": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 400000,
       "cost_per_cache_read_token": 1.75e-07,
       "cost_per_input_token": 1.75e-06,
@@ -24698,7 +24698,7 @@
       "supports_vision": true
     },
     "openai-gpt-54": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_price_tiers": [
         {
           "cache_read": 5e-07,
@@ -24734,7 +24734,7 @@
       "supports_vision": true
     },
     "openai-gpt-54-mini": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 400000,
       "cost_per_cache_read_token": 7.5e-08,
       "cost_per_input_token": 7.5e-07,
@@ -24762,7 +24762,7 @@
       "supports_vision": true
     },
     "openai-gpt-54-pro": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_price_tiers": [
         {
           "input": 6e-05,
@@ -24795,7 +24795,7 @@
       "supports_vision": true
     },
     "openai-gpt-55": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_price_tiers": [
         {
           "cache_read": 1e-06,
@@ -24831,7 +24831,7 @@
       "supports_vision": true
     },
     "openai-gpt-55-pro": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_price_tiers": [
         {
           "input": 6e-05,
@@ -24864,7 +24864,7 @@
       "supports_vision": true
     },
     "openai-gpt-56-luna": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_price_tiers": [
         {
           "cache_read": 4e-08,
@@ -24902,7 +24902,7 @@
       "supports_vision": true
     },
     "openai-gpt-56-luna-pro": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_price_tiers": [
         {
           "cache_read": 4e-08,
@@ -24940,7 +24940,7 @@
       "supports_vision": true
     },
     "openai-gpt-56-sol": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_price_tiers": [
         {
           "cache_read": 8.000000000000001e-07,
@@ -24978,7 +24978,7 @@
       "supports_vision": true
     },
     "openai-gpt-56-sol-pro": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_price_tiers": [
         {
           "cache_read": 8.000000000000001e-07,
@@ -25016,7 +25016,7 @@
       "supports_vision": true
     },
     "openai-gpt-56-terra": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_price_tiers": [
         {
           "cache_read": 4.0000000000000003e-07,
@@ -25054,7 +25054,7 @@
       "supports_vision": true
     },
     "openai-gpt-56-terra-pro": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_price_tiers": [
         {
           "cache_read": 4.0000000000000003e-07,
@@ -25092,7 +25092,7 @@
       "supports_vision": true
     },
     "openai-gpt-6-astra": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_price_tiers": [
         {
           "cache_read": 2e-06,
@@ -25131,7 +25131,7 @@
       "supports_vision": true
     },
     "openai-gpt-6-astra-pro": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_price_tiers": [
         {
           "cache_read": 2e-06,
@@ -25170,7 +25170,7 @@
       "supports_vision": true
     },
     "openai-gpt-6-luna": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_price_tiers": [
         {
           "cache_read": 2e-08,
@@ -25209,7 +25209,7 @@
       "supports_vision": true
     },
     "openai-gpt-6-sol": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_price_tiers": [
         {
           "cache_read": 4.0000000000000003e-07,
@@ -25248,7 +25248,7 @@
       "supports_vision": true
     },
     "openai-gpt-61-sol": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_price_tiers": [
         {
           "cache_read": 2.0000000000000002e-07,
@@ -25287,7 +25287,7 @@
       "supports_vision": true
     },
     "openai-gpt-61-sol-ultrafast": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_price_tiers": [
         {
           "cache_read": 1.2e-06,
@@ -25326,7 +25326,7 @@
       "supports_vision": true
     },
     "openai-gpt-oss-120b": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 128000,
       "cost_per_input_token": 7e-08,
       "cost_per_output_token": 3e-07,
@@ -25350,7 +25350,7 @@
       "supports_vision": false
     },
     "qwen-3-6-plus": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_price_tiers": [
         {
           "cache_read": 6.25e-08,
@@ -25382,7 +25382,7 @@
       "supports_vision": true
     },
     "qwen-3-7-max": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 2.7e-07,
       "cost_per_cache_write_token": 3.35e-06,
@@ -25404,7 +25404,7 @@
       "supports_vision": true
     },
     "qwen-3-7-plus": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_price_tiers": [
         {
           "cache_read": 1.5e-07,
@@ -25436,7 +25436,7 @@
       "supports_vision": true
     },
     "qwen-3-8-2-4t-a95b": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 262144,
       "cost_per_cache_read_token": 3.125e-07,
       "cost_per_input_token": 2.5e-06,
@@ -25456,7 +25456,7 @@
       "supports_vision": false
     },
     "qwen-3-8-27b": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 262144,
       "cost_per_input_token": 4.5000000000000003e-07,
       "cost_per_output_token": 3.2000000000000003e-06,
@@ -25482,7 +25482,7 @@
       "supports_vision": true
     },
     "qwen-3-8-flash": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 1.4e-08,
       "cost_per_input_token": 1.4e-07,
@@ -25504,7 +25504,7 @@
       "supports_vision": true
     },
     "qwen-3-8-max": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 3.125e-07,
       "cost_per_cache_write_token": 3.125e-06,
@@ -25526,7 +25526,7 @@
       "supports_vision": true
     },
     "qwen3-235b-a22b-instruct-2507": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 128000,
       "cost_per_input_token": 1.5e-07,
       "cost_per_output_token": 7.5e-07,
@@ -25544,7 +25544,7 @@
       "supports_vision": false
     },
     "qwen3-235b-a22b-thinking-2507": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 128000,
       "cost_per_input_token": 4.5000000000000003e-07,
       "cost_per_output_token": 3.5e-06,
@@ -25568,7 +25568,7 @@
       "supports_vision": false
     },
     "qwen3-5-35b-a3b": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 256000,
       "cost_per_cache_read_token": 5.0000000000000004e-08,
       "cost_per_input_token": 1.5e-07,
@@ -25595,7 +25595,7 @@
       "supports_vision": true
     },
     "qwen3-5-397b-a17b": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 128000,
       "cost_per_input_token": 7.5e-07,
       "cost_per_output_token": 4.5e-06,
@@ -25621,7 +25621,7 @@
       "supports_vision": true
     },
     "qwen3-6-27b": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 256000,
       "cost_per_input_token": 3.25e-07,
       "cost_per_output_token": 3.25e-06,
@@ -25647,7 +25647,7 @@
       "supports_vision": true
     },
     "qwen3-6-35b-a3b": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 256000,
       "cost_per_input_token": 1.0000000000000001e-07,
       "cost_per_output_token": 1e-06,
@@ -25667,7 +25667,7 @@
       "supports_vision": true
     },
     "qwen3-coder-480b-a35b-instruct-turbo": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 256000,
       "cost_per_cache_read_token": 4e-08,
       "cost_per_input_token": 3.5e-07,
@@ -25686,7 +25686,7 @@
       "supports_vision": false
     },
     "qwen3-next-80b": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 256000,
       "cost_per_input_token": 3.5e-07,
       "cost_per_output_token": 1.8999999999999998e-06,
@@ -25704,7 +25704,7 @@
       "supports_vision": false
     },
     "qwen3-vl-235b-a22b": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 128000,
       "cost_per_cache_read_token": 1.0000000000000001e-07,
       "cost_per_input_token": 2.1e-07,
@@ -25724,7 +25724,7 @@
       "supports_vision": true
     },
     "seed-2-1-turbo": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 256000,
       "cost_per_cache_read_token": 1.25e-07,
       "cost_per_input_token": 6.25e-07,
@@ -25746,7 +25746,7 @@
       "supports_vision": true
     },
     "venice-uncensored-1-2": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 128000,
       "cost_per_input_token": 2.0000000000000002e-07,
       "cost_per_output_token": 9.000000000000001e-07,
@@ -25765,7 +25765,7 @@
       "supports_vision": true
     },
     "venice-uncensored-role-play": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 128000,
       "cost_per_input_token": 5e-07,
       "cost_per_output_token": 2e-06,
@@ -25784,7 +25784,7 @@
       "supports_vision": true
     },
     "xiaomi-mimo-v2-5": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 8e-08,
       "cost_per_input_token": 4.0000000000000003e-07,
@@ -25812,7 +25812,7 @@
       "supports_vision": true
     },
     "xiaomi-mimo-v2-6-flash": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 3.75e-09,
       "cost_per_input_token": 1.75e-07,
@@ -25840,7 +25840,7 @@
       "supports_vision": true
     },
     "z-ai-glm-5-3": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 3.25e-07,
       "cost_per_input_token": 1.75e-06,
@@ -25860,7 +25860,7 @@
       "supports_vision": false
     },
     "z-ai-glm-5-3-flash": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1048576,
       "cost_per_cache_read_token": 3e-08,
       "cost_per_input_token": 1.5e-07,
@@ -25882,7 +25882,7 @@
       "supports_vision": true
     },
     "z-ai-glm-5-turbo": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 200000,
       "cost_per_cache_read_token": 2.4e-07,
       "cost_per_input_token": 1.2e-06,
@@ -25907,7 +25907,7 @@
       "supports_vision": false
     },
     "z-ai-glm-5v-turbo": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 200000,
       "cost_per_cache_read_token": 3e-07,
       "cost_per_input_token": 1.5e-06,
@@ -25933,7 +25933,7 @@
       "supports_vision": true
     },
     "zai-org-glm-4.6": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 198000,
       "cost_per_cache_read_token": 8e-08,
       "cost_per_input_token": 4.3e-07,
@@ -25958,7 +25958,7 @@
       "supports_vision": false
     },
     "zai-org-glm-4.7": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 198000,
       "cost_per_cache_read_token": 1.1e-07,
       "cost_per_input_token": 5.5e-07,
@@ -25983,7 +25983,7 @@
       "supports_vision": false
     },
     "zai-org-glm-5": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 198000,
       "cost_per_cache_read_token": 2.0000000000000002e-07,
       "cost_per_input_token": 1e-06,
@@ -26008,7 +26008,7 @@
       "supports_vision": false
     },
     "zai-org-glm-5-1": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 200000,
       "cost_per_cache_read_token": 2.86e-07,
       "cost_per_input_token": 1.54e-06,
@@ -26033,7 +26033,7 @@
       "supports_vision": false
     },
     "zai-org-glm-5-2": {
-      "api": "openai-completions",
+      "api": "venice-ai-sdk-provider",
       "context_window": 1000000,
       "cost_per_cache_read_token": 2.6e-07,
       "cost_per_input_token": 1.4e-06,
@@ -26089,7 +26089,7 @@
   },
   "xai": {
     "grok-4.20-0309-non-reasoning": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/xai",
       "context_price_tiers": [
         {
           "cache_read": 4.0000000000000003e-07,
@@ -26118,7 +26118,7 @@
       "supports_vision": true
     },
     "grok-4.20-0309-reasoning": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/xai",
       "context_price_tiers": [
         {
           "cache_read": 4.0000000000000003e-07,
@@ -26148,7 +26148,7 @@
       "supports_vision": true
     },
     "grok-4.3": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/xai",
       "context_price_tiers": [
         {
           "cache_read": 4.0000000000000003e-07,
@@ -26184,7 +26184,7 @@
       "supports_vision": true
     },
     "grok-4.5": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/xai",
       "context_price_tiers": [
         {
           "cache_read": 6e-07,
@@ -26220,7 +26220,7 @@
       "supports_vision": true
     },
     "grok-4.6": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/xai",
       "context_price_tiers": [
         {
           "cache_read": 1e-06,
@@ -26256,7 +26256,7 @@
       "supports_vision": true
     },
     "grok-4.7": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/xai",
       "context_price_tiers": [
         {
           "cache_read": 1e-06,
@@ -26292,7 +26292,7 @@
       "supports_vision": true
     },
     "grok-build-0.1": {
-      "api": "openai-completions",
+      "api": "@ai-sdk/xai",
       "context_price_tiers": [
         {
           "cache_read": 4.0000000000000003e-07,

@@ -34,8 +34,6 @@ not establish source review.
 | `providers/native/_result_sanitize.py` | Pending full source review |
 | `providers/native/_wire_common.py` | Reviewed: usage counts, tool IDs, request headers, bounded queue/stream timeout/error cleanup, owned-resource initialization |
 | `providers/native/anthropic_native.py` | Pending full source review |
-| `providers/native/api_routes.json` | Reviewed with parser/consumer and packaged-table tests; source/provenance retained in JSON |
-| `providers/native/api_routes.py` | Reviewed: validated provider/matcher pins, first-match routing and prefix stripping; unused runtime source field removed |
 | `providers/native/auth.py` | Pending full source review |
 | `providers/native/claude_tokenizer/__init__.py` | Pending full source review |
 | `providers/native/claude_tokenizer/constants.py` | Pending full source review |
@@ -323,3 +321,22 @@ Generator fixture verifies original tier conversion and reproducible serializati
 Validation: 130 generator/provider/usage/stream tests passed (32.50s). Ruff,
 formatting and source type checks passed. The daily snapshot workflow now also
 validates generation of upstream context tiers via the same generator fixture.
+
+## Upstream protocol metadata
+
+Removed hand-authored `api_routes.json` and its loader/matcher module. Generator
+uses official per-model provider.npm override, then provider npm/default wire;
+there is no per-model-name rule table. Routed providers consume the generated
+metadata and refuse an unimplemented wire. Removed unused prefix-strip machinery
+(no shipped row enabled it); explicit model_map aliases remain the naming contract.
+Regenerated the snapshot, where official protocol data differs from old OMP pins.
+Generator tests cover override precedence and Responses protocol identity without
+pretending that the Responses adapter is implemented. Protocol adapter host/URL
+normalization and thinking parameters still need review.
+
+Removed the unconsumed wire_source table/domain flag and its unreachable provider
+override branch, plus the redundant model alias forwarding helper. The remaining
+WireRouting method resolves only protocols; model identity is not rewritten there.
+Validation: 130 provider tests passed (33.20s); 30 focused generator/data/lifecycle
+tests passed after flag cleanup. Unsupported upstream protocols have an explicit
+regression that forbids guessing the chat wire. Static checks passed.

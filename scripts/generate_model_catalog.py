@@ -21,7 +21,6 @@ from typing import Final
 
 import httpx
 
-from voidcode.capabilities.providers.native.api_routes import api_route_for
 from voidcode.capabilities.providers.native.provider_table import PROVIDER_TABLE, PROVIDER_TABLE_BY_ID
 from voidcode.capabilities.providers.native.reasoning_effort import CANONICAL_EFFORTS
 
@@ -75,30 +74,22 @@ def _reasoning_effort_fields(raw: dict[str, object]) -> dict[str, object]:
     return fields
 
 
-#: Upstream ``provider.npm`` package -> the wire that SDK speaks. OMP consults
-#: this for the OpenCode gateways only (``openai-compat.ts:6592-6605``), and it is
-#: the only upstream signal for the wires a route pin does not cover.
+#: Map upstream SDK protocol identifiers to our implemented wire vocabulary.
 _NPM_API_HINTS: Final[Mapping[str, str]] = {
     "@ai-sdk/openai": "openai-responses",
+    "@ai-sdk/openai-compatible": "openai-completions",
     "@ai-sdk/anthropic": "anthropic-messages",
     "@ai-sdk/google": "google-generative-ai",
 }
 
 
-def _model_api(provider_id: str, model_id: str, raw: dict[str, object]) -> str:
-    """The wire one model speaks: route pin, then npm hint, then the provider's own wire.
-
-    Same precedence as OMP's ``createOpenCodeApiResolution`` -- the per-id route
-    pins win over upstream metadata, which wins over the provider default. The
-    runtime consumes the emitted value verbatim and never recomputes it.
-    """
-    pinned = api_route_for(provider_id, model_id)
-    if pinned is not None:
-        return pinned.api
-    provider = raw.get("provider")
-    npm = provider.get("npm") if isinstance(provider, dict) else None
-    if isinstance(npm, str) and npm in _NPM_API_HINTS:
-        return _NPM_API_HINTS[npm]
+def _model_api(provider_id: str, provider: dict[str, object], model: dict[str, object]) -> str:
+    """Use the model's upstream protocol override, then the provider's protocol."""
+    override = model.get("provider")
+    npm = override.get("npm") if isinstance(override, dict) else None
+    npm = npm or provider.get("npm")
+    if isinstance(npm, str) and npm:
+        return _NPM_API_HINTS.get(npm, npm)
     return PROVIDER_TABLE_BY_ID[provider_id].wire
 
 
@@ -191,7 +182,7 @@ def _provider_catalog_entries(
             if raw.get("status") == "deprecated":
                 continue
             model_key = model_id.strip().lower()
-            entry = _model_entry(raw, _model_api(provider_id, model_key, raw))
+            entry = _model_entry(raw, _model_api(provider_id, source, raw))
             if entry is None:
                 continue
             provider_models[model_key] = entry

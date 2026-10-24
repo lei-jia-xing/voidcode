@@ -149,3 +149,19 @@ def test_gateway_defaults_preserve_organization_and_project():
         assert client.project == "project"
     finally:
         provider.close()
+
+
+def test_unimplemented_upstream_protocol_does_not_fall_back_to_chat(monkeypatch):
+    from voidcode.capabilities.providers.native import model_routing
+    from voidcode.capabilities.providers.native.model_routing import ModelRoute
+    from voidcode.sdk.provider import ProviderExecutionError, ProviderTurnRequest
+
+    monkeypatch.setattr(model_routing, "static_catalog_metadata", lambda *_: SimpleNamespace(api="openai-responses"))
+
+    def build(*_):
+        raise AssertionError("unsupported wire must fail before client construction")
+
+    provider = RoutedTurnProvider("gateway", WireRouting("gateway", {"chat": ModelRoute("openai-chat-completions")}, "chat"), build)
+    with pytest.raises(ProviderExecutionError) as caught:
+        provider.propose_turn(ProviderTurnRequest(messages=(), model_name="new-model"))
+    assert caught.value.kind == "unsupported_feature"

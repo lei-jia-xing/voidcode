@@ -37,3 +37,16 @@ def test_official_snapshot_adds_new_models_and_preserves_unknowns(tmp_path):
     first = output.read_bytes()
     generator.main(["--source", str(source), "--output", str(output)])
     assert output.read_bytes() == first
+
+
+def test_upstream_model_protocol_overrides_provider_without_name_rules():
+    provider = {"npm": "@ai-sdk/openai-compatible"}
+    model = {"provider": {"npm": "@ai-sdk/anthropic"}}
+    assert generator._model_api("opencode-go", provider, model) == "anthropic-messages"
+    assert generator._model_api("opencode-go", provider, {}) == "openai-completions"
+    model["provider"]["npm"] = "@ai-sdk/openai"
+    assert generator._model_api("opencode-go", provider, model) == "openai-responses"
+
+
+def test_unknown_upstream_protocol_is_preserved_instead_of_guessed():
+    assert generator._model_api("opencode-go", {"npm": "@vendor/new-protocol"}, {}) == "@vendor/new-protocol"

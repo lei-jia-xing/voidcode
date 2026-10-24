@@ -1,8 +1,7 @@
 """The one model matcher: how a data row selects the models it applies to.
 
 Mirrors OMP's ``matchesList`` (``packages/catalog/src/compat/behavior.ts:15-26``)
-so every data table in this package -- ``api_routes.json`` and
-``thinking_rules.json`` -- selects models by the same rules: ``exact``/``prefix``/
+so the thinking-rule table selects models by these rules: ``exact``/``prefix``/
 ``substring`` compare the raw id, ``token``/``glob`` compare the lowercased id,
 and a row may carry several values of one kind.
 """

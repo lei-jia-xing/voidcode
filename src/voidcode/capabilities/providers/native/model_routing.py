@@ -13,10 +13,8 @@ from voidcode.sdk.provider import (
     StreamableTurnProvider,
 )
 
-from .api_routes import api_route_for
 from .config import RoutedWire
 from .model_catalog import static_catalog_metadata
-from .provider_table import WireSource
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,37 +43,20 @@ class WireRouting:
     Routing is a property of the model, not of the provider name: mixed-wire
     gateways (OpenCode Zen/Go) speak several wires behind one host. The wire comes
     from the model's catalog row (``api``, emitted by the generator and consumed
-    verbatim), else an ``api_routes`` pin, else the provider's own wire --
+    verbatim), else the provider's own wire --
     ``default_api``. ``api_to_route`` is the gateway's own wire vocabulary: an
     upstream wire it does not serve is absent, so such a model fails typed rather
     than being guessed at.
 
-    ``wire_source`` comes from the provider table. ``provider`` means the catalog
-    row's ``api`` is upstream truth this build does not serve yet, so every model
-    dispatches ``default_api``; ``model`` means the row decides.
     """
 
     provider: str
     api_to_route: Mapping[str, ModelRoute]
     default_api: str
-    wire_source: WireSource = "model"
 
-    def resolve(self, model: str, api: str | None) -> tuple[str, ModelRoute | None]:
-        """The routed model id and its route (``None`` == unimplemented wire)."""
-        if self.wire_source == "provider":
-            return model, self.api_to_route.get(self.default_api)
-        if api:
-            return model, self.api_to_route.get(api)
-        pinned = api_route_for(self.provider, model)
-        if pinned is not None:
-            return pinned.request_model_id or model, self.api_to_route.get(pinned.api)
-        return model, self.api_to_route.get(self.default_api)
-
-
-def _routed_model(model_map: Mapping[str, str], model_name: str) -> str:
-    """Resolve one provider ``model_map`` alias exactly as the wire adapters do."""
-    mapped = model_map.get(model_name)
-    return mapped if mapped else model_name
+    def resolve(self, api: str | None) -> ModelRoute | None:
+        """Resolve a declared upstream protocol, using the provider default when absent."""
+        return self.api_to_route.get(api or self.default_api)
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,9 +83,10 @@ class RoutedTurnProvider:
 
     def route_for(self, request: ProviderTurnRequest) -> tuple[str, ModelRoute | None]:
         """Return the routed model name and its route (``None`` == unimplemented wire)."""
-        model = _routed_model(self.model_map, request.model_name or "")
+        requested = request.model_name or ""
+        model = self.model_map.get(requested) or requested
         metadata = static_catalog_metadata(self.routing.provider, model)
-        return self.routing.resolve(model, None if metadata is None else metadata.api)
+        return model, self.routing.resolve(None if metadata is None else metadata.api)
 
     def _dispatch(self, request: ProviderTurnRequest) -> tuple[StreamableTurnProvider, ProviderTurnRequest]:
         model, route = self.route_for(request)

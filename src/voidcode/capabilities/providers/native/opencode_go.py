@@ -55,7 +55,7 @@ _OPENCODE_EXTRA_REQUEST_HEADERS: dict[str, str] = {
 # succeeds.
 
 # The wires the Go gateway serves. Each model's wire comes from its catalog row
-# (generated from OMP's route pins and upstream npm hints); this map is only the
+# (generated from upstream protocol metadata); this map is only the
 # gateway's own wire vocabulary, so a wire it does not serve -- the OpenAI
 # Responses API, which VoidCode does not implement -- is absent and fails typed
 # instead of being sent to an endpoint that does not serve the model.
