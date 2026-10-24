@@ -51,14 +51,6 @@ _ZEN_API_TO_ROUTE: Mapping[str, ModelRoute] = {
     "anthropic-messages": ModelRoute(wire="anthropic-messages", base_url=_ZEN_ANTHROPIC_BASE_URL),
 }
 
-# 2026-09-16: the three Zen wires (chat-completions, Anthropic Messages, Google
-# generative-ai) are verified only against mocked HTTP transports: the current Zen
-# account returns HTTP 401 ``CreditsError: Insufficient request balance`` for any
-# Zen request. The per-conversation headers were accepted, so the failure is
-# account balance, not ``MissingSessionID``. Re-check with a funded key: route one
-# turn per wire for a Zen model through ``turn_provider()`` (``glm-5.1`` chat,
-# ``claude-opus-5`` Anthropic, ``gemini-3-flash`` Google) and expect HTTP 200 with
-# ``x-opencode-session`` present.
 _ZEN_WIRE_ROUTING = WireRouting(
     provider="opencode-zen",
     api_to_route=_ZEN_API_TO_ROUTE,
@@ -102,6 +94,7 @@ class OpenCodeZenModelProvider:
                 config=GoogleProviderConfig(
                     auth=GoogleProviderAuthConfig(method="api_key", api_key=endpoint.api_key),
                     base_url=route.base_url or endpoint.base_url,
+                    timeout_seconds=endpoint.timeout_seconds,
                 ),
                 extra_request_headers=_OPENCODE_EXTRA_REQUEST_HEADERS,
             )

@@ -17,8 +17,7 @@ Human label
 
 Model ids are deliberately NOT canonicalised: the ``<model>`` half of a
 ``provider/model`` reference is sent to the vendor verbatim, including its case.
-Catalog metadata, reasoning-effort capability tables and fallback-chain
-comparison match model ids case-insensitively, and ``model_map`` is the mechanism
+Catalog metadata and reasoning-effort capability lookups match model ids case-insensitively, and ``model_map`` is the mechanism
 for vendor casings and aliases.
 
 ``PROVIDER_LABELS`` is the one authoritative table of built-in provider ids: the
@@ -64,16 +63,6 @@ def split_provider_model_reference(raw_model: str) -> tuple[str, str]:
     return provider_name, model_name
 
 
-def canonical_model_reference(raw_model: str) -> str:
-    """``provider/model`` with the provider segment canonicalised.
-
-    Used where a model reference is written back to configuration, so the stored
-    form always carries the canonical provider id.
-    """
-    provider_name, model_name = split_provider_model_reference(raw_model)
-    return f"{provider_name}/{model_name}"
-
-
 def unknown_provider_id_message(provider_name: str) -> str:
     """Loud, actionable message for a provider id nothing declares."""
     canonical = canonical_provider_id(provider_name)
@@ -99,7 +88,6 @@ __all__ = [
     "BUILTIN_PROVIDER_IDS",
     "PROVIDER_LABELS",
     "UnknownProviderIdError",
-    "canonical_model_reference",
     "canonical_provider_id",
     "provider_label",
     "split_provider_model_reference",

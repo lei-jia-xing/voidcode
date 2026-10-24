@@ -46,11 +46,11 @@ not establish source review.
 | `providers/native/model_catalog.py` | Reviewed static catalog fields/lookups and consumers; removed entire unreferenced remote discovery implementation |
 | `providers/native/model_catalog_data.json` | Pending consumer/data-contract review |
 | `providers/native/model_routing.py` | Reviewed: routed alias/catalog fallback, typed unsupported wires, serialized cache creation and teardown |
-| `providers/native/naming.py` | Pending full source review |
+| `providers/native/naming.py` | Reviewed source/callers: provider normalization, preserved model casing, table-derived labels/reservations and unknown-id diagnostics; removed dead canonical-reference wrapper |
 | `providers/native/openai_native.py` | Pending full source review |
 | `providers/native/opencode.py` | Pending full source review |
 | `providers/native/opencode_go.py` | Pending full source review |
-| `providers/native/openrouter.py` | Pending full source review |
+| `providers/native/openrouter.py` | Reviewed: small direct adapter using vendor endpoint normalization and native OpenAI transport |
 | `providers/native/provider_config.py` | Reviewed: table-owned wire defaults, endpoint/gateway defaults and Copilot token resolution; removed dead projections |
 | `providers/native/provider_table.json` | Reviewed with parser/consumer and packaged-table tests; source/provenance retained in JSON |
 | `providers/native/provider_table.py` | Reviewed: typed rows, duplicate/unknown IDs and config/catalog consumers; removed unused notes and forwarding helper |
@@ -680,3 +680,27 @@ Validation: 101 format/files/artifact/coverage tests and 7 read-loopback/core-bu
 tests passed. Ruff/source type checks passed; CodeGraph synchronized. Updated the
 inventory to reflect completed source sections and explicit remaining work rather
 than stale pre-refactor statuses. Full capability audit/full-suite gate remain open.
+
+## Provider gateway and naming cleanup
+
+Reviewed naming source/callers and removed canonical_model_reference, which had
+no consumer. Provider ids still normalize while model-id casing is preserved;
+unknown-provider diagnostics and custom reservations retain active callers.
+Reviewed OpenRouter adapter: it is a small direct native adapter with vendor-owned
+host defaults and no duplicate runtime branch.
+
+OpenCode Go's provider_config always returns an endpoint, so removed nullable
+annotation, impossible endpoint=None constructions, credential/timeout ternaries
+and empty-model-map fallback. Removed dated manual account/debug transcripts and
+model lists from Go/Zen source rather than treating stale comments as protocol
+contracts. Fixed Zen Google route failing to forward timeout_seconds; added a
+regression without instantiating an SDK client. Gateway route hosts/configured URL
+precedence and Go model-specific tool feedback still need protocol review.
+
+Trace is actively used by OpenAI/Anthropic; it is not dead code. Review found its
+recursive field clipping is not a total-record budget and trace-write failures can
+surface through successful requests. Its semantics/cleanup review remains pending.
+
+Validation: 118 provider auth/catalog/dispatch/reasoning/stream/lifecycle/error tests
+passed (32.70s), including the timeout regression. Ruff/source type checks passed;
+CodeGraph synchronized. Complete capability audit and full-suite gate remain open.

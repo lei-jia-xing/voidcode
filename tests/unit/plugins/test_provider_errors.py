@@ -144,3 +144,14 @@ def test_invalid_provider_config_traceback_omits_credential_input():
     with pytest.raises(ValueError) as caught:
         parse_provider_configs_payload({"openai": {"api_key": {"unexpected": secret}}}, source="test", env={})
     assert secret not in "".join(traceback.format_exception(caught.value))
+
+
+def test_zen_google_route_preserves_configured_timeout():
+    from voidcode.capabilities.providers.native.config import ProviderEndpointConfig
+    from voidcode.capabilities.providers.native.model_routing import ModelRoute
+    from voidcode.capabilities.providers.native.opencode import OpenCodeZenModelProvider
+
+    gateway = OpenCodeZenModelProvider(config=ProviderEndpointConfig(api_key="gateway-key", timeout_seconds=17))
+    provider = gateway._wire("model", ModelRoute(wire="google-generative-ai"))
+    assert provider.config.timeout_seconds == 17
+    assert provider.config.auth.api_key == "gateway-key"
