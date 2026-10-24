@@ -23,7 +23,7 @@ not establish source review.
 | `files/errors.py` | Reviewed: retain only classified diagnostic exception and raising helper |
 | `files/gitignore.py` | Reviewed: root-only pathspec matching; removed unused pattern snapshot/property; syntax/order/escape tests |
 | `files/glob_tool.py` | Partial: strict search ingress and error-visible traversal reviewed; output bounds pending |
-| `files/grep_tool.py` | Partial: strict search ingress/default path reviewed; traversal completeness pending |
+| `files/grep_tool.py` | Partial: strict ingress, error-visible traversal, immutable context pairs and bounded context count reviewed; line/result byte bounds and cancellation pending |
 | `files/read_formats.py` | Partial: notebook pagination/global output budget, SQLite encoded budget/read-only queries, PDF process cleanup/preview cap reviewed; snapshot, image and remaining pagination semantics pending |
 | `files/read_tool.py` | Pending full source review |
 | `files/write_tool.py` | Reviewed: hash/containment/symlink/atomic replace/cancellation; fail visibly on mode errors and always clean temporary files |
@@ -1103,3 +1103,19 @@ existing assertions only; no tests added.
 
 Validation: 40 existing shell, process lease and SDK codec/contract tests passed
 (17.32s); Ruff, formatting, source type checking and CodeGraph sync passed.
+
+
+## Grep context representation and ingress bound
+
+Context lines now retain immutable `(line_number, text)` pairs from the reader
+through matching and preview rendering. Only `as_payload` builds JSON objects.
+Removed generic JSON freezing/thawing and rendering-time type checks for internally
+produced lines. Replaced a nonlocal line counter with `enumerate`.
+
+Bound `context` to 100 in both ingress validation and the published tool schema;
+previously an arbitrary count could pre-read the whole file before returning its
+first match (or overflow `islice`). This does not bound a single line or total
+result bytes; those and cooperative cancellation remain audit work.
+
+Validation: 100 existing file/search tests passed (0.71s); no tests added or changed.
+Ruff, formatting, source type checking and CodeGraph sync passed.

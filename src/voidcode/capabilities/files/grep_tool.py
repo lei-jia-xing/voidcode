@@ -3,7 +3,7 @@ from __future__ import annotations
 import fnmatch
 import re
 from collections import deque
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
@@ -12,7 +12,7 @@ from typing import ClassVar
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.json_values import json_wire_object, own_json_object
+from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import OutputBounds, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess
 
@@ -41,7 +41,7 @@ class GrepArgs(BaseModel):
     path: str = "."
     regex: bool = False
     ignore_case: bool = False
-    context: int = Field(default=0, ge=0)
+    context: int = Field(default=0, ge=0, le=100)
     include: list[str] | None = None
     exclude: list[str] | None = None
     respect_gitignore: bool = False
@@ -70,12 +70,8 @@ class GrepResultMatch:
     line: int
     text: str
     columns: tuple[int, ...]
-    before: tuple[Mapping[str, object], ...]
-    after: tuple[Mapping[str, object], ...]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "before", tuple(own_json_object(item) for item in self.before))
-        object.__setattr__(self, "after", tuple(own_json_object(item) for item in self.after))
+    before: tuple[tuple[int, str], ...]
+    after: tuple[tuple[int, str], ...]
 
     def as_payload(self) -> dict[str, object]:
         return {
@@ -83,8 +79,8 @@ class GrepResultMatch:
             "line": self.line,
             "text": self.text,
             "columns": list(self.columns),
-            "before": [json_wire_object(item) for item in self.before],
-            "after": [json_wire_object(item) for item in self.after],
+            "before": [{"line": number, "text": text} for number, text in self.before],
+            "after": [{"line": number, "text": text} for number, text in self.after],
         }
 
 
@@ -127,7 +123,7 @@ class GrepTool:
                 "path": {"type": "string", "description": "File or directory to search, relative to the workspace; defaults to workspace root."},
                 "regex": {"type": "boolean", "description": "Treat pattern as a regular expression; defaults to false."},
                 "ignore_case": {"type": "boolean", "description": "Match case-insensitively; defaults to false."},
-                "context": {"type": "integer", "minimum": 0, "description": "Number of surrounding lines to include for each match."},
+                "context": {"type": "integer", "minimum": 0, "maximum": 100, "description": "Number of surrounding lines per match (max 100)."},
                 "include": {"type": "array", "items": {"type": "string"}, "description": "Optional glob filters for files to include."},
                 "exclude": {"type": "array", "items": {"type": "string"}, "description": "Optional glob filters for files to exclude."},
                 "respect_gitignore": {
@@ -203,13 +199,10 @@ class GrepTool:
         context: int,
     ) -> Iterator[GrepResultMatch]:
         before: deque[tuple[int, str]] = deque(maxlen=context)
-        line_number = 0
 
         def lines() -> Iterator[tuple[int, str]]:
-            nonlocal line_number
             with path.open("r", encoding="utf-8", newline="") as stream:
-                for raw_line in stream:
-                    line_number += 1
+                for line_number, raw_line in enumerate(stream, 1):
                     yield line_number, raw_line.rstrip("\r\n")
 
         try:
@@ -224,8 +217,8 @@ class GrepTool:
                         current[0],
                         current[1],
                         columns,
-                        tuple({"line": number, "text": text} for number, text in before),
-                        tuple({"line": number, "text": text} for number, text in following),
+                        tuple(before),
+                        tuple(following),
                     )
                 before.append(current)
                 try:
@@ -306,11 +299,7 @@ class GrepTool:
         path_display = str(candidate.resolve()) if is_external else relative_path
         preview_lines: dict[tuple[str, int], tuple[str, tuple[int, ...]]] = {}
         for match in matches:
-            for line in (*match.before, {"line": match.line, "text": match.text}, *match.after):
-                line_number = line["line"]
-                line_text = line["text"]
-                if not isinstance(line_number, int) or not isinstance(line_text, str):
-                    continue
+            for line_number, line_text in (*match.before, (match.line, match.text), *match.after):
                 columns = match.columns if line_number == match.line else ()
                 key = (match.file, line_number)
                 if key not in preview_lines or columns:
