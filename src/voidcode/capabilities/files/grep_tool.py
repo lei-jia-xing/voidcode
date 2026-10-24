@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import json
 import re
 from collections import deque
 from collections.abc import Iterator
@@ -13,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
+from voidcode.sdk.limits import TOOL_OUTPUT_BYTES
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import ConfirmedStop, OutputBounds, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult, ToolSuccess
 
@@ -20,6 +22,7 @@ from .errors import raise_tool_diagnostic
 from .gitignore import GitIgnoreMatcher
 
 MAX_MATCHES = 200
+_MAX_LINE_CHARS = 64 * 1024
 #: Upper bound for an explicit ``limit`` so one call cannot materialize an
 #: unbounded match list.
 MAX_RESULT_LIMIT = 5000
@@ -212,9 +215,19 @@ class GrepTool:
             if invocation.abort_signal is not None and invocation.abort_signal.cancelled:
                 return
             with path.open("r", encoding="utf-8", newline="") as stream:
-                for line_number, raw_line in enumerate(stream, 1):
+                for line_number, raw_line in enumerate(iter(lambda: stream.readline(_MAX_LINE_CHARS + 1), ""), 1):
                     if invocation.abort_signal is not None and invocation.abort_signal.cancelled:
                         return
+                    if len(raw_line) > _MAX_LINE_CHARS:
+                        raise_tool_diagnostic(
+                            message=(
+                                f"grep line {line_number} in {relative_path} exceeds {_MAX_LINE_CHARS} characters; "
+                                "use a bounded file read to inspect it."
+                            ),
+                            error_kind="tool_execution_error",
+                            reason="line_too_long",
+                            details={"path": relative_path, "line": line_number},
+                        )
                     yield line_number, raw_line.rstrip("\r\n")
 
         try:
@@ -291,15 +304,18 @@ class GrepTool:
         )
 
         matches: list[GrepResultMatch] = []
+        result_bytes = 2  # JSON list brackets.
         truncated = False
         try:
             for target in targets:
                 file_display = str(target.resolve()) if is_external else target.relative_to(workspace_root).as_posix()
                 for match in self._iter_matches(target, relative_path=file_display, pattern=pattern, context=args.context, invocation=context):
-                    if len(matches) == args.limit:
+                    match_bytes = len(json.dumps(match.as_payload(), ensure_ascii=False).encode("utf-8")) + (2 if matches else 0)
+                    if len(matches) == args.limit or result_bytes + match_bytes > TOOL_OUTPUT_BYTES:
                         truncated = True
                         break
                     matches.append(match)
+                    result_bytes += match_bytes
                 if truncated:
                     break
         except OSError as exc:
@@ -332,7 +348,7 @@ class GrepTool:
         if rendered_lines:
             summary += "\n" + "\n".join(rendered_lines)
         if truncated:
-            summary += f"\n[TRUNCATED] Results truncated at {args.limit} matching lines."
+            summary += "\n[TRUNCATED] Narrow the search path or pattern, or reduce context, to see more results."
 
         body = GrepResultBody(
             path=path_display,

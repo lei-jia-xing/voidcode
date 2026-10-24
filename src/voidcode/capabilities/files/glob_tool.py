@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
@@ -7,6 +8,7 @@ from typing import ClassVar
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 from voidcode.sdk.invocation import ToolContext
+from voidcode.sdk.limits import TOOL_OUTPUT_BYTES
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import ConfirmedStop, OutputBounds, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult, ToolSuccess
 
@@ -126,6 +128,7 @@ class GlobTool:
         limit: int = LIMIT,
     ) -> tuple[list[Path], bool, str | None]:
         matched: list[Path] = []
+        result_bytes = 2  # JSON list brackets.
 
         def fail_walk(error: OSError) -> None:
             raise error
@@ -153,9 +156,13 @@ class GlobTool:
                         continue
                     if not match.is_file():
                         continue
-                    if len(matched) == limit:
+                    # Bound both workspace-relative paths and resolved external symlinks.
+                    match_bytes = max(len(json.dumps(str(path), ensure_ascii=False).encode("utf-8")) for path in (match, match.resolve()))
+                    match_bytes += 2 if matched else 0
+                    if len(matched) == limit or result_bytes + match_bytes > TOOL_OUTPUT_BYTES:
                         return matched, True, None
                     matched.append(match)
+                    result_bytes += match_bytes
         except OSError as exc:
             return matched, False, str(exc)
         return matched, False, None
@@ -212,7 +219,7 @@ class GlobTool:
 
         output = "\n".join(relative_matches) or "No files found."
         if truncated:
-            output += f"\n[TRUNCATED] Showing first {limit} files."
+            output += "\n[TRUNCATED] Narrow the search path or pattern to see more files."
 
         body = GlobResultBody(
             pattern=pattern_value,

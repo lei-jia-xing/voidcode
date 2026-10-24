@@ -22,8 +22,8 @@ not establish source review.
 | `files/edit_tool.py` | Partial: unified exact-edit flow, checked replacement and result semantics reviewed; final ingress, diagnostic bounds and cancellation review pending |
 | `files/errors.py` | Reviewed: retain only classified diagnostic exception and raising helper |
 | `files/gitignore.py` | Reviewed: root-only pathspec matching; removed unused pattern snapshot/property; syntax/order/escape tests |
-| `files/glob_tool.py` | Partial: strict ingress, error-visible traversal and cooperative cancellation reviewed; output byte bounds pending |
-| `files/grep_tool.py` | Partial: strict ingress, error-visible traversal, immutable context pairs and bounded context count reviewed; cooperative cancellation reviewed; line/result byte bounds pending |
+| `files/glob_tool.py` | Reviewed: strict ingress, root-relative patterns, traversal/ignore rules, bounded path collection, ordering/error results and cooperative cancellation |
+| `files/grep_tool.py` | Reviewed: strict ingress, literal/regex matching and filters, bounded line/context/result collection, immutable rendering, error handling and cooperative cancellation |
 | `files/read_formats.py` | Partial: notebook pagination/global output budget, SQLite encoded budget/read-only queries, PDF process cleanup/preview cap reviewed; snapshot, image and remaining pagination semantics pending |
 | `files/read_tool.py` | Pending full source review |
 | `files/write_tool.py` | Reviewed: hash/containment/symlink/atomic replace/cancellation; fail visibly on mode errors and always clean temporary files |
@@ -1138,3 +1138,28 @@ bounds and long-line costs remain pending.
 Validation: 100 existing search/file tests passed (0.80s), plus a manual invocation
 of both tools with an already-cancelled signal confirmed error/partial/stopped
 results. Ruff, formatting, source type checking and CodeGraph sync passed.
+
+
+## Search result and line bounds
+
+Reused SDK `TOOL_OUTPUT_BYTES` as the collection budget for serialized result lists,
+separate from the core's final model projection. Grep measures complete match
+records, including UTF-8 text, columns and repeated context, before retaining them.
+Glob conservatively charges absolute/resolved path spellings, which also bound
+its shorter workspace-relative results. Both stop on either count or byte budget
+and advise narrowing the search instead of attributing all truncation to count.
+The budget covers the matches list, not the envelope or repeated human preview.
+
+Grep reads at most 64 Ki characters plus one per physical line. Oversized lines
+fail visibly with `line_too_long` instead of searching a prefix, fabricating line
+numbers, or silently omitting matches. Together with the existing context-count
+bound this bounds buffered input and occurrence lists. This is not a regex time
+limit: an individual regex evaluation or OS read remains nonpreemptible.
+
+Source review covered traversal ordering, explicit/external paths, ignore/filter
+behavior, UTF-8/binary handling, lookahead, context rendering, count/byte limits,
+errors and cancellation; glob/grep are now marked reviewed with these limits.
+Validation: existing 100 file/search tests passed; manual UTF-8 and long-path
+probes retained match lists of 49,575 and 47,237 bytes with truncation, and a long
+line returned `line_too_long`. No tests added. Ruff, formatting, source type check
+and CodeGraph sync passed.
