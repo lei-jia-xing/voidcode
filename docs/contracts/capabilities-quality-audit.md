@@ -19,7 +19,7 @@ not establish source review.
 | `files/_replace.py` | Reviewed: checked replacement and exclusive atomic creation; cleanup, permissions and race regressions; documented metadata/compare-window limits |
 | `files/apply_patch.py` | Partial: stdin unified diffs, canonical sequential marker preflight and checked commits reviewed; parser, partial-result and cancellation review pending |
 | `files/apply_workspace_edit.py` | Partial: strict generated schema, frozen-argument conversion, checked replacement, commit projections, LSP coordinates, query-failure flow, cooperative cancellation and structured partial commits reviewed; final ingress/bounds reconciliation pending |
-| `files/edit_tool.py` | Partial: unified exact-edit flow, checked replacement and result semantics reviewed; final ingress, diagnostic bounds and cancellation review pending |
+| `files/edit_tool.py` | Partial: strict generated ingress, exact replacement, checked commit, diagnostic bounds and cancellation reviewed; diff formatting/bounds and patch delegation review pending |
 | `files/errors.py` | Reviewed: retain only classified diagnostic exception and raising helper |
 | `files/gitignore.py` | Reviewed: root-only pathspec matching; removed unused pattern snapshot/property; syntax/order/escape tests |
 | `files/glob_tool.py` | Reviewed: strict ingress, root-relative patterns, traversal/ignore rules, bounded path collection, ordering/error results and cooperative cancellation |
@@ -1209,3 +1209,30 @@ Manual two-file write-failure and cancellation probes both left first=new,
 second=old, returned only the first file and preserved its change through codec
 roundtrip. Existing failure assertions were adjusted; no tests added. Ruff,
 formatting, source type checking and CodeGraph sync passed.
+
+
+## Edit ingress and diagnostic simplification
+
+Replaced the handwritten edit argument schema, mode-count switch and manual
+replacement parsing with strict Pydantic single/batch/patch models and one union
+adapter. The same models generate the published object schema, forbid unknown
+fields (including batch items), preserve strict booleans and validate once before
+filesystem reads. Frozen SDK arguments are converted once at ingress. Missing
+hashes use standard validation; stale content keeps its typed diagnostic.
+
+Removed the unused result diagnostics collection and the ambiguous-match location
+hint subsystem: it allocated repeated copies of the same old-string reference,
+then scanned every occurrence to return previews already supplied by the caller.
+Ambiguity still reports the observed count and asks for replaceAll or a longer
+unique string. Removed redundant no-op/input-echo diagnostic fields.
+
+Cancellation checks run between prepared replacements and immediately before the
+single checked commit. Final hash/diff generation now precedes writing so result
+preparation cannot fail after a successful commit. Single-file batches remain
+all-preflight/one-write; multi-file marker/unified patch review remains separate.
+No tests added or modified. Diff formatting/output bounds still need review.
+
+Validation: 84 existing file/core-builtins/core-vertical/optional-query tests
+passed (115.56s), including restart, governance and argument rejection paths.
+Ruff, formatting, source type checking and CodeGraph synchronization passed.
+Implementation net change: 96 lines removed.

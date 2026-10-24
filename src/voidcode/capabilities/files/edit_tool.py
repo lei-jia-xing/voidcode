@@ -3,15 +3,27 @@ from __future__ import annotations
 import difflib
 import hashlib
 import re
-from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.json_values import json_wire_object, own_json_object
+from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.services import PluginServices
-from voidcode.sdk.tools import ResourceChange, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSemantic, ToolSuccess
+from voidcode.sdk.tools import (
+    ConfirmedStop,
+    ResourceChange,
+    TextOutput,
+    ToolCall,
+    ToolDefinition,
+    ToolEffect,
+    ToolFailure,
+    ToolResult,
+    ToolSemantic,
+    ToolSuccess,
+)
 
 from ._replace import replace_file
 from .apply_patch import execute_patch
@@ -25,13 +37,9 @@ class EditResultBody:
     deletions: int
     match_count: int
     diff: str
-    diagnostics: tuple[Mapping[str, object], ...] = ()
     applied: int | None = None
     edits: tuple[tuple[int, EditResultBody], ...] | None = None
     content_hash: str | None = None
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "diagnostics", tuple(own_json_object(item) for item in self.diagnostics))
 
     def as_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -47,8 +55,6 @@ class EditResultBody:
             payload["edits"] = [{"index": idx, "result": res.as_payload()} for idx, res in self.edits]
         if self.content_hash is not None:
             payload["content_hash"] = self.content_hash
-        if self.diagnostics:
-            payload["diagnostics"] = [json_wire_object(item) for item in self.diagnostics]
         return payload
 
 
@@ -65,32 +71,6 @@ def _detect_line_ending(text: str) -> str:
 def _convert_line_endings(text: str, ending: str) -> str:
     normalized = _normalize_line_endings(text)
     return normalized if ending == "\n" else normalized.replace("\n", "\r\n")
-
-
-def _match_locations(content: str, matches: list[str]) -> list[dict[str, object]]:
-    """Map each distinct match to 1-based line numbers and a short preview."""
-    locations: list[dict[str, object]] = []
-    seen: set[str] = set()
-    for match in matches:
-        if match in seen:
-            continue
-        seen.add(match)
-        line_numbers: list[int] = []
-        start = 0
-        while True:
-            index = content.find(match, start)
-            if index == -1:
-                break
-            line_numbers.append(content.count("\n", 0, index) + 1)
-            start = index + 1
-        preview_lines = match.split("\n")[:3]
-        locations.append(
-            {
-                "line_numbers": line_numbers,
-                "preview": "\n".join(preview_lines)[:200],
-            }
-        )
-    return locations
 
 
 def _trim_diff(diff: str) -> str:
@@ -169,7 +149,6 @@ def _replace(
             error_kind="no_op",
             reason="identical_old_and_new",
             retry_guidance="Provide a newString that differs from oldString, or use read to confirm the file already has the desired content.",
-            details={"old_string": old_string, "new_string": new_string},
         )
     if not content:
         raise_tool_diagnostic(
@@ -177,7 +156,6 @@ def _replace(
             error_kind="no_op",
             reason="empty_content",
             retry_guidance="The target file is empty; use write to create content, or read it again before retrying.",
-            details={"content_empty": True},
         )
 
     match_count = content.count(old_string) if old_string else 0
@@ -187,9 +165,6 @@ def _replace(
             error_kind="tool_input_mismatch",
             reason="old_string_not_found",
             retry_guidance="Read the target path and retry with exact current file text, without line-number prefixes.",
-            details={
-                "old_string_line_count": len(old_string.splitlines()),
-            },
         )
     if not replace_all and match_count > 1:
         raise_tool_diagnostic(
@@ -199,12 +174,41 @@ def _replace(
             retry_guidance="Set replaceAll=true or provide longer exact text that uniquely identifies the intended location.",
             details={
                 "match_count": match_count,
-                "matches": _match_locations(content, [old_string] * match_count),
-                "replace_all_hint": True,
             },
         )
 
     return content.replace(old_string, new_string, -1 if replace_all else 1), match_count if replace_all else 1
+
+
+class _Replacement(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    oldString: str
+    newString: str
+    replaceAll: bool = False
+
+
+class _SingleEdit(_Replacement):
+    path: str = Field(min_length=1, pattern=r"\S")
+    expectedHash: str = Field(description="SHA-256 of the current file bytes, as reported by read.")
+
+
+class _BatchEdit(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    path: str = Field(min_length=1, pattern=r"\S")
+    expectedHash: str = Field(description="SHA-256 of the current file bytes, as reported by read.")
+    edits: list[_Replacement] = Field(min_length=1)
+
+
+class _PatchEdit(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    patch: str = Field(min_length=1)
+    expectedHashes: dict[str, str] | None = None
+
+
+_EDIT_ARGS = TypeAdapter(_SingleEdit | _BatchEdit | _PatchEdit)
 
 
 class EditTool:
@@ -212,67 +216,10 @@ class EditTool:
         name="edit",
         description=(
             "Edit files by replacing text (single replacement or ordered batch) or applying a patch. "
-            "OldString replacements require exact current file text; advisory near-match suggestions are never applied. "
+            "Replacements require exact current file text. Patches accept unified diff or *** Begin Patch marker format. "
             "When constructing oldString from read output, omit any leading line-number prefix such as '42: ' and pass only the file's actual text."
         ),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Workspace-relative or absolute path to the file to edit."},
-                "oldString": {"type": "string", "description": "The exact text to replace (single replacement mode)."},
-                "newString": {"type": "string", "description": "The replacement text (single replacement mode)."},
-                "replaceAll": {"type": "boolean", "description": "Replace all occurrences of oldString (default: false)."},
-                "expectedHash": {
-                    "type": "string",
-                    "description": (
-                        "Required SHA-256 hash of the target file content from prior read output. "
-                        "Rejects stale edits when the file changed since that read."
-                    ),
-                },
-                "edits": {
-                    "type": "array",
-                    "minItems": 1,
-                    "description": "Ordered replacements; each oldString must match the current file state at that step.",
-                    "items": {
-                        "type": "object",
-                        "required": ["oldString", "newString"],
-                        "properties": {
-                            "oldString": {"type": "string", "description": "Exact text to replace."},
-                            "newString": {"type": "string", "description": "Replacement text."},
-                            "replaceAll": {"type": "boolean", "description": "Replace every match; defaults to false."},
-                        },
-                    },
-                },
-                "patch": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "Patch text using unified diff or marker patch format (*** Begin Patch / *** End Patch).",
-                },
-                "expectedHashes": {
-                    "type": "object",
-                    "additionalProperties": {"type": "string"},
-                    "description": (
-                        "Map of relative file paths to their SHA-256 content hashes from prior read output. "
-                        "Required for existing files modified or deleted by the patch."
-                    ),
-                },
-            },
-            "oneOf": [
-                {
-                    "required": ["path", "oldString", "newString", "expectedHash"],
-                    "not": {"anyOf": [{"required": ["edits"]}, {"required": ["patch"]}]},
-                },
-                {
-                    "required": ["path", "edits", "expectedHash"],
-                    "not": {"anyOf": [{"required": ["oldString"]}, {"required": ["newString"]}, {"required": ["patch"]}]},
-                },
-                {
-                    "required": ["patch"],
-                    "not": {"anyOf": [{"required": ["path"]}, {"required": ["oldString"]}, {"required": ["newString"]}, {"required": ["edits"]}]},
-                },
-            ],
-            "additionalProperties": False,
-        },
+        input_schema={"type": "object", **_EDIT_ARGS.json_schema()},
         effects=frozenset({ToolEffect.WRITE}),
         semantics=frozenset({ToolSemantic.RESOURCE_EDIT}),
         path_argument_keys=("path",),
@@ -285,46 +232,16 @@ class EditTool:
         context: ToolContext,
         services: PluginServices,  # noqa: ARG002 - required by the frozen Tool ABI
     ) -> ToolResult:
+        args = _EDIT_ARGS.validate_python(json_wire_object(call.arguments))
+        if isinstance(args, _PatchEdit):
+            return execute_patch(args.model_dump(exclude_none=True), context=context, tool_name=self.definition.name)
+        return self._invoke_replacements(args, context=context)
+
+    def _invoke_replacements(self, args: _SingleEdit | _BatchEdit, *, context: ToolContext) -> ToolResult:
         workspace = context.require_workspace()
-        has_patch = "patch" in call.arguments
-        has_edits = "edits" in call.arguments
-        has_single = "oldString" in call.arguments or "newString" in call.arguments
-        modes_present = sum([has_patch, has_edits, has_single])
-        if modes_present > 1:
-            raise ValueError(
-                "edit arguments are mutually exclusive: provide either single replacement "
-                "(path, oldString, newString, expectedHash), edits batch (path, edits, expectedHash), "
-                "or patch (patch, expectedHashes)."
-            )
-        if modes_present == 0:
-            raise ValueError(
-                "edit invocation requires either single replacement arguments (path, oldString, newString, expectedHash), "
-                "an edits batch (path, edits, expectedHash), or a patch (patch)."
-            )
-
-        if has_patch:
-            return execute_patch(
-                call.arguments,
-                context=context,
-                tool_name=self.definition.name,
-            )
-
-        return self._invoke_replacements(call, workspace=workspace, batch=has_edits)
-
-    def _invoke_replacements(
-        self,
-        call: ToolCall,
-        *,
-        workspace: Path,
-        batch: bool,
-    ) -> ToolSuccess[EditResultBody]:
-        path_value = call.arguments.get("path")
-        if not isinstance(path_value, str) or not path_value.strip():
-            raise ValueError("edit requires a non-empty string 'path' argument")
-
-        raw_edits = call.arguments.get("edits") if batch else [call.arguments]
-        if not isinstance(raw_edits, (list, tuple)) or len(raw_edits) == 0:
-            raise ValueError("Validation error: edits must contain at least one edit")
+        path_value = args.path
+        batch = isinstance(args, _BatchEdit)
+        parsed_edits = args.edits if isinstance(args, _BatchEdit) else (args,)
 
         workspace_root = workspace.resolve()
         requested_path = Path(path_value)
@@ -337,18 +254,7 @@ class EditTool:
 
         display_path = candidate.as_posix() if is_external else candidate.relative_to(workspace_root).as_posix()
 
-        expected_hash = call.arguments.get("expectedHash")
-        if not isinstance(expected_hash, str):
-            raise_tool_diagnostic(
-                message="edit requires expectedHash containing the current file content SHA-256.",
-                error_kind="tool_input_mismatch",
-                reason="missing_expected_hash",
-                retry_guidance=(
-                    "Use read on the target path, copy its SHA-256 content hash from the output, then retry the edit with that expectedHash."
-                ),
-                details={"path": display_path, "raw_path": path_value},
-            )
-
+        expected_hash = args.expectedHash
         content_before = read_utf8_text(candidate)
         actual_hash = hashlib.sha256(content_before.encode("utf-8")).hexdigest()
         if expected_hash != actual_hash:
@@ -360,20 +266,6 @@ class EditTool:
                 details={"expected_hash": expected_hash, "actual_hash": actual_hash, "path": display_path},
             )
 
-        # Parse and validate edit items
-        parsed_edits: list[tuple[str, str, bool]] = []
-        for idx, item in enumerate(raw_edits, start=1):
-            if not isinstance(item, Mapping):
-                raise ValueError(f"edit item #{idx} must be an object")
-            old_s = item.get("oldString")
-            new_s = item.get("newString")
-            rep_all = item.get("replaceAll", False)
-            if not isinstance(old_s, str) or not isinstance(new_s, str):
-                raise ValueError(f"edit item #{idx} requires string oldString and newString")
-            if not isinstance(rep_all, bool):
-                raise ValueError(f"edit item #{idx} replaceAll must be a boolean")
-            parsed_edits.append((old_s, new_s, rep_all))
-
         ending = _detect_line_ending(content_before)
 
         # Preflight all edits against exact current text entirely in memory.
@@ -381,15 +273,21 @@ class EditTool:
         details: list[tuple[int, EditResultBody]] = []
         applied = 0
 
-        for idx, (old_str, new_str, rep_all) in enumerate(parsed_edits, start=1):
+        for idx, item in enumerate(parsed_edits, start=1):
+            if context.abort_signal is not None and context.abort_signal.cancelled:
+                return ToolFailure(
+                    self.definition.name,
+                    error="edit cancelled before committing file",
+                    execution=ConfirmedStop(cancellation_signalled=True),
+                )
             before_step = current_content
 
             try:
                 next_content, match_count = _replace(
                     current_content,
-                    old_str,
-                    new_str,
-                    replace_all=rep_all,
+                    item.oldString,
+                    item.newString,
+                    replace_all=item.replaceAll,
                 )
             except ValueError as exc:
                 if not batch:
@@ -439,16 +337,22 @@ class EditTool:
                 )
                 details.append((idx, step_body))
 
-        # All preflight edits passed in memory! Now write once to disk.
         final_text = _convert_line_endings(current_content, ending)
         final_bytes = final_text.encode("utf-8")
-        replace_file(candidate, final_bytes, expected_content=content_before.encode("utf-8"))
         final_disk_hash = hashlib.sha256(final_bytes).hexdigest()
         diff, additions, deletions = summarize_diff(
             path=candidate,
             before=content_before,
             after=final_text,
         )
+        # Prepare the complete result before the single commit.
+        if context.abort_signal is not None and context.abort_signal.cancelled:
+            return ToolFailure(
+                self.definition.name,
+                error="edit cancelled before committing file",
+                execution=ConfirmedStop(cancellation_signalled=True),
+            )
+        replace_file(candidate, final_bytes, expected_content=content_before.encode("utf-8"))
 
         if batch:
             content = f"Applied {applied} edits to {display_path}"
