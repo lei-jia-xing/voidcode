@@ -3,28 +3,13 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, fields
 from functools import lru_cache
 from math import isfinite
-from typing import Annotated, Final, Literal, TypeIs, cast
+from typing import Annotated, Final, cast
 
 from pydantic import ConfigDict, Field, TypeAdapter
 from pydantic.dataclasses import dataclass as validated_dataclass
 
 from ._resources import load_json
 from .reasoning_effort import CANONICAL_EFFORTS
-
-type ToolFeedbackMode = Literal["standard", "synthetic_user_message"]
-
-_TOOL_FEEDBACK_MODES: Final[tuple[ToolFeedbackMode, ...]] = ("standard", "synthetic_user_message")
-
-
-def is_tool_feedback_mode(value: object) -> TypeIs[ToolFeedbackMode]:
-    """Whether an untrusted ``tool_feedback_mode`` token names one of the known modes."""
-    return value in _TOOL_FEEDBACK_MODES
-
-
-def tool_feedback_mode(value: object) -> ToolFeedbackMode | None:
-    """The declared tool-feedback mode, ``None`` when the value declares none."""
-    return value if is_tool_feedback_mode(value) else None
-
 
 type TokenRate = Annotated[float | None, Field(strict=True, ge=0, allow_inf_nan=False)]
 
@@ -68,7 +53,6 @@ class ProviderModelMetadata:
     modalities_input: tuple[str, ...] | None = None
     modalities_output: tuple[str, ...] | None = None
     model_status: str | None = None
-    tool_feedback_mode: ToolFeedbackMode | None = None
     api: str | None = None
     display_name: str | None = None
     #: omp encoding name driving exact token counting (``O200kBase``,
@@ -144,7 +128,6 @@ def _static_catalog_from_payload(data: object) -> dict[str, dict[str, ProviderMo
                 supports_thinking_budget=_optional_bool(entry.get("supports_thinking_budget")),
                 supports_interleaved_reasoning=_optional_bool(entry.get("supports_interleaved_reasoning")),
                 reasoning_visibility=_optional_str(entry.get("reasoning_visibility")),
-                tool_feedback_mode=tool_feedback_mode(entry.get("tool_feedback_mode")),
                 modalities_input=_modalities(entry.get("modalities_input")),
                 modalities_output=_modalities(entry.get("modalities_output")),
                 model_status=_optional_str(entry.get("model_status")),

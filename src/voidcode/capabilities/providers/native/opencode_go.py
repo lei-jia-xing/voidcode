@@ -12,16 +12,13 @@ from .config import (
     ProviderEndpointConfig,
     openai_compatible_endpoint_config,
 )
-from .model_catalog import ToolFeedbackMode
 from .model_routing import ModelRoute, RoutedTurnProvider, WireRouting
 from .openai_native import OpenAIChatCompletionsProvider
 from .provider_table import PROVIDER_TABLE_BY_ID
 
 # These gateways reject the OpenAI ``tool`` role, so completed tool results are
 # replayed as a synthetic user message instead.
-_TOOL_FEEDBACK_OVERRIDES: dict[str, ToolFeedbackMode] = {
-    "qwen3.6-plus": "synthetic_user_message",
-}
+_SYNTHETIC_TOOL_FEEDBACK_MODELS = frozenset({"qwen3.6-plus"})
 
 # OpenCode Go is one gateway host speaking two wires: the Anthropic SDK appends
 # its own ``/v1/messages`` path segment, so the Anthropic route carries the host
@@ -91,7 +88,7 @@ class OpenCodeGoModelProvider:
         return OpenAIChatCompletionsProvider(
             name=self.name,
             config=endpoint,
-            tool_feedback_model_overrides=_TOOL_FEEDBACK_OVERRIDES,
+            synthetic_tool_feedback_models=_SYNTHETIC_TOOL_FEEDBACK_MODELS,
             extra_request_headers=_OPENCODE_EXTRA_REQUEST_HEADERS,
         )
 

@@ -18,7 +18,6 @@ from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.provider import (
     ProviderDoneReason,
     ProviderExecutionError,
-    ProviderMessage,
     ProviderStreamEvent,
     ProviderTokenUsage,
     ProviderTurnRequest,
@@ -41,7 +40,7 @@ from .config import OpenAIProviderConfig, ProviderEndpointConfig
 from .errors import (
     provider_execution_error_from_payload,
 )
-from .model_catalog import ProviderModelMetadata, ToolFeedbackMode, static_catalog_metadata, tool_feedback_mode
+from .model_catalog import ProviderModelMetadata, static_catalog_metadata
 from .provider_config import openai_wire_default_base_url
 from .provider_table import PROVIDER_TABLE_BY_ID
 from .reasoning_effort import clamp_effort_to_supported, normalize_reasoning_effort, reasoning_kwargs
@@ -357,15 +356,6 @@ def _session_id(request: ProviderTurnRequest) -> str:
     return value if isinstance(value, str) else ""
 
 
-def _replayed_message(message: ProviderMessage) -> bool:
-    """Whether this message is replayed history rather than this turn's traffic.
-
-    Replayed conversation is marked with the same ``source`` token the legacy
-    segments carried; an unmarked message belongs to the turn being sent.
-    """
-    return message.metadata.get("source") == "replayed_conversation"
-
-
 @dataclass(frozen=True, slots=True)
 class _ToolAccumulator:
     tool_call_id: str | None = None
@@ -384,7 +374,7 @@ class OpenAIChatCompletionsProvider:
     name: str = "openai"
     config: OpenAIProviderConfig | ProviderEndpointConfig | None = None
     transport: OpenAITransport | None = None
-    tool_feedback_model_overrides: Mapping[str, ToolFeedbackMode] = field(default_factory=dict)
+    synthetic_tool_feedback_models: frozenset[str] = frozenset()
     # Headers this gateway requires on every request it serves. They reach the wire
     # through the SDK's ``extra_headers`` argument, which the transport passes to
     # ``create`` from the payload, so the JSON body never carries them.
@@ -489,13 +479,9 @@ class OpenAIChatCompletionsProvider:
             reverse[candidate] = name
         return original, reverse
 
-    @staticmethod
-    def _visible_arguments(_tool_name: str | None, arguments: dict[str, object]) -> dict[str, object]:
-        return json_wire_object(arguments)
-
     def _messages(self, request: ProviderTurnRequest) -> list[dict[str, object]]:
         original_to_provider, _ = self._tool_maps(request)
-        if self._tool_feedback_mode_for_request(request) == "synthetic_user_message":
+        if self._model_name(request) in self.synthetic_tool_feedback_models or request.model_name in self.synthetic_tool_feedback_models:
             return self._synthetic_feedback_messages(request, original_to_provider)
         requires_reasoning_content = _requires_reasoning_content_with_tool_calls(
             provider_name=request.provider_name or self.name,
@@ -515,7 +501,7 @@ class OpenAIChatCompletionsProvider:
                 tool_calls: list[dict[str, object]] = []
                 for call in message.tool_calls:
                     arguments = json.dumps(
-                        self._visible_arguments(call.tool_name, dict(call.arguments)),
+                        json_wire_object(call.arguments),
                         ensure_ascii=False,
                         sort_keys=True,
                     )
@@ -562,92 +548,26 @@ class OpenAIChatCompletionsProvider:
                 messages.append(replayed)
         return messages
 
-    def _tool_feedback_mode_for_request(self, request: ProviderTurnRequest) -> ToolFeedbackMode | None:
-        """The model's declared tool-feedback mode, ``None`` when nothing declares one.
-
-        Precedence: the adapter's own per-model override, then the mode the turn
-        declares in its own metadata, then the shipped catalog entry. ``None`` means
-        nothing declares a mode, so the turn replays tool results as ``tool`` messages
-        (the standard shape) -- the mode is not substituted here, so a caller can
-        still tell "declared standard" from "unset".
-        """
-        mapped_model = self._model_name(request)
-        mode = self.tool_feedback_model_overrides.get(mapped_model)
-        if mode is None and request.model_name is not None:
-            mode = self.tool_feedback_model_overrides.get(request.model_name)
-        if mode is not None:
-            return mode
-        # A declared value that names no known mode is ignored, never guessed at.
-        declared = tool_feedback_mode(request.metadata.get("tool_feedback_mode"))
-        if declared is not None:
-            return declared
-        # The request carries no catalog object, so the shipped entry for the
-        # mapped model stands in for the metadata the legacy request passed in.
-        metadata = static_catalog_metadata(request.provider_name or self.name, mapped_model)
-        return metadata.tool_feedback_mode if metadata is not None else None
-
     def _synthetic_feedback_messages(self, request: ProviderTurnRequest, original_to_provider: Mapping[str, str]) -> list[dict[str, object]]:
-        """Replay tool results as a synthetic user turn.
-
-        Some gateways reject the OpenAI ``tool`` role. Those models receive the
-        completed tool results as a single user message instead, with prior-run
-        results kept inside the replayed history.
-        """
-        # Arguments live on the assistant message that made the call, not on the
-        # result: index the batch by tool-call id once.
-        call_arguments: dict[str, object] = {}
+        """Keep conversation order while converting tool feedback for selected gateways."""
+        call_arguments: dict[str, Mapping[str, object]] = {}
+        messages: list[dict[str, object]] = []
         for message in request.messages:
             for call in message.tool_calls:
                 if call.tool_call_id is not None:
                     call_arguments[call.tool_call_id] = call.arguments
-        tool_feedback_lines: list[str] = []
-        for message in request.messages:
-            if message.role != "tool" or _replayed_message(message):
-                continue
-            metadata = message.metadata
-            arguments = call_arguments.get(message.tool_call_id or "")
-            payload: dict[str, object] = {
-                "tool_name": original_to_provider.get(message.tool_name or "", message.tool_name),
-                "arguments": self._visible_arguments(message.tool_name, dict(arguments) if isinstance(arguments, Mapping) else {}),
-                # The neutral message keeps the result's error-ness, and the
-                # core renders status/error/bounds into ``content`` already;
-                # the structured fields survive only when the caller attached
-                # them to the message metadata.
-                "status": "error" if message.is_error else "ok",
-                "content": message.content or "",
-                "error": metadata.get("error"),
-                "truncated": bool(metadata.get("truncated")),
-                "partial": bool(metadata.get("partial")),
-                "reference": metadata.get("reference"),
-            }
-            tool_feedback_lines.append(json.dumps(payload, ensure_ascii=False, sort_keys=True))
-        messages: list[dict[str, object]] = []
-        for message in request.messages:
-            if message.role == "assistant" and message.tool_calls:
-                continue
             if message.role == "tool":
-                if _replayed_message(message):
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": f"[Previous run tool result for {message.tool_name}]\n{message.content or ''}",
-                        }
-                    )
-                continue
-            messages.append({"role": message.role, "content": message.content})
-        if tool_feedback_lines:
-            messages.append(
-                {
-                    "role": "user",
-                    "content": "\n".join(
-                        (
-                            "Completed tool calls for current request:",
-                            "Use these results as latest state. Do not repeat completed calls unless retry is required.",
-                            *tool_feedback_lines,
-                        )
-                    ),
+                arguments = call_arguments.pop(message.tool_call_id or "", None)
+                payload = {
+                    "tool_name": original_to_provider.get(message.tool_name or "", message.tool_name),
+                    "tool_call_id": message.tool_call_id,
+                    "arguments": json_wire_object(arguments) if arguments is not None else None,
+                    "status": "error" if message.is_error else "ok",
+                    "content": message.content or "",
                 }
-            )
+                messages.append({"role": "user", "content": json.dumps(payload, ensure_ascii=False, sort_keys=True)})
+            elif message.role != "assistant" or not message.tool_calls or message.content:
+                messages.append({"role": message.role, "content": message.content})
         return messages
 
     def _wire(self, request: ProviderTurnRequest) -> ProviderWireMaterialization:

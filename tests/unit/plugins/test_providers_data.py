@@ -99,7 +99,6 @@ def test_packaged_catalog_preserves_declared_capabilities() -> None:
         "supports_thinking_budget": False,
         "supports_interleaved_reasoning": True,
         "reasoning_visibility": "visible",
-        "tool_feedback_mode": "synthetic_user_message",
     }
     metadata = _static_catalog_from_payload({"endpoint": {"model": fields}})["endpoint"]["model"]
     assert metadata.payload() == fields

@@ -47,9 +47,9 @@ not establish source review.
 | `providers/native/model_catalog_data.json` | Pending consumer/data-contract review |
 | `providers/native/model_routing.py` | Reviewed: routed alias/catalog fallback, typed unsupported wires, serialized cache creation and teardown |
 | `providers/native/naming.py` | Reviewed source/callers: provider normalization, preserved model casing, table-derived labels/reservations and unknown-id diagnostics; removed dead canonical-reference wrapper |
-| `providers/native/openai_native.py` | Pending full source review |
+| `providers/native/openai_native.py` | Partial: lifecycle/stream/error work and ordered gateway feedback reviewed; removed metadata mode/attachment scaffolding; remaining transport/payload/replay source review pending |
 | `providers/native/opencode.py` | Pending full source review |
-| `providers/native/opencode_go.py` | Pending full source review |
+| `providers/native/opencode_go.py` | Partial: nonnullable endpoint path and minimal feedback model set reviewed; gateway host precedence/protocol quirks pending |
 | `providers/native/openrouter.py` | Reviewed: small direct adapter using vendor endpoint normalization and native OpenAI transport |
 | `providers/native/provider_config.py` | Reviewed: table-owned wire defaults, endpoint/gateway defaults and Copilot token resolution; removed dead projections |
 | `providers/native/provider_table.json` | Reviewed with parser/consumer and packaged-table tests; source/provenance retained in JSON |
@@ -934,3 +934,30 @@ Validation: 154 auth/dispatch/reasoning/stream/Google/lifecycle/error/protocol t
 passed (36.17s); both final Anthropic flag-authority cases passed separately. Seven
 core-builtins/read-loopback tests passed. Ruff/source type checks passed; CodeGraph
 synchronized. Full capability audit and final full-suite gate remain outstanding.
+
+## OpenAI gateway feedback: remove mode scaffolding and preserve ordered history
+
+No generated catalog row or runtime producer supplies tool_feedback_mode. Removed
+that metadata field/parser/type vocabulary and request-metadata selection branch.
+The actual Go gateway exception is represented by one frozen model-name set on its
+adapter, with model alias handling preserved. Removed OpenAI's no-op argument wrapper
+and the source=replayed_conversation classifier, which core never publishes.
+
+Synthetic feedback now converts each tool result at its original conversation
+position, keeps assistant text, and carries only explicit SDK result/call fields.
+Removed invented current-run/prior-run separation, end-of-request result relocation,
+and metadata-derived error/bounds/reference fields with no core publisher. Argument
+matching is chronological and consumed per result, so repeated call ids in later
+batches cannot overwrite earlier result arguments. Unknown arguments remain None.
+
+Four actual Go-adapter/SDK loopback cases cover model aliases, repeated call ids,
+multiple request/result batches, retained assistant content, argument association
+and error status. A standard endpoint case proves opaque request metadata does not
+change its tool protocol. Existing ordinary tool-role and reasoning replay tests
+remain applicable. Net implementation reduction: 100 lines. This preserves the
+existing Go exception; it does not newly verify a funded live gateway account.
+
+Validation: 212 provider/generator/stream tests passed, followed by all 14 final
+registered-dispatch cases after chronological call-id handling. Seven core-builtins/
+read-loopback tests passed. Ruff/source type checks passed; CodeGraph synchronized.
+Complete capability audit and final full-suite gate remain outstanding.
