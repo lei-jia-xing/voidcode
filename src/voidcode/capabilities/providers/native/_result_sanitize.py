@@ -1,8 +1,7 @@
 """Bounded model-visible projection of tool payloads.
 
-Ported verbatim from ``voidcode.tools.output`` (``_sanitize_value`` and
-friends) so the provider plugin can project tool arguments and results onto the
-wire without importing legacy runtime modules.
+Projects tool results onto the provider wire, summarizing oversized strings
+and omitting inline blobs.
 """
 
 from __future__ import annotations
@@ -44,10 +43,6 @@ def _sanitize_value(value: object, *, key: str | None = None) -> object:
     if isinstance(value, list | tuple):
         return [_sanitize_value(item, key=key) for item in value]
     return value
-
-
-def sanitize_tool_arguments(arguments: Mapping[str, object]) -> dict[str, object]:
-    return _sanitize_mapping(arguments)
 
 
 def sanitize_tool_result_data(data: Mapping[str, object]) -> dict[str, object]:

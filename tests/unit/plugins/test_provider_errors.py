@@ -111,3 +111,36 @@ def test_google_oauth_still_rejects_an_explicit_api_key():
         parse_provider_configs_payload(
             {"google": {"auth": {"method": "oauth", "access_token": "token", "api_key": "explicit-key"}}}, source="test", env={}
         )
+
+
+def test_provider_config_representations_omit_credentials():
+    from voidcode.capabilities.providers.native.config import ProviderConfigsPayload, parse_provider_configs_payload
+
+    secret = "credential-sentinel-do-not-print"
+    raw = {
+        "openai": {"api_key": secret},
+        "anthropic": {"api_key": secret},
+        "google": {"auth": {"method": "oauth", "access_token": secret}},
+        "github-copilot": {"auth": {"method": "token", "token": secret}},
+        "endpoint": {"api_key": secret},
+        "deepseek": {"api_key": secret},
+        "custom": {"gateway": {"api_key": secret}},
+    }
+    payload = ProviderConfigsPayload.model_validate(raw)
+    configs = parse_provider_configs_payload(raw, source="test", env={})
+    assert secret not in repr(payload)
+    assert secret not in repr(configs)
+    assert configs.openai.api_key == secret
+    assert configs.google.auth.access_token == secret
+    assert configs.github_copilot.auth.token == secret
+
+
+def test_invalid_provider_config_traceback_omits_credential_input():
+    import traceback
+
+    from voidcode.capabilities.providers.native.config import parse_provider_configs_payload
+
+    secret = "credential-sentinel-do-not-print"
+    with pytest.raises(ValueError) as caught:
+        parse_provider_configs_payload({"openai": {"api_key": {"unexpected": secret}}}, source="test", env={})
+    assert secret not in "".join(traceback.format_exception(caught.value))

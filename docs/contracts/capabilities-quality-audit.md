@@ -422,3 +422,22 @@ and reviewing endpoint/header handling; this does not complete capability audit.
 Validation: 149 provider/generator/stream tests passed (32.26s); the final ingress/
 error suite passed all 31 cases after the Google fix. Ruff and source type checks
 passed; CodeGraph synchronized. Full-suite completion gate remains outstanding.
+
+## Provider diagnostic representations
+
+Reviewed config/error representations: dataclass credential fields and Pydantic
+payload repr previously printed raw API keys/access tokens/Copilot tokens. Marked
+those fields repr=False with standard dataclass/Pydantic options; actual values
+remain available to adapters. Enabled Pydantic hide_input_in_errors so chained
+validation tracebacks do not print malformed credential inputs. Regression tests
+cover nested built-in/custom provider representations and a full formatted error
+traceback. This covers configuration diagnostics, not arbitrary upstream messages
+or credentials embedded in user-supplied URLs.
+
+Removed sanitize_tool_arguments, which had no consumer. Result sanitization remains
+used by Anthropic; corrected the obsolete legacy-port docstring. Its whole-payload
+size/depth limits still require review during the remaining projection audit.
+
+Validation: 80 auth/catalog/dispatch/panels/stream/error tests passed (21.19s),
+including both new credential diagnostic regressions; Ruff and source type checks
+passed. Full capability audit and its final full-suite gate remain outstanding.

@@ -72,11 +72,11 @@ BoundaryStringMapping = Annotated[dict[str, str] | None, BeforeValidator(_parse_
 
 
 class _ProviderPayloadModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
 
 class _OpenAIProviderConfigPayload(_ProviderPayloadModel):
-    api_key: BoundaryOptionalString = None
+    api_key: BoundaryOptionalString = Field(default=None, repr=False)
     base_url: BoundaryOptionalString = None
     organization: BoundaryOptionalString = None
     project: BoundaryOptionalString = None
@@ -84,7 +84,7 @@ class _OpenAIProviderConfigPayload(_ProviderPayloadModel):
 
 
 class _AnthropicProviderConfigPayload(_ProviderPayloadModel):
-    api_key: BoundaryOptionalString = None
+    api_key: BoundaryOptionalString = Field(default=None, repr=False)
     base_url: BoundaryOptionalString = None
     version: BoundaryOptionalString = None
     beta_headers: BoundaryStringList | None = ()
@@ -94,8 +94,8 @@ class _AnthropicProviderConfigPayload(_ProviderPayloadModel):
 
 class _GoogleProviderAuthConfigPayload(_ProviderPayloadModel):
     method: BoundaryRequiredString
-    api_key: BoundaryOptionalString = None
-    access_token: BoundaryOptionalString = None
+    api_key: BoundaryOptionalString = Field(default=None, repr=False)
+    access_token: BoundaryOptionalString = Field(default=None, repr=False)
     service_account_json_path: BoundaryOptionalString = None
 
 
@@ -109,7 +109,7 @@ class _GoogleProviderConfigPayload(_ProviderPayloadModel):
 
 class _CopilotProviderAuthConfigPayload(_ProviderPayloadModel):
     method: BoundaryRequiredString
-    token: BoundaryOptionalString = None
+    token: BoundaryOptionalString = Field(default=None, repr=False)
     token_env_var: BoundaryOptionalString = None
 
 
@@ -120,7 +120,7 @@ class _CopilotProviderConfigPayload(_ProviderPayloadModel):
 
 
 class _ProviderEndpointConfigPayload(_ProviderPayloadModel):
-    api_key: BoundaryOptionalString = None
+    api_key: BoundaryOptionalString = Field(default=None, repr=False)
     api_key_env_var: BoundaryOptionalString = None
     base_url: BoundaryOptionalString = None
     auth_header: BoundaryOptionalString = None
@@ -131,7 +131,7 @@ class _ProviderEndpointConfigPayload(_ProviderPayloadModel):
 
 
 class _OpenAICompatibleProviderConfigPayload(_ProviderPayloadModel):
-    api_key: BoundaryOptionalString = None
+    api_key: BoundaryOptionalString = Field(default=None, repr=False)
     api_key_env_var: BoundaryOptionalString = None
     base_url: BoundaryOptionalString = None
     ssl_verify: BoundaryOptionalBool = None
@@ -343,7 +343,7 @@ class OpenAICompatibleProviderConfig:
     Providers use a minimal API_KEY plus optional BASE_URL contract.
     """
 
-    api_key: str | None = None
+    api_key: str | None = field(default=None, repr=False)
     api_key_env_var: str | None = None
     base_url: str | None = None
     ssl_verify: bool | None = None
@@ -394,7 +394,7 @@ def openai_compatible_endpoint_config(
 
 @dataclass(frozen=True, slots=True)
 class OpenAIProviderConfig:
-    api_key: str | None = None
+    api_key: str | None = field(default=None, repr=False)
     base_url: str | None = None
     organization: str | None = None
     project: str | None = None
@@ -403,7 +403,7 @@ class OpenAIProviderConfig:
 
 @dataclass(frozen=True, slots=True)
 class AnthropicProviderConfig:
-    api_key: str | None = None
+    api_key: str | None = field(default=None, repr=False)
     base_url: str | None = None
     version: str | None = None
     beta_headers: tuple[str, ...] = ()
@@ -414,8 +414,8 @@ class AnthropicProviderConfig:
 @dataclass(frozen=True, slots=True)
 class GoogleProviderAuthConfig:
     method: GoogleAuthMethod
-    api_key: str | None = None
-    access_token: str | None = None
+    api_key: str | None = field(default=None, repr=False)
+    access_token: str | None = field(default=None, repr=False)
     service_account_json_path: str | None = None
 
 
@@ -431,7 +431,7 @@ class GoogleProviderConfig:
 @dataclass(frozen=True, slots=True)
 class CopilotProviderAuthConfig:
     method: CopilotAuthMethod
-    token: str | None = None
+    token: str | None = field(default=None, repr=False)
     token_env_var: str | None = None
 
 
@@ -457,7 +457,7 @@ type ProviderConfigEntry = (
 
 @dataclass(frozen=True, slots=True)
 class ProviderEndpointConfig:
-    api_key: str | None = None
+    api_key: str | None = field(default=None, repr=False)
     api_key_env_var: str | None = None
     base_url: str | None = None
     auth_header: str | None = None
