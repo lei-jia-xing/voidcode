@@ -11,9 +11,8 @@ from dataclasses import replace
 
 from voidcode.sdk.provider import ProviderStreamEvent, ProviderTokenUsage, ProviderTurnRequest, ProviderTurnResult
 
-from .native.model_catalog import static_catalog_metadata
+from .native.model_catalog import ProviderModelMetadata, static_catalog_metadata
 from .native.naming import canonical_provider_id
-from .native.pricing_rules import usage_cost_usd
 
 
 def price_usage(*, provider_name: str, model_name: str, usage: ProviderTokenUsage | None) -> ProviderTokenUsage | None:
@@ -26,8 +25,6 @@ def price_usage(*, provider_name: str, model_name: str, usage: ProviderTokenUsag
     return replace(
         usage,
         cost_usd=usage_cost_usd(
-            provider_id=provider_id,
-            model_id=model_name,
             usage=usage,
             metadata=static_catalog_metadata(provider_id, model_name),
         ),
@@ -44,3 +41,66 @@ def price_event(request: ProviderTurnRequest, event: ProviderStreamEvent) -> Pro
     """Attach the catalog cost to a stream event that carries usage."""
     priced = price_usage(provider_name=request.provider_name or "", model_name=request.model_name or "", usage=event.usage)
     return event if priced is event.usage else replace(event, usage=priced)
+
+
+def _uncached_input_tokens(usage: ProviderTokenUsage) -> int | None:
+    if usage.uncached_input_tokens is not None:
+        return usage.uncached_input_tokens
+    if usage.input_tokens is None or usage.cache_read_tokens is None:
+        return None
+    return max(0, usage.input_tokens - usage.cache_read_tokens)
+
+
+def _bucket_cost(count: int | None, rate: float | None) -> float | None:
+    if count == 0 or rate == 0:
+        return 0.0
+    if count is None or rate is None:
+        return None
+    return count * rate
+
+
+def usage_cost_usd(
+    *,
+    usage: ProviderTokenUsage,
+    metadata: ProviderModelMetadata | None,
+) -> float | None:
+    """Price observed usage; return ``None`` when a required count or rate is unknown."""
+    if metadata is None or all(
+        count is None
+        for count in (
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cache_read_tokens,
+            usage.cache_write_tokens,
+            usage.uncached_input_tokens,
+        )
+    ):
+        return None
+    rates = {
+        "input": metadata.cost_per_input_token,
+        "output": metadata.cost_per_output_token,
+        "cache_read": metadata.cost_per_cache_read_token,
+        "cache_write": metadata.cost_per_cache_write_token,
+    }
+    if metadata.context_price_tiers:
+        uncached = _uncached_input_tokens(usage)
+        prompt_input = usage.input_tokens
+        if prompt_input is None and uncached is not None and usage.cache_read_tokens is not None:
+            prompt_input = uncached + usage.cache_read_tokens
+        if prompt_input is None or usage.cache_write_tokens is None:
+            return None
+        prompt_input += usage.cache_write_tokens
+        for tier in sorted(metadata.context_price_tiers, key=lambda tier: tier.threshold):
+            if prompt_input > tier.threshold:
+                for bucket in rates:
+                    override = getattr(tier, bucket)
+                    if override is not None:
+                        rates[bucket] = override
+
+    costs = (
+        _bucket_cost(_uncached_input_tokens(usage), rates["input"]),
+        _bucket_cost(usage.output_tokens, rates["output"]),
+        _bucket_cost(usage.cache_read_tokens, rates["cache_read"]),
+        _bucket_cost(usage.cache_write_tokens, rates["cache_write"]),
+    )
+    return None if any(cost is None for cost in costs) else sum(cost for cost in costs if cost is not None)

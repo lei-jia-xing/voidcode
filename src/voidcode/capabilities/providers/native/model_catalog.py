@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import asdict, dataclass, fields
 from functools import lru_cache
 from math import isfinite
-from typing import Final, Literal, TypeIs, cast
+from typing import Annotated, Final, Literal, TypeIs, cast
+
+from pydantic import ConfigDict, Field, TypeAdapter
+from pydantic.dataclasses import dataclass as validated_dataclass
 
 from ._resources import load_json
 from .reasoning_effort import CANONICAL_EFFORTS
@@ -23,6 +26,21 @@ def tool_feedback_mode(value: object) -> ToolFeedbackMode | None:
     return value if is_tool_feedback_mode(value) else None
 
 
+type TokenRate = Annotated[float | None, Field(strict=True, ge=0, allow_inf_nan=False)]
+
+
+@validated_dataclass(frozen=True, slots=True, config=ConfigDict(extra="forbid"))
+class ContextPriceTier:
+    threshold: Annotated[int, Field(strict=True, gt=0)]
+    input: TokenRate = None
+    output: TokenRate = None
+    cache_read: TokenRate = None
+    cache_write: TokenRate = None
+
+
+_CONTEXT_PRICE_TIERS = TypeAdapter(tuple[ContextPriceTier, ...])
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderModelMetadata:
     context_window: int | None = None
@@ -37,6 +55,7 @@ class ProviderModelMetadata:
     cost_per_output_token: float | None = None
     cost_per_cache_read_token: float | None = None
     cost_per_cache_write_token: float | None = None
+    context_price_tiers: tuple[ContextPriceTier, ...] = ()
     supports_reasoning_effort: bool | None = None
     default_reasoning_effort: str | None = None
     supported_effort_levels: tuple[str, ...] | None = None
@@ -59,11 +78,14 @@ class ProviderModelMetadata:
         if self.default_reasoning_effort is not None and self.default_reasoning_effort not in CANONICAL_EFFORTS:
             raise ValueError(f"default_reasoning_effort must be one of {CANONICAL_EFFORTS}; got {self.default_reasoning_effort!r}")
 
-    def payload(self) -> dict[str, int | float | bool | str | list[str]]:
-        payload: dict[str, int | float | bool | str | list[str]] = {}
+    def payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {}
         for model_field in fields(self):
             value = getattr(self, model_field.name)
-            if value is None:
+            if value is None or (model_field.name == "context_price_tiers" and not value):
+                continue
+            if model_field.name == "context_price_tiers":
+                payload[model_field.name] = [asdict(tier) for tier in self.context_price_tiers]
                 continue
             payload[model_field.name] = list(value) if isinstance(value, tuple) else value
         return payload
@@ -107,6 +129,7 @@ def _static_catalog_from_payload(data: object) -> dict[str, dict[str, ProviderMo
                 cost_per_cache_write_token=_non_negative_float(entry.get("cost_per_cache_write_token")),
                 supports_tools=_optional_bool(entry.get("supports_tools")),
                 supports_reasoning=_optional_bool(entry.get("supports_reasoning")),
+                context_price_tiers=_CONTEXT_PRICE_TIERS.validate_python(entry.get("context_price_tiers", ())),
                 supports_reasoning_effort=_optional_bool(entry.get("supports_reasoning_effort")),
                 default_reasoning_effort=_canonical_effort(entry.get("default_reasoning_effort")),
                 supported_effort_levels=_modalities(entry.get("supported_effort_levels")),

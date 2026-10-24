@@ -54,8 +54,6 @@ not establish source review.
 | `providers/native/opencode.py` | Pending full source review |
 | `providers/native/opencode_go.py` | Pending full source review |
 | `providers/native/openrouter.py` | Pending full source review |
-| `providers/native/pricing_rules.json` | Reviewed with parser/consumer and packaged-table tests; source/provenance retained in JSON |
-| `providers/native/pricing_rules.py` | Reviewed: tier thresholds, known/unknown count arithmetic and finite rate ingress; removed unused runtime provenance |
 | `providers/native/provider_config.py` | Reviewed: table-owned wire defaults, endpoint/gateway defaults and Copilot token resolution; removed dead projections |
 | `providers/native/provider_table.json` | Reviewed with parser/consumer and packaged-table tests; source/provenance retained in JSON |
 | `providers/native/provider_table.py` | Reviewed: typed rows, duplicate/unknown IDs and config/catalog consumers; removed unused notes and forwarding helper |
@@ -304,3 +302,24 @@ tier tables still need migration; this batch does not claim all JSON is upstream
 Validation: generated twice from the downloaded official response; generator fixture
 checks new model propagation, capabilities, prices, unknowns and reproducibility.
 133 generator/provider tests passed (33.56s); static checks passed.
+
+## Upstream long-context pricing
+
+Generated 150 model entries with context price tiers from the same official
+models.dev snapshot as base rates. Threshold/rates use a small Pydantic dataclass
+at ingress, including finite/nonnegative rate and positive integer checks.
+The snapshot loader preserves typed tiers and emits JSON payloads through asdict.
+Price calculation consumes metadata directly, with no provider/model matcher.
+Removed `pricing_rules.py` and the hand-authored `pricing_rules.json`; calculation
+now lives beside the report-time pricing wrapper. Missing tier buckets inherit
+base rates; unknown required usage remains unknown. Threshold comparison is gt,
+matching upstream context tier overrides; multiple levels are ordered by size.
+
+The old real-vendor price constant test disagreed with official GPT-5.6 tier data.
+Removed it in favor of fixed algorithm fixtures that test threshold boundaries and
+multiple tiers, without requiring human changes whenever upstream pricing changes.
+Generator fixture verifies original tier conversion and reproducible serialization.
+
+Validation: 130 generator/provider/usage/stream tests passed (32.50s). Ruff,
+formatting and source type checks passed. The daily snapshot workflow now also
+validates generation of upstream context tiers via the same generator fixture.

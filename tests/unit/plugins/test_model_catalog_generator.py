@@ -20,7 +20,7 @@ def test_official_snapshot_adds_new_models_and_preserves_unknowns(tmp_path):
         "reasoning": True,
         "structured_output": True,
         "limit": {"context": 128000, "output": 8000},
-        "cost": {"input": 2, "output": 8},
+        "cost": {"input": 2, "output": 8, "tiers": [{"tier": {"type": "context", "size": 100000}, "input": 4, "output": 12}]},
         "reasoning_options": [{"type": "effort", "values": ["low", "high"]}],
     }
     source.write_text(json.dumps({"openai": {"models": {"new-model": model}}}), encoding="utf-8")
@@ -28,6 +28,7 @@ def test_official_snapshot_adds_new_models_and_preserves_unknowns(tmp_path):
     result = json.loads(output.read_text())["openai"]["new-model"]
     assert result["context_window"] == 128000
     assert result["cost_per_input_token"] == 2 / 1_000_000
+    assert result["context_price_tiers"] == [{"threshold": 100000, "input": 4e-6, "output": 12e-6}]
     assert result["supports_json_mode"] is True
     assert result["supported_effort_levels"] == ["low", "high"]
     assert "cost_per_cache_read_token" not in result

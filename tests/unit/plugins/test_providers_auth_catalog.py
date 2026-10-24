@@ -47,8 +47,7 @@ from voidcode.capabilities.providers.native.config import (
     ProviderEndpointConfig,
 )
 from voidcode.capabilities.providers.native.model_catalog import static_catalog_metadata
-from voidcode.capabilities.providers.native.pricing_rules import usage_cost_usd
-from voidcode.capabilities.providers.pricing import price_usage
+from voidcode.capabilities.providers.pricing import price_usage, usage_cost_usd
 from voidcode.sdk.provider import (
     ProviderExecutionError,
     ProviderMessage,
@@ -701,57 +700,12 @@ def test_a_model_without_a_shipped_rate_stays_unknown() -> None:
     usage = ProviderTokenUsage(input_tokens=1000, output_tokens=500, cache_read_tokens=100, uncached_input_tokens=900)
 
     priced = usage_cost_usd(
-        provider_id="deepseek",
-        model_id="deepseek-chat",
         usage=usage,
         metadata=static_catalog_metadata("deepseek", "deepseek-chat"),
     )
 
     assert priced is None
     assert price_usage(provider_name="deepseek", model_name="deepseek-chat", usage=usage).cost_usd is None
-
-
-def test_long_context_tier_threshold_is_exclusive_above_the_row() -> None:
-    """``openai/gpt-5.6`` ships ``threshold=272000, inclusive=false``: only above it reprices."""
-    metadata = static_catalog_metadata("openai", "gpt-5.6")
-
-    at_threshold = usage_cost_usd(
-        provider_id="openai",
-        model_id="gpt-5.6",
-        usage=ProviderTokenUsage(input_tokens=272000, output_tokens=1000, cache_read_tokens=0, cache_write_tokens=0, uncached_input_tokens=272000),
-        metadata=metadata,
-    )
-    above_threshold = usage_cost_usd(
-        provider_id="openai",
-        model_id="gpt-5.6",
-        usage=ProviderTokenUsage(input_tokens=272001, output_tokens=1000, cache_read_tokens=0, cache_write_tokens=0, uncached_input_tokens=272001),
-        metadata=metadata,
-    )
-
-    # base input $4/M + output $20/M ...  tier input $10/M + output $45/M
-    assert at_threshold == pytest.approx(272000 * 4e-06 + 1000 * 20e-06)
-    assert above_threshold == pytest.approx(272001 * 10e-06 + 1000 * 45e-06)
-
-
-def test_long_context_tier_threshold_is_inclusive_on_the_row_that_declares_it() -> None:
-    """``xai/grok-4.3`` ships ``threshold=200000, inclusive=true, multiplier=2``: the threshold itself reprices."""
-    metadata = static_catalog_metadata("xai", "grok-4.3")
-
-    at_threshold = usage_cost_usd(
-        provider_id="xai",
-        model_id="grok-4.3",
-        usage=ProviderTokenUsage(input_tokens=200000, output_tokens=1000, cache_read_tokens=0, cache_write_tokens=0, uncached_input_tokens=200000),
-        metadata=metadata,
-    )
-    below_threshold = usage_cost_usd(
-        provider_id="xai",
-        model_id="grok-4.3",
-        usage=ProviderTokenUsage(input_tokens=199999, output_tokens=1000, cache_read_tokens=0, cache_write_tokens=0, uncached_input_tokens=199999),
-        metadata=metadata,
-    )
-
-    assert at_threshold == pytest.approx(200000 * 1.25e-06 * 2 + 1000 * 2.5e-06 * 2)
-    assert below_threshold == pytest.approx(199999 * 1.25e-06 + 1000 * 2.5e-06)
 
 
 def test_a_tiered_row_cannot_price_a_wire_that_reports_no_cache_write_bucket(servers: _Servers) -> None:

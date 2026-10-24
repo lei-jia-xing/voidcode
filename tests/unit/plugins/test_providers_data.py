@@ -5,10 +5,10 @@ from __future__ import annotations
 import pytest
 
 from voidcode.capabilities.providers.native.api_routes import api_route_for
-from voidcode.capabilities.providers.native.model_catalog import static_catalog_metadata
-from voidcode.capabilities.providers.native.pricing_rules import usage_cost_usd
+from voidcode.capabilities.providers.native.model_catalog import ProviderModelMetadata, static_catalog_metadata
 from voidcode.capabilities.providers.native.provider_table import PROVIDER_TABLE
 from voidcode.capabilities.providers.native.thinking_rules import thinking_rule_for
+from voidcode.capabilities.providers.pricing import usage_cost_usd
 from voidcode.sdk.provider import ProviderTokenUsage
 
 _SUPPORTED_WIRES = frozenset({"openai-completions", "anthropic-messages", "google-generative-ai"})
@@ -43,17 +43,15 @@ def test_usage_cost_oracle_and_unknown_provider_stays_unknown() -> None:
     usage = ProviderTokenUsage(input_tokens=1000, output_tokens=500, cache_read_tokens=100, uncached_input_tokens=900)
 
     priced = usage_cost_usd(
-        provider_id="zai",
-        model_id="glm-4.5",
         usage=usage,
-        metadata=static_catalog_metadata("zai", "glm-4.5"),
+        metadata=ProviderModelMetadata(
+            cost_per_input_token=1e-6, cost_per_output_token=2e-6, cost_per_cache_read_token=0.5e-6, cost_per_cache_write_token=0
+        ),
     )
 
-    assert priced == pytest.approx(0.001651)
+    assert priced == pytest.approx(0.00195)
     assert (
         usage_cost_usd(
-            provider_id="deepseek",
-            model_id="deepseek-chat",
             usage=usage,
             metadata=static_catalog_metadata("deepseek", "deepseek-chat"),
         )
@@ -61,39 +59,34 @@ def test_usage_cost_oracle_and_unknown_provider_stays_unknown() -> None:
     )
 
 
-@pytest.mark.parametrize("number", [float("nan"), float("inf"), float("-inf")])
-@pytest.mark.parametrize("field", ["rates", "multiplier"])
-def test_pricing_rules_reject_nonfinite_rates(number: float, field: str) -> None:
-    from voidcode.capabilities.providers.native.pricing_rules import _row
+@pytest.mark.parametrize("number", [float("nan"), float("inf"), float("-inf"), -1, True])
+def test_context_tiers_reject_invalid_rates(number) -> None:
+    from voidcode.capabilities.providers.native.model_catalog import ContextPriceTier
 
-    row = {"provider": "openai", "match": {"type": "prefix", "value": "model"}, "threshold": 100}
-    row[field] = {"input": number, "output": 1, "cache_read": 1, "cache_write": 1} if field == "rates" else number
-    with pytest.raises(ValueError, match="must be a .*number"):
-        _row(row)
+    with pytest.raises(ValueError):
+        ContextPriceTier(threshold=100, input=number)
 
 
 def test_long_context_prices_respect_threshold_and_unknown_counts() -> None:
-    from unittest.mock import patch
+    from voidcode.capabilities.providers.native.model_catalog import ContextPriceTier, ProviderModelMetadata
 
-    from voidcode.capabilities.providers.native import pricing_rules
-    from voidcode.capabilities.providers.native.model_catalog import ProviderModelMetadata
-    from voidcode.capabilities.providers.native.pricing_rules import LongContextRates, PricingRuleRow
+    metadata = ProviderModelMetadata(
+        cost_per_input_token=1,
+        cost_per_output_token=0,
+        cost_per_cache_read_token=0,
+        cost_per_cache_write_token=0,
+        context_price_tiers=(ContextPriceTier(100, input=2), ContextPriceTier(200, input=3)),
+    )
 
-    metadata = ProviderModelMetadata(cost_per_input_token=1, cost_per_output_token=0, cost_per_cache_read_token=0, cost_per_cache_write_token=0)
-    rule = PricingRuleRow("openai", "prefix", "model", 100, False, LongContextRates(2, 0, 0, 0), None)
-    with patch.dict(pricing_rules.PRICING_RULES, {"openai": (rule,)}):
+    def cost(count, cache_write):
+        return usage_cost_usd(
+            metadata=metadata, usage=ProviderTokenUsage(input_tokens=count, cache_read_tokens=0, cache_write_tokens=cache_write, output_tokens=0)
+        )
 
-        def cost(count, cache_write):
-            return usage_cost_usd(
-                provider_id="openai",
-                model_id="model",
-                metadata=metadata,
-                usage=ProviderTokenUsage(input_tokens=count, cache_read_tokens=0, cache_write_tokens=cache_write, output_tokens=0),
-            )
-
-        assert cost(100, 0) == 100
-        assert cost(101, 0) == 202
-        assert cost(100, None) is None
+    assert cost(100, 0) == 100
+    assert cost(101, 0) == 202
+    assert cost(201, 0) == 603
+    assert cost(100, None) is None
 
 
 def test_malformed_budget_tables_are_not_discarded(monkeypatch) -> None:

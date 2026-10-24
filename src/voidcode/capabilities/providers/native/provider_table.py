@@ -118,7 +118,7 @@ PROVIDER_TABLE_BY_ID: Final[Mapping[str, ProviderTableRow]] = {row.id: row for r
 def require_provider_id(provider_id: str, *, source: str) -> str:
     """``provider_id`` when the table declares it, else a loud import-time failure.
 
-    The rule files (``api_routes``, ``thinking_rules``, ``pricing_rules``) address
+    The rule files (``api_routes``, ``thinking_rules``) address
     providers by id; a typo there would otherwise become a table nothing ever
     consults, so the citation is checked against the one provider table instead.
     """

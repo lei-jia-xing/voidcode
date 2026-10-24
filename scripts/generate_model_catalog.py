@@ -126,6 +126,20 @@ def _model_entry(raw: dict[str, object], api: str) -> dict[str, object] | None:
         rate = _per_token(cost, bucket)
         if rate is not None:
             entry[f"cost_per_{bucket}_token"] = rate
+    tiers = []
+    for raw_tier in cost.get("tiers", []):
+        tier = raw_tier.get("tier", {})
+        if tier.get("type") != "context":
+            raise ValueError(f"unsupported models.dev price tier: {tier}")
+        normalized = {"threshold": tier.get("size")}
+        for bucket in ("input", "output", "cache_read", "cache_write"):
+            rate = _per_token(raw_tier, bucket)
+            if rate is not None:
+                normalized[bucket] = rate
+        tiers.append(normalized)
+    if tiers:
+        entry["context_price_tiers"] = sorted(tiers, key=lambda tier: tier["threshold"])
+
     if isinstance(max_output_tokens, int) and not isinstance(max_output_tokens, bool) and max_output_tokens > 0:
         entry["max_output_tokens"] = max_output_tokens
     if isinstance(max_input_tokens, int) and not isinstance(max_input_tokens, bool) and max_input_tokens > 0:

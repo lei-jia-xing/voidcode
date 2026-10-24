@@ -253,5 +253,5 @@ the packaged snapshot and does not need network access for catalog lookup.
 `.github/workflows/update-model-catalog.yml` runs daily and can also be triggered
 manually. It validates the generated data and provider behavior, then creates or
 updates one catalog refresh PR. GitHub Actions must be allowed to create PRs in
-the repository settings. No automatic merge is configured. Wire/thinking quirks
-and long-context pricing rules remain separate pending their upstream migration.
+the repository settings. No automatic merge is configured. Wire/thinking quirks remain separate. Long-context price tiers are generated
+from the same models.dev response as each model's base rates.
