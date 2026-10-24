@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import re
 import subprocess
@@ -15,6 +16,7 @@ from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.tools import ResourceChange, TextOutput, ToolSuccess
 
+from ._replace import replace_file
 from .errors import raise_tool_diagnostic
 
 _CHANGE_OPERATIONS: dict[str, Literal["create", "update", "delete", "move"]] = {"A": "create", "M": "update", "D": "delete", "R": "move"}
@@ -43,6 +45,7 @@ class _PreparedMarkerChange:
     path: str
     content: str = ""
     old_path: str | None = None
+    expected_content: bytes | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -415,16 +418,20 @@ def _apply_marker_patch(
             target = workspace / hunk.path
             if not target.exists():
                 raise ValueError(f"Failed to read file for deletion: {target}")
-            staged_contents.pop(hunk.path, None)
-            prepared.append(_PreparedMarkerChange(status="D", path=hunk.path))
+            previous = staged_contents.pop(hunk.path, None)
+            expected_content = target.read_bytes() if previous is None else previous.encode("utf-8")
+            prepared.append(_PreparedMarkerChange(status="D", path=hunk.path, expected_content=expected_content))
         else:
             source_file = workspace / hunk.path
             source_content = staged_contents.get(hunk.path)
             if source_content is None:
                 try:
-                    source_content = source_file.read_text(encoding="utf-8")
+                    expected_content = source_file.read_bytes()
+                    source_content = expected_content.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
                 except FileNotFoundError as exc:
                     raise ValueError(f"Failed to read file to update: {source_file}") from exc
+            else:
+                expected_content = source_content.encode("utf-8")
             content = _derive_marker_update_content_from_text(
                 source_content,
                 file_path=source_file,
@@ -432,7 +439,7 @@ def _apply_marker_patch(
             )
             if hunk.move_path is None:
                 staged_contents[hunk.path] = content
-                prepared.append(_PreparedMarkerChange(status="M", path=hunk.path, content=content))
+                prepared.append(_PreparedMarkerChange(status="M", path=hunk.path, content=content, expected_content=expected_content))
             else:
                 source_path = (workspace / hunk.path).resolve()
                 destination_path = (workspace / hunk.move_path).resolve()
@@ -448,6 +455,7 @@ def _apply_marker_patch(
                         path=hunk.move_path,
                         content=content,
                         old_path=hunk.path,
+                        expected_content=expected_content,
                     )
                 )
 
@@ -467,11 +475,13 @@ def _apply_marker_patch(
 
     for change in prepared:
         target = workspace / change.path
+        old_target = workspace / (change.old_path or change.path)
+        if change.status in {"D", "R"} and (old_target.is_symlink() or old_target.read_bytes() != change.expected_content):
+            raise OSError(errno.ESTALE, "File changed since patch validation", str(old_target))
         if change.status in {"A", "M", "R"}:
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(change.content, encoding="utf-8", newline="\n")
+            replace_file(target, change.content.encode("utf-8"), expected_content=change.expected_content if change.status == "M" else None)
         if change.status in {"D", "R"}:
-            old_target = workspace / (change.old_path or change.path)
             old_target.unlink()
 
     changes: list[PatchChange] = []

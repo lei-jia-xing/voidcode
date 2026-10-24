@@ -544,3 +544,28 @@ patch mutations, path metadata parsing and cancellation are still pending review
 Validation: 69 files/artifact unit tests and 6 core-builtins/optional-query
 integration tests passed. Ruff and source type checks passed; CodeGraph synced.
 Full capability audit and full-suite completion gate remain outstanding.
+
+## Marker patch commit boundaries
+
+Marker update preparation now retains the source bytes used to derive each change,
+including staged results for repeated same-file edits. Updates reuse checked
+replacement instead of truncating writes. Extended that same small helper to
+create new files via a complete temporary sibling plus os.link: a concurrent
+creator fails with EEXIST instead of being overwritten. Adds and move destinations
+use this creation mode. Deletes and move sources compare the prepared bytes again
+before committing. Removed no patch syntax or in-memory exact matching behavior.
+
+Six regressions cover post-preflight competing writers for add/update/delete/move,
+and successful add/move commits with temporary-file cleanup. Add retains existing
+parser behavior (no implied trailing newline); moving the existing newline-terminated
+source retains its trailing newline. Existing permission and write-failure helper
+regressions continue covering the shared implementation.
+
+This is not a multi-file transaction. Move creates destination before deleting
+source, and checks are best effort; a writer can still race after the last check.
+Marker operation ordering/path aliases and partial-commit reporting need further
+review. No rollback or global filesystem locks added.
+
+Validation: 75 files/artifact unit tests and 6 core-builtins/optional-query
+integration tests passed. Ruff/source type checks passed; CodeGraph synchronized.
+Full capability audit and final full-suite gate remain outstanding.

@@ -1256,3 +1256,56 @@ def test_unified_patch_never_overwrites_workspace_scratch_filename(tmp_path: Pat
     assert scratch.read_bytes() == b"existing user content\x00\r\n"
     assert target.read_text(encoding="utf-8") == ("new\n" if matches else "old\n")
     assert sorted(p.name for p in tmp_path.iterdir()) == [".voidcode_edit.patch", "target.txt"]
+
+
+@pytest.mark.parametrize("operation", ["add", "update", "delete", "move"])
+def test_marker_patch_commit_rejects_changes_after_preflight(tmp_path: Path, monkeypatch, operation: str) -> None:
+    from voidcode.capabilities.files import apply_patch
+
+    source = tmp_path / "source.txt"
+    source.write_bytes(b"old\n")
+    destination = tmp_path / "destination.txt"
+    body = {
+        "add": "*** Add File: destination.txt\n+new\n",
+        "update": "*** Update File: source.txt\n@@\n-old\n+new\n",
+        "delete": "*** Delete File: source.txt\n",
+        "move": "*** Update File: source.txt\n*** Move to: destination.txt\n@@\n-old\n+new\n",
+    }[operation]
+    verify = apply_patch._verify_patch_expected_hashes
+    changed = destination if operation in {"add", "move"} else source
+
+    def concurrent_writer(**kwargs):
+        verify(**kwargs)
+        changed.write_bytes(b"concurrent writer\n")
+
+    monkeypatch.setattr(apply_patch, "_verify_patch_expected_hashes", concurrent_writer)
+    with pytest.raises(OSError):
+        apply_patch.execute_patch(
+            {"patch": f"*** Begin Patch\n{body}*** End Patch\n", "expectedHashes": {"source.txt": hashlib.sha256(source.read_bytes()).hexdigest()}},
+            context=_context(tmp_path),
+        )
+    assert changed.read_bytes() == b"concurrent writer\n"
+    if operation in {"add", "move"}:
+        assert source.read_bytes() == b"old\n"
+    assert not list(tmp_path.glob(".voidcode_edit_*"))
+
+
+@pytest.mark.parametrize("operation", ["add", "move"])
+def test_marker_patch_commits_new_destination_and_removes_source_only_for_move(tmp_path: Path, operation: str) -> None:
+    from voidcode.capabilities.files.apply_patch import execute_patch
+
+    source = tmp_path / "source.txt"
+    source.write_bytes(b"old\n")
+    body = (
+        "*** Add File: destination.txt\n+new\n"
+        if operation == "add"
+        else "*** Update File: source.txt\n*** Move to: destination.txt\n@@\n-old\n+new\n"
+    )
+    result = execute_patch(
+        {"patch": f"*** Begin Patch\n{body}*** End Patch\n", "expectedHashes": {"source.txt": hashlib.sha256(source.read_bytes()).hexdigest()}},
+        context=_context(tmp_path),
+    )
+    assert isinstance(result, ToolSuccess)
+    assert (tmp_path / "destination.txt").read_bytes() == (b"new" if operation == "add" else b"new\n")
+    assert source.exists() == (operation == "add")
+    assert not list(tmp_path.glob(".voidcode_edit_*"))
