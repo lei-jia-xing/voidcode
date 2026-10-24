@@ -102,7 +102,7 @@ def _strip_heredoc(input_text: str) -> str:
     )
     if heredoc_match is None:
         return input_text
-    return heredoc_match.group(2)
+    return heredoc_match.group(2) + "\n"
 
 
 def _looks_like_marker_patch(patch_text: str) -> bool:
@@ -147,20 +147,24 @@ def _parse_marker_update_chunks(lines: list[str], index: int) -> tuple[tuple[_Ma
     chunks: list[_MarkerChunk] = []
     current = index
     while current < len(lines) and not lines[current].startswith("***"):
-        if not lines[current].startswith("@@"):
+        if not lines[current].strip():
             current += 1
             continue
+        if not lines[current].startswith("@@"):
+            raise ValueError(f"malformed patch: expected an @@ update chunk, got: {lines[current]}")
 
         context = lines[current][2:].strip() or None
         current += 1
         old_lines: list[str] = []
         new_lines: list[str] = []
         is_end_of_file = False
-        while current < len(lines) and not lines[current].startswith("@@") and not lines[current].startswith("***"):
+        while current < len(lines) and not lines[current].startswith("@@"):
             change_line = lines[current]
             if change_line == "*** End of File":
                 is_end_of_file = True
                 current += 1
+                break
+            if change_line.startswith("***"):
                 break
             if change_line.startswith(" "):
                 content = change_line[1:]
@@ -170,6 +174,8 @@ def _parse_marker_update_chunks(lines: list[str], index: int) -> tuple[tuple[_Ma
                 old_lines.append(change_line[1:])
             elif change_line.startswith("+"):
                 new_lines.append(change_line[1:])
+            else:
+                raise ValueError(f"malformed patch: update lines must start with space, + or -, got: {change_line}")
             current += 1
         chunks.append(
             _MarkerChunk(
@@ -183,19 +189,13 @@ def _parse_marker_update_chunks(lines: list[str], index: int) -> tuple[tuple[_Ma
 
 
 def _parse_marker_patch(patch_text: str) -> tuple[_MarkerHunk, ...]:
-    lines = _strip_heredoc(patch_text.strip()).split("\n")
-    begin_index = next((index for index, line in enumerate(lines) if line.strip()), -1)
-    end_index = next(
-        (index for index in range(len(lines) - 1, -1, -1) if lines[index].strip()),
-        -1,
-    )
-    if begin_index == -1 or end_index == -1 or begin_index >= end_index:
+    lines = _strip_heredoc(patch_text.strip()).strip().replace("\r\n", "\n").split("\n")
+    if len(lines) < 2 or lines[0].strip() != "*** Begin Patch" or lines[-1].strip() != "*** End Patch":
         raise ValueError("Invalid patch format: missing Begin/End markers")
-    if lines[begin_index].strip() != "*** Begin Patch" or lines[end_index].strip() != "*** End Patch":
-        raise ValueError("Invalid patch format: missing Begin/End markers")
+    end_index = len(lines) - 1
 
     hunks: list[_MarkerHunk] = []
-    current = begin_index + 1
+    current = 1
     while current < end_index:
         current_line = lines[current]
         if not current_line.strip():
@@ -562,7 +562,7 @@ def _consume_path_token(text: str) -> tuple[str, int] | None:
 
 
 def _strip_diff_prefix(path_text: str) -> str:
-    path = path_text.strip()
+    path = path_text
     if path.startswith('"'):
         decoded = _decode_c_quoted_path(path)
         if decoded is not None:
@@ -604,7 +604,7 @@ def _parse_diff_git_paths(line: str) -> tuple[str, str] | None:
 
 
 def _parse_patch_file_path(raw_value: str) -> str | None:
-    value = raw_value.strip()
+    value = raw_value
     if not value:
         return None
     if value.startswith('"'):
@@ -618,88 +618,7 @@ def _parse_patch_file_path(raw_value: str) -> str | None:
         return path
     if '"' in value:
         return None
-    return value.split("\t", 1)[0].rstrip()
-
-
-def _quote_git_path(prefix: str, path: str) -> str:
-    escaped = path.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{prefix}/{escaped}"'
-
-
-def _format_diff_git_line(old_path: str, new_path: str) -> str:
-    quote_paths = any(ch in path for ch in (" ", "\t", '"', "\\") for path in (old_path, new_path))
-    old_token = _quote_git_path("a", old_path) if quote_paths else f"a/{old_path}"
-    new_token = _quote_git_path("b", new_path) if quote_paths else f"b/{new_path}"
-    return f"diff --git {old_token} {new_token}"
-
-
-def _format_patch_marker_path(prefix: str, path: str) -> str:
-    marker = f"{prefix}/{path}"
-    if any(ch in path for ch in (" ", "\t", '"', "\\")):
-        return _quote_git_path(prefix, path)
-    return marker
-
-
-def _normalize_diff_block(header: str, block_lines: list[str]) -> str:
-    diff_paths = _parse_diff_git_paths(header)
-    header_line = header
-    if diff_paths is not None:
-        old_path, new_path = diff_paths
-        header_line = _format_diff_git_line(old_path, new_path)
-
-    has_mode = any(line.startswith("old mode ") for line in block_lines) and any(line.startswith("new mode ") for line in block_lines)
-    has_markers = any(line.startswith("--- ") or line.startswith("+++ ") for line in block_lines)
-    has_hunks = any(line.startswith("@@ ") for line in block_lines)
-
-    if has_mode and not has_markers and not has_hunks and diff_paths is not None:
-        old_path, new_path = diff_paths
-        old_marker = _format_patch_marker_path("a", old_path)
-        new_marker = _format_patch_marker_path("b", new_path)
-        inserted_block: list[str] = []
-        inserted = False
-        for line in block_lines:
-            inserted_block.append(line)
-            if not inserted and line.startswith("new mode "):
-                inserted_block.append(f"--- {old_marker}")
-                inserted_block.append(f"+++ {new_marker}")
-                inserted = True
-        if not inserted:
-            inserted_block.extend([f"--- {old_marker}", f"+++ {new_marker}"])
-        block_lines = inserted_block
-
-    return "\n".join([header_line] + block_lines)
-
-
-def _normalize_patch_text(patch_text: str) -> str:
-    lines = patch_text.splitlines()
-    normalized: list[str] = []
-    current_header: str | None = None
-    current_block: list[str] | None = None
-
-    def flush_block() -> None:
-        nonlocal current_header, current_block
-        if current_header is None or current_block is None:
-            return
-        normalized.append(_normalize_diff_block(current_header, current_block))
-        current_header = None
-        current_block = None
-
-    for line in lines:
-        if line.startswith("diff --git "):
-            flush_block()
-            current_header = line
-            current_block = []
-            continue
-        if current_block is None:
-            normalized.append(line)
-        else:
-            current_block.append(line)
-
-    flush_block()
-    result = "\n".join(normalized)
-    if patch_text.endswith("\n"):
-        result += "\n"
-    return result
+    return value.split("\t", 1)[0]
 
 
 def _run_git_command(args: list[str], cwd: Path, *, patch: str) -> subprocess.CompletedProcess[str]:
@@ -726,11 +645,6 @@ def _changes_from_unified_diff(patch_text: str) -> list[PatchChange]:
     for patched_file in patch_set:
         old_path = None if patched_file.source_file == "/dev/null" else _strip_diff_prefix(patched_file.source_file)
         new_path = None if patched_file.target_file == "/dev/null" else _strip_diff_prefix(patched_file.target_file)
-
-        if old_path is not None and '"' in old_path:
-            old_path = None
-        if new_path is not None and '"' in new_path:
-            new_path = None
 
         if old_path is None and new_path is not None:
             changes.append(PatchChange(path=new_path, status="A"))
@@ -801,7 +715,7 @@ def _changes_from_patch_metadata(patch_text: str) -> list[PatchChange]:
 
 
 def _changes_from_patch(patch_text: str) -> list[PatchChange]:
-    changes = _changes_from_unified_diff(_normalize_patch_text(patch_text))
+    changes = _changes_from_unified_diff(patch_text)
     changes.extend(_changes_from_patch_metadata(patch_text))
     return list(dict.fromkeys(changes))
 
@@ -829,8 +743,8 @@ def execute_patch(
     else:
         raise ValueError(f"{tool_name} expectedHashes must be an object mapping path strings to SHA-256 hash strings")
 
-    stripped_patch = _strip_heredoc(patch_text).strip()
-    if not stripped_patch:
+    patch_text = _strip_heredoc(patch_text)
+    if not patch_text.strip():
         raise_tool_diagnostic(
             message=f"{tool_name} received empty patch text.",
             error_kind="parse_error",
@@ -845,7 +759,6 @@ def execute_patch(
     if _looks_like_marker_patch(patch_text):
         return _apply_marker_patch(patch_text, context=context, expected_hashes=expected_hashes, tool_name=tool_name)
 
-    normalized_patch = _normalize_patch_text(patch_text)
     changes = _changes_from_patch(patch_text)
     if not changes:
         raise_tool_diagnostic(
@@ -857,7 +770,7 @@ def execute_patch(
             ),
             details={"affected_paths": [], "patch_invalid": True},
         )
-    check = _run_git_command(["git", "apply", "--check", "-"], workspace, patch=normalized_patch)
+    check = _run_git_command(["git", "apply", "--check", "-"], workspace, patch=patch_text)
     if check.returncode != 0:
         error = check.stdout or "Patch check failed"
         raise_tool_diagnostic(
@@ -884,7 +797,7 @@ def execute_patch(
 
     if context.abort_signal is not None and context.abort_signal.cancelled:
         return _patch_result([], tool_name=tool_name, error="patch cancelled before committing files", cancelled=True)
-    apply = _run_git_command(["git", "apply", "-"], workspace, patch=normalized_patch)
+    apply = _run_git_command(["git", "apply", "-"], workspace, patch=patch_text)
     if apply.returncode != 0:
         error = apply.stdout or "Patch apply failed"
         raise_tool_diagnostic(

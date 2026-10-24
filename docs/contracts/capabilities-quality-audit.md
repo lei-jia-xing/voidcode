@@ -17,7 +17,7 @@ not establish source review.
 | `exec/shell_exec.py` | Partial: typed SDK artifact references and consumers reviewed; interception policy, progress boundaries and remaining result semantics pending |
 | `files/__init__.py` | Reviewed: typed Tool wrapper preserves diagnostic failures; shared core/plugin factory |
 | `files/_replace.py` | Reviewed: checked replacement and exclusive atomic creation; cleanup, permissions and race regressions; documented metadata/compare-window limits |
-| `files/apply_patch.py` | Partial: stdin unified diffs, typed change pipeline, marker preflight/checked commits, partial results and cancellation boundaries reviewed; parser and unified subprocess ownership review pending; redundant mode verification/error enrichment removed |
+| `files/apply_patch.py` | Partial: stdin unified diffs, typed change pipeline, marker preflight/checked commits, partial results and cancellation boundaries reviewed; marker grammar/EOF, path whitespace and heredoc handling reviewed; unified subprocess ownership and remaining path-parser reconciliation pending |
 | `files/apply_workspace_edit.py` | Partial: strict generated schema, frozen-argument conversion, checked replacement, commit projections, LSP coordinates, query-failure flow, cooperative cancellation and structured partial commits reviewed; final ingress/bounds reconciliation pending |
 | `files/edit_tool.py` | Partial: strict generated ingress, exact replacement, checked commit, diagnostic bounds and cancellation reviewed; diff formatting/bounds and patch delegation review pending |
 | `files/errors.py` | Reviewed: retain only classified diagnostic exception and raising helper |
@@ -1280,3 +1280,30 @@ added. Manual real-git and actual execute_patch probes with core.filemode=true
 and false both changed 0644 to 0755 and reported the update. Ruff, formatting,
 source type checking and CodeGraph sync passed. Implementation net reduction:
 156 lines. Parser and unified subprocess ownership/cancellation remain pending.
+
+
+## Patch grammar and native unified input
+
+Removed the custom unified-patch normalizer and its path re-quoting/mode-header
+insertion helpers. Git now receives the caller's unified diff unchanged after
+optional heredoc unwrapping; metadata parsing uses the same input without a
+second normalization pass. Native mode-only diffs do not require artificial
+---/+++ headers. Heredoc extraction preserves the body's final newline.
+
+Fixed the unreachable marker `*** End of File` branch: chunk scanning now sees
+the sentinel before treating other *** lines as operation boundaries. Invalid
+chunk headers and unprefixed update lines now fail rather than silently vanish.
+Marker framing no longer rescans for first/last nonblank lines; CRLF marker
+transport is normalized before chunk parsing.
+
+Path parsing preserves filename whitespace and decoded quote characters rather
+than stripping/dropping them. This keeps expected-hash lookups aligned with git's
+actual target, including trailing-space filenames.
+
+Validation: 86 existing file/codec/fact tests passed (1.37s), no tests changed or
+added. Manual probes verified repeated EOF matching over CRLF patch input,
+rejection of invalid update lines without writes, native space-containing mode
+paths, heredoc unified input, and trailing-space filename stale-hash rejection
+followed by a valid update. Ruff, formatting, source type checking and CodeGraph
+sync passed. Net implementation reduction: 87 lines. Remaining native path-parser
+reconciliation and subprocess ownership are not yet marked complete.
