@@ -123,3 +123,61 @@ def test_pdf_extractor_is_killed_and_reaped_on_early_exit(monkeypatch, failure):
         read_formats.render_pdf_bytes(b"%PDF-test", cancelled=cancelled)
     assert process.killed
     assert process.reaped
+
+
+@pytest.mark.parametrize("value", [b"x" * 100, "\x01" * 100])
+def test_sqlite_pagination_counts_encoded_cells_without_losing_rows(tmp_path, monkeypatch, value):
+    import sqlite3
+
+    from voidcode.capabilities.files import read_formats
+
+    path = tmp_path / "source.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE entries (value)")
+        connection.executemany("INSERT INTO entries VALUES (?)", [(value,)] * 10)
+    monkeypatch.setattr(read_formats, "MAX_VIEW_BYTES", 1024)
+    offset = 1
+    recovered = []
+    while offset is not None:
+        page = read_formats.render_sqlite(path, table="entries", query=None, offset=offset, limit=200)
+        assert len(json.dumps({key: page[key] for key in ("tables", "columns", "rows")}, ensure_ascii=False).encode("utf-8")) <= 1024
+        recovered.extend(page["rows"])
+        offset = page["next_offset"]
+        if offset is not None:
+            assert page["partial"] is True
+            assert offset == len(recovered) + 1
+    expected = {"type": "blob", "hex": value.hex()} if isinstance(value, bytes) else value
+    assert recovered == [[expected]] * 10
+
+
+def test_sqlite_non_finite_query_result_fails_at_view_boundary(tmp_path):
+    import sqlite3
+
+    from voidcode.capabilities.files.read_formats import render_sqlite
+
+    path = tmp_path / "source.db"
+    sqlite3.connect(path).close()
+    with pytest.raises(ValueError, match="non-finite"):
+        render_sqlite(path, table=None, query="SELECT 1e999", offset=1, limit=10)
+
+
+@pytest.mark.parametrize(
+    "query", ["DELETE FROM entries", "UPDATE entries SET value=2", "PRAGMA user_version=1", "ATTACH DATABASE ':memory:' AS other"]
+)
+def test_sqlite_views_reject_mutating_statements(tmp_path, query):
+    import sqlite3
+
+    from voidcode.capabilities.files.read_formats import render_sqlite
+
+    path = tmp_path / "source.db"
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("CREATE TABLE entries (value)")
+        connection.execute("INSERT INTO entries VALUES (1)")
+        connection.commit()
+        with pytest.raises(ValueError, match="read-only query failed"):
+            render_sqlite(path, table=None, query=query, offset=1, limit=10)
+        assert connection.execute("SELECT value FROM entries").fetchall() == [(1,)]
+        assert connection.execute("PRAGMA user_version").fetchone() == (0,)
+    finally:
+        connection.close()

@@ -634,3 +634,29 @@ Validation: 91 format/files/artifact/coverage tests passed, followed by all 8 fo
 tests after adding interrupt coverage. Seven read-loopback/core-builtins tests
 passed. Ruff, formatting and source type checks passed; CodeGraph synchronized.
 Complete capability audit and final full-suite gate remain outstanding.
+
+## SQLite views: budget encoded data, not source-cell bytes
+
+Replaced type-by-type byte-count guesses with JSON encoding of the actual projected
+row. BLOB hex expansion, string/control escaping, array separators, column names
+and schema JSON now count toward the data budget. Native sqlite3 row values pass
+through directly except for the explicit BLOB envelope; removed invented fallback
+string coercion for types SQLite does not return. Non-finite floats fail at the
+view boundary using JSON's allow_nan=False instead of leaking into a later SDK
+serialization failure.
+
+Pagination regressions cover hex BLOBs and escaped control strings under a small
+budget, follow every returned row offset, and verify complete recovery. Added an
+infinity query regression plus DELETE/UPDATE/PRAGMA/ATTACH read-only rejection tests.
+This bounds tables/columns/rows JSON, not all outer metadata or pretty-print
+indentation: read_tool's existing artifact/output cap governs the full rendered
+view. sqlite3's query-only mode, authorizer and deadline remain in effect.
+
+Database-file source hashes do not represent a logical WAL snapshot; remaining
+review must address that observation semantics along with notebook global output
+limits and generic read control flow. Full audit remains in progress.
+
+Validation: 95 format/files/artifact/coverage tests passed, then all 15 format tests
+passed after adding read-only rejection coverage. Seven read-loopback/core-builtins
+tests passed. Ruff/source type checks passed; CodeGraph synchronized. Complete
+capability audit and final full-suite gate remain outstanding.

@@ -100,7 +100,7 @@ def render_sqlite(
         rows: list[list[object]] = []
         next_offset = None
         truncated = False
-        selected_bytes = schema_bytes
+        tables = [{"name": name, "sql": schema} for name, schema in schemas]
         if sql is not None:
 
             def authorize(action: int, arg1: str | None, arg2: str | None, _db: str | None, _source: str | None) -> int:
@@ -114,6 +114,9 @@ def render_sqlite(
             connection.set_authorizer(authorize)
             cursor = connection.execute(sql)
             columns = [str(description[0]) for description in cursor.description or ()]
+            selected_bytes = len(json.dumps({"tables": tables, "columns": columns, "rows": []}, ensure_ascii=False).encode("utf-8"))
+            if selected_bytes > MAX_VIEW_BYTES:
+                raise ValueError("SQLite schema and column names exceed the total view byte limit")
             row_count = 0
             for index, row in enumerate(cursor):
                 row_count = index + 1
@@ -124,26 +127,19 @@ def render_sqlite(
                     truncated = True
                     break
                 safe_row: list[object] = []
-                row_bytes = 0
                 for value in row:
                     if isinstance(value, bytes):
                         if len(value) > MAX_CELL_BYTES:
                             raise ValueError("SQLite query returned a BLOB larger than the per-cell view limit")
-                        item: object = {"type": "blob", "hex": value.hex()}
-                        row_bytes += len(value)
-                    elif isinstance(value, str):
-                        encoded = value.encode("utf-8")
-                        if len(encoded) > MAX_CELL_BYTES:
-                            raise ValueError("SQLite query returned a text cell larger than the per-cell view limit")
-                        item = value
-                        row_bytes += len(encoded)
-                    elif value is None or isinstance(value, int | float):
-                        item = value
-                        row_bytes += len(str(value).encode("utf-8"))
+                        safe_row.append({"type": "blob", "hex": value.hex()})
                     else:
-                        item = str(value)
-                        row_bytes += len(str(value).encode("utf-8"))
-                    safe_row.append(item)
+                        if isinstance(value, str) and len(value.encode("utf-8")) > MAX_CELL_BYTES:
+                            raise ValueError("SQLite query returned a text cell larger than the per-cell view limit")
+                        safe_row.append(value)
+                try:
+                    row_bytes = len(json.dumps(safe_row, ensure_ascii=False, allow_nan=False).encode("utf-8")) + (2 if rows else 0)
+                except ValueError as exc:
+                    raise ValueError("SQLite query returned a non-finite number, which cannot be represented in JSON") from exc
                 if row_bytes > MAX_VIEW_BYTES - selected_bytes:
                     if not rows:
                         raise ValueError("SQLite query row exceeds the total view byte limit")
@@ -158,7 +154,7 @@ def render_sqlite(
             "type": "sqlite",
             "source": str(path),
             "source_sha256": _hash_file(path),
-            "tables": [{"name": name, "sql": schema} for name, schema in schemas],
+            "tables": tables,
             "table": selected_table,
             "columns": columns,
             "rows": rows,
