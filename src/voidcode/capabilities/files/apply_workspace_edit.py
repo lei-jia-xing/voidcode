@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import difflib
 import hashlib
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, Final
+from typing import ClassVar, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
@@ -28,24 +27,28 @@ from voidcode.sdk.tools import (
 )
 from voidcode.sdk.workspace_queries import DOCUMENT_STATES, DocumentState, DocumentStateRequest
 
-_SHA256_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{64}$")
-
 
 class _TextEdit(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+
     path: str
     startLine: int = Field(ge=1)
     startCharacter: int = Field(ge=1)
     endLine: int = Field(ge=1)
     endCharacter: int = Field(ge=1)
     newText: str
-    expectedHash: str
-    expectedVersion: int | None = None
-    version: int | None = None
+    expectedHash: str = Field(description="SHA-256 content hash of the target file from read.")
+    expectedVersion: int | None = Field(default=None, description="Must match the active document-state provider's version when supplied.")
+    version: int | None = Field(default=None, description="LSP documentChanges version; checked when supplied.")
 
 
 class _WorkspaceEditArgs(BaseModel):
-    positionEncoding: str | None = None
-    edits: list[_TextEdit] = Field(min_length=1)
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    positionEncoding: Literal["utf-8", "utf-16", "utf-32"] | None = Field(
+        default=None, description="LSP position encoding; defaults to the document's negotiated encoding or UTF-16."
+    )
+    edits: list[_TextEdit] = Field(min_length=1, description="Text edits with 1-based line/character ranges, each checked against expectedHash.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,51 +125,11 @@ class ApplyWorkspaceEditTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="apply_workspace_edit",
         description="Apply validated LSP text edits with document-version checks; runtime approval governs filesystem access.",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "positionEncoding": {
-                    "type": "string",
-                    "enum": ["utf-8", "utf-16", "utf-32"],
-                    "description": "LSP position encoding; defaults to the opened document's negotiated encoding or UTF-16.",
-                },
-                "edits": {
-                    "type": "array",
-                    "minItems": 1,
-                    "description": (
-                        "Text edits with 1-based line/character ranges. Every edit requires expectedHash from read. "
-                        "expectedVersion, when provided, must match the document-state provider's current version."
-                    ),
-                    "items": {
-                        "type": "object",
-                        "required": ["path", "startLine", "startCharacter", "endLine", "endCharacter", "newText", "expectedHash"],
-                        "properties": {
-                            "path": {"type": "string"},
-                            "startLine": {"type": "integer", "minimum": 1},
-                            "startCharacter": {"type": "integer", "minimum": 1},
-                            "endLine": {"type": "integer", "minimum": 1},
-                            "endCharacter": {"type": "integer", "minimum": 1},
-                            "newText": {"type": "string"},
-                            "expectedHash": {"type": "string"},
-                            "expectedVersion": {
-                                "type": "integer",
-                                "description": "Optional document version; checked against the active document-state provider.",
-                            },
-                            "version": {"type": "integer", "description": "LSP documentChanges version; checked when supplied."},
-                        },
-                    },
-                },
-            },
-            "required": ["edits"],
-            "additionalProperties": False,
-        },
+        input_schema=_WorkspaceEditArgs.model_json_schema(),
         effects=frozenset({ToolEffect.WRITE}),
         semantics=frozenset({ToolSemantic.RESOURCE_EDIT}),
         path_argument_keys=("edits[].path",),
     )
-
-    def __init__(self) -> None:
-        pass
 
     def invoke(
         self,
@@ -176,7 +139,8 @@ class ApplyWorkspaceEditTool:
         services: PluginServices,
     ) -> ToolResult:
         workspace = context.require_workspace()
-        raw_edits = call.arguments.get("edits")
+        arguments = json_wire_object(call.arguments)
+        raw_edits = arguments.get("edits")
         if isinstance(raw_edits, list):
             for index, item in enumerate(raw_edits):
                 if isinstance(item, dict) and not isinstance(item.get("expectedHash"), str):
@@ -196,10 +160,8 @@ class ApplyWorkspaceEditTool:
                         },
                     )
 
-        args = _WorkspaceEditArgs.model_validate(dict(call.arguments))
-        requested_encoding = args.positionEncoding.lower() if args.positionEncoding is not None else None
-        if requested_encoding is not None and requested_encoding not in ("utf-8", "utf-16", "utf-32"):
-            raise ValueError(f"apply_workspace_edit unsupported positionEncoding: {args.positionEncoding}")
+        args = _WorkspaceEditArgs.model_validate(arguments)
+        requested_encoding = args.positionEncoding
 
         raw_contents: dict[Path, bytes] = {}
         originals: dict[Path, str] = {}

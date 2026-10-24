@@ -441,3 +441,25 @@ size/depth limits still require review during the remaining projection audit.
 Validation: 80 auth/catalog/dispatch/panels/stream/error tests passed (21.19s),
 including both new credential diagnostic regressions; Ruff and source type checks
 passed. Full capability audit and its final full-suite gate remain outstanding.
+
+## Workspace edit ingress: one authoritative schema
+
+Replaced hand-maintained apply_workspace_edit JSON Schema with the Pydantic input
+model's generated schema, retaining coordinate/version/hash descriptions. Both
+nested edit and top-level argument models now forbid extra fields and primitive
+coercion. Removed redundant encoding validation, unused hash regex and empty
+constructor. Existing UTF-8/16/32 coordinate and version behavior stays covered.
+
+Strict validation exposed the SDK's frozen tuple/mapping arguments. Convert them
+once with the existing SDK json_wire_object before validation. This also fixes the
+missing-expectedHash diagnostic precheck, which previously checked only lists and
+therefore never saw normal SDK-frozen edit arrays. Regression tests verify its
+structured diagnostic and that invalid later edits leave the entire batch unwritten.
+
+Mutation review is not yet complete: direct writes can truncate on failure and
+validation-to-write concurrent-change handling still needs review. Do not infer
+transactional multi-file behavior from the ingress tests.
+
+Validation: 56 files/artifact unit tests and 6 optional-query/core-builtins
+integration tests passed. Ruff and source type checks passed, CodeGraph synced.
+Remaining capability work and full-suite completion gate are still outstanding.

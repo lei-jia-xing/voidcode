@@ -1053,3 +1053,42 @@ def test_write_failure_preserves_original_and_removes_temp_file(tmp_path: Path, 
     assert target.read_text() == "original\n"
     assert target.stat().st_mode & 0o777 == 0o755
     assert list(tmp_path.glob(".voidcode_write_*")) == []
+
+
+@pytest.mark.parametrize(
+    "invalid_fields",
+    [{"startLine": True}, {"startCharacter": "1"}, {"expectedVersion": False}, {"unexpected": "ignored-before"}],
+)
+def test_workspace_edit_rejects_invalid_batch_before_writing(tmp_path: Path, invalid_fields: dict) -> None:
+    from voidcode.capabilities.files.apply_workspace_edit import ApplyWorkspaceEditTool
+
+    target = tmp_path / "target.txt"
+    target.write_text("original", encoding="utf-8")
+    edit = {
+        "path": "target.txt",
+        "startLine": 1,
+        "startCharacter": 1,
+        "endLine": 1,
+        "endCharacter": 2,
+        "newText": "X",
+        "expectedHash": hashlib.sha256(target.read_bytes()).hexdigest(),
+    }
+    with pytest.raises(ValueError):
+        ApplyWorkspaceEditTool().invoke(
+            ToolCall(tool_name="apply_workspace_edit", arguments={"edits": [edit, {**edit, **invalid_fields}]}),
+            context=_context(tmp_path),
+            services=cast(Any, _VersionServices(unanswered=True)),
+        )
+    assert target.read_text(encoding="utf-8") == "original"
+
+
+def test_workspace_edit_missing_hash_returns_diagnostic_from_frozen_arguments(tmp_path: Path) -> None:
+    from voidcode.capabilities.files.apply_workspace_edit import ApplyWorkspaceEditTool
+
+    result = ApplyWorkspaceEditTool().invoke(
+        ToolCall(tool_name="apply_workspace_edit", arguments={"edits": [{"path": "target.txt"}]}),
+        context=_context(tmp_path),
+        services=_SERVICES,
+    )
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics.details["reason"] == "missing_expected_hash"
