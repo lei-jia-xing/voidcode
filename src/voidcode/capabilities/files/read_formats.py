@@ -74,6 +74,7 @@ def render_sqlite(
             lambda: int((cancelled is not None and cancelled()) or time.monotonic() - start > SQLITE_TIMEOUT),
             1000,
         )
+        connection.execute("BEGIN")
         schemas: list[tuple[str, str | None]] = []
         schema_bytes = 0
         for name, schema in connection.execute(
@@ -86,10 +87,10 @@ def render_sqlite(
         table_names = {name for name, _ in schemas}
         if table is not None and table not in table_names:
             raise ValueError(f"SQLite table not found: {table}")
-        selected_table = table or (schemas[0][0] if schemas else None)
+        selected_table = table if table is not None else (schemas[0][0] if schemas else None)
         if query is None:
-            escaped = selected_table.replace('"', '""') if selected_table else ""
-            sql = f'SELECT * FROM "{escaped}"' if selected_table else None
+            escaped = selected_table.replace('"', '""') if selected_table is not None else ""
+            sql = f'SELECT * FROM "{escaped}"' if selected_table is not None else None
         else:
             sql = query.strip()
             if not sql:
@@ -153,7 +154,6 @@ def render_sqlite(
         return {
             "type": "sqlite",
             "source": str(path),
-            "source_sha256": _hash_file(path),
             "tables": tables,
             "table": selected_table,
             "columns": columns,
@@ -482,11 +482,6 @@ def _extract_pdf(
             "truncated": next_offset is not None or preview_truncated,
             "partial": next_offset is not None or preview_truncated,
         }
-
-
-def _hash_file(path: Path) -> str:
-    with path.open("rb") as source:
-        return hashlib.file_digest(source, "sha256").hexdigest()
 
 
 def _valid_image(data: bytes, mime: str) -> bool:

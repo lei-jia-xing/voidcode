@@ -24,7 +24,7 @@ not establish source review.
 | `files/gitignore.py` | Reviewed: root-only pathspec matching; removed unused pattern snapshot/property; syntax/order/escape tests |
 | `files/glob_tool.py` | Reviewed: strict ingress, root-relative patterns, traversal/ignore rules, bounded path collection, ordering/error results and cooperative cancellation |
 | `files/grep_tool.py` | Reviewed: strict ingress, literal/regex matching and filters, bounded line/context/result collection, immutable rendering, error handling and cooperative cancellation |
-| `files/read_formats.py` | Partial: notebook pagination/global output budget, SQLite encoded budget/read-only queries, PDF process cleanup/preview cap reviewed; snapshot, image and remaining pagination semantics pending |
+| `files/read_formats.py` | Partial: notebook pagination/global output budget, SQLite encoded budget/read-only snapshot queries and unknown source version, PDF process cleanup/preview cap reviewed; image and remaining pagination semantics pending |
 | `files/read_tool.py` | Pending full source review |
 | `files/write_tool.py` | Reviewed: hash/containment/symlink/atomic replace/cancellation; fail visibly on mode errors and always clean temporary files |
 | `frontmatter.py` | Reviewed source/consumers: safe YAML, duplicate/string-key validation, framing/body/bounds; shared parser tests |
@@ -1376,3 +1376,22 @@ normalization remove /v1. No tests added; existing private route arguments were
 updated. Full source type checking now passes after concurrent SDK changes;
 Ruff and CodeGraph sync passed. External vendor protocol/header assumptions and
 Go's model-specific feedback convention still need reconciliation.
+
+
+## SQLite observations use a transaction, not a physical-file hash
+
+Schema discovery and the selected query now run in one explicit read transaction,
+closed with the existing connection cleanup. Removed source_sha256 and the sole
+whole-file hashing helper: a SQLite observation can include WAL state that is not
+in the main database bytes, and hashing the path after the query cannot establish
+the observation's version. The read projection already accepts an absent source
+hash as unknown. This also removes an unbounded whole-database scan after an
+otherwise bounded query. Empty table names remain distinct from no selected table.
+
+Validation: 94 existing format/file/artifact tests passed (0.99s); no tests added
+or modified. Manual WAL probes showed unchanged main-file bytes while rows changed,
+and no misleading source hash in either view. A writer commit injected between
+schema discovery and row selection remained invisible to the read snapshot, while
+the writer saw its new row. An explicitly selected empty-name table returned its
+row. Ruff, formatting, targeted source type checking and CodeGraph sync passed.
+Other concurrent SDK/product changes were preserved outside this batch.
