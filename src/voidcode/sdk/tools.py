@@ -420,6 +420,8 @@ class ToolFailure[Body: ToolBody]:
     diagnostics: ToolDiagnostics | None = None
     execution: ExecutionObservation | None = None
     timeout_seconds: int | None = None
+    #: Files committed before this invocation failed or was cancelled.
+    changes: tuple[ResourceChange, ...] = ()
     status: ClassVar[Literal["error"]] = "error"
 
 

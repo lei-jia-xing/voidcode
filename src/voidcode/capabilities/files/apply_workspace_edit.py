@@ -15,6 +15,8 @@ from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.queries import QueryContractError
 from voidcode.sdk.services import PluginServices, QueryUnavailable
 from voidcode.sdk.tools import (
+    ConfirmedStop,
+    OutputBounds,
     ResourceChange,
     TextOutput,
     ToolCall,
@@ -156,6 +158,12 @@ class ApplyWorkspaceEditTool:
         display_by_path: dict[Path, str] = {}
         workspace_root = workspace.resolve()
         for edit in args.edits:
+            if context.abort_signal is not None and context.abort_signal.cancelled:
+                return ToolFailure(
+                    tool_name=self.definition.name,
+                    error="apply_workspace_edit cancelled before committing files",
+                    execution=ConfirmedStop(cancellation_signalled=True),
+                )
             requested_path = Path(edit.path)
             path = (requested_path if requested_path.is_absolute() else workspace_root / requested_path).resolve()
             is_external = not path.is_relative_to(workspace_root)
@@ -286,20 +294,6 @@ class ApplyWorkspaceEditTool:
                 content = content[:start] + new_text + content[end:]
             staged[path] = content
 
-        applied_paths: list[str] = []
-        uncommitted_paths: list[str] = [display_by_path[path] for path in staged]
-        try:
-            for path, content in staged.items():
-                replace_file(path, content.encode("utf-8"), expected_content=raw_contents[path])
-                display_path = display_by_path[path]
-                applied_paths.append(display_path)
-                uncommitted_paths.remove(display_path)
-        except OSError as exc:
-            raise RuntimeError(
-                f"apply_workspace_edit failed during write on {path}: {exc}. "
-                f"Applied prefix: {applied_paths}; uncommitted remaining: {uncommitted_paths}"
-            ) from exc
-
         file_results: list[Mapping[str, object]] = []
         for path, final_content in staged.items():
             final_bytes = final_content.encode("utf-8")
@@ -318,6 +312,33 @@ class ApplyWorkspaceEditTool:
                 ),
             }
             file_results.append(file_result)
+
+        applied_paths: list[str] = []
+        error: str | None = None
+        cancelled = False
+        for path, content in staged.items():
+            if context.abort_signal is not None and context.abort_signal.cancelled:
+                cancelled = True
+                error = "apply_workspace_edit cancelled before committing the next file"
+                break
+            try:
+                replace_file(path, content.encode("utf-8"), expected_content=raw_contents[path])
+            except OSError as exc:
+                error = f"apply_workspace_edit failed during write on {path}: {exc}"
+                break
+            applied_paths.append(display_by_path[path])
+
+        if error is not None:
+            remaining = tuple(display_by_path.values())[len(applied_paths) :]
+            message = f"{error}. Applied prefix: {applied_paths}; uncommitted remaining: {list(remaining)}"
+            return ToolFailure(
+                tool_name=self.definition.name,
+                error=message,
+                output=TextOutput(message, bounds=OutputBounds(partial=True)),
+                body=ApplyWorkspaceEditResultBody(paths=tuple(applied_paths), files=tuple(file_results[: len(applied_paths)])),
+                changes=tuple(ResourceChange(path) for path in applied_paths),
+                execution=ConfirmedStop(cancellation_signalled=cancelled),
+            )
 
         display_paths = tuple(sorted(display_by_path.values()))
         return ToolSuccess(

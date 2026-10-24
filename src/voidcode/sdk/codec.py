@@ -185,7 +185,7 @@ def encode_tool_result(result: ToolResult | Mapping[str, object]) -> dict[str, o
     }
     if isinstance(result, ToolSuccess) and result.coverage:
         payload["coverage"] = [observation.as_payload() for observation in result.coverage]
-    if isinstance(result, ToolSuccess) and result.changes:
+    if result.changes:
         payload["changes"] = [_encode(change) for change in result.changes]
     if isinstance(result, ToolFailure):
         execution = result.execution
@@ -228,8 +228,8 @@ def decode_tool_result(payload: Mapping[str, object]) -> ToolResult:
         )
     if wire.error is None:
         raise ValueError("failure result requires an error")
-    if wire.coverage or wire.changes:
-        raise ValueError("failure result must not carry coverage or resource changes")
+    if wire.coverage:
+        raise ValueError("failure result must not carry read coverage")
     execution = None
     if wire.execution is not None:
         observation = wire.execution
@@ -239,4 +239,13 @@ def decode_tool_result(payload: Mapping[str, object]) -> ToolResult:
             execution = ConfirmedStop(observation.cancellation_signalled)
         else:
             execution = UnconfirmedStop(observation.cancellation_signalled)
-    return ToolFailure(wire.tool_name, wire.error, decoded, body, wire.diagnostics, execution, wire.timeout_seconds)
+    return ToolFailure(
+        wire.tool_name,
+        wire.error,
+        decoded,
+        body,
+        wire.diagnostics,
+        execution,
+        wire.timeout_seconds,
+        tuple(ResourceChange(item.path, item.operation, item.old_path) for item in wire.changes or ()),
+    )

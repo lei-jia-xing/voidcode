@@ -4756,9 +4756,8 @@ class Core:
             "effects": declaration["effects"] if intent is not None else sorted(item.value for item in definition.effects) if definition else [],
         }
         paths = [item.path for item in result.coverage] if isinstance(result, ToolSuccess) else []
-        if isinstance(result, ToolSuccess):
-            paths.extend(item.path for item in result.changes)
-            paths.extend(item.old_path for item in result.changes if item.old_path is not None)
+        paths.extend(item.path for item in result.changes)
+        paths.extend(item.old_path for item in result.changes if item.old_path is not None)
         if definition is not None:
             paths.extend(_target_paths(self.workspace, call.arguments, definition.path_argument_keys))
         if isinstance(result, ToolSuccess):
@@ -4770,14 +4769,14 @@ class Core:
                 }
                 for item in result.coverage
             ]
-            metadata["changes"] = [
-                {
-                    **asdict(item),
-                    "path": item.path if item.path.startswith("voidcode://") else canonical_path(self.workspace, item.path),
-                    "old_path": canonical_path(self.workspace, item.old_path) if item.old_path is not None else None,
-                }
-                for item in result.changes
-            ]
+        metadata["changes"] = [
+            {
+                **asdict(item),
+                "path": item.path if item.path.startswith("voidcode://") else canonical_path(self.workspace, item.path),
+                "old_path": canonical_path(self.workspace, item.old_path) if item.old_path is not None else None,
+            }
+            for item in result.changes
+        ]
         metadata["resource_paths"] = sorted({str((self.workspace / path).resolve()) for path in paths if not path.startswith("voidcode://")})
         if deferred:
             cursor.deferred_sequence = None

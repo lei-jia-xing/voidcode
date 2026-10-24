@@ -1115,27 +1115,30 @@ def test_workspace_edit_failed_commit_preserves_target_and_cleans_temporary_file
 
     if failure == "replace":
         monkeypatch.setattr(_replace.os, "replace", fail_replace)
-    with pytest.raises(RuntimeError, match="uncommitted remaining"):
-        ApplyWorkspaceEditTool().invoke(
-            ToolCall(
-                tool_name="apply_workspace_edit",
-                arguments={
-                    "edits": [
-                        {
-                            "path": "target.txt",
-                            "startLine": 1,
-                            "startCharacter": 1,
-                            "endLine": 1,
-                            "endCharacter": 2,
-                            "newText": "X",
-                            "expectedHash": hashlib.sha256(original).hexdigest(),
-                        }
-                    ]
-                },
-            ),
-            context=_context(tmp_path),
-            services=cast(Any, Services()),
-        )
+    result = ApplyWorkspaceEditTool().invoke(
+        ToolCall(
+            tool_name="apply_workspace_edit",
+            arguments={
+                "edits": [
+                    {
+                        "path": "target.txt",
+                        "startLine": 1,
+                        "startCharacter": 1,
+                        "endLine": 1,
+                        "endCharacter": 2,
+                        "newText": "X",
+                        "expectedHash": hashlib.sha256(original).hexdigest(),
+                    }
+                ]
+            },
+        ),
+        context=_context(tmp_path),
+        services=cast(Any, Services()),
+    )
+    assert isinstance(result, ToolFailure)
+    assert "uncommitted remaining" in result.error
+    assert result.body.paths == ()
+    assert result.changes == ()
     assert target.read_bytes() == (original if failure == "replace" else b"concurrent writer\r\n")
     assert target.stat().st_mode & 0o777 == 0o750
     assert sorted(p.name for p in tmp_path.iterdir()) == ["target.txt"]

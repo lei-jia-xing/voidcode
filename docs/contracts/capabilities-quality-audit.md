@@ -18,7 +18,7 @@ not establish source review.
 | `files/__init__.py` | Reviewed: typed Tool wrapper preserves diagnostic failures; shared core/plugin factory |
 | `files/_replace.py` | Reviewed: checked replacement and exclusive atomic creation; cleanup, permissions and race regressions; documented metadata/compare-window limits |
 | `files/apply_patch.py` | Partial: stdin unified diffs, canonical sequential marker preflight and checked commits reviewed; parser, partial-result and cancellation review pending |
-| `files/apply_workspace_edit.py` | Partial: strict generated schema, frozen-argument conversion, checked replacement, commit projections, LSP coordinates and query-failure flow reviewed; cancellation and partial-result review pending |
+| `files/apply_workspace_edit.py` | Partial: strict generated schema, frozen-argument conversion, checked replacement, commit projections, LSP coordinates, query-failure flow, cooperative cancellation and structured partial commits reviewed; final ingress/bounds reconciliation pending |
 | `files/edit_tool.py` | Partial: unified exact-edit flow, checked replacement and result semantics reviewed; final ingress, diagnostic bounds and cancellation review pending |
 | `files/errors.py` | Reviewed: retain only classified diagnostic exception and raising helper |
 | `files/gitignore.py` | Reviewed: root-only pathspec matching; removed unused pattern snapshot/property; syntax/order/escape tests |
@@ -1187,3 +1187,25 @@ first LSP line and edited the next CRLF-delimited line correctly. No tests added
 The final diagnostic-flow change passed 74 existing file/optional-query tests
 (5.52s). Ruff, formatting, source type checking and CodeGraph sync passed.
 Cancellation and structured partial-write results remain pending.
+
+
+## Workspace edit partial commits and cancellation
+
+Workspace edits now prepare result metadata before committing, then report only
+the successfully committed prefix when a later replacement fails or cancellation
+arrives between files. Failures include committed paths/hash/diff records, partial
+output bounds, settled execution and explicit remaining-path guidance. Removed
+the parallel mutable uncommitted-path list. Preflight checks cancellation between
+edits; each file still uses the existing checked atomic replacement. There is no
+multi-file transaction, rollback or replay guarantee.
+
+Extended the existing `changes` slot to ToolFailure instead of inventing separate
+partial-change metadata. Codec roundtrips and core invocation facts now preserve
+committed resource changes regardless of outcome; read coverage remains
+success-only. Updated the public fact contract. Historical events are unchanged.
+
+Validation: 138 existing file/SDK/facts/hooks/optional-query checks passed (11.50s).
+Manual two-file write-failure and cancellation probes both left first=new,
+second=old, returned only the first file and preserved its change through codec
+roundtrip. Existing failure assertions were adjusted; no tests added. Ruff,
+formatting, source type checking and CodeGraph sync passed.

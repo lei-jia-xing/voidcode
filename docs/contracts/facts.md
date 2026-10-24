@@ -9,7 +9,7 @@ Plugins depend on SDK contracts, rather than another plugin's tool names or the 
 | `ToolEffect` | Authority, approval, read-only admission, and recovery policy. `WRITE` does not imply a file edit. |
 | `ToolDefinition.semantics` | Business purpose declared by a tool. `ToolSemantic.RESOURCE_EDIT` identifies edit attempts, including failures. Names are presentation and dispatch identities. |
 | `ToolSuccess.coverage` | Existing `ReadObservation` records: path, content version, and lines/whole-file window the result reports showing. |
-| `ToolSuccess.changes` | `ResourceChange` records for successful create/update/delete/move operations. One invocation can change several resources. |
+| `ToolSuccess.changes`, `ToolFailure.changes` | `ResourceChange` records for committed create/update/delete/move operations. A failed or cancelled invocation may have committed a prefix; its outcome does not erase those changes. |
 | `InvocationFinishedFact` | Outcome, frozen owner/effects/semantics, model attribution, measured JSON envelope sizes, result bounds, diagnostic category, read/change observations, and declared resource paths. |
 | `WakeupFiredFact` | One atomic wakeup claim, with recorded owner, wakeup identity, declared role and immutable payload. It is not a user request or a run completion. |
 | `ChildSpawnedFact` | One actual child session. A batch with three children yields three source facts, regardless of its tool name. |
