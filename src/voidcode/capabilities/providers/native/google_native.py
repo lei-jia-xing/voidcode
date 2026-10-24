@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import os
 from collections.abc import Iterator, Mapping
+from contextlib import closing
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -564,30 +565,42 @@ class GoogleGenAIProvider:
     def stream_turn(self, request: ProviderTurnRequest) -> Iterator[ProviderStreamEvent]:
         provider_name = request.provider_name or self.name
         model_name = request.model_name or "unknown"
+        if request.abort_signal is not None and request.abort_signal.cancelled:
+            yield ProviderStreamEvent(kind="error", channel="error", error="provider stream cancelled", error_kind="cancelled")
+            yield ProviderStreamEvent(kind="done", done_reason="cancelled")
+            return
         try:
             system, contents = self._contents(request)
-            stream = self._client(provider_name=provider_name, model_name=model_name).models.generate_content_stream(
-                model=model_name,
-                contents=contents,
-                config=self._config(request, system),
-            )
             last: object | None = None
             raw_finish: object | None = None
             saw_candidates = False
             tool_call_ordinal = 0
-            for chunk in stream:
-                last = chunk
-                self._raise_if_prompt_blocked(chunk, provider_name=provider_name, model_name=model_name)
-                candidates = getattr(chunk, "candidates", None)
-                if isinstance(candidates, list) and candidates:
-                    saw_candidates = True
-                candidate_finish = getattr(candidates[0], "finish_reason", None) if isinstance(candidates, list) and candidates else None
-                if self._finish_reason_reported(candidate_finish):
-                    raw_finish = candidate_finish
-                for stream_event in self._events_from_response(chunk, request, ordinal_offset=tool_call_ordinal):
-                    yield stream_event
-                    if stream_event.kind == "tool_call_end":
-                        tool_call_ordinal += 1
+            with closing(
+                self._client(provider_name=provider_name, model_name=model_name).models.generate_content_stream(
+                    model=model_name,
+                    contents=contents,
+                    config=self._config(request, system),
+                )
+            ) as stream:
+                for chunk in stream:
+                    if request.abort_signal is not None and request.abort_signal.cancelled:
+                        break
+                    last = chunk
+                    self._raise_if_prompt_blocked(chunk, provider_name=provider_name, model_name=model_name)
+                    candidates = getattr(chunk, "candidates", None)
+                    if isinstance(candidates, list) and candidates:
+                        saw_candidates = True
+                    candidate_finish = getattr(candidates[0], "finish_reason", None) if isinstance(candidates, list) and candidates else None
+                    if self._finish_reason_reported(candidate_finish):
+                        raw_finish = candidate_finish
+                    for stream_event in self._events_from_response(chunk, request, ordinal_offset=tool_call_ordinal):
+                        yield stream_event
+                        if stream_event.kind == "tool_call_end":
+                            tool_call_ordinal += 1
+            if request.abort_signal is not None and request.abort_signal.cancelled:
+                yield ProviderStreamEvent(kind="error", channel="error", error="provider stream cancelled", error_kind="cancelled")
+                yield ProviderStreamEvent(kind="done", done_reason="cancelled")
+                return
             if raw_finish is None:
                 if not saw_candidates:
                     raise ProviderExecutionError(

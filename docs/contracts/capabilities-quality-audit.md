@@ -42,7 +42,7 @@ not establish source review.
 | `providers/native/claude_tokenizer/notation.py` | Pending full source review |
 | `providers/native/config.py` | Partial: dead auth/serialization framework removed; strict single ingress, credential representations and env auth reviewed; remaining normalization review pending |
 | `providers/native/errors.py` | Reviewed: classified errors, SDK text extraction and structured retry hints; removed prose scheduling and duplicate conversion functions |
-| `providers/native/google_native.py` | Partial: actual SDK timeout/transport errors, usage, owned-client cache and identity tool mapping reviewed; OAuth, stream cleanup/cancellation, attachments and remaining wire semantics pending |
+| `providers/native/google_native.py` | Partial: SDK timeout/transport errors, usage, owned-client cache, stream ownership/chunk cancellation and identity tool mapping reviewed; OAuth, blocked-read cancellation, attachments and remaining wire semantics pending |
 | `providers/native/model_catalog.py` | Reviewed static catalog fields/lookups and consumers; removed entire unreferenced remote discovery implementation |
 | `providers/native/model_catalog_data.json` | Pending consumer/data-contract review |
 | `providers/native/model_routing.py` | Reviewed: routed alias/catalog fallback, typed unsupported wires, serialized cache creation and teardown |
@@ -851,3 +851,24 @@ metadata and remaining request/response source review are also outstanding.
 Validation: 163 generator/data/auth/reasoning/stream/lifecycle/usage/error/protocol
 tests passed (29.05s). Ruff/source type checks passed; CodeGraph synchronized.
 Complete capability audit and final full-suite gate remain outstanding.
+
+## Google streaming: explicit stream ownership and cancellation boundaries
+
+Wrapped the SDK generator in contextlib.closing. It now closes before terminal
+success or cancellation events, and on malformed completion, consumer close and
+exceptions. Borrowed SDK clients remain borrowed; only their invocation stream is
+closed here. Added cancellation checks before client access and at chunk boundaries,
+matching the other adapters' error/cancelled-done event shape. No worker/pump framework
+added. A blocked socket read still relies on the configured SDK HTTP timeout; prompt
+mid-read cancellation remains pending rather than being claimed solved.
+
+Five retained-stream regressions verify close counts on success, consumer exit,
+missing terminal finish_reason, pre-cancel without any pull/client-stream access,
+and mid-stream cancellation with cleanup before the first cancellation event.
+Two real Google SDK SSE loopback cases verify normal text/usage/stop and cancellation
+without leaking the next buffered delta. OAuth choice and attachment publication/
+validation remain outstanding from the preceding Google source review.
+
+Validation: 118 Google/stream/auth/lifecycle/error/thinking tests passed (19.15s).
+Ruff/source type checks passed; CodeGraph synchronized. Complete capability audit
+and final full-suite gate remain outstanding.

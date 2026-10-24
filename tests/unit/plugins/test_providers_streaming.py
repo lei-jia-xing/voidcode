@@ -458,3 +458,35 @@ def test_streamed_tool_calls_carry_the_same_facts_as_a_non_streamed_turn(
     tool_event = next(event for event in streamed_events if event.channel == "tool")
     assert json.loads(tool_event.text or "") == {"tool_name": "read", "arguments": {"path": "a.txt"}, "tool_call_id": "call-9"}
     assert streamed_events[-1].done_reason == direct.done_reason == "tool_calls"
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_google_real_sdk_stream_preserves_terminal_and_cancellation_semantics(start_sse_server, cancel):
+    first = {"candidates": [{"content": {"role": "model", "parts": [{"text": "first"}]}}]}
+    final = {
+        "candidates": [{"content": {"role": "model", "parts": [{"text": "second"}]}, "finishReason": "STOP"}],
+        "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 2},
+    }
+    server = start_sse_server([[(0.0, _frame(first)), (0.0, _frame(final))]])
+    provider = _provider({"google": {"api_key": "loopback-key", "base_url": server.base_url}}, name="google")
+    abort = DummyAbortSignal()
+    request = ProviderTurnRequest(
+        messages=(ProviderMessage("user", "hi"),), provider_name="google", model_name="gemini-2.5-flash", abort_signal=abort
+    )
+    try:
+        stream = provider.stream_turn(request)
+        assert next(stream).text == "first"
+        if cancel:
+            abort.set_cancelled(True)
+        remaining = list(stream)
+        assert remaining[-1].done_reason == ("cancelled" if cancel else "stop")
+        if cancel:
+            assert remaining[0].error_kind == "cancelled"
+            assert not any(event.kind == "delta" for event in remaining)
+        else:
+            assert remaining[0].text == "second"
+            assert remaining[-1].usage.input_tokens == 3
+            assert remaining[-1].usage.output_tokens == 2
+        assert len(server.requests) == 1
+    finally:
+        provider.close()
