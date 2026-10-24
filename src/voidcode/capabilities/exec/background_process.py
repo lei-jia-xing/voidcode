@@ -47,7 +47,6 @@ _READY_SCAN_BYTES = 64 * 1024
 _READY_POLL_SECONDS = 0.03
 #: Persisted workspace-state shape (versioned so a future shape can be migrated, not guessed).
 _STATE_VERSION = 1
-_LOG_DIR_PARTS = (".voidcode", "background-processes")
 #: The service calls this tool cannot work without; a handler missing them fails visibly.
 _PROCESS_SERVICES = (
     "spawn_process",
@@ -611,15 +610,11 @@ class BackgroundProcessTool:
             )
         records, version = _read_records(services)
         process_id = f"proc-{uuid4().hex}"
-        log_dir = workspace.joinpath(*_LOG_DIR_PARTS)
-        log_dir.mkdir(parents=True, exist_ok=True)
         # The host refuses a duplicate id outright, so a start can never shadow a live process.
         handle = services.spawn_process(
             _shell_argv(args.command),
             cwd=workspace,
             stdin=True,
-            stdout_path=log_dir / f"{process_id}.stdout.log",
-            stderr_path=log_dir / f"{process_id}.stderr.log",
             process_id=process_id,
         )
         # The identity is persisted before the wait: a start that cannot report back still left

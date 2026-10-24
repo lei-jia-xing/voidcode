@@ -1057,3 +1057,17 @@ Validation: 102 background-tool, shell, host-process and process-lease tests pas
 (34.84s), plus the added host-only identity regression (1 passed). Ruff, formatting,
 source type checking and CodeGraph synchronization passed. Log scan ceilings and
 cursor behavior remain pending; this is not a claim of full module completion.
+
+
+## Host-owned background log paths
+
+Removed the background tool's workspace log directory and explicit per-stream
+filenames. The existing SDK `spawn_process` contract supplies host-owned default
+paths and returns them on the handle; state and tool results already use those
+actual paths. This removes filesystem writes before the host admits the spawn
+and avoids creating `.voidcode/background-processes` in user workspaces.
+
+Adjusted existing tool assertions and the fake service's default-path behavior;
+no new test cases retained, following the user's instruction to stop adding tests.
+Validation: 103 existing background, shell and host-process tests passed (36.59s).
+Ruff, formatting, source type checking and CodeGraph synchronization passed.

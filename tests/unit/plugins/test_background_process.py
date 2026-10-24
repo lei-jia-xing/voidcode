@@ -125,8 +125,8 @@ class _FakeServices:
             process_id=str(process_id),
             pid=100 + len(self.handles),
             start_time=f"start-{process_id}",
-            stdout_path=str(stdout_path),
-            stderr_path=str(stderr_path),
+            stdout_path=str(stdout_path or f"/host-spool/{process_id}.stdout.log"),
+            stderr_path=str(stderr_path or f"/host-spool/{process_id}.stderr.log"),
             running=self.spawn_running,
             exit_code=self.spawn_exit_code,
         )
@@ -288,23 +288,22 @@ def test_start_launches_the_workspace_shell_and_persists_the_identity(tmp_path: 
     assert isinstance(result, ToolSuccess)
     spawn = services.call("spawn_process")
     handle = services.spawn_handle
-    log_dir = tmp_path.resolve() / ".voidcode" / "background-processes"
     assert str(spawn["process_id"]).startswith("proc-")
     assert spawn["argv"] == [*_SHELL_WRAPPER, "python -m http.server"]
     assert spawn["cwd"] == tmp_path.resolve()
     assert spawn["stdin"] is True
     assert spawn["env"] is None
-    assert spawn["stdout_path"] == log_dir / f"{handle.process_id}.stdout.log"
-    assert spawn["stderr_path"] == log_dir / f"{handle.process_id}.stderr.log"
-    # The legacy layout: the log directory exists in the workspace before the process runs.
-    assert log_dir.is_dir()
+    assert spawn["stdout_path"] is None
+    assert spawn["stderr_path"] is None
+    assert not (tmp_path / ".voidcode").exists()
     body = result.body
     assert isinstance(body, BackgroundProcessStartBody)
     assert body.process_id == handle.process_id
     assert body.pid == handle.pid
     assert body.state == "running"
     assert body.description == "dev server"
-    assert body.stdout_path == str(log_dir / f"{handle.process_id}.stdout.log")
+    assert body.stdout_path == handle.stdout_path
+    assert body.stderr_path == handle.stderr_path
     assert body.ready is None
     assert body.ready_pattern is None
     assert body.exit_code is None
