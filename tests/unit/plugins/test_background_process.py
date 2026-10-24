@@ -463,6 +463,25 @@ def test_ps_merges_live_handles_with_the_persisted_identities(tmp_path: Path) ->
     assert services.names() == ["get_state", "list_processes"]
 
 
+def test_ps_keeps_host_identity_without_a_persisted_record(tmp_path: Path) -> None:
+    handle = _handle("proc-host-only", pid=104)
+    services = _FakeServices(handles=[handle])
+
+    result = _invoke({"op": "ps"}, tmp_path, services)
+
+    assert isinstance(result, ToolSuccess)
+    assert isinstance(result.body, BackgroundProcessListBody)
+    (row,) = result.body.processes
+    assert row.process_id == handle.process_id
+    assert row.pid == handle.pid
+    assert row.state == "running"
+    assert row.stdout_path == handle.stdout_path
+    assert row.stderr_path == handle.stderr_path
+    assert row.command == row.description == ""
+    assert row.started_at is None
+    assert services.names() == ["get_state", "list_processes"]
+
+
 def test_ps_of_an_empty_workspace_lists_nothing(tmp_path: Path) -> None:
     services = _FakeServices()
 

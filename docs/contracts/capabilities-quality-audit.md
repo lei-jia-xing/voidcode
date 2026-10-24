@@ -13,7 +13,7 @@ not establish source review.
 | `__init__.py` | Reviewed: documentation-only shared capability boundary |
 | `exec/__init__.py` | Pending full source review |
 | `exec/args.py` | Reviewed source/consumers: three small nonempty field validators used by strict exec argument models |
-| `exec/background_process.py` | Partial: strict persisted identity ingress, UTF-8/CRLF log pages and final readiness draining reviewed; state duplication, scan ceiling/cursor and remaining lifecycle review pending |
+| `exec/background_process.py` | Partial: strict persisted identity ingress, UTF-8/CRLF log pages and final readiness draining reviewed; typed state pipeline reviewed; scan ceiling/cursor and remaining lifecycle review pending |
 | `exec/shell_exec.py` | Pending full source review |
 | `files/__init__.py` | Reviewed: typed Tool wrapper preserves diagnostic failures; shared core/plugin factory |
 | `files/_replace.py` | Reviewed: checked replacement and exclusive atomic creation; cleanup, permissions and race regressions; documented metadata/compare-window limits |
@@ -1042,3 +1042,18 @@ running and exited processes, and exit between stream reads. All 102 background/
 shell/core-process/lease tests passed (34.43s); Ruff/source type checks passed.
 The existing 8MiB line-scan ceiling and byte-cursor product choice remain unresolved;
 this does not claim a complete background_process source audit.
+
+
+## Typed background process identities
+
+Kept validated `_ProcessRecord` objects throughout background process operations,
+serializing only when writing workspace state. Removed the dictionary round trip,
+two per-field type/default helpers and impossible pid-zero fallbacks. A live host
+handle without a persisted mirror still reports its real identity with unknown
+command/description and start time. Exit updates preserve an already known exit
+code when the host has no new answer; omitted optional exit fields remain omitted.
+
+Validation: 102 background-tool, shell, host-process and process-lease tests passed
+(34.84s), plus the added host-only identity regression (1 passed). Ruff, formatting,
+source type checking and CodeGraph synchronization passed. Log scan ceilings and
+cursor behavior remain pending; this is not a claim of full module completion.

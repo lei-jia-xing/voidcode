@@ -333,23 +333,21 @@ class _ProcessState(BaseModel):
     processes: dict[str, _ProcessRecord]
 
 
-def _read_records(services: PluginServices) -> tuple[dict[str, Mapping[str, object]], int]:
+def _read_records(services: PluginServices) -> tuple[dict[str, _ProcessRecord], int]:
     """Validate persisted identities once; malformed state is never an empty inventory."""
     state, version = services.get_state("workspace")
     if state is None:
         return {}, version
     parsed = _ProcessState.model_validate(json_wire_object(state))
-    records: dict[str, Mapping[str, object]] = {}
     for process_id, record in parsed.processes.items():
         if record.process_id != process_id:
             raise ValueError("background process record id does not match its state key")
-        records[process_id] = record.model_dump(exclude_unset=True)
-    return records, version
+    return parsed.processes, version
 
 
-def _write_records(services: PluginServices, records: Mapping[str, Mapping[str, object]], version: int) -> int:
+def _write_records(services: PluginServices, records: Mapping[str, _ProcessRecord], version: int) -> int:
     return services.replace_state(
-        {"schema_version": _STATE_VERSION, "processes": {name: dict(record) for name, record in records.items()}},
+        {"schema_version": _STATE_VERSION, "processes": {name: record.model_dump(exclude_unset=True) for name, record in records.items()}},
         expected_version=version,
         scope="workspace",
     )
@@ -373,38 +371,27 @@ def prepare_exec_deactivation(
     return state
 
 
-def _with_exit(record: Mapping[str, object], *, state: str, exit_code: int | None) -> dict[str, object]:
-    """The record after a process ended: the state, and its exit code when the host has one."""
-    updated = {**record, "state": state}
-    if exit_code is not None:
-        updated["exit_code"] = exit_code
-    return updated
+def _with_exit(record: _ProcessRecord, *, exit_code: int | None) -> _ProcessRecord:
+    """Preserve a known historical exit code when the host has no new answer."""
+    if exit_code is None:
+        return record.model_copy(update={"state": "exited"})
+    return record.model_copy(update={"state": "exited", "exit_code": exit_code})
 
 
-def _record_value(record: Mapping[str, object], key: str, default: str = "") -> str:
-    value = record.get(key)
-    return value if isinstance(value, str) else default
-
-
-def _record_int(record: Mapping[str, object], key: str) -> int | None:
-    value = record.get(key)
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-
-def _identity_record(*, handle: ProcessHandle, command: str, description: str, state: str) -> dict[str, object]:
-    record: dict[str, object] = {
-        "process_id": handle.process_id,
-        "pid": handle.pid,
-        "start_time": handle.start_time,
-        "description": description,
-        "command": command,
-        "stdout_path": handle.stdout_path,
-        "stderr_path": handle.stderr_path,
-        "started_at": _now(),
-        "state": state,
-    }
+def _identity_record(*, handle: ProcessHandle, command: str, description: str) -> _ProcessRecord:
+    record = _ProcessRecord(
+        process_id=handle.process_id,
+        pid=handle.pid,
+        start_time=handle.start_time,
+        description=description,
+        command=command,
+        stdout_path=handle.stdout_path,
+        stderr_path=handle.stderr_path,
+        started_at=_now(),
+        state="running",
+    )
     if handle.exit_code is not None:
-        record["exit_code"] = handle.exit_code
+        record.exit_code = handle.exit_code
     return record
 
 
@@ -478,7 +465,7 @@ def _write_message(written: int, *, requested: int, process_id: str) -> str:
     return f"Wrote {written} of {requested} UTF-8 bytes to background process {process_id}."
 
 
-def _external_failure(*, tool_name: str, process_id: str, record: Mapping[str, object]) -> ToolFailure[BackgroundProcessExternalBody]:
+def _external_failure(*, tool_name: str, process_id: str, record: _ProcessRecord) -> ToolFailure[BackgroundProcessExternalBody]:
     message = _EXTERNAL_MESSAGE.format(process_id=process_id)
     return ToolFailure(
         tool_name=tool_name,
@@ -486,12 +473,12 @@ def _external_failure(*, tool_name: str, process_id: str, record: Mapping[str, o
         output=TextOutput(message),
         body=BackgroundProcessExternalBody(
             process_id=process_id,
-            pid=_record_int(record, "pid") or 0,
-            start_time=_record_value(record, "start_time"),
-            command=_record_value(record, "command"),
-            description=_record_value(record, "description"),
-            stdout_path=_record_value(record, "stdout_path"),
-            stderr_path=_record_value(record, "stderr_path"),
+            pid=record.pid,
+            start_time=record.start_time,
+            command=record.command,
+            description=record.description,
+            stdout_path=record.stdout_path,
+            stderr_path=record.stderr_path,
             reason=message,
         ),
     )
@@ -641,7 +628,6 @@ class BackgroundProcessTool:
             handle=handle,
             command=args.command,
             description=args.description or "",
-            state="running",
         )
         records[handle.process_id] = record
         version = _write_records(services, records, version)
@@ -651,7 +637,7 @@ class BackgroundProcessTool:
         state = "running" if running else "exited"
         if not running:
             # The mirror follows the process it names; nothing else refreshes this attempt's exit.
-            record = _with_exit(record, state=state, exit_code=current.exit_code)
+            record = _with_exit(record, exit_code=current.exit_code)
             records[handle.process_id] = record
             version = _write_records(services, records, version)
         guidance = _start_guidance(handle.process_id)
@@ -674,7 +660,7 @@ class BackgroundProcessTool:
                 description=args.description or "",
                 stdout_path=handle.stdout_path,
                 stderr_path=handle.stderr_path,
-                started_at=_record_value(record, "started_at"),
+                started_at=record.started_at,
                 running=running,
                 ready=ready,
                 ready_pattern=args.ready_pattern,
@@ -689,17 +675,17 @@ class BackgroundProcessTool:
         live: set[str] = set()
         for handle in services.list_processes():
             live.add(handle.process_id)
-            record = records.get(handle.process_id, {})
+            record = records.get(handle.process_id)
             rows.append(
                 BackgroundProcessRow(
                     process_id=handle.process_id,
                     pid=handle.pid,
                     state="running" if handle.running else "exited",
-                    description=_record_value(record, "description"),
-                    command=_record_value(record, "command"),
+                    description=record.description if record is not None else "",
+                    command=record.command if record is not None else "",
                     stdout_path=handle.stdout_path,
                     stderr_path=handle.stderr_path,
-                    started_at=_record_value(record, "started_at") or None,
+                    started_at=record.started_at if record is not None else None,
                     exit_code=handle.exit_code,
                 )
             )
@@ -709,14 +695,14 @@ class BackgroundProcessTool:
             rows.append(
                 BackgroundProcessRow(
                     process_id=process_id,
-                    pid=_record_int(record, "pid") or 0,
+                    pid=record.pid,
                     state="externally managed",
-                    description=_record_value(record, "description"),
-                    command=_record_value(record, "command"),
-                    stdout_path=_record_value(record, "stdout_path"),
-                    stderr_path=_record_value(record, "stderr_path"),
-                    started_at=_record_value(record, "started_at") or None,
-                    exit_code=_record_int(record, "exit_code"),
+                    description=record.description,
+                    command=record.command,
+                    stdout_path=record.stdout_path,
+                    stderr_path=record.stderr_path,
+                    started_at=record.started_at,
+                    exit_code=record.exit_code,
                 )
             )
         rows.sort(key=lambda row: row.process_id)
@@ -823,7 +809,7 @@ class BackgroundProcessTool:
         exit_code = current.exit_code
         record = records.get(args.process_id)
         if record is not None:
-            records[args.process_id] = _with_exit(record, state="exited", exit_code=exit_code)
+            records[args.process_id] = _with_exit(record, exit_code=exit_code)
             _write_records(services, records, version)
         return ToolSuccess(
             tool_name=self.definition.name,
@@ -836,7 +822,7 @@ class BackgroundProcessTool:
             ),
         )
 
-    def _unsupervised(self, *, records: Mapping[str, Mapping[str, object]], process_id: str) -> ToolResult:
+    def _unsupervised(self, *, records: Mapping[str, _ProcessRecord], process_id: str) -> ToolResult:
         """Refuse an id this host does not supervise, naming an unknown one as unknown."""
         record = records.get(process_id)
         if record is None:
