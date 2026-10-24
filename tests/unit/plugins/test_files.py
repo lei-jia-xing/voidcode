@@ -1229,13 +1229,7 @@ def test_edit_replace_all_preserves_single_and_batch_result_counts(tmp_path: Pat
     result = EditTool().invoke(ToolCall(tool_name="edit", arguments=arguments), context=_context(tmp_path), services=_SERVICES)
     assert isinstance(result, ToolSuccess)
     assert target.read_text(encoding="utf-8") == "new new new\n"
-    assert result.body.match_count == (1 if batch else 3)
-    if batch:
-        assert result.body.applied == 1
-        assert result.body.edits[0][1].match_count == 3
-    else:
-        assert result.body.applied is None
-        assert result.body.edits is None
+    assert result.body.match_count == 3
 
 
 @pytest.mark.parametrize("operation", ["add", "update", "delete", "move"])

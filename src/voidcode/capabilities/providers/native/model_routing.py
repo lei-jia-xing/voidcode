@@ -16,23 +16,13 @@ from voidcode.sdk.provider import (
 from .config import RoutedWire
 from .model_catalog import static_catalog_metadata
 
-
-@dataclass(frozen=True, slots=True)
-class ModelRoute:
-    """The wire one model speaks, and the base URL it is spoken at."""
-
-    wire: RoutedWire
-    # ``None`` => the sub-provider's own default for that wire.
-    base_url: str | None = None
-
-
 #: Upstream wire name -> the route VoidCode serves it at. A name absent here is a
 #: wire VoidCode does not implement: the request fails typed instead of being sent
 #: down a wire that does not serve the model.
-IMPLEMENTED_API_ROUTES: Mapping[str, ModelRoute] = {
-    "openai-completions": ModelRoute(wire="openai-chat-completions"),
-    "anthropic-messages": ModelRoute(wire="anthropic-messages"),
-    "google-generative-ai": ModelRoute(wire="google-generative-ai"),
+IMPLEMENTED_API_ROUTES: Mapping[str, RoutedWire] = {
+    "openai-completions": "openai-chat-completions",
+    "anthropic-messages": "anthropic-messages",
+    "google-generative-ai": "google-generative-ai",
 }
 
 
@@ -51,10 +41,10 @@ class WireRouting:
     """
 
     provider: str
-    api_to_route: Mapping[str, ModelRoute]
+    api_to_route: Mapping[str, RoutedWire]
     default_api: str
 
-    def resolve(self, api: str | None) -> ModelRoute | None:
+    def resolve(self, api: str | None) -> RoutedWire | None:
         """Resolve a declared upstream protocol, using the provider default when absent."""
         return self.api_to_route.get(api or self.default_api)
 
@@ -66,8 +56,8 @@ class RoutedTurnProvider:
     ``build`` is the owning adapter's wire factory (it knows the endpoint, the
     credential and the tool-feedback rules of that gateway); ``RoutedTurnProvider``
     knows only the table. Sub-providers are built lazily per routed model and
-    cached, so every wire keeps one SDK client and connection pool for the
-    process. Cache construction is serialized to avoid losing an owned client.
+    cached per model. Cache construction is serialized to avoid losing an owned
+    SDK client and connection pool.
 
     ``model_map`` aliases resolve here, before dispatch, so a routed model always
     reaches its wire under the name the table routed: only the chat wire applies
@@ -76,12 +66,12 @@ class RoutedTurnProvider:
 
     name: str
     routing: WireRouting
-    build: Callable[[str, ModelRoute], StreamableTurnProvider]
+    build: Callable[[str, RoutedWire], StreamableTurnProvider]
     model_map: Mapping[str, str] = field(default_factory=dict)
     _providers: dict[str, StreamableTurnProvider] = field(default_factory=dict, compare=False, repr=False)
     _lock: Lock = field(default_factory=Lock, compare=False, repr=False)
 
-    def route_for(self, request: ProviderTurnRequest) -> tuple[str, ModelRoute | None]:
+    def route_for(self, request: ProviderTurnRequest) -> tuple[str, RoutedWire | None]:
         """Return the routed model name and its route (``None`` == unimplemented wire)."""
         requested = request.model_name or ""
         model = self.model_map.get(requested) or requested

@@ -148,11 +148,10 @@ def test_invalid_provider_config_traceback_omits_credential_input():
 
 def test_zen_google_route_preserves_configured_timeout():
     from voidcode.capabilities.providers.native.config import ProviderEndpointConfig
-    from voidcode.capabilities.providers.native.model_routing import ModelRoute
     from voidcode.capabilities.providers.native.opencode import OpenCodeZenModelProvider
 
     gateway = OpenCodeZenModelProvider(config=ProviderEndpointConfig(api_key="gateway-key", timeout_seconds=17))
-    provider = gateway._wire("model", ModelRoute(wire="google-generative-ai"))
+    provider = gateway._wire("model", "google-generative-ai")
     assert provider.config.timeout_seconds == 17
     assert provider.config.auth.api_key == "gateway-key"
 

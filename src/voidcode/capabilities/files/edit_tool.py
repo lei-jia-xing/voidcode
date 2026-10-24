@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import difflib
 import hashlib
-import re
 from dataclasses import dataclass
+from io import StringIO
 from pathlib import Path
 from typing import ClassVar
 
@@ -37,8 +37,6 @@ class EditResultBody:
     deletions: int
     match_count: int
     diff: str
-    applied: int | None = None
-    edits: tuple[tuple[int, EditResultBody], ...] | None = None
     content_hash: str | None = None
 
     def as_payload(self) -> dict[str, object]:
@@ -49,10 +47,6 @@ class EditResultBody:
             "match_count": self.match_count,
             "diff": self.diff,
         }
-        if self.applied is not None:
-            payload["applied"] = self.applied
-        if self.edits is not None:
-            payload["edits"] = [{"index": idx, "result": res.as_payload()} for idx, res in self.edits]
         if self.content_hash is not None:
             payload["content_hash"] = self.content_hash
         return payload
@@ -73,41 +67,6 @@ def _convert_line_endings(text: str, ending: str) -> str:
     return normalized if ending == "\n" else normalized.replace("\n", "\r\n")
 
 
-def _trim_diff(diff: str) -> str:
-    lines = diff.split("\n")
-    content_lines = [
-        line
-        for line in lines
-        if (line.startswith("+") or line.startswith("-") or line.startswith(" ")) and not line.startswith("---") and not line.startswith("+++")
-    ]
-
-    if not content_lines:
-        return diff
-
-    min_indent: int | None = None
-    for line in content_lines:
-        content = line[1:]
-        if content.strip():
-            match = re.match(r"^(\s*)", content)
-            if match and match.group(1):
-                indent = len(match.group(1))
-                min_indent = indent if min_indent is None else min(min_indent, indent)
-
-    if min_indent is None or min_indent == 0:
-        return diff
-
-    trimmed_lines: list[str] = []
-    for line in lines:
-        if (line.startswith("+") or line.startswith("-") or line.startswith(" ")) and not line.startswith("---") and not line.startswith("+++"):
-            prefix = line[0]
-            content = line[1:]
-            trimmed_lines.append(prefix + content[min_indent:] if len(content) > min_indent else line)
-        else:
-            trimmed_lines.append(line)
-
-    return "\n".join(trimmed_lines)
-
-
 def read_utf8_text(path: Path) -> str:
     try:
         with path.open("r", encoding="utf-8", newline="") as handle:
@@ -117,22 +76,17 @@ def read_utf8_text(path: Path) -> str:
 
 
 def summarize_diff(*, path: Path, before: str, after: str) -> tuple[str, int, int]:
-    def _ensure_newlines(lines: list[str]) -> list[str]:
-        return [line + "\n" for line in lines]
-
-    diff = _trim_diff(
-        "".join(
-            difflib.unified_diff(
-                _ensure_newlines(before.splitlines()) if before else [],
-                _ensure_newlines(after.splitlines()) if after else [],
-                fromfile=str(path),
-                tofile=str(path),
-            )
+    lines = list(
+        difflib.unified_diff(
+            StringIO(before, newline="").readlines(),
+            StringIO(after, newline="").readlines(),
+            fromfile=str(path),
+            tofile=str(path),
         )
     )
-
-    additions = sum(1 for line in diff.splitlines() if line.startswith("+") and not line.startswith("+++"))
-    deletions = sum(1 for line in diff.splitlines() if line.startswith("-") and not line.startswith("---"))
+    additions = sum(line.startswith("+") for line in lines[2:])
+    deletions = sum(line.startswith("-") for line in lines[2:])
+    diff = "".join(line if line.endswith(("\r", "\n")) else line + "\n\\ No newline at end of file\n" for line in lines)
     return diff, additions, deletions
 
 
@@ -270,8 +224,7 @@ class EditTool:
 
         # Preflight all edits against exact current text entirely in memory.
         current_content = content_before
-        details: list[tuple[int, EditResultBody]] = []
-        applied = 0
+        total_matches = 0
 
         for idx, item in enumerate(parsed_edits, start=1):
             if context.abort_signal is not None and context.abort_signal.cancelled:
@@ -280,8 +233,6 @@ class EditTool:
                     error="edit cancelled before committing file",
                     execution=ConfirmedStop(cancellation_signalled=True),
                 )
-            before_step = current_content
-
             try:
                 next_content, match_count = _replace(
                     current_content,
@@ -321,21 +272,7 @@ class EditTool:
                 ) from exc
 
             current_content = next_content
-            applied += 1
-            if batch:
-                diff_step, add_step, del_step = summarize_diff(
-                    path=candidate,
-                    before=before_step,
-                    after=next_content,
-                )
-                step_body = EditResultBody(
-                    path=display_path,
-                    additions=add_step,
-                    deletions=del_step,
-                    match_count=match_count,
-                    diff=diff_step,
-                )
-                details.append((idx, step_body))
+            total_matches += match_count
 
         final_text = _convert_line_endings(current_content, ending)
         final_bytes = final_text.encode("utf-8")
@@ -355,7 +292,7 @@ class EditTool:
         replace_file(candidate, final_bytes, expected_content=content_before.encode("utf-8"))
 
         if batch:
-            content = f"Applied {applied} edits to {display_path}"
+            content = f"Applied {len(parsed_edits)} edits to {display_path}"
         else:
             content = "Edit applied successfully."
             if match_count > 1:
@@ -369,10 +306,8 @@ class EditTool:
                 path=display_path,
                 additions=additions,
                 deletions=deletions,
-                match_count=applied if batch else match_count,
+                match_count=total_matches,
                 diff=diff,
-                applied=applied if batch else None,
-                edits=tuple(details) if batch else None,
                 content_hash=final_disk_hash,
             ),
         )

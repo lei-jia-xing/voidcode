@@ -74,7 +74,6 @@ def test_parallel_first_use_keeps_one_owned_resource(monkeypatch, layer):
 
     from voidcode.capabilities.providers import dispatch
     from voidcode.capabilities.providers.native import anthropic_native, google_native, openai_native
-    from voidcode.capabilities.providers.native.model_routing import ModelRoute
     from voidcode.sdk.provider import ProviderTurnRequest
 
     created = []
@@ -93,7 +92,7 @@ def test_parallel_first_use_keeps_one_owned_resource(monkeypatch, layer):
         def action():
             return provider._provider_for("openai")
     elif layer == "routing":
-        route = ModelRoute("openai-chat-completions")
+        route = "openai-chat-completions"
         provider = RoutedTurnProvider("gateway", WireRouting("gateway", {"chat": route}, "chat"), build)
         request = ProviderTurnRequest(model_name="model", messages=(), available_tools=())
 
@@ -153,7 +152,6 @@ def test_gateway_defaults_preserve_organization_and_project():
 
 def test_unimplemented_upstream_protocol_does_not_fall_back_to_chat(monkeypatch):
     from voidcode.capabilities.providers.native import model_routing
-    from voidcode.capabilities.providers.native.model_routing import ModelRoute
     from voidcode.sdk.provider import ProviderExecutionError, ProviderTurnRequest
 
     monkeypatch.setattr(model_routing, "static_catalog_metadata", lambda *_: SimpleNamespace(api="openai-responses"))
@@ -161,7 +159,7 @@ def test_unimplemented_upstream_protocol_does_not_fall_back_to_chat(monkeypatch)
     def build(*_):
         raise AssertionError("unsupported wire must fail before client construction")
 
-    provider = RoutedTurnProvider("gateway", WireRouting("gateway", {"chat": ModelRoute("openai-chat-completions")}, "chat"), build)
+    provider = RoutedTurnProvider("gateway", WireRouting("gateway", {"chat": "openai-chat-completions"}, "chat"), build)
     with pytest.raises(ProviderExecutionError) as caught:
         provider.propose_turn(ProviderTurnRequest(messages=(), model_name="new-model"))
     assert caught.value.kind == "unsupported_feature"

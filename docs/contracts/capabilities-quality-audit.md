@@ -19,7 +19,7 @@ not establish source review.
 | `files/_replace.py` | Reviewed: checked replacement and exclusive atomic creation; cleanup, permissions and race regressions; documented metadata/compare-window limits |
 | `files/apply_patch.py` | Reviewed: marker-only grammar, exact staged preflight, hash/checked commits, cancellation and truthful partial operations; removed unified/Git execution, path decoding and format adapters |
 | `files/apply_workspace_edit.py` | Partial: strict generated schema, frozen-argument conversion, checked replacement, commit projections, LSP coordinates, query-failure flow, cooperative cancellation and structured partial commits reviewed; final ingress/bounds reconciliation pending |
-| `files/edit_tool.py` | Partial: strict generated ingress, exact replacement, checked commit, diagnostic bounds and cancellation reviewed; diff formatting/bounds and patch delegation review pending |
+| `files/edit_tool.py` | Partial: strict generated ingress, exact replacement, checked commit, diagnostic bounds and cancellation reviewed; standard diff rendering/counts and marker delegation reviewed; final output-bound reconciliation pending |
 | `files/errors.py` | Reviewed: retain only classified diagnostic exception and raising helper |
 | `files/gitignore.py` | Reviewed: root-only pathspec matching; removed unused pattern snapshot/property; syntax/order/escape tests |
 | `files/glob_tool.py` | Reviewed: strict ingress, root-relative patterns, traversal/ignore rules, bounded path collection, ordering/error results and cooperative cancellation |
@@ -48,8 +48,8 @@ not establish source review.
 | `providers/native/model_routing.py` | Reviewed: routed alias/catalog fallback, typed unsupported wires, serialized cache creation and teardown |
 | `providers/native/naming.py` | Reviewed source/callers: provider normalization, preserved model casing, table-derived labels/reservations and unknown-id diagnostics; removed dead canonical-reference wrapper |
 | `providers/native/openai_native.py` | Partial: lifecycle/stream/error work and ordered gateway feedback reviewed; removed metadata mode/attachment scaffolding; remaining transport/payload/replay source review pending |
-| `providers/native/opencode.py` | Pending full source review |
-| `providers/native/opencode_go.py` | Partial: nonnullable endpoint path and minimal feedback model set reviewed; gateway host precedence/protocol quirks pending |
+| `providers/native/opencode.py` | Partial: configured gateway authority, wire vocabulary, aliases, timeout/key propagation and native URL normalization reviewed; external gateway protocol/header assumptions pending |
+| `providers/native/opencode_go.py` | Partial: nonnullable endpoint path and minimal feedback model set reviewed; configured host precedence reviewed and redundant route URL pins removed; external protocol quirks pending |
 | `providers/native/openrouter.py` | Reviewed: small direct adapter using vendor endpoint normalization and native OpenAI transport |
 | `providers/native/provider_config.py` | Reviewed: table-owned wire defaults, endpoint/gateway defaults and Copilot token resolution; removed dead projections |
 | `providers/native/provider_table.json` | Reviewed with parser/consumer and packaged-table tests; source/provenance retained in JSON |
@@ -1334,3 +1334,45 @@ was pruned from the existing resolved graph after offline regeneration could not
 access unrelated cached provider metadata; the resulting lock passed uv's check.
 The retained marker implementation is now marked reviewed. This does not complete
 the broader capabilities audit.
+
+
+## Standard edit diff and one batch result
+
+Removed the custom indentation trimmer; diffs now retain actual indentation.
+Used stdlib StringIO universal-line iteration without newline translation so
+Unicode separators remain content. Standard difflib output marks a missing final
+newline explicitly. Addition/deletion counts skip only the two actual file header
+records, counting changed content that starts with ++ or -- correctly.
+
+Removed recursive per-step batch diff results and the redundant applied-count
+field. A batch preflights entirely in memory and writes once; its final diff and
+hash describe the committed file. `match_count` now means actual replacements in
+both single and batch modes, rather than counting batch entries. Existing batch
+assertions were adjusted; no tests added.
+
+Validation: 82 existing file/codec/fact checks passed (0.85s). Manual indentation,
+header-like content, final-newline-only change and Unicode-separator probes
+returned correct counts and faithful text. Ruff, formatting, source type checking
+and CodeGraph sync passed before an unrelated concurrent SDK commands edit was
+observed. That change is not part of this batch. Implementation net reduction:
+65 lines. Final result output-bound reconciliation remains pending.
+
+
+## Gateway endpoint authority and route simplification
+
+Zen/Go Anthropic adapters no longer override an explicit provider base_url with a
+pinned public gateway URL. The native Anthropic transport already strips a final
+/v1 before its SDK appends /v1/messages, so provider defaults and user endpoints
+can follow the same path. Google/chat routes retain the resolved endpoint too.
+Removed route-specific URLs, endpoint replacement branches, the now-redundant
+ModelRoute wrapper, Zen's copied route map and stale comments. Routing now maps
+upstream API identifiers directly to the existing typed wire vocabulary.
+Unknown protocols still fail visibly before client creation; aliases, per-request
+session headers, gateway keys, timeouts and Go feedback policy are retained.
+
+Validation: 104 existing lifecycle/errors/dispatch/data tests passed (11.86s).
+Manual Zen/Go Anthropic construction preserved a custom host/path and let native
+normalization remove /v1. No tests added; existing private route arguments were
+updated. Full source type checking now passes after concurrent SDK changes;
+Ruff and CodeGraph sync passed. External vendor protocol/header assumptions and
+Go's model-specific feedback convention still need reconciliation.
