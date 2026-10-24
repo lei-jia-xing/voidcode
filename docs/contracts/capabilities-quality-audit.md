@@ -18,7 +18,7 @@ not establish source review.
 | `files/__init__.py` | Reviewed: typed Tool wrapper preserves diagnostic failures; shared core/plugin factory |
 | `files/_replace.py` | Reviewed: checked replacement and exclusive atomic creation; cleanup, permissions and race regressions; documented metadata/compare-window limits |
 | `files/apply_patch.py` | Partial: stdin unified diffs, canonical sequential marker preflight and checked commits reviewed; parser, partial-result and cancellation review pending |
-| `files/apply_workspace_edit.py` | Partial: strict generated schema, frozen-argument conversion, checked replacement and commit projections reviewed; coordinates, cancellation and partial-result review pending |
+| `files/apply_workspace_edit.py` | Partial: strict generated schema, frozen-argument conversion, checked replacement, commit projections, LSP coordinates and query-failure flow reviewed; cancellation and partial-result review pending |
 | `files/edit_tool.py` | Partial: unified exact-edit flow, checked replacement and result semantics reviewed; final ingress, diagnostic bounds and cancellation review pending |
 | `files/errors.py` | Reviewed: retain only classified diagnostic exception and raising helper |
 | `files/gitignore.py` | Reviewed: root-only pathspec matching; removed unused pattern snapshot/property; syntax/order/escape tests |
@@ -1163,3 +1163,27 @@ Validation: existing 100 file/search tests passed; manual UTF-8 and long-path
 probes retained match lists of 49,575 and 47,237 bytes with truncation, and a long
 line returned `line_too_long`. No tests added. Ruff, formatting, source type check
 and CodeGraph sync passed.
+
+
+## Workspace edit coordinates and diagnostic flow
+
+Replaced `splitlines()` with CR/LF/CRLF-only splitting, preserving Unicode line
+separators, NEL, vertical tabs and form feeds as ordinary LSP text. Empty input and
+trailing line endings naturally retain the final editable line, removing manual
+empty/trailing-line repairs. Lower-bound checks already enforced by ingress were
+removed. Unique resolved document paths now sort once without repeated sets.
+The protocol's end-of-line definition is documented in the official specification:
+https://github.com/Microsoft/language-server-protocol/blob/gh-pages/_specifications/specification-3-14.md#text-documents
+
+Removed the result body's unused diagnostics collection and its serialization.
+Document-state queries return their prebuilt ToolFailure directly instead of
+throwing/catching a custom carrier exception. Missing providers and missing
+resources still permit hash-only guards; malformed answers return the same SDK
+diagnostic; handler exceptions still propagate visibly.
+
+Validation: 81 existing file/LSP/optional-query tests passed (25.75s) after the
+coordinate fix; manual edits with four Unicode/control separators preserved the
+first LSP line and edited the next CRLF-delimited line correctly. No tests added.
+The final diagnostic-flow change passed 74 existing file/optional-query tests
+(5.52s). Ruff, formatting, source type checking and CodeGraph sync passed.
+Cancellation and structured partial-write results remain pending.

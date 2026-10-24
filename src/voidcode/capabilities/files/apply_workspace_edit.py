@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,27 +58,15 @@ class _WorkspaceEditArgs(BaseModel):
 class ApplyWorkspaceEditResultBody:
     paths: tuple[str, ...]
     files: tuple[Mapping[str, object], ...] = ()
-    diagnostics: tuple[Mapping[str, object], ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "files", tuple(own_json_object(item) for item in self.files))
-        object.__setattr__(self, "diagnostics", tuple(own_json_object(item) for item in self.diagnostics))
 
     def as_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {"paths": list(self.paths)}
         if self.files:
             payload["files"] = [json_wire_object(item) for item in self.files]
-        if self.diagnostics:
-            payload["diagnostics"] = [json_wire_object(item) for item in self.diagnostics]
         return payload
-
-
-class _DiagnosticFailure(Exception):
-    """Carries a prebuilt model-visible ToolFailure up to the invoke boundary."""
-
-    def __init__(self, result: ToolFailure) -> None:
-        super().__init__(result.error)
-        self.result = result
 
 
 def _diagnostic_failure(
@@ -89,10 +78,7 @@ def _diagnostic_failure(
     retry_guidance: str,
     details: dict[str, object] | None = None,
 ) -> ToolFailure:
-    """A model-visible typed diagnostic: the runtime redacts raised errors, so the new version
-    guards return text plus the standard diagnostics slot instead of raising raw ValueErrors.
-    Only these new paths use it; legacy file errors keep existing behavior.
-    """
+    """Build a model-visible failure using the shared SDK diagnostics slot."""
     payload: dict[str, object] = {"reason": reason}
     if details:
         payload.update(details)
@@ -104,23 +90,21 @@ def _diagnostic_failure(
     )
 
 
-def _query_document_state(services: PluginServices, path: Path, *, tool_name: str) -> DocumentState | None:
+def _query_document_state(services: PluginServices, path: Path, *, tool_name: str) -> DocumentState | ToolFailure | None:
     """Ask any document-state provider; absence permits only hash-based guards."""
     try:
         return DOCUMENT_STATES.ask(services, DocumentStateRequest(path=path.as_posix()))
     except QueryUnavailable:
         return None
-    except QueryContractError as exc:
-        raise _DiagnosticFailure(
-            _diagnostic_failure(
-                tool_name,
-                message=f"unreadable document version answer for {path}: the provider broke its shape contract.",
-                error_kind="tool_input_mismatch",
-                reason="document_answer_shape_violation",
-                retry_guidance="The document-state provider violated its SDK contract; fix the provider before retrying.",
-                details={"path": path.as_posix()},
-            )
-        ) from exc
+    except QueryContractError:
+        return _diagnostic_failure(
+            tool_name,
+            message=f"unreadable document version answer for {path}: the provider broke its shape contract.",
+            error_kind="tool_input_mismatch",
+            reason="document_answer_shape_violation",
+            retry_guidance="The document-state provider violated its SDK contract; fix the provider before retrying.",
+            details={"path": path.as_posix()},
+        )
 
 
 class ApplyWorkspaceEditTool:
@@ -197,11 +181,11 @@ class ApplyWorkspaceEditTool:
                     details={"path": edit.path, "expected_hash": edit.expectedHash, "actual_hash": actual_hash},
                 )
 
-            try:
-                if path not in document_states:
-                    document_states[path] = _query_document_state(services, path, tool_name=self.definition.name)
-            except _DiagnosticFailure as exc:
-                return exc.result
+            if path not in document_states:
+                answer = _query_document_state(services, path, tool_name=self.definition.name)
+                if isinstance(answer, ToolFailure):
+                    return answer
+                document_states[path] = answer
             document_state: DocumentState | None = document_states[path]
             requested_version = edit.expectedVersion if edit.expectedVersion is not None else edit.version
             if requested_version is not None and document_state is None:
@@ -254,14 +238,11 @@ class ApplyWorkspaceEditTool:
             # The negotiated encoding only supplies the default when the caller omits it.
             encoding = requested_encoding or (document_state.position_encoding if document_state is not None else "utf-16")
 
-            lines = current.splitlines(keepends=True)
-            if not lines:
-                lines = [""]
-            elif lines[-1].endswith(("\r", "\n")):
-                lines.append("")
-            if edit.startLine < 1 or edit.startLine > len(lines):
+            # LSP lines end only at CR, LF or CRLF; Unicode separators are text.
+            lines = re.split(r"(?<=\n)|(?<=\r)(?!\n)", current)
+            if edit.startLine > len(lines):
                 raise ValueError(f"apply_workspace_edit startLine {edit.startLine} is out of bounds in {edit.path}")
-            if edit.endLine < 1 or edit.endLine > len(lines):
+            if edit.endLine > len(lines):
                 raise ValueError(f"apply_workspace_edit endLine {edit.endLine} is out of bounds in {edit.path}")
             if edit.endLine < edit.startLine:
                 raise ValueError(f"apply_workspace_edit endLine {edit.endLine} precedes startLine {edit.startLine} in {edit.path}")
@@ -338,13 +319,13 @@ class ApplyWorkspaceEditTool:
             }
             file_results.append(file_result)
 
-        display_paths = list(display_by_path.values())
+        display_paths = tuple(sorted(display_by_path.values()))
         return ToolSuccess(
             tool_name=self.definition.name,
             output=TextOutput(f"Applied {len(args.edits)} workspace edit(s)."),
-            changes=tuple(ResourceChange(path) for path in sorted(set(display_paths))),
+            changes=tuple(ResourceChange(path) for path in display_paths),
             body=ApplyWorkspaceEditResultBody(
-                paths=tuple(sorted(set(display_paths))),
+                paths=display_paths,
                 files=tuple(file_results),
             ),
         )
