@@ -1171,3 +1171,45 @@ def test_workspace_edit_preserves_executable_mode_and_crlf(tmp_path: Path) -> No
     assert target.read_bytes() == b"Xriginal\r\n"
     assert target.stat().st_mode & 0o777 == 0o750
     assert sorted(p.name for p in tmp_path.iterdir()) == ["target.txt"]
+
+
+@pytest.mark.parametrize("batch", [False, True])
+@pytest.mark.parametrize("failure", [None, "replace", "concurrent_change"])
+def test_edit_commit_preserves_bytes_permissions_and_concurrent_changes(tmp_path: Path, monkeypatch, batch: bool, failure: str | None) -> None:
+    from voidcode.capabilities.files import _replace, edit_tool
+
+    target = tmp_path / "target.txt"
+    original = b"original\r\n"
+    target.write_bytes(original)
+    target.chmod(0o750)
+    arguments = {"path": "target.txt", "expectedHash": hashlib.sha256(original).hexdigest()}
+    edit = {"oldString": "original", "newString": "changed"}
+    arguments.update({"edits": [edit]} if batch else edit)
+    original_replace = edit_tool._replace
+
+    def replace_with_concurrent_writer(*args, **kwargs):
+        result = original_replace(*args, **kwargs)
+        target.write_bytes(b"concurrent writer\r\n")
+        return result
+
+    def fail_replace(*args, **kwargs):
+        raise OSError("injected replace failure")
+
+    if failure == "replace":
+        monkeypatch.setattr(_replace.os, "replace", fail_replace)
+    elif failure == "concurrent_change":
+        monkeypatch.setattr(edit_tool, "_replace", replace_with_concurrent_writer)
+
+    tool = edit_tool.EditTool()
+    if failure is None:
+        result = tool.invoke(ToolCall(tool_name="edit", arguments=arguments), context=_context(tmp_path), services=_SERVICES)
+        assert isinstance(result, ToolSuccess)
+        assert result.body.content_hash == hashlib.sha256(b"changed\r\n").hexdigest()
+    else:
+        with pytest.raises(OSError):
+            tool.invoke(ToolCall(tool_name="edit", arguments=arguments), context=_context(tmp_path), services=_SERVICES)
+
+    expected = b"changed\r\n" if failure is None else original if failure == "replace" else b"concurrent writer\r\n"
+    assert target.read_bytes() == expected
+    assert target.stat().st_mode & 0o777 == 0o750
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["target.txt"]

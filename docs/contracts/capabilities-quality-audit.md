@@ -486,3 +486,22 @@ paths still use direct writes and will be reviewed separately.
 Validation: 59 files/artifact tests and 6 core-builtins/optional-query integration
 tests passed. Ruff, source type checks and CodeGraph sync passed. Full capability
 audit and final full-suite gate remain outstanding.
+
+## Exact edit commit boundary
+
+Both single replacement and sequential same-file edit batches now reuse the file
+replacement function introduced for workspace edits. This removes both truncating
+writes and post-write reads. Hash and diff projections describe the committed
+bytes. UTF-8 read uses newline='' so expected original bytes round-trip exactly,
+including CRLF. No new writer abstraction or dependency added.
+
+Six regression cases exercise both edit shapes under success, replacement failure,
+and a concurrent writer between text preparation and commit. They verify expected
+hash, CRLF, executable permissions, preservation of failed/concurrent targets and
+absence of temporary residue. The compare/replace race and metadata limitations
+are the same as documented for workspace edits. Patch mutation paths and edit
+argument-path duplication still need review; cancellation behavior remains pending.
+
+Validation: 65 file/artifact unit tests and 6 core-builtins/optional-query
+integration tests passed. Ruff and source type checks passed; CodeGraph synced.
+Full capability audit and final full-suite gate remain outstanding.

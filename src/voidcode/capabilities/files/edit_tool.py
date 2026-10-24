@@ -13,6 +13,7 @@ from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import ResourceChange, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSemantic, ToolSuccess
 
+from ._replace import replace_file
 from .apply_patch import execute_patch
 from .errors import ToolDiagnosticError, raise_tool_diagnostic
 
@@ -442,14 +443,13 @@ class EditTool:
 
         # All preflight edits passed in memory! Now write once to disk.
         final_text = _convert_line_endings(current_content, ending)
-        candidate.write_bytes(final_text.encode("utf-8"))
-        final_disk_bytes = candidate.read_bytes()
-        final_disk_hash = hashlib.sha256(final_disk_bytes).hexdigest()
-        final_content = read_utf8_text(candidate)
+        final_bytes = final_text.encode("utf-8")
+        replace_file(candidate, final_bytes, expected_content=content_before.encode("utf-8"))
+        final_disk_hash = hashlib.sha256(final_bytes).hexdigest()
         diff, additions, deletions = summarize_diff(
             path=candidate,
             before=content_before,
-            after=final_content,
+            after=final_text,
         )
 
         content = f"Applied {applied} edits to {display_path}"
@@ -539,14 +539,13 @@ class EditTool:
 
         new_content = _convert_line_endings(new_content, ending)
 
-        candidate.write_bytes(new_content.encode("utf-8"))
-        final_disk_bytes = candidate.read_bytes()
-        final_disk_hash = hashlib.sha256(final_disk_bytes).hexdigest()
-        final_content = read_utf8_text(candidate)
+        final_bytes = new_content.encode("utf-8")
+        replace_file(candidate, final_bytes, expected_content=content_old.encode("utf-8"))
+        final_disk_hash = hashlib.sha256(final_bytes).hexdigest()
         diff, additions, deletions = summarize_diff(
             path=candidate,
             before=content_old,
-            after=final_content,
+            after=new_content,
         )
 
         output = "Edit applied successfully."
