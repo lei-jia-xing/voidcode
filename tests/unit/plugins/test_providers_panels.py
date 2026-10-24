@@ -123,21 +123,19 @@ def test_providers_joins_the_configured_entries_with_the_shipped_table() -> None
     assert rows["deepseek"]["label"] == "DeepSeek"
     assert rows["deepseek"]["wire"] == "openai-completions"
     assert rows["deepseek"]["models"] == len(static_catalog_model_ids("deepseek"))
-    assert rows["endpoint"]["credential"] is False
-    assert rows["deepseek"]["credential"] is True
-    assert all(isinstance(entry["credential"], bool) for entry in rows.values())  # type: ignore[union-attr]
     unconfigured = {str(entry["name"]) for entry in result.data["unconfigured"]}  # type: ignore[index,union-attr]
     assert unconfigured == {row.id for row in PROVIDER_TABLE} - set(rows)
     assert "openai" in unconfigured and "`openai`" in result.output
 
 
-def test_providers_reports_credential_presence_without_the_credential() -> None:
+def test_providers_reports_configuration_without_credentials() -> None:
     result = _invoke(_plugin(), "providers", _services())
 
     rendered = json.dumps(result.as_payload())
     assert DEEPSEEK_KEY not in rendered
     assert GOOGLE_KEY not in rendered
     assert "api_key" not in rendered
+    assert "credential" not in rendered
 
 
 def test_providers_without_any_configuration_lists_the_whole_shipped_table() -> None:

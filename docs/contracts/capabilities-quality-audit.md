@@ -29,7 +29,7 @@ not establish source review.
 | `files/write_tool.py` | Reviewed: hash/containment/symlink/atomic replace/cancellation; fail visibly on mode errors and always clean temporary files |
 | `frontmatter.py` | Reviewed source/consumers: safe YAML, duplicate/string-key validation, framing/body/bounds; shared parser tests |
 | `providers/__init__.py` | Reviewed: shared registration/facts/view wiring and ExitStack-owned provider teardown |
-| `providers/dispatch.py` | Partial: strict registration shapes/names, typed materialization, lazy ownership/cache and usage wrappers reviewed; nested credential normalization and remaining ingress review pending |
+| `providers/dispatch.py` | Reviewed: strict registration ingress, explicit auth conflict handling, typed materialization/selection, locked lazy cache/teardown and usage wrappers |
 | `providers/native/__init__.py` | Reviewed: documentation-only namespace, no side effects |
 | `providers/native/_resources.py` | Reviewed: contained package paths and JSON loading; removed unused installed-data locator/text wrapper |
 | `providers/native/_result_sanitize.py` | Pending full source review |
@@ -70,7 +70,7 @@ not establish source review.
 | `providers/native/tokenizer_data/manifest.json` | Pending consumer/data-contract review |
 | `providers/native/tokenizer_routing.json` | Pending consumer/data-contract review |
 | `providers/native/trace.py` | Reviewed: opt-in, whole-record preview budget, JSON encoder, private append and isolated warning-only failures; documented per-file growth/trusted-parent limits |
-| `providers/panels.py` | Pending full source review |
+| `providers/panels.py` | Reviewed: names/catalog-only configuration facts, typed paged transcript dispatches, read-only commands/views; removed guessed credential status |
 | `providers/pricing.py` | Reviewed: price once at report time, preserve prepriced/unknown usage, event/result wrappers |
 
 ## Removed heuristic repair hints
@@ -752,4 +752,28 @@ normalization still require follow-up before marking those modules complete.
 
 Validation: 160 provider trace/auth/catalog/dispatch/panels/reasoning/stream/lifecycle/
 usage/error tests passed (32.51s). Ruff/source type checks passed; CodeGraph synced.
+Full capability audit and final full-suite gate remain outstanding.
+
+## Provider auth normalization and information panels
+
+Core injection includes api_key=None even when a provider uses explicit nested
+auth. The adapter previously left that flat key alongside auth and its strict
+native shape rejected otherwise valid Google/Copilot configuration. Nested-auth
+adapters now remove the empty flat placeholder; a nonempty flat key plus auth
+raises a clear conflict instead of silently selecting one. Removed redundant
+nested-provider and selection-key sets; credential field mapping is authoritative.
+Four regressions cover both nested adapters and explicit conflicts. Generic core
+environment resolution remains vendor-agnostic: a resolved nonempty flat key also
+counts as a conflicting supplied credential and must not be silently discarded.
+
+Removed the panels' credential boolean and its display copy: it only checked flat
+api_key and incorrectly reported other auth methods as absent. Panel construction
+now consumes configured names only, never credential values or inferred readiness.
+No second auth-status mechanism or extra registry was introduced. Existing secret
+exclusion, sorted catalog/configuration, transcript paging and read-only command/
+view tests retain coverage. Reviewed every panel function and factory caller;
+last dispatch comes from typed committed transcript records, not current config.
+
+Validation: 164 provider trace/auth/catalog/dispatch/panels/reasoning/stream/lifecycle/
+usage/error tests passed (32.75s). Ruff/source type checks passed; CodeGraph synced.
 Full capability audit and final full-suite gate remain outstanding.

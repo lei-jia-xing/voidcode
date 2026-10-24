@@ -35,8 +35,6 @@ class ConfiguredProvider:
     name: str
     label: str
     wire: str | None
-    #: Presence only: the credential value never leaves the core injection.
-    credential: bool
     models: int
 
     def as_payload(self) -> dict[str, object]:
@@ -44,14 +42,13 @@ class ConfiguredProvider:
             "name": self.name,
             "label": self.label,
             "wire": self.wire,
-            "credential": self.credential,
             "models": self.models,
         }
 
 
 @dataclass(frozen=True, slots=True)
 class ProviderFacts:
-    """Provider facts a panel reports; no configured value is retained here, only its presence."""
+    """Configured provider identities and catalog facts; no credential values retained."""
 
     configured: tuple[ConfiguredProvider, ...]
     unconfigured: tuple[ProviderTableRow, ...]
@@ -61,20 +58,18 @@ class ProviderFacts:
         """Read the core-injected ``providers`` section: configured names plus their table rows."""
         raw = (config or {}).get("providers")
         entries = raw if isinstance(raw, Mapping) else {}
-        configured = tuple(sorted((_configured_provider(str(name), entry) for name, entry in entries.items()), key=lambda item: item.name))
+        configured = tuple(sorted((_configured_provider(str(name)) for name in entries), key=lambda item: item.name))
         names = {item.name for item in configured}
         return cls(configured=configured, unconfigured=tuple(row for row in PROVIDER_TABLE if row.id not in names))
 
 
-def _configured_provider(name: str, entry: object) -> ConfiguredProvider:
+def _configured_provider(name: str) -> ConfiguredProvider:
     canonical = canonical_provider_id(name)
-    fields = entry if isinstance(entry, Mapping) else {}
     row = PROVIDER_TABLE_BY_ID.get(canonical)
     return ConfiguredProvider(
         name=canonical,
         label=provider_label(canonical),
         wire=None if row is None else row.wire,
-        credential=bool(fields.get("api_key")),
         models=len(static_catalog_model_ids(canonical)),
     )
 
@@ -114,8 +109,7 @@ def providers_panel(facts: ProviderFacts) -> tuple[str, dict[str, object]]:
     lines = ["## Configured providers", ""]
     if facts.configured:
         lines += [
-            f"- **{item.label}** (`{item.name}`) — {item.wire or 'no shipped wire'}, {_counted(item.models, 'shipped model')}, "
-            f"{'credential configured' if item.credential else 'no credential'}"
+            f"- **{item.label}** (`{item.name}`) — {item.wire or 'no shipped wire'}, {_counted(item.models, 'shipped model')}"
             for item in facts.configured
         ]
     else:
@@ -168,7 +162,7 @@ class ProvidersCommand:
 
     definition: ClassVar[CommandDefinition] = CommandDefinition(
         name="providers",
-        description="List configured providers with their shipped table row, catalog size and credential presence.",
+        description="List configured providers with their shipped table row, catalog size.",
         argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
         effects=frozenset({ToolEffect.READ}),
     )

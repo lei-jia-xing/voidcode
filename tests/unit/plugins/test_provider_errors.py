@@ -171,3 +171,22 @@ def test_registered_provider_ingress_rejects_case_collisions(name):
 
     with pytest.raises(ValueError, match="duplicate provider id"):
         build_registered_providers({"providers": {name: {"api_key": "first"}, f" {name.upper()} ": {"api_key": "second"}}})
+
+
+@pytest.mark.parametrize(
+    ("name", "auth"),
+    [("google", {"method": "oauth", "access_token": "supplied-token"}), ("github-copilot", {"method": "token", "token": "supplied-token"})],
+)
+def test_nested_auth_accepts_the_empty_flat_key_injected_by_core(name, auth):
+    from voidcode.capabilities.providers.dispatch import provider_configs
+
+    configs = provider_configs({"providers": {name: {"api_key": None, "auth": auth}}})
+    assert configs.entry(name).auth.method == auth["method"]
+
+
+@pytest.mark.parametrize("name", ["google", "github-copilot"])
+def test_nested_auth_rejects_a_conflicting_flat_key(name):
+    from voidcode.capabilities.providers.dispatch import provider_configs
+
+    with pytest.raises(ValueError, match="must not combine api_key with explicit auth"):
+        provider_configs({"providers": {name: {"api_key": "flat-key", "auth": {"method": "oauth"}}}})

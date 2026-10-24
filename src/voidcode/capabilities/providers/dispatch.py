@@ -51,22 +51,22 @@ from .pricing import price_event, price_result
 #: the core never learns which vendor policy answers it.
 DECLARED_PROVIDER_NAMES: tuple[str, ...] = tuple(sorted(row.id for row in PROVIDER_TABLE))
 
-_SELECTION_KEYS = frozenset({"wire"})
-
 #: Vendors whose configuration nests its credential under ``auth``. The core's
 #: provider entry carries a flat credential + endpoint, so the plugin maps that
 #: pair into the vendor's own shape before the shape parser validates it.
-_NESTED_CREDENTIAL_PROVIDERS = frozenset({"google", "github-copilot"})
-
 _CREDENTIAL_FIELD_BY_PROVIDER: Mapping[str, str] = {"google": "api_key", "github-copilot": "token"}
 
 
 def _entry_payload(provider_name: str, entry: Mapping[str, object]) -> dict[str, object]:
     """One configured provider entry in the vendor's own configuration shape."""
-    payload = {key: value for key, value in entry.items() if key not in _SELECTION_KEYS}
-    if provider_name not in _NESTED_CREDENTIAL_PROVIDERS or "auth" in payload:
+    payload = {key: value for key, value in entry.items() if key != "wire"}
+    if provider_name not in _CREDENTIAL_FIELD_BY_PROVIDER:
         return payload
     credential = payload.pop("api_key", None)
+    if "auth" in payload:
+        if credential is not None:
+            raise ValueError(f"provider '{provider_name}' must not combine api_key with explicit auth")
+        return payload
     auth: dict[str, object] = {"method": "api_key" if provider_name == "google" else "token"}
     if credential is not None:
         auth[_CREDENTIAL_FIELD_BY_PROVIDER[provider_name]] = credential
