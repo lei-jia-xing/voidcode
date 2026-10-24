@@ -431,21 +431,20 @@ def _extract_pdf(
             process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except FileNotFoundError as exc:
             raise ValueError("PDF text view requires the Linux Poppler `pdftotext` utility") from exc
-        deadline = time.monotonic() + PDF_TIMEOUT
-        while process.poll() is None:
-            if cancelled is not None and cancelled():
+        try:
+            deadline = time.monotonic() + PDF_TIMEOUT
+            while process.poll() is None:
+                if cancelled is not None and cancelled():
+                    raise ValueError("PDF text extraction cancelled")
+                if time.monotonic() > deadline:
+                    raise ValueError("PDF text extraction timed out")
+                if output.exists() and output.stat().st_size > PDF_TEXT_BYTES:
+                    raise ValueError(f"PDF extracted text exceeds {PDF_TEXT_BYTES} bytes; select a page")
+                time.sleep(0.01)
+        finally:
+            if process.poll() is None:
                 process.kill()
-                process.communicate()
-                raise ValueError("PDF text extraction cancelled")
-            if time.monotonic() > deadline:
-                process.kill()
-                process.communicate()
-                raise ValueError("PDF text extraction timed out")
-            if output.exists() and output.stat().st_size > PDF_TEXT_BYTES:
-                process.kill()
-                process.communicate()
-                raise ValueError(f"PDF extracted text exceeds {PDF_TEXT_BYTES} bytes; select a page")
-            time.sleep(0.01)
+            process.wait()
         if process.returncode:
             raise ValueError("pdftotext failed: invalid, encrypted, or unreadable PDF")
         if not output.exists():
@@ -465,7 +464,7 @@ def _extract_pdf(
         preview_truncated = False
         for line in lines[offset - 1 : offset - 1 + min(limit, MAX_ROWS)]:
             encoded = line.encode("utf-8")
-            available = PDF_PREVIEW_BYTES - used_bytes - (1 if selected else 0)
+            available = max(0, PDF_PREVIEW_BYTES - used_bytes - (1 if selected else 0))
             if len(encoded) > available:
                 prefix = encoded[:available].decode("utf-8", errors="ignore")
                 if prefix:

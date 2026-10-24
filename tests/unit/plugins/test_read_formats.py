@@ -42,3 +42,84 @@ def test_notebook_omitted_outputs_are_partial_and_recoverable(tmp_path, cell):
     assert second["cells"][0]["outputs"][0]["text"] == "second"
     assert second["partial"] is False
     assert second["next_output_offset"] is None
+
+
+def test_pdf_preview_does_not_use_negative_slice_when_budget_is_full(monkeypatch):
+    from pathlib import Path
+
+    from voidcode.capabilities.files import read_formats
+
+    full_text = "a" * read_formats.PDF_PREVIEW_BYTES + "\n" + "b" * 50000
+
+    class Process:
+        returncode = 0
+
+        def __init__(self, command, **kwargs):
+            Path(command[-1]).write_text(full_text, encoding="utf-8")
+
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(read_formats.subprocess, "Popen", Process)
+    result = read_formats.render_pdf_bytes(b"%PDF-test")
+    assert result["raw_content"] == "a" * read_formats.PDF_PREVIEW_BYTES
+    assert result["partial"] is True
+    assert result["next_offset"] == 2
+    assert result["full_text"] == full_text
+
+
+@pytest.mark.parametrize("failure", ["cancel", "timeout", "oversize", "callback_error", "interrupt"])
+def test_pdf_extractor_is_killed_and_reaped_on_early_exit(monkeypatch, failure):
+    from pathlib import Path
+
+    from voidcode.capabilities.files import read_formats
+
+    class Process:
+        returncode = None
+        killed = False
+        reaped = False
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self):
+            self.killed = True
+            self.returncode = -9
+
+        def wait(self):
+            self.reaped = True
+            return self.returncode
+
+    process = Process()
+
+    def spawn(command, **kwargs):
+        if failure == "oversize":
+            Path(command[-1]).write_bytes(b"x")
+        return process
+
+    calls = 0
+
+    def cancelled():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return False
+        if failure == "callback_error":
+            raise RuntimeError("callback failed")
+        if failure == "interrupt":
+            raise KeyboardInterrupt
+        return failure == "cancel"
+
+    monkeypatch.setattr(read_formats.subprocess, "Popen", spawn)
+    if failure == "timeout":
+        monkeypatch.setattr(read_formats, "PDF_TIMEOUT", -1)
+    if failure == "oversize":
+        monkeypatch.setattr(read_formats, "PDF_TEXT_BYTES", 0)
+    expected_error = {"callback_error": RuntimeError, "interrupt": KeyboardInterrupt}.get(failure, ValueError)
+    with pytest.raises(expected_error):
+        read_formats.render_pdf_bytes(b"%PDF-test", cancelled=cancelled)
+    assert process.killed
+    assert process.reaped

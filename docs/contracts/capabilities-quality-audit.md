@@ -610,3 +610,27 @@ need audit; no completion claim for read_formats as a whole.
 Validation: 86 read-format/files/artifact/coverage unit tests and 7 read-loopback/
 core-builtins tests passed. Ruff/source type checks passed; CodeGraph synchronized.
 Complete capability audit and full-suite gate remain outstanding.
+
+## PDF extraction: one process cleanup path and nonnegative preview budget
+
+PDF preview could exceed its byte cap when a previous line used the entire budget:
+the separator made remaining bytes -1, so encoded[:-1] included nearly all of a
+subsequent long line. Clamp remaining bytes at zero; the omitted line remains
+available through its unchanged next_offset and the retained full-text artifact.
+Regression uses a full-budget first line followed by a 50,000-byte line.
+
+Consolidated three kill/communicate branches into one finally: kill any still-live
+extractor and wait for it on all exits. No pipes need draining (stdout/stderr are
+DEVNULL). This also handles unexpected cancellation callback errors and interrupts,
+which previously leaked the child. Five lifecycle regressions cover cancellation,
+timeout, extracted-size overflow, unexpected callback error and KeyboardInterrupt.
+Tests use controlled extractor doubles rather than depending on installed Poppler;
+real-vendor/document processing is not asserted by these tests.
+
+Remaining format review includes SQLite accounting/snapshot semantics, notebook
+total-output limits, PDF clipped-line continuation and generic read control flow.
+
+Validation: 91 format/files/artifact/coverage tests passed, followed by all 8 format
+tests after adding interrupt coverage. Seven read-loopback/core-builtins tests
+passed. Ruff, formatting and source type checks passed; CodeGraph synchronized.
+Complete capability audit and final full-suite gate remain outstanding.
