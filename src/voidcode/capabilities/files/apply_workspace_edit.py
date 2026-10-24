@@ -27,6 +27,8 @@ from voidcode.sdk.tools import (
 )
 from voidcode.sdk.workspace_queries import DOCUMENT_STATES, DocumentState, DocumentStateRequest
 
+from ._replace import replace_file
+
 
 class _TextEdit(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
@@ -299,7 +301,7 @@ class ApplyWorkspaceEditTool:
                     raise ValueError(f"apply_workspace_edit contains overlapping edits: {display_by_path[path]}")
 
             content = originals[path]
-            for start, end, new_text in sorted(edits, key=lambda item: (item[0], item[1]), reverse=True):
+            for start, end, new_text in reversed(sorted_edits):
                 content = content[:start] + new_text + content[end:]
             staged[path] = content
 
@@ -307,7 +309,7 @@ class ApplyWorkspaceEditTool:
         uncommitted_paths: list[str] = [display_by_path[path] for path in staged]
         try:
             for path, content in staged.items():
-                path.write_bytes(content.encode("utf-8"))
+                replace_file(path, content.encode("utf-8"), expected_content=raw_contents[path])
                 display_path = display_by_path[path]
                 applied_paths.append(display_path)
                 uncommitted_paths.remove(display_path)
@@ -318,9 +320,8 @@ class ApplyWorkspaceEditTool:
             ) from exc
 
         file_results: list[Mapping[str, object]] = []
-        for path in staged:
-            final_bytes = path.read_bytes()
-            final_content = final_bytes.decode("utf-8")
+        for path, final_content in staged.items():
+            final_bytes = final_content.encode("utf-8")
             display_path = display_by_path[path]
             file_result: dict[str, object] = {
                 "path": display_path,

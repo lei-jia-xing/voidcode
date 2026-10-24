@@ -1092,3 +1092,82 @@ def test_workspace_edit_missing_hash_returns_diagnostic_from_frozen_arguments(tm
     )
     assert isinstance(result, ToolFailure)
     assert result.diagnostics.details["reason"] == "missing_expected_hash"
+
+
+@pytest.mark.parametrize("failure", ["replace", "concurrent_change"])
+def test_workspace_edit_failed_commit_preserves_target_and_cleans_temporary_file(tmp_path: Path, monkeypatch, failure: str) -> None:
+    from voidcode.capabilities.files import _replace
+    from voidcode.capabilities.files.apply_workspace_edit import ApplyWorkspaceEditTool
+
+    target = tmp_path / "target.txt"
+    original = b"original\r\n"
+    target.write_bytes(original)
+    target.chmod(0o750)
+
+    def fail_replace(source, destination):
+        raise OSError("injected replace failure")
+
+    class Services(_VersionServices):
+        def query(self, name, arguments=None):
+            if failure == "concurrent_change":
+                target.write_bytes(b"concurrent writer\r\n")
+            return None
+
+    if failure == "replace":
+        monkeypatch.setattr(_replace.os, "replace", fail_replace)
+    with pytest.raises(RuntimeError, match="uncommitted remaining"):
+        ApplyWorkspaceEditTool().invoke(
+            ToolCall(
+                tool_name="apply_workspace_edit",
+                arguments={
+                    "edits": [
+                        {
+                            "path": "target.txt",
+                            "startLine": 1,
+                            "startCharacter": 1,
+                            "endLine": 1,
+                            "endCharacter": 2,
+                            "newText": "X",
+                            "expectedHash": hashlib.sha256(original).hexdigest(),
+                        }
+                    ]
+                },
+            ),
+            context=_context(tmp_path),
+            services=cast(Any, Services()),
+        )
+    assert target.read_bytes() == (original if failure == "replace" else b"concurrent writer\r\n")
+    assert target.stat().st_mode & 0o777 == 0o750
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["target.txt"]
+
+
+def test_workspace_edit_preserves_executable_mode_and_crlf(tmp_path: Path) -> None:
+    from voidcode.capabilities.files.apply_workspace_edit import ApplyWorkspaceEditTool
+
+    target = tmp_path / "target.txt"
+    target.write_bytes(b"original\r\n")
+    target.chmod(0o750)
+    result = ApplyWorkspaceEditTool().invoke(
+        ToolCall(
+            tool_name="apply_workspace_edit",
+            arguments={
+                "edits": [
+                    {
+                        "path": "target.txt",
+                        "startLine": 1,
+                        "startCharacter": 1,
+                        "endLine": 1,
+                        "endCharacter": 2,
+                        "newText": "X",
+                        "expectedHash": hashlib.sha256(target.read_bytes()).hexdigest(),
+                    }
+                ]
+            },
+        ),
+        context=_context(tmp_path),
+        services=cast(Any, _VersionServices(unanswered=True)),
+    )
+    assert isinstance(result, ToolSuccess)
+    assert target.read_bytes() == b"Xriginal\r\n"
+    assert target.stat().st_mode & 0o777 == 0o750
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["target.txt"]

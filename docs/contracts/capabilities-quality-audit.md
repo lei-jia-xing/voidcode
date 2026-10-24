@@ -463,3 +463,26 @@ transactional multi-file behavior from the ingress tests.
 Validation: 56 files/artifact unit tests and 6 optional-query/core-builtins
 integration tests passed. Ruff and source type checks passed, CodeGraph synced.
 Remaining capability work and full-suite completion gate are still outstanding.
+
+## Workspace edit commit boundary
+
+Replaced truncating Path.write_bytes with a small shared file-replacement function:
+write and fsync a temporary sibling, preserve permission bits, verify the target
+still matches validated bytes, then os.replace. A finally block removes temporary
+files on every exit. Symlink substitutions at this boundary are rejected. Removed
+a second edit sort and post-write disk reread; returned hashes/diffs now describe
+the bytes this invocation actually committed, not a later writer's contents.
+
+Regression tests inject replacement failure and a document-query-time concurrent
+writer, verifying original/concurrent bytes survive and no temporary files remain.
+A successful edit preserves executable permissions and CRLF. This is per-file
+replacement, not a multi-file transaction: an already-applied prefix stays applied
+on later failure, as the existing error reports. The final content-check/replace
+window remains best effort, matching write; no process-wide locking added.
+Metadata beyond permission bits (ownership, ACLs, xattrs, hardlink identity) is not
+preserved by replacement, consistent with the existing write tool. Existing edit
+paths still use direct writes and will be reviewed separately.
+
+Validation: 59 files/artifact tests and 6 core-builtins/optional-query integration
+tests passed. Ruff, source type checks and CodeGraph sync passed. Full capability
+audit and final full-suite gate remain outstanding.
