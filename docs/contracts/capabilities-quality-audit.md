@@ -40,7 +40,7 @@ not establish source review.
 | `providers/native/claude_tokenizer/engine.py` | Pending full source review |
 | `providers/native/claude_tokenizer/normalize.py` | Pending full source review |
 | `providers/native/claude_tokenizer/notation.py` | Pending full source review |
-| `providers/native/config.py` | Partial: dead auth/serialization framework removed; strict single ingress, credential representations and env auth reviewed; remaining normalization review pending |
+| `providers/native/config.py` | Reviewed: strict ingress, field/table wiring, typed converters, env resolution, custom names, credential exclusivity and representations; removed dead framework/default paths |
 | `providers/native/errors.py` | Reviewed: classified errors, SDK text extraction and structured retry hints; removed prose scheduling and duplicate conversion functions |
 | `providers/native/google_native.py` | Partial: SDK timeout/transport errors, usage, owned-client cache, stream ownership/chunk cancellation and identity tool mapping reviewed; OAuth and remaining wire semantics pending; dead attachment branch removed, caller cancellation prompt with documented bounded SDK teardown lag |
 | `providers/native/model_catalog.py` | Reviewed static catalog fields/lookups and consumers; removed entire unreferenced remote discovery implementation |
@@ -996,3 +996,28 @@ the original store-closed thread failure is resolved. Ruff/format/source type ch
 passed and CodeGraph synchronized. This supersedes the earlier warning-bearing
 full-suite checkpoint. The full capabilities objective remains open with the source/
 data entries above still partial/pending; frontend/full project gate is not claimed.
+
+## Provider config review completion: unify shapes and remove dead defaults
+
+Completed remaining source/consumer review of the config field/table wiring,
+frozen domain construction, environment resolution, custom name validation and
+shape converters. Endpoint/named_endpoint used identical parsers and defaults;
+collapsed them into one shape. Removed the base-URL helper and fallback already
+covered by the authoritative OpenAI-wire default table. Unknown defaults remain
+None rather than becoming another vendor's URL.
+
+Provider-block absence is handled once at dispatch, leaving six shape converters
+nonnullable and removing their repeated None branches plus an impossible custom
+skip. Google credential validation now enforces the selected required field and
+forbids the other two in one place. Three regressions check every method's missing,
+valid and conflicting credential combinations. This preserves parser semantics;
+the separate Google OAuth delivery issue remains pending in the adapter.
+
+Removed endpoint cache_retention, which had no configuration ingress/producer.
+OpenAI still explicitly refuses unsupported retention on the SDK request itself,
+with a new request-boundary regression. Anthropic's active configuration/request
+retention behavior remains intact. No compatibility field or fallback retained.
+
+Validation: 218 provider/generator/stream tests passed on this worktree before the
+continuation; reviewed the unchanged diff again. Ruff/source checks are revalidated
+with the commit gate. Full capabilities objective remains open.

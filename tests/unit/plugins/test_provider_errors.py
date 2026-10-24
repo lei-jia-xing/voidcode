@@ -227,3 +227,31 @@ def test_provider_collection_nulls_and_valid_values_have_one_typed_result():
     assert configured.anthropic.beta_headers == ("feature-v1",)
     assert configured.endpoint.model_map == {"alias": "Case-Preserved"}
     assert configured.endpoint.auth_scheme == "none"
+
+
+@pytest.mark.parametrize(
+    ("method", "required"), [("api_key", "api_key"), ("oauth", "access_token"), ("service_account", "service_account_json_path")]
+)
+def test_google_auth_requires_exactly_the_selected_credential(method, required):
+    from voidcode.capabilities.providers.native.config import parse_provider_configs_payload
+
+    def parse(auth):
+        return parse_provider_configs_payload({"google": {"auth": auth}}, source="test", env={})
+
+    with pytest.raises(ValueError, match=f"{required}.*must be provided"):
+        parse({"method": method})
+    parsed = parse({"method": method, required: "configured-value"})
+    assert getattr(parsed.google.auth, required) == "configured-value"
+    for other in {"api_key", "access_token", "service_account_json_path"} - {required}:
+        with pytest.raises(ValueError, match=f"{other}.*must not be set"):
+            parse({"method": method, required: "configured-value", other: "conflicting-value"})
+
+
+def test_openai_rejects_anthropic_cache_control_at_request_boundary():
+    from voidcode.capabilities.providers.native.openai_native import OpenAIChatCompletionsProvider
+    from voidcode.sdk.provider import ProviderExecutionError, ProviderTurnRequest
+
+    with pytest.raises(ProviderExecutionError) as caught:
+        OpenAIChatCompletionsProvider()._payload(ProviderTurnRequest(messages=(), model_name="model", cache_retention="long"), stream=False)
+    assert caught.value.kind == "unsupported_feature"
+    assert caught.value.details["reason"] == "unsupported_cache_retention"

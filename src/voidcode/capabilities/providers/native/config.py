@@ -180,7 +180,6 @@ type _ProviderShape = Literal[
     "google",
     "copilot",
     "endpoint",
-    "named_endpoint",
     "openai_compatible",
 ]
 
@@ -213,7 +212,7 @@ _SHAPE_BY_PAYLOAD_MODEL: Mapping[type[BaseModel], _ProviderShape] = {
     _AnthropicProviderConfigPayload: "anthropic",
     _GoogleProviderConfigPayload: "google",
     _CopilotProviderConfigPayload: "copilot",
-    _ProviderEndpointConfigPayload: "named_endpoint",
+    _ProviderEndpointConfigPayload: "endpoint",
     _OpenAICompatibleProviderConfigPayload: "openai_compatible",
 }
 
@@ -236,10 +235,6 @@ def _provider_wires() -> dict[str, _ProviderWire]:
     wires: dict[str, _ProviderWire] = {}
     for provider_id, (field_name, payload_key) in _PROVIDER_CONFIG_FIELD_ENTRIES.items():
         shape = _SHAPE_BY_PAYLOAD_MODEL[_payload_model_type(ProviderConfigsPayload.model_fields[field_name].annotation)]
-        if provider_id == "endpoint":
-            # The generic gateway is the one ``named_endpoint`` that owns the
-            # generic ``ENDPOINT_*`` variables and its own default host.
-            shape = "endpoint"
         wires[provider_id] = _ProviderWire(field_name, payload_key, shape, PROVIDER_TABLE_BY_ID[provider_id].env_vars)
     return wires
 
@@ -313,18 +308,11 @@ class OpenAICompatibleProviderConfig:
 
 
 # Default endpoint per provider, read from the provider table. Only base URLs
-# live there: the model list is always discovered from the provider's own host,
-# so there is no second list to maintain and no listing URL to keep in step.
+# live there; model metadata comes from the generated models.dev catalog.
 # The providers on this contract are the table rows whose config shape is
 # ``openai_compatible`` -- a named endpoint, OpenAI itself, Copilot and the
 # Anthropic-/Google-wire vendors resolve their own default elsewhere.
 _OPENAI_COMPATIBLE_PROVIDER_NAMES = frozenset(provider_id for provider_id, wire in PROVIDER_WIRES.items() if wire.shape == "openai_compatible")
-
-
-def openai_compatible_default_base_url(provider_name: str) -> str:
-    if provider_name not in _OPENAI_COMPATIBLE_PROVIDER_NAMES:
-        return ""
-    return PROVIDER_TABLE_BY_ID[provider_name].default_base_url
 
 
 def openai_compatible_endpoint_config(
@@ -333,7 +321,7 @@ def openai_compatible_endpoint_config(
 ) -> ProviderEndpointConfig:
     if provider_name not in _OPENAI_COMPATIBLE_PROVIDER_NAMES:
         raise ValueError(f"Unknown OpenAI-compatible provider: {provider_name!r}")
-    default_base_url = openai_compatible_default_base_url(provider_name)
+    default_base_url = PROVIDER_TABLE_BY_ID[provider_name].default_base_url
     if config is None:
         # An unconfigured provider still has exactly one endpoint: its own
         # vendor default.
@@ -429,7 +417,6 @@ class ProviderEndpointConfig:
     openai_organization: str | None = None
     openai_project: str | None = None
     wire: RoutedWire = "openai-chat-completions"
-    cache_retention: Literal["none", "short", "long"] = "none"
 
 
 @dataclass(frozen=True, slots=True)
@@ -536,6 +523,8 @@ def _parse_provider_config_entry(
 ) -> ProviderConfigEntry | None:
     """Resolve one already validated provider block through its shape's parser."""
     raw_value = getattr(payload, wire.field_name)
+    if raw_value is None:
+        return None
     match wire.shape:
         case "openai":
             return _parse_openai_provider_config(
@@ -563,7 +552,7 @@ def _parse_provider_config_entry(
                 env=env,
                 token_env_var=wire.env_vars[0],
             )
-        case "endpoint" | "named_endpoint":
+        case "endpoint":
             return _parse_endpoint_provider_config(
                 raw_value,
                 env=env,
@@ -614,14 +603,11 @@ def parse_provider_configs_payload(
 
 
 def _parse_openai_provider_config(
-    payload: _OpenAIProviderConfigPayload | None,
+    payload: _OpenAIProviderConfigPayload,
     *,
     env: Mapping[str, str],
     api_key_env_var: str,
-) -> OpenAIProviderConfig | None:
-    if payload is None:
-        return None
-
+) -> OpenAIProviderConfig:
     api_key = payload.api_key
     if api_key is None:
         api_key = env.get(api_key_env_var)
@@ -635,14 +621,11 @@ def _parse_openai_provider_config(
 
 
 def _parse_anthropic_provider_config(
-    payload: _AnthropicProviderConfigPayload | None,
+    payload: _AnthropicProviderConfigPayload,
     *,
     env: Mapping[str, str],
     api_key_env_var: str,
-) -> AnthropicProviderConfig | None:
-    if payload is None:
-        return None
-
+) -> AnthropicProviderConfig:
     api_key = payload.api_key
     if api_key is None:
         api_key = env.get(api_key_env_var)
@@ -657,15 +640,12 @@ def _parse_anthropic_provider_config(
 
 
 def _parse_google_provider_config(
-    payload: _GoogleProviderConfigPayload | None,
+    payload: _GoogleProviderConfigPayload,
     *,
     field_path: str,
     env: Mapping[str, str],
     api_key_env_var: str,
-) -> GoogleProviderConfig | None:
-    if payload is None:
-        return None
-
+) -> GoogleProviderConfig:
     auth = _parse_google_auth_config(
         payload.auth,
         field_path=_nested_config_field(field_path, "auth"),
@@ -699,26 +679,13 @@ def _parse_google_auth_config(
     access_token = payload.access_token
     service_account_json_path = payload.service_account_json_path
 
-    if method == "api_key":
-        if api_key is None:
-            raise ValueError(f"{_nested_config_field(field_path, 'api_key')} must be provided when method is api_key")
-        if access_token is not None:
-            raise ValueError(f"{_nested_config_field(field_path, 'access_token')} must not be set when method is api_key")
-        if service_account_json_path is not None:
-            raise ValueError(f"{_nested_config_field(field_path, 'service_account_json_path')} must not be set when method is api_key")
-    elif method == "oauth":
-        if access_token is None:
-            raise ValueError(f"{_nested_config_field(field_path, 'access_token')} must be provided when method is oauth")
-        if api_key is not None:
-            raise ValueError(f"{_nested_config_field(field_path, 'api_key')} must not be set when method is oauth")
-        if service_account_json_path is not None:
-            raise ValueError(f"{_nested_config_field(field_path, 'service_account_json_path')} must not be set when method is oauth")
-    elif service_account_json_path is None:
-        raise ValueError(f"{_nested_config_field(field_path, 'service_account_json_path')} must be provided when method is service_account")
-    elif api_key is not None:
-        raise ValueError(f"{_nested_config_field(field_path, 'api_key')} must not be set when method is service_account")
-    elif access_token is not None:
-        raise ValueError(f"{_nested_config_field(field_path, 'access_token')} must not be set when method is service_account")
+    credentials = {"api_key": api_key, "access_token": access_token, "service_account_json_path": service_account_json_path}
+    required_field = {"api_key": "api_key", "oauth": "access_token", "service_account": "service_account_json_path"}[method]
+    if credentials[required_field] is None:
+        raise ValueError(f"{_nested_config_field(field_path, required_field)} must be provided when method is {method}")
+    for name, value in credentials.items():
+        if name != required_field and value is not None:
+            raise ValueError(f"{_nested_config_field(field_path, name)} must not be set when method is {method}")
 
     return GoogleProviderAuthConfig(
         method=method,
@@ -729,15 +696,12 @@ def _parse_google_auth_config(
 
 
 def _parse_copilot_provider_config(
-    payload: _CopilotProviderConfigPayload | None,
+    payload: _CopilotProviderConfigPayload,
     *,
     field_path: str,
     env: Mapping[str, str],
     token_env_var: str,
-) -> CopilotProviderConfig | None:
-    if payload is None:
-        return None
-
+) -> CopilotProviderConfig:
     auth = _parse_copilot_auth_config(
         payload.auth,
         field_path=_nested_config_field(field_path, "auth"),
@@ -780,15 +744,12 @@ def _parse_copilot_auth_config(
 
 
 def _parse_endpoint_provider_config(
-    payload: _ProviderEndpointConfigPayload | None,
+    payload: _ProviderEndpointConfigPayload,
     *,
     env: Mapping[str, str],
     default_api_key_env_var: str,
     default_base_url_env_var: str | None = None,
-) -> ProviderEndpointConfig | None:
-    if payload is None:
-        return None
-
+) -> ProviderEndpointConfig:
     api_key = payload.api_key
     api_key_env_var = payload.api_key_env_var
     if api_key is None:
@@ -814,15 +775,12 @@ def _parse_endpoint_provider_config(
 
 
 def _parse_openai_compatible_provider_config(
-    payload: _OpenAICompatibleProviderConfigPayload | None,
+    payload: _OpenAICompatibleProviderConfigPayload,
     *,
     env: Mapping[str, str],
     api_key_env_var: str,
     fallback_api_key_env_vars: tuple[str, ...] = (),
-) -> OpenAICompatibleProviderConfig | None:
-    if payload is None:
-        return None
-
+) -> OpenAICompatibleProviderConfig:
     api_key = payload.api_key
     api_key_env = payload.api_key_env_var
     if api_key is None:
@@ -853,7 +811,7 @@ def _parse_custom_endpoint_provider_configs(
     parsed: dict[str, ProviderEndpointConfig] = {}
     spelled: dict[str, str] = {}
     for raw_provider_name, provider_payload in payload.items():
-        if not isinstance(raw_provider_name, str) or not raw_provider_name:
+        if not raw_provider_name:
             raise ValueError(f"{field_path} keys must be non-empty strings")
         if "/" in raw_provider_name:
             raise ValueError(f"{_nested_config_field(field_path, raw_provider_name)} must not contain '/'")
@@ -884,8 +842,6 @@ def _parse_custom_endpoint_provider_configs(
             default_api_key_env_var=PROVIDER_TABLE_BY_ID["endpoint"].env_vars[0],
             default_base_url_env_var=PROVIDER_TABLE_BY_ID["endpoint"].env_vars[1],
         )
-        if parsed_config is None:
-            continue
         parsed[normalized_provider_name] = parsed_config
     return parsed
 

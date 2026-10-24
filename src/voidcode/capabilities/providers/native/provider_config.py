@@ -7,7 +7,6 @@ from .config import (
     PROVIDER_WIRES,
     CopilotProviderConfig,
     ProviderEndpointConfig,
-    openai_compatible_default_base_url,
 )
 from .provider_table import PROVIDER_TABLE, PROVIDER_TABLE_BY_ID
 
@@ -43,10 +42,7 @@ def openai_wire_default_base_url(provider_name: str) -> str | None:
     ``None`` means the provider has no default endpoint of its own, so a caller
     must refuse to run rather than point the wire at a host it does not own.
     """
-    vendor_default = _DEFAULT_OPENAI_WIRE_BASE_URLS.get(provider_name)
-    if vendor_default is not None:
-        return vendor_default
-    return openai_compatible_default_base_url(provider_name) or None
+    return _DEFAULT_OPENAI_WIRE_BASE_URLS.get(provider_name)
 
 
 def anthropic_wire_default_base_url(provider_name: str) -> str | None:

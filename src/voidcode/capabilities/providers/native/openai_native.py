@@ -613,19 +613,8 @@ class OpenAIChatCompletionsProvider:
         )
 
     def _payload(self, request: ProviderTurnRequest, *, stream: bool) -> dict[str, object]:
-        # Precedence: the request's own retention, else the endpoint config's
-        # (its field default is "none"), else -- with no endpoint config -- "none".
-        endpoint = self._endpoint_config()
-        retention = request.cache_retention if request.cache_retention is not None else (endpoint.cache_retention if endpoint is not None else "none")
-        if retention not in (None, "none"):
-            # Prompt caching is an Anthropic Messages feature; this adapter would
-            # silently drop the request, so fail explicitly instead. Fallback stays
-            # allowed, matching the deleted LiteLLM backend: another provider in the
-            # chain may be Anthropic-compatible. ``cache_retention`` is not exposed
-            # by any schema that reaches this adapter (only ``providers.anthropic``
-            # parses it, and that config is served by ``anthropic_native``), so in
-            # practice this guard fires on the protocol-level
-            # ``ProviderTurnRequest.cache_retention`` field.
+        if request.cache_retention not in (None, "none"):
+            # This protocol does not implement the requested Anthropic cache control.
             raise ProviderExecutionError(
                 kind="unsupported_feature",
                 provider_name=request.provider_name or self.name,
