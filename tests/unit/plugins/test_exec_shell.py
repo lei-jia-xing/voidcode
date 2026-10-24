@@ -142,7 +142,6 @@ def test_shell_exec_runs_in_the_workspace_and_reports_success(tmp_path: Path) ->
     assert body.stdout_artifact.sha256 == hashlib.sha256(result.output.text.encode()).hexdigest()
     assert body.stderr_artifact is None
     assert lease.spills == [{"data": result.output.text.encode(), "media_type": "text/plain; charset=utf-8"}]
-    assert body.output_char_count == len(result.output.text)
     assert body.as_payload()["exit_code"] == 0
     call = lease.calls[0]
     assert call["argv"] == [*_SHELL_WRAPPER, command]
@@ -206,8 +205,6 @@ def test_shell_exec_timeout_returns_a_partial_body_with_its_artifact(tmp_path: P
     body = result.body
     assert isinstance(body, ShellExecResultBody)
     assert body.timed_out is True
-    assert body.interrupted is True
-    assert body.stop_confirmed is True
     assert body.exit_code is None
     assert body.timeout == 1
     assert body.stdout == "partial\n"
@@ -233,10 +230,8 @@ def test_shell_exec_cancellation_reports_the_abort_signal(tmp_path: Path) -> Non
     assert result.output.text == "User aborted the command.\n\nstarted\n"
     body = result.body
     assert isinstance(body, ShellExecResultBody)
-    assert body.interrupted is True
     assert body.cancelled is True
     assert body.reason == "test abort"
-    assert body.stop_confirmed is True
     assert body.timed_out is False
     assert body.stdout == "started\n"
     assert body.as_payload()["reason"] == "test abort"
@@ -273,7 +268,6 @@ def test_shell_exec_reports_the_tool_timeout_with_partial_output(tmp_path: Path)
     assert isinstance(result, ToolFailure)
     assert isinstance(result.body, ShellExecResultBody)
     assert result.body.timed_out is True
-    assert result.body.stop_confirmed is True
     assert result.body.timeout == 3
     assert result.body.stdout == "partial\n"
     assert result.error == "shell_exec command timed out after 3s"
@@ -303,7 +297,7 @@ def test_shell_exec_preview_overflow_spills_the_full_stream(tmp_path: Path) -> N
     reference = result.output.bounds.reference
     assert reference is not None
     assert reference.uri == f"voidcode://artifact/{body.stdout_artifact.sha256}"
-    assert result.output.text == f"Full process output: {reference.uri}\n\n{body.stdout}"
+    assert result.output.text == f"Captured process output: {reference.uri}\n\n{body.stdout}"
 
 
 def test_shell_exec_forwards_bounded_progress_chunks(tmp_path: Path) -> None:

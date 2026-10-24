@@ -75,13 +75,10 @@ class ShellExecResultBody:
     truncated: bool = False
     stdout_truncated: bool | None = None
     stderr_truncated: bool | None = None
-    output_char_count: int | None = None
     cwd: str | None = None
     stdout_artifact: ArtifactReference | None = None
     stderr_artifact: ArtifactReference | None = None
     output_limit_exceeded: bool = False
-    stop_confirmed: bool | None = None
-    interrupted: bool = False
     timed_out: bool = False
     cancelled: bool = False
     reason: str | None = None
@@ -99,8 +96,6 @@ class ShellExecResultBody:
             payload["stdout_truncated"] = self.stdout_truncated
         if self.stderr_truncated is not None:
             payload["stderr_truncated"] = self.stderr_truncated
-        if self.output_char_count is not None:
-            payload["output_char_count"] = self.output_char_count
         if self.cwd is not None:
             payload["cwd"] = self.cwd
         if self.stdout_artifact is not None:
@@ -109,10 +104,6 @@ class ShellExecResultBody:
             payload["stderr_artifact"] = self.stderr_artifact.as_payload()
         if self.output_limit_exceeded:
             payload["output_limit_exceeded"] = True
-        if self.stop_confirmed is not None:
-            payload["stop_confirmed"] = self.stop_confirmed
-        if self.interrupted:
-            payload["interrupted"] = True
         if self.timed_out:
             payload["timed_out"] = True
         if self.cancelled:
@@ -234,7 +225,7 @@ class ShellExecTool:
         output = f"{stderr}{stdout}" if output_truncated and stderr else f"{stdout}{stderr}"
         artifact_refs = [f"voidcode://artifact/{artifact.sha256}" for artifact in (stdout_artifact, stderr_artifact) if artifact is not None]
         if output_truncated and artifact_refs:
-            output = "Full process output: " + ", ".join(artifact_refs) + "\n\n" + output
+            output = "Captured process output: " + ", ".join(artifact_refs) + "\n\n" + output
 
         body = ShellExecResultBody(
             command=command_text,
@@ -246,7 +237,6 @@ class ShellExecTool:
             truncated=output_truncated,
             stdout_truncated=_preview_truncated(result.stdout),
             stderr_truncated=_preview_truncated(result.stderr),
-            output_char_count=len(output),
             stdout_artifact=stdout_artifact,
             stderr_artifact=stderr_artifact,
             output_limit_exceeded=output_limit_exceeded,
@@ -263,9 +253,8 @@ class ShellExecTool:
         )
 
         if result.timed_out:
-            # The lease stopped the group itself and drained its pipes, so the stop is confirmed;
-            # `exit_code` is None because the child never reported one of its own.
-            stopped_body = replace(body, interrupted=True, timed_out=True, stop_confirmed=True)
+            # The host reports timeout separately from a natural child exit code.
+            stopped_body = replace(body, timed_out=True)
             return ToolFailure(
                 tool_name=self.definition.name,
                 error=f"shell_exec command timed out after {timeout_seconds}s",
@@ -284,7 +273,7 @@ class ShellExecTool:
                     f"{content}\n\n{output}" if output else content,
                     bounds=partial_bounds,
                 ),
-                body=replace(body, interrupted=True, cancelled=True, reason=reason, stop_confirmed=True),
+                body=replace(body, cancelled=True, reason=reason),
                 timeout_seconds=timeout_seconds,
             )
 

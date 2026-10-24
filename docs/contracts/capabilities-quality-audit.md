@@ -1087,3 +1087,19 @@ actual SDK contract; no tests were added.
 
 Validation: 40 existing shell, host-process lease and SDK codec/contract tests
 passed (17.59s). Ruff, formatting, source type checking and CodeGraph sync passed.
+
+
+## Shell result fields and capture wording
+
+Removed shell-only `output_char_count` (no business consumer and measured before
+some final output transformations), `interrupted` (duplicated timeout/cancellation)
+and `stop_confirmed` (always true when present, despite no confirmation field in
+`ProcessResult`). Retained the actual timeout/cancel flags, reason, exit code,
+stream previews, capture-limit flag and SDK output bounds. This does not alter the
+host's process shutdown implementation or claim its bounded kill wait proves exit.
+Changed artifact guidance to "Captured process output" because a capture-limit
+failure cannot honestly advertise the artifact as full process output. Updated
+existing assertions only; no tests added.
+
+Validation: 40 existing shell, process lease and SDK codec/contract tests passed
+(17.32s); Ruff, formatting, source type checking and CodeGraph sync passed.
