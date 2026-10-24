@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -18,7 +17,7 @@ import pytest
 from voidcode.capabilities.exec.shell_exec import ShellExecResultBody
 from voidcode.plugins.exec import create_plugin
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.services import ProcessResult
+from voidcode.sdk.services import ArtifactReference, ProcessResult
 from voidcode.sdk.tools import TextOutput, ToolCall, ToolFailure, ToolSuccess
 
 _SHELL_WRAPPER = ["cmd.exe", "/c"] if os.name == "nt" else ["/bin/sh", "-c"]
@@ -40,13 +39,6 @@ class _AbortSignal:
     def set_cancelled(self, value: bool, *, reason: str | None = None) -> None:
         self._cancelled = value
         self._reason = reason
-
-
-@dataclass(frozen=True, slots=True)
-class _ArtifactReference:
-    sha256: str
-    bytes: int
-    media_type: str
 
 
 class _FakeLease:
@@ -81,10 +73,10 @@ class _FakeLease:
         )
         return self.result
 
-    def spill_artifact(self, data: bytes | str, *, media_type: str = "text/plain; charset=utf-8") -> _ArtifactReference:
+    def spill_artifact(self, data: bytes | str, *, media_type: str = "text/plain; charset=utf-8") -> ArtifactReference:
         payload = data.encode("utf-8") if isinstance(data, str) else bytes(data)
         self.spills.append({"data": payload, "media_type": media_type})
-        return _ArtifactReference(hashlib.sha256(payload).hexdigest(), len(payload), media_type)
+        return ArtifactReference(hashlib.sha256(payload).hexdigest(), len(payload), media_type)
 
 
 def _context_with_progress(workspace: Path, chunks: list[dict[str, object]]) -> ToolContext:
@@ -147,7 +139,7 @@ def test_shell_exec_runs_in_the_workspace_and_reports_success(tmp_path: Path) ->
     assert body.stderr_truncated is False
     # Every non-empty stream is spilled, truncated or not; only the preview stays inline.
     assert body.stdout_artifact is not None
-    assert body.stdout_artifact["artifact_id"] == hashlib.sha256(result.output.text.encode()).hexdigest()
+    assert body.stdout_artifact.sha256 == hashlib.sha256(result.output.text.encode()).hexdigest()
     assert body.stderr_artifact is None
     assert lease.spills == [{"data": result.output.text.encode(), "media_type": "text/plain; charset=utf-8"}]
     assert body.output_char_count == len(result.output.text)
@@ -223,9 +215,7 @@ def test_shell_exec_timeout_returns_a_partial_body_with_its_artifact(tmp_path: P
     assert result.timeout_seconds == 1
     assert lease.calls[0]["timeout_seconds"] == 1.0
     assert body.stdout_artifact is not None
-    assert body.stdout_artifact["artifact_id"] == hashlib.sha256(b"partial\n").hexdigest()
-    assert body.stdout_artifact["kind"] == "stdout"
-    assert body.stdout_artifact["source"] == "process_output"
+    assert body.stdout_artifact.sha256 == hashlib.sha256(b"partial\n").hexdigest()
     assert body.stderr_artifact is None
     assert lease.spills == [{"data": b"partial\n", "media_type": "text/plain; charset=utf-8"}]
 
@@ -309,10 +299,10 @@ def test_shell_exec_preview_overflow_spills_the_full_stream(tmp_path: Path) -> N
     assert result.output.bounds.partial is True
     assert lease.spills == [{"data": full.encode(), "media_type": "text/plain; charset=utf-8"}]
     assert body.stdout_artifact is not None
-    assert body.stdout_artifact["artifact_id"] == hashlib.sha256(full.encode()).hexdigest()
+    assert body.stdout_artifact.sha256 == hashlib.sha256(full.encode()).hexdigest()
     reference = result.output.bounds.reference
     assert reference is not None
-    assert reference.uri == f"voidcode://artifact/{body.stdout_artifact['artifact_id']}"
+    assert reference.uri == f"voidcode://artifact/{body.stdout_artifact.sha256}"
     assert result.output.text == f"Full process output: {reference.uri}\n\n{body.stdout}"
 
 

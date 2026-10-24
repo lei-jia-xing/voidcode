@@ -18,7 +18,7 @@ from typing import ClassVar, final
 from pydantic import BaseModel, ConfigDict, Field
 
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.services import PluginServices
+from voidcode.sdk.services import ArtifactReference, PluginServices
 from voidcode.sdk.tools import (
     OutputBounds,
     OutputReference,
@@ -43,7 +43,6 @@ _CAPTURE_BYTES = 128 * 1024 * 1024
 #: the capture: the artifact keeps the whole bounded stream.
 _PREVIEW_CHARS = 25 * 1024
 _ARTIFACT_MIME = "text/plain; charset=utf-8"
-_ARTIFACT_SOURCE = "process_output"
 #: Longest progress chunk forwarded to the context's progress sink.
 _PROGRESS_CHUNK_CHARS = 12_000
 
@@ -78,8 +77,8 @@ class ShellExecResultBody:
     stderr_truncated: bool | None = None
     output_char_count: int | None = None
     cwd: str | None = None
-    stdout_artifact: dict[str, object] | None = None
-    stderr_artifact: dict[str, object] | None = None
+    stdout_artifact: ArtifactReference | None = None
+    stderr_artifact: ArtifactReference | None = None
     output_limit_exceeded: bool = False
     stop_confirmed: bool | None = None
     interrupted: bool = False
@@ -105,9 +104,9 @@ class ShellExecResultBody:
         if self.cwd is not None:
             payload["cwd"] = self.cwd
         if self.stdout_artifact is not None:
-            payload["stdout_artifact"] = self.stdout_artifact
+            payload["stdout_artifact"] = self.stdout_artifact.as_payload()
         if self.stderr_artifact is not None:
-            payload["stderr_artifact"] = self.stderr_artifact
+            payload["stderr_artifact"] = self.stderr_artifact.as_payload()
         if self.output_limit_exceeded:
             payload["output_limit_exceeded"] = True
         if self.stop_confirmed is not None:
@@ -121,13 +120,10 @@ class ShellExecResultBody:
         return payload
 
 
-def _artifact_reference(artifact: dict[str, object] | None) -> OutputReference | None:
+def _artifact_reference(artifact: ArtifactReference | None) -> OutputReference | None:
     if artifact is None:
         return None
-    artifact_id = artifact.get("artifact_id")
-    if not isinstance(artifact_id, str):
-        return None
-    return OutputReference(f"voidcode://artifact/{artifact_id}", artifact)
+    return OutputReference(f"voidcode://artifact/{artifact.sha256}", artifact.as_payload())
 
 
 class ShellExecArgs(BaseModel):
@@ -156,23 +152,9 @@ def _preview_truncated(text: str) -> bool:
     return len(text) > _PREVIEW_CHARS * 2
 
 
-def _spill_stream(services: PluginServices, stream_name: str, text: str) -> dict[str, object] | None:
+def _spill_stream(services: PluginServices, text: str) -> ArtifactReference | None:
     """The stream's full bounded capture as an artifact; `None` when empty."""
-    if not text:
-        return None
-    reference = services.spill_artifact(text, media_type=_ARTIFACT_MIME)
-    uri = f"voidcode://artifact/{reference.sha256}"
-    return {
-        "artifact_id": reference.sha256,
-        "sha256": reference.sha256,
-        "byte_count": reference.bytes,
-        "content_type": reference.media_type,
-        "mime": reference.media_type,
-        "uri": uri,
-        "kind": stream_name,
-        "status": "available",
-        "source": _ARTIFACT_SOURCE,
-    }
+    return services.spill_artifact(text, media_type=_ARTIFACT_MIME) if text else None
 
 
 def _progress_sink(context: ToolContext) -> Callable[[str, bytes], None] | None:
@@ -244,13 +226,13 @@ class ShellExecTool:
 
         stdout = _preview(result.stdout)
         stderr = _preview(result.stderr)
-        stdout_artifact = _spill_stream(services, "stdout", result.stdout)
-        stderr_artifact = _spill_stream(services, "stderr", result.stderr)
+        stdout_artifact = _spill_stream(services, result.stdout)
+        stderr_artifact = _spill_stream(services, result.stderr)
         output_limit_exceeded = result.truncated
         output_truncated = _preview_truncated(result.stdout) or _preview_truncated(result.stderr) or output_limit_exceeded
         output_reference = _artifact_reference(stdout_artifact) or _artifact_reference(stderr_artifact)
         output = f"{stderr}{stdout}" if output_truncated and stderr else f"{stdout}{stderr}"
-        artifact_refs = [uri for artifact in (stdout_artifact, stderr_artifact) if isinstance((uri := (artifact or {}).get("uri")), str)]
+        artifact_refs = [f"voidcode://artifact/{artifact.sha256}" for artifact in (stdout_artifact, stderr_artifact) if artifact is not None]
         if output_truncated and artifact_refs:
             output = "Full process output: " + ", ".join(artifact_refs) + "\n\n" + output
 

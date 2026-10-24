@@ -14,7 +14,7 @@ not establish source review.
 | `exec/__init__.py` | Pending full source review |
 | `exec/args.py` | Reviewed source/consumers: three small nonempty field validators used by strict exec argument models |
 | `exec/background_process.py` | Partial: strict persisted identity ingress, UTF-8/CRLF log pages and final readiness draining reviewed; typed state pipeline reviewed; scan ceiling/cursor and remaining lifecycle review pending |
-| `exec/shell_exec.py` | Pending full source review |
+| `exec/shell_exec.py` | Partial: typed SDK artifact references and consumers reviewed; interception policy, progress boundaries and remaining result semantics pending |
 | `files/__init__.py` | Reviewed: typed Tool wrapper preserves diagnostic failures; shared core/plugin factory |
 | `files/_replace.py` | Reviewed: checked replacement and exclusive atomic creation; cleanup, permissions and race regressions; documented metadata/compare-window limits |
 | `files/apply_patch.py` | Partial: stdin unified diffs, canonical sequential marker preflight and checked commits reviewed; parser, partial-result and cancellation review pending |
@@ -1071,3 +1071,19 @@ Adjusted existing tool assertions and the fake service's default-path behavior;
 no new test cases retained, following the user's instruction to stop adding tests.
 Validation: 103 existing background, shell and host-process tests passed (36.59s).
 Ruff, formatting, source type checking and CodeGraph synchronization passed.
+
+
+## Shell output artifacts use the SDK contract
+
+Removed shell's ad hoc artifact dictionary. Results retain the existing immutable
+SDK `ArtifactReference` until serialization, then use its `sha256`, `bytes` and
+`media_type` payload. Output bounds keep the same content-addressed URI with the
+same SDK metadata. Removed duplicate identity/media aliases, fixed status/source
+fields and the stream kind already expressed by stdout/stderr field names.
+There are no repository runtime/UI consumers of those removed dictionary keys.
+This also removes downstream dictionary shape checks on internally produced data
+and the test-only duplicate artifact dataclass. Existing assertions now use the
+actual SDK contract; no tests were added.
+
+Validation: 40 existing shell, host-process lease and SDK codec/contract tests
+passed (17.59s). Ruff, formatting, source type checking and CodeGraph sync passed.
