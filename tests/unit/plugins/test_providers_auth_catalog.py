@@ -597,3 +597,31 @@ def test_google_timeout_bounds_the_real_sdk_request(servers: _Servers) -> None:
         assert len(server.requests) == 1
     finally:
         provider.close()
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_anthropic_tool_result_uses_the_sdk_content_and_error_flag(servers: _Servers, failed: bool) -> None:
+    from voidcode.sdk.tools import ToolCall, ToolDefinition
+
+    server = servers.start_json()
+    provider = _provider({"anthropic": {"api_key": "loopback-key", "base_url": server.base_url}}, name="anthropic")
+    request = _request(
+        ProviderMessage("user", "inspect"),
+        ProviderMessage("assistant", tool_calls=(ToolCall("inspect", {"path": "file.txt"}, tool_call_id="call-1"),)),
+        ProviderMessage("tool", "tool-result-body", tool_call_id="call-1", tool_name="inspect", is_error=failed, metadata={"status": "error"}),
+        provider_name="anthropic",
+        model_name="claude-sonnet-4-5",
+        raw_model="anthropic/claude-sonnet-4-5",
+        available_tools=(ToolDefinition("inspect", "Inspect", {"type": "object", "properties": {"path": {"type": "string"}}}),),
+    )
+    try:
+        assert provider.propose_turn(request).output == "anthropic-ok"
+        payload = json.loads(server.requests[0].body)
+        blocks = [block for message in payload["messages"] for block in message["content"]]
+        result = next(block for block in blocks if block["type"] == "tool_result")
+        assert result["tool_use_id"] == "call-1"
+        assert result["content"] == "tool-result-body"
+        assert result.get("is_error", False) is failed
+        assert next(block for block in blocks if block["type"] == "tool_use")["input"] == {"path": "file.txt"}
+    finally:
+        provider.close()

@@ -19,7 +19,6 @@ from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.provider import (
     ProviderDoneReason,
     ProviderExecutionError,
-    ProviderMessage,
     ProviderStreamEvent,
     ProviderTokenUsage,
     ProviderTurnRequest,
@@ -29,7 +28,6 @@ from voidcode.sdk.provider import (
 )
 from voidcode.sdk.tools import ToolCall
 
-from ._result_sanitize import sanitize_tool_result_data
 from ._wire_common import (
     DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS,
     OwnedResource,
@@ -351,34 +349,6 @@ class AnthropicMessagesProvider:
         return value if isinstance(value, str) else None
 
     @staticmethod
-    def _attachment_parts(message: ProviderMessage) -> list[dict[str, object]]:
-        """Image blocks for the attachments one message carries, when any.
-
-        Integration point for the assembly layer: attachments ride on
-        ``ProviderMessage.metadata["attachments"]`` as mappings carrying ``mime``
-        and a base64 ``data_uri`` (``AttachmentOutput`` in ``voidcode.sdk.tools``).
-        Nothing in the core sets that key yet, so this yields nothing until the
-        assembly layer publishes them; the Messages API takes the base64 payload
-        and the media type as separate fields, so the data URI is split here.
-        """
-        declared = message.metadata.get("attachments")
-        if not isinstance(declared, list):
-            return []
-        blocks: list[dict[str, object]] = []
-        for attachment in declared:
-            if not isinstance(attachment, Mapping):
-                continue
-            mime = attachment.get("mime")
-            data_uri = attachment.get("data_uri")
-            if not isinstance(mime, str) or not isinstance(data_uri, str):
-                continue
-            header, _, payload = data_uri.partition(",")
-            if ";base64" not in header or not payload:
-                continue
-            blocks.append({"type": "image", "source": {"type": "base64", "media_type": mime, "data": payload}})
-        return blocks
-
-    @staticmethod
     def _tool_maps(request: ProviderTurnRequest) -> tuple[dict[str, str], dict[str, str]]:
         original: dict[str, str] = {}
         reverse: dict[str, str] = {}
@@ -395,10 +365,6 @@ class AnthropicMessagesProvider:
             original[name] = candidate
             reverse[candidate] = name
         return original, reverse
-
-    @staticmethod
-    def _visible_arguments(_tool_name: str | None, arguments: Mapping[str, object]) -> dict[str, object]:
-        return json_wire_object(arguments)
 
     def _messages_and_system(self, request: ProviderTurnRequest) -> tuple[str | None, list[dict[str, object]]]:
         original_to_provider, _ = self._tool_maps(request)
@@ -440,7 +406,7 @@ class AnthropicMessagesProvider:
                         # would share.
                         "id": call.tool_call_id,
                         "name": original_to_provider.get(call.tool_name, call.tool_name),
-                        "input": self._visible_arguments(call.tool_name, call.arguments),
+                        "input": json_wire_object(call.arguments),
                     }
                     for call in message.tool_calls
                 )
@@ -459,23 +425,16 @@ class AnthropicMessagesProvider:
                     append_message("assistant", block)
                 continue
             if message.role == "tool":
-                metadata = message.metadata or {}
-                raw_data = metadata.get("data")
-                data = sanitize_tool_result_data(raw_data) if isinstance(raw_data, dict) else {}
-                result_data = {key: value for key, value in data.items() if key not in {"tool_call_id", "arguments"}}
-                result_text = message.content or (json.dumps(result_data, ensure_ascii=False, sort_keys=True) if result_data else "")
                 block: dict[str, object] = {
                     "type": "tool_result",
                     "tool_use_id": message.tool_call_id,
-                    "content": result_text,
+                    "content": message.content or "",
                 }
-                if message.is_error or metadata.get("status") == "error":
+                if message.is_error:
                     block["is_error"] = True
                 append_message("user", block)
                 continue
             if message.role in {"user", "assistant"}:
-                for image in self._attachment_parts(message):
-                    append_message(message.role, image)
                 if message.content:
                     append_message(message.role, {"type": "text", "text": message.content})
         return ("\n\n".join(system_parts) if system_parts else None), messages
@@ -637,7 +596,7 @@ class AnthropicMessagesProvider:
             calls = tuple(
                 ToolCall(
                     tool_name=reverse.get(call.tool_name, call.tool_name),
-                    arguments=self._visible_arguments(reverse.get(call.tool_name, call.tool_name), call.arguments),
+                    arguments=json_wire_object(call.arguments),
                     tool_call_id=call.tool_call_id,
                 )
                 for call in calls
@@ -816,7 +775,7 @@ class AnthropicMessagesProvider:
                     tool_call_id=normalize_tool_call_id(accumulator.tool_call_id, fallback=f"tool_call_{index + 1}"),
                     tool_name=reverse.get(accumulator.tool_name, accumulator.tool_name),
                     tool_call_ordinal=index,
-                    parsed_arguments=self._visible_arguments(reverse.get(accumulator.tool_name, accumulator.tool_name), parsed),
+                    parsed_arguments=json_wire_object(parsed),
                 )
             done_reason = _done_reason(stop_reason)
             if done_reason == "unknown" and isinstance(stop_reason, str) and stop_reason.strip():

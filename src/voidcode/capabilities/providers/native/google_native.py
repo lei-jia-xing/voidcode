@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import os
 from collections.abc import Iterator, Mapping
 from contextlib import closing
@@ -188,40 +187,6 @@ class GoogleGenAIProvider:
             response["is_error"] = True
         return response
 
-    @staticmethod
-    def _attachment_parts(message: ProviderMessage) -> list[dict[str, object]]:
-        """Inline media parts for the attachments one message carries, when any.
-
-        Integration point for the assembly layer: attachments ride on
-        ``ProviderMessage.metadata["attachments"]`` as mappings carrying ``mime``
-        and a base64 ``data_uri`` (``AttachmentOutput`` in ``voidcode.sdk.tools``).
-        Nothing in the core sets that key yet, so this yields nothing until the
-        assembly layer publishes them; the legacy wire carried the same inline
-        parts from its own assembled-context attachments.
-        """
-        declared = message.metadata.get("attachments")
-        if not isinstance(declared, list):
-            return []
-        parts: list[dict[str, object]] = []
-        for attachment in declared:
-            if not isinstance(attachment, Mapping):
-                continue
-            mime = attachment.get("mime")
-            data_uri = attachment.get("data_uri")
-            if not isinstance(mime, str) or not isinstance(data_uri, str):
-                continue
-            header, _, payload = data_uri.partition(",")
-            if ";base64" not in header or not payload:
-                continue
-            try:
-                data = base64.b64decode(payload)
-            except ValueError:
-                continue
-            # Raw wire parts keep this path independent of SDK model versions;
-            # ``data`` is bytes because the SDK base64-encodes it on serialize.
-            parts.append({"inline_data": {"mime_type": mime, "data": data}})
-        return parts
-
     def _contents(self, request: ProviderTurnRequest) -> tuple[str | None, list[dict[str, object]]]:
         system: list[str] = []
         contents: list[dict[str, object]] = []
@@ -265,8 +230,6 @@ class GoogleGenAIProvider:
                 continue
             role = "model" if message.role == "assistant" else "user"
             parts = [{"text": message.content}] if message.content else []
-            if role == "user":
-                parts.extend(self._attachment_parts(message))
             if parts:
                 contents.append({"role": role, "parts": parts})
             index += 1

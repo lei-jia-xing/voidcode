@@ -366,25 +366,6 @@ def _replayed_message(message: ProviderMessage) -> bool:
     return message.metadata.get("source") == "replayed_conversation"
 
 
-def _attachment_parts(metadata: Mapping[str, object]) -> dict[str, object]:
-    """The attachment a tool result carries, as the legacy payload emitted it.
-
-    The legacy adapter read ``mime``/``data_uri`` off an ``AttachmentOutput``
-    object; the neutral message carries the same two fields as one entry of its
-    ``attachments`` metadata list.
-    """
-    attachments = metadata.get("attachments")
-    if not isinstance(attachments, list):
-        return {}
-    part = next((item for item in attachments if isinstance(item, Mapping) and isinstance(item.get("mime"), str)), None)
-    if part is None:
-        return {}
-    data_uri = part.get("data_uri")
-    if isinstance(data_uri, str):
-        return {"mime": part["mime"], "data_uri": data_uri}
-    return {"mime": part["mime"], "attachment_unavailable": True}
-
-
 @dataclass(frozen=True, slots=True)
 class _ToolAccumulator:
     tool_call_id: str | None = None
@@ -639,7 +620,6 @@ class OpenAIChatCompletionsProvider:
                 "partial": bool(metadata.get("partial")),
                 "reference": metadata.get("reference"),
             }
-            payload.update(_attachment_parts(metadata))
             tool_feedback_lines.append(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         messages: list[dict[str, object]] = []
         for message in request.messages:

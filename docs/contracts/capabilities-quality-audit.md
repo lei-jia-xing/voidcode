@@ -32,7 +32,7 @@ not establish source review.
 | `providers/dispatch.py` | Reviewed: strict registration ingress, explicit auth conflict handling, typed materialization/selection, locked lazy cache/teardown and usage wrappers |
 | `providers/native/__init__.py` | Reviewed: documentation-only namespace, no side effects |
 | `providers/native/_resources.py` | Reviewed: contained package paths and JSON loading; removed unused installed-data locator/text wrapper |
-| `providers/native/_result_sanitize.py` | Pending full source review |
+| `providers/native/_result_sanitize.py` | Removed: only consumer sat behind an unreachable metadata.data dict check; SDK content is already projected by core |
 | `providers/native/_wire_common.py` | Reviewed: usage counts, tool IDs, request headers, bounded queue/stream timeout/error cleanup, owned-resource initialization |
 | `providers/native/anthropic_native.py` | Pending full source review |
 | `providers/native/claude_tokenizer/__init__.py` | Pending full source review |
@@ -42,7 +42,7 @@ not establish source review.
 | `providers/native/claude_tokenizer/notation.py` | Pending full source review |
 | `providers/native/config.py` | Partial: dead auth/serialization framework removed; strict single ingress, credential representations and env auth reviewed; remaining normalization review pending |
 | `providers/native/errors.py` | Reviewed: classified errors, SDK text extraction and structured retry hints; removed prose scheduling and duplicate conversion functions |
-| `providers/native/google_native.py` | Partial: SDK timeout/transport errors, usage, owned-client cache, stream ownership/chunk cancellation and identity tool mapping reviewed; OAuth, attachments and remaining wire semantics pending; caller cancellation is prompt with documented bounded SDK teardown lag |
+| `providers/native/google_native.py` | Partial: SDK timeout/transport errors, usage, owned-client cache, stream ownership/chunk cancellation and identity tool mapping reviewed; OAuth and remaining wire semantics pending; dead attachment branch removed, caller cancellation prompt with documented bounded SDK teardown lag |
 | `providers/native/model_catalog.py` | Reviewed static catalog fields/lookups and consumers; removed entire unreferenced remote discovery implementation |
 | `providers/native/model_catalog_data.json` | Pending consumer/data-contract review |
 | `providers/native/model_routing.py` | Reviewed: routed alias/catalog fallback, typed unsupported wires, serialized cache creation and teardown |
@@ -908,3 +908,29 @@ Validation: final Google/shared-pump/stream/auth/lifecycle/error/thinking suite 
 all 127 tests (20.00s), including real delayed SSE and timeout requests. Ruff/source
 type checks passed; CodeGraph synchronized. Full capability audit/full-suite gate
 remain outstanding.
+
+## Remove unconnected attachment metadata and duplicate result sanitization
+
+Repository-wide producer audit found no core/plugin publisher for the adapters'
+metadata.attachments convention. ProviderMessage owns/freeze-normalizes JSON:
+attachments become tuples and data becomes MappingProxyType. Verified those actual
+runtime types; all three old adapters checked list, and Anthropic's secondary data
+path checked dict, so those branches never accepted ordinary SDK messages.
+
+Removed Google/Anthropic attachment block builders, OpenAI's synthetic-feedback
+attachment metadata builder, and the orphan _result_sanitize module. Removed
+Anthropic's no-op argument wrapper and secondary data/status interpretation. Native
+tool results now use the SDK content/is_error fields; core engine already calls
+model_result_text before creating those messages. Provider capabilities metadata
+still describes vendor facts; this cleanup does not add working multimodal model
+input. A future attachment feature needs a declared/published SDK contract rather
+than dormant metadata conventions.
+
+Two real Anthropic SDK loopback cases verify tool-use arguments, result body/id and
+success/error flags. Uncontracted metadata.status does not override is_error. No
+compatibility branch or second output-budget implementation retained.
+
+Validation: 154 auth/dispatch/reasoning/stream/Google/lifecycle/error/protocol tests
+passed (36.17s); both final Anthropic flag-authority cases passed separately. Seven
+core-builtins/read-loopback tests passed. Ruff/source type checks passed; CodeGraph
+synchronized. Full capability audit and final full-suite gate remain outstanding.
