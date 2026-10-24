@@ -14,11 +14,11 @@ from dataclasses import asdict
 from typing import get_args
 from voidcode.sdk.plugin import Plugin
 from voidcode.sdk.hooks import ObservedFactKind, RunFinishedFact, UsageFact
-from voidcode.sdk.tools import (ToolDefinition, ToolEffect, ToolSemantic, ToolSuccess, TextOutput, OutputBounds, ReadObservation, ResourceChange)
+from voidcode.sdk.tools import (ToolDefinition, ToolEffect, ToolSuccess, TextOutput, OutputBounds, ReadObservation, ResourceChange)
 
 class Substitute:
     definition = ToolDefinition("replace_any_name", "replacement", {"type": "object"},
-        effects=frozenset({ToolEffect.WRITE}), semantics=frozenset({ToolSemantic.RESOURCE_EDIT}),
+        effects=frozenset({ToolEffect.WRITE}),
         path_argument_keys=("targets[].path",))
     def invoke(self, call, *, context, services):
         return ToolSuccess(call.tool_name, TextOutput("done", bounds=OutputBounds(partial=True)),
@@ -94,7 +94,7 @@ def test_live_history_and_restart_preserve_original_declaration_and_observations
             assert invocation.argument_bytes > 0 and invocation.result_bytes > 0
             expected = json_wire_value([asdict(fact) for fact in facts])
         # Current catalog changes are not a source of historical semantic truth.
-        (source / "__init__.py").write_text(PLUGIN.replace("semantics=frozenset({ToolSemantic.RESOURCE_EDIT})", "semantics=frozenset()"))
+        (source / "__init__.py").write_text(PLUGIN.replace("effects=frozenset({ToolEffect.WRITE})", "effects=frozenset({ToolEffect.READ})"))
         with open_core(workspace, state_dir=state_dir) as core:
             assert json_wire_value([asdict(fact) for fact in history(core, result.session_id)]) == expected
             assert len([e for e in core.store.events(result.session_id) if e.event_type == "plugin.probe.seen"]) == len(facts)

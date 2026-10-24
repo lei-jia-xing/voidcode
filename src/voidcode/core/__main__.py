@@ -10,12 +10,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import signal
 import sys
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -25,7 +24,6 @@ from .storage.store import SessionRecord
 
 if TYPE_CHECKING:
     from .engine import Core
-    from .images import Image
 
 
 def _parse_arguments(raw: str) -> dict[str, object]:
@@ -40,22 +38,11 @@ def _parse_arguments(raw: str) -> dict[str, object]:
     return json_wire_object(own_json_object(payload))
 
 
-def _parse_capabilities(raw: str | None) -> frozenset[str]:
-    if not raw:
-        return frozenset()
-    items = [item.strip() for item in raw.split(",") if item.strip()]
-    for item in items:
-        if "\0" in item or len(item) > 128:
-            raise ValueError("client capabilities must be non-empty strings within 128 characters")
-    return frozenset(items)
-
-
 _COMMANDS = frozenset(
     {
         "run",
         "resume",
         "show",
-        "preflight",
         "upgrade",
         "create-session",
         "sessions",
@@ -71,10 +58,6 @@ _COMMANDS = frozenset(
 _ROOT_VALUE_OPTIONS = frozenset({"--workspace", "--state-dir"})
 #: Every value option the command scan skips, so a session named e.g. ``run`` never reads as a subcommand.
 _COMMAND_SCAN_VALUE_OPTIONS = _ROOT_VALUE_OPTIONS | frozenset({"--server", "--token", "--session-id"})
-
-#: One-shot operational commands route into the elected image below (the supervisor owns its own
-#: launch, and the control/rescue surfaces each use a different context, so they stay local).
-_ROUTED_COMMANDS = frozenset({"run", "resume", "create-session", "sessions", "catalog", "invoke", "confirm", "views", "drain", "usage"})
 
 
 def _normalized_argv(argv: Sequence[str]) -> list[str]:
@@ -129,10 +112,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "      --token TOKEN --session-id ID\n"
         '  voidcode run "read README.md"\n'
         "  voidcode show SESSION --events\n"
-        "  voidcode serve --port 8000\n"
-        "  voidcode upgrade run --candidate PATH \\\n"
-        "      --session-id ID\n"
-        "  voidcode upgrade status",
+        "  voidcode serve --port 8000",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         suggest_on_error=True,
     )
@@ -202,7 +182,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     invoke.add_argument("name", metavar="NAME", help="Command name from the catalog")
     invoke.add_argument("--arguments", default="{}", metavar="JSON", help="Command arguments as a JSON object")
     invoke.add_argument("--expected-revision", required=True, metavar="ID", help="Capability revision the displayed catalog was captured under")
-    invoke.add_argument("--client-capabilities", default="", metavar="LIST", help="Comma-separated client capabilities")
     confirm = commands.add_parser(
         "confirm",
         help="Decide a pending confirmation and print one JSON result",
@@ -212,12 +191,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     confirm.add_argument("request_id", metavar="REQUEST", help="Pending request id")
     confirm.add_argument("--decision", choices=("allow", "deny"), required=True, help="Decision for the pending request")
     confirm.add_argument("--expected-revision", required=True, metavar="ID", help="Capability revision the displayed catalog was captured under")
-    confirm.add_argument("--client-capabilities", default="", metavar="LIST", help="Comma-separated client capabilities")
     views = commands.add_parser(
         "views", help="Print this session's plugin views as JSON", description="Print this session's rendered plugin views as JSON."
     )
     views.add_argument("session_id", metavar="SESSION", help="Session to inspect")
-    views.add_argument("--client-capabilities", default="", metavar="LIST", help="Comma-separated client capabilities")
     drain = commands.add_parser(
         "drain",
         help="Execute pending continuations and print results as JSON",
@@ -227,54 +204,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     drain.add_argument("--limit", type=int, default=10, metavar="N", help="Maximum continuations (default: 10)")
     serve = commands.add_parser(
         "serve",
-        help="Run the supervisor: HTTP API plus the web client",
-        description="Run the supervisor: one loopback listener and\nbearer token across core replacements,\nserving /api plus the web client.",
+        help="Run HTTP API plus the web client",
+        description="Run the VoidCode HTTP API and serve the web client.",
         epilog="Example:\n  voidcode serve --port 8000",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     serve.add_argument("--host", default="127.0.0.1", metavar="HOST", help="Loopback bind address (default: 127.0.0.1)")
     serve.add_argument("--port", type=int, default=8000, metavar="PORT", help="Port, 0 for an ephemeral one (default: 8000)")
     serve.add_argument("--bearer-token", default=None, metavar="TOKEN", help="API bearer token, generated when absent")
-    #: The replaced `voidcode web` opened the browser; serving the bundle is now the same command.
     serve.add_argument("--open", dest="open_browser", action="store_true", help="Open the served web client in a browser")
-    serve.add_argument(
-        "--session-id", default=None, metavar="ID", help="Acting session that owns a first-adoption transition, when the supervisor needs one"
-    )
-    #: Supervised-child mode: the supervisor passes the listener and the launch identity, never a user.
-    serve.add_argument("--listen-fd", type=int, default=None, help=argparse.SUPPRESS)
-    serve.add_argument("--fenced", action="store_true", help=argparse.SUPPRESS)
-    serve.add_argument("--control-token", default=None, help=argparse.SUPPRESS)
-    serve.add_argument("--generation", type=int, default=1, help=argparse.SUPPRESS)
-    serve.add_argument("--upgrade-id", default=None, help=argparse.SUPPRESS)
-    serve.add_argument("--supervisor-pid", type=int, default=None, help=argparse.SUPPRESS)
-    serve.add_argument("--owner-pid", type=int, default=None, help=argparse.SUPPRESS)
-    #: Read-only candidate preflight for a controlled core upgrade: prints one JSON object and
-    #: exits non-zero with a named reason instead of changing anything.
-    commands.add_parser(
-        "preflight",
-        help="Check this installation against the live state (read-only)",
-        description="Check this installation against the live state. Read-only: prints one JSON object, exits 1 on a named refusal.",
-    )
     upgrade = commands.add_parser(
         "upgrade",
-        help="Ask the running supervisor to upgrade this workspace's core",
-        description="Ask the running supervisor for its status, or\nto upgrade this workspace to a candidate\ninstallation.",
-        epilog="Examples:\n  voidcode upgrade status\n  voidcode upgrade run --candidate PATH \\\n      --session-id ID",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        help="Upgrade guidance (VoidCode is single-process; restart to upgrade)",
+        description="VoidCode is a local single-process runtime. When code or configuration updates, simply restart the process.",
     )
-    upgrade.add_argument(
-        "what",
-        nargs="?",
-        default="run",
-        choices=("run", "status"),
-        metavar="{run,status}",
-        help="Upgrade to a candidate (run), or report status (default: run)",
-    )
-    upgrade.add_argument("--candidate", default=None, metavar="PATH", help="Candidate installation directory (required unless status)")
-    upgrade.add_argument("--session-id", default=None, metavar="ID", help="Acting session that owns the transition, when the workspace has sessions")
-    upgrade.add_argument(
-        "--timeout", type=float, default=300.0, metavar="SECONDS", help="Seconds to wait for the drain before refusing (default: 300)"
-    )
+    upgrade.add_argument("what", nargs="*", help=argparse.SUPPRESS)
+    upgrade.add_argument("--candidate", default=None, help=argparse.SUPPRESS)
+    upgrade.add_argument("--session-id", default=None, help=argparse.SUPPRESS)
+    upgrade.add_argument("--timeout", type=float, default=300.0, help=argparse.SUPPRESS)
     normalized = _normalized_argv(argv if argv is not None else sys.argv[1:])
     args = parser.parse_args(normalized)
     if args.command is not None and (args.server is not None or args.token is not None or args.tui_session_id is not None):
@@ -289,60 +236,44 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.server is not None:
                 return run_tui(args.server, token=args.token, session_id=args.tui_session_id)
             return _embedded_tui(workspace, bare_directory, session_id=args.tui_session_id)
-        if args.command in {"show", "preflight"}:
+        if args.command == "show":
             if args.state_dir is not None:
                 directory = args.state_dir
             else:
                 from .bootstrap import state_directory
 
                 directory = state_directory(workspace)
-            if args.command == "preflight":
-                return _preflight(workspace, directory)
             return _show(workspace, directory, args.session_id, events=args.events)
         # Pure ingress validation before opening the core: malformed client
         # input fails fast without touching config, runtime, or storage.
         if args.command == "invoke":
             args.parsed_arguments = _parse_arguments(args.arguments)
-            args.parsed_capabilities = _parse_capabilities(args.client_capabilities)
-        elif args.command in {"confirm", "views"}:
-            args.parsed_capabilities = _parse_capabilities(args.client_capabilities)
         from .bootstrap import open_core, state_directory
 
         directory = args.state_dir if args.state_dir is not None else state_directory(workspace)
-        _maybe_reexec_in_elected_image(args.command, workspace, directory, normalized)
         if args.command == "upgrade":
-            return _upgrade(directory, args)
+            print(
+                json.dumps(
+                    {
+                        "status": "ok",
+                        "message": "VoidCode is a local single-process runtime. To upgrade, update your installation and restart the process.",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 0
         if args.command == "serve":
             from .transport.server import serve_core
 
-            if args.listen_fd is not None:
-                serve_core(
-                    workspace=workspace,
-                    state_dir=directory,
-                    host=args.host,
-                    port=args.port,
-                    bearer_token=args.bearer_token,
-                    listen_fd=args.listen_fd,
-                    fenced=args.fenced,
-                    control_token=args.control_token,
-                    generation=args.generation,
-                    upgrade_id=args.upgrade_id,
-                    supervisor_pid=args.supervisor_pid,
-                    quiet=True,
-                )
-                return 0
-            from .supervisor import run_supervisor
-
-            return run_supervisor(
+            serve_core(
                 workspace=workspace,
                 state_dir=directory,
                 host=args.host,
                 port=args.port,
                 bearer_token=args.bearer_token,
-                session_id=args.session_id,
                 open_browser=args.open_browser,
-                owner_pid=args.owner_pid,
             )
+            return 0
         with open_core(workspace, state_dir=directory) as core:
             previous = {number: signal.signal(number, lambda *_: core.cancel("user signal")) for number in (signal.SIGINT, signal.SIGTERM)}
             try:
@@ -429,249 +360,40 @@ def _show(workspace: Path, directory: Path, session_id: str, *, events: bool) ->
     return 0
 
 
-def _preflight(workspace: Path, directory: Path) -> int:
-    """Candidate preflight for THIS installation against the workspace's live state.
-
-    Runs before any core bootstrap: it reads the database and the private
-    snapshot without opening the configured plugins, never writes, and answers with one JSON object.
-    """
-    from .images import bundle_of, installed_identity, running_identity
-    from .preflight import LAUNCH_PROTOCOL_VERSION, PreflightRefused, verify_preflight
-    from .storage.store import SCHEMA_VERSION
-
-    identity = running_identity() or installed_identity()
-    try:
-        report = verify_preflight(
-            database=directory / "kernel-v1.sqlite3",
-            workspace=str(workspace),
-            state_dir=directory,
-            candidate_package_root=identity.package_root,
-            candidate_launch_protocol=LAUNCH_PROTOCOL_VERSION,
-            image_digest=identity.digest,
-            web_bundle=bundle_of(identity.package_root),
-            target_schema=SCHEMA_VERSION,
-        )
-    except PreflightRefused as exc:
-        print(json.dumps({"ok": False, "reason": exc.reason, "detail": exc.detail}, ensure_ascii=False, allow_nan=False))
-        return 1
-    print(json.dumps(report.as_payload(), ensure_ascii=False, allow_nan=False))
-    return 0
-
-
-def _elect_image_for_command(command: str, workspace: Path, directory: Path) -> Image | None:
-    """The image one one-shot command must execute in, or ``None`` to run in this process.
-
-    Normal operational commands always run inside an image: a recorded election routes into the
-    elected implementation, and a state that adopts for the first time snapshots this installation
-    and runs that image, so the first writer always executes recoverable bytes. Returns the missing
-    image as an error instead of running the wrong one.
-    """
-    if command not in _ROUTED_COMMANDS:
-        return None
-    from .images import IMAGE_DIGEST_ENV, IMAGES_DIR_NAME, ensure_running_image, image_for_digest, installed_identity
-
-    if os.environ.get(IMAGE_DIGEST_ENV) is not None:
-        return None  # already pinned by the launcher that started this process
-    from .preflight import PreflightRefused, read_connection, read_workspace_revision
-
-    database = directory / "kernel-v1.sqlite3"
-    if not database.is_file():
-        return ensure_running_image(directory / IMAGES_DIR_NAME)
-    try:
-        connection = read_connection(database)
-        try:
-            _, payload = read_workspace_revision(connection, str(workspace))
-        finally:
-            connection.close()
-    except PreflightRefused as exc:
-        if exc.reason == "no_adopted_revision":
-            return ensure_running_image(directory / IMAGES_DIR_NAME)
-        return None  # foreign state keeps today's local failure behavior
-    image = payload.get("image")
-    if not isinstance(image, Mapping) or not isinstance(image.get("digest"), str) or not image["digest"]:
-        return None  # a pre-image generation names no election
-    if installed_identity().digest == image["digest"]:
-        return None
-    return image_for_digest(directory / IMAGES_DIR_NAME, image["digest"])
-
-
-def _maybe_reexec_in_elected_image(command: str, workspace: Path, directory: Path, normalized: Sequence[str]) -> None:
-    """Replace this process with the elected image's copy of the same command, when one is elected.
-
-    The working directory is inherited, the import root is replaced, and the probe that got us here
-    is the same digest the elected image recomputes, so the re-executed process finds no second
-    election. ``serve`` owns its own supervised launch and the bare client never re-executes.
-    """
-    from .images import launch_argv, launch_environment
-
-    elected = _elect_image_for_command(command, workspace, directory)
-    if elected is None:
-        return
-    child = launch_argv(*normalized)
-    os.execvpe(child[0], child, launch_environment(elected))  # noqa: S606 - the elected image, verified by digest
-
-
-def _supervisor_request(directory: Path, payload: Mapping[str, object], *, timeout_seconds: float = 300.0) -> dict[str, object]:
-    """One newline-JSON round trip with the supervisor that owns this state directory."""
+def _embedded_tui(workspace: Path, directory: Path, *, session_id: str | None) -> int:
+    """Run the TUI directly against an in-process local transport server."""
     import socket
 
-    from .supervisor import control_socket_path
+    import uvicorn
 
-    sock = control_socket_path(directory)
-    if not sock.exists():
-        raise FileNotFoundError(f"no supervisor is running for this state directory ({directory})")
-    body = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8") + b"\n"
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        client.settimeout(timeout_seconds)
-        client.connect(str(sock))
-        client.sendall(body)
-        received = b""
-        while not received.endswith(b"\n"):
-            chunk = client.recv(65536)
-            if not chunk:
-                break
-            received += chunk
-            if len(received) > 1024 * 1024:
-                raise ValueError("supervisor response exceeds 1 MiB")
-    try:
-        response = json.loads(received.decode("utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"supervisor answered malformed JSON: {exc}") from exc
-    if not isinstance(response, dict):
-        raise ValueError("supervisor answer is not an object")
-    return response
-
-
-def _upgrade(directory: Path, args: argparse.Namespace) -> int:
-    """Ask the running supervisor about an upgrade: its status, or a candidate handoff."""
-    if args.what == "status":
-        response = _supervisor_request(directory, {"op": "status"})
-        print(json.dumps(response, ensure_ascii=False, allow_nan=False))
-        return 0
-    if not args.candidate:
-        print(json.dumps({"status": "failed", "error": "upgrade needs --candidate PATH (or use 'upgrade status')"}))
-        return 1
-    candidate = Path(args.candidate)
-    if not candidate.is_dir():
-        print(json.dumps({"status": "failed", "error": f"candidate is not a directory: {candidate}"}))
-        return 1
-    response = _supervisor_request(
-        directory,
-        {"op": "upgrade", "candidate": str(candidate.resolve(strict=True)), "session_id": args.session_id, "timeout_seconds": args.timeout},
-        timeout_seconds=max(1.0, float(args.timeout) + 60.0),
-    )
-    print(json.dumps(response, ensure_ascii=False, allow_nan=False))
-    return 0 if response.get("status") == "upgraded" else 1
-
-
-def _embedded_tui(workspace: Path, directory: Path, *, session_id: str | None) -> int:
-    """Run the TUI against a supervisor child process, so a core replacement never kills the UI."""
-    import queue
-    import subprocess
-    import urllib.request
-
-    from .images import launch_environment_for_root, running_package_root
+    from .transport.http import create_core_app
+    from .transport.server import generate_bearer_token
     from .tui import run_tui
 
-    package_root = running_package_root()
-    # Every value travels joined to its flag: a value that starts with a dash (a token, a
-    # hostile path) can never be read as another flag.
-    command = [
-        sys.executable,
-        "-P",
-        "-m",
-        "voidcode",
-        "serve",
-        f"--workspace={workspace}",
-        f"--state-dir={directory}",
-        "--host=127.0.0.1",
-        "--port=0",
-        f"--owner-pid={os.getpid()}",
-    ]
-    if session_id is not None:
-        command.append(f"--session-id={session_id}")
-    # The supervisor is spawned with the same pinned launch as a core child: safe path mode
-    # plus an import root that names this installation, so a workspace or cwd package cannot
-    # hijack it. The working directory is inherited untouched; it is never on the import path.
-    child = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=None,
-        text=True,
-        bufsize=1,
-        env=launch_environment_for_root(package_root.parent),
+    token = generate_bearer_token()
+    app = create_core_app(
+        workspace=workspace,
+        state_dir=directory,
+        bearer_token=token,
     )
-    assert child.stdout is not None
-    lines: queue.Queue[str | None] = queue.Queue()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
 
-    def pump() -> None:
-        assert child.stdout is not None
-        try:
-            for line in child.stdout:
-                lines.put(line)
-        finally:
-            lines.put(None)
+    config = uvicorn.Config(app, log_level="warning")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+    thread.start()
 
-    reader = threading.Thread(target=pump, name="EmbeddedSupervisorReader", daemon=True)
-    reader.start()
-
-    def next_line(deadline: float) -> str | None:
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return None
-            try:
-                return lines.get(timeout=min(remaining, 5.0))
-            except queue.Empty:
-                continue
-
-    def stop_child() -> None:
-        try:
-            if child.poll() is None:
-                child.terminate()
-                try:
-                    child.wait(timeout=15)
-                except subprocess.TimeoutExpired:
-                    child.kill()
-                    child.wait(timeout=15)
-            reader.join(timeout=10)
-        finally:
-            if child.stdout is not None:
-                child.stdout.close()
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline and not server.started:
+        time.sleep(0.01)
 
     try:
-        endpoint: str | None = None
-        token: str | None = None
-        deadline = time.monotonic() + 120.0
-        while time.monotonic() < deadline and (endpoint is None or token is None):
-            line = next_line(deadline)
-            if line is None:
-                break
-            text = line.strip()
-            if text.startswith("core endpoint: "):
-                endpoint = text.partition(": ")[2].strip()
-            elif text.startswith("core bearer token: "):
-                token = text.partition(": ")[2].strip()
-        if endpoint is None or token is None:
-            raise RuntimeError(f"embedded supervisor did not report its endpoint (exit status {child.poll()})")
-        deadline = time.monotonic() + 120.0
-        while time.monotonic() < deadline:
-            if child.poll() is not None:
-                raise RuntimeError(f"embedded supervisor exited early with status {child.returncode}")
-            try:
-                request = urllib.request.Request(f"{endpoint}/api/health", headers={"Authorization": f"Bearer {token}"}, method="GET")
-                with urllib.request.urlopen(request, timeout=5) as response:
-                    health = json.loads(response.read().decode("utf-8"))
-                if isinstance(health, dict) and health.get("stage") == "serving":
-                    break
-            except Exception:
-                pass
-            time.sleep(0.2)
-        else:
-            raise RuntimeError("embedded supervisor did not reach serving state in time")
-        return run_tui(endpoint, token=token, session_id=session_id)
+        return run_tui(f"http://127.0.0.1:{port}", token=token, session_id=session_id)
     finally:
-        stop_child()
+        server.should_exit = True
+        thread.join(timeout=2.0)
 
 
 def _dispatch(core: Core, args: argparse.Namespace) -> int:
@@ -706,7 +428,6 @@ def _dispatch(core: Core, args: argparse.Namespace) -> int:
             args.name,
             args.parsed_arguments,
             expected_revision=args.expected_revision,
-            client_capabilities=args.parsed_capabilities,
         )
         print(json.dumps(result.as_payload(), ensure_ascii=False, allow_nan=False))
         return 0 if result.status == "ok" else 2 if result.status == "pending_confirmation" else 1
@@ -716,12 +437,11 @@ def _dispatch(core: Core, args: argparse.Namespace) -> int:
             args.request_id,
             args.decision,
             expected_revision=args.expected_revision,
-            client_capabilities=args.parsed_capabilities,
         )
         print(json.dumps(result.as_payload(), ensure_ascii=False, allow_nan=False))
         return 0 if result.status == "ok" else 2 if result.status == "pending_confirmation" else 1
     if args.command == "views":
-        snapshot = core.plugin_views(args.session_id, client_capabilities=args.parsed_capabilities)
+        snapshot = core.plugin_views(args.session_id)
         print(json.dumps(snapshot.as_payload(), ensure_ascii=False, allow_nan=False))
         return 0
     if args.command == "drain":

@@ -20,7 +20,6 @@ from voidcode.sdk.tools import (
     ToolEffect,
     ToolFailure,
     ToolResult,
-    ToolSemantic,
     ToolSuccess,
 )
 
@@ -61,7 +60,6 @@ class WriteTool:
             "additionalProperties": False,
         },
         effects=frozenset({ToolEffect.WRITE}),
-        semantics=frozenset({ToolSemantic.RESOURCE_EDIT}),
         path_argument_keys=("path",),
         replay_policy="never",
     )

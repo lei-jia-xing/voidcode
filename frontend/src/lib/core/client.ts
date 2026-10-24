@@ -193,7 +193,6 @@ export class CoreClient {
     name: string,
     args: Record<string, unknown>,
     expectedRevision: string,
-    clientCapabilities: string[] = [],
   ): Promise<CommandResult> {
     return await this.request<CommandResult>(
       "POST",
@@ -203,7 +202,6 @@ export class CoreClient {
           arguments: args,
           // The revision the client displayed; a stale one is refused visibly.
           expected_revision: expectedRevision,
-          client_capabilities: clientCapabilities,
         },
       },
     );
@@ -214,7 +212,6 @@ export class CoreClient {
     requestId: string,
     decision: "allow" | "deny",
     expectedRevision: string,
-    clientCapabilities: string[] = [],
   ): Promise<CommandResult> {
     return await this.request<CommandResult>(
       "POST",
@@ -224,24 +221,16 @@ export class CoreClient {
           request_id: requestId,
           decision,
           expected_revision: expectedRevision,
-          client_capabilities: clientCapabilities,
         },
       },
     );
   }
 
-  async views(
-    sessionId: string,
-    clientCapabilities: string[] = [],
-  ): Promise<ViewsSnapshot> {
+  async views(sessionId: string): Promise<ViewsSnapshot> {
     const res = await this.request<{
       revision_id: string;
       views: PluginViewDescriptor[];
-    }>("GET", `/api/sessions/${encodeURIComponent(sessionId)}/views`, {
-      query: {
-        client_capabilities: clientCapabilities.join(","),
-      },
-    });
+    }>("GET", `/api/sessions/${encodeURIComponent(sessionId)}/views`);
     return { revisionId: res.revision_id, views: res.views || [] };
   }
 

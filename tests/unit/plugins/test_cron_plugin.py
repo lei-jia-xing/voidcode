@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import replace
@@ -11,6 +10,7 @@ from typing import Literal
 
 import pytest
 
+from tests.fixtures.fake_services import FakeServices
 from voidcode.plugins.cron import cron_plugin
 from voidcode.plugins.cron.cron_plugin import (
     DEFAULT_RECURRING_EXPIRY_SECONDS,
@@ -30,7 +30,6 @@ from voidcode.plugins.cron.schedule_expr import next_fire_after, parse_schedule
 from voidcode.sdk.commands import CommandInvocation
 from voidcode.sdk.hooks import FactPage, InvocationFinishedFact, RunFinishedFact, WakeupFiredFact
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.services import PluginBudget, PluginServices, SessionUsageReport
 from voidcode.sdk.tools import ToolCall, ToolFailure, ToolSuccess
 
 OWNER = "cron"
@@ -40,117 +39,14 @@ NOW_MS = 1_700_000_000_000
 NOW_SECONDS = NOW_MS // 1000
 
 
-class MockServices(PluginServices):
-    """In-memory PluginServices: CAS state, staged events, committed events and wakeups."""
-
-    owner = OWNER
-
-    def __init__(self) -> None:
-        self.state: dict[tuple[str, str], tuple[Mapping[str, object] | None, int]] = {}
-        self.staged_events: list[tuple[str, Mapping[str, object]]] = []
-        self.events: list[WakeupFiredFact] = []
-        self.schema_version = SCHEMA_VERSION
-        #: wakeup_id -> {"payload", "due_at_ms", "role", "idempotency_key", "status"}
-        self.wakeups: dict[str, dict[str, object]] = {}
-
-    # --- state ---
-
-    def get_state(self, scope: Literal["session", "workspace"] = "session") -> tuple[Mapping[str, object] | None, int]:
-        return self.state.get((scope, ""), (None, 0))
-
-    def get_state_schema_version(self, scope: Literal["session", "workspace"] = "session") -> int:
-        _ = scope
-        return self.schema_version
-
-    def replace_state(
-        self,
-        state: Mapping[str, object],
-        expected_version: int,
-        scope: Literal["session", "workspace"] = "session",
-    ) -> int:
-        _current, version = self.get_state(scope)
-        if version != expected_version:
-            raise RuntimeError(f"CAS mismatch: expected {expected_version}, was {version}")
-        new_version = expected_version + 1
-        self.state[(scope, "")] = (dict(state), new_version)
-        return new_version
-
-    def seed_state(self, payload: Mapping[str, object] | None, *, version: int = 1) -> None:
-        self.state[("session", "")] = (payload, version)
-
-    # --- events ---
-
-    def stage_event(self, event_type: str, payload: Mapping[str, object]) -> None:
-        self.staged_events.append((event_type, dict(payload)))
-
-    def read_facts(self, *, after_sequence=0, limit=100):
-        remaining = tuple(fact for fact in self.events if fact.event_sequence > after_sequence)
-        page = remaining[:limit]
-        return FactPage(page, page[-1].event_sequence if page else after_sequence, len(remaining) > limit)
-
-    # --- wakeups ---
-
-    def schedule_wakeup(
-        self,
-        payload: Mapping[str, object],
-        *,
-        due_at_ms: int,
-        idempotency_key: str | None = None,
-        role: Literal["system", "user"] = "system",
-    ) -> str:
-        if idempotency_key is None:
-            wakeup_id = f"wakeup-{len(self.wakeups)}"
-        else:
-            # Same deterministic identity the core derives: re-scheduling a future point is idempotent.
-            wakeup_id = hashlib.sha256("\0".join((SESSION_ID, OWNER, "wakeup", idempotency_key)).encode()).hexdigest()
-        self.wakeups.setdefault(
-            wakeup_id,
-            {
-                "payload": dict(payload),
-                "due_at_ms": due_at_ms,
-                "role": role,
-                "idempotency_key": idempotency_key,
-                "status": "pending",
-            },
-        )
-        return wakeup_id
-
-    def cancel_wakeup(self, wakeup_id: str) -> bool:
-        record = self.wakeups.get(wakeup_id)
-        if record is None or record["status"] != "pending":
-            return False
-        record["status"] = "cancelled"
-        return True
-
-    def pending(self) -> dict[str, dict[str, object]]:
-        return {key: value for key, value in self.wakeups.items() if value["status"] == "pending"}
-
-    # --- unused surface ---
-
-    def cancel_continuations(self, *, continuation_id: str | None = None) -> None:
-        raise AssertionError("cron cancels no continuations")
-
-    def get_usage(self, *, since_sequence: int = 0, until_sequence: int | None = None) -> SessionUsageReport:
-        raise AssertionError("cron reads no usage")
-
-    def get_budget(self) -> PluginBudget | None:
-        raise AssertionError("cron has no budget")
-
-    def set_budget(self, **_kwargs: object) -> None:
-        raise AssertionError("cron sets no budget")
-
-    def clear_budget(self) -> None:
-        raise AssertionError("cron clears no budget")
-
-
 @pytest.fixture(autouse=True)
 def _pinned_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cron_plugin, "_clock_ms", lambda: NOW_MS)
 
 
 @pytest.fixture
-def services() -> MockServices:
-    return MockServices()
+def services() -> FakeServices:
+    return FakeServices(owner=OWNER, schema_version=SCHEMA_VERSION)
 
 
 def _context(workspace: Path) -> ToolContext:
@@ -165,23 +61,23 @@ def _context(workspace: Path) -> ToolContext:
     )
 
 
-def _invoke_tool(tool: CronCreateTool | CronDeleteTool | CronListTool, services: MockServices, tmp_path: Path, arguments: Mapping[str, object]):
+def _invoke_tool(tool: CronCreateTool | CronDeleteTool | CronListTool, services: FakeServices, tmp_path: Path, arguments: Mapping[str, object]):
     call = ToolCall(tool_name=tool.definition.name, arguments=arguments, tool_call_id="call-1")
     return tool.invoke(call, context=_context(tmp_path), services=services)
 
 
-def _create(services: MockServices, tmp_path: Path, schedule: str, prompt: str = "keep building") -> str:
+def _create(services: FakeServices, tmp_path: Path, schedule: str, prompt: str = "keep building") -> str:
     result = _invoke_tool(CronCreateTool(), services, tmp_path, {"schedule": schedule, "prompt": prompt})
     assert isinstance(result, ToolSuccess)
     return str(json.loads(result.output.text)["id"])
 
 
-def _stored(services: MockServices) -> CronState:
+def _stored(services: FakeServices) -> CronState:
     payload, _version = services.get_state("session")
     return CronState.from_payload(payload)
 
 
-def _entry(services: MockServices, schedule_id: str) -> ScheduleEntry:
+def _entry(services: FakeServices, schedule_id: str) -> ScheduleEntry:
     return _stored(services).schedules[schedule_id]
 
 
@@ -247,7 +143,7 @@ def _schedule_payload(
         ("cron */5 * * * *", "poll"),
     ],
 )
-def test_create_arms_the_first_fire_computed_by_the_expression(services: MockServices, tmp_path: Path, schedule: str, prompt: str) -> None:
+def test_create_arms_the_first_fire_computed_by_the_expression(services: FakeServices, tmp_path: Path, schedule: str, prompt: str) -> None:
     schedule_id = _create(services, tmp_path, schedule, prompt)
     expr = parse_schedule(schedule)
     expected_fire_ms = next_fire_after(expr, NOW_SECONDS) * 1000
@@ -276,7 +172,7 @@ def test_create_arms_the_first_fire_computed_by_the_expression(services: MockSer
     assert _stored(services).cursor_sequence == 0
 
 
-def test_default_expiry_applies_to_recurring_schedules_only(services: MockServices, tmp_path: Path) -> None:
+def test_default_expiry_applies_to_recurring_schedules_only(services: FakeServices, tmp_path: Path) -> None:
     for schedule, expected in (
         ("every 10m", NOW_MS + DEFAULT_RECURRING_EXPIRY_SECONDS * 1000),
         ("cron 0 9 * * *", NOW_MS + DEFAULT_RECURRING_EXPIRY_SECONDS * 1000),
@@ -288,7 +184,7 @@ def test_default_expiry_applies_to_recurring_schedules_only(services: MockServic
 
 
 @pytest.mark.parametrize("schedule", ["banana", "every 0s", "every 10 fortnights", "cron * * *", "at not-a-date", "cron 0 9 * * L"])
-def test_invalid_schedule_is_rejected_without_side_effects(services: MockServices, tmp_path: Path, schedule: str) -> None:
+def test_invalid_schedule_is_rejected_without_side_effects(services: FakeServices, tmp_path: Path, schedule: str) -> None:
     services.seed_state(CronState().to_payload(), version=3)
     result = _invoke_tool(CronCreateTool(), services, tmp_path, {"schedule": schedule, "prompt": "x"})
 
@@ -296,7 +192,7 @@ def test_invalid_schedule_is_rejected_without_side_effects(services: MockService
     assert result.error
     assert services.wakeups == {}
     assert services.staged_events == []
-    assert services.state[("session", "")] == (CronState().to_payload(), 3)
+    assert services.read_state("session") == (CronState().to_payload(), 3)
 
 
 @pytest.mark.parametrize(
@@ -308,14 +204,14 @@ def test_invalid_schedule_is_rejected_without_side_effects(services: MockService
         {"schedule": "every 10m", "prompt": "  "},
     ],
 )
-def test_missing_or_blank_arguments_are_rejected(services: MockServices, tmp_path: Path, arguments: Mapping[str, object]) -> None:
+def test_missing_or_blank_arguments_are_rejected(services: FakeServices, tmp_path: Path, arguments: Mapping[str, object]) -> None:
     result = _invoke_tool(CronCreateTool(), services, tmp_path, arguments)
     assert isinstance(result, ToolFailure)
     assert services.wakeups == {}
     assert services.staged_events == []
 
 
-def test_schedule_cap_is_enforced_per_session(services: MockServices, tmp_path: Path) -> None:
+def test_schedule_cap_is_enforced_per_session(services: FakeServices, tmp_path: Path) -> None:
     schedules = {
         f"sched-{index}": ScheduleEntry(
             schedule_text="every 10m",
@@ -339,7 +235,7 @@ def test_schedule_cap_is_enforced_per_session(services: MockServices, tmp_path: 
 # --- delete and list ---
 
 
-def test_delete_cancels_the_armed_wakeup_and_removes_the_schedule(services: MockServices, tmp_path: Path) -> None:
+def test_delete_cancels_the_armed_wakeup_and_removes_the_schedule(services: FakeServices, tmp_path: Path) -> None:
     kept = _create(services, tmp_path, "every 10m", "keep me")
     removed = _create(services, tmp_path, "every 1h", "drop me")
     armed = _entry(services, removed).wakeup_id
@@ -353,14 +249,14 @@ def test_delete_cancels_the_armed_wakeup_and_removes_the_schedule(services: Mock
     assert set(_stored(services).schedules) == {kept}
 
 
-def test_delete_rejects_unknown_and_missing_ids(services: MockServices, tmp_path: Path) -> None:
+def test_delete_rejects_unknown_and_missing_ids(services: FakeServices, tmp_path: Path) -> None:
     assert isinstance(_invoke_tool(CronDeleteTool(), services, tmp_path, {"id": " "}), ToolFailure)
     unknown = _invoke_tool(CronDeleteTool(), services, tmp_path, {"id": "sched-nope"})
     assert isinstance(unknown, ToolFailure)
     assert unknown.error == "Schedule 'sched-nope' not found."
 
 
-def test_list_reports_every_schedule(services: MockServices, tmp_path: Path) -> None:
+def test_list_reports_every_schedule(services: FakeServices, tmp_path: Path) -> None:
     every = _create(services, tmp_path, "every 10m", "poll")
     once = _create(services, tmp_path, "once", "now please")
     disabled = _create(services, tmp_path, "every 30m", "later")
@@ -409,7 +305,7 @@ def test_list_reports_every_schedule(services: MockServices, tmp_path: Path) -> 
 # --- observation ---
 
 
-def test_observer_rearms_a_recurring_schedule_after_a_fired_completed_run(services: MockServices, tmp_path: Path) -> None:
+def test_observer_rearms_a_recurring_schedule_after_a_fired_completed_run(services: FakeServices, tmp_path: Path) -> None:
     services.seed_state(_schedule_payload(schedule_id="sched-1", schedule_text="every 10m", kind="every", expires_at=NOW_MS + 86_400_000))
     services.events.append(_fired_event(sequence=7, run_id="run-9", schedule_id="sched-1"))
 
@@ -429,7 +325,7 @@ def test_observer_rearms_a_recurring_schedule_after_a_fired_completed_run(servic
     assert _stored(services).cursor_sequence == 7
 
 
-def test_observer_rearms_recurring_schedule_after_a_failed_run_too(services: MockServices, tmp_path: Path) -> None:
+def test_observer_rearms_recurring_schedule_after_a_failed_run_too(services: FakeServices, tmp_path: Path) -> None:
     services.seed_state(_schedule_payload(schedule_id="sched-1", schedule_text="cron 0 9 * * *", kind="cron", expires_at=NOW_MS + 86_400_000))
     services.events.append(_fired_event(sequence=3, run_id="run-9", schedule_id="sched-1"))
 
@@ -443,7 +339,7 @@ def test_observer_rearms_recurring_schedule_after_a_failed_run_too(services: Moc
     assert services.staged_events[0][1]["run_status"] == "failed"
 
 
-def test_once_schedule_deletes_on_success_and_disables_on_failure(services: MockServices, tmp_path: Path) -> None:
+def test_once_schedule_deletes_on_success_and_disables_on_failure(services: FakeServices, tmp_path: Path) -> None:
     services.seed_state(_schedule_payload(schedule_id="sched-1", schedule_text="once", kind="once", expires_at=None))
     services.events.append(_fired_event(sequence=4, run_id="run-9", schedule_id="sched-1"))
 
@@ -455,7 +351,7 @@ def test_once_schedule_deletes_on_success_and_disables_on_failure(services: Mock
 
 
 @pytest.mark.parametrize("status", ["failed", "interrupted"])
-def test_once_schedule_is_disabled_when_its_run_fails(services: MockServices, tmp_path: Path, status: Literal["failed", "interrupted"]) -> None:
+def test_once_schedule_is_disabled_when_its_run_fails(services: FakeServices, tmp_path: Path, status: Literal["failed", "interrupted"]) -> None:
     services.seed_state(_schedule_payload(schedule_id="sched-1", schedule_text="at 2026-12-01T09:00:00", kind="at", expires_at=None))
     services.events.append(_fired_event(sequence=4, run_id="run-9", schedule_id="sched-1"))
 
@@ -468,7 +364,7 @@ def test_once_schedule_is_disabled_when_its_run_fails(services: MockServices, tm
     assert services.staged_events == [("schedule_fired", {"id": "sched-1", "outcome": "disabled", "run_status": status})]
 
 
-def test_expired_recurring_schedule_is_deleted_instead_of_rearmed(services: MockServices, tmp_path: Path) -> None:
+def test_expired_recurring_schedule_is_deleted_instead_of_rearmed(services: FakeServices, tmp_path: Path) -> None:
     services.seed_state(_schedule_payload(schedule_id="sched-1", schedule_text="every 10m", kind="every", expires_at=NOW_MS))
     services.events.append(_fired_event(sequence=4, run_id="run-9", schedule_id="sched-1"))
 
@@ -479,7 +375,7 @@ def test_expired_recurring_schedule_is_deleted_instead_of_rearmed(services: Mock
     assert services.staged_events == [("schedule_fired", {"id": "sched-1", "outcome": "expired", "run_status": "completed"})]
 
 
-def test_untracked_or_foreign_firings_are_ignored(services: MockServices, tmp_path: Path) -> None:
+def test_untracked_or_foreign_firings_are_ignored(services: FakeServices, tmp_path: Path) -> None:
     services.seed_state(_schedule_payload(schedule_id="sched-1", schedule_text="every 10m", kind="every", expires_at=NOW_MS + 86_400_000))
     # A wakeup this plugin does not track, a foreign wakeup kind, and a wakeup of another run.
     services.events.append(_fired_event(sequence=5, run_id="run-9", schedule_id="sched-unknown"))
@@ -496,7 +392,7 @@ def test_untracked_or_foreign_firings_are_ignored(services: MockServices, tmp_pa
     assert _stored(services).cursor_sequence == 7
 
 
-def test_disabled_schedule_is_never_rearmed(services: MockServices, tmp_path: Path) -> None:
+def test_disabled_schedule_is_never_rearmed(services: FakeServices, tmp_path: Path) -> None:
     payload = _schedule_payload(schedule_id="sched-1", schedule_text="once", kind="once", expires_at=None, enabled=False, wakeup_id=None)
     services.seed_state(payload)
     services.events.append(_fired_event(sequence=4, run_id="run-9", schedule_id="sched-1"))
@@ -508,7 +404,7 @@ def test_disabled_schedule_is_never_rearmed(services: MockServices, tmp_path: Pa
     assert _stored(services).schedules["sched-1"].enabled is False
 
 
-def test_observer_ignores_facts_it_does_not_settle(services: MockServices, tmp_path: Path) -> None:
+def test_observer_ignores_facts_it_does_not_settle(services: FakeServices, tmp_path: Path) -> None:
     services.seed_state(_schedule_payload(schedule_id="sched-1", schedule_text="every 10m", kind="every", expires_at=NOW_MS + 86_400_000))
 
     cron_observer(
@@ -532,7 +428,7 @@ def test_observer_ignores_facts_it_does_not_settle(services: MockServices, tmp_p
     assert services.staged_events == []
 
 
-def test_observer_is_idempotent_for_the_same_firing(services: MockServices, tmp_path: Path) -> None:
+def test_observer_is_idempotent_for_the_same_firing(services: FakeServices, tmp_path: Path) -> None:
     services.seed_state(_schedule_payload(schedule_id="sched-1", schedule_text="every 10m", kind="every", expires_at=NOW_MS + 86_400_000))
     services.events.append(_fired_event(sequence=4, run_id="run-9", schedule_id="sched-1"))
 
@@ -547,7 +443,7 @@ def test_observer_is_idempotent_for_the_same_firing(services: MockServices, tmp_
 # --- /loop ---
 
 
-def _invoke_loop(services: MockServices, tmp_path: Path, arguments: Mapping[str, object]):
+def _invoke_loop(services: FakeServices, tmp_path: Path, arguments: Mapping[str, object]):
     command = CronLoopCommand()
     invocation = CommandInvocation(context=_context(tmp_path), name=command.definition.name, arguments=arguments)
     return command.invoke(invocation, services)
@@ -563,7 +459,7 @@ def _invoke_loop(services: MockServices, tmp_path: Path, arguments: Mapping[str,
         ("2 hours run the audit", "10m", "2 hours run the audit"),
     ],
 )
-def test_loop_parses_the_argument_and_arms_an_immediate_wakeup(services: MockServices, tmp_path: Path, raw: str, interval: str, prompt: str) -> None:
+def test_loop_parses_the_argument_and_arms_an_immediate_wakeup(services: FakeServices, tmp_path: Path, raw: str, interval: str, prompt: str) -> None:
     result = _invoke_loop(services, tmp_path, {"input": raw})
 
     assert result.status == "ok"
@@ -589,7 +485,7 @@ def test_loop_parses_the_argument_and_arms_an_immediate_wakeup(services: MockSer
 
 
 @pytest.mark.parametrize("arguments", [{}, {"input": "   "}, {"input": "5m"}])
-def test_loop_returns_the_usage_message_when_it_cannot_parse(services: MockServices, tmp_path: Path, arguments: Mapping[str, object]) -> None:
+def test_loop_returns_the_usage_message_when_it_cannot_parse(services: FakeServices, tmp_path: Path, arguments: Mapping[str, object]) -> None:
     result = _invoke_loop(services, tmp_path, arguments)
 
     assert result.status == "ok"
@@ -647,7 +543,7 @@ def test_plugin_registers_tools_loop_command_and_observer() -> None:
 
 
 @pytest.mark.parametrize("foreign", ["owner", "identity"])
-def test_matching_payload_cannot_settle_a_foreign_or_stale_wakeup(services: MockServices, tmp_path: Path, foreign):
+def test_matching_payload_cannot_settle_a_foreign_or_stale_wakeup(services: FakeServices, tmp_path: Path, foreign):
     services.seed_state(_schedule_payload(schedule_id="sched-1", schedule_text="every 10m", kind="every", expires_at=NOW_MS + 86_400_000))
     fact = _fired_event(sequence=5, run_id="run-9", schedule_id="sched-1")
     services.events.append(replace(fact, **({"owner": "other"} if foreign == "owner" else {"wakeup_id": "stale"})))
@@ -657,7 +553,7 @@ def test_matching_payload_cannot_settle_a_foreign_or_stale_wakeup(services: Mock
     assert _entry(services, "sched-1").wakeup_id == "wakeup-fired"
 
 
-def test_cron_scan_advances_past_empty_fact_pages(services: MockServices, tmp_path: Path):
+def test_cron_scan_advances_past_empty_fact_pages(services: FakeServices, tmp_path: Path):
     services.seed_state(_schedule_payload(schedule_id="sched-1", schedule_text="every 10m", kind="every", expires_at=NOW_MS + 86_400_000))
     pages = iter((FactPage((), 200, True), FactPage((_fired_event(sequence=201, run_id="run-9", schedule_id="sched-1"),), 201, False)))
     cursors = []
@@ -673,7 +569,7 @@ def test_cron_scan_advances_past_empty_fact_pages(services: MockServices, tmp_pa
     assert len(services.wakeups) == 1
 
 
-def test_cron_identity_follows_its_admitted_owner(services: MockServices, tmp_path: Path):
+def test_cron_identity_follows_its_admitted_owner(services: FakeServices, tmp_path: Path):
     services.owner = "renamed-scheduler"
     services.seed_state(_schedule_payload(schedule_id="sched-1", schedule_text="every 10m", kind="every", expires_at=NOW_MS + 86_400_000))
     services.events.append(replace(_fired_event(sequence=5, run_id="run-9", schedule_id="sched-1"), owner=services.owner))

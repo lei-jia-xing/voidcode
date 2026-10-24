@@ -462,7 +462,6 @@ class PluginRuntime:
                 argument_schema=command.definition.argument_schema,
                 effects=tuple(sorted(command.definition.effects, key=lambda effect: effect.value)),
                 busy_gate=command.definition.busy_gate,
-                client_capabilities=tuple(command.definition.client_capabilities),
                 client_syntax=command.definition.client_syntax,
             )
             for command, plugin_id in self._commands.values()
@@ -937,7 +936,6 @@ class PluginRuntime:
         arguments: Mapping[str, object],
         *,
         context: ToolContext,
-        client_capabilities: frozenset[str] = frozenset(),
         readonly: bool = False,
     ) -> tuple[
         CommandResult,
@@ -961,11 +959,6 @@ class PluginRuntime:
             except jsonschema.ValidationError as val_err:
                 return (CommandResult(status="error", error=f"Input validation error: {val_err.message}"), (), (), (), (), None)
 
-        req_client_caps = frozenset(cmd_definition.client_capabilities)
-        if not req_client_caps.issubset(client_capabilities):
-            missing_client = req_client_caps - client_capabilities
-            return (CommandResult(status="error", error=f"Client lacks required capabilities: {set(missing_client)}"), (), (), (), (), None)
-
         lease = self._open_lease(
             owner=cmd_owner,
             session_id=session_id,
@@ -976,7 +969,7 @@ class PluginRuntime:
             internal_work=(not readonly) or ToolEffect.SESSION in cmd_definition.effects,
         )
         services = RuntimeServices(self, lease)
-        invocation = CommandInvocation(context=context, name=name, arguments=args, client_capabilities=client_capabilities)
+        invocation = CommandInvocation(context=context, name=name, arguments=args)
         cancel_event = self.cancel_event_for(lease)
         stop_watcher = threading.Event()
         watcher = threading.Thread(
@@ -1012,7 +1005,6 @@ class PluginRuntime:
         name: str,
         *,
         run_id: str = "",
-        client_capabilities: frozenset[str] = frozenset(),
     ) -> PluginViewDescriptor:
         """Render a declarative plugin view for a session by direct call."""
         view_entry = self._views.get(name)
@@ -1029,7 +1021,7 @@ class PluginRuntime:
         )
         services = RuntimeServices(self, lease)
         try:
-            return view_instance.render(session_id, services, client_capabilities=client_capabilities)
+            return view_instance.render(session_id, services)
         except Exception as exc:
             raise RuntimeError(f"View {name} of {view_owner} failed: {exc}") from exc
         finally:

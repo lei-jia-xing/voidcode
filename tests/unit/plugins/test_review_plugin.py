@@ -5,10 +5,10 @@ from __future__ import annotations
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal
 
 import pytest
 
+from tests.fixtures.fake_services import FakeServices
 from voidcode.plugins.review.review_plugin import (
     DEFAULT_JOIN_TIMEOUT_SECONDS,
     REVIEW_CHILD_LABEL,
@@ -23,67 +23,7 @@ from voidcode.plugins.review.workspace_review import WorkspaceReviewService, git
 from voidcode.sdk.commands import CommandInvocation, CommandResult
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.limits import CHILD_PROMPT_MAX_BYTES
-from voidcode.sdk.services import ChildOutcome, PluginServices
 from voidcode.sdk.tools import ToolEffect
-
-
-class MockServices(PluginServices):
-    """In-memory PluginServices: the spawned child, its outcome, and the staged events."""
-
-    def __init__(self) -> None:
-        self.spawn_calls: list[dict[str, object]] = []
-        self.join_calls: list[tuple[str, float]] = []
-        self.staged_events: list[tuple[str, Mapping[str, object]]] = []
-        #: Outcome the core's join returns for the spawned child.
-        self.join_status: Literal["completed", "failed", "interrupted", "cancelled", "running", "waiting"] = "completed"
-        self.join_output: str | None = "review findings: 3 issues"
-        self.join_error: str | None = None
-
-    def get_state(self, scope: Literal["session", "workspace"] = "session") -> tuple[Mapping[str, object] | None, int]:
-        raise AssertionError("review keeps no state")
-
-    def get_state_schema_version(self, scope: Literal["session", "workspace"] = "session") -> int:
-        raise AssertionError("review keeps no state")
-
-    def replace_state(
-        self,
-        state: Mapping[str, object],
-        expected_version: int,
-        scope: Literal["session", "workspace"] = "session",
-    ) -> int:
-        raise AssertionError("review writes no state")
-
-    def stage_event(self, event_type: str, payload: Mapping[str, object]) -> None:
-        self.staged_events.append((event_type, dict(payload)))
-
-    def spawn_child(
-        self,
-        prompt: str,
-        *,
-        label: str = "",
-        tool_allowlist: tuple[str, ...] | None = None,
-        max_steps: int = 32,
-        readonly: bool = False,
-    ) -> str:
-        self.spawn_calls.append(
-            {
-                "prompt": prompt,
-                "label": label,
-                "tool_allowlist": tool_allowlist,
-                "max_steps": max_steps,
-                "readonly": readonly,
-            }
-        )
-        return f"child-{len(self.spawn_calls)}"
-
-    def join_child(self, child_session_id: str, *, timeout_seconds: float = 300.0) -> ChildOutcome:
-        self.join_calls.append((child_session_id, timeout_seconds))
-        return ChildOutcome(
-            child_session_id=child_session_id,
-            status=self.join_status,
-            output=self.join_output,
-            error=self.join_error,
-        )
 
 
 def _context(workspace: Path) -> ToolContext:
@@ -102,7 +42,7 @@ def _invocation(workspace: Path, arguments: Mapping[str, object]) -> CommandInvo
     return CommandInvocation(context=_context(workspace), name="review", arguments=arguments)
 
 
-def _review(services: MockServices, workspace: Path, arguments: Mapping[str, object]) -> CommandResult:
+def _review(services: FakeServices, workspace: Path, arguments: Mapping[str, object]) -> CommandResult:
     return ReviewCommand().invoke(_invocation(workspace, arguments), services)
 
 
@@ -253,7 +193,7 @@ def test_oversized_workspace_diff_is_refused(tmp_path: Path) -> None:
     diff_bytes = len(_diff_all(repo).encode("utf-8"))
     assert diff_bytes > CHILD_PROMPT_MAX_BYTES
 
-    services = MockServices()
+    services = FakeServices()
     result = _review(services, repo, {})
 
     assert result.status == "error"
@@ -300,7 +240,7 @@ def test_oversized_commit_diff_is_refused(tmp_path: Path) -> None:
 )
 def test_bad_arguments_fail_without_spawning(tmp_path: Path, arguments: Mapping[str, object], message: str) -> None:
     repo = _repo(tmp_path)
-    services = MockServices()
+    services = FakeServices()
 
     result = _review(services, repo, arguments)
 
@@ -313,7 +253,7 @@ def test_bad_arguments_fail_without_spawning(tmp_path: Path, arguments: Mapping[
 def test_missing_git_repository_is_refused(tmp_path: Path) -> None:
     plain = tmp_path / "plain"
     plain.mkdir()
-    services = MockServices()
+    services = FakeServices()
 
     result = _review(services, plain, {})
 
@@ -328,7 +268,7 @@ def test_missing_git_repository_is_refused(tmp_path: Path) -> None:
 def test_review_spawns_the_read_only_profile_child_and_returns_its_answer(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     (repo / "tracked.txt").write_text("base\nchanged\n", encoding="utf-8")
-    services = MockServices()
+    services = FakeServices()
 
     result = _review(services, repo, {"focus": "look for races"})
 
@@ -369,7 +309,7 @@ def test_review_event_is_bounded_and_records_the_commit_target(tmp_path: Path) -
     (repo / "tracked.txt").write_text("base\ncommitted\n", encoding="utf-8")
     _git(repo, "commit", "--quiet", "-am", "second commit")
     sha = _git(repo, "rev-parse", "HEAD").strip()
-    services = MockServices()
+    services = FakeServices()
 
     result = _review(services, repo, {"target": "commit", "sha": sha})
 
@@ -385,7 +325,7 @@ def test_review_event_is_bounded_and_records_the_commit_target(tmp_path: Path) -
 def test_join_timeout_surfaces_the_running_child(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     (repo / "tracked.txt").write_text("base\nchanged\n", encoding="utf-8")
-    services = MockServices()
+    services = FakeServices()
     services.join_status = "running"
     services.join_output = None
 
@@ -402,7 +342,7 @@ def test_join_timeout_surfaces_the_running_child(tmp_path: Path) -> None:
 def test_failed_child_is_reported_as_an_error(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     (repo / "tracked.txt").write_text("base\nchanged\n", encoding="utf-8")
-    services = MockServices()
+    services = FakeServices()
     services.join_status = "failed"
     services.join_output = None
     services.join_error = "provider exploded"
@@ -424,7 +364,7 @@ def test_commit_without_changes_is_refused(tmp_path: Path) -> None:
     service = WorkspaceReviewService(workspace=repo)
     assert service.diff_commit(sha, git=git_status_snapshot(repo)).state == "clean"
 
-    services = MockServices()
+    services = FakeServices()
     result = _review(services, repo, {"target": "commit", "sha": sha})
 
     assert result.status == "error"
@@ -439,7 +379,7 @@ def test_base_branch_without_common_history_is_refused(tmp_path: Path) -> None:
     (repo / "other.txt").write_text("other\n", encoding="utf-8")
     _git(repo, "add", "other.txt")
     _git(repo, "commit", "--quiet", "-m", "orphan commit")
-    services = MockServices()
+    services = FakeServices()
 
     result = _review(services, repo, {"target": "base_branch", "branch": "main"})
 
@@ -451,7 +391,7 @@ def test_base_branch_without_common_history_is_refused(tmp_path: Path) -> None:
 def test_unknown_base_branch_is_refused(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     (repo / "tracked.txt").write_text("base\nchanged\n", encoding="utf-8")
-    services = MockServices()
+    services = FakeServices()
 
     result = _review(services, repo, {"target": "base_branch", "branch": "missing"})
 
@@ -477,7 +417,7 @@ def test_plugin_registers_the_review_command_with_spawn_effects() -> None:
 def test_git_inspection_failure_preserves_the_diagnostic(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     (repo / ".git" / "config").write_text("invalid config line\n", encoding="utf-8")
-    services = MockServices()
+    services = FakeServices()
     result = _review(services, repo, {})
     assert result.status == "error"
     assert "bad config line" in (result.error or "")
@@ -490,7 +430,7 @@ def test_review_diff_does_not_execute_configured_text_conversion(tmp_path: Path)
     _git(repo, "config", "diff.test.textconv", f"touch {marker}")
     (repo / ".gitattributes").write_text("tracked.txt diff=test\n", encoding="utf-8")
     (repo / "tracked.txt").write_text("base\nchanged\n", encoding="utf-8")
-    result = _review(MockServices(), repo, {})
+    result = _review(FakeServices(), repo, {})
     assert result.status == "ok"
     assert not marker.exists()
 
@@ -502,7 +442,7 @@ def test_review_budget_counts_instructions_and_diff_in_utf8(tmp_path: Path, focu
     body = "x" * (CHILD_PROMPT_MAX_BYTES - 180) if focus is None else "changed"
     (repo / "tracked.txt").write_text(body + "\n", encoding="utf-8")
     assert len(_diff_all(repo).encode("utf-8")) < CHILD_PROMPT_MAX_BYTES
-    services = MockServices()
+    services = FakeServices()
     result = _review(services, repo, {} if focus is None else {"focus": focus})
     assert result.status == "error"
     assert "review prompt is too large" in (result.error or "")

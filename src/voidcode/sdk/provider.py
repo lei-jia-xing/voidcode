@@ -190,13 +190,6 @@ class ProviderExecutionError(ValueError):
 
 
 @runtime_checkable
-class ProviderTransport(Protocol):
-    """Transport seam between provider wire adapters and HTTP/SDK clients."""
-
-    def request(self, payload: dict[str, object]) -> object: ...
-
-
-@runtime_checkable
 class TurnProvider(Protocol):
     @property
     def name(self) -> str: ...
@@ -209,11 +202,3 @@ class StreamableTurnProvider(TurnProvider, Protocol):
     """A turn provider that can also answer the same turn as an event stream."""
 
     def stream_turn(self, request: ProviderTurnRequest) -> Iterator[ProviderStreamEvent]: ...
-
-
-@runtime_checkable
-class ModelTurnProvider(Protocol):
-    @property
-    def name(self) -> str: ...
-
-    def turn_provider(self) -> TurnProvider: ...

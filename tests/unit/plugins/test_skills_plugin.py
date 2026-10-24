@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal
 
 import pytest
 
+from tests.fixtures.fake_services import FakeServices
 from voidcode.plugins.skills.skills_plugin import (
     DEFAULT_SKILL_SEARCH_PATHS,
     SkillEnableRule,
@@ -27,30 +27,7 @@ from voidcode.plugins.skills.skills_plugin import (
 )
 from voidcode.sdk.commands import CommandInvocation
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import ToolCall, ToolFailure, ToolSuccess
-
-
-class MockServices(PluginServices):
-    """The skills plugin reads session state and nothing else; any other call is a bug."""
-
-    def get_state(self, scope: Literal["session", "workspace"] = "session"):
-        return None, 0
-
-    def get_state_schema_version(self, scope: Literal["session", "workspace"] = "session") -> int:
-        raise AssertionError("skills reads no state schema version")
-
-    def replace_state(self, state: Mapping[str, object], expected_version: int, scope: Literal["session", "workspace"] = "session") -> int:
-        raise AssertionError("skills writes no state")
-
-    def stage_event(self, event_type: str, payload: Mapping[str, object]) -> None:
-        raise AssertionError("skills stages no events")
-
-    def enqueue_continuation(self, payload: Mapping[str, object], *, idempotency_key: str | None = None) -> str:
-        raise AssertionError("skills enqueues no continuations")
-
-    def cancel_continuations(self, *, continuation_id: str | None = None) -> None:
-        raise AssertionError("skills cancels no continuations")
 
 
 def _context(workspace: Path) -> ToolContext:
@@ -231,7 +208,7 @@ def test_skill_tool_returns_body_metadata_and_user_message(tmp_path: Path) -> No
     res = tool.invoke(
         ToolCall(tool_name="skill", arguments={"name": "alpha", "user_message": "for release 1.2"}),
         context=_context(tmp_path),
-        services=MockServices(),
+        services=FakeServices(),
     )
     assert isinstance(res, ToolSuccess)
     assert res.output.text == (
@@ -253,7 +230,7 @@ def test_skill_tool_returns_body_metadata_and_user_message(tmp_path: Path) -> No
 def test_skill_tool_fails_visibly_for_unknown_or_empty_names(tmp_path: Path, arguments: Mapping[str, object]) -> None:
     _write_skill(tmp_path, name="alpha", description="a", body="A")
     tool = SkillTool(SkillsConfig(enabled=True))
-    res = tool.invoke(ToolCall(tool_name="skill", arguments=arguments), context=_context(tmp_path), services=MockServices())
+    res = tool.invoke(ToolCall(tool_name="skill", arguments=arguments), context=_context(tmp_path), services=FakeServices())
     assert isinstance(res, ToolFailure)
     assert res.output.text == res.error
     assert res.error
@@ -261,7 +238,7 @@ def test_skill_tool_fails_visibly_for_unknown_or_empty_names(tmp_path: Path, arg
 
 def test_skill_tool_reports_unknown_skill_when_disabled_or_absent(tmp_path: Path) -> None:
     tool = SkillTool(SkillsConfig(enabled=False))
-    res = tool.invoke(ToolCall(tool_name="skill", arguments={"name": "alpha"}), context=_context(tmp_path), services=MockServices())
+    res = tool.invoke(ToolCall(tool_name="skill", arguments={"name": "alpha"}), context=_context(tmp_path), services=FakeServices())
     assert isinstance(res, ToolFailure)
     assert res.error == "unknown skill: alpha"
 
@@ -274,7 +251,7 @@ def test_skills_command_lists_enabled_state_and_reports_absence(tmp_path: Path) 
     _write_skill(tmp_path, name="beta", description="b", body="B")
     config = SkillsConfig(enabled=True, rules=(SkillEnableRule(name="beta", enabled=False),))
     invocation = CommandInvocation(context=_context(tmp_path), name="skills", arguments={})
-    res = SkillsCommand(config).invoke(invocation, MockServices())
+    res = SkillsCommand(config).invoke(invocation, FakeServices())
     assert res.status == "ok"
     assert res.output == (
         f"- [enabled] alpha — a ({tmp_path / '.voidcode/skills/alpha/SKILL.md'})\n"
@@ -283,30 +260,30 @@ def test_skills_command_lists_enabled_state_and_reports_absence(tmp_path: Path) 
     assert res.data is not None
     assert [row["name"] for row in res.data["skills"]] == ["alpha", "beta"]
 
-    disabled = SkillsCommand(SkillsConfig()).invoke(invocation, MockServices())
+    disabled = SkillsCommand(SkillsConfig()).invoke(invocation, FakeServices())
     assert disabled.output == "Skills are disabled."
     assert disabled.data == {"enabled": False, "skills": ()}
 
     empty_workspace = tmp_path / "empty"
     empty_workspace.mkdir()
     empty_invocation = CommandInvocation(context=_context(empty_workspace), name="skills", arguments={})
-    empty = SkillsCommand(SkillsConfig(enabled=True)).invoke(empty_invocation, MockServices())
+    empty = SkillsCommand(SkillsConfig(enabled=True)).invoke(empty_invocation, FakeServices())
     assert empty.output == "No skills discovered."
 
 
 def test_context_provider_emits_catalog_only_when_enabled_and_present(tmp_path: Path) -> None:
     plugin = create_plugin({"enabled": True})
     assert plugin.context is not None
-    assert plugin.context(_context(tmp_path), MockServices()) is None
+    assert plugin.context(_context(tmp_path), FakeServices()) is None
 
     _write_skill(tmp_path, name="alpha", description="a", body="A")
-    contribution = plugin.context(_context(tmp_path), MockServices())
+    contribution = plugin.context(_context(tmp_path), FakeServices())
     assert contribution is not None
     assert "<name>alpha</name>" in contribution.content
 
     disabled_plugin = create_plugin(None)
     assert disabled_plugin.context is not None
-    assert disabled_plugin.context(_context(tmp_path), MockServices()) is None
+    assert disabled_plugin.context(_context(tmp_path), FakeServices()) is None
 
 
 def test_create_plugin_registers_declared_tool_and_command() -> None:
@@ -328,7 +305,7 @@ def test_create_plugin_registers_declared_tool_and_command() -> None:
     ],
 )
 def test_invalid_rule_state_is_not_silently_reset(tmp_path: Path, payload: Mapping[str, object]) -> None:
-    class InvalidStateServices(MockServices):
+    class InvalidStateServices(FakeServices):
         def get_state(self, scope="session"):
             return payload, 3
 

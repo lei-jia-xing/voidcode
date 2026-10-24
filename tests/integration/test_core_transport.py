@@ -115,7 +115,7 @@ class GatedCommand:
 class HelloView:
     name = "hello_view"
 
-    def render(self, session_id, services, *, client_capabilities=frozenset()):
+    def render(self, session_id, services):
         state, _ = services.get_state("session")
         greeting = (state or {}).get("greeting", "default")
         return PluginViewDescriptor(

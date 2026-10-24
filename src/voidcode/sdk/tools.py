@@ -9,10 +9,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from types import MappingProxyType
 from typing import Any, ClassVar, Literal, Protocol, runtime_checkable
-
-from jsonschema import Draft202012Validator
 
 from .invocation import ToolContext
 from .json_values import json_wire_object, own_json_object, own_json_value
@@ -153,12 +150,6 @@ class ToolDiagnostics:
         return cls(details=details, **values)
 
 
-class ToolSemantic(StrEnum):
-    """Business meaning, independent of governance effects and tool names."""
-
-    RESOURCE_EDIT = "resource.edit"
-
-
 @dataclass(frozen=True, slots=True)
 class ResourceChange:
     """A successful tool's actual resource change, attributed by the core at commit."""
@@ -189,34 +180,17 @@ class ToolDefinition:
     # tools default to never replay unless they explicitly opt in.
     replay_policy: ToolReplayPolicy | None = None
     supports_parallel: bool = False
-    semantics: frozenset[ToolSemantic] = frozenset()
-    #: Additional meanings selected by JSON Schema predicates over invocation arguments.
-    semantic_rules: Mapping[ToolSemantic, Mapping[str, object]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "input_schema", own_json_object(self.input_schema))
         if not isinstance(self.effects, frozenset):
             object.__setattr__(self, "effects", frozenset(ToolEffect(e) if isinstance(e, str) else e for e in self.effects))
-        object.__setattr__(self, "semantics", frozenset(ToolSemantic(item) for item in self.semantics))
-        rules = {ToolSemantic(semantic): own_json_object(schema) for semantic, schema in self.semantic_rules.items()}
-        for schema in rules.values():
-            Draft202012Validator.check_schema(json_wire_object(schema))
-        object.__setattr__(self, "semantic_rules", MappingProxyType(rules))
         if not isinstance(self.path_argument_keys, tuple):
             object.__setattr__(self, "path_argument_keys", tuple(self.path_argument_keys))
         if self.replay_policy == "safe" and any(
             e in (ToolEffect.WRITE, ToolEffect.EXECUTE, ToolEffect.SPAWN, ToolEffect.SESSION) for e in self.effects
         ):
             raise ValueError("mutating tools cannot declare safe replay")
-
-    def semantics_for(self, arguments: Mapping[str, object]) -> frozenset[ToolSemantic]:
-        """Static meanings plus every rule matching this call; no authority is granted."""
-        if not self.semantic_rules:
-            return self.semantics
-        wire_arguments = json_wire_object(arguments)
-        return self.semantics | frozenset(
-            semantic for semantic, schema in self.semantic_rules.items() if Draft202012Validator(json_wire_object(schema)).is_valid(wire_arguments)
-        )
 
     def replay_policy_for(self, _arguments: Mapping[str, object] | None = None) -> ToolReplayPolicy:
         if self.replay_policy is not None:
@@ -429,18 +403,8 @@ type ToolResult = ToolSuccess[Any] | ToolFailure[Any]
 
 
 @runtime_checkable
-class StaticTool(Protocol):
-    definition: ClassVar[ToolDefinition]
-
-    def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult: ...
-
-
-@runtime_checkable
-class DynamicTool(Protocol):
+class Tool(Protocol):
     @property
     def definition(self) -> ToolDefinition: ...
 
     def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult: ...
-
-
-type Tool = StaticTool | DynamicTool

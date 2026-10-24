@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import fcntl
-import functools
 import hashlib
 import json
 import os
@@ -15,7 +14,6 @@ from pathlib import Path
 from typing import Literal, cast
 from uuid import uuid4
 
-from .. import __version__
 from ..sdk.config import CONFIG_FILE_NAME, CoreConfig, parse_core_config
 from ..sdk.json_values import json_wire_object
 from .activation import (
@@ -32,29 +30,8 @@ from .activation import (
     write_private_snapshot,
 )
 from .engine import Core
-from .images import IMAGES_DIR_NAME, Image, installed_identity, running_identity
-from .images import pin as image_pin
 from .plugins import PluginRuntime, PluginSource
 from .storage.store import SCHEMA_VERSION, EventDraft, SqliteStore, canonical_json, inspect_existing_workspace
-
-
-@functools.cache
-def _executing_image() -> Image:
-    """The image this process executes: its pinned launch identity, or the installed tree.
-
-    The first writer runs inside a materialized image instead (CLI routing), so what gets pinned
-    is always recoverable; the plain-tree digest covers unsupervised entry points that never
-    adopt by themselves.
-    """
-    pinned = running_identity()
-    return pinned if pinned is not None else installed_identity()
-
-
-def _launch_protocol() -> int:
-    """The supervisor<->child launch interface this build speaks (the preflight refusal vocabulary)."""
-    from .preflight import LAUNCH_PROTOCOL_VERSION
-
-    return LAUNCH_PROTOCOL_VERSION
 
 
 def state_directory(workspace: Path) -> Path:
@@ -138,13 +115,7 @@ def open_core(
         if current_payload is None or recorded_schema is None:
             raise ValueError(f"workspace revision {current_revision} disappeared from the core database")
         if recorded_schema != SCHEMA_VERSION:
-            raise ValueError(
-                f"workspace state is at schema {recorded_schema}; this build reads schema {SCHEMA_VERSION}: "
-                "run the explicit upgrade transition through the supervisor "
-                "(`voidcode serve --session-id <id>` for the first adoption of this build, "
-                "or `voidcode upgrade --candidate <install>`) instead of starting the core directly"
-            )
-        _check_image_pin(state_dir, current_payload)
+            raise ValueError(f"workspace state is at schema {recorded_schema}; this build reads schema {SCHEMA_VERSION}")
         snapshot = load_private_snapshot(state_dir, current_revision)
         config = config_from_snapshot(snapshot)
         admission = restore_admission(
@@ -165,21 +136,6 @@ def open_core(
         admits=admit_current,
         auto_drain=auto_drain,
     )
-
-
-def _check_image_pin(state_dir: Path, payload: Mapping[str, object]) -> None:
-    """Refuse to serve state another image was elected for, with the recovery spelled out."""
-    recorded = payload.get("image")
-    if not isinstance(recorded, Mapping):
-        raise ValueError("this state records no elected image; it predates this build's generation shape")
-    digest = recorded.get("digest")
-    if not isinstance(digest, str) or not digest:
-        raise ValueError("this state records no elected image digest; it predates this build's generation shape")
-    if digest != _executing_image().digest:
-        raise ValueError(
-            f"this state was elected to image {digest}; start that image "
-            f"({state_dir / IMAGES_DIR_NAME / digest}) instead of {_executing_image().digest}"
-        )
 
 
 def adopt_generation(*, workspace: Path, state_dir: Path, session_id: str | None) -> dict[str, object]:
@@ -289,7 +245,6 @@ def adopt_generation(*, workspace: Path, state_dir: Path, session_id: str | None
                             "source": "adoption",
                             "from_revision_id": expected_revision,
                             "to_revision_id": admission.revision_id,
-                            "image_digest": _executing_image().digest,
                             "migrated_owners": list(plan.migrated_owners),
                             "deactivated_owners": list(plan.deactivated_owners),
                         },
@@ -377,7 +332,6 @@ def _admission_from(plugins: tuple[PluginSource, ...], *, config: CoreConfig, re
     # Composition only: ids and the private snapshot digest. Credentials and arbitrary plugin
     # configuration never reach events or revisions.
     payload: dict[str, object] = {
-        "image": image_pin(_executing_image(), core_version=__version__, launch_protocol=_launch_protocol()),
         "python": sys.implementation.cache_tag,
         "dependencies": {name: version(name) for name in ("openai", "pydantic", "jsonschema")},
         "model": {"model": config.model.model, "reasoning_effort": config.model.reasoning_effort},

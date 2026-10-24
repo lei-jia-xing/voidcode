@@ -199,7 +199,7 @@ def test_shell_exec_without_a_lease_fails_visibly(tmp_path: Path) -> None:
 def test_shell_exec_timeout_returns_a_partial_body_with_its_artifact(tmp_path: Path) -> None:
     lease = _FakeLease(ProcessResult(exit_code=None, stdout="partial\n", stderr="", duration_ms=1000, timed_out=True))
 
-    result = _invoke("sleep 30", tmp_path, lease, timeout=1)
+    result = _invoke("sleep 1", tmp_path, lease, timeout=1)
 
     assert isinstance(result, ToolFailure)
     body = result.body
@@ -222,7 +222,7 @@ def test_shell_exec_cancellation_reports_the_abort_signal(tmp_path: Path) -> Non
     signal.set_cancelled(True, reason="test abort")
     lease = _FakeLease(ProcessResult(exit_code=None, stdout="started\n", stderr="", duration_ms=20, cancelled=True))
 
-    result = _invoke("sleep 30", tmp_path, lease, abort_signal=signal)
+    result = _invoke("sleep 1", tmp_path, lease, abort_signal=signal)
 
     assert isinstance(result, ToolFailure)
     assert result.error == "User aborted the command."
@@ -263,15 +263,15 @@ def test_shell_exec_rejects_unknown_arguments(tmp_path: Path) -> None:
 def test_shell_exec_reports_the_tool_timeout_with_partial_output(tmp_path: Path) -> None:
     lease = _FakeLease(ProcessResult(exit_code=None, stdout="partial\n", stderr="", duration_ms=30, timed_out=True))
 
-    result = _invoke("sleep 30", tmp_path, lease, timeout=3)
+    result = _invoke("sleep 1", tmp_path, lease, timeout=1)
 
     assert isinstance(result, ToolFailure)
     assert isinstance(result.body, ShellExecResultBody)
     assert result.body.timed_out is True
-    assert result.body.timeout == 3
+    assert result.body.timeout == 1
     assert result.body.stdout == "partial\n"
-    assert result.error == "shell_exec command timed out after 3s"
-    assert lease.calls[0]["timeout_seconds"] == 3.0
+    assert result.error == "shell_exec command timed out after 1s"
+    assert lease.calls[0]["timeout_seconds"] == 1.0
 
 
 def test_shell_exec_preview_overflow_spills_the_full_stream(tmp_path: Path) -> None:

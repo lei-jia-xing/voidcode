@@ -17,7 +17,7 @@ from voidcode.sdk.hooks import (
     RunRequestedFact,
 )
 from voidcode.sdk.services import SessionUsageReport
-from voidcode.sdk.tools import ReadObservation, ResourceChange, ToolSemantic
+from voidcode.sdk.tools import ReadObservation, ResourceChange
 
 COMMON = dict(session_id="session", run_id="run", revision_id="revision", logical_turn="turn")
 
@@ -64,7 +64,7 @@ def test_custom_names_and_batch_resources_do_not_change_meaning():
         outcome(3, reads=(read((3,)),)),
         replace(
             outcome(4, "replace_everything"),
-            semantics=(ToolSemantic.RESOURCE_EDIT,),
+            effects=("write",),
             model="model",
             changes=(ResourceChange("a.py"), ResourceChange("b.py")),
         ),
@@ -101,7 +101,7 @@ def test_errors_retries_diagnostics_and_model_edit_attribution():
         outcome(tool="custom_edit"),
         status="error",
         error="ambiguous",
-        semantics=(ToolSemantic.RESOURCE_EDIT,),
+        effects=("write",),
         model="model",
         error_kind="ambiguous_match",
         has_retry_guidance=True,

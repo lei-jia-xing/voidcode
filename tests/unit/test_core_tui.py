@@ -372,7 +372,7 @@ class _StubClient:
     def command_catalog(self) -> tuple[str, list[dict[str, object]]]:
         return "rev-1", []
 
-    def views(self, session_id: str, *, client_capabilities: str = "") -> tuple[str, list[dict[str, object]]]:
+    def views(self, session_id: str) -> tuple[str, list[dict[str, object]]]:
         return "rev-1", []
 
     def get_session(self, session_id: str) -> dict[str, object]:
@@ -437,7 +437,7 @@ class _CommandClient(_StubClient):
     def list_sessions(self, limit: int = 20) -> list[dict[str, object]]:
         return [{"session_id": "s1", "status": "idle", "turn": 0}]
 
-    def views(self, session_id: str, *, client_capabilities: str = "") -> tuple[str, list[dict[str, object]]]:
+    def views(self, session_id: str) -> tuple[str, list[dict[str, object]]]:
         return "rev-1", list(self.view_list)
 
     def invoke_command(
@@ -447,7 +447,6 @@ class _CommandClient(_StubClient):
         arguments: dict[str, object] | None = None,
         *,
         expected_revision: str,
-        client_capabilities: str = "",
     ) -> dict[str, object]:
         self.invoked.append((session_id, name, dict(arguments or {}), expected_revision))
         return dict(self.results.get(name, {"status": "ok"}))

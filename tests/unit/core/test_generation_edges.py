@@ -12,8 +12,6 @@ import pytest
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.core.activation import bundled_sources
 from voidcode.core.bootstrap import adopt_generation, open_core
-from voidcode.core.images import installed_identity, running_package_root
-from voidcode.core.preflight import verify_preflight
 
 OBSERVER = """
 from __future__ import annotations
@@ -136,7 +134,7 @@ def test_fact_owners_are_frozen_on_the_event_across_restart_with_changed_source(
         worker.join(timeout=5)
 
 
-def test_plain_restart_refuses_reinterpretation_and_preflight_adopts_the_migration(tmp_path: Path) -> None:
+def test_plain_restart_refuses_reinterpretation_and_adoption_migrates(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     state = tmp_path / "state"
@@ -155,20 +153,6 @@ def test_plain_restart_refuses_reinterpretation_and_preflight_adopts_the_migrati
         assert "will not reinterpret" in str(exc)
     else:  # pragma: no cover - the guard is the subject
         raise AssertionError("plain restart reinterpreted stored state under a newer schema")
-
-    identity = installed_identity()
-    report = verify_preflight(
-        database=state / "kernel-v1.sqlite3",
-        workspace=str(workspace),
-        state_dir=state,
-        candidate_package_root=running_package_root(),
-        candidate_launch_protocol=1,
-        image_digest=identity.digest,
-        web_bundle=None,
-    )
-    assert report.image_changed is False and report.schema.unchanged is True
-    assert report.migrated_owners == ("statep",)
-    assert report.adoption_required is True
 
     assert adopt_generation(workspace=workspace, state_dir=state, session_id="s")["migrated_owners"] == ["statep"]
     with sqlite3.connect(state / "kernel-v1.sqlite3") as connection:

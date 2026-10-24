@@ -209,10 +209,8 @@ class ProvidersView:
         self,
         session_id: str,
         services: PluginServices,
-        *,
-        client_capabilities: frozenset[str] = frozenset(),
     ) -> PluginViewDescriptor:
-        _ = (session_id, services, client_capabilities)
+        _ = (session_id, services)
         output, _data = providers_panel(self._facts)
         return PluginViewDescriptor(owner="providers", name=self.name, title="Providers", view_type="markdown", data={"content": output})
 
@@ -229,10 +227,8 @@ class ModelView:
         self,
         session_id: str,
         services: PluginServices,
-        *,
-        client_capabilities: frozenset[str] = frozenset(),
     ) -> PluginViewDescriptor:
-        _ = (session_id, client_capabilities)
+        _ = session_id
         output, _data = model_panel(services, self._facts, None)
         return PluginViewDescriptor(owner="providers", name=self.name, title="Model", view_type="markdown", data={"content": output})
 

@@ -194,14 +194,11 @@ class CoreHttpClient:
         arguments: dict[str, Any] | None = None,
         *,
         expected_revision: str,
-        client_capabilities: str = "",
     ) -> dict[str, Any]:
-        caps = [c.strip() for c in client_capabilities.split(",") if c.strip()] if isinstance(client_capabilities, str) else list(client_capabilities)
         body: dict[str, Any] = {
             "arguments": arguments or {},
             # The revision the client actually displayed; never a default.
             "expected_revision": expected_revision,
-            "client_capabilities": caps,
         }
         return self._request(
             "POST",
@@ -217,14 +214,11 @@ class CoreHttpClient:
         decision: str,
         *,
         expected_revision: str,
-        client_capabilities: str = "",
     ) -> dict[str, Any]:
-        caps = [c.strip() for c in client_capabilities.split(",") if c.strip()] if isinstance(client_capabilities, str) else list(client_capabilities)
         body: dict[str, Any] = {
             "request_id": request_id,
             "decision": decision,
             "expected_revision": expected_revision,
-            "client_capabilities": caps,
         }
         return self._request(
             "POST",
@@ -233,12 +227,11 @@ class CoreHttpClient:
             timeout=60.0,
         )
 
-    def views(self, session_id: str, *, client_capabilities: str = "") -> tuple[str, list[dict[str, Any]]]:
+    def views(self, session_id: str) -> tuple[str, list[dict[str, Any]]]:
         """The rendered views and the revision of the snapshot that rendered them."""
         res = self._request(
             "GET",
             f"/api/sessions/{urllib.parse.quote(session_id)}/views",
-            query={"client_capabilities": client_capabilities} if client_capabilities else None,
         )
         return str(res.get("revision_id", "")), list(res.get("views", []))
 

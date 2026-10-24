@@ -11,7 +11,7 @@ from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandR
 from voidcode.sdk.hooks import ApprovalRequestedFact, ChildSpawnedFact, ContextProjectedFact, InvocationFinishedFact, PluginFact, RunRequestedFact
 from voidcode.sdk.plugin import Plugin
 from voidcode.sdk.services import PluginServices, SessionUsageReport
-from voidcode.sdk.tools import ToolEffect, ToolSemantic
+from voidcode.sdk.tools import ToolEffect
 
 SCHEMA_VERSION = 2
 FACT_PAGE_SIZE = 200
@@ -232,7 +232,7 @@ def project_session_effectiveness(
         stats.partial_results += int(fact.partial is True)
         stats.retry_guidance_count += int(fact.has_retry_guidance)
         model_stats = None
-        if (ToolSemantic.RESOURCE_EDIT in fact.semantics or fact.changes) and fact.model is not None:
+        if (ToolEffect.WRITE in fact.effects or fact.changes) and fact.model is not None:
             model_stats = stats_by_model.setdefault(fact.model, _MutableModelEditStats())
             model_stats.calls += 1
         if fact.status == "error":

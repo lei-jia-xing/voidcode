@@ -7,12 +7,14 @@ Malformed answers are contract violations, never an unavailable resource.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .queries import QueryContract
+from .plugin import PluginQuery, PluginQueryCaller
+from .queries import QueryContractError
+from .services import PluginServices
 
 RULE_URI_PREFIX = "voidcode://rule/"
 RULE_PAGE_QUERY = "workspace.rule_page"
@@ -87,19 +89,60 @@ class RulePageRequest(BaseModel):
     limit: int = Field(default=2000, ge=1, le=2000)
 
 
-class DocumentStateRequest(BaseModel):
+class DocumentVersionRequest(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
 
     path: str = Field(min_length=1)
 
 
-RULE_PAGES = QueryContract(
-    name=RULE_PAGE_QUERY,
-    request_type=RulePageRequest,
-    decode_answer=lambda value, _request: RulePage.from_query(value),
-)
-DOCUMENT_STATES = QueryContract(
-    name=DOCUMENT_VERSION_QUERY,
-    request_type=DocumentStateRequest,
-    decode_answer=lambda value, request: DocumentState.from_query(value, path=request.path),
-)
+DocumentStateRequest = DocumentVersionRequest
+
+
+class _RulePageQuery:
+    name: str = RULE_PAGE_QUERY
+
+    def ask(self, services: PluginServices, request: RulePageRequest) -> RulePage | None:
+        value = services.query(self.name, request.model_dump())
+        if value is None:
+            return None
+        if not isinstance(value, Mapping):
+            raise QueryContractError(f"query {self.name!r} must answer with a JSON object")
+        page = RulePage.from_query(value)
+        if page is None:
+            raise QueryContractError(f"query {self.name!r} answered outside its request/answer contract")
+        return page
+
+    def bind(self, handler: Callable[[RulePageRequest, PluginQueryCaller], RulePage | None]) -> PluginQuery:
+        def invoke(arguments: Mapping[str, object], caller: PluginQueryCaller) -> Mapping[str, object] | None:
+            req = RulePageRequest.model_validate(arguments)
+            ans = handler(req, caller)
+            return None if ans is None else ans.as_payload()
+
+        return PluginQuery(name=self.name, handler=invoke)
+
+
+class _DocumentStateQuery:
+    name: str = DOCUMENT_VERSION_QUERY
+
+    def ask(self, services: PluginServices, request: DocumentVersionRequest) -> DocumentState | None:
+        value = services.query(self.name, request.model_dump())
+        if value is None:
+            return None
+        if not isinstance(value, Mapping):
+            raise QueryContractError(f"query {self.name!r} must answer with a JSON object")
+        state = DocumentState.from_query(value, path=request.path)
+        if state is None:
+            raise QueryContractError(f"query {self.name!r} answered outside its request/answer contract")
+        return state
+
+    def bind(self, handler: Callable[[DocumentVersionRequest, PluginQueryCaller], DocumentState | None]) -> PluginQuery:
+        def invoke(arguments: Mapping[str, object], caller: PluginQueryCaller) -> Mapping[str, object] | None:
+            req = DocumentVersionRequest.model_validate(arguments)
+            ans = handler(req, caller)
+            return None if ans is None else ans.as_payload()
+
+        return PluginQuery(name=self.name, handler=invoke)
+
+
+RULE_PAGES = _RulePageQuery()
+DOCUMENT_STATES = _DocumentStateQuery()

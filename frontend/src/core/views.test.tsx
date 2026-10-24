@@ -64,7 +64,6 @@ describe("FormView", () => {
       name: "get_initial_form",
       description: "Read initial objective",
       effects: ["read"],
-      client_capabilities: [],
       busy_gate: false,
     },
     {
@@ -72,7 +71,6 @@ describe("FormView", () => {
       name: "unsafe_write_action",
       description: "Mutating action",
       effects: ["write"],
-      client_capabilities: [],
       busy_gate: false,
     },
   ];
@@ -425,7 +423,6 @@ describe("FormView", () => {
             name: "goal.load_objective",
             description: "Read the full objective",
             effects: ["read"],
-            client_capabilities: [],
             busy_gate: false,
           },
         ]}
@@ -450,7 +447,6 @@ describe("FormView", () => {
         name: "read_write_probe",
         description: "Read+write probe",
         effects: ["read", "write"],
-        client_capabilities: [],
         busy_gate: false,
       },
     ];

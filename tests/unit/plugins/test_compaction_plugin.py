@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal
 
 import pytest
 
+from tests.fixtures.fake_services import FakeServices
 from voidcode.core.storage.store import StoredEvent
 from voidcode.core.transcript import context_records
 from voidcode.plugins.compaction import compaction_plugin as plugin_module
@@ -50,9 +50,8 @@ from voidcode.sdk.hooks import InvocationFinishedFact, RunFinishedFact, UsageFac
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.provider import ProviderMessage, ProviderTokenUsage, ProviderTurnResult
-from voidcode.sdk.services import EventView, PluginServices
+from voidcode.sdk.services import EventView
 from voidcode.sdk.tools import ResourceChange, TextOutput, ToolCall, ToolFailure, ToolSuccess
-from voidcode.sdk.transcript import ContextHistory
 
 SESSION_ID = "session-1"
 RUN_ID = "run-1"
@@ -164,90 +163,6 @@ def _plan(events: tuple[EventView, ...] = (), **overrides: object):
     assert not overrides, overrides
     assert planned is not None
     return planned
-
-
-class MockServices(PluginServices):
-    """The plugin-facing services this suite drives, with the core's own ruler for coverage."""
-
-    def __init__(
-        self,
-        events: tuple[EventView, ...] = (),
-        *,
-        state: Mapping[str, object] | None = None,
-        version: int = 0,
-        model_answer: str | None = None,
-        model_error: Exception | None = None,
-        refuse: bool = False,
-    ) -> None:
-        self.events = events
-        self.state = state
-        self.version = version
-        self.model_answer = model_answer
-        self.model_error = model_error
-        self.refuse = refuse
-        self.projections: list[dict[str, object]] = []
-        self.staged: list[tuple[str, Mapping[str, object]]] = []
-        self.queries: list[str] = []
-        self.row: dict[str, object] | None = None
-
-    # --- state ---
-
-    def get_state(self, scope: Literal["session", "workspace"] = "session") -> tuple[Mapping[str, object] | None, int]:
-        _ = scope
-        return self.state, self.version
-
-    def replace_state(self, state: Mapping[str, object], expected_version: int, scope: Literal["session", "workspace"] = "session") -> int:
-        _ = scope
-        assert expected_version == self.version, "state CAS conflict in the fake"
-        self.state = state
-        self.version += 1
-        return self.version
-
-    # --- events ---
-
-    def stage_event(self, event_type: str, payload: Mapping[str, object]) -> None:
-        self.staged.append((event_type, payload))
-
-    def read_context_history(self, *, limit=600):
-        return ContextHistory(_records(self.events[:limit]), len(self.events) <= limit)
-
-    # --- window projection ---
-
-    def project_window(self, *, covered_from_sequence: int, covered_to_sequence: int, replacement: str) -> None:
-        if self.refuse:
-            raise ValueError("core refused the projection")
-        covered = tuple(event for event in self.events if event.sequence <= covered_to_sequence)
-        covered_bytes = sum(_size(event) for event in covered)
-        replacement_bytes = len(replacement.encode("utf-8"))
-        assert replacement_bytes < covered_bytes, "the fake core measures what the real one does"
-        self.projections.append(
-            {
-                "covered_from_sequence": covered_from_sequence,
-                "covered_to_sequence": covered_to_sequence,
-                "replacement": replacement,
-            }
-        )
-        self.row = {
-            "owner": OWNER,
-            "covered_from_sequence": covered_from_sequence,
-            "covered_to_sequence": covered_to_sequence,
-            "covered_bytes": covered_bytes,
-            "dropped_bytes": covered_bytes - replacement_bytes,
-            "replacement": replacement,
-            "covered_events": covered_to_sequence,
-        }
-
-    def window_projection(self) -> Mapping[str, object] | None:
-        return self.row
-
-    # --- model lane ---
-
-    def model_query(self, prompt: str, *, model: str | None = None, max_output_tokens: int | None = None) -> str:
-        _ = model, max_output_tokens
-        self.queries.append(prompt)
-        if self.model_error is not None:
-            raise self.model_error
-        return self.model_answer or ""
 
 
 def _context() -> ToolContext:
@@ -470,7 +385,7 @@ def test_plan_is_none_when_the_window_has_nothing_new_to_cover() -> None:
 def test_apply_projection_refuses_a_replacement_that_would_not_shrink_the_window() -> None:
     # One tiny event: any labelled projection of it is bigger than the event itself.
     events = (_event(1, "kernel.user_message", {"content": "hi"}),)
-    services = MockServices(events)
+    services = FakeServices(events)
     outcome = apply_projection(
         services,
         state=CompactionState(),
@@ -488,7 +403,7 @@ def test_apply_projection_refuses_a_replacement_that_would_not_shrink_the_window
 
 
 def test_apply_projection_is_a_noop_when_nothing_is_coverable() -> None:
-    services = MockServices(_session_events())
+    services = FakeServices(_session_events())
     outcome = apply_projection(
         services,
         state=CompactionState(cursor_sequence=8, last_projection=LastProjection(1, 8, 4_000, 1_000, "deterministic")),
@@ -511,7 +426,7 @@ def test_apply_projection_is_a_noop_when_nothing_is_coverable() -> None:
 
 def test_apply_projection_reports_the_core_measured_accounting() -> None:
     events = _session_events()
-    services = MockServices(events)
+    services = FakeServices(events)
     outcome = apply_projection(
         services,
         state=CompactionState(),
@@ -562,7 +477,7 @@ def test_apply_projection_reports_the_core_measured_accounting() -> None:
 
 def test_model_summary_lane_replaces_the_text_and_keeps_the_real_accounting() -> None:
     events = _session_events()
-    services = MockServices(events, model_answer="  MODEL SUMMARY TEXT  ")
+    services = FakeServices(events, model_answer="  MODEL SUMMARY TEXT  ")
     outcome = apply_projection(
         services,
         state=CompactionState(),
@@ -588,7 +503,7 @@ def test_model_summary_lane_replaces_the_text_and_keeps_the_real_accounting() ->
 
 def test_model_summary_failure_and_blank_answer_fall_back_to_the_deterministic_text() -> None:
     events = _session_events()
-    failing = MockServices(events, model_error=RuntimeError("provider exploded"))
+    failing = FakeServices(events, model_error=RuntimeError("provider exploded"))
     failed = apply_projection(
         failing,
         state=CompactionState(),
@@ -602,7 +517,7 @@ def test_model_summary_failure_and_blank_answer_fall_back_to_the_deterministic_t
     assert failed.status == "projected"
     assert failed.summary_kind == "deterministic"
     assert failing.row["replacement"] == render_deterministic_replacement(_plan(events))
-    blank = MockServices(events, model_answer="   \n  ")
+    blank = FakeServices(events, model_answer="   \n  ")
     blanked = apply_projection(
         blank,
         state=CompactionState(),
@@ -618,7 +533,7 @@ def test_model_summary_failure_and_blank_answer_fall_back_to_the_deterministic_t
 
 def test_a_model_summary_that_would_grow_the_window_falls_back_to_the_deterministic_text() -> None:
     events = _session_events()
-    services = MockServices(events, model_answer="X" * 20_000)
+    services = FakeServices(events, model_answer="X" * 20_000)
     outcome = apply_projection(
         services,
         state=CompactionState(),
@@ -636,7 +551,7 @@ def test_a_model_summary_that_would_grow_the_window_falls_back_to_the_determinis
 
 def test_an_unshrinkable_prefix_is_refused_before_the_model_lane_is_asked() -> None:
     events = (_event(1, "kernel.user_message", {"content": "hi"}),)
-    services = MockServices(events, model_answer="SHORT")
+    services = FakeServices(events, model_answer="SHORT")
     outcome = apply_projection(
         services,
         state=CompactionState(),
@@ -679,7 +594,7 @@ def test_model_replacement_is_a_pure_function_of_the_summary() -> None:
 
 def test_observer_projects_once_the_measured_dispatch_crosses_the_trigger() -> None:
     events = _session_events()
-    services = MockServices(events)
+    services = FakeServices(events)
     config = CompactionConfig(threshold_tokens=1_000, reserve_tokens=0, keep_recent_tokens=0)
     compaction_observer(_usage(8, input_tokens=9_000), _context(), services, config=config)
     assert len(services.projections) == 1
@@ -695,21 +610,21 @@ def test_observer_projects_once_the_measured_dispatch_crosses_the_trigger() -> N
 def test_observer_stays_idle_below_the_trigger_without_or_unmeasured() -> None:
     events = _session_events()
     config = CompactionConfig(threshold_tokens=1_000, reserve_tokens=0, keep_recent_tokens=0)
-    below = MockServices(events)
+    below = FakeServices(events)
     compaction_observer(_usage(8, input_tokens=1_000), _context(), below, config=config)
     assert below.projections == []
     assert below.state is None
-    unknown = MockServices(events)
+    unknown = FakeServices(events)
     compaction_observer(_usage(8, input_tokens=None), _context(), unknown, config=config)
     assert unknown.projections == []
-    disabled = MockServices(events)
+    disabled = FakeServices(events)
     compaction_observer(_usage(8, input_tokens=9_000), _context(), disabled, config=CompactionConfig(enabled=False))
     assert disabled.projections == []
     assert disabled.state is None
 
 
 def test_observer_ignores_fact_kinds_it_does_not_subscribe_to() -> None:
-    services = MockServices(_session_events())
+    services = FakeServices(_session_events())
     config = CompactionConfig(threshold_tokens=1_000, reserve_tokens=0, keep_recent_tokens=0)
     fact = InvocationFinishedFact(
         session_id=SESSION_ID,
@@ -727,7 +642,7 @@ def test_observer_ignores_fact_kinds_it_does_not_subscribe_to() -> None:
 
 
 def test_observer_projects_at_run_finish_when_the_last_dispatch_crossed_the_trigger() -> None:
-    services = MockServices(_session_events())
+    services = FakeServices(_session_events())
     config = CompactionConfig(threshold_tokens=1_000, reserve_tokens=0, keep_recent_tokens=0)
     fact = RunFinishedFact(
         session_id=SESSION_ID,
@@ -746,7 +661,7 @@ def test_observer_projects_at_run_finish_when_the_last_dispatch_crossed_the_trig
 
 def test_compact_command_reports_accounting_and_noops_on_a_second_call() -> None:
     events = _session_events()
-    services = MockServices(events)
+    services = FakeServices(events)
     command = CompactCommand(CompactionConfig(keep_recent_tokens=0))
     invocation = CommandInvocation(context=_context(), name="compact", arguments={})
     first = command.invoke(invocation, services)
@@ -777,13 +692,13 @@ def test_compact_command_reports_accounting_and_noops_on_a_second_call() -> None
 
 def test_compact_command_refusal_and_empty_session_are_visible() -> None:
     events = (_event(1, "kernel.user_message", {"content": "hi"}),)
-    services = MockServices(events)
+    services = FakeServices(events)
     command = CompactCommand(CompactionConfig(keep_recent_tokens=0))
     invocation = CommandInvocation(context=_context(), name="compact", arguments={})
     refused = command.invoke(invocation, services)
     assert refused.status == "error"
     assert "compaction refused" in (refused.error or "")
-    empty = command.invoke(invocation, MockServices(()))
+    empty = command.invoke(invocation, FakeServices(()))
     assert empty.status == "ok"
     assert empty.data == {"noop": True, "reason": "no_events"}
 

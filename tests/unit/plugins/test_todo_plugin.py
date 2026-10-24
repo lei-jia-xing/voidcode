@@ -5,10 +5,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import Literal
 
 import pytest
 
+from tests.fixtures.fake_services import FakeServices
 from voidcode.plugins.todo.todo_plugin import (
     DEFAULT_TODO_REMINDER_MAX_PER_CYCLE,
     SCHEMA_VERSION,
@@ -36,9 +36,8 @@ from voidcode.plugins.todo.todo_plugin import (
     todo_summary,
 )
 from voidcode.sdk.commands import CommandInvocation
-from voidcode.sdk.hooks import FactPage, InvocationFinishedFact, PluginFact, RunFinishedFact, RunRequestedFact
+from voidcode.sdk.hooks import FactPage, InvocationFinishedFact, RunFinishedFact, RunRequestedFact
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.services import PluginBudget, PluginServices, SessionUsageReport
 from voidcode.sdk.tools import ToolCall, ToolFailure, ToolSuccess
 
 
@@ -51,70 +50,6 @@ def _request(sequence: int, run_id: str, *, resumed: bool = False) -> RunRequest
         event_sequence=sequence,
         resumed=resumed,
     )
-
-
-class MockServices(PluginServices):
-    """In-memory PluginServices for fast unit testing."""
-
-    def __init__(self) -> None:
-        self.state: dict[tuple[str, str], tuple[Mapping[str, object] | None, int]] = {}
-        self.staged_events: list[tuple[str, Mapping[str, object]]] = []
-        self.staged_continuations: list[tuple[Mapping[str, object], str | None, str]] = []
-        self.facts: list[PluginFact] = []
-        self.schema_version = 0
-
-    def get_state(self, scope: Literal["session", "workspace"] = "session") -> tuple[Mapping[str, object] | None, int]:
-        return self.state.get((scope, ""), (None, 0))
-
-    def get_state_schema_version(self, scope: Literal["session", "workspace"] = "session") -> int:
-        _ = scope
-        return self.schema_version
-
-    def replace_state(
-        self,
-        state: Mapping[str, object],
-        expected_version: int,
-        scope: Literal["session", "workspace"] = "session",
-    ) -> int:
-        _cur, ver = self.get_state(scope)
-        if ver != expected_version:
-            raise RuntimeError(f"CAS mismatch: expected {expected_version}, was {ver}")
-        new_ver = expected_version + 1
-        self.state[(scope, "")] = (dict(state), new_ver)
-        return new_ver
-
-    def stage_event(self, event_type: str, payload: Mapping[str, object]) -> None:
-        self.staged_events.append((event_type, dict(payload)))
-
-    def enqueue_continuation(
-        self,
-        payload: Mapping[str, object],
-        *,
-        idempotency_key: str | None = None,
-        role: Literal["system", "user"] = "system",
-    ) -> str:
-        self.staged_continuations.append((dict(payload), idempotency_key, role))
-        return f"continuation-{len(self.staged_continuations)}"
-
-    def read_facts(self, *, after_sequence: int = 0, limit: int = 100) -> FactPage:
-        remaining = tuple(fact for fact in self.facts if fact.event_sequence > after_sequence)
-        page = remaining[:limit]
-        return FactPage(page, page[-1].event_sequence if page else after_sequence, len(remaining) > limit)
-
-    def cancel_continuations(self, *, continuation_id: str | None = None) -> None:
-        raise AssertionError("todo does not cancel continuations")
-
-    def get_usage(self, *, since_sequence: int = 0, until_sequence: int | None = None) -> SessionUsageReport:
-        raise AssertionError("todo does not read usage")
-
-    def get_budget(self) -> PluginBudget | None:
-        raise AssertionError("todo has no budget")
-
-    def set_budget(self, **_kwargs: object) -> None:
-        raise AssertionError("todo sets no budget")
-
-    def clear_budget(self) -> None:
-        raise AssertionError("todo clears no budget")
 
 
 def _context(workspace: Path) -> ToolContext:
@@ -133,7 +68,7 @@ def _call(arguments: Mapping[str, object], *, name: str = "todo") -> ToolCall:
     return ToolCall(tool_name=name, arguments=arguments, tool_call_id="call-1")
 
 
-def _invoke(services: MockServices, tmp_path: Path, arguments: Mapping[str, object]):
+def _invoke(services: FakeServices, tmp_path: Path, arguments: Mapping[str, object]):
     return TodoTool().invoke(_call(arguments), context=_context(tmp_path), services=services)
 
 
@@ -158,12 +93,12 @@ def _raw_state(phases: object, *, revision: int) -> dict[str, object]:
     }
 
 
-def _stored(services: MockServices) -> TodoState:
+def _stored(services: FakeServices) -> TodoState:
     raw, _version = services.get_state("session")
     return TodoState.from_payload(raw)
 
 
-def _phases(services: MockServices) -> list[dict[str, object]]:
+def _phases(services: FakeServices) -> list[dict[str, object]]:
     return [{"name": phase["name"], "tasks": [dict(task) for task in phase["tasks"]]} for phase in _stored(services).phases]
 
 
@@ -234,7 +169,7 @@ def test_blocked_reason_is_whitespace_collapsed() -> None:
 
 
 def test_init_list_and_items_normalize_first_pending(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     res = _invoke(services, tmp_path, {"op": "init", "list": [{"phase": "Build", "items": ["compile", "test"]}]})
     assert isinstance(res, ToolSuccess)
     assert _phases(services) == [
@@ -249,7 +184,7 @@ def test_init_list_and_items_normalize_first_pending(tmp_path: Path) -> None:
 
 
 def test_init_rejects_ambiguous_and_duplicate_input(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     both = _invoke(services, tmp_path, {"op": "init", "list": [{"phase": "A", "items": ["x"]}], "items": ["x"]})
     assert isinstance(both, ToolFailure)
     assert both.error == "init accepts list or items, not both"
@@ -265,7 +200,7 @@ def test_init_rejects_ambiguous_and_duplicate_input(tmp_path: Path) -> None:
 
 
 def test_start_blocked_and_terminal_rules(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     _invoke(services, tmp_path, {"op": "init", "items": ["one", "two"]})
     _invoke(services, tmp_path, {"op": "block", "task": "two", "reason": "waiting on  ci"})
     blocked = _invoke(services, tmp_path, {"op": "start", "task": "two"})
@@ -285,7 +220,7 @@ def test_start_blocked_and_terminal_rules(tmp_path: Path) -> None:
 
 
 def test_done_drop_terminal_transitions_and_phase_targeting(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     _invoke(services, tmp_path, {"op": "init", "list": [{"phase": "A", "items": ["x", "y"]}, {"phase": "B", "items": ["z"]}]})
     noop = _invoke(services, tmp_path, {"op": "done", "task": "nonexistent"})
     assert isinstance(noop, ToolFailure)
@@ -307,7 +242,7 @@ def test_done_drop_terminal_transitions_and_phase_targeting(tmp_path: Path) -> N
 
 
 def test_append_rm_and_view_semantics(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     _invoke(services, tmp_path, {"op": "init", "items": ["keep"]})
     appended = _invoke(services, tmp_path, {"op": "append", "phase": "More", "items": ["extra"]})
     assert isinstance(appended, ToolSuccess)
@@ -336,7 +271,7 @@ def test_append_rm_and_view_semantics(tmp_path: Path) -> None:
 
 
 def test_view_is_read_only_and_does_not_normalize(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     phases = [{"name": "A", "tasks": [{"content": "x", "status": "pending"}, {"content": "y", "status": "pending"}]}]
     services.replace_state(_raw_state(phases, revision=4), expected_version=0)
     res = _invoke(services, tmp_path, {"op": "view"})
@@ -348,7 +283,7 @@ def test_view_is_read_only_and_does_not_normalize(tmp_path: Path) -> None:
 
 
 def test_mutation_bumps_revision_and_stages_event(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     _invoke(services, tmp_path, {"op": "init", "items": ["one"]})
     assert _stored(services).revision == 1
     event_type, payload = services.staged_events[-1]
@@ -363,7 +298,7 @@ def test_mutation_bumps_revision_and_stages_event(tmp_path: Path) -> None:
 
 
 def test_render_mutation_diff_and_summary_text(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     _invoke(services, tmp_path, {"op": "init", "items": ["one", "two"]})
     res = _invoke(services, tmp_path, {"op": "done", "task": "one"})
     assert isinstance(res, ToolSuccess)
@@ -377,7 +312,7 @@ def test_render_mutation_diff_and_summary_text(tmp_path: Path) -> None:
 
 
 def test_invalid_arguments_fail_without_state_write(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     res = _invoke(services, tmp_path, {"op": "explode"})
     assert isinstance(res, ToolFailure)
     assert "todo op must be one of" in res.error
@@ -388,7 +323,7 @@ def test_invalid_arguments_fail_without_state_write(tmp_path: Path) -> None:
 
 
 def test_status_command_renders_table_and_data(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     _invoke(services, tmp_path, {"op": "init", "items": ["one", "two"]})
     _invoke(services, tmp_path, {"op": "block", "task": "two", "reason": "waiting"})
     invocation = CommandInvocation(context=_context(tmp_path), name="todo", arguments={})
@@ -399,12 +334,12 @@ def test_status_command_renders_table_and_data(tmp_path: Path) -> None:
     assert res.data["summary"]["total"] == 2
     assert res.data["revision"] == 2
 
-    empty = TodoStatusCommand().invoke(invocation, MockServices())
+    empty = TodoStatusCommand().invoke(invocation, FakeServices())
     assert empty.output == "Todo list is empty."
 
 
 def test_clear_command_is_explicit_and_idempotent(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     _invoke(services, tmp_path, {"op": "init", "items": ["one"]})
     invocation = CommandInvocation(context=_context(tmp_path), name="todo.clear", arguments={})
     cleared = TodoClearCommand().invoke(invocation, services)
@@ -423,7 +358,7 @@ def test_clear_command_is_explicit_and_idempotent(tmp_path: Path) -> None:
 
 
 def test_context_plan_truth_text_is_verbatim(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     assert todo_context(_context(tmp_path), services) is None
 
     _invoke(services, tmp_path, {"op": "init", "items": ["one", "two"]})
@@ -446,7 +381,7 @@ def test_context_plan_truth_text_is_verbatim(tmp_path: Path) -> None:
 
 
 def test_context_hides_completed_and_abandoned_tasks(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     _invoke(services, tmp_path, {"op": "init", "items": ["one", "two"]})
     _invoke(services, tmp_path, {"op": "done", "task": "one"})
     text = render_provider_state(_stored(services).phases)
@@ -688,7 +623,7 @@ def test_reminder_state_parse_rejects_unknown_and_missing_fields() -> None:
 
 
 def test_observer_mid_run_nudge_fires_once_at_the_threshold(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     services.facts = [_request(1, "run-1")]
     _invoke(services, tmp_path, {"op": "init", "items": ["one", "two"]})
 
@@ -718,7 +653,7 @@ def test_observer_mid_run_nudge_fires_once_at_the_threshold(tmp_path: Path) -> N
 
 
 def test_observer_nudge_ignores_read_tier_and_resets_on_todo_touch(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     services.facts = [_request(1, "run-1")]
     _invoke(services, tmp_path, {"op": "init", "items": ["one"]})
 
@@ -739,7 +674,7 @@ def test_observer_nudge_ignores_read_tier_and_resets_on_todo_touch(tmp_path: Pat
 
 
 def test_observer_completion_reminder_is_a_user_role_continuation(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     services.facts = [_request(1, "run-1")]
     _invoke(services, tmp_path, {"op": "init", "items": ["one", "two"]})
     _invoke(services, tmp_path, {"op": "block", "task": "two", "reason": "waiting"})
@@ -768,7 +703,7 @@ def test_observer_completion_reminder_is_a_user_role_continuation(tmp_path: Path
 
 
 def test_observer_skips_reminders_for_unfinished_runs_and_finished_lists(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     services.facts = [_request(1, "run-1")]
     _invoke(services, tmp_path, {"op": "init", "items": ["one"]})
 
@@ -783,7 +718,7 @@ def test_observer_skips_reminders_for_unfinished_runs_and_finished_lists(tmp_pat
 
 
 def test_new_user_prompt_starts_a_fresh_reminder_cycle(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     services.facts = [_request(1, "run-1")]
     _invoke(services, tmp_path, {"op": "init", "items": ["one"]})
     config = TodoRemindersConfig(max_per_cycle=1)
@@ -810,7 +745,7 @@ def test_new_user_prompt_starts_a_fresh_reminder_cycle(tmp_path: Path) -> None:
 
 
 def test_disabled_reminders_config_never_enqueues(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     services.facts = [_request(1, "run-1")]
     _invoke(services, tmp_path, {"op": "init", "items": ["one"]})
     config = TodoRemindersConfig(enabled=False)
@@ -821,7 +756,7 @@ def test_disabled_reminders_config_never_enqueues(tmp_path: Path) -> None:
 
 
 def test_cycle_scan_advances_through_empty_source_pages_without_resetting_on_resume(tmp_path: Path):
-    services = MockServices()
+    services = FakeServices()
     services.facts = [_request(1, "run-1")]
     _invoke(services, tmp_path, {"op": "init", "items": ["one"]})
     config = TodoRemindersConfig(max_per_cycle=1)
@@ -855,7 +790,7 @@ def test_reminder_cycle_ids_reject_empty_or_non_string_state(section: str | None
 
 
 def test_todo_mutation_preserves_cycle_budget_and_cursor(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     services.facts = [_request(1, "run-1")]
     _invoke(services, tmp_path, {"op": "init", "items": ["one", "two"]})
     config = TodoRemindersConfig(max_per_cycle=1)
@@ -878,7 +813,7 @@ def test_todo_mutation_preserves_cycle_budget_and_cursor(tmp_path: Path) -> None
 
 @pytest.mark.parametrize("status,stop_cause", [("failed", "error"), ("interrupted", "user_stop"), ("completed", "user_stop")])
 def test_unsent_reminder_does_not_consume_cycle_allowance(tmp_path: Path, status: str, stop_cause: str) -> None:
-    services = MockServices()
+    services = FakeServices()
     services.facts = [_request(1, "run-1")]
     _invoke(services, tmp_path, {"op": "init", "items": ["one"]})
     todo_observer(_run_fact(status=status, stop_cause=stop_cause), _context(tmp_path), services)
@@ -904,7 +839,7 @@ def test_todo_schema_version_requires_integer() -> None:
 
 
 def test_unknown_effect_is_not_silently_discarded_as_read_only(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     _invoke(services, tmp_path, {"op": "init", "items": ["one"]})
     before = services.get_state()
     with pytest.raises(ValueError, match="unknown-effect"):

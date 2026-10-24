@@ -892,7 +892,6 @@ class GoalCommand:
         argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
         effects=frozenset({ToolEffect.READ}),
         busy_gate=False,
-        client_capabilities=frozenset(),
     )
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
@@ -934,7 +933,6 @@ class GoalSetCommand:
         },
         effects=frozenset({ToolEffect.WRITE, ToolEffect.SESSION}),
         busy_gate=False,
-        client_capabilities=frozenset(),
     )
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
@@ -1038,7 +1036,6 @@ class GoalEditCommand:
         },
         effects=frozenset({ToolEffect.WRITE, ToolEffect.SESSION}),
         busy_gate=False,
-        client_capabilities=frozenset(),
     )
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
@@ -1151,7 +1148,6 @@ class GoalPauseCommand:
         argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
         effects=frozenset({ToolEffect.SESSION}),
         busy_gate=False,
-        client_capabilities=frozenset(),
     )
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
@@ -1193,7 +1189,6 @@ class GoalResumeCommand:
         argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
         effects=frozenset({ToolEffect.SESSION}),
         busy_gate=False,
-        client_capabilities=frozenset(),
     )
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
@@ -1273,7 +1268,6 @@ class GoalClearCommand:
         argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
         effects=frozenset({ToolEffect.SESSION}),
         busy_gate=False,
-        client_capabilities=frozenset(),
     )
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
@@ -1300,7 +1294,6 @@ class GoalLoadObjectiveCommand:
         argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
         effects=frozenset({ToolEffect.READ}),
         busy_gate=False,
-        client_capabilities=frozenset(),
     )
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
@@ -1331,10 +1324,8 @@ class GoalStatusView:
         self,
         session_id: str,
         services: PluginServices,
-        *,
-        client_capabilities: frozenset[str] = frozenset(),
     ) -> PluginViewDescriptor:
-        _ = (session_id, client_capabilities)
+        _ = session_id
         state_data, _ = services.get_state("session")
         if not state_data:
             return PluginViewDescriptor(
@@ -1373,10 +1364,8 @@ class GoalDetailsView:
         self,
         session_id: str,
         services: PluginServices,
-        *,
-        client_capabilities: frozenset[str] = frozenset(),
     ) -> PluginViewDescriptor:
-        _ = (session_id, client_capabilities)
+        _ = session_id
         state_data, _ = services.get_state("session")
         if not state_data:
             return PluginViewDescriptor(
@@ -1418,10 +1407,8 @@ class GoalFormView:
         self,
         session_id: str,
         services: PluginServices,
-        *,
-        client_capabilities: frozenset[str] = frozenset(),
     ) -> PluginViewDescriptor:
-        _ = (session_id, client_capabilities)
+        _ = session_id
         state_data, _ = services.get_state("session")
         goal = GoalState.from_dict(state_data) if state_data else None
 

@@ -21,7 +21,6 @@ from voidcode.sdk.tools import (
     ToolEffect,
     ToolFailure,
     ToolResult,
-    ToolSemantic,
     ToolSuccess,
 )
 
@@ -175,7 +174,6 @@ class EditTool:
         ),
         input_schema={"type": "object", **_EDIT_ARGS.json_schema()},
         effects=frozenset({ToolEffect.WRITE}),
-        semantics=frozenset({ToolSemantic.RESOURCE_EDIT}),
         path_argument_keys=("path",),
     )
 

@@ -121,7 +121,6 @@ class CommandDescriptor:
     argument_schema: Mapping[str, object] = field(default_factory=dict)
     effects: tuple[ToolEffect, ...] = ()
     busy_gate: bool = False
-    client_capabilities: tuple[str, ...] = ()
     #: Declarative client syntax prefix, when the command declares one.
     client_syntax: str | None = None
 
@@ -136,7 +135,6 @@ class CommandDescriptor:
             "argument_schema": json_wire_object(self.argument_schema),
             "effects": [e.value for e in self.effects],
             "busy_gate": self.busy_gate,
-            "client_capabilities": list(self.client_capabilities),
             "client_syntax": self.client_syntax,
         }
 
@@ -148,12 +146,9 @@ class CommandInvocation:
     context: ToolContext
     name: str
     arguments: Mapping[str, object] = field(default_factory=dict)
-    client_capabilities: frozenset[str] | Sequence[str] = frozenset()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "arguments", own_json_object(self.arguments))
-        if not isinstance(self.client_capabilities, frozenset):
-            object.__setattr__(self, "client_capabilities", frozenset(self.client_capabilities))
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,7 +160,6 @@ class CommandDefinition:
     argument_schema: Mapping[str, object] = field(default_factory=dict)
     effects: frozenset[ToolEffect] | Sequence[ToolEffect] = frozenset()
     busy_gate: bool = False
-    client_capabilities: frozenset[str] | Sequence[str] = frozenset()
     #: Declarative client syntax prefix (clients route it; the core never parses it).
     client_syntax: str | None = None
 
@@ -173,8 +167,6 @@ class CommandDefinition:
         object.__setattr__(self, "argument_schema", own_json_object(self.argument_schema))
         if not isinstance(self.effects, frozenset):
             object.__setattr__(self, "effects", frozenset(self.effects))
-        if not isinstance(self.client_capabilities, frozenset):
-            object.__setattr__(self, "client_capabilities", frozenset(self.client_capabilities))
 
 
 @runtime_checkable

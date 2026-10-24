@@ -197,6 +197,4 @@ class PluginView(Protocol):
         self,
         session_id: str,
         services: PluginServices,
-        *,
-        client_capabilities: frozenset[str] = frozenset(),
     ) -> PluginViewDescriptor: ...

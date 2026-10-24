@@ -137,10 +137,8 @@ class TallyView:
         self,
         session_id: str,
         services: PluginServices,
-        *,
-        client_capabilities: frozenset[str] = frozenset(),
     ) -> PluginViewDescriptor:
-        _ = (session_id, client_capabilities)
+        _ = session_id
         state, _version = _load(services)
         return PluginViewDescriptor(
             owner="tally-counter",

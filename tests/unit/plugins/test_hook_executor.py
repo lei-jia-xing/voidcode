@@ -76,7 +76,7 @@ MARKER_WRITER = (
     "-c",
     "import json, pathlib; pathlib.Path('marker.txt').write_text('ran'); print(json.dumps({'action': 'continue'}))",
 )
-SLOW_HOOK = (sys.executable, "-c", "import time, json; time.sleep(5); print(json.dumps({'action': 'cancel'}))")
+SLOW_HOOK = (sys.executable, "-c", "import time, json; time.sleep(1); print(json.dumps({'action': 'cancel'}))")
 
 
 # --- stdout JSON protocol -----------------------------------------------------
@@ -210,25 +210,25 @@ def test_missing_executable_fails_closed_on_pre_tool(tmp_path: Path) -> None:
 
 
 def test_timeout_override_fails_closed_on_pre_tool(tmp_path: Path) -> None:
-    hooks = RuntimeHooksConfig(pre_tool=(SLOW_HOOK,), timeout_seconds=0.25)
+    hooks = RuntimeHooksConfig(pre_tool=(SLOW_HOOK,), timeout_seconds=0.05)
     started = time.monotonic()
     outcome = run_tool_hooks(_tool_request(tmp_path, hooks=hooks))
     elapsed = time.monotonic() - started
 
-    assert elapsed < 4.0
+    assert elapsed < 1.0
     assert outcome.action == "cancel"
     assert outcome.failed_error is not None
     assert outcome.failed_error.startswith("tool pre-hook failed for write_file: ")
-    assert "timed out after 0.25 seconds" in outcome.failed_error
+    assert "timed out after 0.05 seconds" in outcome.failed_error
 
 
 def test_timeout_fails_open_on_post_tool(tmp_path: Path) -> None:
-    hooks = RuntimeHooksConfig(post_tool=(SLOW_HOOK,), timeout_seconds=0.25)
+    hooks = RuntimeHooksConfig(post_tool=(SLOW_HOOK,), timeout_seconds=0.05)
     outcome = run_tool_hooks(_tool_request(tmp_path, hooks=hooks, phase="post"))
 
     assert outcome.action is None
     assert outcome.failed_error is not None
-    assert "timed out after 0.25 seconds" in outcome.failed_error
+    assert "timed out after 0.05 seconds" in outcome.failed_error
 
 
 def test_hook_command_cwd_is_the_workspace(tmp_path: Path) -> None:

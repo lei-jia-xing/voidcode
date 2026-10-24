@@ -23,9 +23,9 @@ The core binds `127.0.0.1`, `::1`, or `localhost` only. Every request under `/ap
 | `sessions [--limit]` | List this workspace's sessions. | `0` |
 | `show <session_id> [--events]` | Read durable state (and optionally the raw event history) without configuration, runtime, or revision checks. | `0` |
 | `catalog` | Print the admitted command catalog (`revision_id` + commands). | `0` |
-| `invoke <session_id> <name> --arguments JSON --expected-revision ID [--client-capabilities]` | Invoke one admitted command. | `0` ok, `2` pending confirmation, `1` error |
-| `confirm <session_id> <request_id> --decision allow\|deny --expected-revision ID [--client-capabilities]` | Resolve a stored plugin confirmation. | `0` ok, `2` pending confirmation, `1` error |
-| `views <session_id> [--client-capabilities]` | Print the rendered plugin views envelope. | `0` |
+| `invoke <session_id> <name> --arguments JSON --expected-revision ID` | Invoke one admitted command. | `0` ok, `2` pending confirmation, `1` error |
+| `confirm <session_id> <request_id> --decision allow\|deny --expected-revision ID` | Resolve a stored plugin confirmation. | `0` ok, `2` pending confirmation, `1` error |
+| `views <session_id>` | Print the rendered plugin views envelope. | `0` |
 | `drain <session_id> [--limit]` | Execute pending durable continuations. | `0` |
 | `usage <session_id> [--since-sequence --until-sequence]` | Print the truthful session usage report. | `0` |
 | *(bare command)* `[--server --token --session-id]` | Start the TUI (supervisor child process unless `--server` is given). | — |
@@ -33,7 +33,7 @@ The core binds `127.0.0.1`, `::1`, or `localhost` only. Every request under `/ap
 | `upgrade [run\|status] --candidate PATH [--session-id ID] [--timeout S]` | Ask the running supervisor for its status, or upgrade this workspace to a candidate installation (one JSON object; exit `0` only on `upgraded`/`ok`). | `0` ok, `1` refused/blocked/failed |
 | `preflight` | Read-only candidate check for this installation against the live state (one JSON object; exit `1` on a named refusal). | `0` ok, `1` refused |
 
-Root options: `--workspace PATH` (default: current directory), `--state-dir PATH`. `invoke` arguments must be a JSON object; `--client-capabilities` is a comma-separated list of client capability names. Every failure (including malformed arguments or a missing config) prints `{"status": "failed", "error": "..."}` and exits non-zero.
+Root options: `--workspace PATH` (default: current directory), `--state-dir PATH`. `invoke` arguments must be a JSON object. Every failure (including malformed arguments or a missing config) prints `{"status": "failed", "error": "..."}` and exits non-zero.
 
 ## HTTP API
 
@@ -49,7 +49,7 @@ Root options: `--workspace PATH` (default: current directory), `--state-dir PATH
 | `POST` | `/api/sessions/{session_id}/resume` | Resume execution, optionally with `approval_request_id` and `decision` (`allow`/`deny`). |
 | `POST` | `/api/sessions/{session_id}/invoke/{name}` | Invoke an admitted command with JSON `arguments` and the required `expected_revision`. |
 | `POST` | `/api/sessions/{session_id}/confirm` | Resolve a stored confirmation by `request_id`, `decision`, and the required `expected_revision`. |
-| `GET` | `/api/sessions/{session_id}/views?client_capabilities=` | Render plugin views: one envelope (`revision_id` + `views`); `client_capabilities` is a comma-separated list of capability names. |
+| `GET` | `/api/sessions/{session_id}/views` | Render plugin views: one envelope (`revision_id` + `views`). |
 | `POST` | `/api/sessions/{session_id}/continuations` | Drain and execute pending durable continuations. |
 | `GET` | `/api/sessions/{session_id}/usage?since_sequence=&until_sequence=` | Truthful token usage for the session. |
 | `POST` | `/api/sessions/{session_id}/cancel` | Request cancellation for one session. |

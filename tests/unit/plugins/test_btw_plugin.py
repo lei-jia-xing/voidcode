@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal
 
+from tests.fixtures.fake_services import FakeServices
 from voidcode.plugins.btw.btw_plugin import (
     SIDE_QUESTION_WRAPPER,
     BtwCommand,
@@ -14,7 +14,6 @@ from voidcode.plugins.btw.btw_plugin import (
 )
 from voidcode.sdk.commands import CommandInvocation, CommandResult
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.services import PluginServices
 
 #: Legacy wrapper instruction, copied verbatim from ``runtime/service.py:ask_side_question``.
 LEGACY_WRAPPER = (
@@ -22,65 +21,6 @@ LEGACY_WRAPPER = (
     "You have NO tools available and there will be no follow-up turns; answer only from the conversation context.\n"
     "If you do not know the answer, say so — do not offer to look it up.\n\n"
 )
-
-
-class MockServices(PluginServices):
-    """PluginServices that records the single provider turn a side question makes.
-
-    A side question has no state and no events, so every write seam raises: if the
-    command ever touches one, the test fails instead of silently passing.
-    """
-
-    def __init__(self, *, answer: str = "because the sky scatters blue light", failure: Exception | None = None) -> None:
-        self.answer = answer
-        self.failure = failure
-        self.prompts: list[str] = []
-
-    def model_query(self, prompt: str, *, model: str | None = None, max_output_tokens: int | None = None, include_context: bool = False) -> str:
-        assert include_context is True
-        self.prompts.append(prompt)
-        if self.failure is not None:
-            raise self.failure
-        return self.answer
-
-    def get_state(self, scope: Literal["session", "workspace"] = "session") -> tuple[Mapping[str, object] | None, int]:
-        raise AssertionError("btw reads no state")
-
-    def get_state_schema_version(self, scope: Literal["session", "workspace"] = "session") -> int:
-        raise AssertionError("btw reads no state schema")
-
-    def replace_state(
-        self,
-        state: Mapping[str, object],
-        expected_version: int,
-        scope: Literal["session", "workspace"] = "session",
-    ) -> int:
-        raise AssertionError("btw writes no state")
-
-    def stage_event(self, event_type: str, payload: Mapping[str, object]) -> None:
-        raise AssertionError("btw stages no events")
-
-    def enqueue_continuation(
-        self,
-        payload: Mapping[str, object],
-        *,
-        idempotency_key: str | None = None,
-        role: Literal["system", "user"] = "system",
-    ) -> str:
-        raise AssertionError("btw enqueues no continuation")
-
-    def schedule_wakeup(
-        self,
-        payload: Mapping[str, object],
-        *,
-        due_at_ms: int,
-        idempotency_key: str | None = None,
-        role: Literal["system", "user"] = "system",
-    ) -> str:
-        raise AssertionError("btw schedules no wakeup")
-
-    def set_overlay(self, tier: Literal["read-only"] = "read-only") -> None:
-        raise AssertionError("btw sets no overlay")
 
 
 def _context(workspace: Path) -> ToolContext:
@@ -95,7 +35,9 @@ def _context(workspace: Path) -> ToolContext:
     )
 
 
-def _invoke(services: MockServices, tmp_path: Path, arguments: Mapping[str, object]) -> CommandResult:
+def _invoke(services: FakeServices, tmp_path: Path, arguments: Mapping[str, object]) -> CommandResult:
+    if services.answer is None and services.model_answer is None and services.failure is None:
+        services.answer = "because the sky scatters blue light"
     return BtwCommand().invoke(CommandInvocation(context=_context(tmp_path), name="btw", arguments=arguments), services)
 
 
@@ -105,7 +47,7 @@ def test_wrapper_text_is_the_legacy_instruction_verbatim() -> None:
 
 
 def test_question_passthrough_and_answer_returned(tmp_path: Path) -> None:
-    services = MockServices(answer="Rayleigh scattering.")
+    services = FakeServices(answer="Rayleigh scattering.")
     result = _invoke(services, tmp_path, {"question": "why is the sky blue?"})
     assert result.status == "ok"
     assert result.output == "Rayleigh scattering."
@@ -115,7 +57,7 @@ def test_question_passthrough_and_answer_returned(tmp_path: Path) -> None:
 
 
 def test_question_is_stripped_before_the_provider_turn(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     result = _invoke(services, tmp_path, {"question": "   spaces around   "})
     assert result.status == "ok"
     assert services.prompts == [LEGACY_WRAPPER + "spaces around"]
@@ -124,7 +66,7 @@ def test_question_is_stripped_before_the_provider_turn(tmp_path: Path) -> None:
 
 def test_empty_or_missing_question_is_an_error_without_a_provider_turn(tmp_path: Path) -> None:
     for arguments in ({}, {"question": ""}, {"question": "   "}, {"question": 7}):
-        services = MockServices()
+        services = FakeServices()
         result = _invoke(services, tmp_path, arguments)
         assert result.status == "error"
         assert result.error == "side question must not be empty"
@@ -134,7 +76,7 @@ def test_empty_or_missing_question_is_an_error_without_a_provider_turn(tmp_path:
 
 def test_empty_answer_is_an_error(tmp_path: Path) -> None:
     for answer in ("", "   ", "\n"):
-        services = MockServices(answer=answer)
+        services = FakeServices(answer=answer)
         result = _invoke(services, tmp_path, {"question": "anything?"})
         assert result.status == "error"
         assert result.error == "side question received an empty response"
@@ -143,7 +85,7 @@ def test_empty_answer_is_an_error(tmp_path: Path) -> None:
 
 
 def test_provider_failure_is_an_error(tmp_path: Path) -> None:
-    services = MockServices(failure=RuntimeError("provider exploded"))
+    services = FakeServices(failure=RuntimeError("provider exploded"))
     result = _invoke(services, tmp_path, {"question": "anything?"})
     assert result.status == "error"
     assert result.error == "side question failed: RuntimeError: provider exploded"
@@ -153,7 +95,7 @@ def test_provider_failure_is_an_error(tmp_path: Path) -> None:
 def test_no_state_or_events_are_staged(tmp_path: Path) -> None:
     # Every state/event seam on MockServices raises, so a green result proves the command
     # used exactly one provider turn and nothing else.
-    services = MockServices()
+    services = FakeServices()
     result = _invoke(services, tmp_path, {"question": "status?"})
     assert result.status == "ok"
     assert len(services.prompts) == 1

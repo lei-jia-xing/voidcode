@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import Literal
 
 import pytest
 
+from tests.fixtures.fake_services import FakeServices
 from voidcode.plugins.goal.goal_plugin import (
     ActiveWindow,
     CreateGoalTool,
@@ -33,87 +32,7 @@ from voidcode.sdk.commands import CommandInvocation, ConfirmationRequest
 from voidcode.sdk.hooks import InvocationFinishedFact, RunFinishedFact, UsageFact
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.provider import ProviderTokenUsage
-from voidcode.sdk.services import PluginBudget, PluginServices, SessionUsageReport
 from voidcode.sdk.tools import ToolCall, ToolFailure, ToolSuccess
-
-
-class MockServices(PluginServices):
-    """In-memory implementation of PluginServices for fast unit testing."""
-
-    def __init__(self, through_sequence: int = 0) -> None:
-        self.state: dict[tuple[str, str], tuple[Mapping[str, object] | None, int]] = {}
-        self.staged_events: list[tuple[str, Mapping[str, object]]] = []
-        self.staged_continuations: list[tuple[Mapping[str, object], str | None]] = []
-        self.cancelled_continuations: list[str | None] = []
-        self.budget: PluginBudget | None = None
-        self.through_sequence = through_sequence
-
-    def get_state(self, scope: Literal["session", "workspace"] = "session") -> tuple[Mapping[str, object] | None, int]:
-        return self.state.get((scope, ""), (None, 0))
-
-    def replace_state(
-        self,
-        state: Mapping[str, object],
-        expected_version: int,
-        scope: Literal["session", "workspace"] = "session",
-    ) -> int:
-        cur, ver = self.get_state(scope)
-        if ver != expected_version:
-            raise RuntimeError(f"CAS mismatch: expected {expected_version}, was {ver}")
-        new_ver = expected_version + 1
-        self.state[(scope, "")] = (dict(state) if state else None, new_ver)
-        return new_ver
-
-    def stage_event(self, event_type: str, payload: Mapping[str, object]) -> None:
-        self.staged_events.append((event_type, dict(payload)))
-
-    def enqueue_continuation(self, payload: Mapping[str, object], *, idempotency_key: str | None = None) -> str:
-        self.staged_continuations.append((dict(payload), idempotency_key))
-        return f"continuation-{len(self.staged_continuations)}"
-
-    def cancel_continuations(self, *, continuation_id: str | None = None) -> None:
-        self.cancelled_continuations.append(continuation_id)
-
-    def get_usage(self, *, since_sequence: int = 0, until_sequence: int | None = None) -> SessionUsageReport:
-        return SessionUsageReport(
-            session_id="test-session",
-            input_tokens=0,
-            output_tokens=0,
-            cache_read_tokens=0,
-            uncached_input_tokens=0,
-            has_unknown_usage=False,
-            turn_count=0,
-            elapsed_seconds=0.0,
-            since_sequence=since_sequence,
-            until_sequence=until_sequence,
-            through_sequence=self.through_sequence,
-        )
-
-    def get_budget(self) -> PluginBudget | None:
-        return self.budget
-
-    def set_budget(
-        self,
-        *,
-        since_sequence: int,
-        max_input_tokens: int | None = None,
-        max_output_tokens: int | None = None,
-        max_total_tokens: int | None = None,
-        max_cost_usd: float | None = None,
-        max_elapsed_seconds: float | None = None,
-    ) -> None:
-        self.budget = PluginBudget(
-            owner="goal",
-            since_sequence=since_sequence,
-            max_input_tokens=max_input_tokens,
-            max_output_tokens=max_output_tokens,
-            max_total_tokens=max_total_tokens,
-            max_cost_usd=max_cost_usd,
-            max_elapsed_seconds=max_elapsed_seconds,
-        )
-
-    def clear_budget(self) -> None:
-        self.budget = None
 
 
 def _make_context(workspace: Path, *, actor: str = "client", logical_turn: str = "turn-1") -> ToolContext:
@@ -277,7 +196,7 @@ def test_spill_and_read_long_objective(tmp_path: Path) -> None:
 
 def test_get_goal_tool(tmp_path: Path) -> None:
     tool = GetGoalTool()
-    services = MockServices()
+    services = FakeServices()
     ctx = _make_context(tmp_path)
     now = int(time.time() * 1000)
 
@@ -308,7 +227,7 @@ def test_get_goal_tool(tmp_path: Path) -> None:
 
 def test_create_goal_tool(tmp_path: Path) -> None:
     tool = CreateGoalTool()
-    services = MockServices(through_sequence=3)
+    services = FakeServices(through_sequence=3)
     ctx = _make_context(tmp_path)
     now = int(time.time() * 1000)
 
@@ -343,7 +262,7 @@ def test_create_goal_tool(tmp_path: Path) -> None:
 
 def test_update_goal_tool_complete(tmp_path: Path) -> None:
     tool = UpdateGoalTool()
-    services = MockServices(through_sequence=12)
+    services = FakeServices(through_sequence=12)
     ctx = _make_context(tmp_path)
     now = int(time.time() * 1000)
 
@@ -370,7 +289,7 @@ def test_update_goal_tool_complete(tmp_path: Path) -> None:
 
 def test_update_goal_tool_3_turn_blocked_discipline(tmp_path: Path) -> None:
     tool = UpdateGoalTool()
-    services = MockServices(through_sequence=10)
+    services = FakeServices(through_sequence=10)
     now = int(time.time() * 1000)
 
     state = GoalState(goal_id="g1", status="active", objective="Hard task", created_at=now, updated_at=now)
@@ -411,7 +330,7 @@ def test_update_goal_tool_3_turn_blocked_discipline(tmp_path: Path) -> None:
 
 
 def test_commands_set_edit_pause_resume_clear(tmp_path: Path) -> None:
-    services = MockServices(through_sequence=5)
+    services = FakeServices(through_sequence=5)
     ctx_client = _make_context(tmp_path, actor="client")
     ctx_user = _make_context(tmp_path, actor="user")
 
@@ -476,7 +395,7 @@ def test_commands_set_edit_pause_resume_clear(tmp_path: Path) -> None:
 
 
 def test_commands_edge_cases(tmp_path: Path) -> None:
-    services = MockServices(through_sequence=5)
+    services = FakeServices(through_sequence=5)
     ctx = _make_context(tmp_path)
     now = int(time.time() * 1000)
 
@@ -533,7 +452,7 @@ def test_commands_edge_cases(tmp_path: Path) -> None:
 
 
 def test_goal_edit_with_long_objective_and_budget_adjust(tmp_path: Path) -> None:
-    services = MockServices(through_sequence=1)
+    services = FakeServices(through_sequence=1)
     ctx = _make_context(tmp_path)
     now = int(time.time() * 1000)
 
@@ -584,7 +503,7 @@ def test_edit_budget_unknown_lifetime_refuses_finite_raise_and_allows_uncap(tmp_
     """When closed-window usage is unknown or pending, finite remaining cannot be known.
     Setting a finite budget must fail with a visible error until the user explicitly uncaps (null).
     """
-    services = MockServices(through_sequence=9)
+    services = FakeServices(through_sequence=9)
     ctx = _make_context(tmp_path)
     now = int(time.time() * 1000)
 
@@ -627,7 +546,7 @@ def test_edit_budget_unknown_lifetime_refuses_finite_raise_and_allows_uncap(tmp_
 
 
 def test_observer_usage_accounting_and_windows(tmp_path: Path) -> None:
-    services = MockServices(through_sequence=10)
+    services = FakeServices(through_sequence=10)
     ctx = _make_context(tmp_path)
     now = int(time.time() * 1000)
 
@@ -728,7 +647,7 @@ def test_observer_usage_accounting_and_windows(tmp_path: Path) -> None:
 
 def test_observer_unreported_metrics_never_become_zero(tmp_path: Path) -> None:
     """Unreported dispatch: token metrics go unknown and a known later fact cannot resurrect them as zero."""
-    services = MockServices(through_sequence=5)
+    services = FakeServices(through_sequence=5)
     ctx = _make_context(tmp_path)
     now = int(time.time() * 1000)
 
@@ -795,7 +714,7 @@ def test_observer_unreported_metrics_never_become_zero(tmp_path: Path) -> None:
 
 def test_observer_unknown_cost_does_not_poison_tokens(tmp_path: Path) -> None:
     """A missing cost or cache metric must not falsify known billable tokens."""
-    services = MockServices(through_sequence=5)
+    services = FakeServices(through_sequence=5)
     ctx = _make_context(tmp_path)
     now = int(time.time() * 1000)
 
@@ -836,7 +755,7 @@ def test_observer_unknown_cost_does_not_poison_tokens(tmp_path: Path) -> None:
 
 def test_run_finished_missing_elapsed_keeps_time_unknown(tmp_path: Path) -> None:
     """Run-finished never fabricates a zero elapsed and never double counts measured dispatch time."""
-    services = MockServices()
+    services = FakeServices()
     ctx = _make_context(tmp_path)
     now = int(time.time() * 1000)
 
@@ -929,7 +848,7 @@ def test_state_parse_rejects_coercion_and_missing_keys() -> None:
 
 
 def test_observer_reset_blocked_count_on_tool_success(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     ctx = _make_context(tmp_path)
     now = int(time.time() * 1000)
 
@@ -977,7 +896,7 @@ def test_observer_reset_blocked_count_on_tool_success(tmp_path: Path) -> None:
 
 
 def test_observer_run_finished_stop_causes(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     ctx = _make_context(tmp_path)
     now = int(time.time() * 1000)
 
@@ -1043,7 +962,7 @@ def test_consumer_edit_flow_preserves_identity_and_usage(tmp_path: Path) -> None
     goal already carries (charged usage and measured time are seeded here; their truthfulness
     against core facts is an integration concern, not this unit boundary).
     """
-    services = MockServices(through_sequence=4)
+    services = FakeServices(through_sequence=4)
     ctx = _make_context(tmp_path)
     plugin = create_plugin({})
     commands = {command.definition.name: command for command in plugin.commands}
@@ -1110,7 +1029,7 @@ def test_update_goal_blocked_without_turn_identity_never_credits_a_turn(tmp_path
     the audit counter; the tool refuses explicitly instead of fabricating turns.
     """
     tool = UpdateGoalTool()
-    services = MockServices(through_sequence=3)
+    services = FakeServices(through_sequence=3)
     now = int(time.time() * 1000)
     state = GoalState(goal_id="g1", status="active", objective="Noisy batch", created_at=now, updated_at=now)
     services.replace_state(state.to_dict(), expected_version=0)
@@ -1258,7 +1177,7 @@ def test_prepare_deactivation_rejects_malformed_input_instead_of_resetting() -> 
 
 @pytest.mark.parametrize("budget", [0, 1000], ids=["invalid-budget", "unknown-prior-usage"])
 def test_rejected_goal_edit_does_not_write_objective_attachment(tmp_path: Path, budget: int) -> None:
-    services = MockServices()
+    services = FakeServices()
     goal = GoalState(
         goal_id="g1",
         status="active",
@@ -1296,7 +1215,7 @@ def test_usage_window_updates_share_truthful_lifetime_metrics(
     closed: bool,
     usage: ProviderTokenUsage | None,
 ) -> None:
-    services = MockServices()
+    services = FakeServices()
     goal = GoalState(
         goal_id="g1",
         status="paused" if closed else "active",

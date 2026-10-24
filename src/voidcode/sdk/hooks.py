@@ -8,7 +8,7 @@ from typing import Literal
 
 from .json_values import own_json_object
 from .provider import ProviderTokenUsage
-from .tools import ReadObservation, ResourceChange, ToolSemantic
+from .tools import ReadObservation, ResourceChange
 
 ObservedFactKind = Literal[
     "usage", "invocation_finished", "run_finished", "run_requested", "approval_requested", "child_spawned", "context_projected", "wakeup_fired"
@@ -78,7 +78,7 @@ class InvocationFinishedFact:
     #: Attribution and semantic observations frozen at completion. Consumers
     #: must not consult the current catalog to reinterpret these facts.
     model: str | None = None
-    semantics: tuple[ToolSemantic, ...] = ()
+    semantics: tuple[str, ...] = ()
     argument_bytes: int = 0
     result_bytes: int = 0
     truncated: bool = False

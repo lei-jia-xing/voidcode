@@ -253,7 +253,7 @@ def test_a_broken_gate_denies_and_never_allows(tmp_path: Path) -> None:
     malformed_reason = malformed.pre_tool(_intent("write"), _context(tmp_path), _NoServices())
     assert malformed_reason is not None and "malformed JSON" in malformed_reason
 
-    timed_out = ToolHooks(parse_hooks_config({"timeout_seconds": 0.2, "pre_tool": [_slow_command(5)]}))
+    timed_out = ToolHooks(parse_hooks_config({"timeout_seconds": 0.05, "pre_tool": [_slow_command(1)]}))
     timeout_reason = timed_out.pre_tool(_intent("write"), _context(tmp_path), _NoServices())
     assert timeout_reason is not None and "timed out" in timeout_reason
 

@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal
 
 import pytest
 
+from tests.fixtures.fake_services import FakeServices
 from voidcode.plugins.delegation.delegation_plugin import (
     CANCEL_REASON,
     DEFAULT_JOIN_TIMEOUT_SECONDS,
@@ -23,166 +23,11 @@ from voidcode.plugins.delegation.delegation_plugin import (
 from voidcode.plugins.delegation.profiles.registry import load_agent_registry
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import (
-    ArtifactPage,
     ChildOutcome,
     ChildSendReceipt,
     EventView,
-    PluginBudget,
-    PluginServices,
-    SessionUsageReport,
 )
-from voidcode.sdk.tools import TextOutput, ToolCall, ToolDefinition, ToolFailure, ToolResult, ToolSuccess
-
-
-class MockServices(PluginServices):
-    """In-memory PluginServices: session state plus a roster of children this session spawned."""
-
-    def __init__(self) -> None:
-        self.state: dict[str, tuple[Mapping[str, object] | None, int]] = {}
-        self.staged_events: list[tuple[str, Mapping[str, object]]] = []
-        self.spawn_calls: list[dict[str, object]] = []
-        self.unavailable_tools: set[str] = set()
-        self.join_calls: list[tuple[str, float]] = []
-        self.cancel_calls: list[tuple[str, str]] = []
-        self.send_calls: list[dict[str, object]] = []
-        self.acks: list[tuple[str, str]] = []
-        self.roster: dict[str, ChildOutcome] = {}
-        #: 1-based spawn call numbers the core refuses, with its refusal message or exception.
-        self.spawn_failures: dict[int, str | Exception] = {}
-        self.cancel_result = True
-        self.send_result = ChildSendReceipt(child_session_id="child-1", delivery="queued", child_status="running")
-        self.child_events: dict[str, tuple[EventView, ...]] = {}
-        self.artifacts: dict[str, bytes] = {}
-
-    def tool_definition(self, name: str) -> ToolDefinition | None:
-        return None if name in self.unavailable_tools else ToolDefinition(name=name, description="Test capability")
-
-    def get_state(self, scope: Literal["session", "workspace"] = "session") -> tuple[Mapping[str, object] | None, int]:
-        return self.state.get(scope, (None, 0))
-
-    def get_state_schema_version(self, scope: Literal["session", "workspace"] = "session") -> int:
-        _ = scope
-        return 0
-
-    def replace_state(
-        self,
-        state: Mapping[str, object],
-        expected_version: int,
-        scope: Literal["session", "workspace"] = "session",
-    ) -> int:
-        _cur, ver = self.get_state(scope)
-        if ver != expected_version:
-            raise RuntimeError(f"CAS mismatch: expected {expected_version}, was {ver}")
-        new_ver = expected_version + 1
-        self.state[scope] = (dict(state), new_ver)
-        return new_ver
-
-    def stage_event(self, event_type: str, payload: Mapping[str, object]) -> None:
-        self.staged_events.append((event_type, dict(payload)))
-
-    def enqueue_continuation(self, payload: Mapping[str, object], *, idempotency_key: str | None = None) -> str:
-        raise AssertionError("delegation enqueues no continuations")
-
-    def spawn_child(
-        self,
-        prompt: str,
-        *,
-        label: str = "",
-        tool_allowlist: tuple[str, ...] | None = None,
-        max_steps: int = 32,
-        readonly: bool = False,
-        notify_on_completion: bool = False,
-    ) -> str:
-        call_number = len(self.spawn_calls) + 1
-        self.spawn_calls.append(
-            {
-                "prompt": prompt,
-                "label": label,
-                "tool_allowlist": tool_allowlist,
-                "max_steps": max_steps,
-                "readonly": readonly,
-                "notify_on_completion": notify_on_completion,
-            }
-        )
-        refusal = self.spawn_failures.get(call_number)
-        if refusal is not None:
-            raise refusal if isinstance(refusal, Exception) else ValueError(refusal)
-        child_id = f"child-{len(self.roster) + 1}"
-        self.roster[child_id] = ChildOutcome(child_session_id=child_id, status="completed", output=f"result of {prompt}", run_id=f"run-{child_id}")
-        return child_id
-
-    def send_child(
-        self,
-        child_session_id: str,
-        prompt: str,
-        *,
-        label: str = "",
-        notify_on_completion: bool = True,
-    ) -> ChildSendReceipt:
-        self.send_calls.append(
-            {
-                "child_session_id": child_session_id,
-                "prompt": prompt,
-                "label": label,
-                "notify_on_completion": notify_on_completion,
-            }
-        )
-        return ChildSendReceipt(
-            child_session_id=child_session_id,
-            delivery=self.send_result.delivery,
-            child_status=self.send_result.child_status,
-            run_id=self.send_result.run_id,
-            message_id=self.send_result.message_id,
-        )
-
-    def acknowledge_child_completion(self, child_session_id: str, run_id: str) -> None:
-        self.acks.append((child_session_id, run_id))
-
-    def read_child_events(
-        self,
-        child_session_id: str,
-        *,
-        after_sequence: int = 0,
-        limit: int = 100,
-        include_payload: bool = True,
-    ) -> tuple[EventView, ...]:
-        return tuple(event for event in self.child_events.get(child_session_id, ()) if event.sequence > after_sequence)[:limit]
-
-    def read_artifact(self, reference: object, *, offset: int = 0, limit: int = 65536) -> ArtifactPage:
-        sha = str(getattr(reference, "sha256", reference))
-        data = self.artifacts[sha]
-        page = data[offset : offset + limit]
-        return ArtifactPage(
-            sha256=sha,
-            offset=offset,
-            total_bytes=len(data),
-            data=page,
-            eof=offset + len(page) >= len(data),
-            media_type="text/plain; charset=utf-8",
-        )
-
-    def join_child(self, child_session_id: str, *, timeout_seconds: float = 300.0) -> ChildOutcome:
-        self.join_calls.append((child_session_id, timeout_seconds))
-        return self.roster[child_session_id]
-
-    def cancel_child(self, child_session_id: str, reason: str = "owner cancellation") -> bool:
-        self.cancel_calls.append((child_session_id, reason))
-        return self.cancel_result
-
-    def cancel_continuations(self, *, continuation_id: str | None = None) -> None:
-        raise AssertionError("delegation cancels no continuations")
-
-    def get_usage(self, *, since_sequence: int = 0, until_sequence: int | None = None) -> SessionUsageReport:
-        raise AssertionError("delegation reads no usage")
-
-    def get_budget(self) -> PluginBudget | None:
-        raise AssertionError("delegation has no budget")
-
-    def set_budget(self, **_kwargs: object) -> None:
-        raise AssertionError("delegation sets no budget")
-
-    def clear_budget(self) -> None:
-        raise AssertionError("delegation clears no budget")
+from voidcode.sdk.tools import TextOutput, ToolCall, ToolFailure, ToolResult, ToolSuccess
 
 
 def _context(workspace: Path) -> ToolContext:
@@ -197,12 +42,12 @@ def _context(workspace: Path) -> ToolContext:
     )
 
 
-def _task(services: MockServices, tmp_path: Path, arguments: Mapping[str, object]) -> ToolResult:
+def _task(services: FakeServices, tmp_path: Path, arguments: Mapping[str, object]) -> ToolResult:
     call = ToolCall(tool_name="task", arguments=arguments, tool_call_id="call-1")
     return TaskTool().invoke(call, context=_context(tmp_path), services=services)
 
 
-def _batch(services: MockServices, tmp_path: Path, arguments: Mapping[str, object]) -> ToolResult:
+def _batch(services: FakeServices, tmp_path: Path, arguments: Mapping[str, object]) -> ToolResult:
     call = ToolCall(tool_name="task_batch", arguments=arguments, tool_call_id="call-2")
     return TaskBatchTool().invoke(call, context=_context(tmp_path), services=services)
 
@@ -212,7 +57,7 @@ def _payload(result: ToolResult) -> dict[str, object]:
     return dict(result.body.as_payload())
 
 
-def _stored(services: MockServices) -> DelegationState:
+def _stored(services: FakeServices) -> DelegationState:
     raw, _version = services.get_state("session")
     return DelegationState.from_payload(raw)
 
@@ -231,7 +76,7 @@ def _custom_workspace(tmp_path: Path, filename: str, markdown: str) -> Path:
     return workspace
 
 
-def _task_at(services: MockServices, workspace: Path, arguments: Mapping[str, object]) -> ToolResult:
+def _task_at(services: FakeServices, workspace: Path, arguments: Mapping[str, object]) -> ToolResult:
     call = ToolCall(tool_name="task", arguments=arguments, tool_call_id="call-1")
     return TaskTool().invoke(call, context=_context(workspace), services=services)
 
@@ -306,7 +151,7 @@ def test_state_rejects_malformed_documents(payload: Mapping[str, object]) -> Non
 
 
 def test_spawn_passes_arguments_through_and_records_roster_event(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     res = _task(
         services,
         tmp_path,
@@ -340,7 +185,7 @@ def test_spawn_passes_arguments_through_and_records_roster_event(tmp_path: Path)
 
 
 def test_synchronous_spawn_joins_and_returns_the_child_outcome(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     res = _task(services, tmp_path, {"prompt": "do the work", "run_in_background": False, "timeout": 2_500})
     assert isinstance(res, ToolSuccess)
     assert services.join_calls == [("child-1", 2.5)]
@@ -353,7 +198,7 @@ def test_synchronous_spawn_joins_and_returns_the_child_outcome(tmp_path: Path) -
 
 
 def test_synchronous_spawn_without_timeout_uses_the_default(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     _task(services, tmp_path, {"prompt": "work", "run_in_background": False})
     assert services.join_calls == [("child-1", DEFAULT_JOIN_TIMEOUT_SECONDS)]
 
@@ -362,7 +207,7 @@ def test_synchronous_spawn_without_timeout_uses_the_default(tmp_path: Path) -> N
 
 
 def test_profile_spawn_materializes_the_prompt_and_applies_its_scope(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     res = _task(services, tmp_path, {"prompt": "map the retry paths", "label": "explore", "subagent_type": "explore"})
 
     assert isinstance(res, ToolSuccess)
@@ -388,7 +233,7 @@ def test_profile_spawn_materializes_the_prompt_and_applies_its_scope(tmp_path: P
 
 
 def test_profile_child_scope_is_reported_by_the_control_path(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     _task(services, tmp_path, {"prompt": "plan it", "subagent_type": "plan"})
 
     res = _task(services, tmp_path, {"operation": "output", "task_id": "child-1"})
@@ -402,7 +247,7 @@ def test_profile_child_scope_is_reported_by_the_control_path(tmp_path: Path) -> 
 
 
 def test_unknown_subagent_type_fails_without_spawning(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     res = _task(services, tmp_path, {"prompt": "work", "subagent_type": "ghost"})
 
     assert isinstance(res, ToolFailure)
@@ -412,7 +257,7 @@ def test_unknown_subagent_type_fails_without_spawning(tmp_path: Path) -> None:
 
 
 def test_default_agent_is_a_normal_delegatable_definition(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     result = _task(services, tmp_path, {"prompt": "work", "subagent_type": "default"})
     assert isinstance(result, ToolSuccess)
     assert services.spawn_calls[0]["prompt"] == f"{_builtin_body(tmp_path, 'default')}\n\nwork"
@@ -424,7 +269,7 @@ def test_custom_profile_spawns_with_its_own_body_scope_and_writable_stance(tmp_p
         "helper.md",
         "---\nname: helper\ndescription: Local helper\n---\n\nHelp locally.\n",
     )
-    services = MockServices()
+    services = FakeServices()
     res = _task_at(services, workspace, {"prompt": "count doors", "subagent_type": "helper"})
 
     assert isinstance(res, ToolSuccess)
@@ -435,7 +280,7 @@ def test_custom_profile_spawns_with_its_own_body_scope_and_writable_stance(tmp_p
 
 
 def test_profile_and_explicit_allowlist_can_be_combined(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     res = _task(services, tmp_path, {"prompt": "work", "subagent_type": "plan", "tool_allowlist": ["read"]})
     assert isinstance(res, ToolSuccess)
     assert services.spawn_calls[0]["tool_allowlist"] == ("read",)
@@ -443,7 +288,7 @@ def test_profile_and_explicit_allowlist_can_be_combined(tmp_path: Path) -> None:
 
 
 def test_subagent_type_applies_to_spawns_only(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     res = _task(services, tmp_path, {"operation": "output", "task_id": "child-1", "subagent_type": "plan"})
 
     assert isinstance(res, ToolFailure)
@@ -452,7 +297,7 @@ def test_subagent_type_applies_to_spawns_only(tmp_path: Path) -> None:
 
 
 def test_profile_inherits_scope_without_tool_discovery(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     services.unavailable_tools = {"read", "glob", "grep", "ast_grep", "lsp"}
     res = _task(services, tmp_path, {"prompt": "map it", "subagent_type": "explore"})
     assert isinstance(res, ToolSuccess)
@@ -463,7 +308,7 @@ def test_profile_inherits_scope_without_tool_discovery(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("failure", [ValueError("spawn refused"), RuntimeError("host refused")])
 def test_profile_spawn_failure_is_not_retried_with_a_wider_scope(tmp_path: Path, failure: Exception) -> None:
-    services = MockServices()
+    services = FakeServices()
     services.spawn_failures = {1: failure}
     res = _task(services, tmp_path, {"prompt": "map it", "subagent_type": "explore"})
     assert isinstance(res, ToolFailure)
@@ -473,7 +318,7 @@ def test_profile_spawn_failure_is_not_retried_with_a_wider_scope(tmp_path: Path,
 
 
 def test_no_profile_keeps_the_calling_allowlist_and_writable_stance(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     res = _task(services, tmp_path, {"prompt": "plain work", "tool_allowlist": ["read", "glob"]})
 
     assert isinstance(res, ToolSuccess)
@@ -486,7 +331,7 @@ def test_no_profile_keeps_the_calling_allowlist_and_writable_stance(tmp_path: Pa
 
 def test_unsupported_profile_model_is_refused_before_spawning(tmp_path: Path) -> None:
     workspace = _custom_workspace(tmp_path, "picky.md", "---\nname: picky\ndescription: Choosy helper\nmodel: endpoint/gpt-x\n---\nPick well.")
-    services = MockServices()
+    services = FakeServices()
     result = _task_at(services, workspace, {"prompt": "work", "subagent_type": "picky"})
     assert isinstance(result, ToolFailure)
     assert "per-agent model selection" in result.error
@@ -497,7 +342,7 @@ def test_unsupported_profile_model_is_refused_before_spawning(tmp_path: Path) ->
 
 
 def test_output_joins_with_the_requested_timeout_and_surfaces_running(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     _task(services, tmp_path, {"prompt": "long work", "label": "long"})
     services.roster["child-1"] = ChildOutcome(child_session_id="child-1", status="running")
     res = _task(services, tmp_path, {"operation": "output", "task_id": "child-1", "timeout": 5_000})
@@ -520,7 +365,7 @@ def test_output_joins_with_the_requested_timeout_and_surfaces_running(tmp_path: 
 
 
 def test_output_reports_the_terminal_child_outcome(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     _task(services, tmp_path, {"prompt": "work"})
     services.roster["child-1"] = ChildOutcome(child_session_id="child-1", status="failed", output=None, error="child blew up", stop_cause="error")
     res = _task(services, tmp_path, {"operation": "output", "task_id": "child-1"})
@@ -532,7 +377,7 @@ def test_output_reports_the_terminal_child_outcome(tmp_path: Path) -> None:
 
 
 def test_send_maps_the_receipt_without_claiming_consumption(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     _task(services, tmp_path, {"prompt": "work", "label": "sender"})
     services.send_result = ChildSendReceipt(
         child_session_id="child-1",
@@ -565,7 +410,7 @@ def test_send_maps_the_receipt_without_claiming_consumption(tmp_path: Path) -> N
 
 
 def test_history_pages_through_the_cursor_without_loss(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     _task(services, tmp_path, {"prompt": "work", "label": "hist"})
     filler = "x" * (20 * 1024)
     services.child_events["child-1"] = tuple(
@@ -627,7 +472,7 @@ def test_history_pages_through_the_cursor_without_loss(tmp_path: Path) -> None:
 
 
 def test_unknown_task_ids_fail_without_touching_the_core(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     _task(services, tmp_path, {"prompt": "work"})
     for operation in ("output", "cancel"):
         res = _task(services, tmp_path, {"operation": operation, "task_id": "child-404"})
@@ -638,7 +483,7 @@ def test_unknown_task_ids_fail_without_touching_the_core(tmp_path: Path) -> None
 
 
 def test_cancel_reports_acceptance(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     _task(services, tmp_path, {"prompt": "work", "label": "cancel me"})
     res = _task(services, tmp_path, {"operation": "cancel", "task_id": "child-1"})
     assert isinstance(res, ToolSuccess)
@@ -671,7 +516,7 @@ def test_cancel_reports_acceptance(tmp_path: Path) -> None:
     ],
 )
 def test_task_argument_conflicts_fail_without_spawning(tmp_path: Path, arguments: Mapping[str, object], message: str) -> None:
-    services = MockServices()
+    services = FakeServices()
     res = _task(services, tmp_path, arguments)
     assert isinstance(res, ToolFailure)
     assert message in res.error
@@ -682,7 +527,7 @@ def test_task_argument_conflicts_fail_without_spawning(tmp_path: Path, arguments
 
 
 def test_core_spawn_refusal_is_reported_as_a_failure(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     services.spawn_failures = {1: "tool_allowlist names an unknown tool: nope"}
     res = _task(services, tmp_path, {"prompt": "work", "tool_allowlist": ["nope"]})
     assert isinstance(res, ToolFailure)
@@ -694,7 +539,7 @@ def test_core_spawn_refusal_is_reported_as_a_failure(tmp_path: Path) -> None:
 
 
 def test_batch_preflights_every_item_before_any_spawn(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     too_many = _batch(services, tmp_path, {"tasks": [{"prompt": "ok"} for _ in range(MAX_BATCH_SIZE + 1)]})
     assert isinstance(too_many, ToolFailure)
     assert f"at most {MAX_BATCH_SIZE} tasks, got {MAX_BATCH_SIZE + 1}" in too_many.error
@@ -717,7 +562,7 @@ def test_batch_preflights_every_item_before_any_spawn(tmp_path: Path) -> None:
 
 
 def test_batch_argument_conflicts_fail(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     both_modes = _batch(services, tmp_path, {"tasks": [{"prompt": "x"}], "operation": "output", "parallel_group_id": "g1"})
     assert isinstance(both_modes, ToolFailure)
     assert "one mode per call" in both_modes.error
@@ -737,7 +582,7 @@ def test_batch_argument_conflicts_fail(tmp_path: Path) -> None:
 
 
 def test_batch_spawns_the_whole_group_and_records_it(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     res = _batch(services, tmp_path, {"tasks": [{"prompt": "one", "label": "a"}, {"prompt": "two", "max_steps": 7}]})
     assert isinstance(res, ToolSuccess)
     payload = _payload(res)
@@ -760,7 +605,7 @@ def test_batch_spawns_the_whole_group_and_records_it(tmp_path: Path) -> None:
 
 
 def test_batch_partial_spawn_keeps_created_children(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     services.spawn_failures = {3: "delegation spawn budget exhausted for this chain"}
     res = _batch(
         services,
@@ -788,7 +633,7 @@ def test_batch_partial_spawn_keeps_created_children(tmp_path: Path) -> None:
 
 
 def test_batch_with_no_created_child_fails(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     services.spawn_failures = {
         1: "delegation depth limit exceeded: depth 4 exceeds max 3",
         2: "delegation depth limit exceeded: depth 4 exceeds max 3",
@@ -803,7 +648,7 @@ def test_batch_with_no_created_child_fails(tmp_path: Path) -> None:
 
 
 def test_batch_group_read_returns_bounded_per_child_statuses(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     spawned = _batch(services, tmp_path, {"tasks": [{"prompt": "secret prompt one"}, {"prompt": "secret prompt two"}]})
     group_id = str(_payload(spawned)["parallel_group_id"])
     services.roster["child-2"] = ChildOutcome(child_session_id="child-2", status="failed", error="child blew up", stop_cause="error")
@@ -834,7 +679,7 @@ def test_batch_group_read_returns_bounded_per_child_statuses(tmp_path: Path) -> 
 
 
 def test_batch_group_read_rejects_unknown_groups(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     res = _batch(services, tmp_path, {"operation": "output", "parallel_group_id": "deadbeef"})
     assert isinstance(res, ToolFailure)
     assert res.error == "unknown task group: deadbeef"
@@ -845,7 +690,7 @@ def test_batch_group_read_rejects_unknown_groups(tmp_path: Path) -> None:
 
 
 def test_batch_items_select_their_own_profiles(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     res = _batch(services, tmp_path, {"tasks": [{"prompt": "read the docs", "subagent_type": "research"}, {"prompt": "plain"}]})
 
     assert isinstance(res, ToolSuccess)
@@ -871,7 +716,7 @@ def test_batch_items_select_their_own_profiles(tmp_path: Path) -> None:
 
 
 def test_batch_combines_profile_and_caller_scope_and_preserves_spawn_failures(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     services.spawn_failures = {2: "delegation spawn budget exhausted for this chain"}
     res = _batch(services, tmp_path, {"tasks": [{"prompt": "plan it", "subagent_type": "plan", "tool_allowlist": ["read"]}, {"prompt": "doomed"}]})
     payload = _payload(res)
@@ -882,7 +727,7 @@ def test_batch_combines_profile_and_caller_scope_and_preserves_spawn_failures(tm
 
 
 def test_batch_group_read_reports_each_child_profile(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     spawned = _batch(services, tmp_path, {"tasks": [{"prompt": "one", "subagent_type": "explore"}, {"prompt": "two"}]})
     group_id = str(_payload(spawned)["parallel_group_id"])
     services.roster["child-1"] = ChildOutcome(child_session_id="child-1", status="running")
@@ -903,7 +748,7 @@ def test_batch_group_read_reports_each_child_profile(tmp_path: Path) -> None:
 
 
 def test_batch_item_with_unknown_profile_rejects_the_whole_batch(tmp_path: Path) -> None:
-    services = MockServices()
+    services = FakeServices()
     res = _batch(services, tmp_path, {"tasks": [{"prompt": "ok"}, {"prompt": "x", "subagent_type": "ghost"}]})
 
     assert isinstance(res, ToolFailure)
@@ -942,7 +787,7 @@ def test_standard_agent_tools_and_max_turns_apply_to_task_and_batch(tmp_path: Pa
     workspace = _custom_workspace(
         tmp_path, "helper.md", "---\nname: helper\ndescription: d\ntools: read, grep\nmaxTurns: 3\nmodel: inherit\n---\nHelp."
     )
-    services = MockServices()
+    services = FakeServices()
     result = _task_at(services, workspace, {"prompt": "work", "subagent_type": "helper", "tool_allowlist": ["read", "glob"], "max_steps": 7})
     assert isinstance(result, ToolSuccess)
     assert services.spawn_calls[0]["tool_allowlist"] == ("read",)

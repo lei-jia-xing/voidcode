@@ -312,11 +312,6 @@ export interface components {
              * @default false
              */
             busy_gate: boolean;
-            /**
-             * Client Capabilities
-             * @default []
-             */
-            client_capabilities: string[];
             /** Client Syntax */
             client_syntax?: string | null;
             /** Description */
@@ -353,8 +348,6 @@ export interface components {
         };
         /** ConfirmRequest */
         ConfirmRequest: {
-            /** Client Capabilities */
-            client_capabilities?: string[];
             /**
              * Decision
              * @enum {string}
@@ -577,8 +570,6 @@ export interface components {
             arguments?: {
                 [key: string]: unknown;
             };
-            /** Client Capabilities */
-            client_capabilities?: string[];
             /** Expected Revision */
             expected_revision: string;
         };
@@ -1738,9 +1729,7 @@ export interface operations {
     };
     _handle_views_api_sessions__session_id__views_get: {
         parameters: {
-            query?: {
-                client_capabilities?: string;
-            };
+            query?: never;
             header?: never;
             path: {
                 session_id: string;

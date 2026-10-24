@@ -166,7 +166,7 @@ class RogueCommand:
 class HelloView:
     name = "hello_view"
 
-    def render(self, session_id, services, *, client_capabilities=frozenset()):
+    def render(self, session_id, services):
         st, ver = services.get_state("session")
         greeting = (st or {{}}).get("greeting", "default")
         return PluginViewDescriptor(

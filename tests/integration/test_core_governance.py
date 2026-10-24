@@ -1711,7 +1711,7 @@ def test_owner_cancel_stops_own_claimed_run_without_next_turn(tmp_path: Path) ->
             )
             assert foreign[0] == 200, foreign[1].decode()
             assert json.loads(foreign[1])["status"] == "ok", foreign[1].decode()
-            time.sleep(1.0)
+            time.sleep(0.05)
             assert worker.is_alive(), "a foreign owner cancelled another owner's run"
             with sqlite3.connect(state / "kernel-v1.sqlite3") as conn:
                 foreign_row = conn.execute("SELECT status FROM continuations WHERE continuation_id = ?", ("owner-claim",)).fetchone()
@@ -2730,7 +2730,7 @@ def test_confirmed_owner_cancel_stops_claimed_run(tmp_path: Path) -> None:
             assert pending["status"] == "pending_confirmation", pending
             request_id = pending["confirmation"]["request_id"]
             # Asking alone must not cancel the owner's run.
-            time.sleep(0.5)
+            time.sleep(0.05)
             assert worker.is_alive(), "an unconfirmed ask cancelled the owner's run"
 
             confirmed = _request(
@@ -2983,7 +2983,7 @@ def test_replayed_run_finished_fact_keeps_its_measured_elapsed(tmp_path: Path) -
                 ("timing-session", finished.sequence, _GOV_PLUGIN_ID),
             )
             conn.commit()
-        time.sleep(2.0)
+        time.sleep(0.05)
         _cli(workspace, state, "invoke", "timing-session", "gov_read_cmd")
 
         with SqliteStore(state / "kernel-v1.sqlite3") as store:

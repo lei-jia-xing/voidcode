@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from ...sdk.services import ContinuationResult
 from ..storage.store import SessionRecord
@@ -21,19 +21,6 @@ from ..storage.store import SessionRecord
 
 class CoreHttpModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-
-
-def _capability_list(value: object) -> list[str]:
-    if isinstance(value, str):
-        items = [item.strip() for item in value.split(",") if item.strip()]
-    elif isinstance(value, (list, tuple)):
-        items = list(value)
-    else:
-        raise ValueError("must be a list of non-empty strings")
-    for item in items:
-        if not isinstance(item, str) or not item or "\0" in item or len(item) > 128:
-            raise ValueError("must be a list of non-empty strings")
-    return items
 
 
 class CreateSessionRequest(CoreHttpModel):
@@ -53,42 +40,23 @@ class ResumeRequest(CoreHttpModel):
 
 
 class InvokeRequest(CoreHttpModel):
+    model_config = ConfigDict(extra="ignore")
     arguments: dict[str, Any] = Field(default_factory=dict)
     #: The capability revision the client actually displayed. Required: a client
     #: must never let the core fall back to "whatever is current now".
     expected_revision: str = Field(min_length=1, max_length=128)
-    client_capabilities: list[str] = Field(default_factory=list)
-
-    _check_capabilities = field_validator("client_capabilities", mode="before")(_capability_list)
 
 
 class ConfirmRequest(CoreHttpModel):
+    model_config = ConfigDict(extra="ignore")
     request_id: str = Field(min_length=1, max_length=128)
     #: The revision of the catalog the confirmation was displayed under.
     expected_revision: str = Field(min_length=1, max_length=128)
     decision: Literal["allow", "deny"]
-    client_capabilities: list[str] = Field(default_factory=list)
-
-    _check_capabilities = field_validator("client_capabilities", mode="before")(_capability_list)
 
 
 class DrainRequest(CoreHttpModel):
     limit: int = Field(default=10, ge=1, le=100)
-
-
-class DrainControlRequest(CoreHttpModel):
-    """Supervisor drain order: fence admission, settle admitted work, optionally pause runs."""
-
-    timeout_seconds: float = Field(default=30.0, ge=0.0, le=600.0)
-    require_quiescent: bool = False
-    pause_at_batch_boundary: bool = False
-    pause_intent: str = Field(default="", max_length=128)
-
-
-class AdoptControlRequest(CoreHttpModel):
-    """Adoption attribution: the acting session that owns the transition, when one exists."""
-
-    session_id: str | None = Field(default=None, max_length=128)
 
 
 class HealthBody(CoreHttpModel):

@@ -75,7 +75,7 @@ arguments against the registered schema before dispatch; a schema failure is
 ## 4. Commands: revision binding, busy gate
 
 Commands declare `argument_schema`, `effects`, `busy_gate`,
-`client_capabilities`, and optional `client_syntax`.
+and optional `client_syntax`.
 They reach every client the same way (`/<name>` in TUI/web, `voidcode
 invoke` from CLI), with no client-side command table.
 

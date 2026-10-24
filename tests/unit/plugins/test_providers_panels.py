@@ -90,7 +90,7 @@ def _invocation(name: str, arguments: Mapping[str, object]) -> CommandInvocation
 
 
 def _view(plugin: Plugin, name: str) -> PluginViewDescriptor:
-    return next(view for view in plugin.views if view.name == name).render("session-1", _services(), client_capabilities=frozenset())
+    return next(view for view in plugin.views if view.name == name).render("session-1", _services())
 
 
 def _services(events: Sequence[TranscriptEntry] = ()) -> StubServices:
@@ -219,7 +219,6 @@ def test_registration_declares_exactly_the_registered_commands() -> None:
     for definition in definitions.values():
         assert definition.effects == frozenset({ToolEffect.READ})
         assert definition.busy_gate is False
-        assert definition.client_capabilities == frozenset()
     assert definitions["providers"].argument_schema == {"type": "object", "properties": {}, "additionalProperties": False}
     model_schema = definitions["model"].argument_schema
     assert model_schema["additionalProperties"] is False
@@ -245,7 +244,7 @@ def test_view_render_reports_the_session_dispatch() -> None:
     services = _services(_dispatch(3, "deepseek", "deepseek-chat"))
     view = next(view for view in _plugin().views if view.name == "model")
 
-    descriptor = view.render("session-1", services, client_capabilities=frozenset())
+    descriptor = view.render("session-1", services)
 
     assert "`deepseek/deepseek-chat`" in str(descriptor.data["content"])
 

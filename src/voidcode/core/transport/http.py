@@ -31,18 +31,14 @@ from ...sdk.commands import CommandCatalog, CommandResult
 from ...sdk.json_values import json_wire_object
 from ...sdk.services import SessionUsageReport
 from ...sdk.views import ViewsSnapshot
-from ..bootstrap import adopt_generation, open_core
+from ..bootstrap import open_core
 from ..engine import Core, CoreResult, DrainRefused
-from ..images import Image, installed_identity, running_identity
-from ..preflight import LAUNCH_PROTOCOL_VERSION
-from ..storage.store import SessionRecord, StoreConflict, StoredEvent, inspect_existing_workspace
+from ..storage.store import SessionRecord, StoredEvent, inspect_existing_workspace
 from .models import (
-    AdoptControlRequest,
     CheckpointBody,
     ConfirmRequest,
     ContinuationsBody,
     CreateSessionRequest,
-    DrainControlRequest,
     DrainRequest,
     HealthBody,
     InvokeRequest,
@@ -52,6 +48,8 @@ from .models import (
     ShowBody,
     StoredEventBody,
 )
+
+LAUNCH_PROTOCOL_VERSION = 1
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +184,6 @@ class CoreTransportApp(FastAPI):
         frontend_dist: Path | None = None,
         fenced: bool = False,
         control_token: str | None = None,
-        image: Image | None = None,
         generation: int = 1,
         upgrade_id: str | None = None,
         workspace: Path | None = None,
@@ -213,9 +210,6 @@ class CoreTransportApp(FastAPI):
         self._allow_origin = allow_origin
         self._fenced = fenced
         self._control_token = control_token
-        # Health always reports an identity: the validated image the launcher passes, or the tree
-        # this process executes when it serves standalone.
-        self._image = image if image is not None else (running_identity() or installed_identity())
         self._generation = generation
         self._upgrade_id = upgrade_id
         self._workspace = workspace
@@ -260,21 +254,16 @@ class CoreTransportApp(FastAPI):
         if self._fenced:
             raise HttpError(503, "core is draining for an upgrade; retry after it restarts", code="upgrade_pending")
 
-    def _require_control(self, request: Request) -> None:
-        if self._control_token is None:
-            raise HttpError(403, "control channel is not enabled on this server")
-        presented = request.headers.get("authorization", "")
-        scheme, _, credential = presented.partition(" ")
-        if scheme.lower() != "bearer" or not credential or not secrets.compare_digest(credential, self._control_token):
-            raise HttpError(401, "missing or invalid control credential", code="missing_control_credential")
-
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("type") not in ("http", "lifespan"):
             raise RuntimeError(f"unsupported scope type: {scope.get('type')!r}")
         if scope.get("type") == "http":
             path = str(scope.get("path", ""))
             if path == "/api" or path.startswith("/api/"):
-                control_surface = path == "/api/kernel" or path.startswith("/api/kernel/")
+                challenge = self._auth_challenge(scope)
+                if challenge is not None:
+                    await challenge(scope, receive, send)
+                    return
                 raw_headers = scope.get("headers", [])
                 headers = {name.decode("latin-1").lower(): value.decode("latin-1") for name, value in raw_headers}
                 origin = headers.get("origin")
@@ -289,10 +278,6 @@ class CoreTransportApp(FastAPI):
                         },
                     )
                     await cors_resp(scope, receive, send)
-                    return
-                challenge = None if control_surface else self._auth_challenge(scope)
-                if challenge is not None:
-                    await challenge(scope, receive, send)
                     return
                 if origin:
 
@@ -439,10 +424,6 @@ class CoreTransportApp(FastAPI):
         route("/api/sessions/{session_id}/cancel", self._handle_cancel, methods=["POST"], summary="Request cancellation for one session")
         route("/api/sessions/{session_id}/events", self._handle_events, methods=["GET"], summary="Replay session events", streaming_frame=ShowBody)
         route("/api/health", self._handle_health, methods=["GET"], summary="Read core health and identity", response_model=HealthBody)
-        route("/api/kernel/drain", self._handle_core_drain, methods=["POST"], summary="Drain for an upgrade", in_schema=False)
-        route("/api/kernel/admit", self._handle_core_admit, methods=["POST"], summary="Resume admission", in_schema=False)
-        route("/api/kernel/adopt", self._handle_core_adopt, methods=["POST"], summary="Adopt a new generation", in_schema=False)
-        route("/api/kernel/promote", self._handle_core_promote, methods=["POST"], summary="Promote to serving", in_schema=False)
         if self._frontend_dist is not None:
             # The single-page client: an exact file when one exists, otherwise index.html, so a
             # client-side route survives a reload. Registered last so every /api route wins, and
@@ -556,7 +537,6 @@ class CoreTransportApp(FastAPI):
                 name,
                 dict(payload.arguments),
                 expected_revision=payload.expected_revision,
-                client_capabilities=frozenset(payload.client_capabilities),
             )
         except Exception as exc:
             raise _core_error(exc) from None
@@ -573,18 +553,16 @@ class CoreTransportApp(FastAPI):
                 payload.request_id,
                 payload.decision,
                 expected_revision=payload.expected_revision,
-                client_capabilities=frozenset(payload.client_capabilities),
             )
         except Exception as exc:
             raise _core_error(exc) from None
         return _ok(result.as_payload())
 
-    async def _handle_views(self, session_id: str, client_capabilities: str = Query(default="")) -> Response:
+    async def _handle_views(self, session_id: str) -> Response:
         _validated_session_id(session_id)
         core = self._core_or_503()
         try:
-            capabilities = frozenset(_capability_list_query(client_capabilities))
-            snapshot = await asyncio.to_thread(core.plugin_views, session_id, client_capabilities=capabilities)
+            snapshot = await asyncio.to_thread(core.plugin_views, session_id)
         except Exception as exc:
             raise _core_error(exc) from None
         return _ok(snapshot.as_payload())
@@ -628,7 +606,6 @@ class CoreTransportApp(FastAPI):
                     found_revision = None
                 if found_revision is not None:
                     revision_id = found_revision
-        image = self._image
         return _ok(
             {
                 "status": "ok",
@@ -639,95 +616,13 @@ class CoreTransportApp(FastAPI):
                 "revision_id": revision_id,
                 "launch_protocol": LAUNCH_PROTOCOL_VERSION,
                 "core_version": __version__,
-                "image_digest": "" if image is None else image.digest,
-                "web_bundle": None if image is None else image.bundle,
+                "image_digest": "",
+                "web_bundle": None,
                 "supervisor_pid": os.getppid(),
                 "generation": self._generation,
                 "active_upgrade": None if self._upgrade_id is None else {"upgrade_id": self._upgrade_id, "stage": self._stage},
             }
         )
-
-    async def _handle_core_drain(self, request: Request, payload: DrainControlRequest | None = None) -> Response:
-        self._require_control(request)
-        core = self._core_or_503()
-        body = payload or DrainControlRequest()
-        try:
-            result = await asyncio.to_thread(
-                core.begin_drain,
-                timeout_seconds=body.timeout_seconds,
-                require_quiescent=body.require_quiescent,
-                pause_at_batch_boundary=body.pause_at_batch_boundary,
-                pause_intent=body.pause_intent,
-            )
-        except Exception as exc:
-            raise _core_error(exc) from None
-        if not result.get("drained"):
-            return _ok(result, status=409)
-        self._restart_ready = True
-        await self._await_follow_streams(timeout_seconds=15.0)
-        return _ok(result)
-
-    async def _await_follow_streams(self, timeout_seconds: float = 15.0) -> None:
-        """Wait for the streams open right now to end with their restart frames.
-
-        Bounded: a stuck stream delays a drain by seconds at most, never wedges it.
-        """
-        snapshot = list(self._follow_streams)
-        if not snapshot:
-            return
-        try:
-            await asyncio.wait_for(asyncio.gather(*[event.wait() for event in snapshot]), timeout=timeout_seconds)
-        except TimeoutError:
-            logger.warning("drain giving up waiting for %d follow streams", len(snapshot))
-
-    async def _handle_core_admit(self, request: Request) -> Response:
-        self._require_control(request)
-        self._restart_ready = False
-        core = self._core
-        if core is None:
-            return _ok({"admitting": True})
-        try:
-            result = await asyncio.to_thread(core.admit)
-        except Exception as exc:
-            raise _core_error(exc) from None
-        return _ok(result)
-
-    async def _handle_core_adopt(self, request: Request, payload: AdoptControlRequest | None = None) -> Response:
-        self._require_control(request)
-        if self._core is not None:
-            return _ok({"adopted": False, "reason": "already_current"})
-        if self._workspace is None or self._state_dir is None:
-            raise HttpError(500, "adoption is unavailable on this server")
-        body = payload or AdoptControlRequest()
-        try:
-            report = await asyncio.to_thread(adopt_generation, workspace=self._workspace, state_dir=self._state_dir, session_id=body.session_id)
-        except StoreConflict as exc:
-            raise HttpError(409, str(exc), code="adoption_blocked") from None
-        except (ValueError, RuntimeError) as exc:
-            raise HttpError(409, str(exc), code="adoption_refused") from None
-        except Exception as exc:
-            raise _core_error(exc) from None
-        try:
-            core = await asyncio.to_thread(open_core, self._workspace, state_dir=self._state_dir)
-        except Exception as exc:
-            raise _core_error(exc) from None
-        self._core = core
-        self._stage = "adopted"
-        return _ok({"adopted": True, **report})
-
-    async def _handle_core_promote(self, request: Request) -> Response:
-        self._require_control(request)
-        core = self._core
-        if core is None:
-            raise HttpError(409, "adoption is owed but not committed", code="unsupported_state")
-        try:
-            result = await asyncio.to_thread(core.promote)
-        except Exception as exc:
-            raise _core_error(exc) from None
-        self._fenced = False
-        self._restart_ready = False
-        self._stage = "serving"
-        return _ok(result)
 
     async def _handle_cancel(self, session_id: str) -> Response:
         _validated_session_id(session_id)
@@ -828,14 +723,6 @@ class CoreTransportApp(FastAPI):
                 return
 
 
-def _capability_list_query(value: str) -> list[str]:
-    items = [item.strip() for item in value.split(",") if item.strip()]
-    for item in items:
-        if "\0" in item or len(item) > 128:
-            raise HttpError(400, "client_capabilities must be non-empty strings within 128 characters")
-    return items
-
-
 def _checkpoint_view(checkpoint: Any) -> dict[str, object] | None:
     if checkpoint is None:
         return None
@@ -864,7 +751,6 @@ def create_core_app(
     frontend_dist: Path | None = None,
     fenced: bool = False,
     control_token: str | None = None,
-    image: Image | None = None,
     generation: int = 1,
     upgrade_id: str | None = None,
 ) -> CoreTransportApp:
@@ -881,7 +767,6 @@ def create_core_app(
         frontend_dist=frontend_dist,
         fenced=fenced,
         control_token=control_token,
-        image=image,
         generation=generation,
         upgrade_id=upgrade_id,
         workspace=resolved_workspace,
@@ -897,7 +782,6 @@ def create_core_app_with_factory(
     frontend_dist: Path | None = None,
     fenced: bool = False,
     control_token: str | None = None,
-    image: Image | None = None,
     generation: int = 1,
     upgrade_id: str | None = None,
     workspace: Path | None = None,
@@ -911,7 +795,6 @@ def create_core_app_with_factory(
         frontend_dist=frontend_dist,
         fenced=fenced,
         control_token=control_token,
-        image=image,
         generation=generation,
         upgrade_id=upgrade_id,
         workspace=workspace,

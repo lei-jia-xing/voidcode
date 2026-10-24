@@ -25,7 +25,6 @@ from voidcode.sdk.tools import (
     ToolEffect,
     ToolFailure,
     ToolResult,
-    ToolSemantic,
     ToolSuccess,
 )
 from voidcode.sdk.workspace_queries import DOCUMENT_STATES, DocumentState, DocumentStateRequest
@@ -115,7 +114,6 @@ class ApplyWorkspaceEditTool:
         description="Apply validated LSP text edits with document-version checks; runtime approval governs filesystem access.",
         input_schema=_WorkspaceEditArgs.model_json_schema(),
         effects=frozenset({ToolEffect.WRITE}),
-        semantics=frozenset({ToolSemantic.RESOURCE_EDIT}),
         path_argument_keys=("edits[].path",),
     )
 
