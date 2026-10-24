@@ -17,7 +17,7 @@ not establish source review.
 | `exec/shell_exec.py` | Partial: typed SDK artifact references and consumers reviewed; interception policy, progress boundaries and remaining result semantics pending |
 | `files/__init__.py` | Reviewed: typed Tool wrapper preserves diagnostic failures; shared core/plugin factory |
 | `files/_replace.py` | Reviewed: checked replacement and exclusive atomic creation; cleanup, permissions and race regressions; documented metadata/compare-window limits |
-| `files/apply_patch.py` | Partial: stdin unified diffs, typed change pipeline, marker preflight/checked commits, partial results and cancellation boundaries reviewed; parser and unified-process/post-apply review pending |
+| `files/apply_patch.py` | Partial: stdin unified diffs, typed change pipeline, marker preflight/checked commits, partial results and cancellation boundaries reviewed; parser and unified subprocess ownership review pending; redundant mode verification/error enrichment removed |
 | `files/apply_workspace_edit.py` | Partial: strict generated schema, frozen-argument conversion, checked replacement, commit projections, LSP coordinates, query-failure flow, cooperative cancellation and structured partial commits reviewed; final ingress/bounds reconciliation pending |
 | `files/edit_tool.py` | Partial: strict generated ingress, exact replacement, checked commit, diagnostic bounds and cancellation reviewed; diff formatting/bounds and patch delegation review pending |
 | `files/errors.py` | Reviewed: retain only classified diagnostic exception and raising helper |
@@ -1259,3 +1259,24 @@ failure reported only destination creation with source retained. Adjusted the
 existing concurrent-write case for returned ToolFailure; no tests added. Ruff,
 formatting, source type checking and CodeGraph sync passed. Net implementation
 reduction: 44 lines. Parser and unified post-apply verification remain pending.
+
+
+## Remove unified patch post-apply policy and error reconstruction
+
+Deleted four mode-only helpers (detection, expected-mode parsing, pre-apply mode
+snapshots and post-apply checks). Normal parsed changes already include these
+files, and git apply owns mode application. The extra check could reject a
+successfully applied patch after mutation and discard its resource changes.
+No special mode-only acceptance path is needed when parsed changes are empty.
+
+Removed git-error line-number extraction, patch-context echo and invalid-patch
+example formatting. Git's original error is now the diagnostic message; existing
+brief guidance and affected paths remain. Removed the duplicated git-error detail
+field. This avoids inferring meaning from vendor error prose or echoing the
+caller's patch back as a new observation.
+
+Validation: 86 existing file/codec/fact tests passed (0.84s), no tests changed or
+added. Manual real-git and actual execute_patch probes with core.filemode=true
+and false both changed 0644 to 0755 and reported the update. Ruff, formatting,
+source type checking and CodeGraph sync passed. Implementation net reduction:
+156 lines. Parser and unified subprocess ownership/cancellation remain pending.

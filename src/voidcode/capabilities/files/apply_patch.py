@@ -716,149 +716,6 @@ def _run_git_command(args: list[str], cwd: Path, *, patch: str) -> subprocess.Co
         raise ValueError("git is required to apply an edit patch") from exc
 
 
-def _format_patch_error(error: str, patch_text: str) -> str:
-    if "No valid patches in input" in error or "patch with only garbage" in error:
-        return _invalid_patch_text_error(patch_text, detail=error)
-    match = re.search(r"(?:line\s+|:)(\d+)(?:\n|$)", error)
-    if match is None:
-        return error
-    line_number = int(match.group(1))
-    lines = patch_text.splitlines()
-    start = max(1, line_number - 4)
-    end = min(len(lines), line_number + 4)
-    context = "\n".join(f"{idx}: {lines[idx - 1]}" for idx in range(start, end + 1))
-    hint = ""
-    if 1 <= line_number <= len(lines) and lines[line_number - 1].startswith("diff --git "):
-        hint = (
-            "\nHint: a new file diff began where git was still parsing the previous hunk. "
-            "Check the previous @@ header line counts, or use the structured "
-            "*** Begin Patch / *** Add File envelope to avoid manual hunk counts."
-        )
-    return f"{error}\nPatch context near line {line_number}:\n{context}{hint}"
-
-
-def _invalid_patch_text_error(patch_text: str, *, detail: str | None = None) -> str:
-    stripped = _strip_heredoc(patch_text).strip()
-    if not stripped:
-        base = "edit received empty patch text."
-    else:
-        base = "edit received malformed patch text: no valid file operations were found."
-    guidance = (
-        "\nProvide exactly one structured patch envelope with at least one file operation, "
-        "or a valid unified diff that git apply can parse."
-        "\nExample:\n*** Begin Patch\n*** Add File: hello.txt\n+hello\n*** End Patch"
-    )
-    if detail:
-        return f"{base}\nUnderlying error: {detail}{guidance}"
-    return f"{base}{guidance}"
-
-
-def _looks_like_mode_only_patch(patch_text: str) -> bool:
-    inside_diff = False
-    current_block_is_mode_only = False
-    blocks: list[bool] = []
-
-    def flush_block() -> None:
-        nonlocal current_block_is_mode_only
-        if inside_diff:
-            blocks.append(current_block_is_mode_only)
-
-    for line in patch_text.splitlines():
-        if line.startswith("diff --git "):
-            if inside_diff:
-                flush_block()
-            inside_diff = True
-            current_block_is_mode_only = True
-            continue
-        if not inside_diff:
-            continue
-        if line.startswith("old mode ") or line.startswith("new mode "):
-            continue
-        if line.startswith("--- ") or line.startswith("+++ ") or line.startswith("@@ "):
-            current_block_is_mode_only = False
-            continue
-        if line.strip() == "":
-            continue
-        current_block_is_mode_only = False
-
-    if inside_diff:
-        flush_block()
-
-    return bool(blocks) and all(blocks)
-
-
-def _mode_only_expected_modes(patch_text: str) -> dict[str, int]:
-    """Return the target modes declared by each mode-only diff block."""
-    expected_modes: dict[str, int] = {}
-    current_paths: tuple[str, str] | None = None
-    for line in patch_text.splitlines():
-        if line.startswith("diff --git "):
-            current_paths = _parse_diff_git_paths(line)
-            continue
-        if current_paths is None or not line.startswith("new mode "):
-            continue
-        try:
-            mode = int(line[len("new mode ") :].strip(), 8)
-        except ValueError:
-            continue
-        expected_modes[current_paths[1]] = mode & 0o7777
-    return expected_modes
-
-
-def _capture_mode_only_state(
-    *,
-    changes: list[PatchChange],
-    workspace: Path,
-) -> dict[str, tuple[bool, int | None]]:
-    state: dict[str, tuple[bool, int | None]] = {}
-    for change in changes:
-        path_value = change.path
-        candidate = _resolve_patch_path(workspace, path_value)
-        try:
-            state[path_value] = (True, candidate.stat().st_mode & 0o7777)
-        except FileNotFoundError:
-            state[path_value] = (False, None)
-    return state
-
-
-def _verify_mode_only_change(
-    *,
-    changes: list[PatchChange],
-    expected_modes: dict[str, int],
-    before: dict[str, tuple[bool, int | None]],
-    workspace: Path,
-) -> None:
-    """Reject a mode-only success unless every declared mode changed on disk."""
-    unchanged_paths: list[str] = []
-    invalid_paths: list[str] = []
-    for change in changes:
-        path_value = change.path
-        candidate = _resolve_patch_path(workspace, path_value)
-        try:
-            after = (True, candidate.stat().st_mode & 0o7777)
-        except FileNotFoundError:
-            after = (False, None)
-        if before.get(path_value) == after:
-            unchanged_paths.append(path_value)
-        expected_mode = expected_modes.get(path_value)
-        if expected_mode is not None and after != (True, expected_mode):
-            invalid_paths.append(path_value)
-
-    if unchanged_paths or invalid_paths:
-        detail_paths = sorted(set(unchanged_paths + invalid_paths))
-        raise_tool_diagnostic(
-            message=(f"edit patch did not make the requested mode-only filesystem change for: {', '.join(detail_paths)}."),
-            error_kind="no_op",
-            reason="mode_only_change_not_verified",
-            retry_guidance=("Confirm the current file mode and rebuild the mode-only patch against the current file state."),
-            details={
-                "affected_paths": [change.path for change in changes],
-                "unchanged_paths": unchanged_paths,
-                "invalid_mode_paths": invalid_paths,
-            },
-        )
-
-
 def _changes_from_unified_diff(patch_text: str) -> list[PatchChange]:
     try:
         patch_set = PatchSet(patch_text)
@@ -975,7 +832,7 @@ def execute_patch(
     stripped_patch = _strip_heredoc(patch_text).strip()
     if not stripped_patch:
         raise_tool_diagnostic(
-            message=_invalid_patch_text_error(patch_text),
+            message=f"{tool_name} received empty patch text.",
             error_kind="parse_error",
             reason="empty_patch",
             retry_guidance=(
@@ -990,9 +847,9 @@ def execute_patch(
 
     normalized_patch = _normalize_patch_text(patch_text)
     changes = _changes_from_patch(patch_text)
-    if not changes and not _looks_like_mode_only_patch(patch_text):
+    if not changes:
         raise_tool_diagnostic(
-            message=_invalid_patch_text_error(patch_text),
+            message=f"{tool_name} received malformed patch text: no valid file operations were found.",
             error_kind="parse_error",
             reason="invalid_patch_text",
             retry_guidance=(
@@ -1004,7 +861,7 @@ def execute_patch(
     if check.returncode != 0:
         error = check.stdout or "Patch check failed"
         raise_tool_diagnostic(
-            message=_format_patch_error(error, normalized_patch),
+            message=error,
             error_kind="parse_error",
             reason="patch_apply_failed",
             retry_guidance=(
@@ -1013,7 +870,6 @@ def execute_patch(
                 "*** Begin Patch envelope to avoid manual hunk counts."
             ),
             details={
-                "git_error": error,
                 "affected_paths": [c.path for c in changes],
             },
         )
@@ -1026,16 +882,13 @@ def execute_patch(
         tool_name=tool_name,
     )
 
-    mode_only = _looks_like_mode_only_patch(patch_text)
-    mode_only_before = _capture_mode_only_state(changes=changes, workspace=workspace) if mode_only else {}
-
     if context.abort_signal is not None and context.abort_signal.cancelled:
         return _patch_result([], tool_name=tool_name, error="patch cancelled before committing files", cancelled=True)
     apply = _run_git_command(["git", "apply", "-"], workspace, patch=normalized_patch)
     if apply.returncode != 0:
         error = apply.stdout or "Patch apply failed"
         raise_tool_diagnostic(
-            message=_format_patch_error(error, normalized_patch),
+            message=error,
             error_kind="parse_error",
             reason="patch_apply_failed",
             retry_guidance=(
@@ -1044,17 +897,8 @@ def execute_patch(
                 "*** Begin Patch envelope to avoid manual hunk counts."
             ),
             details={
-                "git_error": error,
                 "affected_paths": [c.path for c in changes],
             },
-        )
-
-    if mode_only:
-        _verify_mode_only_change(
-            changes=changes,
-            expected_modes=_mode_only_expected_modes(patch_text),
-            before=mode_only_before,
-            workspace=workspace,
         )
 
     return _patch_result(changes, tool_name=tool_name)
