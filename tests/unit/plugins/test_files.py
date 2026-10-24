@@ -1234,3 +1234,25 @@ def test_edit_replace_all_preserves_single_and_batch_result_counts(tmp_path: Pat
     else:
         assert result.body.applied is None
         assert result.body.edits is None
+
+
+@pytest.mark.parametrize("matches", [True, False])
+def test_unified_patch_never_overwrites_workspace_scratch_filename(tmp_path: Path, matches: bool) -> None:
+    from voidcode.capabilities.files.apply_patch import execute_patch
+
+    scratch = tmp_path / ".voidcode_edit.patch"
+    scratch.write_bytes(b"existing user content\x00\r\n")
+    target = tmp_path / "target.txt"
+    target.write_text("old\n", encoding="utf-8")
+    old_line = "old" if matches else "does not match"
+    patch = f"--- a/target.txt\n+++ b/target.txt\n@@ -1 +1 @@\n-{old_line}\n+new\n"
+    arguments = {"patch": patch, "expectedHashes": {"target.txt": hashlib.sha256(target.read_bytes()).hexdigest()}}
+    if matches:
+        result = execute_patch(arguments, context=_context(tmp_path))
+        assert isinstance(result, ToolSuccess)
+    else:
+        with pytest.raises(ValueError):
+            execute_patch(arguments, context=_context(tmp_path))
+    assert scratch.read_bytes() == b"existing user content\x00\r\n"
+    assert target.read_text(encoding="utf-8") == ("new\n" if matches else "old\n")
+    assert sorted(p.name for p in tmp_path.iterdir()) == [".voidcode_edit.patch", "target.txt"]

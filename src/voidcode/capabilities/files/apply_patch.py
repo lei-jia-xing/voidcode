@@ -713,11 +713,12 @@ def _normalize_patch_text(patch_text: str) -> str:
     return result
 
 
-def _run_git_command(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+def _run_git_command(args: list[str], cwd: Path, *, patch: str) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
             args,
             cwd=str(cwd),
+            input=patch,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -1025,89 +1026,81 @@ def execute_patch(
             ),
             details={"affected_paths": [], "patch_invalid": True},
         )
-    patch_path = workspace / ".voidcode_edit.patch"
-    patch_path.write_text(normalized_patch, encoding="utf-8", newline="\n")
-    try:
-        check = _run_git_command(["git", "apply", "--check", str(patch_path)], workspace)
-        if check.returncode != 0:
-            error = check.stdout or "Patch check failed"
-            raise_tool_diagnostic(
-                message=_format_patch_error(error, normalized_patch),
-                error_kind="parse_error",
-                reason="patch_apply_failed",
-                retry_guidance=(
-                    "Re-read the affected file(s) with read and rebuild the patch hunks from "
-                    f"the current content, then retry {tool_name}. Prefer the structured "
-                    "*** Begin Patch envelope to avoid manual hunk counts."
-                ),
-                details={
-                    "git_error": error,
-                    "affected_paths": [c.get("path") for c in changes if isinstance(c.get("path"), str)],
-                },
-            )
+    check = _run_git_command(["git", "apply", "--check", "-"], workspace, patch=normalized_patch)
+    if check.returncode != 0:
+        error = check.stdout or "Patch check failed"
+        raise_tool_diagnostic(
+            message=_format_patch_error(error, normalized_patch),
+            error_kind="parse_error",
+            reason="patch_apply_failed",
+            retry_guidance=(
+                "Re-read the affected file(s) with read and rebuild the patch hunks from "
+                f"the current content, then retry {tool_name}. Prefer the structured "
+                "*** Begin Patch envelope to avoid manual hunk counts."
+            ),
+            details={
+                "git_error": error,
+                "affected_paths": [c.get("path") for c in changes if isinstance(c.get("path"), str)],
+            },
+        )
 
-        # Verify expected hashes for every existing file the patch modifies, before writing.
-        _verify_patch_expected_hashes(
+    # Verify expected hashes for every existing file the patch modifies, before writing.
+    _verify_patch_expected_hashes(
+        changes=changes,
+        expected_hashes=expected_hashes,
+        workspace=workspace,
+        tool_name=tool_name,
+    )
+
+    mode_only = _looks_like_mode_only_patch(patch_text)
+    mode_only_before = _capture_mode_only_state(changes=changes, workspace=workspace) if mode_only else {}
+
+    apply = _run_git_command(["git", "apply", "-"], workspace, patch=normalized_patch)
+    if apply.returncode != 0:
+        error = apply.stdout or "Patch apply failed"
+        raise_tool_diagnostic(
+            message=_format_patch_error(error, normalized_patch),
+            error_kind="parse_error",
+            reason="patch_apply_failed",
+            retry_guidance=(
+                "Re-read the affected file(s) with read and rebuild the patch hunks from "
+                f"the current content, then retry {tool_name}. Prefer the structured "
+                "*** Begin Patch envelope to avoid manual hunk counts."
+            ),
+            details={
+                "git_error": error,
+                "affected_paths": [c.get("path") for c in changes if isinstance(c.get("path"), str)],
+            },
+        )
+
+    if mode_only:
+        _verify_mode_only_change(
             changes=changes,
-            expected_hashes=expected_hashes,
+            expected_modes=_mode_only_expected_modes(patch_text),
+            before=mode_only_before,
             workspace=workspace,
-            tool_name=tool_name,
         )
 
-        mode_only = _looks_like_mode_only_patch(patch_text)
-        mode_only_before = _capture_mode_only_state(changes=changes, workspace=workspace) if mode_only else {}
+    summary_lines: list[str] = []
+    for c in changes:
+        if c.get("status") == "R":
+            summary_lines.append(f"M {c['old_path']} -> {c['path']}")
+        else:
+            summary_lines.append(f"{c['status']} {c['path']}")
 
-        apply = _run_git_command(["git", "apply", str(patch_path)], workspace)
-        if apply.returncode != 0:
-            error = apply.stdout or "Patch apply failed"
-            raise_tool_diagnostic(
-                message=_format_patch_error(error, normalized_patch),
-                error_kind="parse_error",
-                reason="patch_apply_failed",
-                retry_guidance=(
-                    "Re-read the affected file(s) with read and rebuild the patch hunks from "
-                    f"the current content, then retry {tool_name}. Prefer the structured "
-                    "*** Begin Patch envelope to avoid manual hunk counts."
-                ),
-                details={
-                    "git_error": error,
-                    "affected_paths": [c.get("path") for c in changes if isinstance(c.get("path"), str)],
-                },
-            )
+    content = "\n".join(summary_lines) if summary_lines else "patch applied"
 
-        if mode_only:
-            _verify_mode_only_change(
-                changes=changes,
-                expected_modes=_mode_only_expected_modes(patch_text),
-                before=mode_only_before,
-                workspace=workspace,
-            )
-
-        summary_lines: list[str] = []
-        for c in changes:
-            if c.get("status") == "R":
-                summary_lines.append(f"M {c['old_path']} -> {c['path']}")
-            else:
-                summary_lines.append(f"{c['status']} {c['path']}")
-
-        content = "\n".join(summary_lines) if summary_lines else "patch applied"
-
-        return ToolSuccess(
-            tool_name=tool_name,
-            output=TextOutput(content),
-            changes=tuple(
-                ResourceChange(c.path, _CHANGE_OPERATIONS[c.status], c.old_path) for c in (_patch_change_from_payload(change) for change in changes)
-            ),
-            body=ApplyPatchResultBody(
-                changes=tuple(_patch_change_from_payload(change) for change in changes),
-                count=len(changes),
-            ),
-        )
-    finally:
-        try:
-            patch_path.unlink(missing_ok=True)
-        except Exception:
-            pass
+    return ToolSuccess(
+        tool_name=tool_name,
+        output=TextOutput(content),
+        changes=tuple(
+            ResourceChange(c.path, _CHANGE_OPERATIONS[c.status], c.old_path) for c in (_patch_change_from_payload(change) for change in changes)
+        ),
+        body=ApplyPatchResultBody(
+            changes=tuple(_patch_change_from_payload(change) for change in changes),
+            count=len(changes),
+        ),
+    )
 
 
 __all__ = ["ApplyPatchResultBody", "PatchChange", "execute_patch"]

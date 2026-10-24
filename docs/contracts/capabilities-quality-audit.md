@@ -525,3 +525,22 @@ Patch parsing/mutation and cancellation remain pending audit.
 Validation: 67 files/artifact unit tests and 6 core-builtins/optional-query
 integration tests passed. Ruff/source type checks passed; CodeGraph synchronized.
 Complete capability audit and final full-suite validation remain outstanding.
+
+## Unified patch: stream input instead of a workspace scratch file
+
+Unified patches previously overwrote workspace/.voidcode_edit.patch and removed
+it after invocation, deleting any preexisting user file at that name. Concurrent
+calls also shared the same filename, and initial write failures escaped cleanup.
+Git already accepts patch data on stdin: both check/apply commands now receive the
+normalized patch directly through subprocess.run(input=...). Removed all scratch
+file creation and cleanup, including a broad swallowed cleanup exception.
+
+Success/failure regressions preserve a preexisting binary scratch-named user file
+and assert the target changes only on successful patch validation. Git remains
+the unified-diff implementation. Check and apply are separate process executions;
+this change does not add a transaction or solve intervening target changes. Marker
+patch mutations, path metadata parsing and cancellation are still pending review.
+
+Validation: 69 files/artifact unit tests and 6 core-builtins/optional-query
+integration tests passed. Ruff and source type checks passed; CodeGraph synced.
+Full capability audit and full-suite completion gate remain outstanding.
