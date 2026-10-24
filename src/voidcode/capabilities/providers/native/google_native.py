@@ -29,13 +29,6 @@ from .config import GoogleProviderConfig
 from .errors import provider_execution_error_from_payload
 from .model_catalog import static_catalog_metadata
 from .reasoning_effort import (
-    REASONING_EFFORT_HIGH,
-    REASONING_EFFORT_LOW,
-    REASONING_EFFORT_MAX,
-    REASONING_EFFORT_MEDIUM,
-    REASONING_EFFORT_MINIMAL,
-    REASONING_EFFORT_OFF,
-    REASONING_EFFORT_XHIGH,
     clamp_effort_to_supported,
     normalize_reasoning_effort,
 )
@@ -51,12 +44,12 @@ from .thinking_rules import thinking_rule_for
 _GOOGLE_THINKING_LEVELS: dict[str, types.ThinkingLevel] = {
     # ``mapEffortToGoogleThinkingLevel`` (``model-thinking.ts:85-110``), values
     # identical to OMP's mapper including the ``xhigh``/``max`` -> HIGH clamp.
-    REASONING_EFFORT_MINIMAL: types.ThinkingLevel.MINIMAL,
-    REASONING_EFFORT_LOW: types.ThinkingLevel.LOW,
-    REASONING_EFFORT_MEDIUM: types.ThinkingLevel.MEDIUM,
-    REASONING_EFFORT_HIGH: types.ThinkingLevel.HIGH,
-    REASONING_EFFORT_XHIGH: types.ThinkingLevel.HIGH,
-    REASONING_EFFORT_MAX: types.ThinkingLevel.HIGH,
+    "minimal": types.ThinkingLevel.MINIMAL,
+    "low": types.ThinkingLevel.LOW,
+    "medium": types.ThinkingLevel.MEDIUM,
+    "high": types.ThinkingLevel.HIGH,
+    "xhigh": types.ThinkingLevel.HIGH,
+    "max": types.ThinkingLevel.HIGH,
 }
 # Service account credentials carry no scope of their own; the Vertex AI /
 # Gemini enterprise endpoints authorize with the cloud-platform scope.
@@ -341,12 +334,12 @@ class GoogleGenAIProvider:
         supported = metadata.supported_effort_levels if metadata is not None else None
         effort = clamp_effort_to_supported(effort, supported)
         if rule.mode == "google-level":
-            if effort == REASONING_EFFORT_OFF:
+            if effort == "off":
                 # Gemini 3 has no fully disabled level below MINIMAL, so "off"
                 # asks for the lowest level and suppresses thought summaries.
                 return types.ThinkingConfig(thinking_level=types.ThinkingLevel.MINIMAL, include_thoughts=False)
             return types.ThinkingConfig(thinking_level=_GOOGLE_THINKING_LEVELS[effort], include_thoughts=True)
-        if effort == REASONING_EFFORT_OFF:
+        if effort == "off":
             return types.ThinkingConfig(thinking_budget=0, include_thoughts=False)
         budget = rule.budget_for(effort)
         # ``-1`` is the SDK's own "no explicit budget" sentinel: the model picks its

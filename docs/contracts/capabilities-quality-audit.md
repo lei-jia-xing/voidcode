@@ -54,7 +54,7 @@ not establish source review.
 | `providers/native/provider_config.py` | Reviewed: table-owned wire defaults, endpoint/gateway defaults and Copilot token resolution; removed dead projections |
 | `providers/native/provider_table.json` | Reviewed with parser/consumer and packaged-table tests; source/provenance retained in JSON |
 | `providers/native/provider_table.py` | Reviewed: typed rows, duplicate/unknown IDs and config/catalog consumers; removed unused notes and forwarding helper |
-| `providers/native/reasoning_effort.py` | Pending full source review |
+| `providers/native/reasoning_effort.py` | Reviewed: canonical vocabulary, unknown-preserving clamping, explicit-off and binary/protocol mapping; removed rank maps/aliases/runtime type imports |
 | `providers/native/thinking_rules.json` | Reviewed with parser/consumer and packaged-table tests; source/provenance retained in JSON |
 | `providers/native/thinking_rules.py` | Reviewed: model-name overlays/effort maps removed; upstream capabilities select validated protocol defaults and named budgets; Kimi cap convention pending adapter review |
 | `providers/native/tokenizer.py` | Pending full source review |
@@ -802,3 +802,26 @@ and domain/env converters; this entry does not claim full config source completi
 Validation: 175 provider trace/auth/catalog/dispatch/panels/reasoning/stream/lifecycle/
 usage/error tests passed (32.70s). Ruff/source type checks passed; CodeGraph synced.
 Complete capability audit and final full-suite gate remain outstanding.
+
+## Reasoning effort: one ordered vocabulary, no rank-map scaffolding
+
+Reviewed all reasoning_effort functions and their OpenAI/Anthropic/Google/generator
+callers. Canonical ladder now holds the literal vocabulary directly; removed seven
+constant aliases that only expanded Google request mapping. Google continues mapping
+minimal/low/medium/high to SDK enums and xhigh/max to HIGH. Moved type-only rule
+imports behind TYPE_CHECKING; the effort vocabulary no longer imports/loads thinking
+rules just to provide strings. Corrected the old misplaced/dependency-free docstring.
+
+Clamping now filters the canonical ladder and takes its final candidate, falling
+back to the first supported canonical level. Removed duplicate per-call rank maps,
+max/min selection and filtered-list scaffolding. Unknown/empty capability ladders
+and explicit off retain their previous behavior. Eight regressions cover unsorted
+levels, down/up bounds, off, unknown/empty/vendor-only metadata and mixed levels.
+The existing provider loopback effort cases continue verifying actual wire payloads.
+
+The remaining Kimi-name output-cap convention lives in thinking_rules/openai_native,
+not this vocabulary/helper module; its protocol justification still needs review.
+
+Validation: 148 generator/data/auth/reasoning/stream/lifecycle/error/protocol tests
+passed (28.80s). Ruff/source type checks passed; CodeGraph synchronized. Complete
+capability audit and final full-suite gate remain outstanding.

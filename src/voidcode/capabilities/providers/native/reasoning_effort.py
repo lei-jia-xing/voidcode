@@ -1,35 +1,18 @@
+"""Canonical effort vocabulary and protocol-level request mapping.
+
+Unknown model capability metadata leaves requested effort unchanged. Explicit
+levels clamp down through the canonical ladder, or up to its lowest supported level.
+"""
+
 from __future__ import annotations
 
-from .thinking_rules import DisableMode, ThinkingRule
+from typing import TYPE_CHECKING
 
-"""Canonical reasoning-effort values and the data-driven thinking-request mapping.
+if TYPE_CHECKING:
+    from .thinking_rules import DisableMode, ThinkingRule
 
-This module is intentionally dependency-free and leaf: it is importable from
-`runtime/` without pulling in a provider SDK or adapter, so effort
-normalization, clamping, and provider mapping can be shared across the
-runtime control plane and provider backends. The provider-specific mapping is
-*data*: which field carries the effort, which vendor spelling turns reasoning
-off and which budgets apply come from `thinking_rules.json`.
-"""
-REASONING_EFFORT_OFF = "off"
-REASONING_EFFORT_MINIMAL = "minimal"
-REASONING_EFFORT_LOW = "low"
-REASONING_EFFORT_MEDIUM = "medium"
-REASONING_EFFORT_HIGH = "high"
-REASONING_EFFORT_XHIGH = "xhigh"
-REASONING_EFFORT_MAX = "max"
-
-# Ordered clamping ladder (off is NOT in it).
-CANONICAL_EFFORTS: tuple[str, ...] = (
-    REASONING_EFFORT_MINIMAL,
-    REASONING_EFFORT_LOW,
-    REASONING_EFFORT_MEDIUM,
-    REASONING_EFFORT_HIGH,
-    REASONING_EFFORT_XHIGH,
-    REASONING_EFFORT_MAX,
-)
-
-ALL_EFFORTS: tuple[str, ...] = (REASONING_EFFORT_OFF, *CANONICAL_EFFORTS)
+CANONICAL_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh", "max")
+ALL_EFFORTS: tuple[str, ...] = ("off", *CANONICAL_EFFORTS)
 
 
 def normalize_reasoning_effort(value: object) -> str:
@@ -38,7 +21,7 @@ def normalize_reasoning_effort(value: object) -> str:
     Case-sensitive, no aliases, no trimming: only the exact members of
     `ALL_EFFORTS` are accepted.
     """
-    if not isinstance(value, str) or not value or value not in ALL_EFFORTS:
+    if not isinstance(value, str) or value not in ALL_EFFORTS:
         raise ValueError(f"reasoning_effort must be one of: {', '.join(ALL_EFFORTS)}; got {value!r}")
     return value
 
@@ -46,43 +29,21 @@ def normalize_reasoning_effort(value: object) -> str:
 def clamp_effort_to_supported(effort: str, supported: tuple[str, ...] | None) -> str:
     """Clamp `effort` to the nearest level the provider/model actually supports.
 
-    `supported` is an ordered tuple of canonical efforts (excluding "off").
+    `supported` lists advertised canonical efforts (excluding "off").
     Returns `effort` unchanged when `supported` is None, when `effort` is
     "off", or when `effort` is already supported. Otherwise snaps DOWN to the
     nearest supported level at or below `effort`; if `effort` is below every
     supported level, snaps UP to the lowest supported level.
     """
-    if supported is None:
+    if supported is None or effort == "off" or effort in supported or effort not in CANONICAL_EFFORTS:
         return effort
-    if effort == REASONING_EFFORT_OFF:
-        return effort
-    if effort in supported:
-        return effort
-
-    supported_canonical = tuple(level for level in supported if level in CANONICAL_EFFORTS)
-    if not supported_canonical:
-        return effort
-
-    canonical_by_name = {level: index for index, level in enumerate(CANONICAL_EFFORTS)}
-    effort_index = canonical_by_name.get(effort)
-    if effort_index is None:
-        return effort
-
-    candidates = [level for level in supported_canonical if canonical_by_name[level] <= effort_index]
-    if candidates:
-        return max(candidates, key=canonical_by_name.__getitem__)
-    return min(supported_canonical, key=canonical_by_name.__getitem__)
+    candidates = [level for level in CANONICAL_EFFORTS[: CANONICAL_EFFORTS.index(effort) + 1] if level in supported]
+    return candidates[-1] if candidates else lowest_supported_effort(supported) or effort
 
 
 def lowest_supported_effort(supported: tuple[str, ...] | None) -> str | None:
-    """Return the lowest canonical level in `supported`, or None if it lists none."""
-    if not supported:
-        return None
-    canonical_by_name = {level: index for index, level in enumerate(CANONICAL_EFFORTS)}
-    levels = [level for level in supported if level in canonical_by_name]
-    if not levels:
-        return None
-    return min(levels, key=canonical_by_name.__getitem__)
+    """Return the lowest canonical supported level, preserving absence as None."""
+    return next((level for level in CANONICAL_EFFORTS if level in (supported or ())), None)
 
 
 def reasoning_kwargs(
@@ -99,7 +60,7 @@ def reasoning_kwargs(
     ladder member: it resolves through the protocol default, overridden when
     upstream explicitly declares a none effort.
     """
-    if effort == REASONING_EFFORT_OFF:
+    if effort == "off":
         return disabled_reasoning_kwargs(rule=rule, supported_levels=supported_levels)
     if rule.mode == "binary":
         # The vendor reads its thinking switch from the request body, so the
@@ -140,12 +101,6 @@ def _binary_thinking_kwargs(disable_mode: DisableMode, *, enabled: bool) -> dict
 __all__ = [
     "ALL_EFFORTS",
     "CANONICAL_EFFORTS",
-    "REASONING_EFFORT_HIGH",
-    "REASONING_EFFORT_MAX",
-    "REASONING_EFFORT_MEDIUM",
-    "REASONING_EFFORT_MINIMAL",
-    "REASONING_EFFORT_OFF",
-    "REASONING_EFFORT_XHIGH",
     "clamp_effort_to_supported",
     "disabled_reasoning_kwargs",
     "lowest_supported_effort",
