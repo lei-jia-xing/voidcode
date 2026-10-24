@@ -1309,3 +1309,39 @@ def test_marker_patch_commits_new_destination_and_removes_source_only_for_move(t
     assert (tmp_path / "destination.txt").read_bytes() == (b"new" if operation == "add" else b"new\n")
     assert source.exists() == (operation == "add")
     assert not list(tmp_path.glob(".voidcode_edit_*"))
+
+
+@pytest.mark.parametrize(
+    ("operations", "expected", "error"),
+    [
+        ("*** Add File: new.txt\n+temporary\n*** Delete File: new.txt\n", {"source.txt": b"old\n"}, None),
+        ("*** Delete File: source.txt\n*** Update File: source.txt\n@@\n-old\n+new\n", {"source.txt": b"old\n"}, "Failed to read file to update"),
+        ("*** Delete File: source.txt\n*** Add File: source.txt\n+replacement\n", {"source.txt": b"replacement"}, None),
+        (
+            "*** Update File: source.txt\n*** Move to: moved.txt\n@@\n-old\n+new\n*** Update File: moved.txt\n@@\n-new\n+final\n",
+            {"moved.txt": b"final\n"},
+            None,
+        ),
+        ("*** Add File: new.txt\n+first\n*** Add File: ./new.txt\n+second\n", {"source.txt": b"old\n"}, "destination already exists"),
+        (
+            "*** Update File: source.txt\n@@\n-old\n+new\n*** Update File: ./source.txt\n@@\n-new\n+final\n",
+            {"source.txt": b"final\n"},
+            None,
+        ),
+    ],
+)
+def test_marker_patch_preflights_sequential_file_state(tmp_path: Path, operations: str, expected: dict, error: str | None) -> None:
+    from voidcode.capabilities.files.apply_patch import execute_patch
+
+    source = tmp_path / "source.txt"
+    source.write_bytes(b"old\n")
+    arguments = {
+        "patch": f"*** Begin Patch\n{operations}*** End Patch\n",
+        "expectedHashes": {"source.txt": hashlib.sha256(source.read_bytes()).hexdigest()},
+    }
+    if error:
+        with pytest.raises(ValueError, match=error):
+            execute_patch(arguments, context=_context(tmp_path))
+    else:
+        assert isinstance(execute_patch(arguments, context=_context(tmp_path)), ToolSuccess)
+    assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == expected

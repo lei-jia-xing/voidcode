@@ -401,60 +401,51 @@ def _apply_marker_patch(
 ) -> ToolSuccess[ApplyPatchResultBody]:
     hunks = _parse_marker_patch(patch_text)
     prepared: list[_PreparedMarkerChange] = []
-    planned_add_paths: set[str] = set()
-    staged_contents: dict[str, str] = {}
-    for hunk in hunks:
-        if hunk.move_path is not None and hunk.move_path == hunk.path:
-            raise ValueError(f"Move destination must differ from source: {hunk.move_path}")
+    staged_contents: dict[Path, bytes | None] = {}
 
+    def current_content(path: Path) -> bytes | None:
+        if path not in staged_contents:
+            try:
+                staged_contents[path] = path.read_bytes()
+            except FileNotFoundError:
+                staged_contents[path] = None
+        return staged_contents[path]
+
+    for hunk in hunks:
+        source = _resolve_patch_path(workspace, hunk.path)
+        expected_content = current_content(source)
         if hunk.action == "add":
-            target = workspace / hunk.path
-            if target.exists() or hunk.path in planned_add_paths:
+            if expected_content is not None:
                 raise ValueError(f"Add File destination already exists: {hunk.path}")
-            planned_add_paths.add(hunk.path)
-            staged_contents[hunk.path] = hunk.contents
-            prepared.append(_PreparedMarkerChange(status="A", path=hunk.path, content=hunk.contents))
+            staged_contents[source] = hunk.contents.encode("utf-8")
+            prepared.append(_PreparedMarkerChange(status="A", path=source.as_posix(), content=hunk.contents))
         elif hunk.action == "delete":
-            target = workspace / hunk.path
-            if not target.exists():
-                raise ValueError(f"Failed to read file for deletion: {target}")
-            previous = staged_contents.pop(hunk.path, None)
-            expected_content = target.read_bytes() if previous is None else previous.encode("utf-8")
-            prepared.append(_PreparedMarkerChange(status="D", path=hunk.path, expected_content=expected_content))
+            if expected_content is None:
+                raise ValueError(f"Failed to read file for deletion: {source}")
+            staged_contents[source] = None
+            prepared.append(_PreparedMarkerChange(status="D", path=source.as_posix(), expected_content=expected_content))
         else:
-            source_file = workspace / hunk.path
-            source_content = staged_contents.get(hunk.path)
-            if source_content is None:
-                try:
-                    expected_content = source_file.read_bytes()
-                    source_content = expected_content.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
-                except FileNotFoundError as exc:
-                    raise ValueError(f"Failed to read file to update: {source_file}") from exc
-            else:
-                expected_content = source_content.encode("utf-8")
-            content = _derive_marker_update_content_from_text(
-                source_content,
-                file_path=source_file,
-                chunks=hunk.chunks,
-            )
+            if expected_content is None:
+                raise ValueError(f"Failed to read file to update: {source}")
+            source_content = expected_content.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+            content = _derive_marker_update_content_from_text(source_content, file_path=source, chunks=hunk.chunks)
             if hunk.move_path is None:
-                staged_contents[hunk.path] = content
-                prepared.append(_PreparedMarkerChange(status="M", path=hunk.path, content=content, expected_content=expected_content))
+                staged_contents[source] = content.encode("utf-8")
+                prepared.append(_PreparedMarkerChange(status="M", path=source.as_posix(), content=content, expected_content=expected_content))
             else:
-                source_path = (workspace / hunk.path).resolve()
-                destination_path = (workspace / hunk.move_path).resolve()
-                if source_path == destination_path:
+                destination = _resolve_patch_path(workspace, hunk.move_path)
+                if source == destination:
                     raise ValueError(f"Move destination must differ from source: {hunk.move_path}")
-                if destination_path.exists():
+                if current_content(destination) is not None:
                     raise ValueError(f"Move destination already exists: {hunk.move_path}")
-                staged_contents.pop(hunk.path, None)
-                staged_contents[hunk.move_path] = content
+                staged_contents[source] = None
+                staged_contents[destination] = content.encode("utf-8")
                 prepared.append(
                     _PreparedMarkerChange(
                         status="R",
-                        path=hunk.move_path,
+                        path=destination.as_posix(),
                         content=content,
-                        old_path=hunk.path,
+                        old_path=source.as_posix(),
                         expected_content=expected_content,
                     )
                 )

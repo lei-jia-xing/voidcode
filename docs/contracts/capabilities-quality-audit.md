@@ -569,3 +569,24 @@ review. No rollback or global filesystem locks added.
 Validation: 75 files/artifact unit tests and 6 core-builtins/optional-query
 integration tests passed. Ruff/source type checks passed; CodeGraph synchronized.
 Full capability audit and final full-suite gate remain outstanding.
+
+## Marker patch: one sequential preflight state
+
+Removed separate planned-add tracking and mixed disk/staged-text lookup. Preflight
+now caches bytes or absence by canonical resolved Path, applying each planned
+operation to the same state. The prepared operations retain canonical paths and
+the precise preceding bytes for commit checks. No new persistence/rollback layer.
+
+Previously delete-then-update could pass preflight using the original disk file,
+then delete it and fail during commit. Newly added files could not be deleted;
+path aliases lost staged changes. These now follow the actual sequential plan.
+Six regressions cover add/delete, invalid delete/update with no disk writes,
+delete/add, move/update, duplicate aliased adds, and sequential aliased updates.
+Implementation is nine lines shorter while eliminating the competing state stores.
+
+Metadata reporting for partial commits, cancellation and the documented filesystem
+race windows remain pending. Full capability audit is not complete.
+
+Validation: 81 files/artifact unit tests and 6 core-builtins/optional-query
+integration tests passed. Ruff/source type checks passed; CodeGraph synchronized.
+Full-suite completion gate remains outstanding.
