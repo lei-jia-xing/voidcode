@@ -23,28 +23,12 @@ PDF_TEXT_BYTES = 10 * 1024 * 1024
 PDF_PREVIEW_BYTES = 32 * 1024
 
 
-def _bounded_text(value: str, budget: list[int], clipped: list[bool]) -> str:
-    encoded = value.encode("utf-8")
-    size = min(len(encoded), MAX_CELL_BYTES, budget[0])
-    if size < len(encoded):
-        clipped[0] = True
-    preview = encoded[:size].decode("utf-8", errors="ignore")
-    budget[0] -= len(preview.encode("utf-8"))
-    return preview
-
-
 def _join_strings(value: object, *, description: str) -> str:
     if isinstance(value, str):
-        result = value
-    elif isinstance(value, list) and all(isinstance(part, str) for part in value):
-        if sum(len(part.encode("utf-8")) for part in value) > MAX_FORMAT_BYTES:
-            raise ValueError(f"Notebook {description} exceeds the source file size limit")
-        result = "".join(value)
-    else:
-        raise ValueError(f"invalid Notebook {description}")
-    if len(result.encode("utf-8")) > MAX_FORMAT_BYTES:
-        raise ValueError(f"Notebook {description} exceeds the source file size limit")
-    return result
+        return value
+    if isinstance(value, list) and all(isinstance(part, str) for part in value):
+        return "".join(value)
+    raise ValueError(f"invalid Notebook {description}")
 
 
 def render_sqlite(
@@ -210,28 +194,34 @@ def render_notebook(
             raise ValueError(f"Notebook cell offset {offset} is out of range ({len(cells)} cells)")
         indexes = list(range(offset - 1, min(len(cells), offset - 1 + min(limit, MAX_CELLS))))
 
-    budget = [MAX_VIEW_BYTES]
+    budget = MAX_VIEW_BYTES
     rendered: list[dict[str, object]] = []
     images: list[dict[str, object]] = []
     output_count = 0
     image_bytes = 0
     next_output_offset: int | None = None
     outputs_truncated = False
-    clipped_text = [False]
+    clipped_text = False
     raw_reference_required = False
+
+    def bounded_text(value: str) -> str:
+        nonlocal budget, clipped_text
+        encoded = value.encode("utf-8")
+        size = min(len(encoded), MAX_CELL_BYTES, budget)
+        clipped_text |= size < len(encoded)
+        preview = encoded[:size].decode("utf-8", errors="ignore")
+        budget -= len(preview.encode("utf-8"))
+        return preview
+
     for index in indexes:
         item = cells[index]
         if not isinstance(item, dict) or item.get("cell_type") not in {"code", "markdown", "raw"}:
             raise ValueError(f"invalid Jupyter notebook cell at index {index}")
-        source = item.get("source", "")
-        if isinstance(source, list):
-            source = _join_strings(source, description=f"cell {index} source")
-        if not isinstance(source, str):
-            raise ValueError(f"invalid source in Jupyter notebook cell {index}")
+        source = _join_strings(item.get("source", ""), description=f"cell {index} source")
         cell_view: dict[str, object] = {
             "index": index,
             "type": item["cell_type"],
-            "source": _bounded_text(source, budget, clipped_text),
+            "source": bounded_text(source),
         }
         if item["cell_type"] == "code":
             count = item.get("execution_count")
@@ -259,7 +249,7 @@ def render_notebook(
                     raise ValueError(f"Notebook output has more than {MAX_OUTPUTS} data types")
                 view: dict[str, object] = {
                     "output_type": output_type,
-                    "data_types": sorted(str(key) for key in data),
+                    "data_types": sorted(data),
                 }
                 supported_data_types = {
                     "text/plain",
@@ -270,12 +260,12 @@ def render_notebook(
                     "image/jpeg",
                     "image/webp",
                 }
-                unsupported_data_types = sorted(str(key) for key in data if key not in supported_data_types)
+                unsupported_data_types = sorted(key for key in data if key not in supported_data_types)
                 if unsupported_data_types:
                     view["unsupported_data_types"] = unsupported_data_types
                     raw_reference_required = True
                 if output_type == "stream" and "text" in output:
-                    view["text"] = _bounded_text(_join_strings(output["text"], description="stream output"), budget, clipped_text)
+                    view["text"] = bounded_text(_join_strings(output["text"], description="stream output"))
                 for mime in ("text/plain", "text/markdown", "text/html", "application/json"):
                     if mime not in data:
                         continue
@@ -286,9 +276,10 @@ def render_notebook(
                         text = value
                     else:
                         text = json.dumps(value, ensure_ascii=False)
-                    view[mime] = _bounded_text(text, budget, clipped_text)
+                    view[mime] = bounded_text(text)
                 if "traceback" in output:
-                    view["traceback"] = _bounded_text(_join_strings(output["traceback"], description="traceback"), budget, clipped_text)
+                    view["traceback"] = bounded_text(_join_strings(output["traceback"], description="traceback"))
+                output_images: list[dict[str, object]] = []
                 for mime in ("image/png", "image/jpeg", "image/webp"):
                     if mime not in data:
                         continue
@@ -310,8 +301,8 @@ def render_notebook(
                     image_bytes += len(image)
                     if image_bytes > MAX_IMAGE_BYTES:
                         raise ValueError(f"Notebook images exceed the {MAX_IMAGE_BYTES}-byte total limit")
-                    if not _valid_image(image, mime):
-                        raise ValueError(f"Notebook image does not contain valid {mime} data")
+                    if not _matches_image_signature(image, mime):
+                        raise ValueError(f"Notebook image does not match its declared {mime} signature")
                     image_info: dict[str, object] = {
                         "cell": index,
                         "mime": mime,
@@ -320,7 +311,9 @@ def render_notebook(
                         "data": image,
                     }
                     images.append(image_info)
-                    view["image"] = image_info
+                    output_images.append(image_info)
+                if output_images:
+                    view["images"] = output_images
                 output_views.append(view)
             output_end = output_offset - 1 + len(output_views)
             cell_next_output = output_end + 1 if output_end < len(outputs) else None
@@ -333,7 +326,7 @@ def render_notebook(
             cell_view["outputs_truncated"] = cell_next_output is not None
         rendered.append(cell_view)
     next_offset = None if cell is not None or offset - 1 + len(rendered) >= len(cells) else offset + len(rendered)
-    truncated = next_offset is not None or outputs_truncated or clipped_text[0]
+    truncated = next_offset is not None or outputs_truncated or clipped_text or raw_reference_required
     return {
         "type": "notebook",
         "source_bytes": raw,
@@ -346,7 +339,7 @@ def render_notebook(
         "next_output_offset": next_output_offset,
         "cells": rendered,
         "images": images,
-        "truncated_text": clipped_text[0],
+        "truncated_text": clipped_text,
         "truncated": truncated,
         "partial": truncated,
         "raw_reference_required": raw_reference_required,
@@ -483,7 +476,7 @@ def _extract_pdf(
     }
 
 
-def _valid_image(data: bytes, mime: str) -> bool:
+def _matches_image_signature(data: bytes, mime: str) -> bool:
     if mime == "image/png":
         return data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 24 and data[12:16] == b"IHDR"
     if mime == "image/jpeg":

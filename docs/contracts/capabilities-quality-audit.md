@@ -24,7 +24,7 @@ not establish source review.
 | `files/gitignore.py` | Reviewed: root-only pathspec matching; removed unused pattern snapshot/property; syntax/order/escape tests |
 | `files/glob_tool.py` | Reviewed: strict ingress, root-relative patterns, traversal/ignore rules, bounded path collection, ordering/error results and cooperative cancellation |
 | `files/grep_tool.py` | Reviewed: strict ingress, literal/regex matching and filters, bounded line/context/result collection, immutable rendering, error handling and cooperative cancellation |
-| `files/read_formats.py` | Partial: notebook pagination/global output budget, SQLite encoded budget/read-only snapshot queries and unknown source version, PDF snapshot/cleanup/preview and full-text recovery reviewed; notebook image and remaining pagination semantics pending |
+| `files/read_formats.py` | Reviewed: bounded notebook/SQLite/PDF views, source snapshot semantics, pagination/recovery, signature-only image handling, read-only transactions and extractor cleanup |
 | `files/read_tool.py` | Pending full source review |
 | `files/write_tool.py` | Reviewed: hash/containment/symlink/atomic replace/cancellation; fail visibly on mode errors and always clean temporary files |
 | `frontmatter.py` | Reviewed source/consumers: safe YAML, duplicate/string-key validation, framing/body/bounds; shared parser tests |
@@ -1416,3 +1416,29 @@ and artifact entry probes with a scripted extractor returned complete 42,000-byt
 UTF-8 text artifacts while reporting preview clipping. Ruff, formatting, targeted
 source type checking and CodeGraph sync passed. Notebook image/pagination and the
 remaining read-tool source review are still pending.
+
+
+## Notebook output completeness and local text budget
+
+Moved notebook text-budget accounting into a local closure, removing mutable
+single-element budget/flag lists and their repeated plumbing. String-list joining
+now only validates/joins: the source was already bounded and decoded from one
+JSON byte snapshot. Removed redundant key-to-string coercion after JSON parsing.
+
+Notebook output records now retain an images list, rather than overwriting one
+image slot when the MIME bundle contains several supported image formats. The
+existing global spill pass updates every retained record to its artifact reference.
+Unsupported MIME output now also sets the incomplete/truncated flag; its complete
+original bytes remain available through the existing source_reference mechanism.
+Renamed the private image check to describe its actual signature-only scope;
+this is format identification, not a full pixel/container decoder.
+
+The retained format-view source review covers read-only SQLite snapshot/budgets,
+notebook source/output pagination and raw recovery, MIME records/signatures,
+PDF immutable source/temp ownership, timeout/cancellation and clipped-text recovery.
+read_formats.py is marked reviewed; the larger read_tool.py audit remains open.
+Validation: 94 existing format/file/artifact checks passed (0.92s), no tests changed
+or added. A manual read with PNG/JPEG signature fixtures and an unknown MIME kept
+two independent image references, reported partial output and preserved the exact
+raw notebook artifact. Ruff, formatting, targeted type checking and CodeGraph sync
+passed. Net implementation reduction: 7 lines; no new dependencies.
