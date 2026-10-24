@@ -243,12 +243,10 @@ def render_notebook(
                 raise ValueError(f"invalid outputs in Jupyter notebook cell {index}")
             if output_offset > max(1, len(outputs)):
                 raise ValueError(f"Notebook output offset {output_offset} is out of range ({len(outputs)} outputs)")
-            selected_outputs = outputs[output_offset - 1 : output_offset - 1 + min(output_limit, MAX_OUTPUTS)]
+            selected_outputs = outputs[output_offset - 1 : output_offset - 1 + min(output_limit, MAX_OUTPUTS - output_count)]
+            output_count += len(selected_outputs)
             output_views: list[dict[str, object]] = []
             for output in selected_outputs:
-                output_count += 1
-                if output_count > MAX_OUTPUTS:
-                    raise ValueError(f"Notebook exceeds the maximum supported output count ({MAX_OUTPUTS})")
                 if not isinstance(output, dict):
                     raise ValueError(f"invalid output in Jupyter notebook cell {index}")
                 output_type = output.get("output_type")

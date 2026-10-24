@@ -181,3 +181,30 @@ def test_sqlite_views_reject_mutating_statements(tmp_path, query):
         assert connection.execute("PRAGMA user_version").fetchone() == (0,)
     finally:
         connection.close()
+
+
+@pytest.mark.parametrize("first_count", [15, 20])
+def test_notebook_global_output_budget_returns_partial_page_instead_of_failing(tmp_path, first_count):
+    path = tmp_path / "notebook.ipynb"
+    cells = [
+        {
+            "cell_type": "code",
+            "source": f"source-{index}",
+            "outputs": [{"output_type": "stream", "text": f"{index}:{output}"} for output in range(count)],
+        }
+        for index, count in enumerate([first_count, 15])
+    ]
+    path.write_text(json.dumps({"cells": cells}), encoding="utf-8")
+    page = render_notebook(path, offset=1, limit=10)
+    assert [cell["source"] for cell in page["cells"]] == ["source-0", "source-1"]
+    assert sum(len(cell["outputs"]) for cell in page["cells"]) == 20
+    assert page["partial"] is True
+    assert page["next_offset"] is None
+    second = page["cells"][1]
+    recovered = list(second["outputs"])
+    while second["next_output_offset"] is not None:
+        continuation = render_notebook(path, offset=1, limit=10, cell=1, output_offset=second["next_output_offset"])
+        second = continuation["cells"][0]
+        recovered.extend(second["outputs"])
+    assert [output["text"] for output in recovered] == [f"1:{index}" for index in range(15)]
+    assert continuation["partial"] is False

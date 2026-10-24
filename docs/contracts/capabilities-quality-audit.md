@@ -16,14 +16,15 @@ not establish source review.
 | `exec/background_process.py` | Pending full source review |
 | `exec/shell_exec.py` | Pending full source review |
 | `files/__init__.py` | Reviewed: typed Tool wrapper preserves diagnostic failures; shared core/plugin factory |
-| `files/apply_patch.py` | Partial: read guards and fuzzy repair hints removed; final mutation/ingress review pending |
-| `files/apply_workspace_edit.py` | Pending full source review |
-| `files/edit_tool.py` | Partial: read guards and fuzzy repair hints removed; final mutation/ingress review pending |
+| `files/_replace.py` | Reviewed: checked replacement and exclusive atomic creation; cleanup, permissions and race regressions; documented metadata/compare-window limits |
+| `files/apply_patch.py` | Partial: stdin unified diffs, canonical sequential marker preflight and checked commits reviewed; parser, partial-result and cancellation review pending |
+| `files/apply_workspace_edit.py` | Partial: strict generated schema, frozen-argument conversion, checked replacement and commit projections reviewed; coordinates, cancellation and partial-result review pending |
+| `files/edit_tool.py` | Partial: unified exact-edit flow, checked replacement and result semantics reviewed; final ingress, diagnostic bounds and cancellation review pending |
 | `files/errors.py` | Reviewed: retain only classified diagnostic exception and raising helper |
 | `files/gitignore.py` | Reviewed: root-only pathspec matching; removed unused pattern snapshot/property; syntax/order/escape tests |
 | `files/glob_tool.py` | Partial: strict search ingress and error-visible traversal reviewed; output bounds pending |
 | `files/grep_tool.py` | Partial: strict search ingress/default path reviewed; traversal completeness pending |
-| `files/read_formats.py` | Pending full source review |
+| `files/read_formats.py` | Partial: notebook pagination/global output budget, SQLite encoded budget/read-only queries, PDF process cleanup/preview cap reviewed; snapshot, image and remaining pagination semantics pending |
 | `files/read_tool.py` | Pending full source review |
 | `files/write_tool.py` | Reviewed: hash/containment/symlink/atomic replace/cancellation; fail visibly on mode errors and always clean temporary files |
 | `frontmatter.py` | Reviewed source/consumers: safe YAML, duplicate/string-key validation, framing/body/bounds; shared parser tests |
@@ -39,7 +40,7 @@ not establish source review.
 | `providers/native/claude_tokenizer/engine.py` | Pending full source review |
 | `providers/native/claude_tokenizer/normalize.py` | Pending full source review |
 | `providers/native/claude_tokenizer/notation.py` | Pending full source review |
-| `providers/native/config.py` | Pending full source review |
+| `providers/native/config.py` | Partial: dead auth/serialization framework removed; strict single ingress, credential representations and env auth reviewed; remaining normalization review pending |
 | `providers/native/errors.py` | Reviewed: classified errors, SDK text extraction and structured retry hints; removed prose scheduling and duplicate conversion functions |
 | `providers/native/google_native.py` | Pending full source review |
 | `providers/native/model_catalog.py` | Reviewed static catalog fields/lookups and consumers; removed entire unreferenced remote discovery implementation |
@@ -55,7 +56,7 @@ not establish source review.
 | `providers/native/provider_table.py` | Reviewed: typed rows, duplicate/unknown IDs and config/catalog consumers; removed unused notes and forwarding helper |
 | `providers/native/reasoning_effort.py` | Pending full source review |
 | `providers/native/thinking_rules.json` | Reviewed with parser/consumer and packaged-table tests; source/provenance retained in JSON |
-| `providers/native/thinking_rules.py` | Reviewed: default/scoped overlays, shared budgets, effort maps and output caps; malformed budget tables rejected |
+| `providers/native/thinking_rules.py` | Reviewed: model-name overlays/effort maps removed; upstream capabilities select validated protocol defaults and named budgets; Kimi cap convention pending adapter review |
 | `providers/native/tokenizer.py` | Pending full source review |
 | `providers/native/tokenizer_data/Cl100kBase.utok1.bz2` | Pending consumer/data-contract review |
 | `providers/native/tokenizer_data/DeepSeekV3.utok1.bz2` | Pending consumer/data-contract review |
@@ -660,3 +661,22 @@ Validation: 95 format/files/artifact/coverage tests passed, then all 15 format t
 passed after adding read-only rejection coverage. Seven read-loopback/core-builtins
 tests passed. Ruff/source type checks passed; CodeGraph synchronized. Complete
 capability audit and final full-suite gate remain outstanding.
+
+## Notebook global output budget: paginate instead of rejecting a valid view
+
+Removed the per-output counter/overflow exception. Each cell now selects at most
+the remaining global output budget, and the selected slice updates that budget
+once. Later cells still expose their sources, their output continuation and the
+existing partial flags, even if the budget leaves them zero output entries.
+This removes a valid-notebook failure at the 21st output without widening limits.
+
+Regressions cover two cells where the first consumes either 15 or all 20 output
+slots. Both return a bounded partial page; following the second cell's continuation
+recovers all its outputs and ends in a complete view. Existing per-cell limits,
+text/image budgets and strict content checks remain unchanged. Rendering a page
+does not imply omitted outputs were validated.
+
+Validation: 101 format/files/artifact/coverage tests and 7 read-loopback/core-builtins
+tests passed. Ruff/source type checks passed; CodeGraph synchronized. Updated the
+inventory to reflect completed source sections and explicit remaining work rather
+than stale pre-refactor statuses. Full capability audit/full-suite gate remain open.
