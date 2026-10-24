@@ -13,8 +13,7 @@ from unidiff import PatchSet
 from unidiff.errors import UnidiffParseError
 
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.json_values import json_wire_object, own_json_object
-from voidcode.sdk.tools import ResourceChange, TextOutput, ToolSuccess
+from voidcode.sdk.tools import ConfirmedStop, OutputBounds, ResourceChange, TextOutput, ToolFailure, ToolResult, ToolSuccess
 
 from ._replace import replace_file
 from .errors import raise_tool_diagnostic
@@ -65,28 +64,35 @@ class PatchChange:
 class ApplyPatchResultBody:
     changes: tuple[PatchChange, ...]
     count: int
-    diagnostics: tuple[Mapping[str, object], ...] = ()
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "diagnostics", tuple(own_json_object(item) for item in self.diagnostics))
 
     def as_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
             "changes": [change.as_payload() for change in self.changes],
             "count": self.count,
         }
-        if self.diagnostics:
-            payload["diagnostics"] = [json_wire_object(item) for item in self.diagnostics]
         return payload
 
 
-def _patch_change_from_payload(payload: Mapping[str, object]) -> PatchChange:
-    path = payload.get("path")
-    status = payload.get("status")
-    old_path = payload.get("old_path")
-    if not isinstance(path, str) or not isinstance(status, str) or (old_path is not None and not isinstance(old_path, str)):
-        raise TypeError("Invalid internal patch change")
-    return PatchChange(path=path, status=status, old_path=old_path)
+def _patch_result(
+    changes: list[PatchChange],
+    *,
+    tool_name: str,
+    error: str | None = None,
+    cancelled: bool = False,
+) -> ToolResult:
+    summary = "\n".join(f"M {change.old_path} -> {change.path}" if change.status == "R" else f"{change.status} {change.path}" for change in changes)
+    body = ApplyPatchResultBody(changes=tuple(changes), count=len(changes))
+    resources = tuple(ResourceChange(change.path, _CHANGE_OPERATIONS[change.status], change.old_path) for change in changes)
+    if error is not None:
+        return ToolFailure(
+            tool_name=tool_name,
+            error=error,
+            output=TextOutput(f"{error}\n{summary}" if summary else error, bounds=OutputBounds(partial=True)),
+            body=body,
+            changes=resources,
+            execution=ConfirmedStop(cancellation_signalled=cancelled),
+        )
+    return ToolSuccess(tool_name=tool_name, output=TextOutput(summary or "patch applied"), body=body, changes=resources)
 
 
 def _strip_heredoc(input_text: str) -> str:
@@ -328,7 +334,7 @@ def _resolve_patch_path(workspace: Path, raw_path: str) -> Path:
 
 def _verify_patch_expected_hashes(
     *,
-    changes: list[dict[str, object]],
+    changes: list[PatchChange],
     expected_hashes: dict[str, str] | None,
     workspace: Path,
     tool_name: str = "edit",
@@ -342,12 +348,10 @@ def _verify_patch_expected_hashes(
     missing_paths: list[str] = []
     affected_paths: list[str] = []
     for change in changes:
-        status = change.get("status")
+        status = change.status
         if status == "A":
             continue
-        raw_path = change.get("old_path") if status == "R" else change.get("path")
-        if not isinstance(raw_path, str):
-            continue
+        raw_path = change.old_path or change.path
         resolved = _resolve_patch_path(workspace, raw_path)
         if not resolved.is_file():
             continue
@@ -395,10 +399,11 @@ def _verify_patch_expected_hashes(
 def _apply_marker_patch(
     patch_text: str,
     *,
-    workspace: Path,
+    context: ToolContext,
     expected_hashes: dict[str, str] | None = None,
     tool_name: str = "edit",
-) -> ToolSuccess[ApplyPatchResultBody]:
+) -> ToolResult:
+    workspace = context.require_workspace().resolve()
     hunks = _parse_marker_patch(patch_text)
     prepared: list[_PreparedMarkerChange] = []
     staged_contents: dict[Path, bytes | None] = {}
@@ -412,6 +417,8 @@ def _apply_marker_patch(
         return staged_contents[path]
 
     for hunk in hunks:
+        if context.abort_signal is not None and context.abort_signal.cancelled:
+            return _patch_result([], tool_name=tool_name, error="patch cancelled before committing files", cancelled=True)
         source = _resolve_patch_path(workspace, hunk.path)
         expected_content = current_content(source)
         if hunk.action == "add":
@@ -451,55 +458,36 @@ def _apply_marker_patch(
                 )
 
     _verify_patch_expected_hashes(
-        changes=[
-            {
-                "path": change.path,
-                "status": change.status,
-                **({"old_path": change.old_path} if change.old_path is not None else {}),
-            }
-            for change in prepared
-        ],
+        changes=[PatchChange(change.path, change.status, change.old_path) for change in prepared],
         expected_hashes=expected_hashes,
         workspace=workspace,
         tool_name=tool_name,
     )
 
-    for change in prepared:
-        target = workspace / change.path
-        old_target = workspace / (change.old_path or change.path)
-        if change.status in {"D", "R"} and (old_target.is_symlink() or old_target.read_bytes() != change.expected_content):
-            raise OSError(errno.ESTALE, "File changed since patch validation", str(old_target))
-        if change.status in {"A", "M", "R"}:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            replace_file(target, change.content.encode("utf-8"), expected_content=change.expected_content if change.status == "M" else None)
-        if change.status in {"D", "R"}:
-            old_target.unlink()
-
     changes: list[PatchChange] = []
-    summary_lines: list[str] = []
     for change in prepared:
-        target = _resolve_patch_path(workspace, change.path)
-        display_path = target.as_posix() if not target.is_relative_to(workspace.resolve()) else target.relative_to(workspace.resolve()).as_posix()
-        old_target = _resolve_patch_path(workspace, change.old_path) if change.old_path is not None else None
-        display_old_path = (
-            old_target.as_posix()
-            if old_target is not None and not old_target.is_relative_to(workspace.resolve())
-            else old_target.relative_to(workspace.resolve()).as_posix()
-            if old_target is not None
-            else None
-        )
-        changes.append(PatchChange(path=display_path, status=change.status, old_path=display_old_path))
-        if change.status == "R":
-            summary_lines.append(f"M {display_old_path} -> {display_path}")
-        else:
-            summary_lines.append(f"{change.status} {display_path}")
+        if context.abort_signal is not None and context.abort_signal.cancelled:
+            return _patch_result(changes, tool_name=tool_name, error="patch cancelled before committing the next operation", cancelled=True)
+        target = Path(change.path)
+        old_target = Path(change.old_path or change.path)
+        display = target.relative_to(workspace).as_posix() if target.is_relative_to(workspace) else target.as_posix()
+        old_display = old_target.relative_to(workspace).as_posix() if old_target.is_relative_to(workspace) else old_target.as_posix()
+        try:
+            if change.status in {"D", "R"} and (old_target.is_symlink() or old_target.read_bytes() != change.expected_content):
+                raise OSError(errno.ESTALE, "File changed since patch validation", str(old_target))
+            if change.status in {"A", "M", "R"}:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                replace_file(target, change.content.encode("utf-8"), expected_content=change.expected_content if change.status == "M" else None)
+                changes.append(PatchChange(display, "A" if change.status == "R" else change.status))
+            if change.status in {"D", "R"}:
+                old_target.unlink()
+                if change.status == "R":
+                    changes.pop()  # The created destination is now a completed move.
+                changes.append(PatchChange(display, change.status, old_display if change.status == "R" else None))
+        except OSError as exc:
+            return _patch_result(changes, tool_name=tool_name, error=f"patch failed while committing {change.path}: {exc}")
 
-    return ToolSuccess(
-        tool_name=tool_name,
-        output=TextOutput("\n".join(summary_lines)),
-        body=ApplyPatchResultBody(changes=tuple(changes), count=len(changes)),
-        changes=tuple(ResourceChange(c.path, _CHANGE_OPERATIONS[c.status], c.old_path) for c in changes),
-    )
+    return _patch_result(changes, tool_name=tool_name)
 
 
 def _decode_c_quoted_path(token: str) -> str | None:
@@ -819,14 +807,12 @@ def _mode_only_expected_modes(patch_text: str) -> dict[str, int]:
 
 def _capture_mode_only_state(
     *,
-    changes: list[dict[str, object]],
+    changes: list[PatchChange],
     workspace: Path,
 ) -> dict[str, tuple[bool, int | None]]:
     state: dict[str, tuple[bool, int | None]] = {}
     for change in changes:
-        path_value = change.get("path")
-        if not isinstance(path_value, str):
-            continue
+        path_value = change.path
         candidate = _resolve_patch_path(workspace, path_value)
         try:
             state[path_value] = (True, candidate.stat().st_mode & 0o7777)
@@ -837,7 +823,7 @@ def _capture_mode_only_state(
 
 def _verify_mode_only_change(
     *,
-    changes: list[dict[str, object]],
+    changes: list[PatchChange],
     expected_modes: dict[str, int],
     before: dict[str, tuple[bool, int | None]],
     workspace: Path,
@@ -846,9 +832,7 @@ def _verify_mode_only_change(
     unchanged_paths: list[str] = []
     invalid_paths: list[str] = []
     for change in changes:
-        path_value = change.get("path")
-        if not isinstance(path_value, str):
-            continue
+        path_value = change.path
         candidate = _resolve_patch_path(workspace, path_value)
         try:
             after = (True, candidate.stat().st_mode & 0o7777)
@@ -868,32 +852,20 @@ def _verify_mode_only_change(
             reason="mode_only_change_not_verified",
             retry_guidance=("Confirm the current file mode and rebuild the mode-only patch against the current file state."),
             details={
-                "affected_paths": [path_value for path_value in (change.get("path") for change in changes) if isinstance(path_value, str)],
+                "affected_paths": [change.path for change in changes],
                 "unchanged_paths": unchanged_paths,
                 "invalid_mode_paths": invalid_paths,
             },
         )
 
 
-def _dedupe_changes(changes: list[dict[str, object]]) -> list[dict[str, object]]:
-    deduped: list[dict[str, object]] = []
-    seen: set[tuple[object, ...]] = set()
-    for change in changes:
-        key = (change.get("status"), change.get("old_path"), change.get("path"))
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(change)
-    return deduped
-
-
-def _changes_from_unified_diff(patch_text: str) -> list[dict[str, object]]:
+def _changes_from_unified_diff(patch_text: str) -> list[PatchChange]:
     try:
         patch_set = PatchSet(patch_text)
     except UnidiffParseError, ValueError:
         return []
 
-    changes: list[dict[str, object]] = []
+    changes: list[PatchChange] = []
     for patched_file in patch_set:
         old_path = None if patched_file.source_file == "/dev/null" else _strip_diff_prefix(patched_file.source_file)
         new_path = None if patched_file.target_file == "/dev/null" else _strip_diff_prefix(patched_file.target_file)
@@ -904,34 +876,33 @@ def _changes_from_unified_diff(patch_text: str) -> list[dict[str, object]]:
             new_path = None
 
         if old_path is None and new_path is not None:
-            changes.append({"path": new_path, "status": "A"})
+            changes.append(PatchChange(path=new_path, status="A"))
         elif old_path is not None and new_path is None:
-            changes.append({"path": old_path, "status": "D"})
+            changes.append(PatchChange(path=old_path, status="D"))
         elif old_path is not None and new_path is not None and old_path != new_path:
-            changes.append({"path": new_path, "old_path": old_path, "status": "R"})
+            changes.append(PatchChange(path=new_path, old_path=old_path, status="R"))
         elif new_path is not None:
-            changes.append({"path": new_path, "status": "M"})
+            changes.append(PatchChange(path=new_path, status="M"))
 
     return changes
 
 
-def _changes_from_patch_metadata(patch_text: str) -> list[dict[str, object]]:
-    changes: list[dict[str, object]] = []
+def _changes_from_patch_metadata(patch_text: str) -> list[PatchChange]:
+    changes: list[PatchChange] = []
     block_old_path: str | None = None
     block_new_path: str | None = None
     patch_old_path: str | None = None
 
     def flush_block() -> None:
-        if block_old_path is None and block_new_path is None:
-            return
-        if block_old_path is None and block_new_path is not None:
-            changes.append({"path": block_new_path, "status": "A"})
-        elif block_old_path is not None and block_new_path is None:
-            changes.append({"path": block_old_path, "status": "D"})
+        if block_new_path is None:
+            if block_old_path is not None:
+                changes.append(PatchChange(path=block_old_path, status="D"))
+        elif block_old_path is None:
+            changes.append(PatchChange(path=block_new_path, status="A"))
         elif block_old_path == block_new_path:
-            changes.append({"path": block_new_path, "status": "M"})
+            changes.append(PatchChange(path=block_new_path, status="M"))
         else:
-            changes.append({"path": block_new_path, "old_path": block_old_path, "status": "R"})
+            changes.append(PatchChange(path=block_new_path, old_path=block_old_path, status="R"))
 
     for line in patch_text.splitlines():
         if line.startswith("diff --git "):
@@ -972,10 +943,10 @@ def _changes_from_patch_metadata(patch_text: str) -> list[dict[str, object]]:
     return changes
 
 
-def _changes_from_patch(patch_text: str) -> list[dict[str, object]]:
+def _changes_from_patch(patch_text: str) -> list[PatchChange]:
     changes = _changes_from_unified_diff(_normalize_patch_text(patch_text))
     changes.extend(_changes_from_patch_metadata(patch_text))
-    return _dedupe_changes(changes)
+    return list(dict.fromkeys(changes))
 
 
 def execute_patch(
@@ -983,8 +954,10 @@ def execute_patch(
     *,
     context: ToolContext,
     tool_name: str = "edit",
-) -> ToolSuccess[ApplyPatchResultBody]:
+) -> ToolResult:
     workspace = context.require_workspace()
+    if context.abort_signal is not None and context.abort_signal.cancelled:
+        return _patch_result([], tool_name=tool_name, error="patch cancelled before committing files", cancelled=True)
     patch_text = arguments.get("patch")
     if not isinstance(patch_text, str):
         raise ValueError(f"{tool_name} requires a string 'patch' argument")
@@ -1013,7 +986,7 @@ def execute_patch(
         )
 
     if _looks_like_marker_patch(patch_text):
-        return _apply_marker_patch(patch_text, workspace=workspace, expected_hashes=expected_hashes, tool_name=tool_name)
+        return _apply_marker_patch(patch_text, context=context, expected_hashes=expected_hashes, tool_name=tool_name)
 
     normalized_patch = _normalize_patch_text(patch_text)
     changes = _changes_from_patch(patch_text)
@@ -1041,7 +1014,7 @@ def execute_patch(
             ),
             details={
                 "git_error": error,
-                "affected_paths": [c.get("path") for c in changes if isinstance(c.get("path"), str)],
+                "affected_paths": [c.path for c in changes],
             },
         )
 
@@ -1056,6 +1029,8 @@ def execute_patch(
     mode_only = _looks_like_mode_only_patch(patch_text)
     mode_only_before = _capture_mode_only_state(changes=changes, workspace=workspace) if mode_only else {}
 
+    if context.abort_signal is not None and context.abort_signal.cancelled:
+        return _patch_result([], tool_name=tool_name, error="patch cancelled before committing files", cancelled=True)
     apply = _run_git_command(["git", "apply", "-"], workspace, patch=normalized_patch)
     if apply.returncode != 0:
         error = apply.stdout or "Patch apply failed"
@@ -1070,7 +1045,7 @@ def execute_patch(
             ),
             details={
                 "git_error": error,
-                "affected_paths": [c.get("path") for c in changes if isinstance(c.get("path"), str)],
+                "affected_paths": [c.path for c in changes],
             },
         )
 
@@ -1082,26 +1057,7 @@ def execute_patch(
             workspace=workspace,
         )
 
-    summary_lines: list[str] = []
-    for c in changes:
-        if c.get("status") == "R":
-            summary_lines.append(f"M {c['old_path']} -> {c['path']}")
-        else:
-            summary_lines.append(f"{c['status']} {c['path']}")
-
-    content = "\n".join(summary_lines) if summary_lines else "patch applied"
-
-    return ToolSuccess(
-        tool_name=tool_name,
-        output=TextOutput(content),
-        changes=tuple(
-            ResourceChange(c.path, _CHANGE_OPERATIONS[c.status], c.old_path) for c in (_patch_change_from_payload(change) for change in changes)
-        ),
-        body=ApplyPatchResultBody(
-            changes=tuple(_patch_change_from_payload(change) for change in changes),
-            count=len(changes),
-        ),
-    )
+    return _patch_result(changes, tool_name=tool_name)
 
 
 __all__ = ["ApplyPatchResultBody", "PatchChange", "execute_patch"]

@@ -17,7 +17,7 @@ not establish source review.
 | `exec/shell_exec.py` | Partial: typed SDK artifact references and consumers reviewed; interception policy, progress boundaries and remaining result semantics pending |
 | `files/__init__.py` | Reviewed: typed Tool wrapper preserves diagnostic failures; shared core/plugin factory |
 | `files/_replace.py` | Reviewed: checked replacement and exclusive atomic creation; cleanup, permissions and race regressions; documented metadata/compare-window limits |
-| `files/apply_patch.py` | Partial: stdin unified diffs, canonical sequential marker preflight and checked commits reviewed; parser, partial-result and cancellation review pending |
+| `files/apply_patch.py` | Partial: stdin unified diffs, typed change pipeline, marker preflight/checked commits, partial results and cancellation boundaries reviewed; parser and unified-process/post-apply review pending |
 | `files/apply_workspace_edit.py` | Partial: strict generated schema, frozen-argument conversion, checked replacement, commit projections, LSP coordinates, query-failure flow, cooperative cancellation and structured partial commits reviewed; final ingress/bounds reconciliation pending |
 | `files/edit_tool.py` | Partial: strict generated ingress, exact replacement, checked commit, diagnostic bounds and cancellation reviewed; diff formatting/bounds and patch delegation review pending |
 | `files/errors.py` | Reviewed: retain only classified diagnostic exception and raising helper |
@@ -1236,3 +1236,26 @@ Validation: 84 existing file/core-builtins/core-vertical/optional-query tests
 passed (115.56s), including restart, governance and argument rejection paths.
 Ruff, formatting, source type checking and CodeGraph synchronization passed.
 Implementation net change: 96 lines removed.
+
+
+## Typed patch changes and marker partial results
+
+PatchChange now flows through parsing, hash/mode checks, deduplication, summaries
+and SDK result projection. Removed ad hoc change dictionaries, internal dictionary
+revalidation, an unused diagnostics collection and custom deduplication; immutable
+dataclass keys use `dict.fromkeys` to preserve first-seen order. Marker and unified
+paths share a small result constructor.
+
+Marker commits record each completed operation immediately. A later OSError or
+cancellation returns the actual committed prefix via body and SDK changes with
+partial output bounds. A move whose destination was created but source unlink
+failed reports a create, not a completed move. Cancellation is checked between
+marker hunks/operations and before unified git apply; running git subprocesses
+remain a separate ownership/cancellation audit item. No rollback mechanism added.
+
+Validation: 86 existing file/codec/fact tests passed (0.74s). Manual second-write
+failure and cancellation probes reported only the first update; a source-unlink
+failure reported only destination creation with source retained. Adjusted the
+existing concurrent-write case for returned ToolFailure; no tests added. Ruff,
+formatting, source type checking and CodeGraph sync passed. Net implementation
+reduction: 44 lines. Parser and unified post-apply verification remain pending.

@@ -1282,11 +1282,12 @@ def test_marker_patch_commit_rejects_changes_after_preflight(tmp_path: Path, mon
         changed.write_bytes(b"concurrent writer\n")
 
     monkeypatch.setattr(apply_patch, "_verify_patch_expected_hashes", concurrent_writer)
-    with pytest.raises(OSError):
-        apply_patch.execute_patch(
-            {"patch": f"*** Begin Patch\n{body}*** End Patch\n", "expectedHashes": {"source.txt": hashlib.sha256(source.read_bytes()).hexdigest()}},
-            context=_context(tmp_path),
-        )
+    result = apply_patch.execute_patch(
+        {"patch": f"*** Begin Patch\n{body}*** End Patch\n", "expectedHashes": {"source.txt": hashlib.sha256(source.read_bytes()).hexdigest()}},
+        context=_context(tmp_path),
+    )
+    assert isinstance(result, ToolFailure)
+    assert result.changes == ()
     assert changed.read_bytes() == b"concurrent writer\n"
     if operation in {"add", "move"}:
         assert source.read_bytes() == b"old\n"
