@@ -61,3 +61,27 @@ def test_copilot_environment_token_resolves_without_an_ambiguous_reference():
     configs = parse_provider_configs_payload({"github-copilot": {"auth": {"method": "token"}}}, source="test", env={name: "test-token"})
     assert configs.github_copilot.auth.token == "test-token"
     assert configs.github_copilot.auth.token_env_var is None
+
+
+@pytest.mark.parametrize("value", [0, -1, True, "30", float("nan"), float("inf"), float("-inf")])
+def test_provider_timeout_requires_a_finite_positive_number(value):
+    from voidcode.capabilities.providers.native.config import parse_provider_configs_payload
+
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        parse_provider_configs_payload({"openai": {"timeout_seconds": value}}, source="test", env={})
+
+
+@pytest.mark.parametrize("value", [None, 1, 0.25])
+def test_provider_timeout_accepts_null_and_positive_numbers(value):
+    from voidcode.capabilities.providers.native.config import parse_provider_configs_payload
+
+    configs = parse_provider_configs_payload({"openai": {"timeout_seconds": value}}, source="test", env={})
+    assert configs.openai.timeout_seconds == value
+
+
+@pytest.mark.parametrize(("field", "value"), [("api_key", 123), ("base_url", False), ("ssl_verify", "false"), ("ssl_verify", 1)])
+def test_provider_config_does_not_coerce_strings_or_booleans(field, value):
+    from voidcode.capabilities.providers.native.config import parse_provider_configs_payload
+
+    with pytest.raises(ValueError, match=field):
+        parse_provider_configs_payload({"endpoint": {field: value}}, source="test", env={})

@@ -4,46 +4,15 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Annotated, Literal, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, ValidationError
 from pydantic.functional_validators import BeforeValidator
 
 from .naming import (
     BUILTIN_PROVIDER_IDS,
-    PROVIDER_LABELS,
     UnknownProviderIdError,
     canonical_provider_id,
 )
 from .provider_table import PROVIDER_TABLE_BY_ID
-
-
-def _parse_optional_boundary_string(value: object) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise ValueError("must be a string when provided")
-    return value
-
-
-def _parse_required_boundary_string(value: object) -> str:
-    if not isinstance(value, str):
-        raise ValueError("must be a string")
-    return value
-
-
-def _parse_optional_boundary_timeout(value: object) -> float | None:
-    if value is None:
-        return None
-    if not isinstance(value, int | float) or isinstance(value, bool) or value <= 0:
-        raise ValueError("must be a number greater than 0 when provided")
-    return float(value)
-
-
-def _parse_optional_boundary_bool(value: object) -> bool | None:
-    if value is None:
-        return None
-    if not isinstance(value, bool):
-        raise ValueError("must be a boolean when provided")
-    return value
 
 
 def _parse_boundary_string_list(value: object) -> tuple[str, ...]:
@@ -90,45 +59,16 @@ _VALID_ENDPOINT_AUTH_SCHEMES: tuple[EndpointAuthScheme, ...] = (
 )
 
 # The wires VoidCode implements. An internal endpoint marker, never user config:
-# it tells the discovery path which listing shape and credential headers the
-# provider's host speaks, and per-model gateway routing reuses it.
+# it identifies the request protocol used by per-model gateway routing.
 type RoutedWire = Literal["openai-chat-completions", "anthropic-messages", "google-generative-ai"]
 
 
-# The ``Field(...)`` range/minimum constraints below mirror what the paired
-# ``BeforeValidator`` already enforces, so the JSON Schema generated from these
-# boundary models (the shipped ``schema/voidcode.config.schema.json``) describes
-# the values the parser really accepts instead of a looser shape.
-# The range/length keywords below are published-contract metadata
-# (``json_schema_extra``), not validation: the paired ``BeforeValidator`` keeps
-# deciding acceptance and its messages, exactly as before these models were made
-# public for schema generation.
-BoundarySchemaNumber = Annotated[float, Field(json_schema_extra={"exclusiveMinimum": 0})]
-BoundarySchemaString = Annotated[str, Field()]
-#: The endpoint auth scheme publishes its enum inside the string branch so the
-#: field also accepts an explicit null (which the parser normalises).
-BoundaryAuthSchemeValue = Annotated[str, Field(json_schema_extra={"enum": list(_VALID_ENDPOINT_AUTH_SCHEMES)})]
-_BoundaryAuthScheme = Annotated[BoundaryAuthSchemeValue | None, BeforeValidator(_parse_optional_boundary_string)]
-#: ``_parse_boundary_string_mapping`` rejects an empty value, so only the map's
-#: values publish a minimum; a plain provider string may be empty.
-BoundarySchemaNonEmptyString = Annotated[str, Field(json_schema_extra={"minLength": 1})]
-BoundaryOptionalString = Annotated[BoundarySchemaString | None, BeforeValidator(_parse_optional_boundary_string)]
-BoundaryRequiredString = Annotated[str, BeforeValidator(_parse_required_boundary_string)]
-BoundaryOptionalTimeout = Annotated[BoundarySchemaNumber | None, BeforeValidator(_parse_optional_boundary_timeout)]
-BoundaryOptionalBool = Annotated[bool | None, BeforeValidator(_parse_optional_boundary_bool)]
+BoundaryOptionalString = StrictStr | None
+BoundaryRequiredString = StrictStr
+BoundaryOptionalTimeout = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)] | None
+BoundaryOptionalBool = StrictBool | None
 BoundaryStringList = Annotated[tuple[str, ...], BeforeValidator(_parse_boundary_string_list)]
-BoundaryStringMapping = Annotated[
-    dict[str, BoundarySchemaNonEmptyString] | None,
-    BeforeValidator(_parse_boundary_string_mapping),
-    Field(json_schema_extra={"propertyNames": {"pattern": ".+"}}),
-]
-
-#: ``providers.custom`` keys may not shadow a built-in provider id (the parser
-#: canonicalises and compares against ``BUILTIN_PROVIDER_IDS``) and may not
-#: contain a ``/``; the pattern is derived from the same provider table.
-#: The alternation is built from the label table's own ids (``[a-z0-9-]`` only in
-#: this repo), so it needs no regex escaping.
-_CUSTOM_PROVIDER_KEY_PATTERN = rf"^(?!(?:{'|'.join(PROVIDER_LABELS)})$)(?!.*[/]).+$"
+BoundaryStringMapping = Annotated[dict[str, str] | None, BeforeValidator(_parse_boundary_string_mapping)]
 
 
 class _ProviderPayloadModel(BaseModel):
@@ -153,10 +93,7 @@ class _AnthropicProviderConfigPayload(_ProviderPayloadModel):
 
 
 class _GoogleProviderAuthConfigPayload(_ProviderPayloadModel):
-    method: BoundaryRequiredString = Field(
-        # ``_parse_google_auth_method`` owns the rejection.
-        json_schema_extra={"enum": list(_VALID_GOOGLE_AUTH_METHODS)},
-    )
+    method: BoundaryRequiredString
     api_key: BoundaryOptionalString = None
     access_token: BoundaryOptionalString = None
     service_account_json_path: BoundaryOptionalString = None
@@ -171,10 +108,7 @@ class _GoogleProviderConfigPayload(_ProviderPayloadModel):
 
 
 class _CopilotProviderAuthConfigPayload(_ProviderPayloadModel):
-    method: BoundaryRequiredString = Field(
-        # ``_parse_copilot_auth_method`` owns the rejection.
-        json_schema_extra={"enum": list(_VALID_COPILOT_AUTH_METHODS)},
-    )
+    method: BoundaryRequiredString
     token: BoundaryOptionalString = None
     token_env_var: BoundaryOptionalString = None
 
@@ -190,7 +124,7 @@ class _ProviderEndpointConfigPayload(_ProviderPayloadModel):
     api_key_env_var: BoundaryOptionalString = None
     base_url: BoundaryOptionalString = None
     auth_header: BoundaryOptionalString = None
-    auth_scheme: _BoundaryAuthScheme = None
+    auth_scheme: BoundaryOptionalString = None
     ssl_verify: BoundaryOptionalBool = None
     timeout_seconds: BoundaryOptionalTimeout = None
     model_map: BoundaryStringMapping = Field(default_factory=dict)
@@ -244,10 +178,7 @@ class ProviderConfigsPayload(_ProviderPayloadModel):
     xiaomi_token_plan_cn: _OpenAICompatibleProviderConfigPayload | None = Field(default=None, alias="xiaomi-token-plan-cn")
     xiaomi_token_plan_sgp: _OpenAICompatibleProviderConfigPayload | None = Field(default=None, alias="xiaomi-token-plan-sgp")
     zenmux: _OpenAICompatibleProviderConfigPayload | None = None
-    custom: dict[str, _ProviderEndpointConfigPayload] = Field(
-        default_factory=dict,
-        json_schema_extra={"propertyNames": {"pattern": _CUSTOM_PROVIDER_KEY_PATTERN}},
-    )
+    custom: dict[str, _ProviderEndpointConfigPayload] = Field(default_factory=dict)
 
 
 def _provider_config_fields() -> dict[str, tuple[str, str]]:

@@ -385,3 +385,21 @@ SDK Tool protocol instead of Any. Namespace docstrings reflect shared capabiliti
 
 Validation: 135 generator/provider/auth-ingress/thinking/usage/stream tests passed
 (32.67s). Ruff, formatting and source type checks passed.
+
+## Provider ingress: strict primitives instead of schema wrappers
+
+Removed unused JSON Schema-only aliases, enum/property metadata and the custom
+provider-name schema regex. Repository-wide search found no schema-generation
+consumer; actual auth-method and custom-name validation still lives in ingress.
+Removed four handwritten primitive validators in favor of existing Pydantic
+StrictStr/StrictBool and a strict positive finite float constraint. Explicit null
+and integer timeout values remain accepted. NaN and infinity, previously accepted
+as timeouts, now fail at configuration entry. String-list and mapping normalizers
+remain because they implement actual null and nonempty-value semantics.
+
+Added active-ingress tests for finite/positive timeouts and rejection of primitive
+coercion. Broader capability audit remains in progress.
+
+Validation: 145 provider/generator/stream tests passed (32.36s); all 28 ingress/
+error tests passed separately after adding four strict-type cases. Ruff and source
+type checks passed. This is focused validation, not a full-suite completion gate.
