@@ -287,3 +287,20 @@ mirror and has no scheduled refresh workflow. User requested upstream model data
 to reduce manual JSON maintenance. Investigated official models.dev JSON APIs
 and OpenRouter model metadata; automated snapshot generation is the proposed next
 step. No source/refresh behavior has been changed yet.
+
+## Official model catalog synchronization
+
+User selected models.dev as authoritative and authorized field adaptation.
+Generator now reads `https://models.dev/api.json` directly, without zstd mirror
+handling, tokenizer routing prerequisite, retag/pricing-only modes or hand-set
+per-model default effort. Shares the actual canonical effort ladder with runtime.
+Maps upstream structured-output capability; converts finite nonnegative per-million
+prices once. Validates generated metadata with the runtime loader before writing.
+Official snapshot has 1170 coding models across 35 supported providers. Added daily
+workflow that tests and proposes the generated snapshot in one reusable PR branch.
+No external PR was created during this session. Protocol quirks and context price
+tier tables still need migration; this batch does not claim all JSON is upstream.
+
+Validation: generated twice from the downloaded official response; generator fixture
+checks new model propagation, capabilities, prices, unknowns and reproducibility.
+133 generator/provider tests passed (33.56s); static checks passed.

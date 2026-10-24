@@ -240,3 +240,18 @@ use the policy and session tool scope to restrict execution or writes.
 set `enabled: false` for each bundled id listed in `core/activation.py` (`BUNDLED_PLUGIN_IDS`).
 The `model` and `providers` configuration remains necessary for model calls, even with no
 plugins. Core defaults use the same provider configuration and authentication as the adapters.
+
+## Model catalog updates
+
+Model specifications and base rates are generated from the official
+[models.dev API](https://models.dev/api.json), rather than edited model by model.
+Run `uv run python scripts/generate_model_catalog.py` to refresh the packaged
+snapshot; `--source api.json` accepts a saved official response for reproducible
+offline generation. Missing source facts remain unknown. The application reads
+the packaged snapshot and does not need network access for catalog lookup.
+
+`.github/workflows/update-model-catalog.yml` runs daily and can also be triggered
+manually. It validates the generated data and provider behavior, then creates or
+updates one catalog refresh PR. GitHub Actions must be allowed to create PRs in
+the repository settings. No automatic merge is configured. Wire/thinking quirks
+and long-context pricing rules remain separate pending their upstream migration.

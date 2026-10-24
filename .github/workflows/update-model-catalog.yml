@@ -1,0 +1,39 @@
+name: Update model catalog
+
+on:
+    schedule:
+        - cron: "17 3 * * *"
+    workflow_dispatch:
+
+permissions:
+    contents: write
+    pull-requests: write
+
+concurrency:
+    group: update-model-catalog
+    cancel-in-progress: false
+
+jobs:
+    update:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v6
+            - uses: astral-sh/setup-uv@v7
+            - run: uv python install 3.14
+            - run: uv sync --extra dev
+            - name: Generate official models.dev snapshot
+              run: uv run python scripts/generate_model_catalog.py
+            - name: Validate generated catalog and provider behavior
+              run: >-
+                  uv run pytest -q tests/unit/plugins/test_model_catalog_generator.py
+                  tests/unit/plugins/test_providers_data.py
+                  tests/unit/plugins/test_providers_reasoning.py
+                  tests/unit/plugins/test_providers_dispatch.py
+            - uses: peter-evans/create-pull-request@v8
+              with:
+                  branch: automation/model-catalog
+                  title: "chore: refresh models.dev catalog"
+                  commit-message: "chore: refresh models.dev catalog"
+                  body: "Regenerated from https://models.dev/api.json and validated against the catalog loader and provider tests."
+                  add-paths: src/voidcode/capabilities/providers/native/model_catalog_data.json
+                  delete-branch: true

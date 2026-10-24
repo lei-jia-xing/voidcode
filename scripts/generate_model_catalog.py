@@ -1,7 +1,7 @@
-"""Generate the bundled model catalog from the models.dev mirror.
+"""Generate the bundled model catalog from the official models.dev API.
 
 Dev-time generator only; never imported by the runtime. Fetches the
-field-pruned models.dev mirror at https://catalog.stencil.so/models.json.zstd
+official JSON endpoint at https://models.dev/api.json
 and emits `src/voidcode/capabilities/providers/native/model_catalog_data.json`, which
 is the providers plugin's only static metadata source.
 
@@ -15,91 +15,42 @@ import argparse
 import json
 import sys
 from collections.abc import Mapping
+from math import isfinite
 from pathlib import Path
 from typing import Final
 
 import httpx
-import zstandard
 
 from voidcode.capabilities.providers.native.api_routes import api_route_for
 from voidcode.capabilities.providers.native.provider_table import PROVIDER_TABLE, PROVIDER_TABLE_BY_ID
+from voidcode.capabilities.providers.native.reasoning_effort import CANONICAL_EFFORTS
 
-CATALOG_URL = "https://catalog.stencil.so/models.json.zstd"
+CATALOG_URL = "https://models.dev/api.json"
 _PROVIDER_PLUGIN = Path(__file__).resolve().parent.parent / "src" / "voidcode" / "capabilities" / "providers" / "native"
 OUTPUT_PATH = _PROVIDER_PLUGIN / "model_catalog_data.json"
-#: Model -> tokenizer routing, extracted from oh-my-pi by
-#: ``scripts/extract_tokenizer_data.py``. The models.dev mirror carries no
-#: ``tokenizer`` field, so this extract is the only source of that identity.
-TOKENIZER_ROUTING_PATH = _PROVIDER_PLUGIN / "tokenizer_routing.json"
-_ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"  # little-endian 0xfd2fb528
-
-# Must stay equal to `CANONICAL_EFFORTS`
-# (src/voidcode/capabilities/providers/native/reasoning_effort.py):
-# the runtime clamps requested effort against these levels, so a level outside
-# the ladder would be unreachable, and a missing one would never be offered.
-CANONICAL_EFFORT_LEVELS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh", "max")
-
 # Canonical provider id -> the upstream models.dev keys its catalog is built
 # from, straight from the one provider table. A provider with no upstream key
 # (a runtime-only gateway) contributes no catalog entry.
 PROVIDER_KEYS: dict[str, tuple[str, ...]] = {row.id: row.models_dev_keys for row in PROVIDER_TABLE if row.models_dev_keys}
-
-#: Models whose default reasoning effort is authored, not derived: upstream
-#: carries no per-model default signal (no `default` key anywhere in
-#: `reasoning_options[]`), so `_reasoning_effort_fields` cannot produce these.
-#: The eight values below were hand-set in commit 153a9a95 and are preserved
-#: here so regenerating the catalog does not silently drop them; Wave W3 owns
-#: the final default-effort semantics.
-DEFAULT_REASONING_EFFORT: dict[tuple[str, str], str] = {
-    ("github-copilot", "kimi-k3"): "max",
-    ("moonshot", "kimi-k3"): "max",
-    ("opencode-zen", "kimi-k3"): "max",
-    ("opencode-go", "kimi-k3"): "max",
-    ("zai", "glm-5.3"): "max",
-    ("zhipuai", "glm-5.3"): "max",
-    ("opencode-go", "glm-5.3"): "max",
-    ("opencode-go", "glm-5.3-flash"): "max",
-}
 
 
 def _fetch_raw() -> bytes:
     response = httpx.get(
         CATALOG_URL,
         headers={
-            "Accept": "application/zstd, application/json",
+            "Accept": "application/json",
             "User-Agent": "voidcode-model-catalog-generator",
         },
         follow_redirects=True,
+        timeout=30,
     )
     response.raise_for_status()
     return response.content
 
 
-def _tokenizer_routing() -> dict[tuple[str, str], str]:
-    """Model -> tokenizer name, from the checked-in omp routing extract.
-
-    The models.dev mirror carries NO ``tokenizer`` field (verified against both
-    the local snapshot and the live endpoint), so the identity cannot come from
-    upstream. It comes from oh-my-pi's own per-model routing table, extracted to
-    ``provider/tokenizer_routing.json`` by
-    ``scripts/extract_tokenizer_data.py`` -- the same generator that ships the
-    vocabularies. Keys are ``(provider_id, model_id)``, both lower-case.
-    """
-    if not TOKENIZER_ROUTING_PATH.exists():
-        raise SystemExit(f"missing {TOKENIZER_ROUTING_PATH}; run scripts/extract_tokenizer_data.py first")
-    raw = json.loads(TOKENIZER_ROUTING_PATH.read_text(encoding="utf-8"))
-    return {(provider.lower(), model.lower()): name for provider, models in raw.items() for model, name in models.items()}
-
-
-def _decode(content: bytes) -> dict[str, object]:
-    if content[:4] == _ZSTD_MAGIC:
-        content = zstandard.ZstdDecompressor().decompress(content)
-    return json.loads(content)
-
-
 def _per_token(cost: dict[str, object], key: str) -> float | None:
     value = cost.get(key)
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not isfinite(value) or value < 0:
         return None
     return float(value) / 1_000_000
 
@@ -118,7 +69,7 @@ def _reasoning_effort_fields(raw: dict[str, object]) -> dict[str, object]:
         None,
     )
     if isinstance(values, list):
-        levels = [level for level in CANONICAL_EFFORT_LEVELS if level in values]
+        levels = [level for level in CANONICAL_EFFORTS if level in values]
         if levels:
             fields["supported_effort_levels"] = levels
     return fields
@@ -167,10 +118,10 @@ def _model_entry(raw: dict[str, object], api: str) -> dict[str, object] | None:
         "api": api,
         "context_window": context_window,
     }
-    for key in ("tool_call", "reasoning"):
-        value = raw.get(key)
+    for source, target in {"tool_call": "supports_tools", "reasoning": "supports_reasoning", "structured_output": "supports_json_mode"}.items():
+        value = raw.get(source)
         if isinstance(value, bool):
-            entry["supports_tools" if key == "tool_call" else "supports_reasoning"] = value
+            entry[target] = value
     for bucket in ("input", "output", "cache_read", "cache_write"):
         rate = _per_token(cost, bucket)
         if rate is not None:
@@ -208,8 +159,7 @@ def _provider_catalog_entries(
     """Every catalog entry one provider contributes from its upstream source keys.
 
     Models that are not callable, deprecated, or carry no context window are
-    dropped; the model id is case-folded. An authored default effort
-    (``DEFAULT_REASONING_EFFORT``) is the last thing applied.
+    dropped; the model id is case-folded. Missing upstream facts stay unknown.
     """
     provider_models: dict[str, dict[str, object]] = {}
     for key in keys:
@@ -230,94 +180,32 @@ def _provider_catalog_entries(
             entry = _model_entry(raw, _model_api(provider_id, model_key, raw))
             if entry is None:
                 continue
-            default_effort = DEFAULT_REASONING_EFFORT.get((provider_id, model_key))
-            if default_effort is not None:
-                entry["default_reasoning_effort"] = default_effort
             provider_models[model_key] = entry
     return provider_models
 
 
-def _refresh_existing_prices(catalog: dict[str, dict[str, dict[str, object]]], payload: dict[str, object]) -> int:
-    refreshed = 0
-    for provider_id, models in catalog.items():
-        source_models: dict[str, dict[str, object]] = {}
-        for key in PROVIDER_KEYS.get(provider_id, ()):
-            provider = payload.get(key)
-            raw_models = provider.get("models") if isinstance(provider, dict) else None
-            if isinstance(raw_models, dict):
-                source_models.update(
-                    (model_id.strip().lower(), raw) for model_id, raw in raw_models.items() if isinstance(model_id, str) and isinstance(raw, dict)
-                )
-        for model_id, entry in models.items():
-            raw = source_models.get(model_id)
-            if raw is None:
-                continue
-            cost = raw.get("cost")
-            cost = cost if isinstance(cost, dict) else {}
-            for bucket in ("input", "output", "cache_read", "cache_write"):
-                field = f"cost_per_{bucket}_token"
-                rate = _per_token(cost, bucket)
-                if rate is None:
-                    entry.pop(field, None)
-                else:
-                    entry[field] = rate
-            refreshed += 1
-    return refreshed
-
-
-def _tag_tokenizers(catalog: dict[str, dict[str, dict[str, object]]], routing: Mapping[tuple[str, str], str]) -> int:
-    """Stamp ``tokenizer`` onto every catalog entry omp routes to an encoding."""
-    tagged = 0
-    for provider_id, models in catalog.items():
-        for model_key, entry in models.items():
-            name = routing.get((provider_id, model_key))
-            if name is None:
-                entry.pop("tokenizer", None)
-                continue
-            entry["tokenizer"] = name
-            tagged += 1
-    return tagged
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", type=Path, help="local models.json.zstd or JSON snapshot; defaults to the canonical mirror")
-    parser.add_argument("--retag-only", action="store_true", help="re-stamp tokenizers without reading the mirror")
-    parser.add_argument("--pricing-only", action="store_true", help="refresh price fields on existing rows, preserving all other catalog data")
+    parser.add_argument("--source", type=Path, help="local models.dev api.json; defaults to the official API")
+    parser.add_argument("--output", type=Path, default=OUTPUT_PATH, help="generated catalog destination")
     args = parser.parse_args(argv)
-    if args.retag_only and (args.source is not None or args.pricing_only):
-        parser.error("--retag-only cannot be combined with --source or --pricing-only")
-    routing = _tokenizer_routing()
+    source = args.source.read_bytes() if args.source is not None else _fetch_raw()
+    payload = json.loads(source)
+    if not isinstance(payload, dict) or not payload:
+        raise ValueError("models.dev response must be a non-empty provider object")
+    catalog = {}
+    for provider_id, keys in PROVIDER_KEYS.items():
+        models = _provider_catalog_entries(provider_id, keys, payload)
+        if models:
+            catalog[provider_id] = models
+    if not catalog:
+        raise ValueError("models.dev response yielded no supported coding models")
+    # Validate before replacing the snapshot, using the runtime's actual loader.
+    from voidcode.capabilities.providers.native.model_catalog import _static_catalog_from_payload
 
-    if args.retag_only:
-        catalog = json.loads(OUTPUT_PATH.read_text(encoding="utf-8"))
-    else:
-        source = args.source.read_bytes() if args.source is not None else _fetch_raw()
-        payload = _decode(source)
-        if args.pricing_only:
-            catalog = json.loads(OUTPUT_PATH.read_text(encoding="utf-8"))
-            refreshed = _refresh_existing_prices(catalog, payload)
-        else:
-            catalog = {}
-            for provider_id, keys in PROVIDER_KEYS.items():
-                provider_models = _provider_catalog_entries(provider_id, keys, payload)
-                if provider_models:
-                    catalog[provider_id] = provider_models
-
-    tagged = (
-        _tag_tokenizers(catalog, routing)
-        if not args.pricing_only
-        else sum("tokenizer" in entry for models in catalog.values() for entry in models.values())
-    )
-    OUTPUT_PATH.write_text(json.dumps(catalog, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    total = sum(len(models) for models in catalog.values())
-    if not args.retag_only and not args.pricing_only:
-        for provider_id, models in catalog.items():
-            print(f"{provider_id}: {len(models)} models")
-    if args.pricing_only:
-        print(f"pricing provenance: {args.source if args.source is not None else CATALOG_URL}; refreshed {refreshed} existing rows")
-    else:
-        print(f"tokenizer routing: {tagged}/{total} catalog entries tagged ({tagged / total:.1%})")
+    _static_catalog_from_payload(catalog)
+    args.output.write_text(json.dumps(catalog, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+    print(f"{CATALOG_URL}: {sum(len(models) for models in catalog.values())} models across {len(catalog)} providers")
     return 0
 
 
