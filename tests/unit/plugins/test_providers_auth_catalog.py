@@ -582,3 +582,18 @@ def test_trace_write_failure_does_not_fail_a_completed_anthropic_request(servers
         assert "Provider trace could not be written" in caplog.text
     finally:
         provider.close()
+
+
+def test_google_timeout_bounds_the_real_sdk_request(servers: _Servers) -> None:
+    server = servers.start_json(delay_seconds=1.0)
+    provider = _provider({"google": {"api_key": "loopback-key", "base_url": server.base_url, "timeout_seconds": 0.1}}, name="google")
+    started = time.monotonic()
+    try:
+        with pytest.raises(ProviderExecutionError) as caught:
+            provider.propose_turn(_request(provider_name="google", model_name="gemini-2.5-flash", raw_model="google/gemini-2.5-flash"))
+        assert caught.value.retryable is True
+        assert caught.value.details["network_failure"] is True
+        assert time.monotonic() - started < 0.8
+        assert len(server.requests) == 1
+    finally:
+        provider.close()

@@ -42,7 +42,7 @@ not establish source review.
 | `providers/native/claude_tokenizer/notation.py` | Pending full source review |
 | `providers/native/config.py` | Partial: dead auth/serialization framework removed; strict single ingress, credential representations and env auth reviewed; remaining normalization review pending |
 | `providers/native/errors.py` | Reviewed: classified errors, SDK text extraction and structured retry hints; removed prose scheduling and duplicate conversion functions |
-| `providers/native/google_native.py` | Pending full source review |
+| `providers/native/google_native.py` | Partial: actual SDK timeout/transport errors, usage, owned-client cache and identity tool mapping reviewed; OAuth, stream cleanup/cancellation, attachments and remaining wire semantics pending |
 | `providers/native/model_catalog.py` | Reviewed static catalog fields/lookups and consumers; removed entire unreferenced remote discovery implementation |
 | `providers/native/model_catalog_data.json` | Pending consumer/data-contract review |
 | `providers/native/model_routing.py` | Reviewed: routed alias/catalog fallback, typed unsupported wires, serialized cache creation and teardown |
@@ -825,3 +825,29 @@ not this vocabulary/helper module; its protocol justification still needs review
 Validation: 148 generator/data/auth/reasoning/stream/lifecycle/error/protocol tests
 passed (28.80s). Ruff/source type checks passed; CodeGraph synchronized. Complete
 capability audit and final full-suite gate remain outstanding.
+
+## Google native adapter: actual SDK timeout and error transport
+
+Source review found timeout_seconds was never passed to Google SDK options. Client
+HttpOptions now carries the configured timeout converted from seconds to positive
+integer milliseconds, with existing configured endpoint/version handling preserved.
+The installed google-genai SDK imports httpx, while our error classifier checked
+httpx2.TransportError; switched to the SDK's actual transport exception family.
+An actual delayed loopback request now stops at its configured budget, remains a
+single request and reports a retryable network failure.
+
+Removed the identity tool-name maps and no-op visible-argument wrapper. Tool names
+stay verbatim and arguments use the existing SDK JSON conversion directly. No
+provider-specific name remapping behavior was removed.
+
+Review also found supplied oauth access tokens are currently sent as API keys.
+Official Gemini OAuth docs specify Authorization: Bearer, not x-goog-api-key:
+https://ai.google.dev/gemini-api/docs/oauth . The installed SDK credential path uses
+Vertex AI mode and needs separate endpoint semantics. User preference requested
+for real OAuth support versus deleting the incomplete mode; no dependent auth
+change made while that choice is pending. Stream cleanup/cancellation, attachment
+metadata and remaining request/response source review are also outstanding.
+
+Validation: 163 generator/data/auth/reasoning/stream/lifecycle/usage/error/protocol
+tests passed (29.05s). Ruff/source type checks passed; CodeGraph synchronized.
+Complete capability audit and final full-suite gate remain outstanding.

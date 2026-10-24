@@ -6,7 +6,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-import httpx2
+import httpx
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError as GoogleAPIError
@@ -144,7 +144,8 @@ class GoogleGenAIProvider:
             # ``credentials`` and ``api_key`` are mutually exclusive in the SDK.
             kwargs["credentials"] = credentials
         base_url = None if config is None else config.base_url
-        if base_url:
+        timeout = None if config is None else config.timeout_seconds
+        if base_url or timeout is not None:
             # A configured endpoint replaces every SDK default (the SDK's own
             # ``_base_url`` resolution gives ``http_options.base_url`` precedence
             # over its host defaults, and its client skips the ADC project lookup
@@ -152,7 +153,11 @@ class GoogleGenAIProvider:
             # -- ``v1beta`` or ``v1beta1`` -- to a URL that already names one, so
             # the version is cleared: a configured base URL is a complete
             # endpoint root and the SDK appends only the resource path.
-            kwargs["http_options"] = types.HttpOptions(base_url=base_url, api_version="")
+            kwargs["http_options"] = types.HttpOptions(
+                base_url=base_url or None,
+                api_version="" if base_url else None,
+                timeout=max(1, int(timeout * 1000)) if timeout is not None else None,
+            )
         project = None if config is None else config.project
         location = None if config is None else config.region
         if credentials is not None:
@@ -174,19 +179,6 @@ class GoogleGenAIProvider:
             # project-only config never moves off the generativelanguage endpoint.
             kwargs.update(vertexai=True, project=project, location=location)
         return genai.Client(**kwargs)
-
-    @staticmethod
-    def _tool_name_maps(request: ProviderTurnRequest) -> tuple[dict[str, str], dict[str, str]]:
-        forward: dict[str, str] = {}
-        reverse: dict[str, str] = {}
-        for name in dict.fromkeys(tool.name for tool in request.available_tools if tool.name):
-            forward[name] = name
-            reverse[name] = name
-        return forward, reverse
-
-    @staticmethod
-    def _visible_arguments(_tool_name: str | None, arguments: Mapping[str, object]) -> dict[str, object]:
-        return json_wire_object(arguments)
 
     @staticmethod
     def _tool_response(message: ProviderMessage) -> dict[str, object]:
@@ -252,7 +244,7 @@ class GoogleGenAIProvider:
                         {
                             "function_call": {
                                 "name": call.tool_name,
-                                "args": self._visible_arguments(call.tool_name, call.arguments or {}),
+                                "args": json_wire_object(call.arguments or {}),
                             }
                         }
                     )
@@ -397,7 +389,7 @@ class GoogleGenAIProvider:
                 payload=payload,
                 source=source,
             )
-        known_network_failure = isinstance(exc, httpx2.TransportError)
+        known_network_failure = isinstance(exc, httpx.TransportError)
         return ProviderExecutionError(
             kind="provider_error",
             provider_name=provider_name,
@@ -564,7 +556,7 @@ class GoogleGenAIProvider:
                 details={"source": "api", "reason": "malformed_tool_call_arguments"},
             )
         return ToolCall(
-            tool_name=self._tool_name_maps(request)[1].get(provider_tool_name, provider_tool_name),
+            tool_name=provider_tool_name,
             arguments=parsed_args,
             tool_call_id=f"{provider_tool_name}_{ordinal + 1}",
         )
