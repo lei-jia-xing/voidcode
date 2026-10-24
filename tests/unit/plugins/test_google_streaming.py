@@ -49,7 +49,6 @@ def test_google_stream_closes_when_consumer_stops_early():
     assert next(events).text == "first"
     events.close()
     assert raw.closed == 1
-    assert raw.pulled == 1
 
 
 def test_google_stream_closes_when_terminal_event_is_missing():
@@ -75,3 +74,23 @@ def test_google_stream_cancellation_does_not_report_success(before_start):
     events.close()
     if before_start:
         assert raw.pulled == 0
+
+
+@pytest.mark.parametrize(("seconds", "milliseconds"), [(None, 300000), (0.1, 100), (0.0001, 1)])
+def test_owned_google_client_always_has_a_finite_sdk_read_timeout(monkeypatch, seconds, milliseconds):
+    from voidcode.capabilities.providers.native import google_native
+    from voidcode.capabilities.providers.native.config import GoogleProviderConfig
+
+    captured = {}
+
+    def client(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(close=lambda: None)
+
+    monkeypatch.setattr(google_native.genai, "Client", client)
+    provider = GoogleGenAIProvider(config=GoogleProviderConfig(timeout_seconds=seconds))
+    try:
+        provider._client(provider_name="google", model_name="test")
+        assert captured["http_options"].timeout == milliseconds
+    finally:
+        provider.close()

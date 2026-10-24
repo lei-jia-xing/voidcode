@@ -25,7 +25,7 @@ from voidcode.sdk.provider import (
 )
 from voidcode.sdk.tools import ToolCall
 
-from ._wire_common import OwnedResource, resolve_extra_request_headers, usage_int
+from ._wire_common import OwnedResource, iter_stream_with_timeout, resolve_extra_request_headers, usage_int
 from .config import GoogleProviderConfig
 from .errors import provider_execution_error_from_payload
 from .model_catalog import static_catalog_metadata
@@ -145,20 +145,18 @@ class GoogleGenAIProvider:
             # ``credentials`` and ``api_key`` are mutually exclusive in the SDK.
             kwargs["credentials"] = credentials
         base_url = None if config is None else config.base_url
-        timeout = None if config is None else config.timeout_seconds
-        if base_url or timeout is not None:
-            # A configured endpoint replaces every SDK default (the SDK's own
-            # ``_base_url`` resolution gives ``http_options.base_url`` precedence
-            # over its host defaults, and its client skips the ADC project lookup
-            # once one is set). The SDK would then append its own version segment
-            # -- ``v1beta`` or ``v1beta1`` -- to a URL that already names one, so
-            # the version is cleared: a configured base URL is a complete
-            # endpoint root and the SDK appends only the resource path.
-            kwargs["http_options"] = types.HttpOptions(
-                base_url=base_url or None,
-                api_version="" if base_url else None,
-                timeout=max(1, int(timeout * 1000)) if timeout is not None else None,
-            )
+        # A configured endpoint replaces every SDK default (the SDK's own
+        # ``_base_url`` resolution gives ``http_options.base_url`` precedence
+        # over its host defaults, and its client skips the ADC project lookup
+        # once one is set). The SDK would then append its own version segment
+        # -- ``v1beta`` or ``v1beta1`` -- to a URL that already names one, so
+        # the version is cleared: a configured base URL is a complete
+        # endpoint root and the SDK appends only the resource path.
+        kwargs["http_options"] = types.HttpOptions(
+            base_url=base_url or None,
+            api_version="" if base_url else None,
+            timeout=max(1, int(self._timeout() * 1000)),
+        )
         project = None if config is None else config.project
         location = None if config is None else config.region
         if credentials is not None:
@@ -562,6 +560,9 @@ class GoogleGenAIProvider:
             tool_call_id=f"{provider_tool_name}_{ordinal + 1}",
         )
 
+    def _timeout(self) -> float:
+        return self.config.timeout_seconds if self.config is not None and self.config.timeout_seconds is not None else 300.0
+
     def stream_turn(self, request: ProviderTurnRequest) -> Iterator[ProviderStreamEvent]:
         provider_name = request.provider_name or self.name
         model_name = request.model_name or "unknown"
@@ -575,11 +576,16 @@ class GoogleGenAIProvider:
             raw_finish: object | None = None
             saw_candidates = False
             tool_call_ordinal = 0
+            raw_stream = self._client(provider_name=provider_name, model_name=model_name).models.generate_content_stream(
+                model=model_name, contents=contents, config=self._config(request, system)
+            )
             with closing(
-                self._client(provider_name=provider_name, model_name=model_name).models.generate_content_stream(
-                    model=model_name,
-                    contents=contents,
-                    config=self._config(request, system),
+                iter_stream_with_timeout(
+                    raw_stream,
+                    timeout_seconds=self._timeout(),
+                    provider_name=provider_name,
+                    model_name=model_name,
+                    aborted=lambda: request.abort_signal is not None and request.abort_signal.cancelled,
                 )
             ) as stream:
                 for chunk in stream:
@@ -627,8 +633,11 @@ class GoogleGenAIProvider:
             yield ProviderStreamEvent(
                 kind="done", done_reason=done_reason, metadata=stream_metadata, usage=self._usage(last) if last is not None else None
             )
-        except ProviderExecutionError:
-            raise
+        except ProviderExecutionError as exc:
+            if exc.kind != "cancelled":
+                raise
+            yield ProviderStreamEvent(kind="error", channel="error", error=exc.message, error_kind="cancelled")
+            yield ProviderStreamEvent(kind="done", done_reason="cancelled")
         except Exception as exc:
             raise self._map_exception(exc, provider_name=provider_name, model_name=model_name, source="stream") from exc
 

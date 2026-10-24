@@ -42,7 +42,7 @@ not establish source review.
 | `providers/native/claude_tokenizer/notation.py` | Pending full source review |
 | `providers/native/config.py` | Partial: dead auth/serialization framework removed; strict single ingress, credential representations and env auth reviewed; remaining normalization review pending |
 | `providers/native/errors.py` | Reviewed: classified errors, SDK text extraction and structured retry hints; removed prose scheduling and duplicate conversion functions |
-| `providers/native/google_native.py` | Partial: SDK timeout/transport errors, usage, owned-client cache, stream ownership/chunk cancellation and identity tool mapping reviewed; OAuth, blocked-read cancellation, attachments and remaining wire semantics pending |
+| `providers/native/google_native.py` | Partial: SDK timeout/transport errors, usage, owned-client cache, stream ownership/chunk cancellation and identity tool mapping reviewed; OAuth, attachments and remaining wire semantics pending; caller cancellation is prompt with documented bounded SDK teardown lag |
 | `providers/native/model_catalog.py` | Reviewed static catalog fields/lookups and consumers; removed entire unreferenced remote discovery implementation |
 | `providers/native/model_catalog_data.json` | Pending consumer/data-contract review |
 | `providers/native/model_routing.py` | Reviewed: routed alias/catalog fallback, typed unsupported wires, serialized cache creation and teardown |
@@ -872,3 +872,39 @@ validation remain outstanding from the preceding Google source review.
 Validation: 118 Google/stream/auth/lifecycle/error/thinking tests passed (19.15s).
 Ruff/source type checks passed; CodeGraph synchronized. Complete capability audit
 and final full-suite gate remain outstanding.
+
+## Shared stream wait: poll cancellation without shrinking network budgets
+
+The existing one-slot stream pump only observed pending cancellation when the full
+queue/network timeout expired. Added monotonic deadlines with 50ms queue waits
+when an abort callback is supplied. Early empty polls continue until the original
+first-event/idle deadline; each delivered item resets the next budget after caller
+processing, preserving prior timeout semantics. Streams without abort callbacks
+still wait directly to the deadline. The function now advertises its actual
+Generator return type so standard contextlib.closing can own it.
+
+Google now reuses this existing pump and its configured timeout (300s default),
+with explicit contextlib cleanup of the wrapper. Pending-abort exceptions map to
+Google's existing error/cancelled-done event shape. Removed the no-prefetch assertion
+from the earlier retained-stream test: bounded one-slot prefetch is permitted;
+observed output and close ownership remain asserted.
+
+Two cooperative stalled-source tests cover first-token and post-delta waits, proving
+cancellation returns before a 5s deadline and wakes/closes the source once. A real
+Google SSE test cancels during a delayed chunk and returns within 1s despite a 3s
+SDK read timeout. This proves caller responsiveness, not forced interruption of
+SDK generator I/O: concurrent generator.close may be rejected while executing;
+the daemon reader can remain until its SDK/socket read finishes or times out.
+No additional thread, watcher, timer or cleanup framework was added in production.
+
+Owned Google clients now always receive a finite SDK HTTP timeout, using the same
+_timeout() value as the pump (300s default). This avoids a finite caller deadline
+paired with an unbounded default SDK read. Three constructor regressions verify
+default, explicit seconds-to-milliseconds and sub-millisecond rounding. Borrowed
+clients retain their own configured transport/read bounds. Cancellation is prompt
+for the caller; SDK I/O teardown can still lag until its bounded read returns.
+
+Validation: final Google/shared-pump/stream/auth/lifecycle/error/thinking suite passed
+all 127 tests (20.00s), including real delayed SSE and timeout requests. Ruff/source
+type checks passed; CodeGraph synchronized. Full capability audit/full-suite gate
+remain outstanding.

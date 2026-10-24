@@ -490,3 +490,28 @@ def test_google_real_sdk_stream_preserves_terminal_and_cancellation_semantics(st
         assert len(server.requests) == 1
     finally:
         provider.close()
+
+
+def test_google_cancel_while_waiting_does_not_wait_for_sdk_timeout(start_sse_server):
+    first = {"candidates": [{"content": {"role": "model", "parts": [{"text": "partial"}]}}]}
+    final = {"candidates": [{"finishReason": "STOP"}]}
+    server = start_sse_server([[(0.0, _frame(first)), (2.0, _frame(final))]])
+    provider = _provider({"google": {"api_key": "loopback-key", "base_url": server.base_url, "timeout_seconds": 3}}, name="google")
+    abort = DummyAbortSignal()
+    request = ProviderTurnRequest(
+        messages=(ProviderMessage("user", "hi"),), provider_name="google", model_name="gemini-2.5-flash", abort_signal=abort
+    )
+    timer = threading.Timer(0.05, lambda: abort.set_cancelled(True))
+    try:
+        stream = provider.stream_turn(request)
+        assert next(stream).text == "partial"
+        started = time.monotonic()
+        timer.start()
+        remaining = list(stream)
+        assert time.monotonic() - started < 1
+        assert remaining[0].error_kind == "cancelled"
+        assert remaining[-1].done_reason == "cancelled"
+        assert not any(event.kind == "delta" for event in remaining)
+    finally:
+        timer.cancel()
+        provider.close()

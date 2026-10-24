@@ -9,10 +9,11 @@ the one-slot transport holder a frozen provider uses to own its client.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterator, Mapping
 from dataclasses import dataclass, field
 from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
+from time import monotonic
 from typing import cast
 
 from voidcode.sdk.provider import ProviderExecutionError
@@ -77,11 +78,12 @@ def iter_stream_with_timeout(
     model_name: str,
     first_event_timeout_seconds: float | None = None,
     aborted: Callable[[], bool] | None = None,
-) -> Iterator[object]:
+) -> Generator[object]:
     """Pull ``stream`` on a worker thread, failing when a chunk stalls.
 
     The SDK stream is consumed off-thread so a chunk that never arrives cannot
-    block the caller: the queue hands control back every ``timeout_seconds``.
+    block the caller. The queue enforces the deadline while polling cancellation
+    every 50ms when an abort callback is supplied.
     ``first_event_timeout_seconds`` bounds the wait for the *first* chunk
     separately from the idle timeout between chunks (OMP arms both at 300s,
     ``utils/idle-iterator.ts:4-7``); it defaults to ``timeout_seconds`` and is
@@ -105,7 +107,7 @@ def iter_stream_with_timeout(
     # (``getOpenAIStreamFirstEventTimeoutMs`` returns ``max(base, idleTimeoutMs)``,
     # ``utils/idle-iterator.ts:90``): with both defaults at 300s the two coincide,
     # and a longer per-chunk timeout widens the first-token allowance with it.
-    first_event_deadline = max(first_event_timeout_seconds or 0.0, timeout_seconds)
+    first_event_budget = max(first_event_timeout_seconds or 0.0, timeout_seconds)
     queue: Queue[tuple[str, object]] = Queue(maxsize=1)
     stop_event = Event()
 
@@ -139,11 +141,12 @@ def iter_stream_with_timeout(
     thread = Thread(target=pull, name=f"voidcode-{provider_name}-stream", daemon=True)
     thread.start()
     seen_first_event = False
+    deadline = monotonic() + first_event_budget
     try:
         while True:
-            wait_seconds = timeout_seconds if seen_first_event else first_event_deadline
+            remaining = max(0.0, deadline - monotonic())
             try:
-                kind, value = queue.get(timeout=wait_seconds)
+                kind, value = queue.get(timeout=min(remaining, 0.05) if aborted is not None else remaining)
             except Empty as exc:
                 if aborted is not None and aborted():
                     raise ProviderExecutionError(
@@ -154,6 +157,8 @@ def iter_stream_with_timeout(
                         retryable=False,
                         fallback_allowed=False,
                     ) from exc
+                if monotonic() < deadline:
+                    continue
                 raise ProviderExecutionError(
                     kind="transient_failure",
                     provider_name=provider_name,
@@ -179,6 +184,7 @@ def iter_stream_with_timeout(
                 raise cast(BaseException, value)
             seen_first_event = True
             yield value
+            deadline = monotonic() + timeout_seconds
     finally:
         stop_event.set()
         close_stream()

@@ -61,3 +61,51 @@ def test_queue_timeout_closes_stream_once_and_releases_worker() -> None:
         list(iter_stream_with_timeout(Stream(), timeout_seconds=0.01, provider_name="test", model_name="model"))
     assert stopped.wait(timeout=5)
     assert closed == [1]
+
+
+@pytest.mark.parametrize("after_partial", [False, True])
+def test_pending_abort_does_not_wait_for_the_network_timeout(after_partial):
+    from threading import Timer
+    from time import monotonic
+
+    abort = Event()
+    release = Event()
+    stopped = Event()
+    closed = []
+
+    class Stream:
+        sent = False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if after_partial and not self.sent:
+                self.sent = True
+                return "partial"
+            try:
+                assert release.wait(timeout=5)
+                raise StopIteration
+            finally:
+                stopped.set()
+
+        def close(self):
+            closed.append(1)
+            release.set()
+
+    stream = iter_stream_with_timeout(Stream(), timeout_seconds=5, provider_name="test", model_name="model", aborted=abort.is_set)
+    if after_partial:
+        assert next(stream) == "partial"
+    timer = Timer(0.05, abort.set)
+    started = monotonic()
+    timer.start()
+    try:
+        with pytest.raises(ProviderExecutionError) as caught:
+            list(stream)
+        assert caught.value.kind == "cancelled"
+        assert monotonic() - started < 1
+        assert stopped.wait(timeout=1)
+        assert closed == [1]
+    finally:
+        timer.cancel()
+        release.set()
