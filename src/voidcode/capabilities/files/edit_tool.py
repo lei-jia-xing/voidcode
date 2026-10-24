@@ -278,9 +278,6 @@ class EditTool:
         path_argument_keys=("path",),
     )
 
-    def __init__(self) -> None:
-        pass
-
     def invoke(
         self,
         call: ToolCall,
@@ -312,22 +309,20 @@ class EditTool:
                 tool_name=self.definition.name,
             )
 
-        if has_edits:
-            return self._invoke_edits_batch(call, workspace=workspace)
+        return self._invoke_replacements(call, workspace=workspace, batch=has_edits)
 
-        return self._invoke_single(call, workspace=workspace)
-
-    def _invoke_edits_batch(
+    def _invoke_replacements(
         self,
         call: ToolCall,
         *,
         workspace: Path,
+        batch: bool,
     ) -> ToolSuccess[EditResultBody]:
         path_value = call.arguments.get("path")
         if not isinstance(path_value, str) or not path_value.strip():
             raise ValueError("edit requires a non-empty string 'path' argument")
 
-        raw_edits = call.arguments.get("edits")
+        raw_edits = call.arguments.get("edits") if batch else [call.arguments]
         if not isinstance(raw_edits, (list, tuple)) or len(raw_edits) == 0:
             raise ValueError("Validation error: edits must contain at least one edit")
 
@@ -397,6 +392,8 @@ class EditTool:
                     replace_all=rep_all,
                 )
             except ValueError as exc:
+                if not batch:
+                    raise
                 message = (
                     f"edit failed at edit #{idx} of {len(parsed_edits)} for {display_path}.\n"
                     f"Prepared edits before failure: {idx - 1}; no file changes were written.\n"
@@ -426,20 +423,21 @@ class EditTool:
                 ) from exc
 
             current_content = next_content
-            diff_step, add_step, del_step = summarize_diff(
-                path=candidate,
-                before=before_step,
-                after=next_content,
-            )
-            step_body = EditResultBody(
-                path=display_path,
-                additions=add_step,
-                deletions=del_step,
-                match_count=match_count,
-                diff=diff_step,
-            )
             applied += 1
-            details.append((idx, step_body))
+            if batch:
+                diff_step, add_step, del_step = summarize_diff(
+                    path=candidate,
+                    before=before_step,
+                    after=next_content,
+                )
+                step_body = EditResultBody(
+                    path=display_path,
+                    additions=add_step,
+                    deletions=del_step,
+                    match_count=match_count,
+                    diff=diff_step,
+                )
+                details.append((idx, step_body))
 
         # All preflight edits passed in memory! Now write once to disk.
         final_text = _convert_line_endings(current_content, ending)
@@ -452,7 +450,12 @@ class EditTool:
             after=final_text,
         )
 
-        content = f"Applied {applied} edits to {display_path}"
+        if batch:
+            content = f"Applied {applied} edits to {display_path}"
+        else:
+            content = "Edit applied successfully."
+            if match_count > 1:
+                content += f" ({match_count} occurrences replaced)"
 
         return ToolSuccess(
             self.definition.name,
@@ -462,106 +465,10 @@ class EditTool:
                 path=display_path,
                 additions=additions,
                 deletions=deletions,
-                match_count=applied,
+                match_count=applied if batch else match_count,
                 diff=diff,
-                applied=applied,
-                edits=tuple(details),
-                content_hash=final_disk_hash,
-            ),
-        )
-
-    def _invoke_single(
-        self,
-        call: ToolCall,
-        *,
-        workspace: Path,
-    ) -> ToolSuccess[EditResultBody]:
-        path_value = call.arguments.get("path")
-        if not isinstance(path_value, str):
-            raise ValueError("edit requires a string path argument")
-
-        old_string = call.arguments.get("oldString")
-        if not isinstance(old_string, str):
-            raise ValueError("edit requires a string oldString argument")
-
-        new_string = call.arguments.get("newString")
-        if not isinstance(new_string, str):
-            raise ValueError("edit requires a string newString argument")
-
-        replace_all = call.arguments.get("replaceAll", False)
-        if not isinstance(replace_all, bool):
-            raise ValueError("edit replaceAll must be a boolean")
-
-        workspace_root = workspace.resolve()
-        requested_path = Path(path_value)
-        candidate = (requested_path if requested_path.is_absolute() else workspace_root / requested_path).resolve()
-        is_external = not candidate.is_relative_to(workspace_root)
-
-        if not candidate.exists():
-            raise ValueError(f"edit target does not exist: {path_value}")
-
-        if not candidate.is_file():
-            raise ValueError(f"edit target is not a file: {path_value}")
-
-        display_path = candidate.as_posix() if is_external else candidate.relative_to(workspace_root).as_posix()
-
-        expected_hash = call.arguments.get("expectedHash")
-        if not isinstance(expected_hash, str):
-            raise_tool_diagnostic(
-                message="edit requires expectedHash containing the current file content SHA-256.",
-                error_kind="tool_input_mismatch",
-                reason="missing_expected_hash",
-                retry_guidance=(
-                    "Use read on the target path, copy its SHA-256 content hash from the output, then retry the edit with that expectedHash."
-                ),
-                details={"path": display_path, "raw_path": path_value},
-            )
-
-        content_old = read_utf8_text(candidate)
-        actual_hash = hashlib.sha256(content_old.encode("utf-8")).hexdigest()
-        if expected_hash != actual_hash:
-            raise_tool_diagnostic(
-                message="Edit rejected because the file changed since it was read (stale edit).",
-                error_kind="stale_edit",
-                reason="content_hash_mismatch",
-                retry_guidance="Read the file again, use the SHA-256 content hash shown in read output, then retry the edit.",
-                details={"expected_hash": expected_hash, "actual_hash": actual_hash, "path": display_path},
-            )
-
-        ending = _detect_line_ending(content_old)
-
-        new_content, match_count = _replace(
-            content_old,
-            old_string,
-            new_string,
-            replace_all=replace_all,
-        )
-
-        new_content = _convert_line_endings(new_content, ending)
-
-        final_bytes = new_content.encode("utf-8")
-        replace_file(candidate, final_bytes, expected_content=content_old.encode("utf-8"))
-        final_disk_hash = hashlib.sha256(final_bytes).hexdigest()
-        diff, additions, deletions = summarize_diff(
-            path=candidate,
-            before=content_old,
-            after=new_content,
-        )
-
-        output = "Edit applied successfully."
-        if match_count > 1:
-            output += f" ({match_count} occurrences replaced)"
-
-        return ToolSuccess(
-            self.definition.name,
-            output=TextOutput(output),
-            changes=(ResourceChange(display_path),),
-            body=EditResultBody(
-                path=display_path,
-                additions=additions,
-                deletions=deletions,
-                match_count=match_count,
-                diff=diff,
+                applied=applied if batch else None,
+                edits=tuple(details) if batch else None,
                 content_hash=final_disk_hash,
             ),
         )

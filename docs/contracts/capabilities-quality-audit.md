@@ -505,3 +505,23 @@ argument-path duplication still need review; cancellation behavior remains pendi
 Validation: 65 file/artifact unit tests and 6 core-builtins/optional-query
 integration tests passed. Ruff and source type checks passed; CodeGraph synced.
 Full capability audit and final full-suite gate remain outstanding.
+
+## Exact edit: consolidate single and batch execution
+
+Single replacements and same-file batches now normalize to one list of exact
+replacements, then share target resolution, expected-hash validation, UTF-8 read,
+in-memory replacement, newline conversion, checked file replacement and final
+projection. Removed the duplicate single-edit method and empty constructor: net
+93 fewer implementation lines. Single-edit replacement failures retain their
+original diagnostic; batches retain prepared-edit counts and no-write-on-preflight
+failure. Only batches construct per-step diffs/results.
+
+Result semantics are deliberate: a single replaceAll reports occurrence count;
+a batch reports number of edit items and each item's occurrence count. Added
+regressions for both shapes so consolidation does not silently alter that contract.
+Single-edit paths now reject whitespace-only paths consistently with batches.
+Patch parsing/mutation and cancellation remain pending audit.
+
+Validation: 67 files/artifact unit tests and 6 core-builtins/optional-query
+integration tests passed. Ruff/source type checks passed; CodeGraph synchronized.
+Complete capability audit and final full-suite validation remain outstanding.

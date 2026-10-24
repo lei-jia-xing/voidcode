@@ -1213,3 +1213,24 @@ def test_edit_commit_preserves_bytes_permissions_and_concurrent_changes(tmp_path
     assert target.read_bytes() == expected
     assert target.stat().st_mode & 0o777 == 0o750
     assert sorted(p.name for p in tmp_path.iterdir()) == ["target.txt"]
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_edit_replace_all_preserves_single_and_batch_result_counts(tmp_path: Path, batch: bool) -> None:
+    from voidcode.capabilities.files.edit_tool import EditTool
+
+    target = tmp_path / "target.txt"
+    target.write_text("old old old\n", encoding="utf-8")
+    edit = {"oldString": "old", "newString": "new", "replaceAll": True}
+    arguments = {"path": "target.txt", "expectedHash": hashlib.sha256(target.read_bytes()).hexdigest()}
+    arguments.update({"edits": [edit]} if batch else edit)
+    result = EditTool().invoke(ToolCall(tool_name="edit", arguments=arguments), context=_context(tmp_path), services=_SERVICES)
+    assert isinstance(result, ToolSuccess)
+    assert target.read_text(encoding="utf-8") == "new new new\n"
+    assert result.body.match_count == (1 if batch else 3)
+    if batch:
+        assert result.body.applied == 1
+        assert result.body.edits[0][1].match_count == 3
+    else:
+        assert result.body.applied is None
+        assert result.body.edits is None
