@@ -24,7 +24,7 @@ not establish source review.
 | `files/gitignore.py` | Reviewed: root-only pathspec matching; removed unused pattern snapshot/property; syntax/order/escape tests |
 | `files/glob_tool.py` | Reviewed: strict ingress, root-relative patterns, traversal/ignore rules, bounded path collection, ordering/error results and cooperative cancellation |
 | `files/grep_tool.py` | Reviewed: strict ingress, literal/regex matching and filters, bounded line/context/result collection, immutable rendering, error handling and cooperative cancellation |
-| `files/read_formats.py` | Partial: notebook pagination/global output budget, SQLite encoded budget/read-only snapshot queries and unknown source version, PDF process cleanup/preview cap reviewed; image and remaining pagination semantics pending |
+| `files/read_formats.py` | Partial: notebook pagination/global output budget, SQLite encoded budget/read-only snapshot queries and unknown source version, PDF snapshot/cleanup/preview and full-text recovery reviewed; notebook image and remaining pagination semantics pending |
 | `files/read_tool.py` | Pending full source review |
 | `files/write_tool.py` | Reviewed: hash/containment/symlink/atomic replace/cancellation; fail visibly on mode errors and always clean temporary files |
 | `frontmatter.py` | Reviewed source/consumers: safe YAML, duplicate/string-key validation, framing/body/bounds; shared parser tests |
@@ -1395,3 +1395,24 @@ schema discovery and row selection remained invisible to the read snapshot, whil
 the writer saw its new row. An explicitly selected empty-name table returned its
 row. Ruff, formatting, targeted source type checking and CodeGraph sync passed.
 Other concurrent SDK/product changes were preserved outside this batch.
+
+
+## Recover clipped PDF text through the same artifact contract
+
+Both file and artifact PDF views now spill the full extracted text whenever the
+preview clips a line, including texts between the 32 KiB preview budget and the
+50 KiB general output budget. Previously those texts lost their full-text field
+without receiving a text_reference, so a clipped tail had no extracted-text entry
+point. Existing line cursors and partial/truncated flags remain unchanged; the
+full text artifact provides access to clipped line content.
+
+PDF source and extracted text now share the source snapshot's temporary directory,
+removing a nested directory lifetime. The extractor's timeout/cancellation/
+kill-and-wait cleanup is retained. Removed redundant local reference variables in
+the format-view renderer. No new dependencies or test cases.
+
+Validation: 94 existing format/file/artifact checks passed (0.90s). Manual file
+and artifact entry probes with a scripted extractor returned complete 42,000-byte
+UTF-8 text artifacts while reporting preview clipping. Ruff, formatting, targeted
+source type checking and CodeGraph sync passed. Notebook image/pagination and the
+remaining read-tool source review are still pending.

@@ -285,7 +285,7 @@ def _render_artifact(
         source_reference = path
         text_reference: str | None = None
         output_artifact: Mapping[str, object] | None = None
-        if len(full_text.encode("utf-8")) > MAX_BYTES:
+        if rendered["truncated_text"] or len(full_text.encode("utf-8")) > MAX_BYTES:
             spilled = _spill_artifact(services, kind="pdf_text", content=full_text, mime="text/plain; charset=utf-8", source=path)
             output_artifact, text_reference = spilled[0], spilled[2]
         rendered.update(source_reference=source_reference, source_artifact=source_artifact)
@@ -1452,11 +1452,9 @@ def _render_format_view(
     full_text = payload.pop("full_text", None)
     source_bytes = payload.pop("source_bytes", None)
     artifacts: list[Mapping[str, object]] = []
-    text_reference: str | None = None
-    if isinstance(full_text, str) and len(full_text.encode("utf-8")) > MAX_BYTES:
+    if isinstance(full_text, str) and (payload.get("truncated_text") is True or len(full_text.encode("utf-8")) > MAX_BYTES):
         spilled = _spill_artifact(services, kind="pdf_text", content=full_text, mime="text/plain; charset=utf-8", source=label)
-        text_reference = spilled[2]
-        payload["text_reference"] = text_reference
+        payload["text_reference"] = spilled[2]
         payload["output_artifact"] = spilled[0]
     payload["source"] = label
 
@@ -1479,7 +1477,6 @@ def _render_format_view(
         image["reference"] = spilled[2]
         image["artifact"] = spilled[0]
         artifacts.append(spilled[0])
-    source_reference: str | None = None
     if view == "pdf" or payload.get("truncated_text") is True or payload.get("raw_reference_required") is True:
         if not isinstance(source_bytes, bytes):
             raise ValueError(f"{view} source snapshot is unavailable")
@@ -1490,8 +1487,7 @@ def _render_format_view(
             mime="application/pdf" if view == "pdf" else "application/json",
             source=label,
         )
-        source_reference = spilled[2]
-        payload["source_reference"] = source_reference
+        payload["source_reference"] = spilled[2]
         payload["source_artifact"] = spilled[0]
     if artifacts:
         payload["artifacts"] = artifacts

@@ -415,73 +415,72 @@ def _extract_pdf(
         raise ValueError("PDF offset and limit must be positive")
     if cancelled is not None and cancelled():
         raise ValueError("PDF text extraction cancelled")
-    with tempfile.TemporaryDirectory(prefix="voidcode-read-pdf-text-") as directory:
-        output = Path(directory) / "text.txt"
-        command = ["pdftotext", "-layout", "-enc", "UTF-8"]
-        if page is not None:
-            command.extend(["-f", str(page), "-l", str(page)])
-        command.extend([str(path), str(output)])
-        try:
-            process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except FileNotFoundError as exc:
-            raise ValueError("PDF text view requires the Linux Poppler `pdftotext` utility") from exc
-        try:
-            deadline = time.monotonic() + PDF_TIMEOUT
-            while process.poll() is None:
-                if cancelled is not None and cancelled():
-                    raise ValueError("PDF text extraction cancelled")
-                if time.monotonic() > deadline:
-                    raise ValueError("PDF text extraction timed out")
-                if output.exists() and output.stat().st_size > PDF_TEXT_BYTES:
-                    raise ValueError(f"PDF extracted text exceeds {PDF_TEXT_BYTES} bytes; select a page")
-                time.sleep(0.01)
-        finally:
-            if process.poll() is None:
-                process.kill()
-            process.wait()
-        if process.returncode:
-            raise ValueError("pdftotext failed: invalid, encrypted, or unreadable PDF")
-        if not output.exists():
-            raise ValueError("pdftotext did not produce output")
-        with output.open("rb") as extracted:
-            raw_text = extracted.read(PDF_TEXT_BYTES + 1)
-        if len(raw_text) > PDF_TEXT_BYTES:
-            raise ValueError(f"PDF extracted text exceeds {PDF_TEXT_BYTES} bytes; select a page")
-        full_text = raw_text.decode("utf-8", errors="strict")
-        if not full_text.strip():
-            raise ValueError("PDF has no extractable text layer; OCR is not performed")
-        lines = full_text.splitlines()
-        if offset > len(lines):
-            raise ValueError(f"PDF text offset {offset} is beyond {len(lines)} extracted lines")
-        selected: list[str] = []
-        used_bytes = 0
-        preview_truncated = False
-        for line in lines[offset - 1 : offset - 1 + min(limit, MAX_ROWS)]:
-            encoded = line.encode("utf-8")
-            available = max(0, PDF_PREVIEW_BYTES - used_bytes - (1 if selected else 0))
-            if len(encoded) > available:
-                prefix = encoded[:available].decode("utf-8", errors="ignore")
-                if prefix:
-                    selected.append(prefix)
-                preview_truncated = True
-                break
-            selected.append(line)
-            used_bytes += len(encoded) + (1 if len(selected) > 1 else 0)
-        next_offset = offset + len(selected) if offset - 1 + len(selected) < len(lines) else None
-        return {
-            "type": "pdf",
-            "source_sha256": source_hash,
-            "page": page,
-            "line_count": len(lines),
-            "offset": offset,
-            "limit": min(limit, MAX_ROWS),
-            "next_offset": next_offset,
-            "raw_content": "\n".join(selected),
-            "full_text": full_text,
-            "truncated_text": preview_truncated,
-            "truncated": next_offset is not None or preview_truncated,
-            "partial": next_offset is not None or preview_truncated,
-        }
+    output = path.with_suffix(".txt")
+    command = ["pdftotext", "-layout", "-enc", "UTF-8"]
+    if page is not None:
+        command.extend(["-f", str(page), "-l", str(page)])
+    command.extend([str(path), str(output)])
+    try:
+        process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except FileNotFoundError as exc:
+        raise ValueError("PDF text view requires the Linux Poppler `pdftotext` utility") from exc
+    try:
+        deadline = time.monotonic() + PDF_TIMEOUT
+        while process.poll() is None:
+            if cancelled is not None and cancelled():
+                raise ValueError("PDF text extraction cancelled")
+            if time.monotonic() > deadline:
+                raise ValueError("PDF text extraction timed out")
+            if output.exists() and output.stat().st_size > PDF_TEXT_BYTES:
+                raise ValueError(f"PDF extracted text exceeds {PDF_TEXT_BYTES} bytes; select a page")
+            time.sleep(0.01)
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+    if process.returncode:
+        raise ValueError("pdftotext failed: invalid, encrypted, or unreadable PDF")
+    if not output.exists():
+        raise ValueError("pdftotext did not produce output")
+    with output.open("rb") as extracted:
+        raw_text = extracted.read(PDF_TEXT_BYTES + 1)
+    if len(raw_text) > PDF_TEXT_BYTES:
+        raise ValueError(f"PDF extracted text exceeds {PDF_TEXT_BYTES} bytes; select a page")
+    full_text = raw_text.decode("utf-8", errors="strict")
+    if not full_text.strip():
+        raise ValueError("PDF has no extractable text layer; OCR is not performed")
+    lines = full_text.splitlines()
+    if offset > len(lines):
+        raise ValueError(f"PDF text offset {offset} is beyond {len(lines)} extracted lines")
+    selected: list[str] = []
+    used_bytes = 0
+    preview_truncated = False
+    for line in lines[offset - 1 : offset - 1 + min(limit, MAX_ROWS)]:
+        encoded = line.encode("utf-8")
+        available = max(0, PDF_PREVIEW_BYTES - used_bytes - (1 if selected else 0))
+        if len(encoded) > available:
+            prefix = encoded[:available].decode("utf-8", errors="ignore")
+            if prefix:
+                selected.append(prefix)
+            preview_truncated = True
+            break
+        selected.append(line)
+        used_bytes += len(encoded) + (1 if len(selected) > 1 else 0)
+    next_offset = offset + len(selected) if offset - 1 + len(selected) < len(lines) else None
+    return {
+        "type": "pdf",
+        "source_sha256": source_hash,
+        "page": page,
+        "line_count": len(lines),
+        "offset": offset,
+        "limit": min(limit, MAX_ROWS),
+        "next_offset": next_offset,
+        "raw_content": "\n".join(selected),
+        "full_text": full_text,
+        "truncated_text": preview_truncated,
+        "truncated": next_offset is not None or preview_truncated,
+        "partial": next_offset is not None or preview_truncated,
+    }
 
 
 def _valid_image(data: bytes, mime: str) -> bool:
