@@ -26,7 +26,7 @@ from voidcode.sdk.tools import ToolCall
 
 from ._wire_common import OwnedResource, resolve_extra_request_headers, usage_int
 from .config import GoogleProviderConfig
-from .errors import parse_provider_api_error
+from .errors import provider_execution_error_from_payload
 from .model_catalog import static_catalog_metadata
 from .reasoning_effort import (
     REASONING_EFFORT_HIGH,
@@ -404,16 +404,11 @@ class GoogleGenAIProvider:
             payload["status_code"] = exc.code
             if isinstance(exc.message, str):
                 payload["message"] = exc.message
-            parsed = parse_provider_api_error(payload)
-            return ProviderExecutionError(
-                kind=parsed.kind,
+            return provider_execution_error_from_payload(
                 provider_name=provider_name,
                 model_name=model_name,
-                message=parsed.message,
-                retryable=parsed.retryable,
-                fallback_allowed=parsed.fallback_allowed,
-                retry_after=parsed.retry_after,
-                details=parsed.details,
+                payload=payload,
+                source=source,
             )
         known_network_failure = isinstance(exc, httpx2.TransportError)
         return ProviderExecutionError(

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from math import isfinite
 from typing import Any
 
 from voidcode.sdk.provider import ProviderErrorKind, ProviderExecutionError
@@ -77,7 +78,7 @@ class ParsedProviderError:
 
 def _recovery_policy_for_kind(kind: ProviderErrorKind) -> tuple[bool | None, bool]:
     if kind == "context_limit":
-        # The runtime owns bounded pruning and larger-window fallback policy.
+        # Classification alone does not decide context recovery.
         return None, True
     if kind in {
         "missing_auth",
@@ -89,7 +90,7 @@ def _recovery_policy_for_kind(kind: ProviderErrorKind) -> tuple[bool | None, boo
     }:
         return False, True
     if kind == "rate_limit":
-        # The runtime's rate-limit lane owns deferral; otherwise use configured fallback.
+        # Rate-limit classification alone does not authorize an immediate retry.
         return None, True
     if kind == "cancelled":
         return False, False
@@ -132,21 +133,13 @@ def _classify_api_error_kind(*, status_code: int | None, code: str | None) -> Pr
     return "provider_error"
 
 
-def parse_provider_api_error(payload: dict[str, Any]) -> ParsedProviderError:
-    return _parse_provider_error(payload, source="api", default_message="provider api error")
-
-
-def parse_provider_stream_error(payload: dict[str, Any]) -> ParsedProviderError:
-    return _parse_provider_error(payload, source="stream", default_message="provider stream error")
-
-
 def _is_terminal_client_status(status_code: int | None) -> bool:
     """Whether a status is a permanent client error: 4xx except 408 and 429."""
     return status_code is not None and 400 <= status_code < 500 and status_code not in {408, 429}
 
 
-def _parse_provider_error(payload: dict[str, Any], *, source: str, default_message: str) -> ParsedProviderError:
-    message = _extract_error_message(payload) or default_message
+def parse_provider_error(payload: dict[str, Any], *, source: str = "api") -> ParsedProviderError:
+    message = _extract_error_message(payload) or f"provider {source} error"
     status_code = _extract_status_code(payload)
     code = _extract_error_code(payload)
     kind = _classify_api_error_kind(status_code=status_code, code=code)
@@ -222,25 +215,6 @@ _MS_PER_SECOND = 1000.0
 _EPOCH_MS_FLOOR = 1_000_000_000_000.0
 _EPOCH_SECONDS_FLOOR = 1_000_000_000.0
 
-_UNIT_SECONDS: dict[str, float] = {
-    "ms": 0.001,
-    "s": 1.0,
-    "sec": 1.0,
-    "m": 60.0,
-    "min": 60.0,
-    "mins": 60.0,
-    "minute": 60.0,
-    "minutes": 60.0,
-    "h": 3600.0,
-    "hr": 3600.0,
-    "hrs": 3600.0,
-    "hour": 3600.0,
-    "hours": 3600.0,
-    "d": 86400.0,
-    "day": 86400.0,
-    "days": 86400.0,
-}
-
 
 def _retry_after_from_value(raw: object) -> float | None:
     """Seconds from one raw hint (a number, a numeric string, or an HTTP date)."""
@@ -297,104 +271,12 @@ def _retry_after_from_header(header: str, raw: object) -> float | None:
     if header == "retry-after-ms":
         # The millisecond header is a plain positive delta: OMP's
         # ``parseRetryAfterMsHeader`` drops anything <= 0 (``utils/retry-after.ts:79-85``).
-        # Only the body's ``retry-after-ms=0`` spelling is a retry-now signal.
         return value / _MS_PER_SECOND if value > 0 else None
     return value
 
 
-def _amount_seconds(match: re.Match[str], *, default_unit: str = "s") -> float | None:
-    value = float(match.group(1))
-    if value <= 0:
-        return None
-    unit = match.group(2) if match.lastindex and match.lastindex > 1 else default_unit
-    return value * _UNIT_SECONDS[unit.lower()]
-
-
-def _reset_after_seconds(match: re.Match[str]) -> float | None:
-    hours, minutes, seconds = (float(group or 0) for group in match.groups())
-    total = hours * 3600 + minutes * 60 + seconds
-    return total if total > 0 else None
-
-
-def _hour_minute_seconds(match: re.Match[str]) -> float | None:
-    hours, minutes = (float(group) for group in match.groups())
-    total = hours * 3600 + minutes * 60
-    return total if total > 0 else None
-
-
-def _millisecond_body_seconds(match: re.Match[str]) -> float:
-    """``retry-after-ms`` in the text: a parsed zero is a retry-now signal."""
-    return int(match.group(1)) / _MS_PER_SECOND
-
-
-#: One body-text timing pattern and the wait its match reports. OMP reads a body by
-#: evaluating every pattern and keeping the longest wait, and a gateway that reports
-#: the wait only in the message is common enough to matter
-#: (``packages/utils/src/fetch-retry.ts:4-29,118-215``).
-_BODY_RETRY_HINTS: tuple[tuple[re.Pattern[str], Callable[[re.Match[str]], float | None]], ...] = (
-    (re.compile(r"retry-after-ms\s*[:=]\s*([0-9]+)", re.IGNORECASE), _millisecond_body_seconds),
-    (re.compile(r"reset after (?:(\d+)h)?(?:(\d+)m)?([0-9.]+)s", re.IGNORECASE), _reset_after_seconds),
-    (re.compile(r"please retry in ([0-9.]+)\s*(ms|s)\b", re.IGNORECASE), _amount_seconds),
-    (re.compile(r'"retryDelay"\s*:\s*"([0-9.]+)\s*(ms|s)"', re.IGNORECASE), _amount_seconds),
-    (re.compile(r"try again in\s+~?\s*([0-9.]+)\s*(ms|sec|s|minutes?|mins?|m|hours?|hrs?|h)\b", re.IGNORECASE), _amount_seconds),
-    (re.compile(r"(?:will\s+)?resets?\s+in\s+~?\s*([0-9.]+)\s*(ms|sec|s|minutes?|mins?|m|hours?|hrs?|h|days?|d)\b", re.IGNORECASE), _amount_seconds),
-    # The compound remainder the generic pattern above truncates: "Resets in 2hr 15min".
-    (re.compile(r"resets?\s+in\s+~?\s*(\d+(?:\.\d+)?)\s*hr\s*(\d+(?:\.\d+)?)\s*min\b", re.IGNORECASE), _hour_minute_seconds),
-)
-
-#: ``reset at`` wall clocks (``utils/fetch-retry.ts:18-25``). voidcode ships no
-#: per-provider reset timezone, so a stamp that omits its zone is read as UTC -- the
-#: same reading the HTTP-date header path uses -- and only settles the wait when no
-#: relative signal exists, which is what OMP does with a naive stamp
-#: (``utils/fetch-retry.ts:135-165,241``).
-_RESET_AT_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(
-        r"(?:will\s+)?reset at\s+([0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:?[0-9]{2})?)",
-        re.IGNORECASE,
-    ),
-    re.compile(r"将在\s*([0-9]{4}-[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2}:[0-9]{2})\s*重置"),
-)
-_ZONE_SUFFIX = re.compile(r"(?:Z|[+-][0-9]{2}:?[0-9]{2})$", re.IGNORECASE)
-
-
-def _body_retry_seconds(message: str) -> tuple[list[float], list[float]]:
-    """The waits a message text reports, as ``(relative, reset-at fallback)``."""
-    relative: list[float] = []
-    fallback: list[float] = []
-    for pattern, seconds in _BODY_RETRY_HINTS:
-        match = pattern.search(message)
-        if match is None:
-            continue
-        value = seconds(match)
-        if value is not None:
-            relative.append(value)
-    for pattern in _RESET_AT_PATTERNS:
-        match = pattern.search(message)
-        if match is None:
-            continue
-        raw = match.group(1).replace(" ", "T")
-        zone_aware = _ZONE_SUFFIX.search(raw) is not None
-        try:
-            retry_at = datetime.fromisoformat(raw)
-        except ValueError:
-            continue
-        if not zone_aware:
-            retry_at = retry_at.replace(tzinfo=UTC)
-        delta = (retry_at - datetime.now(UTC)).total_seconds()
-        if delta > 0:
-            (relative if zone_aware else fallback).append(delta)
-    return relative, fallback
-
-
 def _extract_retry_after(payload: dict[str, Any]) -> float | None:
-    """The longest wait any hint in ``payload`` reports, capped at one hour.
-
-    Every header name is parsed and the maximum across them wins
-    (``utils/retry-after.ts:31-43``); the message text competes in the same maximum,
-    because a parsed ``0`` is a retry-now signal that must survive rather than be
-    dropped in favour of a longer reading. The 3600s cap is voidcode's own (OMP fails
-    fast above its ``maxDelayMs`` instead).
-    """
+    """Longest valid structured retry hint, capped at one hour."""
     candidates: list[float] = []
     for key in ("retry_after", "retry-after"):
         direct = _retry_after_from_value(payload.get(key))
@@ -409,41 +291,20 @@ def _extract_retry_after(payload: dict[str, Any]) -> float | None:
             parsed = _retry_after_from_header(header, value)
             if parsed is not None:
                 candidates.append(parsed)
-    relative, fallback = _body_retry_seconds(_extract_error_message(payload) or "")
-    candidates.extend(relative)
-    if not candidates:
-        candidates.extend(fallback)
+    candidates = [value for value in candidates if isfinite(value) and value >= 0]
     if not candidates:
         return None
     return min(max(candidates), 3600.0)
 
 
-def provider_execution_error_from_api_payload(
+def provider_execution_error_from_payload(
     *,
     provider_name: str,
     model_name: str,
     payload: dict[str, Any],
+    source: str = "api",
 ) -> ProviderExecutionError:
-    parsed = parse_provider_api_error(payload)
-    return ProviderExecutionError(
-        kind=parsed.kind,
-        provider_name=provider_name,
-        model_name=model_name,
-        message=parsed.message,
-        retryable=parsed.retryable,
-        fallback_allowed=parsed.fallback_allowed,
-        retry_after=parsed.retry_after,
-        details=parsed.details,
-    )
-
-
-def provider_execution_error_from_stream_payload(
-    *,
-    provider_name: str,
-    model_name: str,
-    payload: dict[str, Any],
-) -> ProviderExecutionError:
-    parsed = parse_provider_stream_error(payload)
+    parsed = parse_provider_error(payload, source=source)
     return ProviderExecutionError(
         kind=parsed.kind,
         provider_name=provider_name,

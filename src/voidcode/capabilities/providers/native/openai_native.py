@@ -39,8 +39,7 @@ from ._wire_common import (
 )
 from .config import OpenAIProviderConfig, ProviderEndpointConfig
 from .errors import (
-    provider_execution_error_from_api_payload,
-    provider_execution_error_from_stream_payload,
+    provider_execution_error_from_payload,
 )
 from .model_catalog import ProviderModelMetadata, ToolFeedbackMode, static_catalog_metadata, tool_feedback_mode
 from .provider_config import openai_wire_default_base_url
@@ -98,7 +97,7 @@ def _stream_event_error_payload(exc: Exception) -> dict[str, object]:
 
     The SDK's decoder raises parser/model errors directly (``JSONDecodeError``,
     pydantic errors), so they are reported through the same typed payload shape
-    the deleted SSE parser used: ``provider_execution_error_from_stream_payload``
+    the deleted SSE parser used: ``provider_execution_error_from_payload``
     then classifies them as a transient stream failure with ``source``/guidance
     details. Raw parser text is deliberately not forwarded.
     """
@@ -823,8 +822,7 @@ class OpenAIChatCompletionsProvider:
         if isinstance(exc, ProviderExecutionError):
             return exc
         if isinstance(exc, OpenAITransportError):
-            factory = provider_execution_error_from_stream_payload if source == "stream" else provider_execution_error_from_api_payload
-            return factory(provider_name=provider_name, model_name=model_name, payload=exc.payload)
+            return provider_execution_error_from_payload(provider_name=provider_name, model_name=model_name, payload=exc.payload, source=source)
         known_network_failure = isinstance(exc, (httpx2.TransportError, OpenAIAPITimeoutError, OpenAIAPIConnectionError))
         return ProviderExecutionError(
             kind="provider_error",

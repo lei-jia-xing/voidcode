@@ -46,22 +46,6 @@ def _parse_optional_boundary_positive_int(value: object) -> int | None:
     return value
 
 
-def _parse_optional_boundary_nonnegative_int(value: object) -> int | None:
-    if value is None:
-        return None
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise ValueError("must be an integer greater than or equal to 0 when provided")
-    return value
-
-
-def _parse_optional_boundary_nonnegative_float(value: object) -> float | None:
-    if value is None:
-        return None
-    if not isinstance(value, int | float) or isinstance(value, bool) or value < 0:
-        raise ValueError("must be a number greater than or equal to 0 when provided")
-    return float(value)
-
-
 def _parse_optional_boundary_bool(value: object) -> bool | None:
     if value is None:
         return None
@@ -128,9 +112,7 @@ type RoutedWire = Literal["openai-chat-completions", "anthropic-messages", "goog
 # deciding acceptance and its messages, exactly as before these models were made
 # public for schema generation.
 BoundarySchemaNumber = Annotated[float, Field(json_schema_extra={"exclusiveMinimum": 0})]
-BoundarySchemaNonnegativeNumber = Annotated[float, Field(json_schema_extra={"minimum": 0})]
 BoundarySchemaPositiveInt = Annotated[int, Field(json_schema_extra={"minimum": 1})]
-BoundarySchemaNonnegativeInt = Annotated[int, Field(json_schema_extra={"minimum": 0})]
 BoundarySchemaString = Annotated[str, Field()]
 #: The endpoint auth scheme publishes its enum inside the string branch so the
 #: field also accepts an explicit null (which the parser normalises).
@@ -143,8 +125,6 @@ BoundaryOptionalString = Annotated[BoundarySchemaString | None, BeforeValidator(
 BoundaryRequiredString = Annotated[str, BeforeValidator(_parse_required_boundary_string)]
 BoundaryOptionalTimeout = Annotated[BoundarySchemaNumber | None, BeforeValidator(_parse_optional_boundary_timeout)]
 BoundaryOptionalPositiveInt = Annotated[BoundarySchemaPositiveInt | None, BeforeValidator(_parse_optional_boundary_positive_int)]
-BoundaryOptionalNonnegativeInt = Annotated[BoundarySchemaNonnegativeInt | None, BeforeValidator(_parse_optional_boundary_nonnegative_int)]
-BoundaryOptionalNonnegativeFloat = Annotated[BoundarySchemaNonnegativeNumber | None, BeforeValidator(_parse_optional_boundary_nonnegative_float)]
 BoundaryOptionalBool = Annotated[bool | None, BeforeValidator(_parse_optional_boundary_bool)]
 BoundaryStringList = Annotated[tuple[str, ...], BeforeValidator(_parse_boundary_string_list)]
 BoundaryStringMapping = Annotated[
@@ -169,20 +149,12 @@ class _ProviderPayloadModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class _ProviderTransientRetryConfigPayload(_ProviderPayloadModel):
-    max_retries: BoundaryOptionalNonnegativeInt = None
-    base_delay_ms: BoundaryOptionalNonnegativeFloat = None
-    max_delay_ms: BoundaryOptionalNonnegativeFloat = None
-    jitter: BoundaryOptionalBool = None
-
-
 class _OpenAIProviderConfigPayload(_ProviderPayloadModel):
     api_key: BoundaryOptionalString = None
     base_url: BoundaryOptionalString = None
     organization: BoundaryOptionalString = None
     project: BoundaryOptionalString = None
     timeout_seconds: BoundaryOptionalTimeout = None
-    transient_retry: _ProviderTransientRetryConfigPayload | None = None
 
 
 class _AnthropicProviderConfigPayload(_ProviderPayloadModel):
@@ -192,7 +164,6 @@ class _AnthropicProviderConfigPayload(_ProviderPayloadModel):
     beta_headers: BoundaryStringList | None = ()
     cache_retention: Literal["none", "short", "long"] = "short"
     timeout_seconds: BoundaryOptionalTimeout = None
-    transient_retry: _ProviderTransientRetryConfigPayload | None = None
 
 
 class _GoogleProviderAuthConfigPayload(_ProviderPayloadModel):
@@ -211,7 +182,6 @@ class _GoogleProviderConfigPayload(_ProviderPayloadModel):
     project: BoundaryOptionalString = None
     region: BoundaryOptionalString = None
     timeout_seconds: BoundaryOptionalTimeout = None
-    transient_retry: _ProviderTransientRetryConfigPayload | None = None
 
 
 class _CopilotProviderAuthConfigPayload(_ProviderPayloadModel):
@@ -229,7 +199,6 @@ class _CopilotProviderConfigPayload(_ProviderPayloadModel):
     auth: _CopilotProviderAuthConfigPayload | None = None
     base_url: BoundaryOptionalString = None
     timeout_seconds: BoundaryOptionalTimeout = None
-    transient_retry: _ProviderTransientRetryConfigPayload | None = None
 
 
 class _ProviderEndpointConfigPayload(_ProviderPayloadModel):
@@ -241,7 +210,6 @@ class _ProviderEndpointConfigPayload(_ProviderPayloadModel):
     ssl_verify: BoundaryOptionalBool = None
     timeout_seconds: BoundaryOptionalTimeout = None
     model_map: BoundaryStringMapping = Field(default_factory=dict)
-    transient_retry: _ProviderTransientRetryConfigPayload | None = None
 
 
 class _OpenAICompatibleProviderConfigPayload(_ProviderPayloadModel):
@@ -251,7 +219,6 @@ class _OpenAICompatibleProviderConfigPayload(_ProviderPayloadModel):
     ssl_verify: BoundaryOptionalBool = None
     timeout_seconds: BoundaryOptionalTimeout = None
     model_map: BoundaryStringMapping = Field(default_factory=dict)
-    transient_retry: _ProviderTransientRetryConfigPayload | None = None
 
 
 class ProviderConfigsPayload(_ProviderPayloadModel):
@@ -460,27 +427,6 @@ def _canonical_provider_config_key(raw_key: str, *, field_path: str) -> str:
 
 
 @dataclass(frozen=True, slots=True)
-class ProviderTransientRetryConfig:
-    max_retries: int = 3
-    base_delay_ms: float = 1000.0
-    max_delay_ms: float = 10_000.0
-    jitter: bool = True
-
-    def __post_init__(self) -> None:
-        if self.max_retries < 0:
-            raise ValueError("max_retries must be greater than or equal to 0")
-        if self.base_delay_ms < 0:
-            raise ValueError("base_delay_ms must be greater than or equal to 0")
-        if self.max_delay_ms < 0:
-            raise ValueError("max_delay_ms must be greater than or equal to 0")
-        if self.max_delay_ms < self.base_delay_ms:
-            raise ValueError("max_delay_ms must be greater than or equal to base_delay_ms")
-
-
-DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG = ProviderTransientRetryConfig()
-
-
-@dataclass(frozen=True, slots=True)
 class OpenAICompatibleProviderConfig:
     """Configuration shared by named OpenAI-compatible providers.
 
@@ -493,7 +439,6 @@ class OpenAICompatibleProviderConfig:
     ssl_verify: bool | None = None
     timeout_seconds: float | None = None
     model_map: dict[str, str] = field(default_factory=dict)
-    transient_retry: ProviderTransientRetryConfig | None = None
 
 
 # Default endpoint per provider, read from the provider table. Only base URLs
@@ -544,7 +489,6 @@ class OpenAIProviderConfig:
     organization: str | None = None
     project: str | None = None
     timeout_seconds: float | None = None
-    transient_retry: ProviderTransientRetryConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -555,7 +499,6 @@ class AnthropicProviderConfig:
     beta_headers: tuple[str, ...] = ()
     cache_retention: Literal["none", "short", "long"] = "short"
     timeout_seconds: float | None = None
-    transient_retry: ProviderTransientRetryConfig | None = None
     beta_headers_explicit: bool = field(default=False, compare=False, repr=False)
     cache_retention_explicit: bool = field(default=False, compare=False, repr=False)
 
@@ -581,7 +524,6 @@ class GoogleProviderConfig:
     project: str | None = None
     region: str | None = None
     timeout_seconds: float | None = None
-    transient_retry: ProviderTransientRetryConfig | None = None
 
 
 type CopilotAuthMethod = Literal["token", "oauth"]
@@ -601,11 +543,10 @@ class CopilotProviderConfig:
     auth: CopilotProviderAuthConfig | None = None
     base_url: str | None = None
     timeout_seconds: float | None = None
-    transient_retry: ProviderTransientRetryConfig | None = None
 
 
 #: Any configuration entry a built-in provider id can resolve to. Every member
-#: carries a ``base_url`` and a ``transient_retry``, which is what the readers of
+#: carries a ``base_url``, which is what the readers of
 #: an entry actually ask it for.
 type ProviderConfigEntry = (
     OpenAIProviderConfig
@@ -627,7 +568,6 @@ class ProviderEndpointConfig:
     ssl_verify: bool | None = None
     timeout_seconds: float | None = None
     model_map: dict[str, str] = field(default_factory=dict)
-    transient_retry: ProviderTransientRetryConfig | None = None
     openai_organization: str | None = None
     openai_project: str | None = None
     wire: RoutedWire = "openai-chat-completions"
@@ -829,7 +769,6 @@ def _merge_openai_provider_config(
         organization=_prefer_primary(primary.organization, fallback.organization),
         project=_prefer_primary(primary.project, fallback.project),
         timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
-        transient_retry=_prefer_primary(primary.transient_retry, fallback.transient_retry),
     )
 
 
@@ -853,7 +792,6 @@ def _merge_anthropic_provider_config(
         beta_headers_explicit=primary.beta_headers_explicit or fallback.beta_headers_explicit,
         cache_retention_explicit=primary.cache_retention_explicit or fallback.cache_retention_explicit,
         timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
-        transient_retry=_prefer_primary(primary.transient_retry, fallback.transient_retry),
     )
 
 
@@ -871,7 +809,6 @@ def _merge_google_provider_config(
         project=_prefer_primary(primary.project, fallback.project),
         region=_prefer_primary(primary.region, fallback.region),
         timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
-        transient_retry=_prefer_primary(primary.transient_retry, fallback.transient_retry),
     )
 
 
@@ -887,7 +824,6 @@ def _merge_copilot_provider_config(
         auth=_prefer_primary(primary.auth, fallback.auth),
         base_url=_prefer_primary(primary.base_url, fallback.base_url),
         timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
-        transient_retry=_prefer_primary(primary.transient_retry, fallback.transient_retry),
     )
 
 
@@ -909,7 +845,6 @@ def _merge_endpoint_provider_config(
         ssl_verify=_prefer_primary(primary.ssl_verify, fallback.ssl_verify),
         timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
         model_map={**fallback.model_map, **primary.model_map},
-        transient_retry=_prefer_primary(primary.transient_retry, fallback.transient_retry),
     )
 
 
@@ -928,7 +863,6 @@ def _merge_openai_compatible_provider_config(
         ssl_verify=_prefer_primary(primary.ssl_verify, fallback.ssl_verify),
         timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
         model_map={**fallback.model_map, **primary.model_map},
-        transient_retry=_prefer_primary(primary.transient_retry, fallback.transient_retry),
     )
 
 
@@ -1241,10 +1175,6 @@ def _parse_openai_provider_config(
         organization=payload.organization,
         project=payload.project,
         timeout_seconds=payload.timeout_seconds,
-        transient_retry=_parse_transient_retry_config(
-            payload.transient_retry,
-            field_path=_nested_config_field(field_path, "transient_retry"),
-        ),
     )
 
 
@@ -1279,10 +1209,6 @@ def _parse_anthropic_provider_config(
         beta_headers_explicit="beta_headers" in payload.model_fields_set,
         cache_retention_explicit="cache_retention" in payload.model_fields_set,
         timeout_seconds=payload.timeout_seconds,
-        transient_retry=_parse_transient_retry_config(
-            payload.transient_retry,
-            field_path=_nested_config_field(field_path, "transient_retry"),
-        ),
     )
 
 
@@ -1317,10 +1243,6 @@ def _parse_google_provider_config(
         project=payload.project,
         region=payload.region,
         timeout_seconds=payload.timeout_seconds,
-        transient_retry=_parse_transient_retry_config(
-            payload.transient_retry,
-            field_path=_nested_config_field(field_path, "transient_retry"),
-        ),
     )
 
 
@@ -1409,10 +1331,6 @@ def _parse_copilot_provider_config(
         auth=auth,
         base_url=payload.base_url,
         timeout_seconds=payload.timeout_seconds,
-        transient_retry=_parse_transient_retry_config(
-            payload.transient_retry,
-            field_path=_nested_config_field(field_path, "transient_retry"),
-        ),
     )
 
 
@@ -1525,10 +1443,6 @@ def _parse_endpoint_provider_config(
         ssl_verify=payload.ssl_verify,
         timeout_seconds=payload.timeout_seconds,
         model_map=payload.model_map or {},
-        transient_retry=_parse_transient_retry_config(
-            payload.transient_retry,
-            field_path=_nested_config_field(field_path, "transient_retry"),
-        ),
     )
 
 
@@ -1570,38 +1484,6 @@ def _parse_openai_compatible_provider_config(
         ssl_verify=payload.ssl_verify,
         timeout_seconds=payload.timeout_seconds,
         model_map=payload.model_map or {},
-        transient_retry=_parse_transient_retry_config(
-            payload.transient_retry,
-            field_path=_nested_config_field(field_path, "transient_retry"),
-        ),
-    )
-
-
-def _parse_transient_retry_config(
-    raw_value: object,
-    *,
-    field_path: str,
-) -> ProviderTransientRetryConfig | None:
-    if raw_value is None:
-        return None
-    payload = (
-        raw_value
-        if isinstance(raw_value, _ProviderTransientRetryConfigPayload)
-        else _validate_provider_payload_model(
-            raw_value,
-            field_path=field_path,
-            model_type=_ProviderTransientRetryConfigPayload,
-        )
-    )
-    base_delay_ms = DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG.base_delay_ms if payload.base_delay_ms is None else payload.base_delay_ms
-    max_delay_ms = DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG.max_delay_ms if payload.max_delay_ms is None else payload.max_delay_ms
-    if max_delay_ms < base_delay_ms:
-        raise ValueError(f"{_nested_config_field(field_path, 'max_delay_ms')} must be greater than or equal to base_delay_ms")
-    return ProviderTransientRetryConfig(
-        max_retries=(DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG.max_retries if payload.max_retries is None else payload.max_retries),
-        base_delay_ms=base_delay_ms,
-        max_delay_ms=max_delay_ms,
-        jitter=(DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG.jitter if payload.jitter is None else payload.jitter),
     )
 
 
@@ -1621,8 +1503,6 @@ def _serialize_openai_provider_config(
         payload["project"] = provider.project
     if provider.timeout_seconds is not None:
         payload["timeout_seconds"] = provider.timeout_seconds
-    if provider.transient_retry is not None:
-        payload["transient_retry"] = _serialize_transient_retry_config(provider.transient_retry)
     return payload
 
 
@@ -1644,8 +1524,6 @@ def _serialize_anthropic_provider_config(
         payload["cache_retention"] = provider.cache_retention
     if provider.timeout_seconds is not None:
         payload["timeout_seconds"] = provider.timeout_seconds
-    if provider.transient_retry is not None:
-        payload["transient_retry"] = _serialize_transient_retry_config(provider.transient_retry)
     return payload
 
 
@@ -1665,8 +1543,6 @@ def _serialize_google_provider_config(
         payload["region"] = provider.region
     if provider.timeout_seconds is not None:
         payload["timeout_seconds"] = provider.timeout_seconds
-    if provider.transient_retry is not None:
-        payload["transient_retry"] = _serialize_transient_retry_config(provider.transient_retry)
     return payload
 
 
@@ -1700,8 +1576,6 @@ def _serialize_copilot_provider_config(
         payload["base_url"] = provider.base_url
     if provider.timeout_seconds is not None:
         payload["timeout_seconds"] = provider.timeout_seconds
-    if provider.transient_retry is not None:
-        payload["transient_retry"] = _serialize_transient_retry_config(provider.transient_retry)
     return payload
 
 
@@ -1743,8 +1617,6 @@ def _serialize_endpoint_provider_config(
         payload["timeout_seconds"] = provider.timeout_seconds
     if provider.model_map:
         payload["model_map"] = dict(provider.model_map)
-    if provider.transient_retry is not None:
-        payload["transient_retry"] = _serialize_transient_retry_config(provider.transient_retry)
     return payload
 
 
@@ -1766,20 +1638,7 @@ def _serialize_openai_compatible_provider_config(
         payload["timeout_seconds"] = provider.timeout_seconds
     if provider.model_map:
         payload["model_map"] = dict(provider.model_map)
-    if provider.transient_retry is not None:
-        payload["transient_retry"] = _serialize_transient_retry_config(provider.transient_retry)
     return payload
-
-
-def _serialize_transient_retry_config(
-    retry_config: ProviderTransientRetryConfig,
-) -> dict[str, object]:
-    return {
-        "max_retries": retry_config.max_retries,
-        "base_delay_ms": retry_config.base_delay_ms,
-        "max_delay_ms": retry_config.max_delay_ms,
-        "jitter": retry_config.jitter,
-    }
 
 
 def _parse_custom_endpoint_provider_configs(

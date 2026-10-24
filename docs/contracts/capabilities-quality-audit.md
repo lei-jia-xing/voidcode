@@ -43,7 +43,7 @@ not establish source review.
 | `providers/native/claude_tokenizer/normalize.py` | Pending full source review |
 | `providers/native/claude_tokenizer/notation.py` | Pending full source review |
 | `providers/native/config.py` | Pending full source review |
-| `providers/native/errors.py` | Pending full source review |
+| `providers/native/errors.py` | Reviewed: classified errors, SDK text extraction and structured retry hints; removed prose scheduling and duplicate conversion functions |
 | `providers/native/google_native.py` | Pending full source review |
 | `providers/native/model_catalog.py` | Reviewed static catalog fields/lookups and consumers; removed entire unreferenced remote discovery implementation |
 | `providers/native/model_catalog_data.json` | Pending consumer/data-contract review |
@@ -246,3 +246,23 @@ The four deleted adapter modules have no SDK/public plugin registration contract
 Validation: 120 provider tests passed (33.02s); the final gateway-default change
 then passed 15 lifecycle tests, including real SDK organization/project preservation.
 Ruff, formatting and source type checks passed.
+
+## Error parsing and unused retry configuration
+
+Removed natural-language retry timing guesses, date/timezone assumptions and unit
+regex tables. Keep structured fields/headers and reject negative/non-finite waits.
+Unified API/stream error parsing and conversion; Google streaming failures now
+retain stream identity. No new retry library was introduced: source inspection
+confirmed there is no provider retry executor in the current core or dispatch.
+The prior assertion that core already owns an executing retry loop was incorrect.
+
+Removed unused `transient_retry` configuration payload/domain/default classes,
+merge/parse/serialize branches and orphan numeric validators. Strict ingress now
+rejects this ineffective option rather than accepting a promise that never runs.
+Updated configuration documentation. SDK error hints remain descriptive contract
+fields, not an automatic replay mechanism. A future explicit retry feature may use
+Tenacity, but adding it during cleanup would expand product behavior.
+
+Validation: 131 provider tests passed (33.04s), followed by 11 focused error
+tests including rejection of the ineffective transient_retry setting. Ruff,
+formatting and source type checks passed.

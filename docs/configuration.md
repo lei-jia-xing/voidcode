@@ -88,7 +88,7 @@ Each key is a provider name matching `[a-z][a-z0-9_-]*`, and it must be declared
 |---|---|---|
 | `api_key` | string | Optional. When omitted, the core falls back to `<PROVIDER>_API_KEY` in the environment, uppercased with `-` replaced by `_` (for example `openai` → `OPENAI_API_KEY`). |
 | `base_url` | string | Required for every configured provider. |
-| *any other field* | any JSON value | Passed to the declaring plugin verbatim and validated there against that plugin's own configuration schema. The core assigns no vendor meaning to them: for OpenAI-wire providers the plugin accepts `organization`, `project`, `timeout_seconds`, and `transient_retry`. `api_key` and `base_url` may not be repeated here. |
+| *any other field* | any JSON value | Passed to the declaring plugin verbatim and validated there against that plugin's own configuration schema. The core assigns no vendor meaning to them: for OpenAI-wire providers the plugin accepts `organization`, `project`, and `timeout_seconds`. `api_key` and `base_url` may not be repeated here. |
 
 Credentials never reach events or revisions, which carry digests only: resolved credentials are written only into the private 0600 snapshot inside the state directory. The core never writes environment-resolved keys back to the workspace; an `api_key` written explicitly in `voidcode.json` stays where the user put it.
 

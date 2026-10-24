@@ -41,8 +41,7 @@ from ._wire_common import (
 )
 from .config import AnthropicProviderConfig
 from .errors import (
-    provider_execution_error_from_api_payload,
-    provider_execution_error_from_stream_payload,
+    provider_execution_error_from_payload,
 )
 from .model_catalog import static_catalog_metadata
 from .provider_config import anthropic_wire_default_base_url
@@ -575,8 +574,7 @@ class AnthropicMessagesProvider:
         if isinstance(exc, ProviderExecutionError):
             return exc
         if isinstance(exc, AnthropicTransportError):
-            factory = provider_execution_error_from_stream_payload if source == "stream" else provider_execution_error_from_api_payload
-            return factory(provider_name=provider_name, model_name=model_name, payload=exc.payload)
+            return provider_execution_error_from_payload(provider_name=provider_name, model_name=model_name, payload=exc.payload, source=source)
         known_network_failure = isinstance(exc, (httpx2.TransportError, AnthropicAPITimeoutError, AnthropicAPIConnectionError))
         return ProviderExecutionError(
             kind="provider_error",
