@@ -85,3 +85,29 @@ def test_provider_config_does_not_coerce_strings_or_booleans(field, value):
 
     with pytest.raises(ValueError, match=field):
         parse_provider_configs_payload({"endpoint": {field: value}}, source="test", env={})
+
+
+@pytest.mark.parametrize(
+    "auth",
+    [
+        {"method": "oauth", "access_token": "supplied-token"},
+        {"method": "service_account", "service_account_json_path": "account.json"},
+    ],
+)
+def test_google_non_key_auth_ignores_ambient_api_key(auth):
+    from voidcode.capabilities.providers.native.config import parse_provider_configs_payload
+    from voidcode.capabilities.providers.native.provider_table import PROVIDER_TABLE_BY_ID
+
+    name = PROVIDER_TABLE_BY_ID["google"].env_vars[0]
+    configs = parse_provider_configs_payload({"google": {"auth": auth}}, source="test", env={name: "ambient-key"})
+    assert configs.google.auth.method == auth["method"]
+    assert configs.google.auth.api_key is None
+
+
+def test_google_oauth_still_rejects_an_explicit_api_key():
+    from voidcode.capabilities.providers.native.config import parse_provider_configs_payload
+
+    with pytest.raises(ValueError, match="api_key.*must not be set"):
+        parse_provider_configs_payload(
+            {"google": {"auth": {"method": "oauth", "access_token": "token", "api_key": "explicit-key"}}}, source="test", env={}
+        )

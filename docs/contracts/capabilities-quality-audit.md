@@ -403,3 +403,22 @@ coercion. Broader capability audit remains in progress.
 Validation: 145 provider/generator/stream tests passed (32.36s); all 28 ingress/
 error tests passed separately after adding four strict-type cases. Ruff and source
 type checks passed. This is focused validation, not a full-suite completion gate.
+
+## Provider ingress: consume validated payloads once
+
+All eight private shape/auth converters are called only after the top-level
+ProviderConfigsPayload validator has produced their typed payload models.
+Removed their unreachable raw-object validation fallbacks, typed the converter
+inputs, removed three unused field-path parameters, and dropped duplicate custom
+mapping shape checks. Runtime callers continue through one strict public ingress.
+
+Found a credential bug during this review: Google OAuth and service-account
+configs inherited an ambient API key and then rejected themselves as conflicting.
+Only api_key mode now reads its environment fallback. Explicit conflicting keys
+still fail. Added OAuth/service-account ambient-key tests and an explicit-conflict
+regression. Remaining converter work includes simplifying literal normalization
+and reviewing endpoint/header handling; this does not complete capability audit.
+
+Validation: 149 provider/generator/stream tests passed (32.26s); the final ingress/
+error suite passed all 31 cases after the Google fix. Ruff and source type checks
+passed; CodeGraph synchronized. Full-suite completion gate remains outstanding.

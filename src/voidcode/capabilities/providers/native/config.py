@@ -645,24 +645,23 @@ def _validate_provider_payload_model[TModel: BaseModel](
 
 def _parse_provider_config_entry(
     wire: _ProviderWire,
-    raw_value: object,
+    payload: ProviderConfigsPayload,
     *,
     field_path: str,
     env: Mapping[str, str],
 ) -> ProviderConfigEntry | None:
-    """Parse one ``providers.<id>`` block through its shape's parser."""
+    """Resolve one already validated provider block through its shape's parser."""
+    raw_value = getattr(payload, wire.field_name)
     match wire.shape:
         case "openai":
             return _parse_openai_provider_config(
                 raw_value,
-                field_path=field_path,
                 env=env,
                 api_key_env_var=wire.env_vars[0],
             )
         case "anthropic":
             return _parse_anthropic_provider_config(
                 raw_value,
-                field_path=field_path,
                 env=env,
                 api_key_env_var=wire.env_vars[0],
             )
@@ -691,7 +690,6 @@ def _parse_provider_config_entry(
         case "openai_compatible":
             return _parse_openai_compatible_provider_config(
                 raw_value,
-                field_path=field_path,
                 env=env,
                 api_key_env_var=wire.env_vars[0],
                 fallback_api_key_env_vars=wire.env_vars[1:],
@@ -718,7 +716,7 @@ def parse_provider_configs_payload(
         {
             wire.field_name: _parse_provider_config_entry(
                 wire,
-                getattr(payload, wire.field_name),
+                payload,
                 field_path=_nested_config_field(source, wire.payload_key),
                 env=environment,
             )
@@ -733,23 +731,13 @@ def parse_provider_configs_payload(
 
 
 def _parse_openai_provider_config(
-    raw_value: object,
+    payload: _OpenAIProviderConfigPayload | None,
     *,
-    field_path: str,
     env: Mapping[str, str],
     api_key_env_var: str,
 ) -> OpenAIProviderConfig | None:
-    if raw_value is None:
+    if payload is None:
         return None
-    payload = (
-        raw_value
-        if isinstance(raw_value, _OpenAIProviderConfigPayload)
-        else _validate_provider_payload_model(
-            raw_value,
-            field_path=field_path,
-            model_type=_OpenAIProviderConfigPayload,
-        )
-    )
 
     api_key = payload.api_key
     if api_key is None:
@@ -764,23 +752,13 @@ def _parse_openai_provider_config(
 
 
 def _parse_anthropic_provider_config(
-    raw_value: object,
+    payload: _AnthropicProviderConfigPayload | None,
     *,
-    field_path: str,
     env: Mapping[str, str],
     api_key_env_var: str,
 ) -> AnthropicProviderConfig | None:
-    if raw_value is None:
+    if payload is None:
         return None
-    payload = (
-        raw_value
-        if isinstance(raw_value, _AnthropicProviderConfigPayload)
-        else _validate_provider_payload_model(
-            raw_value,
-            field_path=field_path,
-            model_type=_AnthropicProviderConfigPayload,
-        )
-    )
 
     api_key = payload.api_key
     if api_key is None:
@@ -796,23 +774,14 @@ def _parse_anthropic_provider_config(
 
 
 def _parse_google_provider_config(
-    raw_value: object,
+    payload: _GoogleProviderConfigPayload | None,
     *,
     field_path: str,
     env: Mapping[str, str],
     api_key_env_var: str,
 ) -> GoogleProviderConfig | None:
-    if raw_value is None:
+    if payload is None:
         return None
-    payload = (
-        raw_value
-        if isinstance(raw_value, _GoogleProviderConfigPayload)
-        else _validate_provider_payload_model(
-            raw_value,
-            field_path=field_path,
-            model_type=_GoogleProviderConfigPayload,
-        )
-    )
 
     auth = _parse_google_auth_config(
         payload.auth,
@@ -830,28 +799,19 @@ def _parse_google_provider_config(
 
 
 def _parse_google_auth_config(
-    raw_value: object,
+    payload: _GoogleProviderAuthConfigPayload | None,
     *,
     field_path: str,
     env: Mapping[str, str],
     api_key_env_var: str,
 ) -> GoogleProviderAuthConfig | None:
-    if raw_value is None:
+    if payload is None:
         return None
-    payload = (
-        raw_value
-        if isinstance(raw_value, _GoogleProviderAuthConfigPayload)
-        else _validate_provider_payload_model(
-            raw_value,
-            field_path=field_path,
-            model_type=_GoogleProviderAuthConfigPayload,
-        )
-    )
 
     method = _parse_google_auth_method(payload.method, field_path=field_path)
 
     api_key = payload.api_key
-    if api_key is None:
+    if method == "api_key" and api_key is None:
         api_key = env.get(api_key_env_var)
     access_token = payload.access_token
     service_account_json_path = payload.service_account_json_path
@@ -886,23 +846,14 @@ def _parse_google_auth_config(
 
 
 def _parse_copilot_provider_config(
-    raw_value: object,
+    payload: _CopilotProviderConfigPayload | None,
     *,
     field_path: str,
     env: Mapping[str, str],
     token_env_var: str,
 ) -> CopilotProviderConfig | None:
-    if raw_value is None:
+    if payload is None:
         return None
-    payload = (
-        raw_value
-        if isinstance(raw_value, _CopilotProviderConfigPayload)
-        else _validate_provider_payload_model(
-            raw_value,
-            field_path=field_path,
-            model_type=_CopilotProviderConfigPayload,
-        )
-    )
 
     auth = _parse_copilot_auth_config(
         payload.auth,
@@ -918,23 +869,14 @@ def _parse_copilot_provider_config(
 
 
 def _parse_copilot_auth_config(
-    raw_value: object,
+    payload: _CopilotProviderAuthConfigPayload | None,
     *,
     field_path: str,
     env: Mapping[str, str],
     default_token_env_var: str,
 ) -> CopilotProviderAuthConfig | None:
-    if raw_value is None:
+    if payload is None:
         return None
-    payload = (
-        raw_value
-        if isinstance(raw_value, _CopilotProviderAuthConfigPayload)
-        else _validate_provider_payload_model(
-            raw_value,
-            field_path=field_path,
-            model_type=_CopilotProviderAuthConfigPayload,
-        )
-    )
 
     method = _parse_copilot_auth_method(payload.method, field_path=field_path)
 
@@ -955,24 +897,15 @@ def _parse_copilot_auth_config(
 
 
 def _parse_endpoint_provider_config(
-    raw_value: object,
+    payload: _ProviderEndpointConfigPayload | None,
     *,
     field_path: str,
     env: Mapping[str, str],
     default_api_key_env_var: str,
     default_base_url_env_var: str | None = None,
 ) -> ProviderEndpointConfig | None:
-    if raw_value is None:
+    if payload is None:
         return None
-    payload = (
-        raw_value
-        if isinstance(raw_value, _ProviderEndpointConfigPayload)
-        else _validate_provider_payload_model(
-            raw_value,
-            field_path=field_path,
-            model_type=_ProviderEndpointConfigPayload,
-        )
-    )
 
     api_key = payload.api_key
     api_key_env_var = payload.api_key_env_var
@@ -1004,24 +937,14 @@ def _parse_endpoint_provider_config(
 
 
 def _parse_openai_compatible_provider_config(
-    raw_value: object,
+    payload: _OpenAICompatibleProviderConfigPayload | None,
     *,
-    field_path: str,
     env: Mapping[str, str],
     api_key_env_var: str,
     fallback_api_key_env_vars: tuple[str, ...] = (),
 ) -> OpenAICompatibleProviderConfig | None:
-    if raw_value is None:
+    if payload is None:
         return None
-    payload = (
-        raw_value
-        if isinstance(raw_value, _OpenAICompatibleProviderConfigPayload)
-        else _validate_provider_payload_model(
-            raw_value,
-            field_path=field_path,
-            model_type=_OpenAICompatibleProviderConfigPayload,
-        )
-    )
 
     api_key = payload.api_key
     api_key_env = payload.api_key_env_var
@@ -1045,17 +968,11 @@ def _parse_openai_compatible_provider_config(
 
 
 def _parse_custom_endpoint_provider_configs(
-    raw_value: object,
+    payload: dict[str, _ProviderEndpointConfigPayload],
     *,
     field_path: str,
     env: Mapping[str, str],
 ) -> dict[str, ProviderEndpointConfig]:
-    if raw_value is None:
-        return {}
-    if not isinstance(raw_value, dict):
-        raise ValueError(f"{field_path} must be an object when provided")
-
-    payload = raw_value
     parsed: dict[str, ProviderEndpointConfig] = {}
     spelled: dict[str, str] = {}
     for raw_provider_name, provider_payload in payload.items():
