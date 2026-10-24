@@ -13,7 +13,7 @@ not establish source review.
 | `__init__.py` | Reviewed: documentation-only shared capability boundary |
 | `exec/__init__.py` | Pending full source review |
 | `exec/args.py` | Reviewed source/consumers: three small nonempty field validators used by strict exec argument models |
-| `exec/background_process.py` | Pending full source review |
+| `exec/background_process.py` | Partial: strict persisted identity ingress, UTF-8/CRLF log pages and final readiness draining reviewed; state duplication, scan ceiling/cursor and remaining lifecycle review pending |
 | `exec/shell_exec.py` | Pending full source review |
 | `files/__init__.py` | Reviewed: typed Tool wrapper preserves diagnostic failures; shared core/plugin factory |
 | `files/_replace.py` | Reviewed: checked replacement and exclusive atomic creation; cleanup, permissions and race regressions; documented metadata/compare-window limits |
@@ -1021,3 +1021,24 @@ retention behavior remains intact. No compatibility field or fallback retained.
 Validation: 218 provider/generator/stream tests passed on this worktree before the
 continuation; reviewed the unchanged diff again. Ruff/source checks are revalidated
 with the commit gate. Full capabilities objective remains open.
+
+## Background output: preserve byte-page boundaries and final readiness logs
+
+Log scans now collect bounded raw byte chunks and decode once, replacing repeated
+page-text concatenation. UTF-8 codepoints and CRLF split across SDK pages no longer
+become replacement characters or extra lines. Readiness polling keeps its bounded
+tail as bytes and decodes the combined window, so split characters can be recovered
+when the next page arrives without introducing an incremental-decoder abstraction.
+
+Readiness aggregates liveness across both reads and waits for both streams' EOF
+before concluding an exited process never became ready. It no longer discards
+unread final pages or misses stdout written between a live stdout read and an
+exited stderr read. Deadline and literal per-line matching stay unchanged.
+Replaced the handwritten nonempty stdin validator with Field(min_length=1) and
+removed obsolete runtime/P4 migration prose from the module header.
+
+Four regressions cover tiny UTF-8/CRLF byte pages, multi-page ready text for both
+running and exited processes, and exit between stream reads. All 102 background/
+shell/core-process/lease tests passed (34.43s); Ruff/source type checks passed.
+The existing 8MiB line-scan ceiling and byte-cursor product choice remain unresolved;
+this does not claim a complete background_process source audit.

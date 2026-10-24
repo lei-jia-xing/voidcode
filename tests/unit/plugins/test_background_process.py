@@ -749,3 +749,47 @@ def test_corrupt_process_state_is_not_an_empty_or_fabricated_inventory(tmp_path:
     with pytest.raises(ValueError):
         _invoke({"op": "ps"}, tmp_path, services)
     assert services.names() == ["get_state"]
+
+
+def test_log_pages_preserve_utf8_and_crlf_across_byte_boundaries(tmp_path, monkeypatch):
+    from voidcode.capabilities.exec import background_process
+
+    monkeypatch.setattr(background_process, "_LOG_PAGE_BYTES", 2)
+    handle = _handle("proc-split", pid=7, running=False, exit_code=0)
+    services = _FakeServices(
+        handles=[handle], logs={("proc-split", "stdout"): "甲\r\n乙\r\n".encode()}, state=_state(_persisted(handle, state="exited"))
+    )
+    result = _invoke({"op": "logs", "process_id": "proc-split", "stream": "stdout"}, tmp_path, services)
+    assert result.body.stdout == "甲\n乙\n"
+    assert result.body.stdout_lines == 2
+    assert result.body.next_offset is None
+    assert result.body.truncated is False
+
+
+@pytest.mark.parametrize("running", [False, True])
+def test_readiness_finds_utf8_pattern_after_multiple_byte_pages(tmp_path, monkeypatch, running):
+    from voidcode.capabilities.exec import background_process
+
+    monkeypatch.setattr(background_process, "_LOG_PAGE_BYTES", 2)
+    monkeypatch.setattr(background_process, "_READY_POLL_SECONDS", 0)
+    services = _FakeServices(logs={"stdout": "boot\n就绪\n".encode()}, spawn_running=running, spawn_exit_code=None if running else 0)
+    result = _invoke({"op": "start", "command": "serve", "ready_pattern": "就绪", "ready_timeout": 1}, tmp_path, services)
+    assert result.body.ready is True
+    assert result.body.running is running
+
+
+def test_readiness_rechecks_stdout_when_process_exits_between_stream_reads(tmp_path):
+    class Services(_FakeServices):
+        transitioned = False
+
+        def read_process_output(self, process_id, *, stream="stdout", offset=0, limit=_HOST_PAGE_LIMIT):
+            page = super().read_process_output(process_id, stream=stream, offset=offset, limit=limit)
+            if stream == "stdout" and not self.transitioned:
+                self.transitioned = True
+                self.logs["stdout"] = b"listening\n"
+                self.handles = [replace(handle, running=False, exit_code=0) for handle in self.handles]
+            return page
+
+    result = _invoke({"op": "start", "command": "serve", "ready_pattern": "listening", "ready_timeout": 1}, tmp_path, Services())
+    assert result.body.ready is True
+    assert result.body.state == "exited"

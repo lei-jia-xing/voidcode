@@ -1,15 +1,9 @@
-"""The `background_process` tool: workspace processes supervised by the plugin host.
+"""Background process tools over core-owned process supervision.
 
-Ported from the runtime-owned process command (``voidcode.runtime.execution.process``) onto the
-core's background-process service. The host owns the live process, its group, and the log
-files — this tool never spawns a child itself. What it owns is the contract around them: the shell
-wrapper, the legacy log layout, the ready-pattern wait, line paged logs, stdin writes, and the
-identity it persists in workspace state (pid + start time + log paths). That persisted identity is
-what lets a later host report a process it no longer supervises as externally managed instead of
-guessing from a pid.
-
-P4 boundary (accepted): every start mints a fresh id; legacy reuse-by-exact-command-match is
-dropped deliberately, and the core's 'already running' refusal for a repeated id propagates.
+The core owns live processes and byte-paged logs. This tool persists identities,
+provides line-paged views, waits for readiness text and forwards stdin/control.
+Persisted records are history; live control requires a current service handle.
+Every start mints a fresh identity.
 """
 
 from __future__ import annotations
@@ -22,7 +16,7 @@ from pathlib import Path
 from typing import Annotated, ClassVar, Literal, final
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
@@ -106,15 +100,8 @@ class _LogsArgs(_ProcessIdArgs):
 
 class _SendArgs(_ProcessIdArgs):
     op: Literal["send"]
-    input: str
+    input: str = Field(min_length=1)
     newline: bool = True
-
-    @field_validator("input", mode="after")
-    @classmethod
-    def _validate_input(cls, value: str) -> str:
-        if not value:
-            raise ValueError("input must be a non-empty string")
-        return value
 
 
 class _StopArgs(_ProcessIdArgs):
@@ -436,14 +423,14 @@ def _scan_stream(services: PluginServices, process_id: str, stream: _StreamName)
     ceiling: a runaway log costs a bounded read, and the caller is told `truncated` rather than
     handed a silently short page.
     """
-    text = ""
+    chunks: list[bytes] = []
     offset = 0
     while True:
         page = services.read_process_output(process_id, stream=stream, offset=offset, limit=_LOG_PAGE_BYTES)
         offset += len(page.data)
-        if page.data:
-            text += page.text.replace("\r\n", "\n")
+        chunks.append(page.data)
         if page.eof or not page.data or offset >= _LOG_SCAN_BYTES:
+            text = b"".join(chunks).decode("utf-8", errors="replace").replace("\r\n", "\n")
             return _StreamScan(lines=text.splitlines(keepends=True), truncated=not page.eof)
 
 
@@ -457,20 +444,22 @@ def _wait_for_ready(services: PluginServices, process_id: str, *, pattern: str |
         return None
     deadline = time.monotonic() + timeout
     offsets = {"stdout": 0, "stderr": 0}
-    scanned = {"stdout": "", "stderr": ""}
+    scanned = {"stdout": b"", "stderr": b""}
     while True:
-        running = True
+        running = False
+        drained = True
         for stream in ("stdout", "stderr"):
             page = services.read_process_output(process_id, stream=stream, offset=offsets[stream], limit=_LOG_PAGE_BYTES)
             offsets[stream] += len(page.data)
-            running = page.running
+            running = running or page.running
+            drained = drained and page.eof
             if not page.data:
                 continue
-            window = scanned[stream] + page.text.replace("\r\n", "\n")
-            scanned[stream] = window[-_READY_SCAN_BYTES:]
-            if any(pattern in line for line in scanned[stream].splitlines()):
+            scanned[stream] = (scanned[stream] + page.data)[-_READY_SCAN_BYTES:]
+            text = scanned[stream].decode("utf-8", errors="replace").replace("\r\n", "\n")
+            if any(pattern in line for line in text.splitlines()):
                 return True
-        if not running or time.monotonic() >= deadline:
+        if (not running and drained) or time.monotonic() >= deadline:
             return False
         time.sleep(_READY_POLL_SECONDS)
 
