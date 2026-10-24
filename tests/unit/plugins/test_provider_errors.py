@@ -155,3 +155,19 @@ def test_zen_google_route_preserves_configured_timeout():
     provider = gateway._wire("model", ModelRoute(wire="google-generative-ai"))
     assert provider.config.timeout_seconds == 17
     assert provider.config.auth.api_key == "gateway-key"
+
+
+@pytest.mark.parametrize("providers", [[], "invalid", {1: {}}, {" ": {}}, {"openai": []}, {"gateway": None}])
+def test_registered_provider_ingress_rejects_malformed_shapes(providers):
+    from voidcode.capabilities.providers.dispatch import build_registered_providers
+
+    with pytest.raises(ValueError):
+        build_registered_providers({"providers": providers})
+
+
+@pytest.mark.parametrize("name", ["openai", "custom-gateway"])
+def test_registered_provider_ingress_rejects_case_collisions(name):
+    from voidcode.capabilities.providers.dispatch import build_registered_providers
+
+    with pytest.raises(ValueError, match="duplicate provider id"):
+        build_registered_providers({"providers": {name: {"api_key": "first"}, f" {name.upper()} ": {"api_key": "second"}}})

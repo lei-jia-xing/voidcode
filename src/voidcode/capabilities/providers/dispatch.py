@@ -30,8 +30,10 @@ from .native.config import (
     GoogleProviderConfig,
     OpenAICompatibleProviderConfig,
     OpenAIProviderConfig,
+    ProviderConfigEntry,
     ProviderConfigs,
     ProviderEndpointConfig,
+    openai_compatible_endpoint_config,
     parse_provider_configs_payload,
 )
 from .native.google_native import GoogleGenAIProvider
@@ -83,29 +85,38 @@ def provider_configs(config: Mapping[str, object]) -> ProviderConfigs:
     raw = config.get("providers")
     payload: dict[str, object] = {}
     custom: dict[str, object] = {}
-    if isinstance(raw, Mapping):
-        for raw_name, raw_entry in raw.items():
-            name = canonical_provider_id(str(raw_name))
-            entry = _entry_payload(name, raw_entry) if isinstance(raw_entry, Mapping) else {}
-            payload_key = PROVIDER_CONFIG_PAYLOAD_KEYS.get(name)
-            if payload_key is None:
-                custom[name] = entry
-            else:
-                payload[payload_key] = entry
+    if raw is not None and not isinstance(raw, Mapping):
+        raise ValueError("providers config must be an object")
+    names: set[str] = set()
+    for raw_name, raw_entry in (raw or {}).items():
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            raise ValueError("provider names must be non-empty strings")
+        name = canonical_provider_id(raw_name)
+        if name in names:
+            raise ValueError(f"duplicate provider id '{name}': provider ids are case-insensitive")
+        names.add(name)
+        if not isinstance(raw_entry, Mapping):
+            raise ValueError(f"provider '{name}' config must be an object")
+        entry = _entry_payload(name, raw_entry)
+        payload_key = PROVIDER_CONFIG_PAYLOAD_KEYS.get(name)
+        if payload_key is None:
+            custom[name] = entry
+        else:
+            payload[payload_key] = entry
     if custom:
         payload["custom"] = custom
     parsed = parse_provider_configs_payload(payload, source="providers config")
     return parsed if parsed is not None else ProviderConfigs()
 
 
-def _entry_for(configs: ProviderConfigs, provider_name: str) -> object | None:
+def _entry_for(configs: ProviderConfigs, provider_name: str) -> ProviderConfigEntry | None:
     entry = configs.entry(provider_name)
     if entry is not None:
         return entry
     return configs.custom.get(canonical_provider_id(provider_name))
 
 
-def _materialize(provider_name: str, configuration: object | None) -> TurnProvider:
+def _materialize(provider_name: str, configuration: ProviderConfigEntry | None) -> TurnProvider:
     """Build the adapter a configured provider id runs on.
 
     Mirrors the product's provider dispatch: the named gateways and first-party
@@ -113,18 +124,6 @@ def _materialize(provider_name: str, configuration: object | None) -> TurnProvid
     on the wire its table row declares, and an unknown id is only reachable as a
     declared custom endpoint.
     """
-    if configuration is not None and not isinstance(
-        configuration,
-        (
-            OpenAIProviderConfig,
-            AnthropicProviderConfig,
-            GoogleProviderConfig,
-            CopilotProviderConfig,
-            ProviderEndpointConfig,
-            OpenAICompatibleProviderConfig,
-        ),
-    ):
-        raise ValueError(f"provider configuration has the wrong type for {provider_name!r}")
     entry = configuration
     match provider_name:
         case "opencode-zen" if entry is None or isinstance(entry, ProviderEndpointConfig):
@@ -148,17 +147,11 @@ def _materialize(provider_name: str, configuration: object | None) -> TurnProvid
         if wire.shape == "anthropic" and (entry is None or isinstance(entry, AnthropicProviderConfig)):
             return AnthropicMessagesProvider(name=provider_name, config=entry)
         if wire.shape == "openai_compatible" and (entry is None or isinstance(entry, OpenAICompatibleProviderConfig)):
-            return OpenAIChatCompletionsProvider(name=provider_name, config=_endpoint_of(provider_name, entry))
+            return OpenAIChatCompletionsProvider(name=provider_name, config=openai_compatible_endpoint_config(provider_name, entry))
         raise ValueError(f"provider configuration has the wrong type for {provider_name!r}")
     if isinstance(entry, ProviderEndpointConfig):
         return OpenAIChatCompletionsProvider(name=provider_name, config=endpoint_provider_config(entry))
     raise UnknownProviderIdError(provider_name)
-
-
-def _endpoint_of(provider_name: str, configuration: OpenAICompatibleProviderConfig | None) -> ProviderEndpointConfig:
-    from .native.config import openai_compatible_endpoint_config
-
-    return openai_compatible_endpoint_config(provider_name, configuration)
 
 
 class RegisteredProvider:

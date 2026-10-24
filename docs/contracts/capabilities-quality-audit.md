@@ -28,8 +28,8 @@ not establish source review.
 | `files/read_tool.py` | Pending full source review |
 | `files/write_tool.py` | Reviewed: hash/containment/symlink/atomic replace/cancellation; fail visibly on mode errors and always clean temporary files |
 | `frontmatter.py` | Reviewed source/consumers: safe YAML, duplicate/string-key validation, framing/body/bounds; shared parser tests |
-| `providers/__init__.py` | Pending full source review |
-| `providers/dispatch.py` | Pending full source review |
+| `providers/__init__.py` | Reviewed: shared registration/facts/view wiring and ExitStack-owned provider teardown |
+| `providers/dispatch.py` | Partial: strict registration shapes/names, typed materialization, lazy ownership/cache and usage wrappers reviewed; nested credential normalization and remaining ingress review pending |
 | `providers/native/__init__.py` | Reviewed: documentation-only namespace, no side effects |
 | `providers/native/_resources.py` | Reviewed: contained package paths and JSON loading; removed unused installed-data locator/text wrapper |
 | `providers/native/_result_sanitize.py` | Pending full source review |
@@ -729,3 +729,27 @@ trace logging targets a directory. Existing OpenAI/Anthropic callers remain inta
 Validation: final trace/auth/dispatch/reasoning/stream/lifecycle/error suite passed
 all 112 tests (32.49s). Ruff, formatting and source type checks passed; CodeGraph
 synchronized. Full capability audit and final full-suite gate remain outstanding.
+
+## Provider registration ingress: reject malformed and colliding entries
+
+The registration adapter previously coerced provider names with str(), treated
+malformed provider blocks as empty mappings, and silently overwrote case-folded
+name collisions before the native parser could see them. It now rejects non-object
+sections/entries, non-string/empty names and canonical duplicate ids at this ingress.
+Missing providers still means no configured entries. Added six malformed-shape and
+two built-in/custom collision regressions. Panels consume configuration only after
+this registration validation succeeds.
+
+Typed _entry_for/_materialize with the existing ProviderConfigEntry union, removed
+the duplicate broad runtime type guard, and inlined the unused _endpoint_of forwarding
+function. Per-provider shape narrowing remains necessary for adapter construction.
+No fallback config or compatibility path added.
+
+Reviewed the shared provider plugin factory: registration precedes facts creation,
+views/commands are read-only, and ExitStack closes every registered provider. Panel
+source/callers reviewed; nested-auth credential presence and dispatch configuration
+normalization still require follow-up before marking those modules complete.
+
+Validation: 160 provider trace/auth/catalog/dispatch/panels/reasoning/stream/lifecycle/
+usage/error tests passed (32.51s). Ruff/source type checks passed; CodeGraph synced.
+Full capability audit and final full-suite gate remain outstanding.
