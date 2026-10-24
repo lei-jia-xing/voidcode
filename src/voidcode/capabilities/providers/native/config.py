@@ -14,61 +14,22 @@ from .naming import (
 )
 from .provider_table import PROVIDER_TABLE_BY_ID
 
-
-def _parse_boundary_string_list(value: object) -> tuple[str, ...]:
-    if value is None:
-        return ()
-    if not isinstance(value, list):
-        raise ValueError("must be an array when provided")
-    parsed_items: list[str] = []
-    for index, item in enumerate(value):
-        if not isinstance(item, str):
-            raise ValueError(f"[{index}] must be a string")
-        parsed_items.append(item)
-    return tuple(parsed_items)
-
-
-def _parse_boundary_string_mapping(value: object) -> dict[str, str]:
-    if value is None:
-        return {}
-    if not isinstance(value, dict):
-        raise ValueError("must be an object when provided")
-    mapping: dict[str, str] = {}
-    for raw_key, raw_item in value.items():
-        if not isinstance(raw_key, str):
-            raise ValueError(" keys must be strings")
-        if not raw_key:
-            raise ValueError(" keys must not be empty")
-        if not isinstance(raw_item, str):
-            raise ValueError(f".{raw_key} must be a string")
-        if not raw_item:
-            raise ValueError(f".{raw_key} must not be empty")
-        mapping[raw_key] = raw_item
-    return mapping
-
-
 type GoogleAuthMethod = Literal["api_key", "oauth", "service_account"]
 type CopilotAuthMethod = Literal["token", "oauth"]
 type EndpointAuthScheme = Literal["bearer", "token", "none"]
-_VALID_GOOGLE_AUTH_METHODS: tuple[GoogleAuthMethod, ...] = ("api_key", "oauth", "service_account")
-_VALID_COPILOT_AUTH_METHODS: tuple[CopilotAuthMethod, ...] = ("token", "oauth")
-_VALID_ENDPOINT_AUTH_SCHEMES: tuple[EndpointAuthScheme, ...] = (
-    "bearer",
-    "token",
-    "none",
-)
-
 # The wires VoidCode implements. An internal endpoint marker, never user config:
 # it identifies the request protocol used by per-model gateway routing.
 type RoutedWire = Literal["openai-chat-completions", "anthropic-messages", "google-generative-ai"]
 
 
 BoundaryOptionalString = StrictStr | None
-BoundaryRequiredString = StrictStr
 BoundaryOptionalTimeout = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)] | None
 BoundaryOptionalBool = StrictBool | None
-BoundaryStringList = Annotated[tuple[str, ...], BeforeValidator(_parse_boundary_string_list)]
-BoundaryStringMapping = Annotated[dict[str, str] | None, BeforeValidator(_parse_boundary_string_mapping)]
+BoundaryStringList = Annotated[list[StrictStr], Field(strict=True), BeforeValidator(lambda value: [] if value is None else value)]
+NonEmptyString = Annotated[str, Field(strict=True, min_length=1)]
+BoundaryStringMapping = Annotated[
+    dict[NonEmptyString, NonEmptyString], Field(strict=True), BeforeValidator(lambda value: {} if value is None else value)
+]
 
 
 class _ProviderPayloadModel(BaseModel):
@@ -87,13 +48,13 @@ class _AnthropicProviderConfigPayload(_ProviderPayloadModel):
     api_key: BoundaryOptionalString = Field(default=None, repr=False)
     base_url: BoundaryOptionalString = None
     version: BoundaryOptionalString = None
-    beta_headers: BoundaryStringList | None = ()
+    beta_headers: BoundaryStringList = Field(default_factory=list)
     cache_retention: Literal["none", "short", "long"] = "short"
     timeout_seconds: BoundaryOptionalTimeout = None
 
 
 class _GoogleProviderAuthConfigPayload(_ProviderPayloadModel):
-    method: BoundaryRequiredString
+    method: GoogleAuthMethod
     api_key: BoundaryOptionalString = Field(default=None, repr=False)
     access_token: BoundaryOptionalString = Field(default=None, repr=False)
     service_account_json_path: BoundaryOptionalString = None
@@ -108,7 +69,7 @@ class _GoogleProviderConfigPayload(_ProviderPayloadModel):
 
 
 class _CopilotProviderAuthConfigPayload(_ProviderPayloadModel):
-    method: BoundaryRequiredString
+    method: CopilotAuthMethod
     token: BoundaryOptionalString = Field(default=None, repr=False)
     token_env_var: BoundaryOptionalString = None
 
@@ -124,7 +85,7 @@ class _ProviderEndpointConfigPayload(_ProviderPayloadModel):
     api_key_env_var: BoundaryOptionalString = None
     base_url: BoundaryOptionalString = None
     auth_header: BoundaryOptionalString = None
-    auth_scheme: BoundaryOptionalString = None
+    auth_scheme: EndpointAuthScheme | None = None
     ssl_verify: BoundaryOptionalBool = None
     timeout_seconds: BoundaryOptionalTimeout = None
     model_map: BoundaryStringMapping = Field(default_factory=dict)
@@ -525,37 +486,6 @@ class ProviderConfigs:
         return None if field_name is None else getattr(self, field_name)
 
 
-def _parse_google_auth_method(raw_method: str, *, field_path: str) -> GoogleAuthMethod:
-    if raw_method == "api_key":
-        return "api_key"
-    if raw_method == "oauth":
-        return "oauth"
-    if raw_method == "service_account":
-        return "service_account"
-    allowed = ", ".join(_VALID_GOOGLE_AUTH_METHODS)
-    raise ValueError(f"{_nested_config_field(field_path, 'method')} must be one of: {allowed}")
-
-
-def _parse_copilot_auth_method(raw_method: str, *, field_path: str) -> CopilotAuthMethod:
-    if raw_method == "token":
-        return "token"
-    if raw_method == "oauth":
-        return "oauth"
-    allowed = ", ".join(_VALID_COPILOT_AUTH_METHODS)
-    raise ValueError(f"{_nested_config_field(field_path, 'method')} must be one of: {allowed}")
-
-
-def _parse_endpoint_auth_scheme(raw_scheme: str, *, field_path: str) -> EndpointAuthScheme:
-    if raw_scheme == "bearer":
-        return "bearer"
-    if raw_scheme == "token":
-        return "token"
-    if raw_scheme == "none":
-        return "none"
-    allowed = ", ".join(_VALID_ENDPOINT_AUTH_SCHEMES)
-    raise ValueError(f"{_nested_config_field(field_path, 'auth_scheme')} must be one of: {allowed}")
-
-
 def _provider_configs_from_entries(
     entries: Mapping[str, ProviderConfigEntry | None],
     *,
@@ -575,72 +505,26 @@ def _provider_configs_from_entries(
     return providers
 
 
-def _runtime_config_field_name(field_path: str) -> str | None:
-    runtime_field_prefix = "runtime config field '"
-    if field_path.startswith(runtime_field_prefix) and field_path.endswith("'"):
-        return field_path[len(runtime_field_prefix) : -1]
-    return None
-
-
-def _append_config_field_suffix(field_path: str, suffix: str) -> str:
-    runtime_field_name = _runtime_config_field_name(field_path)
-    if runtime_field_name is not None:
-        return format_runtime_config_field_error(f"{runtime_field_name}{suffix}")
-    return f"{field_path}{suffix}"
-
-
 def _extend_config_field_path(field_path: str, loc: tuple[object, ...]) -> str:
-    extended = field_path
     for item in loc:
-        if isinstance(item, int):
-            extended = _append_config_field_suffix(extended, f"[{item}]")
-            continue
-        extended = _nested_config_field(extended, str(item))
-    return extended
+        field_path += f"[{item}]" if isinstance(item, int) else f".{item}"
+    return field_path
 
 
 def _format_provider_payload_validation_error(
     *,
     field_path: str,
     error: Mapping[str, object],
-    object_when_provided: bool = True,
 ) -> str:
     raw_loc = error.get("loc", ())
     loc = tuple(raw_loc) if isinstance(raw_loc, (list, tuple)) else ()
     error_type = error.get("type", "")
     target = _extend_config_field_path(field_path, loc)
     if error_type in {"model_type", "dict_type"}:
-        suffix = " when provided" if object_when_provided else ""
-        return f"{target} must be an object{suffix}"
+        return f"{target} must be an object when provided"
     if error_type == "extra_forbidden":
         return f"{target} is not supported"
-    # Imported lazily: ``provider.errors`` imports ``provider.protocol``, which
-    # reaches back through ``model_catalog`` to this module.
-    from .errors import validation_reason_from_error
-
-    reason = validation_reason_from_error(error)
-    if reason.startswith("[") or reason.startswith("."):
-        if " " in reason:
-            suffix, nested_reason = reason.split(" ", maxsplit=1)
-            return f"{_append_config_field_suffix(target, suffix)} {nested_reason}"
-        return _append_config_field_suffix(target, reason)
-    if reason.startswith(" keys"):
-        return f"{target}{reason}"
-    return f"{target} {reason}"
-
-
-def _validate_provider_payload_model[TModel: BaseModel](
-    raw_value: object,
-    *,
-    field_path: str,
-    model_type: type[TModel],
-) -> TModel:
-    try:
-        return model_type.model_validate(raw_value)
-    except ValidationError as exc:
-        first = exc.errors(include_url=False)[0]
-        error = first if isinstance(first, Mapping) else {}
-        raise ValueError(_format_provider_payload_validation_error(field_path=field_path, error=error)) from exc
+    return f"{target} {error['msg']}"
 
 
 def _parse_provider_config_entry(
@@ -682,7 +566,6 @@ def _parse_provider_config_entry(
         case "endpoint" | "named_endpoint":
             return _parse_endpoint_provider_config(
                 raw_value,
-                field_path=field_path,
                 env=env,
                 default_api_key_env_var=wire.env_vars[0],
                 default_base_url_env_var=wire.env_vars[1] if len(wire.env_vars) > 1 else None,
@@ -704,11 +587,11 @@ def parse_provider_configs_payload(
 ) -> ProviderConfigs | None:
     if raw_providers is None:
         return None
-    payload = _validate_provider_payload_model(
-        _canonicalize_provider_config_payload_keys(raw_providers, field_path=source),
-        field_path=source,
-        model_type=ProviderConfigsPayload,
-    )
+    try:
+        payload = ProviderConfigsPayload.model_validate(_canonicalize_provider_config_payload_keys(raw_providers, field_path=source))
+    except ValidationError as exc:
+        error = exc.errors(include_url=False)[0]
+        raise ValueError(_format_provider_payload_validation_error(field_path=source, error=error)) from exc
 
     environment: Mapping[str, str] = {} if env is None else env
 
@@ -767,7 +650,7 @@ def _parse_anthropic_provider_config(
         api_key=api_key,
         base_url=payload.base_url,
         version=payload.version,
-        beta_headers=payload.beta_headers or (),
+        beta_headers=tuple(payload.beta_headers),
         cache_retention=payload.cache_retention,
         timeout_seconds=payload.timeout_seconds,
     )
@@ -808,7 +691,7 @@ def _parse_google_auth_config(
     if payload is None:
         return None
 
-    method = _parse_google_auth_method(payload.method, field_path=field_path)
+    method = payload.method
 
     api_key = payload.api_key
     if method == "api_key" and api_key is None:
@@ -878,7 +761,7 @@ def _parse_copilot_auth_config(
     if payload is None:
         return None
 
-    method = _parse_copilot_auth_method(payload.method, field_path=field_path)
+    method = payload.method
 
     token = payload.token
     token_env_var = payload.token_env_var
@@ -899,7 +782,6 @@ def _parse_copilot_auth_config(
 def _parse_endpoint_provider_config(
     payload: _ProviderEndpointConfigPayload | None,
     *,
-    field_path: str,
     env: Mapping[str, str],
     default_api_key_env_var: str,
     default_base_url_env_var: str | None = None,
@@ -919,20 +801,15 @@ def _parse_endpoint_provider_config(
     if base_url is None and default_base_url_env_var is not None:
         base_url = env.get(default_base_url_env_var)
 
-    raw_auth_scheme = payload.auth_scheme
-    auth_scheme: EndpointAuthScheme = "bearer"
-    if raw_auth_scheme is not None:
-        auth_scheme = _parse_endpoint_auth_scheme(raw_auth_scheme, field_path=field_path)
-
     return ProviderEndpointConfig(
         api_key=api_key,
         api_key_env_var=api_key_env_var,
         base_url=base_url,
         auth_header=payload.auth_header,
-        auth_scheme=auth_scheme,
+        auth_scheme=payload.auth_scheme or "bearer",
         ssl_verify=payload.ssl_verify,
         timeout_seconds=payload.timeout_seconds,
-        model_map=payload.model_map or {},
+        model_map=payload.model_map,
     )
 
 
@@ -963,7 +840,7 @@ def _parse_openai_compatible_provider_config(
         base_url=payload.base_url,
         ssl_verify=payload.ssl_verify,
         timeout_seconds=payload.timeout_seconds,
-        model_map=payload.model_map or {},
+        model_map=payload.model_map,
     )
 
 
@@ -1001,7 +878,6 @@ def _parse_custom_endpoint_provider_configs(
 
         parsed_config = _parse_endpoint_provider_config(
             provider_payload,
-            field_path=_nested_config_field(field_path, raw_provider_name),
             env=env,
             # A custom provider is an endpoint-shaped gateway: it reads the
             # generic ENDPOINT_* variables, like the built-in ``endpoint``.
@@ -1015,19 +891,4 @@ def _parse_custom_endpoint_provider_configs(
 
 
 def _nested_config_field(source: str, nested: str) -> str:
-    runtime_field_prefix = "runtime config field '"
-    if source.startswith(runtime_field_prefix) and source.endswith("'"):
-        base_field = source[len(runtime_field_prefix) : -1]
-        return f"runtime config field '{base_field}.{nested}'"
     return f"{source}.{nested}"
-
-
-def format_runtime_config_field_error(field_path: str) -> str:
-    runtime_field_prefix = "runtime config field '"
-    if field_path.startswith(runtime_field_prefix):
-        if field_path.endswith("'"):
-            return field_path
-        if "'[" in field_path:
-            base, suffix = field_path[len(runtime_field_prefix) :].split("'[", maxsplit=1)
-            return f"{runtime_field_prefix}{base}[{suffix}'"
-    return f"runtime config field '{field_path}'"

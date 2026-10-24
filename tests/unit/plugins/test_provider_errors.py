@@ -190,3 +190,40 @@ def test_nested_auth_rejects_a_conflicting_flat_key(name):
 
     with pytest.raises(ValueError, match="must not combine api_key with explicit auth"):
         provider_configs({"providers": {name: {"api_key": "flat-key", "auth": {"method": "oauth"}}}})
+
+
+@pytest.mark.parametrize(
+    ("provider", "field", "value"),
+    [
+        ("anthropic", "beta_headers", "header"),
+        ("anthropic", "beta_headers", [123]),
+        ("endpoint", "model_map", {"": "model"}),
+        ("endpoint", "model_map", {"alias": ""}),
+        ("endpoint", "model_map", {1: "model"}),
+        ("endpoint", "model_map", {"alias": 123}),
+        ("endpoint", "model_map", ["model"]),
+        ("endpoint", "auth_scheme", "unknown"),
+        ("google", "auth", {"method": "unknown"}),
+        ("github-copilot", "auth", {"method": True}),
+    ],
+)
+def test_provider_collection_and_literal_constraints_reject_invalid_values(provider, field, value):
+    from voidcode.capabilities.providers.native.config import parse_provider_configs_payload
+
+    with pytest.raises(ValueError, match=field):
+        parse_provider_configs_payload({provider: {field: value}}, source="test", env={})
+
+
+def test_provider_collection_nulls_and_valid_values_have_one_typed_result():
+    from voidcode.capabilities.providers.native.config import parse_provider_configs_payload
+
+    empty = parse_provider_configs_payload({"anthropic": {"beta_headers": None}, "endpoint": {"model_map": None, "auth_scheme": None}}, source="test")
+    assert empty.anthropic.beta_headers == ()
+    assert empty.endpoint.model_map == {}
+    assert empty.endpoint.auth_scheme == "bearer"
+    configured = parse_provider_configs_payload(
+        {"anthropic": {"beta_headers": ["feature-v1"]}, "endpoint": {"model_map": {"alias": "Case-Preserved"}, "auth_scheme": "none"}}, source="test"
+    )
+    assert configured.anthropic.beta_headers == ("feature-v1",)
+    assert configured.endpoint.model_map == {"alias": "Case-Preserved"}
+    assert configured.endpoint.auth_scheme == "none"

@@ -777,3 +777,28 @@ last dispatch comes from typed committed transcript records, not current config.
 Validation: 164 provider trace/auth/catalog/dispatch/panels/reasoning/stream/lifecycle/
 usage/error tests passed (32.75s). Ruff/source type checks passed; CodeGraph synced.
 Full capability audit and final full-suite gate remain outstanding.
+
+## Provider config: declarative collection/literal validation
+
+Replaced custom string-list/map parsers with strict Pydantic collection and nonempty
+string constraints. Tiny before validators retain explicit-null normalization;
+Anthropic header lists convert once to the domain tuple. Auth method/scheme fields
+now use the existing Literal types directly, deleting three switch validators and
+three duplicate allowed-value tables. Cross-field credential rules still apply in
+the typed converters, including environment-sensitive method checks.
+
+The generic payload-model validator had only one remaining caller; inlined it at
+the one public config ingress. Removed old quoted runtime-config-field formatting
+and obsolete error helpers after repository-wide source/test consumer checks.
+Pydantic locations now drive field/index paths directly, retaining unsupported-field
+messages and credential-safe chained errors. No backward-compatibility formatter.
+
+Eleven regressions cover malformed collection values, empty model aliases/targets,
+non-string map entries, invalid auth literals, null normalization, preserved alias
+casing and valid header/domain tuple conversion. Together these remove 161 net
+implementation lines. Remaining config review concerns table/field metadata wiring
+and domain/env converters; this entry does not claim full config source completion.
+
+Validation: 175 provider trace/auth/catalog/dispatch/panels/reasoning/stream/lifecycle/
+usage/error tests passed (32.70s). Ruff/source type checks passed; CodeGraph synced.
+Complete capability audit and final full-suite gate remain outstanding.
