@@ -22,8 +22,8 @@ not establish source review.
 | `files/edit_tool.py` | Partial: unified exact-edit flow, checked replacement and result semantics reviewed; final ingress, diagnostic bounds and cancellation review pending |
 | `files/errors.py` | Reviewed: retain only classified diagnostic exception and raising helper |
 | `files/gitignore.py` | Reviewed: root-only pathspec matching; removed unused pattern snapshot/property; syntax/order/escape tests |
-| `files/glob_tool.py` | Partial: strict search ingress and error-visible traversal reviewed; output bounds pending |
-| `files/grep_tool.py` | Partial: strict ingress, error-visible traversal, immutable context pairs and bounded context count reviewed; line/result byte bounds and cancellation pending |
+| `files/glob_tool.py` | Partial: strict ingress, error-visible traversal and cooperative cancellation reviewed; output byte bounds pending |
+| `files/grep_tool.py` | Partial: strict ingress, error-visible traversal, immutable context pairs and bounded context count reviewed; cooperative cancellation reviewed; line/result byte bounds pending |
 | `files/read_formats.py` | Partial: notebook pagination/global output budget, SQLite encoded budget/read-only queries, PDF process cleanup/preview cap reviewed; snapshot, image and remaining pagination semantics pending |
 | `files/read_tool.py` | Pending full source review |
 | `files/write_tool.py` | Reviewed: hash/containment/symlink/atomic replace/cancellation; fail visibly on mode errors and always clean temporary files |
@@ -1119,3 +1119,22 @@ result bytes; those and cooperative cancellation remain audit work.
 
 Validation: 100 existing file/search tests passed (0.71s); no tests added or changed.
 Ruff, formatting, source type checking and CodeGraph sync passed.
+
+
+## Cooperative search cancellation
+
+Glob and grep now check the invocation abort signal before traversal and between
+directories/files; grep also checks before opening a file, while reading lines and
+before matching buffered context. A cancelled scan returns a ToolFailure with
+partial output bounds and ConfirmedStop(cancellation_signalled=True), rather than
+claiming an empty or complete successful search. It discards accumulated matches
+on cancellation instead of presenting them as an inventory.
+
+Used the existing invocation signal directly, without a cancellation framework or
+new test cases. These are cooperative boundaries: a single directory enumeration,
+file read or Python regular-expression evaluation is not preemptible; output byte
+bounds and long-line costs remain pending.
+
+Validation: 100 existing search/file tests passed (0.80s), plus a manual invocation
+of both tools with an already-cancelled signal confirmed error/partial/stopped
+results. Ruff, formatting, source type checking and CodeGraph sync passed.

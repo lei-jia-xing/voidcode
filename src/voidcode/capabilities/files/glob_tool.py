@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices
-from voidcode.sdk.tools import OutputBounds, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult, ToolSuccess
+from voidcode.sdk.tools import ConfirmedStop, OutputBounds, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult, ToolSuccess
 
 from .gitignore import GitIgnoreMatcher
 
@@ -120,6 +120,7 @@ class GlobTool:
         pattern: str,
         *,
         project_root: Path,
+        context: ToolContext,
         include_hidden: bool = True,
         gitignore: GitIgnoreMatcher | None = None,
         limit: int = LIMIT,
@@ -138,9 +139,15 @@ class GlobTool:
             )
 
         try:
+            if context.abort_signal is not None and context.abort_signal.cancelled:
+                return matched, False, None
             for directory, dirnames, filenames in search_dir.walk(on_error=fail_walk):
+                if context.abort_signal is not None and context.abort_signal.cancelled:
+                    break
                 dirnames[:] = sorted(name for name in dirnames if not excluded(directory / name, is_directory=True))
                 for name in sorted(filenames):
+                    if context.abort_signal is not None and context.abort_signal.cancelled:
+                        return matched, False, None
                     match = directory / name
                     if not match.relative_to(search_dir).full_match(pattern) or excluded(match, is_directory=False):
                         continue
@@ -177,10 +184,19 @@ class GlobTool:
             search_path,
             pattern_value,
             project_root=effective_root,
+            context=context,
             include_hidden=include_hidden,
             gitignore=gitignore,
             limit=limit,
         )
+
+        if context.abort_signal is not None and context.abort_signal.cancelled:
+            return ToolFailure(
+                tool_name=self.definition.name,
+                error="glob search cancelled",
+                output=TextOutput("glob search cancelled", bounds=OutputBounds(partial=True)),
+                execution=ConfirmedStop(cancellation_signalled=True),
+            )
 
         try:
             matched.sort(key=lambda p: p.stat().st_mtime, reverse=True)

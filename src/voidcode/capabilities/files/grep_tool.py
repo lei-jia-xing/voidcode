@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.services import PluginServices
-from voidcode.sdk.tools import OutputBounds, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess
+from voidcode.sdk.tools import ConfirmedStop, OutputBounds, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult, ToolSuccess
 
 from .errors import raise_tool_diagnostic
 from .gitignore import GitIgnoreMatcher
@@ -156,10 +156,13 @@ class GrepTool:
         root: Path,
         *,
         project_root: Path,
+        context: ToolContext,
         include: list[str] | None,
         exclude: list[str] | None,
         gitignore: GitIgnoreMatcher | None = None,
     ) -> Iterator[Path]:
+        if context.abort_signal is not None and context.abort_signal.cancelled:
+            return
         include_patterns = include or []
         exclude_patterns = exclude or []
         if root.is_file():
@@ -170,6 +173,8 @@ class GrepTool:
             raise error
 
         for directory, dirnames, filenames in root.walk(top_down=True, on_error=fail_walk):
+            if context.abort_signal is not None and context.abort_signal.cancelled:
+                return
             directory_relative = directory.relative_to(project_root)
             dirnames[:] = sorted(
                 name
@@ -178,6 +183,8 @@ class GrepTool:
                 and (gitignore is None or not gitignore.is_ignored((directory_relative / name).as_posix(), is_directory=True))
             )
             for name in sorted(filenames):
+                if context.abort_signal is not None and context.abort_signal.cancelled:
+                    return
                 candidate = directory / name
                 if not candidate.is_file():
                     continue
@@ -197,18 +204,25 @@ class GrepTool:
         relative_path: str,
         pattern: re.Pattern[str],
         context: int,
+        invocation: ToolContext,
     ) -> Iterator[GrepResultMatch]:
         before: deque[tuple[int, str]] = deque(maxlen=context)
 
         def lines() -> Iterator[tuple[int, str]]:
+            if invocation.abort_signal is not None and invocation.abort_signal.cancelled:
+                return
             with path.open("r", encoding="utf-8", newline="") as stream:
                 for line_number, raw_line in enumerate(stream, 1):
+                    if invocation.abort_signal is not None and invocation.abort_signal.cancelled:
+                        return
                     yield line_number, raw_line.rstrip("\r\n")
 
         try:
             remaining = iter(lines())
             following = deque(islice(remaining, context + 1))
             while following:
+                if invocation.abort_signal is not None and invocation.abort_signal.cancelled:
+                    return
                 current = following.popleft()
                 columns = tuple(match.start() + 1 for match in pattern.finditer(current[1]))
                 if columns:
@@ -270,6 +284,7 @@ class GrepTool:
         targets = self._iter_targets(
             candidate,
             project_root=effective_root,
+            context=context,
             include=args.include,
             exclude=args.exclude,
             gitignore=gitignore,
@@ -280,7 +295,7 @@ class GrepTool:
         try:
             for target in targets:
                 file_display = str(target.resolve()) if is_external else target.relative_to(workspace_root).as_posix()
-                for match in self._iter_matches(target, relative_path=file_display, pattern=pattern, context=args.context):
+                for match in self._iter_matches(target, relative_path=file_display, pattern=pattern, context=args.context, invocation=context):
                     if len(matches) == args.limit:
                         truncated = True
                         break
@@ -293,6 +308,14 @@ class GrepTool:
                 error_kind="tool_execution_error",
                 reason="search_io_error",
                 details={"path": args.path},
+            )
+
+        if context.abort_signal is not None and context.abort_signal.cancelled:
+            return ToolFailure(
+                tool_name=self.definition.name,
+                error="grep search cancelled",
+                output=TextOutput("grep search cancelled", bounds=OutputBounds(partial=True)),
+                execution=ConfirmedStop(cancellation_signalled=True),
             )
 
         total_occurrences = sum(len(match.columns) for match in matches)
