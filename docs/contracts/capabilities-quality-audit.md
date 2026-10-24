@@ -69,7 +69,7 @@ not establish source review.
 | `providers/native/tokenizer_data/ctok_v4_7.bin.bz2` | Pending consumer/data-contract review |
 | `providers/native/tokenizer_data/manifest.json` | Pending consumer/data-contract review |
 | `providers/native/tokenizer_routing.json` | Pending consumer/data-contract review |
-| `providers/native/trace.py` | Pending full source review |
+| `providers/native/trace.py` | Reviewed: opt-in, whole-record preview budget, JSON encoder, private append and isolated warning-only failures; documented per-file growth/trusted-parent limits |
 | `providers/panels.py` | Pending full source review |
 | `providers/pricing.py` | Reviewed: price once at report time, preserve prepriced/unknown usage, event/result wrappers |
 
@@ -704,3 +704,28 @@ surface through successful requests. Its semantics/cleanup review remains pendin
 Validation: 118 provider auth/catalog/dispatch/reasoning/stream/lifecycle/error tests
 passed (32.70s), including the timeout regression. Ruff/source type checks passed;
 CodeGraph synchronized. Complete capability audit and full-suite gate remain open.
+
+## Provider trace: standard encoding, per-record budget and diagnostic isolation
+
+Replaced recursive per-field string/list/dict clipping with JSONEncoder.iterencode
+and one 32,000-byte preview budget for the whole record. Small records retain their
+structured fields; oversized records retain trace identity plus an explicit UTF-8
+preview/truncated envelope. Encoding the preview as a JSON string adds escaping,
+so the output line is bounded by twice that preview budget plus envelope overhead.
+This bounds each line, not accumulated file size or peak encoding of one huge value.
+
+Trace remains opt-in. File/serialization failures warn with exception class only,
+without printing payload data or turning a completed provider request into failure.
+Private 0600 creation/restriction and O_NOFOLLOW protect the final file component;
+parent directories are still user-selected trusted paths. The trace intentionally
+contains conversation content when enabled; it is not a credential-redaction layer.
+No rotation/configuration framework added.
+
+Tests cover structured small records, large Unicode/escaped records, existing-file
+permissions, directory/serialization/symlink failures and the disabled no-I/O path.
+A real Anthropic SDK loopback request succeeds with normal stop/output even when
+trace logging targets a directory. Existing OpenAI/Anthropic callers remain intact.
+
+Validation: final trace/auth/dispatch/reasoning/stream/lifecycle/error suite passed
+all 112 tests (32.49s). Ruff, formatting and source type checks passed; CodeGraph
+synchronized. Full capability audit and final full-suite gate remain outstanding.

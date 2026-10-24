@@ -568,3 +568,17 @@ def test_a_tiered_row_cannot_price_a_wire_that_reports_no_cache_write_bucket(ser
     assert usage is not None
     assert usage.cache_write_tokens is None
     assert usage.cost_usd is None
+
+
+def test_trace_write_failure_does_not_fail_a_completed_anthropic_request(servers: _Servers, tmp_path: Path, monkeypatch, caplog) -> None:
+    server = servers.start_json()
+    monkeypatch.setenv("VOIDCODE_PROVIDER_TRACE", "1")
+    monkeypatch.setenv("VOIDCODE_PROVIDER_TRACE_LOG", str(tmp_path))
+    provider = _provider({"anthropic": {"api_key": "loopback-key", "base_url": server.base_url}}, name="anthropic")
+    try:
+        result = provider.propose_turn(_request(provider_name="anthropic", model_name="claude-sonnet-4-5", raw_model="anthropic/claude-sonnet-4-5"))
+        assert result.output == "anthropic-ok"
+        assert result.done_reason == "stop"
+        assert "Provider trace could not be written" in caplog.text
+    finally:
+        provider.close()
