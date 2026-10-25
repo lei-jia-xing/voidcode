@@ -331,14 +331,21 @@ def test_anthropic_version_and_beta_headers_carry_the_configured_values(servers:
     assert "authorization" not in request.headers
 
 
-def test_google_credentials_reach_the_wire_as_the_api_key_header(servers: _Servers) -> None:
+def test_google_api_key_and_oauth_use_their_respective_auth_headers(servers: _Servers) -> None:
     server = servers.start_json()
     api_key_provider = _provider(
         {"google": {"api_key": "google-api-key", "base_url": server.base_url}},
         name="google",
     )
     oauth_provider = _provider(
-        {"google": {"auth": {"method": "oauth", "access_token": "google-access-token"}, "base_url": server.base_url}},
+        {
+            "google": {
+                "auth": {"method": "oauth", "access_token": "google-access-token"},
+                "base_url": server.base_url,
+                "project": "loopback-project",
+                "region": "us-central1",
+            }
+        },
         name="google",
     )
 
@@ -348,7 +355,9 @@ def test_google_credentials_reach_the_wire_as_the_api_key_header(servers: _Serve
     api_key_request, oauth_request = server.requests
     assert "generateContent" in api_key_request.path
     assert api_key_request.headers["x-goog-api-key"] == "google-api-key"
-    assert oauth_request.headers["x-goog-api-key"] == "google-access-token"
+    assert oauth_request.headers["authorization"] == "Bearer google-access-token"
+    assert "x-goog-api-key" not in oauth_request.headers
+    assert "/projects/loopback-project/locations/us-central1/" in oauth_request.path
 
 
 def test_google_service_account_signs_and_exchanges_its_assertion_locally(servers: _Servers, tmp_path: Path) -> None:

@@ -42,7 +42,7 @@ not establish source review.
 | `providers/native/claude_tokenizer/notation.py` | Pending full source review |
 | `providers/native/config.py` | Reviewed: strict ingress, field/table wiring, typed converters, env resolution, custom names, credential exclusivity and representations; removed dead framework/default paths |
 | `providers/native/errors.py` | Reviewed: classified errors, SDK text extraction and structured retry hints; removed prose scheduling and duplicate conversion functions |
-| `providers/native/google_native.py` | Partial: SDK timeout/transport errors, usage, owned-client cache, stream ownership/chunk cancellation and identity tool mapping reviewed; OAuth and remaining wire semantics pending; dead attachment branch removed, caller cancellation prompt with documented bounded SDK teardown lag |
+| `providers/native/google_native.py` | Partial: SDK timeout/transport errors, usage, owned-client cache, stream ownership/chunk cancellation and identity tool mapping reviewed; remaining wire semantics pending; OAuth Vertex credentials/project requirement reviewed; dead attachment branch removed, caller cancellation prompt with documented bounded SDK teardown lag |
 | `providers/native/model_catalog.py` | Reviewed static catalog fields/lookups and consumers; strict Pydantic data ingress replaces permissive field conversion; removed entire unreferenced remote discovery implementation |
 | `providers/native/model_catalog_data.json` | Reviewed packaged schema and generator/consumer contract: 35 providers/1170 rows, strict metadata, protocol/effort/limit/price consumers and scheduled snapshot PR; no live freshness claim |
 | `providers/native/model_routing.py` | Reviewed: routed alias/catalog fallback, typed unsupported wires, serialized cache creation and teardown |
@@ -2275,3 +2275,29 @@ then round-tripped provider-result JSON persistence and frozen request metadata
 back to identical SDK parts. Unsigned metadata stays absent and signatures
 were not emitted in visible text deltas. No tests added or live vendor calls
 used. OAuth and remaining Google wire/usage reconciliation remain pending.
+
+## Google OAuth uses SDK credentials rather than an API key
+
+Fixed the auth=oauth branch that passed access_token as api_key. It now creates
+existing google-auth OAuth Credentials and lets Google GenAI send the Bearer
+header. Explicit credentials select the already-supported Vertex surface; an
+OAuth configuration must name its project, with optional region left to SDK
+defaults. Missing project fails typed before SDK construction. Credentials do
+not fall back to GOOGLE_API_KEY; API-key and service-account paths remain
+separate. No new auth mode, fields, login/refresh manager or dependency.
+
+[Google SDK client documentation](https://googleapis.github.io/python-genai/genai.html)
+assigns its credentials argument to Vertex AI, while the
+[OAuth quickstart](https://ai.google.dev/gemini-api/docs/oauth) documents Bearer
+access-token delivery. The configuration guide now states this implementation's
+Vertex/project requirement and supplied-token scope.
+
+Updated the existing auth wire test to check actual OAuth semantics rather
+than the old API-key header bug. Ruff, formatting and targeted type checking
+passed; 124 existing auth/catalog/lifecycle/error/usage/thinking tests passed
+in 14.36 seconds with local loopback permission. The real SDK sent Bearer
+authorization without x-goog-api-key and used the configured project/location
+path. Manual probes confirmed an ambient API key does not override explicit
+OAuth and missing-project errors do not expose token material. No tests added
+or live vendor calls used. Remaining adapter source/usage reconciliation and
+other capability inventory items still prevent full goal completion.

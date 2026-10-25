@@ -10,6 +10,7 @@ import httpx
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError as GoogleAPIError
+from google.oauth2 import credentials as oauth_credentials
 from google.oauth2 import service_account
 
 from voidcode.sdk.json_values import json_wire_object
@@ -133,8 +134,19 @@ class GoogleGenAIProvider:
             # A configured service account file is authoritative for this method:
             # falling back to ``GOOGLE_API_KEY`` would silently ignore it.
             credentials = _service_account_credentials(auth.service_account_json_path, provider_name=provider_name, model_name=model_name)
+        elif auth is not None and auth.method == "oauth":
+            if config is None or not config.project:
+                raise ProviderExecutionError(
+                    kind="not_configured",
+                    provider_name=provider_name,
+                    model_name=model_name,
+                    message="Google OAuth requires providers.google.project for Vertex AI credentials",
+                    retryable=False,
+                    fallback_allowed=True,
+                )
+            credentials = oauth_credentials.Credentials(token=auth.access_token)
         elif auth is not None:
-            api_key = auth.api_key if auth.method == "api_key" else auth.access_token
+            api_key = auth.api_key
         if credentials is None:
             api_key = api_key or os.environ.get("GOOGLE_API_KEY")
         kwargs: dict[str, Any] = {}
@@ -172,7 +184,7 @@ class GoogleGenAIProvider:
             if project is not None or location is not None:
                 kwargs.update(vertexai=True, project=project, location=location)
         elif project is not None and location is not None:
-            # API key / access token configs keep the pre-existing gate: only a
+            # API key configs keep the pre-existing gate: only a
             # complete project+region pair selects Vertex express mode, so a
             # project-only config never moves off the generativelanguage endpoint.
             kwargs.update(vertexai=True, project=project, location=location)
