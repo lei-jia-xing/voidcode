@@ -236,19 +236,20 @@ class GoogleGenAIProvider:
         return ("\n\n".join(system) if system else None), contents
 
     def _config(self, request: ProviderTurnRequest, system: str | None) -> types.GenerateContentConfig:
-        declarations: list[types.FunctionDeclaration] = []
-        for tool in request.available_tools:
-            declarations.append(
+        metadata = static_catalog_metadata(request.provider_name or self.name, request.model_name or "")
+        declarations = (
+            [
                 types.FunctionDeclaration(
                     name=tool.name,
                     description=tool.description,
                     parameters_json_schema=json_wire_object(tool.input_schema) or {"type": "object", "properties": {}},
                 )
-            )
+                for tool in request.available_tools
+            ]
+            if metadata is None or metadata.supports_tools is not False
+            else []
+        )
         tools = [types.Tool(function_declarations=declarations)] if declarations else None
-        # The request carries no catalog object: the shipped catalog row is the
-        # same metadata source, and this lookup never fails a turn.
-        metadata = static_catalog_metadata(request.provider_name or self.name, request.model_name or "")
         max_output_tokens = metadata.max_output_tokens if metadata is not None else None
         # ``{session_id}`` placeholders resolve per request from the request's own
         # mapping; the client that carries them is reused across conversations.

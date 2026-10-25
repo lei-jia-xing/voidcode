@@ -1789,3 +1789,22 @@ Ruff, formatting and full source type checking passed. Six existing provider
 modules plus SDK dependency-direction checks passed 140 tests in 22.85 seconds
 with local loopback socket permission. No tests added and no live vendor calls
 used. Remaining OpenAI schema/replay/transport semantics still need review.
+
+## Preserve tool schemas and respect Google model tool capability
+
+Removed OpenAI's legacy flat-property-map conversion. A tool already declares
+a JSON schema; the adapter now preserves it and only supplies a missing root
+object type, as Anthropic does. Previously valid root `oneOf`/`anyOf` schemas
+without explicit root properties were rewritten as property names, destroying
+their constraints. No compatibility fallback remains.
+
+Google now consults catalog tool capability before constructing function
+declarations. Explicit `supports_tools=False` sends no tools, while unknown
+capability retains the existing permissive behavior. This matches OpenAI and
+Anthropic and avoids sending unsupported declarations.
+
+Ruff, formatting, full source type checking and 136 existing provider tests
+passed (22.10 seconds, local loopback permitted). Manual probes preserved a
+root `oneOf` schema and its valid/invalid instances, and checked Google true,
+false and unknown capability behavior with identical declaration schemas. No
+tests added. Full adapter/replay/usage and Google OAuth review remain pending.

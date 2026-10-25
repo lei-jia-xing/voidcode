@@ -573,19 +573,11 @@ class OpenAIChatCompletionsProvider:
         tools: list[dict[str, object]] = []
         for tool in request.available_tools:
             schema = json_wire_object(tool.input_schema)
-            if schema.get("type") == "object" or "properties" in schema or "additionalProperties" in schema:
-                parameters = dict(schema)
-                parameters.setdefault("type", "object")
-            else:
-                properties = dict(schema)
-                required = properties.pop("required", None)
-                parameters = {"type": "object", "properties": properties, "additionalProperties": True}
-                if isinstance(required, list) and all(isinstance(value, str) for value in required):
-                    parameters["required"] = list(required)
+            schema.setdefault("type", "object")
             tools.append(
                 {
                     "type": "function",
-                    "function": {"name": original_to_provider.get(tool.name, tool.name), "description": tool.description, "parameters": parameters},
+                    "function": {"name": original_to_provider.get(tool.name, tool.name), "description": tool.description, "parameters": schema},
                 }
             )
         return tools
