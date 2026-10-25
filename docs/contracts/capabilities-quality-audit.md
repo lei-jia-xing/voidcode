@@ -37,7 +37,7 @@ not establish source review.
 | `providers/native/anthropic_native.py` | Reviewed: request/tool/cache assembly, SDK auth/stream ownership, signed/redacted replay, exact tool stream identity, explicit terminal handling, unknown-preserving usage and thinking budget controls; model-specific thinking constraints delegated visibly to API |
 | `providers/native/claude_tokenizer/__init__.py` | Reviewed: family configuration, lazy load and count dispatch |
 | `providers/native/claude_tokenizer/constants.py` | Pending full source review |
-| `providers/native/claude_tokenizer/engine.py` | Pending full source review |
+| `providers/native/claude_tokenizer/engine.py` | Reviewed: count-only DP, byte floor, frame tail and bundled CTOK loading |
 | `providers/native/claude_tokenizer/normalize.py` | Pending full source review |
 | `providers/native/claude_tokenizer/notation.py` | Removed: unused token rendering/parsing API |
 | `providers/native/config.py` | Reviewed: strict ingress, field/table wiring, typed converters, env resolution, custom names, credential exclusivity and representations; removed dead framework/default paths |
@@ -2582,3 +2582,21 @@ whitespace and deterministic mixed strings. All 200 matched after editing.
 Repository searches found no consumers of removed APIs. Ruff/format and targeted
 ty passed; CodeGraph synchronized. No tests added. Full engine, normalization
 and constants review remains outstanding.
+
+### Claude count engine: avoid reconstructing discarded tokens
+
+The sole tile caller needs a count. Both dynamic programs now return integer
+minimum costs without parent arrays, span backtracking or token slicing. The
+byte floor caches counts rather than byte-segment lists; the frame tail subtracts
+one frame token from its minimum count directly. Removed the unused derived
+newline_ladder field. Vocabulary matching, normalization, marker costs and frame
+parameters remain unchanged. Reviewed the complete engine including CTOK loading:
+inputs are trusted bundled blobs, not user-uploaded containers; loading errors
+propagate instead of returning a guessed count.
+
+Validation: 200 previously recorded baseline counts remained identical. A fresh
+HEAD engine loaded alongside the new engine matched another 804 cases across
+all four families, including trailing-newline lengths 0–100 and deterministic
+multilingual/marker strings. Ruff/format and targeted ty passed; CodeGraph synced.
+No tests added; current vendor exactness and normalization/constants audit are
+not established by these equivalence checks.

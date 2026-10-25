@@ -100,7 +100,7 @@ def count_tokens(text: str, encoding: str) -> int:
         # newline, so an empty message costs zero there; v3/v4.7 still pay for
         # the frame's own ⟨bow⟩.
         return 0 if not _FAMILIES[encoding].frame_bow else 1
-    return tile(text, _core(encoding))[0]
+    return tile(text, _core(encoding))
 
 
 def encodings() -> tuple[str, ...]:

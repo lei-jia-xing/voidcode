@@ -15,27 +15,15 @@ from .constants import BOW_G, CAPS_G, EOW_G, ESCAPED_MARKER_LITERALS, MARKER_GLY
 from .normalize import nfc, raw_head_space, stream_norm
 
 
-def min_tile(n: int, cost_fn, max_len: int) -> tuple[float, list[tuple[int, int]]]:
-    """Min-cost tiling of ``[0, n)``. ``cost_fn(j, i)`` gives the cost of segment ``[j, i)``, or
-    ``None`` if it is not a piece. Returns ``(total_cost, spans)`` with the chosen ``(j, i)`` in
-    order. Callers guarantee a tiling exists by supplying a length-1 floor. Ties break on strict
-    ``<``, towards the leftmost start and therefore the longest final segment, which makes the
-    result deterministic."""
-    INF = float("inf")
-    best = [0.0] + [INF] * n
-    par = [0] * (n + 1)
-    for i in range(1, n + 1):
-        for j in range(max(0, i - max_len), i):
-            c = cost_fn(j, i)
-            if c is not None and best[j] + c < best[i]:
-                best[i] = best[j] + c
-                par[i] = j
-    spans, i = [], n
-    while i > 0:
-        j = par[i]
-        spans.append((j, i))
-        i = j
-    return best[n], spans[::-1]
+def min_tile(n: int, cost_fn, max_len: int) -> int:
+    """Minimum cost over byte segments, with a guaranteed single-byte floor."""
+    best = [0] + [n + 1] * n
+    for end in range(1, n + 1):
+        for start in range(max(0, end - max_len), end):
+            cost = cost_fn(start, end)
+            if cost is not None:
+                best[end] = min(best[end], best[start] + cost)
+    return best[n]
 
 
 class ReverseTrie:
@@ -53,14 +41,13 @@ class ReverseTrie:
             node[self._END] = None
 
 
-def min_vocab_tile(text: str, trie: ReverseTrie, unit_cost) -> tuple[int, list[tuple[int, int]]]:
+def min_vocab_tile(text: str, trie: ReverseTrie, unit_cost) -> int:
     """Min-cost tiling over a cost-1 vocabulary plus a guaranteed one-character floor.
 
     The specialized form of :func:`min_tile`: the trie visits only prefixes that can still become
     a piece, instead of probing every substring up to the longest piece (128 for v3).
     """
     best = [0] * (len(text) + 1)
-    par = [0] * (len(text) + 1)
     root = trie.root
     terminal = trie._END
     for end in range(1, len(text) + 1):
@@ -69,7 +56,6 @@ def min_vocab_tile(text: str, trie: ReverseTrie, unit_cost) -> tuple[int, list[t
         start = end - 1
         node = root.get(text[start])
         best[end] = best[start] + (1 if node is not None and terminal in node else unit_cost(start))
-        par[end] = start
 
         if node is None:
             continue
@@ -79,18 +65,10 @@ def min_vocab_tile(text: str, trie: ReverseTrie, unit_cost) -> tuple[int, list[t
                 break
             if terminal in node:
                 candidate = best[start] + 1
-                # Starts decrease through the traversal, so replacing on a tie retains min_tile's
-                # longest-final-piece tie order.
                 if candidate <= best[end]:
                     best[end] = candidate
-                    par[end] = start
 
-    spans, end = [], len(text)
-    while end > 0:
-        start = par[end]
-        spans.append((start, end))
-        end = start
-    return best[-1], spans[::-1]
+    return best[-1]
 
 
 class ByteFloor:
@@ -102,23 +80,18 @@ class ByteFloor:
         # cost-1 whole codepoints from the piece vocabulary.
         self.tokens = set(byte_tokens) | {c.encode().hex() for c in unit_chars}
         self.max_len = max((len(k) // 2 for k in self.tokens), default=1)
-        self._chunks: dict[bytes, list[bytes]] = {}
-
-    def chunks(self, bs: bytes) -> list[bytes]:
-        """The chosen byte segments, one per token. Memoized per byte string."""
-        hit = self._chunks.get(bs)
-        if hit is None:
-
-            def cost_fn(j: int, i: int) -> int | None:
-                return 1 if (i - j == 1 or bs[j:i].hex() in self.tokens) else None
-
-            _, spans = min_tile(len(bs), cost_fn, self.max_len)
-            hit = self._chunks[bs] = [bs[j:i] for j, i in spans]
-        return hit
+        self._costs: dict[bytes, int] = {}
 
     def cost_bytes(self, bs: bytes) -> int:
-        """One token per chunk."""
-        return len(self.chunks(bs))
+        """Minimum byte-token count, cached per byte string."""
+        hit = self._costs.get(bs)
+        if hit is None:
+
+            def cost_fn(start: int, end: int) -> int | None:
+                return 1 if end - start == 1 or bs[start:end].hex() in self.tokens else None
+
+            hit = self._costs[bs] = min_tile(len(bs), cost_fn, self.max_len)
+        return hit
 
     def cost_char(self, c: str) -> int:
         """Isolated codepoint cost via the byte floor."""
@@ -139,7 +112,7 @@ def char_cost(model, ch: str) -> int:
     return hit
 
 
-def frame_tail(n: int, model) -> list[str]:
+def frame_tail(n: int, model) -> int:
     """What a content-final run of ``n`` frame-absorbed characters costs beyond the frame's own
     trailing token. Ladder families only; on v5 trailing whitespace is simply free.
 
@@ -149,21 +122,16 @@ def frame_tail(n: int, model) -> list[str]:
     40 recorded rows; beyond 40 it rests on the vocabulary's newline ladder being complete.
     """
     if n == 0 or model.frame_tail != "ladder":
-        return []
+        return 0
     # The frame appends ⏎⏎ (``appended_newlines``), so one token can span into it; the
     # sonnet/fable-5 frame appends nothing.
     run = "\n" * (n + model.appended_newlines)
 
-    _total, spans = min_vocab_tile(run, model.trie, lambda _at: 1)
-    return [run[j:i] for j, i in spans][:-1]  # the last token is the frame's own ⏎⏎
+    return min_vocab_tile(run, model.trie, lambda _at: 1) - 1  # the last token belongs to the frame
 
 
-def tile(text: str, model) -> tuple[int, list[str | bytes]]:
-    """One min-cost tiling of the marked stream. Returns ``(cost, tokens)``.
-
-    Tokens are internal-form: ``str`` for a vocabulary piece or marker, ``bytes`` for a
-    sub-character chunk. ``len(tokens) == cost``.
-    """
+def tile(text: str, model) -> int:
+    """Count the minimum-cost tokens in the marked stream and frame tail."""
     if model.frame_tail == "ladder":
         norm = nfc(text, fold_quotes=model.fold_quotes)
         n_tail = len(norm) - len(norm.rstrip(model.frame_strip))
@@ -174,9 +142,6 @@ def tile(text: str, model) -> tuple[int, list[str | bytes]]:
         n_tail = 0
     s = stream_norm(norm, model, raw_head_space=raw_head_space(text))
     tail = frame_tail(n_tail, model)
-    if not s:
-        return len(tail), list(tail)
-    pieces = model.vocab
 
     def unit_floor(j: int) -> int:
         """One character where no piece covers it: a marker is a token, anything else falls to the
@@ -186,20 +151,7 @@ def tile(text: str, model) -> tuple[int, list[str | bytes]]:
             return 1
         return char_cost(model, ch)
 
-    total, spans = min_vocab_tile(s, model.trie, unit_floor)
-    # A span that fell to the byte floor may cost more than one token (a 4-byte letter with no
-    # piece costs 4) and must expand into that many, or len(tokenize(x)) stops being the count.
-    out: list[str | bytes] = []
-    for j, i in spans:
-        seg = s[j:i]
-        if seg in pieces or unit_floor(j) == 1:
-            out.append(seg)
-        else:
-            literal = ESCAPED_MARKER_LITERALS.get(seg, seg)
-            out.extend(model.bytes.chunks(literal.encode()))
-    assert len(out) == int(total), (len(out), int(total))
-    out.extend(tail)
-    return int(total) + len(tail), out
+    return min_vocab_tile(s, model.trie, unit_floor) + tail
 
 
 # ---- the shipped vocabulary container ------------------------------------------------------------
@@ -224,18 +176,13 @@ _TABLE_END = 0x58B
 
 
 class VocabCore:
-    """One loaded vocabulary: pieces, the byte floor, and the frame scalars.
-
-    ``newline_ladder`` is derived from the pieces (every pure-newline piece),
-    so the frame's trailing-newline cost needs no separate data.
-    """
+    """One loaded vocabulary: pieces, the byte floor, and frame parameters."""
 
     __slots__ = (
         "vocab",
         "trie",
         "unit_pieces",
         "bytes",
-        "newline_ladder",
         "fold_quotes",
         "allcaps_min",
         "frame_bow",
@@ -261,7 +208,6 @@ class VocabCore:
         self.unit_pieces = {p for p in vocab if len(p) == 1 and p not in MARKER_GLYPHS}
         # ByteFloor keys on hex strings, the container's own spelling.
         self.bytes = ByteFloor({t.hex() for t in byte_tokens}, self.unit_pieces)
-        self.newline_ladder = frozenset(len(p) for p in vocab if p and all(c == "\n" for c in p))
         self.fold_quotes = fold_quotes
         self.allcaps_min = allcaps_min
         self.frame_bow = frame_bow
