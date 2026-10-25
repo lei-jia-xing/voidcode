@@ -571,7 +571,7 @@ class GoogleGenAIProvider:
             return
         try:
             system, contents = self._contents(request)
-            last: object | None = None
+            latest_usage: ProviderTokenUsage | None = None
             raw_finish: object | None = None
             saw_candidates = False
             tool_call_ordinal = 0
@@ -591,7 +591,9 @@ class GoogleGenAIProvider:
                 for chunk in stream:
                     if request.abort_signal is not None and request.abort_signal.cancelled:
                         break
-                    last = chunk
+                    observed_usage = self._usage(chunk)
+                    if observed_usage is not None:
+                        latest_usage = observed_usage
                     parts.extend(self._parts(chunk))
                     self._raise_if_prompt_blocked(chunk, provider_name=provider_name, model_name=model_name)
                     candidates = getattr(chunk, "candidates", None)
@@ -633,9 +635,7 @@ class GoogleGenAIProvider:
             stream_metadata = self._signed_parts_metadata(parts)
             if done_reason == "unknown":
                 stream_metadata["finish_reason_raw"] = raw_token
-            yield ProviderStreamEvent(
-                kind="done", done_reason=done_reason, metadata=stream_metadata or None, usage=self._usage(last) if last is not None else None
-            )
+            yield ProviderStreamEvent(kind="done", done_reason=done_reason, metadata=stream_metadata or None, usage=latest_usage)
         except ProviderExecutionError as exc:
             if exc.kind != "cancelled":
                 raise

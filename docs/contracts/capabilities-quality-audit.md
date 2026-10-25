@@ -2301,3 +2301,19 @@ path. Manual probes confirmed an ambient API key does not override explicit
 OAuth and missing-project errors do not expose token material. No tests added
 or live vendor calls used. Remaining adapter source/usage reconciliation and
 other capability inventory items still prevent full goal completion.
+
+## Google latest observed stream usage
+
+Streaming now retains the latest valid ProviderTokenUsage instead of keeping
+the final SDK response solely to inspect its usage. A trailing event without
+usage no longer erases statistics already reported by the provider. Explicit
+zero counts replace earlier totals, and a stream without any valid usage
+remains unknown. Counts are neither accumulated nor filled from guessed zeros.
+The raw last-response state was replaced by the typed usage state it served.
+
+Ruff, formatting and targeted type checking passed; 118 existing provider
+streaming/usage/lifecycle/error/thinking tests passed in 11.63 seconds with local
+loopback permission. Manual real SDK response streams checked an empty final
+usage event, a later explicit all-zero report, and no usage at all. No tests
+added or live vendor calls used. Reasoning-output accounting and remaining
+native adapter source reconciliation are still pending.
