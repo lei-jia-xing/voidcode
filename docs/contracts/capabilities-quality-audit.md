@@ -2486,3 +2486,21 @@ guessed mode substitutions or per-model rules. SDK calls retain configured
 timeouts; local fixtures establish adapter behavior, not live compatibility
 with every vendor/model. OpenAI and the other pending capability inventory
 rows still need reconciliation and the full project gate remains outstanding.
+
+## OpenAI reasoning kwargs need no extra-body merge path
+
+Payload construction now updates directly from the existing reasoning kwargs
+projection. Removed the impossible pre-existing extra_body merge, defensive
+copy and separate branch: payload construction never sets that option before
+reasoning projection. extra_body remains the SDK option key; it is not flattened
+into unrecognized create() kwargs. This also preserves any complete mapping
+returned by the shared projection without a special partial update.
+
+Production source is 14 lines shorter. Ruff, formatting and targeted type
+checking passed; 48 existing reasoning/thinking/streaming tests passed in
+21.45 seconds with local loopback permission, including real request-body
+expectations. Sixteen baseline/current payload comparisons across four
+protocol-default providers and four effort values were identical, with nested
+extra_body contents kept under their SDK option. No tests added or live vendor
+calls used. Explicit numeric effort handling and the remaining OpenAI source
+reconciliation still need completion.
