@@ -604,9 +604,21 @@ class OpenAIChatCompletionsProvider:
             # family is the one exception, and it sends the model's own maximum
             # (``resolveOpenAIOutputTokenParam``, openai-shared.ts:630-647).
             payload[rule.max_tokens_field_or_default()] = _output_cap(metadata)
-        if request.reasoning_effort and (metadata is None or metadata.supports_reasoning is not False):
+        if request.reasoning_effort is not None and (metadata is None or metadata.supports_reasoning is not False):
             effort = normalize_reasoning_effort(request.reasoning_effort)
-            if isinstance(effort, str):
+            if isinstance(effort, int):
+                if effort != 0:
+                    raise ProviderExecutionError(
+                        kind="unsupported_feature",
+                        provider_name=request.provider_name or self.name,
+                        model_name=model_name,
+                        message="This Chat Completions adapter accepts reasoning effort levels, not numeric token budgets",
+                        retryable=False,
+                        fallback_allowed=True,
+                        details={"source": "payload", "reason": "unsupported_reasoning_budget"},
+                    )
+                effort = "off"
+            if effort is not None:
                 supported = metadata.supported_effort_levels if metadata is not None else None
                 payload.update(
                     reasoning_kwargs(

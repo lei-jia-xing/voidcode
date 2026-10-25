@@ -2529,3 +2529,18 @@ and bypass line normalization, preserving original UTF-8 file bytes.
 Validation: 73 existing files unit tests passed, four parser probes passed, and
 an actual pure move preserved CRLF bytes. Ruff/format and targeted ty passed;
 CodeGraph synchronized. No tests added.
+
+### Chat Completions numeric reasoning requests
+
+The adapter previously ignored integer reasoning budgets (and skipped zero by
+truthiness). Zero now uses the same protocol mapping as explicit off. Positive
+budgets fail with typed unsupported_feature instead of silently dropping the
+request; this adapter has no numeric-budget mapping. Existing catalog suppression
+for models explicitly marked non-reasoning is unchanged. No new model rules or
+dependencies introduced.
+
+Validation: 48 existing reasoning/protocol/streaming tests passed. Twelve manual
+payload probes across OpenAI, OpenRouter, Zai and Qwen verified zero/off equality
+and positive-budget errors for unknown models. Ruff/format and targeted ty
+passed; CodeGraph synchronized. No tests added. OpenAI adapter audit remains
+partial; these checks do not establish live vendor compatibility.
