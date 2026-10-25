@@ -2355,3 +2355,25 @@ confirmed extraction of visible text, reasoning, call identity and signed
 metadata without invoking that accessor. No tests added or live vendor calls
 used. Signed replay for provider-omitted function IDs and remaining adapter
 reconciliation still need review; Google is not marked fully reviewed yet.
+
+## Google signed replay distinguishes runtime and wire IDs
+
+Signed Google parts must stay unchanged, including an omitted function ID.
+History conversion now maps the current assistant's runtime call identities to
+the original signed function IDs, including None. Tool feedback therefore
+omits an ID when its original signed call omitted it, rather than sending an
+invented runtime fallback unmatched by the preserved Part. Explicit upstream
+IDs still round-trip. The map is local and cleared for each assistant, so later
+unsigned calls with reused fallback IDs cannot inherit earlier mappings.
+
+The original/runtime call lists are zipped strictly: inconsistent own metadata
+fails rather than silently truncating. Consecutive tool feedback now uses one
+loop for the whole batch instead of separate first/following message code. No
+persisted field, signature mutation or cross-plugin contract was added.
+
+Ruff, formatting and targeted type checking passed; 137 existing provider/auth
+tests passed in 21.75 seconds with local loopback permission. Real SDK-part
+probes covered missing/explicit IDs in one signed batch, unchanged binary
+signature serialization, a later unsigned fallback-ID reuse and malformed call
+count rejection. No tests added or live vendor calls used. Remaining native
+adapter reconciliation and other capability inventory items remain pending.

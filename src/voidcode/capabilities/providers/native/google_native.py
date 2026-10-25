@@ -202,6 +202,7 @@ class GoogleGenAIProvider:
     def _contents(self, request: ProviderTurnRequest) -> tuple[str | None, list[dict[str, object]]]:
         system: list[str] = []
         contents: list[dict[str, object]] = []
+        wire_ids: dict[str, str | None] = {}
         messages = request.messages
         index = 0
         while index < len(messages):
@@ -212,11 +213,17 @@ class GoogleGenAIProvider:
                 index += 1
                 continue
             if message.role == "assistant":
+                wire_ids.clear()
                 replay = json_wire_object(message.metadata).get("google_parts")
                 if replay is not None:
                     if not isinstance(replay, list):
                         raise ValueError("Google replay parts must be an array")
-                    contents.append({"role": "model", "parts": [types.Part.model_validate(part) for part in replay]})
+                    replayed_parts = [types.Part.model_validate(part) for part in replay]
+                    original_calls = [part.function_call for part in replayed_parts if part.function_call is not None]
+                    for runtime_call, original_call in zip(message.tool_calls, original_calls, strict=True):
+                        if runtime_call.tool_call_id is not None:
+                            wire_ids[runtime_call.tool_call_id] = original_call.id
+                    contents.append({"role": "model", "parts": replayed_parts})
                     index += 1
                     continue
             if message.role == "assistant" and message.tool_calls:
@@ -241,12 +248,17 @@ class GoogleGenAIProvider:
                 # ``function_response`` with the ``function_call`` it answers,
                 # and a batch is exactly the tool messages the model's own
                 # assistant turn called. Reasoning is never replayed here.
-                parts = [{"function_response": {"id": message.tool_call_id, "name": message.tool_name, "response": self._tool_response(message)}}]
-                index += 1
+                parts = []
                 while index < len(messages) and messages[index].role == "tool":
                     following = messages[index]
                     parts.append(
-                        {"function_response": {"id": following.tool_call_id, "name": following.tool_name, "response": self._tool_response(following)}}
+                        {
+                            "function_response": {
+                                "id": wire_ids.get(following.tool_call_id or "", following.tool_call_id),
+                                "name": following.tool_name,
+                                "response": self._tool_response(following),
+                            }
+                        }
                     )
                     index += 1
                 contents.append({"role": "user", "parts": parts})
