@@ -2163,3 +2163,23 @@ conflicts in both root listings and selected-member reads. Additional manual
 probes covered reversed member ordering, explicit directory conflicts and
 last-size behavior for repeated files. No tests added. Long-name output bounds
 and compressed archive scan resource/cancellation limits remain pending.
+
+## Byte-bounded archive directory pages
+
+Archive entry pages now stop at both the existing count limit and read data
+byte budget. The continuation field advances by the number actually rendered;
+full member names are retained instead of clipping an identity callers need
+for selected reads. Header and a worst-case continuation line are included in
+the data budget, without a new configurable limit or pagination mechanism.
+
+A directory label or single member name too large to fit fails explicitly; it
+cannot produce an empty truncated page advertising the same cursor forever.
+Ordinary short-name listings retain the same pagination. This bounds the raw
+listing data, not all surrounding envelope/summary metadata.
+
+Ruff, formatting and targeted type checking passed; 97 existing file/format/
+artifact/coverage tests passed in 1.14 seconds. A real ZIP with 200 long
+multibyte names reconstructed all names exactly across eight byte-bounded
+pages, with strictly increasing offsets. A single 60,000-byte name was rejected
+without a stuck cursor. No tests added. Compressed archive scan resource and
+cancellation limits remain pending review.
