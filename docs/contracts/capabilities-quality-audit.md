@@ -47,7 +47,7 @@ not establish source review.
 | `providers/native/model_catalog_data.json` | Pending consumer/data-contract review |
 | `providers/native/model_routing.py` | Reviewed: routed alias/catalog fallback, typed unsupported wires, serialized cache creation and teardown |
 | `providers/native/naming.py` | Reviewed source/callers: provider normalization, preserved model casing, table-derived labels/reservations and unknown-id diagnostics; removed dead canonical-reference wrapper |
-| `providers/native/openai_native.py` | Partial: lifecycle/stream/error work and ordered gateway feedback reviewed; removed metadata mode/attachment scaffolding; remaining transport/payload/replay source review pending |
+| `providers/native/openai_native.py` | Partial: lifecycle/stream/error work and ordered gateway feedback reviewed; removed metadata mode/attachment scaffolding and unconsumed wire fingerprints; remaining transport/payload/replay source review pending |
 | `providers/native/opencode.py` | Partial: configured gateway authority, wire vocabulary, aliases, timeout/key propagation and native URL normalization reviewed; external gateway protocol/header assumptions pending |
 | `providers/native/opencode_go.py` | Partial: nonnullable endpoint path and minimal feedback model set reviewed; configured host precedence reviewed and redundant route URL pins removed; external protocol quirks pending |
 | `providers/native/openrouter.py` | Reviewed: small direct adapter using vendor endpoint normalization and native OpenAI transport |
@@ -1769,3 +1769,23 @@ provider test modules with local socket permission passed all 136 tests in
 tool/cache gating for both supported and unsupported tool metadata. No tests
 added; no live vendor credentials or external service requests used. Anthropic
 stream/replay/usage and transport details remain pending full reconciliation.
+
+## OpenAI unused wire fingerprints and SDK types
+
+OpenAI request construction no longer serializes system-prefix/tool snapshots
+or computes SHA-256 fingerprints with no consumer. Its private materialization
+wrapper is replaced by a tools-only projection; messages go directly into the
+payload. Tool projection is skipped when catalog metadata disables tools.
+Existing tool name/schema transformations and history conversion are retained.
+
+After removing the last consumer, deleted `ProviderWireMaterialization` and
+`WirePrefixDescriptor` from the SDK. Repository-wide source/test searches found
+no remaining references. These structures were internal adapter intermediates,
+not fields in persisted turn requests or provider protocol methods. No
+compatibility aliases or replacement abstractions were introduced. Combined
+production source reduction: 41 lines.
+
+Ruff, formatting and full source type checking passed. Six existing provider
+modules plus SDK dependency-direction checks passed 140 tests in 22.85 seconds
+with local loopback socket permission. No tests added and no live vendor calls
+used. Remaining OpenAI schema/replay/transport semantics still need review.

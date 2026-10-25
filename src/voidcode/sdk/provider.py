@@ -154,24 +154,6 @@ class ProviderStreamEvent:
     parsed_arguments: dict[str, object] | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class WirePrefixDescriptor:
-    """Identity of a final wire prefix, not a cache-hit claim."""
-
-    canonical_bytes: bytes
-    canonical_hash: str
-    materialized_message_count: int
-    tool_generation: str
-    assembly_version: int
-
-
-@dataclass(frozen=True, slots=True)
-class ProviderWireMaterialization:
-    messages: list[dict[str, object]]
-    tools: list[dict[str, object]]
-    prefix: WirePrefixDescriptor
-
-
 @dataclass(slots=True, eq=False)
 class ProviderExecutionError(ValueError):
     kind: ProviderErrorKind

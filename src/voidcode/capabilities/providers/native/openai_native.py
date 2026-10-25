@@ -22,8 +22,6 @@ from voidcode.sdk.provider import (
     ProviderTokenUsage,
     ProviderTurnRequest,
     ProviderTurnResult,
-    ProviderWireMaterialization,
-    WirePrefixDescriptor,
 )
 from voidcode.sdk.tools import ToolCall
 
@@ -570,8 +568,7 @@ class OpenAIChatCompletionsProvider:
                 messages.append({"role": message.role, "content": message.content})
         return messages
 
-    def _wire(self, request: ProviderTurnRequest) -> ProviderWireMaterialization:
-        messages = self._messages(request)
+    def _tools(self, request: ProviderTurnRequest) -> list[dict[str, object]]:
         original_to_provider, _ = self._tool_maps(request)
         tools: list[dict[str, object]] = []
         for tool in request.available_tools:
@@ -591,26 +588,7 @@ class OpenAIChatCompletionsProvider:
                     "function": {"name": original_to_provider.get(tool.name, tool.name), "description": tool.description, "parameters": parameters},
                 }
             )
-        stable_messages: list[dict[str, object]] = []
-        for message in messages:
-            if message.get("role") != "system":
-                break
-            stable_messages.append(message)
-        canonical = json.dumps(
-            {"assembly_version": 1, "messages": stable_messages, "tools": tools}, ensure_ascii=True, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
-        tool_bytes = json.dumps(tools, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        return ProviderWireMaterialization(
-            messages=messages,
-            tools=tools,
-            prefix=WirePrefixDescriptor(
-                canonical_bytes=canonical,
-                canonical_hash=hashlib.sha256(canonical).hexdigest(),
-                materialized_message_count=len(messages),
-                tool_generation=hashlib.sha256(tool_bytes).hexdigest(),
-                assembly_version=1,
-            ),
-        )
+        return tools
 
     def _payload(self, request: ProviderTurnRequest, *, stream: bool) -> dict[str, object]:
         if request.cache_retention not in (None, "none"):
@@ -625,18 +603,17 @@ class OpenAIChatCompletionsProvider:
                 details={"source": "payload", "reason": "unsupported_cache_retention"},
             )
         model_name = self._model_name(request)
-        wire = self._wire(request)
         # The request carries no catalog object, so the shipped catalog entry for
         # the provider and the mapped model is the authority the legacy
         # ``request.model_metadata`` used to be.
         metadata = static_catalog_metadata(request.provider_name or self.name, model_name)
         rule = thinking_rule_for(request.provider_name or self.name, model_name)
-        payload: dict[str, object] = {"model": model_name, "messages": wire.messages, "stream": stream}
+        payload: dict[str, object] = {"model": model_name, "messages": self._messages(request), "stream": stream}
         # The catalog is the authority on what this model accepts: a model that
         # cannot call tools is not handed a tool schema, and one that does not
         # reason is not handed a reasoning knob.
-        if wire.tools and (metadata is None or metadata.supports_tools is not False):
-            payload["tools"] = wire.tools
+        if request.available_tools and (metadata is None or metadata.supports_tools is not False):
+            payload["tools"] = self._tools(request)
             if not rule.requires_reasoning_content_for_tool_calls:
                 payload["tool_choice"] = "auto"
         if rule.sends_output_cap_by_default:
