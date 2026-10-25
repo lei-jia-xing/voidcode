@@ -2442,3 +2442,20 @@ checked zero/off/none equivalence, budgets 1 and 1023 refusing locally, and
 1024 preserved alongside an unchanged 8192 output cap. No tests added or live
 vendor calls used. Anthropic usage unknown-state and remaining terminal/source
 reconciliation still need completion.
+
+## Anthropic incomplete inclusive input remains unknown
+
+Removed the fallback that treated uncached input as a complete inclusive input
+total when cache-read tokens were absent. `_usage` and streaming `_merge_usage`
+now compute that total only with both observed components; the independently
+reported uncached count is retained. Known split stream reports can complete
+the total later, and explicit zero counts replace earlier observations.
+No count is guessed or erased from its own bucket, and cache-write remains its
+separate additive bucket under the existing SDK contract.
+
+Ruff, formatting and targeted type checking passed; 46 existing usage/auth/
+streaming tests passed in 22.91 seconds with local loopback permission. Manual
+probes covered missing and invalid cache counts, completion from split reports,
+explicit zeros and an incomplete final total. No tests added or live vendor
+calls used. Remaining Anthropic stream lifetime/terminal reconciliation and
+other partial capability rows remain open.
