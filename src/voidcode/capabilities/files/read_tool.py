@@ -113,34 +113,20 @@ def _render_tool_documentation(
             f"no tool documentation for {tool_name}: the active revision admits no such tool, "
             "or this session's profile scope/read-only stance hides it",
         )
-    # No sidecar guidance files in the plugin world: the tool's own admitted
-    # definition is the guidance source.
-    guidance = definition.description or ""
-    sections = [
-        f"# Tool: {definition.name}",
-        "",
-        ("Schema" if not guidance else "Agent usage guidance"),
-        "",
-    ]
-    if guidance:
-        sections.append(guidance)
-        sections.append("")
-        sections.append("JSON input schema (input_schema):")
-        sections.append("")
-    else:
-        sections.append("(no sidecar guidance file for this tool)")
-        sections.append("")
-        sections.append("JSON input schema (input_schema):")
-        sections.append("")
+    guidance = definition.description
     schema = json_wire_object(definition.input_schema)
-    schema_text = json.dumps(schema, indent=2)
-    sections.append(schema_text)
-    sections.append("")
     effects = sorted(effect.value for effect in definition.effects)
-    sections.append("effects: " + ", ".join(effects))
     read_only = is_read_tier(definition.effects)
-    sections.append(f"read_only: {str(read_only).lower()}")
-    content = "\n".join(sections).strip()
+    content = "\n\n".join(
+        (
+            f"# Tool: {definition.name}",
+            guidance,
+            "JSON input schema (input_schema):",
+            json.dumps(schema, indent=2),
+            "effects: " + ", ".join(effects),
+            f"read_only: {str(read_only).lower()}",
+        )
+    )
     return _ReadOutcome(
         output=_text_output(f"Read documentation for tool {tool_name}.", raw_content=content),
         body=OpaqueToolBody(
@@ -471,20 +457,27 @@ def _render_transcript(
     after_sequence = 0
     offset = 0
     if query:
-        params = parse_qs(query, strict_parsing=True)
+        try:
+            params = parse_qs(query, strict_parsing=True, keep_blank_values=True)
+        except ValueError as exc:
+            return _uri_failure(tool_name_label, f"invalid transcript query: {exc}")
         unknown = sorted(set(params) - {"after_sequence", "offset"})
         if unknown:
             return _uri_failure(tool_name_label, f"unsupported transcript query parameter: {unknown[0]}")
-        for name, target in (("after_sequence", "after_sequence"), ("offset", "offset")):
+        for name in ("after_sequence", "offset"):
             values = params.get(name)
             if values is None:
                 continue
-            if len(values) != 1 or not values[0].isdigit():
+            if len(values) != 1 or not values[0].isdecimal():
                 return _uri_failure(tool_name_label, f"transcript {name} must be one non-negative integer")
-            if target == "after_sequence":
-                after_sequence = int(values[0])
+            try:
+                value = int(values[0])
+            except ValueError:
+                return _uri_failure(tool_name_label, f"transcript {name} exceeds the supported integer length")
+            if name == "after_sequence":
+                after_sequence = value
             else:
-                offset = int(values[0])
+                offset = value
     caller_session_id = context.require_session_id()
     limit = max(1, min(limit, MAX_EVENT_PAGE))
     try:

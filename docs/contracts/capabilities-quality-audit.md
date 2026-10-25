@@ -25,7 +25,7 @@ not establish source review.
 | `files/glob_tool.py` | Reviewed: strict ingress, root-relative patterns, traversal/ignore rules, bounded path collection, ordering/error results and cooperative cancellation |
 | `files/grep_tool.py` | Reviewed: strict ingress, literal/regex matching and filters, bounded line/context/result collection, immutable rendering, error handling and cooperative cancellation |
 | `files/read_formats.py` | Reviewed: bounded notebook/SQLite/PDF views, source snapshot semantics, pagination/recovery, signature-only image handling, read-only transactions and extractor cleanup |
-| `files/read_tool.py` | Partial: strict ingress, PDF recovery and typed/error-visible bounded directory materialization reviewed; archive member identity/byte bounds and clipped-line recovery reviewed; native file stream/hash/binary bounds and read cancellation ingress reviewed; artifact/transcript projections, native clipped-line recovery, archive metadata/modes, directory cancellation and result metadata pending |
+| `files/read_tool.py` | Partial: strict ingress, PDF recovery and typed/error-visible bounded directory materialization reviewed; archive member identity/byte bounds and clipped-line recovery reviewed; native file stream/hash/binary bounds and read cancellation ingress reviewed; tool documentation and transcript query ingress reviewed; remaining artifact/transcript projections, native clipped-line recovery, archive metadata/modes, directory cancellation and result metadata pending |
 | `files/write_tool.py` | Reviewed: hash/containment/symlink/atomic replace/cancellation; fail visibly on mode errors and always clean temporary files |
 | `frontmatter.py` | Reviewed source/consumers: safe YAML, duplicate/string-key validation, framing/body/bounds; shared parser tests |
 | `providers/__init__.py` | Reviewed: shared registration/facts/view wiring and ExitStack-owned provider teardown |
@@ -1550,3 +1550,20 @@ cancellation test was adjusted to the explicit failure result and lost its unuse
 SQLite setup; no tests added. Ruff, formatting, targeted type checks and CodeGraph
 sync passed. Net implementation reduction: 30 lines. Native clipped-line recovery,
 archive metadata and remaining projections are still pending.
+
+## Tool documentation and transcript query ingress
+
+Removed historical sidecar guidance wording and repeated schema formatting from
+`read_tool.py`. Documentation uses the admitted, visible tool definition directly;
+its typed description no longer gets a synthetic fallback.
+
+Transcript queries retain blank values so empty and duplicate parameters cannot
+silently become default cursors. Malformed query syntax, non-decimal numerals and
+integers exceeding Python's conversion limit return explicit URI failures before
+reading events. Removed the redundant parameter-name/target-name tuple mapping.
+
+Validation: Ruff and targeted source type checking passed; 77 existing file and
+artifact tests passed. Six manual malformed-query probes (blank, superscript,
+duplicate with blank, missing equals, unknown blank key and 5000-digit integer)
+were rejected before event-store access. No tests added. Remaining transcript
+projection/bounds and artifact paths still require source review.
