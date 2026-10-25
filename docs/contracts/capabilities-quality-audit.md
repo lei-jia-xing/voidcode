@@ -1624,3 +1624,18 @@ passed. Manual probes confirmed raw ZIP and unsupported 7z bytes use the binary
 file branch, and five incompatible archive/directory selector combinations fail
 explicitly. No tests added. Archive metadata collection bounds and directory
 mid-scan cancellation remain pending.
+
+## One authoritative read argument schema
+
+Removed the handwritten read JSON schema. `ReadArgs.model_json_schema()` now
+publishes the same field types and numeric limits used at invocation ingress;
+field descriptions live alongside those constraints. Artifact page and notebook
+output ceilings no longer have independently maintained numeric copies.
+Corrected the transcript description to reflect that readable prompts and tool
+results are included. Generated optional/null schemas now reflect the runtime's
+already-accepted optional fields. No schema translation layer was added.
+
+Net source reduction: 38 lines. Ruff, full source type checking and 97 existing
+file/format/artifact/coverage tests passed. Manual validation checked the thawed
+SDK wire schema against JSON Schema and compared valid arguments plus five
+invalid bound/unknown-field cases with Pydantic ingress. No tests added.

@@ -536,18 +536,43 @@ def _render_transcript(
 class ReadArgs(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
-    path: str
-    offset: int | None = Field(default=None, ge=1)
-    limit: int | None = Field(default=None, ge=1, le=2000)
-    byte_offset: int | None = Field(default=None, ge=0)
-    byte_limit: int | None = Field(default=None, ge=4, le=MAX_ARTIFACT_PAGE_BYTES)
-    view: Literal["raw", "sqlite", "notebook", "pdf"] | None = None
-    table: str | None = None
-    query: str | None = None
-    cell: int | None = Field(default=None, ge=0)
-    page: int | None = Field(default=None, ge=1)
-    output_offset: int | None = Field(default=None, ge=1)
-    output_limit: int | None = Field(default=None, ge=1, le=MAX_OUTPUTS)
+    path: str = Field(
+        description=(
+            "Internal URLs: voidcode://tool/<name> reads a tool's guidance and input schema; "
+            "voidcode://rule/<name> reads a bounded workspace rule catalog entry; "
+            "voidcode://artifact/<id> reads a bounded slice of the current session's spilled tool-output artifact; "
+            "voidcode://transcript/<session_id> reads a bounded transcript with prompts and tool results "
+            "of the current session or of a child session it spawned."
+        )
+    )
+    offset: int | None = Field(
+        default=None,
+        ge=1,
+        description="1-based starting file line, SQLite row, Notebook cell, or PDF text line; Notebook cell offsets use `offset` rather than `cell`.",
+    )
+    limit: int | None = Field(
+        default=None, ge=1, le=2000, description="Maximum file lines, SQLite rows, Notebook cells, or PDF text lines to return."
+    )
+    byte_offset: int | None = Field(
+        default=None, ge=0, description="Zero-based UTF-8 byte offset for continuing a long artifact line; use the returned next_byte_offset."
+    )
+    byte_limit: int | None = Field(
+        default=None, ge=4, le=MAX_ARTIFACT_PAGE_BYTES, description="Maximum UTF-8 bytes in an artifact page; requires byte_offset."
+    )
+    view: Literal["raw", "sqlite", "notebook", "pdf"] | None = Field(
+        default=None,
+        description="Select a read-only derived view; raw returns the original file bytes/text and preserves ordinary file-read semantics.",
+    )
+    table: str | None = Field(default=None, description="SQLite table to inspect; defaults to the first user table.")
+    query: str | None = Field(default=None, description="One read-only SQLite SELECT/WITH query.")
+    cell: int | None = Field(default=None, ge=0, description="Zero-based notebook cell index to inspect alone.")
+    page: int | None = Field(default=None, ge=1, description="One-based PDF page to extract.")
+    output_offset: int | None = Field(
+        default=None, ge=1, description="1-based notebook output index within `cell`; requires the zero-based cell selector."
+    )
+    output_limit: int | None = Field(
+        default=None, ge=1, le=MAX_OUTPUTS, description="Maximum notebook outputs to return for `cell`; continue with next_output_offset."
+    )
 
     @field_validator("path")
     @classmethod
@@ -1448,70 +1473,7 @@ class ReadTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="read",
         description="Read a file inside the current workspace.",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": (
-                        "Internal URLs: voidcode://tool/<name> reads a tool's guidance and input schema; "
-                        "voidcode://rule/<name> reads a bounded workspace rule catalog entry; "
-                        "voidcode://artifact/<id> reads a bounded slice of the current session's spilled tool-output artifact; "
-                        "voidcode://transcript/<session_id> reads a bounded, payload-stripped transcript of the current session "
-                        "or of a child session it spawned."
-                    ),
-                },
-                "offset": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": (
-                        "1-based starting file line, SQLite row, Notebook cell, or PDF text line; "
-                        "Notebook cell offsets use `offset` rather than `cell`."
-                    ),
-                },
-                "limit": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 2000,
-                    "description": "Maximum file lines, SQLite rows, Notebook cells, or PDF text lines to return.",
-                },
-                "byte_offset": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "description": "Zero-based UTF-8 byte offset for continuing a long artifact line; use the returned next_byte_offset.",
-                },
-                "byte_limit": {
-                    "type": "integer",
-                    "minimum": 4,
-                    "maximum": 47104,
-                    "description": "Maximum UTF-8 bytes in an artifact page; requires byte_offset.",
-                },
-                "view": {
-                    "type": "string",
-                    "enum": ["raw", "sqlite", "notebook", "pdf"],
-                    "description": (
-                        "Select a read-only derived view; raw returns the original file bytes/text and preserves ordinary file-read semantics."
-                    ),
-                },
-                "table": {"type": "string", "description": "SQLite table to inspect; defaults to the first user table."},
-                "query": {"type": "string", "description": "One read-only SQLite SELECT/WITH query."},
-                "cell": {"type": "integer", "minimum": 0, "description": "Zero-based notebook cell index to inspect alone."},
-                "page": {"type": "integer", "minimum": 1, "description": "One-based PDF page to extract."},
-                "output_offset": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": "1-based notebook output index within `cell`; requires the zero-based cell selector.",
-                },
-                "output_limit": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 20,
-                    "description": "Maximum notebook outputs to return for `cell`; continue with next_output_offset.",
-                },
-            },
-            "required": ["path"],
-            "additionalProperties": False,
-        },
+        input_schema=ReadArgs.model_json_schema(),
         effects=frozenset({ToolEffect.READ}),
         path_argument_keys=("path",),
         supports_parallel=True,
