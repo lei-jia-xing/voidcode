@@ -113,11 +113,11 @@ def _command_result_rows(name: str, result: Mapping[str, Any]) -> list[str]:
     status = str(result.get("status", ""))
     text = _command_result_text(result)
     if status == "error":
-        return _prefixed_rows(f"✖ Command /{label} failed:", text, color="31")
+        return _prefixed_rows(f"[error] Command /{label} failed:", text, color="31")
     if status == "pending_confirmation":
-        return [f"\x1b[33m⏳ Command /{label} awaits confirmation\x1b[0m"]
+        return [f"\x1b[33m[wait] Command /{label} awaits confirmation\x1b[0m"]
     if status == "ok":
-        return _prefixed_rows(f"✔ Command /{label}:", text, color="32")
+        return _prefixed_rows(f"[ok] Command /{label}:", text, color="32")
     return _prefixed_rows(f"Command /{label} [{status or 'unknown'}]:", text, color="33")
 
 
@@ -479,7 +479,7 @@ class CoreTuiApp:
                 # the reconnected stream (first-frame trigger above), so an
                 # announced restart and a silent drop share one path — and no
                 # blocking request ever runs on this UI thread.
-                self.status_line = "Core restarting — reconnecting..."
+                self.status_line = "Core restarting -- reconnecting..."
             elif kind == "error":
                 rows_to_commit.append(f"\x1b[31m[Core stream error]\x1b[0m {_safe(frame.get('error'))}")
 
@@ -519,7 +519,7 @@ class CoreTuiApp:
                         continue
                     name = _safe(call.get("tool_name") or "tool")
                     arguments = json.dumps(json_safe(call.get("arguments")), ensure_ascii=False, allow_nan=False)
-                    rows.append(f"\x1b[33m▶ Tool call {name}\x1b[0m {_safe(arguments)}")
+                    rows.append(f"\x1b[33m> Tool call {name}\x1b[0m {_safe(arguments)}")
         elif etype in (EventType.TOOL_COMPLETED, EventType.TOOL_INTERRUPTED):
             raw_call = payload.get("call")
             call: dict[str, Any] = raw_call if isinstance(raw_call, dict) else {}
@@ -530,9 +530,9 @@ class CoreTuiApp:
             body = _tool_output_text(result)
             if failed:
                 error = _safe(result.get("error") or body or "interrupted")
-                rows.append(f"\x1b[31m✖ Tool {name} failed:\x1b[0m {error}")
+                rows.append(f"\x1b[31m[error] Tool {name} failed:\x1b[0m {error}")
             else:
-                rows.append(f"\x1b[32m✔ Tool {name}:\x1b[0m {body}")
+                rows.append(f"\x1b[32m[ok] Tool {name}:\x1b[0m {body}")
         elif etype == EventType.COMMAND_COMPLETED:
             raw_command_result = payload.get("result")
             command_result: dict[str, Any] = raw_command_result if isinstance(raw_command_result, dict) else {}
@@ -1244,7 +1244,7 @@ class CoreTuiApp:
                 sid = s.get("session_id", "")
                 status = s.get("status", "idle")
                 turn = s.get("turn", 0)
-                marker = " ▶" if sid == self.session_id else "  "
+                marker = " >" if sid == self.session_id else "  "
                 lines.append(f"{marker} {sid} (status={status}, turn={turn})")
             self.terminal.commit_rows(lines)
         except Exception as exc:

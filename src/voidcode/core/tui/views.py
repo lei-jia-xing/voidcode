@@ -44,11 +44,11 @@ def render_notice(data: Mapping[str, Any], width: int) -> list[str]:
     message = str(data.get("message", ""))
     level = str(data.get("level", "info"))
     style_map = {
-        "info": ("blue", "ℹ Notice"),
-        "warning": ("yellow", "⚠ Warning"),
-        "error": ("red", "✖ Error"),
+        "info": ("blue", "[info]"),
+        "warning": ("yellow", "[warn]"),
+        "error": ("red", "[error]"),
     }
-    color, prefix = style_map.get(level, ("blue", "ℹ Notice"))
+    color, prefix = style_map.get(level, ("blue", "[info]"))
     content = Text.assemble((f"{prefix}: ", f"bold {color}"), (message, ""))
     return render_lines(content, width)
 
@@ -115,7 +115,7 @@ def render_diff(data: Mapping[str, Any], width: int) -> list[str]:
 def render_status(data: Mapping[str, Any], width: int) -> list[str]:
     label = str(data.get("label", "Status"))
     value = str(data.get("value", ""))
-    text = Text.assemble(("● ", "bold green"), (f"{label}: ", "bold"), (value, "white"))
+    text = Text.assemble(("* ", "bold green"), (f"{label}: ", "bold"), (value, "white"))
     return render_lines(text, width)
 
 
@@ -160,7 +160,7 @@ class InteractiveChoices:
         text.append("Choose an option:\n", style="bold cyan")
         for i, opt in enumerate(self.options):
             if i == self.selected_index:
-                text.append(f" ▶ [{i + 1}] {opt['label']}\n", style="bold yellow")
+                text.append(f" > [{i + 1}] {opt['label']}\n", style="bold yellow")
             else:
                 text.append(f"   [{i + 1}] {opt['label']}\n", style="white")
         panel = Panel(text, title=f"Action: {self.action}", border_style="yellow", expand=True)
@@ -389,9 +389,9 @@ class InteractiveForm:
     def render_rows(self, width: int) -> list[str]:
         text = Text()
         if self.load_error:
-            text.append(f"⚠ Load failure: {self.load_error}\n", style="bold red")
+            text.append(f"[warn] Load failure: {self.load_error}\n", style="bold red")
         if self.validation_error:
-            text.append(f"✖ Validation: {self.validation_error}\n", style="bold red")
+            text.append(f"[error] Validation: {self.validation_error}\n", style="bold red")
 
         text.append(f"Form: {self.action} (Enter/Tab next, Ctrl+S submit, Esc cancel)\n\n", style="dim")
         for i, f in enumerate(self.fields):
@@ -402,7 +402,7 @@ class InteractiveForm:
             is_active = i == self.active_index
             req_mark = "*" if f["required"] else ""
 
-            prefix = "▶ " if is_active else "  "
+            prefix = "> " if is_active else "  "
             label_style = "bold cyan" if is_active else "white"
             text.append(f"{prefix}{label}{req_mark} [{ftype}]: ", style=label_style)
 

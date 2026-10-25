@@ -1335,16 +1335,27 @@ def _render_archive_members(
         if offset > max(1, len(children)):
             raise ValueError(f"Offset {offset} is out of range for this archive directory ({len(children)} entries)")
         page_limit = min(limit, ARCHIVE_LIST_LIMIT)
-        shown = children[offset - 1 : offset - 1 + page_limit]
-        next_offset = offset + len(shown) if offset - 1 + len(shown) < len(children) else None
-        truncated = next_offset is not None
         header = f"{label}:" if not normalized_inner else f"{label}/"
+        continuation = f"\n… {len(children)} more; continue with offset={len(children) + 1}."
+        budget = MAX_BYTES - len(header.encode("utf-8")) - len(continuation.encode("utf-8"))
+        if budget < 0:
+            raise ValueError("archive directory path exceeds the read output byte limit")
         lines = [header]
-        for name, size, dir_flag in shown:
-            lines.append(f"{name}/" if dir_flag else f"{name} ({_human_size(size)})")
+        entry_count = 0
+        for name, size, dir_flag in children[offset - 1 : offset - 1 + page_limit]:
+            line = f"{name}/" if dir_flag else f"{name} ({_human_size(size)})"
+            byte_count = len(line.encode("utf-8")) + 1
+            if byte_count > budget:
+                if entry_count == 0:
+                    raise ValueError("archive member name exceeds the read output byte limit")
+                break
+            lines.append(line)
+            budget -= byte_count
+            entry_count += 1
+        next_offset = offset + entry_count if offset - 1 + entry_count < len(children) else None
+        truncated = next_offset is not None
         if truncated:
-            lines.append(f"… {len(children) - offset + 1 - len(shown)} more; continue with offset={next_offset}.")
-        entry_count = len(shown)
+            lines.append(f"… {len(children) - offset + 1 - entry_count} more; continue with offset={next_offset}.")
         rendered = "\n".join(lines)
         return _ReadOutcome(
             output=_text_output(

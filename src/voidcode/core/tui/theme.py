@@ -1,29 +1,6 @@
 """Theme tokens, palettes, and glyph tables.
 
-Design data ported from oh-my-pi (https://github.com/can1357/oh-my-pi, MIT).
-The pinned source is oh-my-pi commit
-``b07a1c146d0d12cfc855a2c65d52f892ef319040``; all source paths below are
-relative to that repository revision.
-
-* Token vocabulary (``ThemeColor``/``ThemeBg``): ``packages/tui/src/theme/schema.ts``.
-* ``voidcode-dark`` colour values: ``packages/tui/src/theme/defaults/titanium.json``
-  (omp's default dark theme -- ``packages/coding-agent/src/modes/settings.ts:59``
-  ``theme.dark`` default ``"titanium"``), with ``packages/tui/src/theme/dark.json``
-  as the fallback base for tokens titanium omits.
-* ``voidcode-light`` colour values: ``packages/tui/src/theme/light.json``
-  (``settings.ts`` ``theme.light`` default ``"light"``).
-* Glyph tables: ``packages/tui/src/theme/symbols.ts`` -- ``UNICODE_SYMBOLS``
-  (``:369``) and ``ASCII_SYMBOLS`` (``:1103``), keyed by omp's own ``SymbolKey``
-  names (``:9``).
-* Spinner frames: ``packages/tui/src/theme/symbols.ts:1385-1401`` ``SPINNER_FRAMES``.
-* ``fg``/``bg`` reset semantics (foreground-only ``\\x1b[39m`` / background-only
-  ``\\x1b[49m``): ``packages/tui/src/theme/theme-class.ts:292-309``.
-
-The registry (which names exist, and which name each mode falls back to) is
-owned here, not by the runtime config: a name arrives unresolved -- possibly
-``None``, possibly a typo -- and :func:`resolve_theme` is the only resolver.
-
-This module is pure: no terminal I/O, no global mutable state.
+Pure theme resolution and styling primitives for the TUI.
 """
 
 from __future__ import annotations
@@ -105,6 +82,7 @@ def _contains_terminal_controls(value: str) -> bool:
 
 __all__ = [
     "BG_TOKENS",
+    "DEFAULT_GLYPH_PRESET",
     "DEFAULT_THEME_NAMES",
     "FG_TOKENS",
     "SPINNER_FRAMES",
@@ -349,11 +327,11 @@ _UNICODE_SYMBOLS: Final[Mapping[str, str]] = MappingProxyType(
         "boxRound.vertical": "│",
         "sep.dot": " · ",
         "icon.model": "⬢",
-        "icon.folder": "📁",
-        "icon.search": "🔍",
-        "icon.file": "📄",
-        "icon.context": "◫",
-        "icon.job": "⚙",
+        "icon.folder": "[D]",
+        "icon.search": "[/]",
+        "icon.file": "[F]",
+        "icon.context": "ctx:",
+        "icon.job": "bg",
         "thinking.minimal": "○ min",
         "thinking.low": "◔ low",
         "thinking.medium": "◑ med",
@@ -373,10 +351,10 @@ _UNICODE_SYMBOLS: Final[Mapping[str, str]] = MappingProxyType(
         "tool.bash": "❯",
         "tool.webSearch": "⌕",
         "tool.eval": "▶",
-        "tool.job": "⚙",
+        "tool.job": "job",
         "tool.task": "⇶",
         "tool.todo": "☑",
-        "tool.memory": "🧠",
+        "tool.memory": "mem",
         "statusline.status": "●",
         "statusline.mode": "◈",
         "statusline.cost": "$",
@@ -390,6 +368,7 @@ _UNICODE_SYMBOLS: Final[Mapping[str, str]] = MappingProxyType(
         "tool.ask": "?",
     }
 )
+_EMOJI_SYMBOLS: Final[Mapping[str, str]] = _UNICODE_SYMBOLS
 
 #: ``ASCII_SYMBOLS`` (``theme/symbols.ts:1103-1379``), same keys.
 _ASCII_SYMBOLS: Final[Mapping[str, str]] = MappingProxyType(
@@ -466,6 +445,7 @@ _NERD_SYMBOLS: Final[Mapping[str, str]] = MappingProxyType(
 SYMBOL_PRESETS: Final[Mapping[str, Mapping[str, str]]] = MappingProxyType(
     {"unicode": _UNICODE_SYMBOLS, "ascii": _ASCII_SYMBOLS, "nerd": _NERD_SYMBOLS}
 )
+DEFAULT_GLYPH_PRESET: Final[str] = "ascii"
 
 #: ``SPINNER_FRAMES`` (``theme/symbols.ts:1385-1401``), ported verbatim;
 #: only the ``status`` animation is ever advanced.
@@ -636,7 +616,7 @@ class Theme:
         backgrounds: Mapping[str, str | int],
         *,
         color_system: ColorSystem | None = ColorSystem.TRUECOLOR,
-        glyph_preset: str = "unicode",
+        glyph_preset: str = DEFAULT_GLYPH_PRESET,
         symbol_overrides: Mapping[str, str] = MappingProxyType({}),
     ) -> None:
         self.name = name
@@ -954,7 +934,7 @@ def resolve_theme(
     mode: str = "auto",
     *,
     color_system: ColorSystem | None = ColorSystem.TRUECOLOR,
-    glyph_preset: str = "unicode",
+    glyph_preset: str = DEFAULT_GLYPH_PRESET,
     symbol_overrides: Mapping[str, str] | None = None,
 ) -> Theme:
     """Resolve one exact palette name and its validated semantic glyph set."""
@@ -976,12 +956,3 @@ def resolve_theme(
         glyph_preset=glyph_preset,
         symbol_overrides=MappingProxyType(dict(overrides)),
     )
-
-
-def background_mode(rgb: tuple[int, int, int] | None) -> Literal["dark", "light"] | None:
-    """Classify a reported terminal background by linear relative luminance."""
-    if rgb is None:
-        return None
-    linear = tuple((channel / 255) / 12.92 if channel / 255 <= 0.04045 else ((channel / 255 + 0.055) / 1.055) ** 2.4 for channel in rgb)
-    luminance = 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
-    return "dark" if luminance < 0.179 else "light"

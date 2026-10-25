@@ -1,17 +1,11 @@
-"""Typed live-frame layout and append-only settled-row commit boundary.
-
-:class:`LiveRegion` keeps chrome and unsettled rows in a bounded live viewport
-and hands only explicit settled batches to its commit sink; a resize drops older
-live rows and never promotes them to committed history. :class:`TuiFrame` is the
-typed frame both the region and the application render from.
-"""
+"""Typed live-frame layout and row diffing."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 
-__all__ = ["LiveRegion", "TuiFrame", "diff_rows"]
+__all__ = ["TuiFrame", "diff_rows"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,85 +32,3 @@ def diff_rows(previous: Sequence[str], current: Sequence[str]) -> tuple[tuple[in
         if index >= len(previous) or previous[index] != row:
             changes.append((index, row))
     return tuple(changes)
-
-
-class LiveRegion:
-    """Bounded live viewport; only explicit settled batches are committed."""
-
-    __slots__ = ("_commit_rows", "_committed", "_live", "_max_rows", "_paint")
-
-    def __init__(
-        self,
-        commit: Callable[[Sequence[str]], None],
-        max_rows: int | None = None,
-        paint: Callable[[TuiFrame], None] | None = None,
-    ) -> None:
-        self._commit_rows = commit
-        self._paint = paint
-        self._max_rows = max_rows
-        self._live = TuiFrame()
-        self._committed = 0
-
-    # -- queries -----------------------------------------------------------
-
-    def pending_frame(self) -> TuiFrame:
-        return self._live
-
-    def committed_rows(self) -> int:
-        """Rows handed to scrollback by explicit settled batches."""
-        return self._committed
-
-    # -- mutations ---------------------------------------------------------
-
-    def set_max_rows(self, max_rows: int | None) -> None:
-        self._max_rows = max_rows
-
-    def set_live(self, frame: TuiFrame) -> None:
-        """Keep chrome visible and viewport-trim only unsettled transcript rows."""
-        transcript = frame.transcript_rows
-        chrome = frame.chrome_rows
-        cursor = frame.cursor
-        if self._max_rows is not None:
-            height = max(0, self._max_rows)
-            chrome_dropped = max(0, len(chrome) - height)
-            chrome = chrome[-height:] if height else ()
-            transcript_budget = max(0, height - len(chrome))
-            visible_transcript = transcript[-transcript_budget:] if transcript_budget else ()
-            transcript_dropped = len(transcript) - len(visible_transcript)
-            transcript = visible_transcript
-            if cursor is not None:
-                row, column = cursor
-                row -= transcript_dropped
-                if row < 0:
-                    cursor = None
-                elif row >= len(transcript):
-                    if row < len(transcript) + chrome_dropped:
-                        cursor = None
-                    else:
-                        cursor = (row - chrome_dropped, column)
-                else:
-                    cursor = (row, column)
-                if cursor is not None and cursor[0] >= len(transcript) + len(chrome):
-                    cursor = None
-        live = TuiFrame(tuple(transcript), tuple(chrome), cursor)
-        if live == self._live:
-            return
-        self._live = live
-        if self._paint is not None:
-            self._paint(live)
-
-    def commit(self, rows: Sequence[str]) -> None:
-        """Write a settle batch once; ``set_live`` never commits anything."""
-        settled = tuple(rows)
-        if not settled:
-            return
-        self._commit_rows(settled)
-        self._committed += len(settled)
-
-    def clear(self) -> None:
-        """Erase the mutable viewport without touching scrollback."""
-        if self._live == TuiFrame():
-            return
-        self._live = TuiFrame()
-        if self._paint is not None:
-            self._paint(self._live)
