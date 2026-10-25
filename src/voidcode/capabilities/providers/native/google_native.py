@@ -199,6 +199,14 @@ class GoogleGenAIProvider:
                     system.append(message.content)
                 index += 1
                 continue
+            if message.role == "assistant":
+                replay = json_wire_object(message.metadata).get("google_parts")
+                if replay is not None:
+                    if not isinstance(replay, list):
+                        raise ValueError("Google replay parts must be an array")
+                    contents.append({"role": "model", "parts": [types.Part.model_validate(part) for part in replay]})
+                    index += 1
+                    continue
             if message.role == "assistant" and message.tool_calls:
                 parts: list[dict[str, object]] = []
                 if message.content:
@@ -406,6 +414,12 @@ class GoogleGenAIProvider:
         if isinstance(parts, list):
             yield from parts
 
+    @staticmethod
+    def _signed_parts_metadata(parts: list[object]) -> dict[str, object]:
+        if not any(getattr(part, "thought_signature", None) for part in parts):
+            return {}
+        return {"google_parts": [types.Part.model_validate(part).model_dump(mode="json", exclude_none=True) for part in parts]}
+
     def _events_from_response(self, response: object, request: ProviderTurnRequest, *, ordinal_offset: int = 0) -> Iterator[ProviderStreamEvent]:
         ordinal = ordinal_offset
         for part in self._parts(response):
@@ -466,7 +480,8 @@ class GoogleGenAIProvider:
             tool_calls: list[ToolCall] = []
             reasoning_parts: list[str] = []
             ordinal = 0
-            for part in self._parts(response):
+            parts = list(self._parts(response))
+            for part in parts:
                 if bool(getattr(part, "thought", False)):
                     # The SDK's ``response.text`` skips thought parts, so the
                     # non-streaming path must collect them here to persist the
@@ -479,6 +494,9 @@ class GoogleGenAIProvider:
                 if tool_call is not None:
                     tool_calls.append(tool_call)
                     ordinal += 1
+            metadata = self._signed_parts_metadata(parts)
+            if finish == "unknown" and finish_reason_reported:
+                metadata["finish_reason_raw"] = str(getattr(raw_finish, "name", raw_finish))
             return ProviderTurnResult(
                 tool_calls=tuple(tool_calls),
                 output=text,
@@ -486,9 +504,7 @@ class GoogleGenAIProvider:
                 usage=self._usage(response),
                 done_reason=finish,
                 finish_reason_reported=finish_reason_reported,
-                metadata=(
-                    {"finish_reason_raw": str(getattr(raw_finish, "name", raw_finish))} if finish == "unknown" and finish_reason_reported else None
-                ),
+                metadata=metadata or None,
             )
         except ProviderExecutionError:
             raise
@@ -547,6 +563,7 @@ class GoogleGenAIProvider:
             raw_finish: object | None = None
             saw_candidates = False
             tool_call_ordinal = 0
+            parts: list[object] = []
             raw_stream = self._client(provider_name=provider_name, model_name=model_name).models.generate_content_stream(
                 model=model_name, contents=contents, config=self._config(request, system)
             )
@@ -563,6 +580,7 @@ class GoogleGenAIProvider:
                     if request.abort_signal is not None and request.abort_signal.cancelled:
                         break
                     last = chunk
+                    parts.extend(self._parts(chunk))
                     self._raise_if_prompt_blocked(chunk, provider_name=provider_name, model_name=model_name)
                     candidates = getattr(chunk, "candidates", None)
                     if isinstance(candidates, list) and candidates:
@@ -600,9 +618,11 @@ class GoogleGenAIProvider:
                 )
             done_reason = self._finish_reason(raw_finish)
             raw_token = str(getattr(raw_finish, "name", raw_finish))
-            stream_metadata: dict[str, object] | None = {"finish_reason_raw": raw_token} if done_reason == "unknown" else None
+            stream_metadata = self._signed_parts_metadata(parts)
+            if done_reason == "unknown":
+                stream_metadata["finish_reason_raw"] = raw_token
             yield ProviderStreamEvent(
-                kind="done", done_reason=done_reason, metadata=stream_metadata, usage=self._usage(last) if last is not None else None
+                kind="done", done_reason=done_reason, metadata=stream_metadata or None, usage=self._usage(last) if last is not None else None
             )
         except ProviderExecutionError as exc:
             if exc.kind != "cancelled":

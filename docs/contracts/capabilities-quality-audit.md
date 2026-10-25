@@ -2247,3 +2247,31 @@ calls with distinct server IDs through SDK-valid replay and tool-result parts,
 and checked the missing-ID fallback. No tests added or live vendor calls used.
 Google thought-signature/part replay remains a separate known gap, alongside
 the previously recorded OAuth and remaining wire audit.
+
+## Google signed Part persistence and replay
+
+Google responses with thought signatures now preserve their complete ordered
+Part list in existing opaque provider metadata (`google_parts`). Non-stream
+and stream completion use the same helper; streaming retains original chunk
+part boundaries, including empty text parts carrying only a signature. Without
+a signature, no replay metadata is added.
+
+SDK Part.model_dump(mode="json") supplies the existing base64 binary encoding;
+Part.model_validate restores typed parts after SDK JSON metadata thawing. Signed
+assistant messages replay those parts directly rather than reconstructing and
+merging text/functions, keeping signatures attached to the original Part. No
+custom codec, tool-name signature map, SDK field or storage mechanism was added.
+
+[Google thought-signature documentation](https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures)
+requires returning signatures within their original parts, including during
+function calling. Installed SDK Part configuration confirms base64 JSON byte
+serialization and validation.
+
+Ruff, formatting and targeted type checking passed; 118 existing provider
+streaming/usage/lifecycle/error/thinking tests passed in 11.42 seconds with local
+loopback permission. Manual real SDK response/stream probes preserved binary
+signatures on two same-name function calls and an empty signature-only part,
+then round-tripped provider-result JSON persistence and frozen request metadata
+back to identical SDK parts. Unsigned metadata stays absent and signatures
+were not emitted in visible text deltas. No tests added or live vendor calls
+used. OAuth and remaining Google wire/usage reconciliation remain pending.
