@@ -2226,3 +2226,24 @@ cancelled after page one: no second store read or PDF extraction occurred, and
 the result was ToolFailure with confirmed cancellation. No tests added.
 Remaining archive decompression and artifact/transcript projection scope is
 still recorded separately; the complete capability audit is not yet achieved.
+
+## Google function-call identity round trip
+
+Google now retains an upstream function_call.id through the existing shared
+normalizer rather than always replacing it with a name/ordinal. History replay
+sends that ID on function_call, and consecutive tool results return the matching
+ID on function_response. The previous deterministic fallback is retained only
+when the provider omits an ID. No new identity field or mapping mechanism.
+
+[Google function-calling documentation](https://ai.google.dev/gemini-api/docs/generate-content/function-calling.md)
+requires returning the exact function-call ID in its response; this matters for
+parallel calls sharing a tool name. Installed SDK FunctionCall/FunctionResponse
+types accept the preserved fields.
+
+Ruff, formatting and targeted type checking passed; 118 existing provider
+streaming/usage/lifecycle/error/thinking tests passed in 11.36 seconds with
+local loopback permission. Manual real SDK-part probes preserved two same-name
+calls with distinct server IDs through SDK-valid replay and tool-result parts,
+and checked the missing-ID fallback. No tests added or live vendor calls used.
+Google thought-signature/part replay remains a separate known gap, alongside
+the previously recorded OAuth and remaining wire audit.

@@ -24,7 +24,7 @@ from voidcode.sdk.provider import (
 )
 from voidcode.sdk.tools import ToolCall
 
-from ._wire_common import OwnedResource, iter_stream_with_timeout, resolve_extra_request_headers, usage_int
+from ._wire_common import OwnedResource, iter_stream_with_timeout, normalize_tool_call_id, resolve_extra_request_headers, usage_int
 from .config import GoogleProviderConfig
 from .errors import provider_execution_error_from_payload
 from .model_catalog import static_catalog_metadata
@@ -207,6 +207,7 @@ class GoogleGenAIProvider:
                     parts.append(
                         {
                             "function_call": {
+                                "id": call.tool_call_id,
                                 "name": call.tool_name,
                                 "args": json_wire_object(call.arguments or {}),
                             }
@@ -220,11 +221,13 @@ class GoogleGenAIProvider:
                 # ``function_response`` with the ``function_call`` it answers,
                 # and a batch is exactly the tool messages the model's own
                 # assistant turn called. Reasoning is never replayed here.
-                parts = [{"function_response": {"name": message.tool_name, "response": self._tool_response(message)}}]
+                parts = [{"function_response": {"id": message.tool_call_id, "name": message.tool_name, "response": self._tool_response(message)}}]
                 index += 1
                 while index < len(messages) and messages[index].role == "tool":
                     following = messages[index]
-                    parts.append({"function_response": {"name": following.tool_name, "response": self._tool_response(following)}})
+                    parts.append(
+                        {"function_response": {"id": following.tool_call_id, "name": following.tool_name, "response": self._tool_response(following)}}
+                    )
                     index += 1
                 contents.append({"role": "user", "parts": parts})
                 continue
@@ -525,7 +528,7 @@ class GoogleGenAIProvider:
         return ToolCall(
             tool_name=provider_tool_name,
             arguments=parsed_args,
-            tool_call_id=f"{provider_tool_name}_{ordinal + 1}",
+            tool_call_id=normalize_tool_call_id(getattr(function_call, "id", None), fallback=f"{provider_tool_name}_{ordinal + 1}"),
         )
 
     def _timeout(self) -> float:
