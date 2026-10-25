@@ -10,7 +10,7 @@ from voidcode.core.engine import Core
 from voidcode.core.storage.store import SqliteStore, StorageError
 
 
-@pytest.mark.parametrize("kind", ["activation", "ticker", "admit"])
+@pytest.mark.parametrize("kind", ["activation", "ticker"])
 def test_shutdown_keeps_store_open_until_owned_worker_exits(tmp_path, monkeypatch, kind):
     entered = threading.Event()
     release = threading.Event()
@@ -31,9 +31,8 @@ def test_shutdown_keeps_store_open_until_owned_worker_exits(tmp_path, monkeypatc
     monkeypatch.setattr(Core, "_wakeup_loop", blocked if kind == "ticker" else lambda core: None)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    core = open_core(workspace, state_dir=tmp_path / "state", auto_drain=False)
+    core = open_core(workspace, state_dir=tmp_path / "state")
     try:
-        core.admit() if kind == "admit" else core.promote()
         assert entered.wait(timeout=2)
         actual_join = workers[0].join
 

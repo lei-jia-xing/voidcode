@@ -352,7 +352,7 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
           if (healthRequestRef.current !== serial) return;
           if (!isCurrent(sessionId, epoch, clientKey)) return;
           setUpgrade({
-            fenced: snapshot.fenced === true,
+            fenced: "fenced" in snapshot && snapshot.fenced === true,
             stage: String(snapshot.stage ?? ""),
             coreVersion: String(snapshot.core_version ?? ""),
             generation:
@@ -398,7 +398,7 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
           if (healthRequestRef.current !== round) return;
           if (!isCurrent(sessionId, epoch, clientKey)) return;
           const next = {
-            fenced: snapshot.fenced === true,
+            fenced: "fenced" in snapshot && snapshot.fenced === true,
             stage: String(snapshot.stage ?? ""),
             coreVersion: String(snapshot.core_version ?? ""),
             generation:

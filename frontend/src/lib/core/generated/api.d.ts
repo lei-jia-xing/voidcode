@@ -541,8 +541,6 @@ export interface components {
             } | null;
             /** Core Version */
             core_version: string;
-            /** Fenced */
-            fenced: boolean;
             /** Generation */
             generation: number;
             /** Launch Protocol */

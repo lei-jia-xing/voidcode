@@ -63,7 +63,6 @@ class HealthBody(CoreHttpModel):
     """Core health and identity: the stable surface clients and the supervisor poll."""
 
     status: str
-    fenced: bool
     stage: str
     pid: int
     workspace: str

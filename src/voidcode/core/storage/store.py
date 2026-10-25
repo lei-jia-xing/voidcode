@@ -263,16 +263,6 @@ class PluginStateRow:
         object.__setattr__(self, "payload", own_json_object(self.payload))
 
 
-@dataclass(frozen=True, slots=True)
-class DrainBlocker:
-    """One unit of work that must settle before an adoption commits, with a stable reason code."""
-
-    session_id: str
-    status: str
-    reason: str
-    detail: str = ""
-
-
 def canonical_json(value: Mapping[str, object]) -> str:
     """Produce deterministic, sorted, compact UTF-8 JSON without NaN."""
     return json.dumps(
@@ -2101,7 +2091,7 @@ class SqliteStore:
                         fact_observers=fact_observers,
                         now=now,
                     )
-                blockers = self._drain_blockers_locked(
+                blockers = self._adoption_blockers_locked(
                     workspace,
                     include_parked=require_quiescent,
                     # The acting orphan is settled by the caller's explicit interrupted commit;
@@ -2109,7 +2099,7 @@ class SqliteStore:
                     exclude_running=session_id if acting_was_running else None,
                 )
                 if blockers:
-                    joined = "; ".join(f"{blocker.session_id} is blocked ({blocker.reason})" for blocker in blockers)
+                    joined = "; ".join(f"{sess} is blocked ({reason})" for sess, reason in blockers)
                     raise StoreConflict(f"adoption blocked: {joined}")
 
                 self._connection.execute(
@@ -2256,20 +2246,20 @@ class SqliteStore:
                     self._connection.execute("ROLLBACK")
                 raise
 
-    def _drain_blockers_locked(self, workspace: str, *, include_parked: bool, exclude_running: str | None = None) -> list[DrainBlocker]:
+    def _adoption_blockers_locked(self, workspace: str, *, include_parked: bool, exclude_running: str | None = None) -> list[tuple[str, str]]:
         """Work that must settle before an adoption commits; callers hold the connection lock.
 
         ``exclude_running`` names the one acting session an orphan recovery is already settling
         explicitly; it still appears through every other blocker category.
         """
-        blockers: list[DrainBlocker] = []
+        blockers: list[tuple[str, str]] = []
         running_query = "SELECT session_id FROM sessions WHERE workspace = ? AND status = 'running'"
         running_params: list[object] = [workspace]
         if exclude_running is not None:
             running_query += " AND session_id <> ?"
             running_params.append(exclude_running)
         cursor = self._connection.execute(running_query + " ORDER BY session_id ASC", tuple(running_params))
-        blockers.extend(DrainBlocker(session_id=str(row[0]), status="running", reason="running") for row in cursor.fetchall())
+        blockers.extend((str(row[0]), "running") for row in cursor.fetchall())
         if include_parked:
             cursor = self._connection.execute(
                 """
@@ -2280,7 +2270,7 @@ class SqliteStore:
                 """,
                 (workspace,),
             )
-            blockers.extend(DrainBlocker(session_id=str(row[0]), status="waiting", reason="approval_wait") for row in cursor.fetchall())
+            blockers.extend((str(row[0]), "approval_wait") for row in cursor.fetchall())
             cursor = self._connection.execute(
                 """
                 SELECT session_id, request_id
@@ -2291,10 +2281,7 @@ class SqliteStore:
                 """,
                 (workspace,),
             )
-            blockers.extend(
-                DrainBlocker(session_id=str(row[0]), status="confirmation", reason="pending_confirmation", detail=str(row[1]))
-                for row in cursor.fetchall()
-            )
+            blockers.extend((str(row[0]), "pending_confirmation") for row in cursor.fetchall())
         cursor = self._connection.execute(
             """
             SELECT session_id, continuation_id, owner
@@ -2305,9 +2292,7 @@ class SqliteStore:
             """,
             (workspace,),
         )
-        blockers.extend(
-            DrainBlocker(session_id=str(row[0]), status="claimed", reason="claimed_continuation", detail=str(row[1])) for row in cursor.fetchall()
-        )
+        blockers.extend((str(row[0]), "claimed_continuation") for row in cursor.fetchall())
         return blockers
 
     def _settle_orphaned_runs_locked(
@@ -2379,12 +2364,6 @@ class SqliteStore:
                 "UPDATE checkpoints SET kind = 'interrupted', revision_id = ?, last_event_sequence = ?, updated_at = ? WHERE session_id = ?",
                 (target_revision_id, sequence, now, str(session_id)),
             )
-
-    def drain_blockers(self, workspace: str, *, include_parked: bool) -> tuple[DrainBlocker, ...]:
-        """Read-only view of the work that must settle before an adoption commits."""
-        with self._lock:
-            self._check_open()
-            return tuple(self._drain_blockers_locked(workspace, include_parked=include_parked))
 
     def workspace_current(self, workspace: str) -> str | None:
         """The capability revision the workspace is currently running, or None before first adoption."""

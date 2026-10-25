@@ -34,7 +34,7 @@ from ...sdk.json_values import json_wire_object
 from ...sdk.services import SessionUsageReport
 from ...sdk.views import ViewsSnapshot
 from ..bootstrap import open_core
-from ..engine import Core, CoreResult, DrainRefused
+from ..engine import Core, CoreResult
 from ..storage.store import SessionRecord, StoredEvent, inspect_existing_workspace
 from ..transcript import transcript_entry
 from .models import (
@@ -116,8 +116,6 @@ async def _unhandled_handler(request: Request, exc: Exception) -> Response:
 
 def _core_error(error: Exception) -> HttpError:
     message = str(error)
-    if isinstance(error, DrainRefused):
-        return HttpError(503, message, code="upgrade_pending")
     # A client acting on a stale or missing displayed revision is refused before
     # any dispatch: the refusal is visible and never retried automatically.
     if "is stale; refresh the catalog" in message:
@@ -242,14 +240,11 @@ class CoreTransportApp(FastAPI):
 
     def _core_or_503(self) -> Core:
         if self._core is None:
-            if self._fenced:
-                raise HttpError(503, "core is draining for an upgrade; retry after it restarts", code="upgrade_pending")
             raise HttpError(503, "core is not started")
         return self._core
 
     def _require_serving(self) -> None:
-        if self._fenced:
-            raise HttpError(503, "core is draining for an upgrade; retry after it restarts", code="upgrade_pending")
+        pass
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("type") not in ("http", "lifespan"):
@@ -606,7 +601,6 @@ class CoreTransportApp(FastAPI):
         return _ok(
             {
                 "status": "ok",
-                "fenced": self._fenced,
                 "stage": self._stage,
                 "pid": os.getpid(),
                 "workspace": "" if self._workspace is None else str(self._workspace),
