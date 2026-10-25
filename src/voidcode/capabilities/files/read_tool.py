@@ -549,10 +549,13 @@ class ReadArgs(BaseModel):
     offset: int | None = Field(
         default=None,
         ge=1,
-        description="1-based starting file line, SQLite row, Notebook cell, or PDF text line; Notebook cell offsets use `offset` rather than `cell`.",
+        description="1-based starting file/member line, archive entry, SQLite row, notebook cell, or PDF text line.",
     )
     limit: int | None = Field(
-        default=None, ge=1, le=2000, description="Maximum file lines, SQLite rows, Notebook cells, or PDF text lines to return."
+        default=None,
+        ge=1,
+        le=2000,
+        description="Maximum file/member lines, archive entries, SQLite rows, notebook cells, or PDF text lines to return.",
     )
     byte_offset: int | None = Field(
         default=None, ge=0, description="Zero-based UTF-8 byte offset for continuing a long artifact line; use the returned next_byte_offset."
@@ -1326,20 +1329,25 @@ def _render_archive_members(
     )
     if is_directory:
         children = _archive_children(members, normalized_inner)
-        truncated = len(children) > ARCHIVE_LIST_LIMIT
-        shown = children[:ARCHIVE_LIST_LIMIT]
+        if offset > max(1, len(children)):
+            raise ValueError(f"Offset {offset} is out of range for this archive directory ({len(children)} entries)")
+        page_limit = min(limit, ARCHIVE_LIST_LIMIT)
+        shown = children[offset - 1 : offset - 1 + page_limit]
+        next_offset = offset + len(shown) if offset - 1 + len(shown) < len(children) else None
+        truncated = next_offset is not None
         header = f"{label}:" if not normalized_inner else f"{label}/"
         lines = [header]
         for name, size, dir_flag in shown:
             lines.append(f"{name}/" if dir_flag else f"{name} ({_human_size(size)})")
         if truncated:
-            lines.append(f"… {len(children) - ARCHIVE_LIST_LIMIT} more; list a subdirectory to see the rest.")
+            lines.append(f"… {len(children) - offset + 1 - len(shown)} more; continue with offset={next_offset}.")
         entry_count = len(shown)
         rendered = "\n".join(lines)
         return _ReadOutcome(
             output=_text_output(
                 f"Listed {entry_count} entr{'y' if entry_count == 1 else 'ies'} in {label}" + ("; listing is truncated." if truncated else "."),
                 raw_content=rendered,
+                next_offset=next_offset,
                 truncated=truncated,
                 partial=truncated,
             ),
@@ -1348,6 +1356,9 @@ def _render_archive_members(
                     "path": label,
                     "type": "archive_listing",
                     "entry_count": entry_count,
+                    "offset": offset,
+                    "limit": page_limit,
+                    "next_offset": next_offset,
                     "truncated": truncated,
                     "partial": truncated,
                     "raw_content": rendered,

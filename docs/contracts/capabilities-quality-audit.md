@@ -2130,3 +2130,20 @@ confirmed over-limit refusal and ordinary selected-member reads; a scripted
 100-member TAR iterator stopped after exactly limit plus one observations.
 No tests added. Archive listing continuation, collisions and remaining
 projection/cancellation semantics still need review.
+
+## Archive directory continuation with existing offsets
+
+Archive listings now honor the existing 1-based offset and limit arguments,
+with the previous 200-entry ceiling retained per page. The standard next_offset
+field and output guidance identify the next entry; invalid offsets fail visibly.
+Removed the misleading advice to list a subdirectory when a flat archive has
+more than 200 files. Read argument descriptions now include member lines and
+archive entry pagination. No new cursor type or separate listing mechanism.
+
+Ruff, formatting and targeted type checking passed; 97 existing file/format/
+artifact/coverage tests passed in 0.99 seconds. Manual real ZIP/TAR archives
+with 450 flat entries were reconstructed exactly across three listing pages,
+with no gaps/duplicates; seven-entry limits and out-of-range offsets were also
+checked. No tests added. Count limits alone do not establish byte-bounded output
+for unusually long member names, and compressed TAR scan work/cancellation and
+file/directory name collisions still need reconciliation.
