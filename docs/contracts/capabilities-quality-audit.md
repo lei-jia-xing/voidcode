@@ -2003,3 +2003,25 @@ normalized lookup returns its original metadata object and four empty/collision
 shapes fail visibly. No tests added. Original upstream casing is still folded
 by the generator under the existing documented catalog contract; vendor wire
 model names remain preserved by request/config paths.
+
+## Share exact edit diff rendering
+
+Workspace edit now reuses `edit_tool.summarize_diff` rather than independently
+calling difflib with `str.splitlines`. This removes a second diff-rendering path
+and preserves Unicode line separators inside file lines. Missing final newlines
+receive the same explicit marker already used by ordinary edit. Both diff
+headers use the displayed workspace path, consistently with the shared helper,
+rather than the old workspace-only synthetic a/b prefixes. No new helper module
+or dependency was introduced.
+
+Model output for both successful edit paths is a short summary; complete diffs
+remain in structured bodies for clients/history, so they do not require a new
+model-output clipping/spill layer. Workspace partial failures already report
+only committed prefix changes and partial standard output bounds.
+
+Ruff, formatting and targeted type checking passed; 97 existing file/format/
+artifact/coverage tests passed in 1.75 seconds. A real workspace edit over
+`a<U+2028>b` without final newline produced one original and replacement line,
+with missing-newline markers on both, and the intended file bytes. No tests
+added. Workspace version-field/ingress reconciliation and remaining native read
+recovery/lifecycle review still need completion.

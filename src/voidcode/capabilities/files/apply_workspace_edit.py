@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import difflib
 import hashlib
 import re
 from collections.abc import Mapping
@@ -30,6 +29,7 @@ from voidcode.sdk.tools import (
 from voidcode.sdk.workspace_queries import DOCUMENT_STATES, DocumentState, DocumentStateRequest
 
 from ._replace import replace_file
+from .edit_tool import summarize_diff
 
 
 class _TextEdit(BaseModel):
@@ -300,14 +300,7 @@ class ApplyWorkspaceEditTool:
                 "path": display_path,
                 "byte_count": len(final_bytes),
                 "content_hash": hashlib.sha256(final_bytes).hexdigest(),
-                "diff": "".join(
-                    difflib.unified_diff(
-                        originals[path].splitlines(keepends=True),
-                        final_content.splitlines(keepends=True),
-                        fromfile=f"a/{display_path}",
-                        tofile=f"b/{display_path}",
-                    )
-                ),
+                "diff": summarize_diff(path=Path(display_path), before=originals[path], after=final_content)[0],
             }
             file_results.append(file_result)
 
