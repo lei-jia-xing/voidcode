@@ -25,7 +25,7 @@ not establish source review.
 | `files/glob_tool.py` | Reviewed: strict ingress, root-relative patterns, traversal/ignore rules, bounded path collection, ordering/error results and cooperative cancellation |
 | `files/grep_tool.py` | Reviewed: strict ingress, literal/regex matching and filters, bounded line/context/result collection, immutable rendering, error handling and cooperative cancellation |
 | `files/read_formats.py` | Reviewed: bounded notebook/SQLite/PDF views, source snapshot semantics, pagination/recovery, signature-only image handling, read-only transactions and extractor cleanup |
-| `files/read_tool.py` | Pending full source review |
+| `files/read_tool.py` | Partial: strict complete-argument ingress and PDF full-text recovery reviewed; artifact/file/archive/directory/transcript projections and result metadata source audit pending |
 | `files/write_tool.py` | Reviewed: hash/containment/symlink/atomic replace/cancellation; fail visibly on mode errors and always clean temporary files |
 | `frontmatter.py` | Reviewed source/consumers: safe YAML, duplicate/string-key validation, framing/body/bounds; shared parser tests |
 | `providers/__init__.py` | Reviewed: shared registration/facts/view wiring and ExitStack-owned provider teardown |
@@ -1442,3 +1442,22 @@ or added. A manual read with PNG/JPEG signature fixtures and an unknown MIME kep
 two independent image references, reported partial output and preserved the exact
 raw notebook artifact. Ruff, formatting, targeted type checking and CodeGraph sync
 passed. Net implementation reduction: 7 lines; no new dependencies.
+
+
+## Read ingress uses strict field constraints
+
+Replaced eight custom numeric validators with Pydantic Field bounds and one strict,
+extra-forbidding configuration. Removed mixed StrictInt/coercing-int behavior.
+Published limit/output-limit maxima now also apply at direct capability ingress.
+The whitespace-aware path validator remains explicit.
+
+ReadTool now validates the complete argument mapping instead of rebuilding a
+whitelist dictionary that silently discarded unknown fields. This makes unknown
+field rejection effective and removes the duplicate field inventory at invocation.
+Optional None values retain their existing default-selection semantics.
+
+Validation: 94 existing format/file/artifact checks passed (0.98s), no tests changed
+or added. Manual calls with boolean offset, string limit, unknown field and
+limit=2001 all failed validation before resolving a nonexistent file. Ruff,
+formatting, full source type checking and CodeGraph sync passed. Implementation
+net reduction: 66 lines. Remaining read projection/metadata review stays open.

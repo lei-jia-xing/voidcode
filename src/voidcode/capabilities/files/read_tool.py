@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import ClassVar, Literal, cast, final
 from urllib.parse import parse_qs
 
-from pydantic import BaseModel, StrictInt, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from voidcode.sdk.history import render_history_page
 from voidcode.sdk.invocation import ToolContext
@@ -529,77 +529,26 @@ def _render_transcript(
 
 
 class ReadArgs(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+
     path: str
-    offset: int | None = None
-    limit: int | None = None
-    byte_offset: StrictInt | None = None
-    byte_limit: StrictInt | None = None
+    offset: int | None = Field(default=None, ge=1)
+    limit: int | None = Field(default=None, ge=1, le=2000)
+    byte_offset: int | None = Field(default=None, ge=0)
+    byte_limit: int | None = Field(default=None, ge=4, le=MAX_ARTIFACT_PAGE_BYTES)
     view: Literal["raw", "sqlite", "notebook", "pdf"] | None = None
     table: str | None = None
     query: str | None = None
-    cell: StrictInt | None = None
-    page: StrictInt | None = None
-    output_offset: StrictInt | None = None
-    output_limit: StrictInt | None = None
+    cell: int | None = Field(default=None, ge=0)
+    page: int | None = Field(default=None, ge=1)
+    output_offset: int | None = Field(default=None, ge=1)
+    output_limit: int | None = Field(default=None, ge=1, le=MAX_OUTPUTS)
 
-    @field_validator("path", mode="after")
+    @field_validator("path")
     @classmethod
-    def _validate_path(cls, value: str, info: ValidationInfo) -> str:
+    def _validate_path(cls, value: str) -> str:
         if not value.strip():
-            raise ValueError(f"{info.field_name} must not be empty")
-        return value
-
-    @field_validator("offset", mode="after")
-    @classmethod
-    def _validate_offset(cls, value: int | None) -> int | None:
-        if value is None:
-            return None
-        if value < 1:
-            raise ValueError("offset must be greater than or equal to 1")
-        return value
-
-    @field_validator("limit", mode="after")
-    @classmethod
-    def _validate_limit(cls, value: int | None) -> int | None:
-        if value is None:
-            return None
-        if value < 1:
-            raise ValueError("limit must be greater than or equal to 1")
-        return value
-
-    @field_validator("byte_offset", mode="after")
-    @classmethod
-    def _validate_byte_offset(cls, value: int | None) -> int | None:
-        if value is not None and value < 0:
-            raise ValueError("byte_offset must be a non-negative, zero-based UTF-8 byte offset")
-        return value
-
-    @field_validator("byte_limit", mode="after")
-    @classmethod
-    def _validate_byte_limit(cls, value: int | None) -> int | None:
-        if value is not None and not 4 <= value <= MAX_ARTIFACT_PAGE_BYTES:
-            raise ValueError(f"byte_limit must be between 4 and {MAX_ARTIFACT_PAGE_BYTES}")
-        return value
-
-    @field_validator("cell", mode="after")
-    @classmethod
-    def _validate_cell(cls, value: int | None) -> int | None:
-        if value is not None and value < 0:
-            raise ValueError("cell must be a non-negative zero-based index")
-        return value
-
-    @field_validator("page", mode="after")
-    @classmethod
-    def _validate_page(cls, value: int | None) -> int | None:
-        if value is not None and value < 1:
-            raise ValueError("page must be a positive one-based page number")
-        return value
-
-    @field_validator("output_offset", "output_limit", mode="after")
-    @classmethod
-    def _validate_output_page(cls, value: int | None) -> int | None:
-        if value is not None and value < 1:
-            raise ValueError("output_offset and output_limit must be positive integers")
+            raise ValueError("path must not be empty")
         return value
 
 
@@ -1599,22 +1548,7 @@ class ReadTool:
     )
 
     def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:
-        args = ReadArgs.model_validate(
-            {
-                "path": call.arguments.get("path"),
-                "offset": call.arguments.get("offset"),
-                "limit": call.arguments.get("limit"),
-                "byte_offset": call.arguments.get("byte_offset"),
-                "byte_limit": call.arguments.get("byte_limit"),
-                "view": call.arguments.get("view"),
-                "table": call.arguments.get("table"),
-                "query": call.arguments.get("query"),
-                "cell": call.arguments.get("cell"),
-                "page": call.arguments.get("page"),
-                "output_offset": call.arguments.get("output_offset"),
-                "output_limit": call.arguments.get("output_limit"),
-            }
-        )
+        args = ReadArgs.model_validate(dict(call.arguments))
         if args.path.startswith((RULE_URI_PREFIX, VOIDCODE_TOOL_DOC_PREFIX, VOIDCODE_TRANSCRIPT_PREFIX)) and (
             args.view is not None
             or args.table is not None
