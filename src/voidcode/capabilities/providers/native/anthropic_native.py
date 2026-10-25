@@ -382,7 +382,7 @@ class AnthropicMessagesProvider:
                     system_parts.append(message.content)
                 continue
             if message.role == "assistant":
-                metadata = message.metadata or {}
+                metadata = json_wire_object(message.metadata)
                 thinking_blocks = metadata.get("thinking_blocks")
                 # Only the opaque blocks the wire gave back can be replayed: the
                 # Messages API requires a signature on a thinking block, so the
@@ -407,18 +407,7 @@ class AnthropicMessagesProvider:
                     }
                     for call in message.tool_calls
                 )
-                if prior and blocks:
-                    # Anthropic requires thinking blocks to precede the rest of an
-                    # assistant message. Preserve signatures opaquely.
-                    content = prior + blocks
-                    if messages and messages[-1]["role"] == "assistant":
-                        existing = messages[-1].get("content")
-                        if isinstance(existing, list):
-                            existing.extend(content)
-                    else:
-                        messages.append({"role": "assistant", "content": content})
-                    continue
-                for block in blocks:
+                for block in [*prior, *blocks]:
                     append_message("assistant", block)
                 continue
             if message.role == "tool":
@@ -431,9 +420,8 @@ class AnthropicMessagesProvider:
                     block["is_error"] = True
                 append_message("user", block)
                 continue
-            if message.role in {"user", "assistant"}:
-                if message.content:
-                    append_message(message.role, {"type": "text", "text": message.content})
+            if message.content:
+                append_message("user", {"type": "text", "text": message.content})
         return ("\n\n".join(system_parts) if system_parts else None), messages
 
     def _payload(self, request: ProviderTurnRequest, *, stream: bool) -> dict[str, object]:

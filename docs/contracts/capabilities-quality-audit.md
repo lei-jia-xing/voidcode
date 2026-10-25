@@ -1844,3 +1844,24 @@ usage, lifecycle, error and thinking tests passed 115 tests in 10.62 seconds
 with local loopback permitted. A 3012-fragment scripted response produced one
 start event, preserved original fragment ordinals/call identity and reconstructed
 the exact input object. No tests added or live vendor calls used.
+
+## Anthropic frozen replay metadata and message merging
+
+Thinking replay now thaws SDK-owned message metadata through the shared JSON
+projection before inspecting its block list. SDK metadata freezes lists into
+tuples; the old list-only check silently discarded supplied signed blocks and
+could also leave nested mapping proxies unsuitable for wire JSON. The existing
+opaque signature/content values are preserved without constructing reasoning.
+
+Removed the separate assistant merge branch: thinking and ordinary blocks now
+use the same role-merging path, in that order. Removed the already-handled
+assistant-role check from the remaining user branch. Source is 16 lines shorter.
+
+Ruff, formatting and targeted provider type checking passed. Existing provider
+streaming, usage, lifecycle, error and thinking modules passed 115 tests in
+11.35 seconds with local loopback permitted. A manual frozen-metadata probe
+confirmed signed thinking precedes tool use, tool feedback/user text merge in
+order, wire JSON serializes, and source metadata remains unchanged. No tests
+added. Important remaining gap: the adapter's response/stream paths do not yet
+record signed thinking blocks themselves; this fixes supplied metadata replay,
+not complete signed-thinking round trips or redacted-block handling.
