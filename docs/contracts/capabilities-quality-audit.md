@@ -1712,3 +1712,21 @@ schema admission and operation validation. Manual probes checked all five
 valid operations and four invalid limit/empty/unknown-field combinations
 against both the wire JSON schema and runtime union. Background lifecycle and
 log scan cursor review remain incomplete.
+
+## Background result output bounds
+
+Process lists now disclose how many rows the existing 64-row limit omitted and
+mark standard output bounds partial/truncated accordingly. Previously the list
+reported a successful 64-row result with no indication that more processes
+existed. No body fields or pagination mechanism were added.
+
+Log results now project their existing truncation status onto standard
+`TextOutput.bounds`, matching the body rather than implicitly claiming complete
+output. Existing semantics count skipped leading lines as a partial view.
+
+Ruff, formatting, full source type checking and 88 existing background/shell
+tests passed. Manual probes verified 70 processes yield 64 rows plus an explicit
+six-row omission and partial bounds; one-line and whole-log reads had matching
+body/output truncation states. No tests added. The 8 MiB log scan ceiling still
+needs cursor/recovery review; output metadata consistency alone does not solve
+that separate limitation.

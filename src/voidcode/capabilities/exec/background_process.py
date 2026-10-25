@@ -23,6 +23,7 @@ from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.services import PluginServices, ProcessHandle
 from voidcode.sdk.tools import (
     ConfirmedStop,
+    OutputBounds,
     TextOutput,
     ToolCall,
     ToolDefinition,
@@ -608,9 +609,13 @@ class BackgroundProcessTool:
             )
         rows.sort(key=lambda row: row.process_id)
         listed = tuple(rows[:MAX_PROCESS_ROWS])
+        omitted = len(rows) - len(listed)
+        summary = f"Background process list: {len(listed)} process(es)."
+        if omitted:
+            summary += f" {omitted} additional process(es) omitted by the {MAX_PROCESS_ROWS}-row limit."
         return ToolSuccess(
             tool_name=self.definition.name,
-            output=TextOutput(f"Background process list: {len(listed)} process(es)."),
+            output=TextOutput(summary, bounds=OutputBounds(truncated=bool(omitted), partial=bool(omitted))),
             body=BackgroundProcessListBody(processes=listed, count=len(listed), limit=MAX_PROCESS_ROWS),
         )
 
@@ -640,7 +645,7 @@ class BackgroundProcessTool:
         output = f"{output}\n\nGuidance: {guidance}" if output else f"Guidance: {guidance}"
         return ToolSuccess(
             tool_name=self.definition.name,
-            output=TextOutput(output),
+            output=TextOutput(output, bounds=OutputBounds(truncated=truncated, partial=truncated)),
             body=BackgroundProcessLogsBody(
                 process_id=args.process_id,
                 state="running" if running else "exited",
