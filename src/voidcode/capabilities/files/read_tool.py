@@ -1197,7 +1197,7 @@ def _archive_children(members: list[tuple[str, int, bool]], prefix: str) -> list
     return sorted((name, size, is_dir) for name, (size, is_dir) in children.items())
 
 
-def _render_archive_lines(text: str, *, label: str, offset: int, limit: int) -> _ReadOutcome:
+def _render_archive_lines(text: str, *, label: str, offset: int, limit: int, services: PluginServices) -> _ReadOutcome:
     limit = min(limit, DEFAULT_READ_LIMIT)
     source_lines = text.splitlines()
     total_lines = len(source_lines)
@@ -1206,6 +1206,7 @@ def _render_archive_lines(text: str, *, label: str, offset: int, limit: int) -> 
     rendered_lines: list[str] = []
     bytes_used = 0
     content_truncated = False
+    lines_clipped = False
     has_more = False
     for line_index in range(offset - 1, total_lines):
         if len(rendered_lines) >= limit:
@@ -1219,17 +1220,23 @@ def _render_archive_lines(text: str, *, label: str, offset: int, limit: int) -> 
             break
         rendered_lines.append(line_text)
         bytes_used += encoded_size
+        lines_clipped |= line_truncated
         content_truncated = content_truncated or line_truncated
     next_offset = offset + len(rendered_lines)
     content_truncated = content_truncated or has_more
     raw_content = "\n".join(rendered_lines)
+    summary = f"Read {len(rendered_lines)} line(s) from {label}" + ("; output is truncated." if content_truncated else ".")
+    reference: OutputReference | None = None
+    if lines_clipped:
+        artifact, _, uri = _spill_artifact(services, kind="archive_text", content=text, mime="text/plain; charset=utf-8", source=label)
+        reference = OutputReference(uri, artifact)
+        summary += f" Full member text: read(path={json.dumps(uri)})."
     return _ReadOutcome(
         output=_text_output(
-            f"Read {len(rendered_lines)} line(s) from {label}" + ("; output is truncated." if content_truncated else "."),
+            summary,
             raw_content=raw_content,
             next_offset=next_offset if has_more else None,
-            truncated=content_truncated,
-            partial=content_truncated,
+            bounds=OutputBounds(truncated=content_truncated, partial=content_truncated, reference=reference, source=label),
         ),
         body=OpaqueToolBody(
             {
@@ -1249,7 +1256,7 @@ def _render_archive_lines(text: str, *, label: str, offset: int, limit: int) -> 
     )
 
 
-def _render_archive(archive_path: Path, inner: str, *, family: str, label: str, offset: int, limit: int) -> _ReadOutcome:
+def _render_archive(archive_path: Path, inner: str, *, family: str, label: str, offset: int, limit: int, services: PluginServices) -> _ReadOutcome:
     if family == "zip":
         try:
             with zipfile.ZipFile(archive_path) as zip_archive:
@@ -1260,6 +1267,7 @@ def _render_archive(archive_path: Path, inner: str, *, family: str, label: str, 
                     label=label,
                     offset=offset,
                     limit=limit,
+                    services=services,
                 )
         except zipfile.BadZipFile as exc:
             raise ValueError(f"not a valid zip archive: {label}") from exc
@@ -1272,6 +1280,7 @@ def _render_archive(archive_path: Path, inner: str, *, family: str, label: str, 
                 label=label,
                 offset=offset,
                 limit=limit,
+                services=services,
             )
     except tarfile.TarError as exc:
         raise ValueError(f"not a valid tar archive: {label}") from exc
@@ -1285,6 +1294,7 @@ def _render_archive_members(
     label: str,
     offset: int,
     limit: int,
+    services: PluginServices,
 ) -> _ReadOutcome:
     normalized_inner = _normalize_member_path(inner)
     names = {name for name, _, _ in members}
@@ -1293,7 +1303,7 @@ def _render_archive_members(
         or any(name.startswith(f"{normalized_inner}/") for name in names)
         or any(name == normalized_inner and dir_flag for name, _, dir_flag in members)
     )
-    if not normalized_inner or is_directory:
+    if is_directory:
         children = _archive_children(members, normalized_inner)
         truncated = len(children) > ARCHIVE_LIST_LIMIT
         shown = children[:ARCHIVE_LIST_LIMIT]
@@ -1342,7 +1352,7 @@ def _render_archive_members(
                 }
             ),
         )
-    return _render_archive_lines(text, label=label, offset=offset, limit=limit)
+    return _render_archive_lines(text, label=label, offset=offset, limit=limit, services=services)
 
 
 def _read_success(outcome: _ReadOutcome) -> ToolSuccess[ReadResultBody | OpaqueToolBody]:
@@ -1669,6 +1679,7 @@ class ReadTool:
                     label=args.path,
                     offset=offset,
                     limit=limit,
+                    services=services,
                 )
             )
 

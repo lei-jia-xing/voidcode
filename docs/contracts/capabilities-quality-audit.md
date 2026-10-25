@@ -25,7 +25,7 @@ not establish source review.
 | `files/glob_tool.py` | Reviewed: strict ingress, root-relative patterns, traversal/ignore rules, bounded path collection, ordering/error results and cooperative cancellation |
 | `files/grep_tool.py` | Reviewed: strict ingress, literal/regex matching and filters, bounded line/context/result collection, immutable rendering, error handling and cooperative cancellation |
 | `files/read_formats.py` | Reviewed: bounded notebook/SQLite/PDF views, source snapshot semantics, pagination/recovery, signature-only image handling, read-only transactions and extractor cleanup |
-| `files/read_tool.py` | Partial: strict ingress, PDF recovery and typed/error-visible bounded directory materialization reviewed; archive member identity/byte bounds reviewed; artifact/file/transcript projections, archive metadata/line recovery, directory cancellation and result metadata pending |
+| `files/read_tool.py` | Partial: strict ingress, PDF recovery and typed/error-visible bounded directory materialization reviewed; archive member identity/byte bounds and clipped-line recovery reviewed; artifact/file/transcript projections, archive metadata/mode semantics, directory cancellation and result metadata pending |
 | `files/write_tool.py` | Reviewed: hash/containment/symlink/atomic replace/cancellation; fail visibly on mode errors and always clean temporary files |
 | `frontmatter.py` | Reviewed source/consumers: safe YAML, duplicate/string-key validation, framing/body/bounds; shared parser tests |
 | `providers/__init__.py` | Reviewed: shared registration/facts/view wiring and ExitStack-owned provider teardown |
@@ -1507,3 +1507,21 @@ of an oversized duplicate, preserved trailing-space names and correct detection
 under a folder.zip-cache prefix. Ruff, formatting and targeted source type checks
 passed. Archive metadata enumeration limits and clipped member-line recovery
 remain pending; the entire archive path is not yet marked reviewed.
+
+
+## Recover clipped archive-member text with existing artifacts
+
+Archive text previews now distinguish clipped line content from ordinary page
+limits. Only when an emitted line is clipped, the existing artifact service stores
+the complete bounded member text; OutputBounds carries its reference and the
+model-visible summary gives the read URI. Existing line cursors still navigate
+complete subsequent lines, while artifact byte reads recover the clipped tail.
+No new pagination scheme or duplicate body reference fields were introduced.
+ZIP/TAR share the same path; short members avoid extra artifacts. Removed a
+redundant directory predicate and duplicate output-bound argument plumbing.
+
+Validation: 94 existing format/file/artifact checks passed (1.46s), no tests changed
+or added. Manual real ZIP/TAR calls clipped a multibyte long line, then recovered
+the exact complete text through the returned artifact's byte view. A short-member
+read added no spill. Ruff, formatting, targeted source typing and CodeGraph sync
+passed. Archive metadata bounds/mode semantics remain pending.
