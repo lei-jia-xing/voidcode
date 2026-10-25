@@ -155,7 +155,7 @@ def _render_artifact(
     limit: int,
     byte_offset: int | None = None,
     byte_limit: int | None = None,
-    view: Literal["pdf"] | None = None,
+    view: Literal["raw", "pdf"] | None = None,
     page: int | None = None,
 ) -> _ReadOutcome:
     """Render an integrity-checked, bounded line or byte page from an artifact.
@@ -165,7 +165,8 @@ def _render_artifact(
     workspace binary branch), a PDF claim takes the PDF view, and everything
     else pages as text. An artifact stored without a claim falls back to the
     ``%PDF-`` magic; no other sniffing is done, so image bytes without a claim
-    still page as text.
+    still page as text. Explicit raw mode bypasses PDF extraction; explicit
+    byte pagination bypasses both PDF extraction and image attachment rendering.
     """
 
     artifact_id = path[len(VOIDCODE_ARTIFACT_PREFIX) :].strip()
@@ -216,7 +217,7 @@ def _render_artifact(
     media_type = first_page.media_type
 
     # An explicit PDF view on a non-PDF artifact still fails below, on the magic.
-    if media_type in RASTER_IMAGE_MIMES and view != "pdf":
+    if byte_offset is None and media_type in RASTER_IMAGE_MIMES and view != "pdf":
         total_bytes = first_page.total_bytes
         content_hash = first_page.sha256
         artifact: Mapping[str, object] = {"artifact_id": artifact_id, "sha256": content_hash, "byte_count": total_bytes, "uri": path}
@@ -252,7 +253,11 @@ def _render_artifact(
             ),
         )
 
-    if view == "pdf" or media_type == "application/pdf" or (not media_type and first_page.data.startswith(b"%PDF-")):
+    if (
+        byte_offset is None
+        and view != "raw"
+        and (view == "pdf" or media_type == "application/pdf" or (not media_type and first_page.data.startswith(b"%PDF-")))
+    ):
         source_bytes, total_bytes, content_hash = _full_bytes("PDF artifact")
         # A producer's PDF claim is trusted, but the bytes still have to be a
         # readable PDF; without a claim the magic is the only evidence.
@@ -1631,6 +1636,7 @@ class ReadTool:
                     limit=args.limit or DEFAULT_READ_LIMIT,
                     byte_offset=args.byte_offset,
                     byte_limit=args.byte_limit,
+                    view=args.view,
                 )
             )
         if args.path.startswith(VOIDCODE_TRANSCRIPT_PREFIX):

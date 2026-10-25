@@ -2183,3 +2183,24 @@ multibyte names reconstructed all names exactly across eight byte-bounded
 pages, with strictly increasing offsets. A single 60,000-byte name was rejected
 without a stuck cursor. No tests added. Compressed archive scan resource and
 cancellation limits remain pending review.
+
+## Artifact raw and byte-read precedence
+
+Artifact invocation now forwards its validated raw selector into rendering.
+Explicit raw reads skip both claimed and magic-detected PDF extraction, instead
+of silently running Poppler despite the request. Explicit byte_offset now
+selects ordinary byte paging before media-type-based PDF/image handling. An
+explicit PDF view still rejects incompatible byte arguments at ingress.
+
+No new reading branch or parameter was added: this enables existing raw/byte
+paths that automatic media classification previously shadowed. Raw binary
+text pages retain existing UTF-8 replacement decoding; they do not claim a
+lossless binary-to-text encoding. Default PDF extraction and image attachments
+are unchanged.
+
+Ruff, formatting and targeted type checking passed; 97 existing file/format/
+artifact/coverage tests passed in 0.88 seconds. Manual claimed/unclaimed PDF
+reads with extraction patched to fail confirmed raw and byte reads never invoke
+it; image byte reads returned the requested byte cursor rather than attachment
+output. No tests added. Artifact full-read cancellation and remaining read
+projection semantics still need review.
