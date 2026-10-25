@@ -42,7 +42,7 @@ not establish source review.
 | `providers/native/claude_tokenizer/notation.py` | Pending full source review |
 | `providers/native/config.py` | Reviewed: strict ingress, field/table wiring, typed converters, env resolution, custom names, credential exclusivity and representations; removed dead framework/default paths |
 | `providers/native/errors.py` | Reviewed: classified errors, SDK text extraction and structured retry hints; removed prose scheduling and duplicate conversion functions |
-| `providers/native/google_native.py` | Partial: SDK timeout/transport errors, usage, owned-client cache, stream ownership/chunk cancellation and identity tool mapping reviewed; remaining wire semantics pending; OAuth Vertex credentials/project requirement reviewed; dead attachment branch removed, caller cancellation prompt with documented bounded SDK teardown lag |
+| `providers/native/google_native.py` | Reviewed: SDK auth/owned-client lifecycle, timeouts/errors, tool capability and ID pairing, signed Part persistence/replay, thinking controls, inclusive/unknown-preserving usage and terminal stream semantics; documented Vertex OAuth/project and bounded teardown limitations |
 | `providers/native/model_catalog.py` | Reviewed static catalog fields/lookups and consumers; strict Pydantic data ingress replaces permissive field conversion; removed entire unreferenced remote discovery implementation |
 | `providers/native/model_catalog_data.json` | Reviewed packaged schema and generator/consumer contract: 35 providers/1170 rows, strict metadata, protocol/effort/limit/price consumers and scheduled snapshot PR; no live freshness claim |
 | `providers/native/model_routing.py` | Reviewed: routed alias/catalog fallback, typed unsupported wires, serialized cache creation and teardown |
@@ -2377,3 +2377,28 @@ probes covered missing/explicit IDs in one signed batch, unchanged binary
 signature serialization, a later unsigned fallback-ID reuse and malformed call
 count rejection. No tests added or live vendor calls used. Remaining native
 adapter reconciliation and other capability inventory items remain pending.
+
+## Google adapter source audit reconciliation
+
+Completed source reconciliation across Google client construction/ownership,
+service-account and OAuth/API-key authority, configured endpoint/version/header
+behavior, catalog tool/output/thinking controls, history role/tool batching,
+SDK response/stream projections, signed Part persistence, original/missing
+function IDs, usage normalization, prompt blocking, terminal reason handling
+and cancellation/error paths. Each affected area has its implementation and
+verification evidence recorded above. The module inventory row is reviewed.
+
+Known product boundaries remain explicit: supplied OAuth tokens use Vertex
+with project and do not implement interactive login/refresh; network calls use
+configured SDK timeouts, so cooperative caller cancellation does not promise
+instant termination of an in-progress SDK/socket operation; unknown usage
+components remain None; no live provider compatibility is claimed from local
+fixtures. These are stated boundaries rather than hidden success fallbacks.
+
+The last affected combined adapter/auth validation passed 137 existing tests
+in 21.75 seconds, alongside targeted type/lint checks and the signed/missing-ID
+manual probes. No source edits or additional tests were needed for this final
+review record. A filesystem-to-inventory comparison found every current file
+under capabilities listed, with only the deliberately removed sanitizer still
+recorded as removed. This proves inventory coverage, not review completion of
+rows still marked partial/pending or the outstanding full project gate.
