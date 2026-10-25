@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import codecs
 import hashlib
 import heapq
 import json
@@ -328,11 +329,13 @@ def _render_artifact(
         data = window.data
         total_bytes = window.total_bytes
         content_hash = window.sha256
-        next_byte_offset = None if window.eof else window.offset + len(data)
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        raw_content = decoder.decode(data, final=window.eof)
+        consumed = len(data) - len(decoder.getstate()[0])
+        next_byte_offset = None if window.eof else window.offset + consumed
         truncated = next_byte_offset is not None
-        raw_content = data.decode("utf-8", "replace")
         artifact: Mapping[str, object] = {"artifact_id": artifact_id, "sha256": content_hash, "byte_count": total_bytes, "uri": path}
-        summary = f"Read {len(data)} artifact byte(s) from byte offset {byte_offset}"
+        summary = f"Read {consumed} artifact byte(s) from byte offset {byte_offset}"
         summary += f"; continue with byte_offset={next_byte_offset}." if next_byte_offset is not None else "."
         return _ReadOutcome(
             output=_text_output(
@@ -356,7 +359,7 @@ def _render_artifact(
                     "next_byte_offset": next_byte_offset,
                     "truncated": truncated,
                     "partial": truncated,
-                    "byte_count": len(data),
+                    "byte_count": consumed,
                     "artifact_byte_count": total_bytes,
                     "content_hash": content_hash,
                     "raw_content": raw_content,
@@ -388,6 +391,13 @@ def _render_artifact(
     data = window.data
     total_bytes = window.total_bytes
     content_hash = window.sha256
+    # A byte window may stop inside a line. Leave that fragment for the next
+    # line page; a line larger than the window must continue by byte instead.
+    if not window.eof:
+        last_newline = data.rfind(b"\n")
+        if last_newline == -1:
+            return _render_artifact(path, context=context, services=services, offset=offset, limit=limit, byte_offset=byte_start)
+        data = data[: last_newline + 1]
     text = data.decode("utf-8", "replace")
     page_lines = text.split("\n")
     if page_lines[-1] == "":

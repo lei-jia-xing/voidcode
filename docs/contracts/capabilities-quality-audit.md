@@ -1567,3 +1567,25 @@ artifact tests passed. Six manual malformed-query probes (blank, superscript,
 duplicate with blank, missing equals, unknown blank key and 5000-digit integer)
 were rejected before event-store access. No tests added. Remaining transcript
 projection/bounds and artifact paths still require source review.
+
+## Artifact page boundaries
+
+Artifact line pages previously counted the unfinished line at the byte-window
+boundary as complete. Continuing with the advertised line offset skipped its
+unread tail. Non-final windows now retain only complete lines; when one line
+exceeds a whole window, the existing byte-read path supplies a byte cursor
+instead. No new pagination protocol or helper abstraction was introduced.
+
+Byte pages use the standard incremental UTF-8 decoder to defer an incomplete
+trailing character. Their cursor and consumed byte count exclude those deferred
+bytes, so subsequent pages preserve valid multi-byte text instead of producing
+replacement characters at every window boundary. Arbitrary invalid bytes still
+use replacement decoding, as before.
+
+Validation: Ruff, targeted source type checking and 77 existing file/artifact
+tests passed. Manual probes reconstructed a 40,000-character Chinese line plus
+following lines across windows without loss, confirmed the preceding complete
+line advances by line cursor, and verified a four-byte window consumes one
+three-byte character and resumes at byte three. No tests added. Artifact full
+read cancellation/size accounting, duplicate image spills, and remaining result
+metadata are still pending review.
