@@ -23,8 +23,6 @@ from voidcode.sdk.provider import (
     ProviderTokenUsage,
     ProviderTurnRequest,
     ProviderTurnResult,
-    ProviderWireMaterialization,
-    WirePrefixDescriptor,
 )
 from voidcode.sdk.tools import ToolCall
 
@@ -439,34 +437,6 @@ class AnthropicMessagesProvider:
                     append_message(message.role, {"type": "text", "text": message.content})
         return ("\n\n".join(system_parts) if system_parts else None), messages
 
-    def _wire(self, request: ProviderTurnRequest) -> ProviderWireMaterialization:
-        system, messages = self._messages_and_system(request)
-        original_to_provider, _ = self._tool_maps(request)
-        tools: list[dict[str, object]] = []
-        for tool in request.available_tools:
-            schema = json_wire_object(tool.input_schema)
-            schema.setdefault("type", "object")
-            tools.append({"name": original_to_provider.get(tool.name, tool.name), "description": tool.description, "input_schema": schema})
-        stable_messages = messages[:]
-        canonical = json.dumps(
-            {"assembly_version": 1, "system": system, "messages": stable_messages, "tools": tools},
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        tool_bytes = json.dumps(tools, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        return ProviderWireMaterialization(
-            messages=messages,
-            tools=tools,
-            prefix=WirePrefixDescriptor(
-                canonical_bytes=canonical,
-                canonical_hash=hashlib.sha256(canonical).hexdigest(),
-                materialized_message_count=len(messages),
-                tool_generation=hashlib.sha256(tool_bytes).hexdigest(),
-                assembly_version=1,
-            ),
-        )
-
     def _payload(self, request: ProviderTurnRequest, *, stream: bool) -> dict[str, object]:
         provider_name = request.provider_name or self.name
         model_name = request.model_name or "unknown"
@@ -480,7 +450,6 @@ class AnthropicMessagesProvider:
                 fallback_allowed=True,
             )
         system, messages = self._messages_and_system(request)
-        wire = self._wire(request)
         metadata = static_catalog_metadata(provider_name, request.model_name or "")
         model_name = request.model_name or ""
         rule = thinking_rule_for(request.provider_name or self.name, model_name)
@@ -492,8 +461,14 @@ class AnthropicMessagesProvider:
         payload: dict[str, object] = {"model": request.model_name, "max_tokens": max_tokens, "messages": messages, "stream": stream}
         if system:
             payload["system"] = system
-        if wire.tools and (metadata is None or metadata.supports_tools is not False):
-            payload["tools"] = wire.tools
+        tools: list[dict[str, object]] = []
+        if request.available_tools and (metadata is None or metadata.supports_tools is not False):
+            original_to_provider, _ = self._tool_maps(request)
+            for tool in request.available_tools:
+                schema = json_wire_object(tool.input_schema)
+                schema.setdefault("type", "object")
+                tools.append({"name": original_to_provider[tool.name], "description": tool.description, "input_schema": schema})
+            payload["tools"] = tools
             payload["tool_choice"] = {"type": "auto"}
         budget = _thinking_payload(payload, request=request, rule=rule)
         if budget is not None:
@@ -504,9 +479,8 @@ class AnthropicMessagesProvider:
         retention = request.cache_retention if request.cache_retention is not None else (self.config.cache_retention if self.config else "short")
         if retention in {"short", "long"}:
             cache_control = {"type": "ephemeral", "ttl": "5m" if retention == "short" else "1h"}
-            if wire.tools:
-                wire.tools[-1]["cache_control"] = cache_control
-                payload["tools"] = wire.tools
+            if tools:
+                tools[-1]["cache_control"] = cache_control
             elif system:
                 payload["system"] = [{"type": "text", "text": system, "cache_control": cache_control}]
         extra_headers = resolve_extra_request_headers(self.extra_request_headers, self._session_id(request))

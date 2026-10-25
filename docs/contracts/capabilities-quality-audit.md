@@ -34,7 +34,7 @@ not establish source review.
 | `providers/native/_resources.py` | Reviewed: contained package paths and JSON loading; removed unused installed-data locator/text wrapper |
 | `providers/native/_result_sanitize.py` | Removed: only consumer sat behind an unreachable metadata.data dict check; SDK content is already projected by core |
 | `providers/native/_wire_common.py` | Reviewed: usage counts, tool IDs, request headers, bounded queue/stream timeout/error cleanup, owned-resource initialization |
-| `providers/native/anthropic_native.py` | Pending full source review |
+| `providers/native/anthropic_native.py` | Partial: request assembly and tool/cache gating reviewed; removed unconsumed wire fingerprints and duplicate history conversion; stream/replay/usage/transport reconciliation pending |
 | `providers/native/claude_tokenizer/__init__.py` | Pending full source review |
 | `providers/native/claude_tokenizer/constants.py` | Pending full source review |
 | `providers/native/claude_tokenizer/engine.py` | Pending full source review |
@@ -1749,3 +1749,23 @@ tests passed. Manual schema probes agreed with ingress for valid default/max
 timeouts and nullable descriptions, and rejected zero/over-limit/bool timeouts
 and unknown fields. Shell interception policy and progress boundary review remain
 pending; this is not a completed shell source audit.
+
+## Anthropic request assembly and tool/cache gating
+
+Deleted the private `_wire` materialization: its only caller used the tools list
+and discarded both canonical request serialization and prefix/tool hashes. It
+also converted the full history a second time. Request assembly now constructs
+tools directly after catalog capability gating and converts history once. No
+public SDK wire contracts were removed. Production source is 26 lines shorter.
+
+Fixed cache retention reintroducing tools on models whose catalog explicitly
+says `supports_tools=False`. Cache control now modifies only the tools already
+selected for the payload, or uses the system block when tools are absent.
+
+Ruff, formatting and full source type checking passed. The initial test run
+could not bind loopback sockets in the sandbox; rerunning the same six existing
+provider test modules with local socket permission passed all 136 tests in
+22.14 seconds. Manual request probes confirmed one history assembly and correct
+tool/cache gating for both supported and unsupported tool metadata. No tests
+added; no live vendor credentials or external service requests used. Anthropic
+stream/replay/usage and transport details remain pending full reconciliation.
