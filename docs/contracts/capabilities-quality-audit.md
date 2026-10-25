@@ -1933,3 +1933,24 @@ cancellation in under one second. A real SDK RateLimitError preserved status
 429, retry-after headers and rate_limit classification. No tests added or live
 vendor calls used. OpenAI has a similar wrapper plus separate SSE error
 normalization that still needs reconciliation.
+
+## OpenAI SDK stream close and error boundaries
+
+Removed OpenAI's SDK stream generator wrapper so the timeout/cancellation pump
+closes the actual SDK iterator while its worker is blocked. The existing provider
+error boundary now handles SDK API exceptions with status/header extraction,
+and JSON/Pydantic decoder failures through the existing bounded stream-error
+payload. Mapping decoded non-object events remains at the chunk boundary.
+
+This also avoids the previous wrapper's catch-all classification of arbitrary
+stream exceptions, including raw network failures, as invalid JSON events.
+Known network exceptions retain network failure classification; unknown errors
+use the ordinary bounded provider failure. No new stream class or ownership
+mechanism was introduced.
+
+Ruff, formatting and targeted provider type checking passed. Six existing
+provider modules passed 136 tests in 22.59 seconds with local loopback permitted.
+Manual probes confirmed SDK stream identity, direct close on blocked-read
+cancellation in under one second, HTTP 429 classification, and parser-error
+redaction of private document/message strings. No tests added or live vendor
+calls used. Broader native adapter source reconciliation remains pending.

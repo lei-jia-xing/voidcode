@@ -13,6 +13,7 @@ from openai import APIConnectionError as OpenAIAPIConnectionError
 from openai import APIError as OpenAIAPIError
 from openai import APITimeoutError as OpenAIAPITimeoutError
 from openai import OpenAI, omit
+from pydantic import ValidationError
 
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.provider import (
@@ -237,17 +238,7 @@ class OpenAIChatCompletionsTransport:
             result = self._sdk().chat.completions.create(**cast(Any, self._request_headers(payload)), timeout=timeout_seconds)
         except OpenAIAPIError as exc:
             raise OpenAITransportError(self._api_error_payload(exc)) from exc
-        if bool(payload.get("stream")):
-            return self._iter_sdk_stream(result)
         return result
-
-    def _iter_sdk_stream(self, stream: object) -> Iterator[object]:
-        try:
-            yield from cast(Iterator[object], stream)
-        except OpenAIAPIError as exc:
-            raise OpenAITransportError(self._api_error_payload(exc)) from exc
-        except Exception as exc:
-            raise OpenAITransportError(_stream_event_error_payload(exc)) from exc
 
 
 def normalize_openai_base_url(base_url: str | None) -> str:
@@ -678,6 +669,14 @@ class OpenAIChatCompletionsProvider:
     def _map_exception(exc: Exception, *, provider_name: str, model_name: str, source: str) -> ProviderExecutionError:
         if isinstance(exc, ProviderExecutionError):
             return exc
+        if isinstance(exc, OpenAIAPIError):
+            return provider_execution_error_from_payload(
+                provider_name=provider_name, model_name=model_name, payload=OpenAIChatCompletionsTransport._api_error_payload(exc), source=source
+            )
+        if source == "stream" and isinstance(exc, (json.JSONDecodeError, ValidationError)):
+            return provider_execution_error_from_payload(
+                provider_name=provider_name, model_name=model_name, payload=_stream_event_error_payload(exc), source=source
+            )
         if isinstance(exc, OpenAITransportError):
             return provider_execution_error_from_payload(provider_name=provider_name, model_name=model_name, payload=exc.payload, source=source)
         known_network_failure = isinstance(exc, (httpx2.TransportError, OpenAIAPITimeoutError, OpenAIAPIConnectionError))
