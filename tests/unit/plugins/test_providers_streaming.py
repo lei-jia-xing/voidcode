@@ -486,7 +486,8 @@ def test_google_real_sdk_stream_preserves_terminal_and_cancellation_semantics(st
         else:
             assert remaining[0].text == "second"
             assert remaining[-1].usage.input_tokens == 3
-            assert remaining[-1].usage.output_tokens == 2
+            # Candidate count alone does not establish a total including thinking.
+            assert remaining[-1].usage.output_tokens is None
         assert len(server.requests) == 1
     finally:
         provider.close()

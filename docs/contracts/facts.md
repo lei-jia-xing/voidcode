@@ -69,6 +69,8 @@ A provider intent is in flight, not observed usage. New orphan dispatch settleme
 
 Installing a window projection is staged with the callback, and the verified projection and its core fact commit in the same SQLite transaction. A callback/commit failure applies neither. No database schema migration is needed.
 
+Provider usage `output_tokens` counts total generated output, including reasoning. When a provider reports candidate and thinking counts separately, the adapter sums them only when both are known; an incomplete total remains `None`, distinct from an observed zero. Historical usage facts retain the values recorded by their original adapter and are not recomputed.
+
 ## Current contract and effectiveness v2
 
 Only the current persisted fact shape is supported. Invocation outcomes require their full recorded semantic metadata, and public fact events require their recorded observer eligibility. Missing fields fail explicitly; the runtime never joins older tool intents, fills fields from the current catalog, or bypasses replay validation for older events. There is no legacy-data adapter or automatic conversion. This SDK change follows the existing explicit core-image upgrade rules, which do not make incompatible event records compatible.

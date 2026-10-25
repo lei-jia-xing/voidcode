@@ -400,7 +400,10 @@ class GoogleGenAIProvider:
         if usage is None:
             return None
         input_tokens = usage_int(getattr(usage, "prompt_token_count", None))
-        output_tokens = usage_int(getattr(usage, "candidates_token_count", None))
+        candidates = usage_int(getattr(usage, "candidates_token_count", None))
+        thoughts = usage_int(getattr(usage, "thoughts_token_count", None))
+        # Google reports thinking separately; an incomplete output total stays unknown.
+        output_tokens = candidates + thoughts if candidates is not None and thoughts is not None else None
         cache_read = usage_int(getattr(usage, "cached_content_token_count", None))
         if all(value is None for value in (input_tokens, output_tokens, cache_read)):
             return None

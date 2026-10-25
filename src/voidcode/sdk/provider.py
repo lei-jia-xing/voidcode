@@ -78,6 +78,7 @@ class ProviderTokenUsage:
     # observed zero. ``input_tokens`` is the *inclusive* prompt total: cache
     # reads are already inside it. Never add ``cache_read_tokens`` on top.
     input_tokens: int | None = None
+    #: Total generated tokens, including reasoning; incomplete separate buckets remain unknown.
     output_tokens: int | None = None
     cache_read_tokens: int | None = None
     cache_write_tokens: int | None = None

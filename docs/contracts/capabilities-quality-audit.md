@@ -2317,3 +2317,25 @@ loopback permission. Manual real SDK response streams checked an empty final
 usage event, a later explicit all-zero report, and no usage at all. No tests
 added or live vendor calls used. Reasoning-output accounting and remaining
 native adapter source reconciliation are still pending.
+
+## Google generated output includes thinking
+
+Google's candidates_token_count excludes thoughts_token_count. The adapter now
+reports their sum as the existing normalized output_tokens total only when
+both counts are valid; missing/invalid components leave the total unknown.
+Zero remains an observed zero. No inferred total from prompt subtraction or
+new reasoning-count field was introduced. SDK/public fact descriptions now
+state that generated output includes reasoning; historical recorded facts are
+not repriced or rewritten.
+
+[Google Generate Content thinking documentation](https://ai.google.dev/gemini-api/docs/generate-content/thinking)
+separately defines candidate/thinking counts and prices their combined output.
+Installed SDK usage metadata confirms those distinct fields.
+
+Updated the existing real-SDK streaming assertion: its fixture reports only
+candidate tokens, so the inclusive total is unknown. Ruff, formatting and
+targeted type checking passed; 131 existing provider/data tests passed in
+11.45 seconds with local loopback permission. Manual probes covered nonzero
+sums, zero components, absent components and invalid boolean/negative thinking
+counts. No tests added or live vendor calls used. Remaining adapter and
+capability inventory scope still prevents full goal completion.
