@@ -2108,3 +2108,25 @@ Chinese characters and original CRLF bytes through artifact byte pages, checked
 no-spill short reads and the recovery size ceiling, and rejected an in-place
 source change before any mismatched spill. No tests added. Remaining read
 artifact/archive projection and lifecycle details are still pending.
+
+## Archive member metadata count bounds
+
+Archives now admit at most 10,000 members before normalizing metadata, building
+name sets or rendering children. ZIP checks its SDK-loaded infolist before
+allocating a second metadata collection; directory identity uses ZipInfo.is_dir.
+TAR iterates only the limit plus one via stdlib islice instead of unconditionally
+calling getmembers before checking any application limit. Over-limit archives
+fail explicitly rather than returning an incomplete membership map.
+
+This bounds application-level metadata collections and TAR header count, not
+the standard ZIP parser's initial central-directory load. Nor does a header
+count bound total TAR decompression work when skipping large preceding members;
+that remaining resource/feature-scope decision is still open. No custom archive
+parser or dependency was introduced.
+
+Ruff, formatting and targeted type checking passed; 97 existing file/format/
+artifact/coverage tests passed in 1.19 seconds. Manual real ZIP/TAR probes
+confirmed over-limit refusal and ordinary selected-member reads; a scripted
+100-member TAR iterator stopped after exactly limit plus one observations.
+No tests added. Archive listing continuation, collisions and remaining
+projection/cancellation semantics still need review.

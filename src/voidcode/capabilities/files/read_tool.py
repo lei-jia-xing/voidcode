@@ -17,7 +17,7 @@ import zipfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from io import TextIOWrapper
-from itertools import takewhile
+from itertools import islice, takewhile
 from pathlib import Path
 from typing import IO, ClassVar, Literal, cast, final
 from urllib.parse import parse_qs
@@ -974,6 +974,7 @@ UNSUPPORTED_ARCHIVE_SUFFIXES = (".rar", ".7z", ".iso", ".cab", ".deb", ".rpm", "
 #: decoded size of a single member (decompression-bomb guard).
 ARCHIVE_LIST_LIMIT = 200
 MAX_ARCHIVE_MEMBER_BYTES = 1024 * 1024
+MAX_ARCHIVE_MEMBERS = 10_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -1152,11 +1153,17 @@ def _split_archive_path(path: str) -> tuple[str, str, str] | None:
 
 
 def _zip_members(archive: zipfile.ZipFile) -> list[tuple[str, int, bool]]:
-    return [(_normalize_member_path(info.filename), info.file_size, info.filename.endswith("/")) for info in archive.infolist()]
+    members = archive.infolist()
+    if len(members) > MAX_ARCHIVE_MEMBERS:
+        raise ValueError(f"archive exceeds the maximum supported member count ({MAX_ARCHIVE_MEMBERS})")
+    return [(_normalize_member_path(info.filename), info.file_size, info.is_dir()) for info in members]
 
 
 def _tar_members(archive: tarfile.TarFile) -> list[tuple[str, int, bool]]:
-    return [(_normalize_member_path(member.name), member.size, member.isdir()) for member in archive.getmembers()]
+    members = list(islice(archive, MAX_ARCHIVE_MEMBERS + 1))
+    if len(members) > MAX_ARCHIVE_MEMBERS:
+        raise ValueError(f"archive exceeds the maximum supported member count ({MAX_ARCHIVE_MEMBERS})")
+    return [(_normalize_member_path(member.name), member.size, member.isdir()) for member in members]
 
 
 def _archive_member_bytes(handle: IO[bytes], normalized: str) -> bytes:
