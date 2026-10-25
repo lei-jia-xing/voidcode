@@ -191,11 +191,6 @@ def test_shell_exec_requires_a_command(tmp_path: Path) -> None:
         _shell_tool().invoke(ToolCall("shell_exec", {}), context=_context(tmp_path), services=_FakeLease())  # type: ignore[arg-type]
 
 
-def test_shell_exec_without_a_lease_fails_visibly(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="shell_exec requires the core process lease"):
-        _shell_tool().invoke(ToolCall("shell_exec", {"command": "echo hi"}), context=_context(tmp_path), services=None)  # type: ignore[arg-type]
-
-
 def test_shell_exec_timeout_returns_a_partial_body_with_its_artifact(tmp_path: Path) -> None:
     lease = _FakeLease(ProcessResult(exit_code=None, stdout="partial\n", stderr="", duration_ms=1000, timed_out=True))
 

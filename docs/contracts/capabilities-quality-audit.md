@@ -1730,3 +1730,22 @@ six-row omission and partial bounds; one-line and whole-log reads had matching
 body/output truncation states. No tests added. The 8 MiB log scan ceiling still
 needs cursor/recovery review; output metadata consistency alone does not solve
 that separate limitation.
+
+## Shell ingress schema and service dispatch
+
+Shell arguments now generate the published schema directly from `ShellExecArgs`,
+with descriptions beside their validation constraints. Removed the separate
+JSON field/type/timeout table. Generated defaults/null acceptance describe the
+existing runtime behavior.
+
+The shell calls the mandatory typed `PluginServices.run_process` method directly
+instead of rediscovering it with `getattr` and checking callability on every
+invocation. Deleted the obsolete test that passes `None` outside the SDK service
+contract. No tests added. Core-owned process execution, timeouts, capture limits,
+artifact handling and command interception are unchanged.
+
+Ruff, formatting, full source type checking and 87 existing background/shell
+tests passed. Manual schema probes agreed with ingress for valid default/max
+timeouts and nullable descriptions, and rejected zero/over-limit/bool timeouts
+and unknown fields. Shell interception policy and progress boundary review remain
+pending; this is not a completed shell source audit.

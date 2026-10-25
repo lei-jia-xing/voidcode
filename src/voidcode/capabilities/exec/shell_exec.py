@@ -120,9 +120,9 @@ def _artifact_reference(artifact: ArtifactReference | None) -> OutputReference |
 class ShellExecArgs(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    timeout: int = Field(default=DEFAULT_TIMEOUT_SECONDS, ge=1, le=MAX_TIMEOUT_SECONDS)
-    command: NonEmptyCommand
-    description: OptionalDescription = None
+    timeout: int = Field(default=DEFAULT_TIMEOUT_SECONDS, ge=1, le=MAX_TIMEOUT_SECONDS, description="Timeout in seconds (max 600).")
+    command: NonEmptyCommand = Field(description="Shell command to execute in the workspace.")
+    description: OptionalDescription = Field(default=None, description="Human-readable description of the command.")
 
 
 def _shell_argv(command: str) -> list[str]:
@@ -176,16 +176,7 @@ class ShellExecTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="shell_exec",
         description="Execute a command inside the current workspace.",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "command": {"type": "string", "minLength": 1, "description": "Shell command to execute in the workspace."},
-                "timeout": {"type": "integer", "minimum": 1, "maximum": 600, "description": "Timeout in seconds (max 600)"},
-                "description": {"type": "string", "description": "Human-readable description of the command"},
-            },
-            "required": ["command"],
-            "additionalProperties": False,
-        },
+        input_schema=ShellExecArgs.model_json_schema(),
         effects=frozenset({ToolEffect.EXECUTE, ToolEffect.SPAWN}),
     )
 
@@ -203,11 +194,7 @@ class ShellExecTool:
             raise ValueError("shell_exec workspace must be an existing directory")
         timeout_seconds = args.timeout
 
-        run_process = getattr(services, "run_process", None)
-        if not callable(run_process):
-            raise ValueError("shell_exec requires the core process lease")
-
-        result = run_process(
+        result = services.run_process(
             _shell_argv(command_text),
             cwd=workspace_root,
             timeout_seconds=float(timeout_seconds),
