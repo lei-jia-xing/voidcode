@@ -55,10 +55,6 @@ class ProviderModelMetadata:
     model_status: OptionalText = None
     api: OptionalText = None
     display_name: OptionalText = None
-    #: omp encoding name driving exact token counting (``O200kBase``,
-    #: ``deepseek-v3``, ...). ``None`` means no exact tokenizer and the runtime
-    #: falls back to the byte-count estimate. See ``provider/tokenizer.py``.
-    tokenizer: OptionalText = None
 
     def __post_init__(self) -> None:
         if self.default_reasoning_effort is not None and self.default_reasoning_effort not in CANONICAL_EFFORTS:

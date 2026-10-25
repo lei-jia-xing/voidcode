@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from voidcode.sdk.provider import StreamableTurnProvider, TurnProvider
 
@@ -27,6 +27,7 @@ _OPENCODE_GO = PROVIDER_TABLE_BY_ID["opencode-go"]
 _OPENCODE_EXTRA_REQUEST_HEADERS: dict[str, str] = {
     "x-opencode-session": "{session_id}",
     "x-opencode-client": "voidcode",
+    "User-Agent": "voidcode",
 }
 
 # Unsupported upstream protocols fail before client construction.
@@ -51,7 +52,7 @@ class OpenCodeGoModelProvider:
     def provider_config(self) -> ProviderEndpointConfig:
         return openai_compatible_endpoint_config(self.name, self.config)
 
-    def _wire(self, _model: str, route: RoutedWire) -> StreamableTurnProvider:
+    def _wire(self, route: RoutedWire) -> StreamableTurnProvider:
         endpoint = self.provider_config()
         if route == "anthropic-messages":
             return AnthropicMessagesProvider(
@@ -65,7 +66,7 @@ class OpenCodeGoModelProvider:
             )
         return OpenAIChatCompletionsProvider(
             name=self.name,
-            config=endpoint,
+            config=replace(endpoint, model_map={}),
             synthetic_tool_feedback_models=_SYNTHETIC_TOOL_FEEDBACK_MODELS,
             extra_request_headers=_OPENCODE_EXTRA_REQUEST_HEADERS,
         )

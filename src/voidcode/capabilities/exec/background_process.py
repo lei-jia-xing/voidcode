@@ -86,7 +86,7 @@ class _ProcessIdArgs(_StrictArgs):
 class _LogsArgs(_ProcessIdArgs):
     op: Literal["logs"] = Field(description="Read a bounded, line-paged window of a process's output.")
     stream: Literal["stdout", "stderr", "both"] = Field(default="both", description="Which output stream to read.")
-    offset: int = Field(default=0, ge=0, le=1_000_000, description="Number of leading lines to skip; page from next_offset to read on.")
+    offset: int = Field(default=0, ge=0, description="Number of leading lines to skip; page from next_offset to read on.")
     limit: int = Field(default=500, ge=1, le=500, description="Maximum lines to return (1-500).")
 
 
@@ -391,7 +391,7 @@ def _live_handle(services: PluginServices, process_id: str) -> ProcessHandle | N
 def _scan_stream(services: PluginServices, process_id: str, stream: _StreamName) -> _StreamScan:
     """Every line of one stream's log, read out of the host's bounded byte windows.
 
-    Lines keep their endings, so a page of them is the log's own bytes. The scan stops at a byte
+    Lines retain endings with CRLF normalized to LF. The scan stops at a byte
     ceiling: a runaway log costs a bounded read, and the caller is told `truncated` rather than
     handed a silently short page.
     """
@@ -429,8 +429,9 @@ def _wait_for_ready(services: PluginServices, process_id: str, *, pattern: str |
             drained = drained and page.eof
             if not page.data:
                 continue
-            scanned[stream] = (scanned[stream] + page.data)[-_READY_SCAN_BYTES:]
-            text = scanned[stream].decode("utf-8", errors="replace").replace("\r\n", "\n")
+            window = scanned[stream] + page.data
+            scanned[stream] = window[-_READY_SCAN_BYTES:]
+            text = window.decode("utf-8", errors="replace").replace("\r\n", "\n")
             if any(pattern in line for line in text.splitlines()):
                 return True
         if (not running and drained) or time.monotonic() >= deadline:
@@ -488,6 +489,14 @@ class BackgroundProcessTool:
         workspace = context.require_workspace().resolve()
         context.require_session_id()
         args = _ARGS_ADAPTER.validate_python(dict(call.arguments))
+        if context.abort_signal is not None and context.abort_signal.cancelled:
+            message = f"background_process {args.op} aborted before execution"
+            return ToolFailure(
+                tool_name=self.definition.name,
+                error=message,
+                output=TextOutput(message),
+                execution=ConfirmedStop(cancellation_signalled=True),
+            )
         if isinstance(args, _StartArgs):
             return self._start(
                 args,
@@ -504,15 +513,6 @@ class BackgroundProcessTool:
         return self._ps(services=services)
 
     def _start(self, args: _StartArgs, *, workspace: Path, services: PluginServices, context: ToolContext) -> ToolResult:
-        if context.abort_signal is not None and context.abort_signal.cancelled:
-            # Pre-flight refusal: a cancelled call launches no process, so nothing is unknown.
-            message = "background_process start aborted before launching the process"
-            return ToolFailure(
-                tool_name=self.definition.name,
-                error=message,
-                output=TextOutput(message),
-                execution=ConfirmedStop(cancellation_signalled=True),
-            )
         records, version = _read_records(services)
         process_id = f"proc-{uuid4().hex}"
         # The host refuses a duplicate id outright, so a start can never shadow a live process.
@@ -629,17 +629,22 @@ class BackgroundProcessTool:
         counts = {"stdout": 0, "stderr": 0}
         next_offsets: dict[str, int] = {}
         truncated = args.offset > 0
+        capped_paths: list[str] = []
         for stream in selected:
             scan = _scan_stream(services, args.process_id, stream)
             page_lines = scan.lines[args.offset : args.offset + args.limit]
             pages[stream] = "".join(page_lines)
             counts[stream] = len(page_lines)
-            if args.offset + len(page_lines) < len(scan.lines) or scan.truncated:
+            if args.offset + len(page_lines) < len(scan.lines):
                 next_offsets[stream] = args.offset + len(page_lines)
             truncated = truncated or scan.truncated or bool(next_offsets)
+            if scan.truncated:
+                capped_paths.append(handle.stdout_path if stream == "stdout" else handle.stderr_path)
         current = _live_handle(services, args.process_id) or handle
         running = current.running
         guidance = _logs_guidance(running=running)
+        if capped_paths:
+            guidance += f" Only the first {_LOG_SCAN_BYTES} bytes per stream were scanned; read the remaining logs from: {capped_paths!r}."
         sections = [f"[{name}]\n{pages[name]}" for name in selected if pages[name]]
         output = "\n".join(sections)
         output = f"{output}\n\nGuidance: {guidance}" if output else f"Guidance: {guidance}"
@@ -724,7 +729,7 @@ class BackgroundProcessTool:
                 process_id=args.process_id,
                 state="exited",
                 exit_code=exit_code,
-                running=current.running,
+                running=False,
             ),
         )
 

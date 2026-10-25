@@ -2,7 +2,7 @@
 
 The lease owns the machine, so these tests drive a fake lease: it records the call the tool made
 and returns the scripted `ProcessResult` the host would have produced. What is under test is the
-tool's contract — interception before the lease, the argv/cwd/timeout it asks for, the
+tool's contract — the argv/cwd/timeout it asks for, the
 preview/artifact split of each stream, and the flags on each failure shape.
 """
 
@@ -175,15 +175,13 @@ def test_shell_exec_reports_a_zero_exit_without_streams(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("command", ["cat file.txt", "grep foo file.txt", "sed -i 's/a/b/' file.txt", "find . -name x"])
-def test_shell_exec_refuses_misused_shell_patterns(tmp_path: Path, command: str) -> None:
+def test_shell_exec_passes_commands_to_the_lease(tmp_path: Path, command: str) -> None:
     lease = _FakeLease()
 
-    with pytest.raises(ValueError, match="Blocked:") as exc:
-        _invoke(command, tmp_path, lease)
+    result = _invoke(command, tmp_path, lease)
 
-    assert f"Original command: {command}" in str(exc.value)
-    # Interception is pre-flight: a refused command never reaches the lease.
-    assert lease.calls == []
+    assert isinstance(result, ToolSuccess)
+    assert lease.calls[0]["argv"] == [*_SHELL_WRAPPER, command]
 
 
 def test_shell_exec_requires_a_command(tmp_path: Path) -> None:
@@ -310,6 +308,7 @@ def test_shell_exec_forwards_bounded_progress_chunks(tmp_path: Path) -> None:
     assert chunks == [
         {"stream": "stdout", "text": "hi\nthere", "run_id": "run-test", "invocation_id": "invocation-test"},
         {"stream": "stderr", "text": "y" * 12_000, "run_id": "run-test", "invocation_id": "invocation-test"},
+        {"stream": "stderr", "text": "y" * 8_000, "run_id": "run-test", "invocation_id": "invocation-test"},
     ]
 
 

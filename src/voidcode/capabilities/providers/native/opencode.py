@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from voidcode.sdk.provider import StreamableTurnProvider, TurnProvider
 
@@ -24,6 +24,7 @@ _OPENCODE_ZEN = PROVIDER_TABLE_BY_ID["opencode-zen"]
 _OPENCODE_EXTRA_REQUEST_HEADERS: dict[str, str] = {
     "x-opencode-session": "{session_id}",
     "x-opencode-client": "voidcode",
+    "User-Agent": "voidcode",
 }
 
 _ZEN_WIRE_ROUTING = WireRouting(
@@ -45,7 +46,7 @@ class OpenCodeZenModelProvider:
             api_key_env_var=_OPENCODE_ZEN.env_vars[0],
         )
 
-    def _wire(self, _model: str, route: RoutedWire) -> StreamableTurnProvider:
+    def _wire(self, route: RoutedWire) -> StreamableTurnProvider:
         endpoint = self.provider_config()
         if route == "anthropic-messages":
             return AnthropicMessagesProvider(
@@ -71,7 +72,7 @@ class OpenCodeZenModelProvider:
             )
         return OpenAIChatCompletionsProvider(
             name=self.name,
-            config=endpoint,
+            config=replace(endpoint, model_map={}),
             extra_request_headers=_OPENCODE_EXTRA_REQUEST_HEADERS,
         )
 

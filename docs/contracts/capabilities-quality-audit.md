@@ -13,8 +13,8 @@ not establish source review.
 | `__init__.py` | Reviewed: documentation-only shared capability boundary |
 | `exec/__init__.py` | Reviewed: stateless factory registers shell/background tools and identity-preserving deactivation; no resources, imports of concrete peers or duplicated config |
 | `exec/args.py` | Reviewed source/consumers: three small nonempty field validators used by strict exec argument models |
-| `exec/background_process.py` | Partial: strict persisted identity ingress, UTF-8/CRLF log pages and final readiness draining reviewed; typed state pipeline reviewed; scan ceiling/cursor and remaining lifecycle review pending |
-| `exec/shell_exec.py` | Partial: typed SDK artifact references and consumers reviewed; interception policy, progress boundaries and remaining result semantics pending |
+| `exec/background_process.py` | Reviewed: strict args/state, identity persistence, host-owned lifecycle, cancellation ingress/readiness, bounded log prefix/cursors, stdin counts and confirmed-stop projection |
+| `exec/shell_exec.py` | Reviewed: strict ingress, governed dispatch, bounded previews/artifacts, progress decoding, exit/timeout/cancel/capture-limit projections; command-name interception removed |
 | `files/__init__.py` | Reviewed: typed Tool wrapper preserves diagnostic failures; shared core/plugin factory |
 | `files/_replace.py` | Reviewed: checked replacement and exclusive atomic creation; cleanup, permissions and race regressions; documented metadata/compare-window limits |
 | `files/apply_patch.py` | Reviewed: marker-only grammar, exact staged preflight, hash/checked commits, cancellation and truthful partial operations; removed unified/Git execution, path decoding and format adapters |
@@ -58,17 +58,17 @@ not establish source review.
 | `providers/native/thinking_rules.json` | Reviewed with parser/consumer and packaged-table tests; source/provenance retained in JSON |
 | `providers/native/thinking_rules.py` | Reviewed: model-name overlays/effort maps removed; upstream capabilities select validated protocol defaults and named budgets; Kimi cap convention pending adapter review |
 | `providers/native/tokenizer.py` | Reviewed: offline encoding dispatch, lazy loading, normalization and fallback; no runtime consumer |
-| `providers/native/tokenizer_data/Cl100kBase.utok1.bz2` | Pending consumer/data-contract review |
-| `providers/native/tokenizer_data/DeepSeekV3.utok1.bz2` | Pending consumer/data-contract review |
-| `providers/native/tokenizer_data/Glm5.utok1.bz2` | Pending consumer/data-contract review |
-| `providers/native/tokenizer_data/KimiK2.utok1.bz2` | Pending consumer/data-contract review |
-| `providers/native/tokenizer_data/O200kBase.utok1.bz2` | Pending consumer/data-contract review |
-| `providers/native/tokenizer_data/Qwen3.utok1.bz2` | Pending consumer/data-contract review |
-| `providers/native/tokenizer_data/__init__.py` | Pending consumer/data-contract review |
-| `providers/native/tokenizer_data/ctok_v3.bin.bz2` | Pending consumer/data-contract review |
-| `providers/native/tokenizer_data/ctok_v4_7.bin.bz2` | Pending consumer/data-contract review |
-| `providers/native/tokenizer_data/manifest.json` | Pending consumer/data-contract review |
-| `providers/native/tokenizer_routing.json` | Pending consumer/data-contract review |
+| `providers/native/tokenizer_data/Cl100kBase.utok1.bz2` | Reviewed: bundled blob/manifest contract and actual encoding consumers; no live oracle claim |
+| `providers/native/tokenizer_data/DeepSeekV3.utok1.bz2` | Reviewed: bundled blob/manifest contract and actual encoding consumers; no live oracle claim |
+| `providers/native/tokenizer_data/Glm5.utok1.bz2` | Reviewed: bundled blob/manifest contract and actual encoding consumers; no live oracle claim |
+| `providers/native/tokenizer_data/KimiK2.utok1.bz2` | Reviewed: bundled blob/manifest contract and actual encoding consumers; no live oracle claim |
+| `providers/native/tokenizer_data/O200kBase.utok1.bz2` | Reviewed: bundled blob/manifest contract and actual encoding consumers; no live oracle claim |
+| `providers/native/tokenizer_data/Qwen3.utok1.bz2` | Reviewed: bundled blob/manifest contract and actual encoding consumers; no live oracle claim |
+| `providers/native/tokenizer_data/__init__.py` | Reviewed: bundled blob/manifest contract and actual encoding consumers; no live oracle claim |
+| `providers/native/tokenizer_data/ctok_v3.bin.bz2` | Reviewed: bundled blob/manifest contract and actual encoding consumers; no live oracle claim |
+| `providers/native/tokenizer_data/ctok_v4_7.bin.bz2` | Reviewed: bundled blob/manifest contract and actual encoding consumers; no live oracle claim |
+| `providers/native/tokenizer_data/manifest.json` | Reviewed: bundled blob/manifest contract and actual encoding consumers; no live oracle claim |
+| `providers/native/tokenizer_routing.json` | Removed: no reader; generator no longer depends on local model-cache database |
 | `providers/native/trace.py` | Reviewed: opt-in, whole-record preview budget, JSON encoder, private append and isolated warning-only failures; documented per-file growth/trusted-parent limits |
 | `providers/panels.py` | Reviewed: names/catalog-only configuration facts, typed paged transcript dispatches, read-only commands/views; removed guessed credential status |
 | `providers/pricing.py` | Reviewed: price once at report time, preserve prepriced/unknown usage, event/result wrappers |
@@ -2618,3 +2618,203 @@ Validation: all 65,536 BMP classifications and individual lowerings matched HEAD
 4,000 mixed-string case mappings and 200 recorded family token counts matched.
 Ruff/format and targeted ty passed. These are equivalence checks against the
 shipped implementation, not a fresh vendor-oracle guarantee. No tests added.
+
+### Tokenizer data: remove unused model routing snapshot
+
+No source, test or development consumer reads tokenizer_routing.json. Deleted
+the 1,110-line stale snapshot, its SQLite extraction function/default database
+lookup/CLI option, and the unpopulated, unconsumed catalog tokenizer field.
+The vocabulary extractor now needs only the native addon; it no longer requires
+a local .omp model-cache database after writing vocabularies. The explicit
+encoding-based counting API and all eight bundled vocabulary blobs remain.
+
+Reviewed data consumers against all ten manifest rows: compressed/raw byte sizes
+match, UTOK raw entry counts and CTOK parsed vocabulary counts match. Qwen3 has
+248,044 entries / 247,844 unique tokens; DeepSeekV3 has 128,000 / 127,998. The
+existing dict construction retains the last rank for duplicates; this review
+does not claim vendor-oracle equivalence for that choice. All ten encodings
+previously loaded and counted multilingual text. Provenance
+remains recorded in manifest/NOTICE, without a live-vendor freshness/exactness
+claim. The data package contains only documentation, with no import effects.
+
+Validation: 17 existing provider-data/catalog-generator tests passed. Extractor
+--help runs without a model database; Ruff/format and targeted ty passed;
+CodeGraph synchronized. No tests added.
+
+### Background logs: stop issuing stalled pagination cursors
+
+At the 8 MiB scan cap, the log tool previously issued a next_offset even when
+the requested line offset had exhausted all scanned lines. Repeating that cursor
+returned the same empty page forever. It now issues cursors only for additional
+scanned lines, retains truthful truncated bounds, and names the raw log files
+for recovery beyond the scanned prefix. Removed the arbitrary million-line
+offset ceiling so generated cursors remain valid input. The existing bounded
+scan is retained; no persistent cursor/index mechanism added. CRLF behavior is
+now accurately described in the scan docstring.
+
+Validation: 66 existing background-process tests passed. A manual bounded-service
+probe verified exhausted-prefix next_offset=None, truncated=True, recovery path
+in guidance, and acceptance of offset 1,000,001. Ruff/format and targeted ty
+passed; CodeGraph synchronized. No tests added. Remaining lifecycle and
+cancellation review is still open.
+
+### Shell capability: remove command-name interception
+
+Deleted the regex rules that refused cat, grep/rg, sed -i and find and suggested
+hardcoded peer tools. The naive shell-operator split also treated quoted content
+as command segments. Shell dispatch now passes validated commands directly to
+the ordinary governed process lease. Core execute/spawn effects, visibility and
+approval policy remain authoritative; no replacement shell parser or command
+registry introduced. Updated the existing four interception cases to verify
+unchanged argv forwarding instead of refusal.
+
+Validation: 87 existing shell/background tests passed. Ruff/format and targeted
+exec typecheck passed. No tests added. Progress decoding and remaining result
+projection review remain open.
+
+### Shell progress: keep complete valid UTF-8 chunks
+
+Progress callbacks previously discarded each decoded chunk after character
+12,000 and decoded split UTF-8 codepoints separately. Each stream now owns an
+incremental UTF-8 decoder and emits all decoded text as events bounded to 12,000
+characters. Decoder state is invocation-local and stdout/stderr are independent.
+The final process capture remains authoritative: incomplete invalid UTF-8 suffixes
+may stay buffered in progress until completion, and CRLF normalization in this
+observational path remains local to decoded chunks. No new durable state or
+stream protocol introduced.
+
+Validation: 21 existing shell tests passed; updated the existing bounded-progress
+expectation to include the formerly discarded 8,000-character suffix. A manual
+50,000-byte multilingual stream delivered in seven-byte pieces reconstructed
+exactly, with all events bounded. Ruff/format and targeted ty passed; CodeGraph
+synchronized. No tests added.
+
+### Shell result projection review complete
+
+Reconciled the complete shell implementation with ProcessResult and existing
+shell tests. The host owns process-group lifetime, timeout/cancel handling and
+capture limits; the capability owns argument validation, previewing and artifact
+references. Both nonempty bounded captures are spilled; inline previews keep
+head/tail. Exit failures keep stderr as the error and stdout as output; the
+structured body retains both previews and artifact references. Timeout and
+cancellation mark output partial, while capture overflow is a visible failure.
+Preview-truncated stream flags describe inline previews; output_limit_exceeded
+separately reports the host's aggregate capture bound. None exit codes are not
+fabricated as zero/success. No additional process lifecycle wrapper is needed.
+
+Progress is observational, with the documented incomplete-UTF-8/CRLF boundary
+limits; final decoded captures remain authoritative. The SDK reports decoded
+text artifacts, not original arbitrary binary process bytes. These are explicit
+contract boundaries, not a claim that shell output is a byte-for-byte file copy.
+Evidence: full source/SDK consumer inspection and the already-run 87 shell plus
+background cases, including the latest 21 shell cases after progress changes.
+No production or test changes required in this review. Background-process
+lifecycle and the remaining file/provider inventory still prevent completion
+of the overall capability audit.
+
+### Confirmed background stops: do not reuse stale running state
+
+SDK cancel_process explicitly returns True only when the process is gone. After
+that confirmation, a host may remove its handle. The existing fallback to the
+pre-stop handle then yielded state=exited with running=True. Stop results now
+report running=False from the confirmed stop, while missing exit codes stay
+None. Persisted history still follows the same confirmed-stop path.
+
+Validation: 87 existing shell/background tests passed; a manual service probe
+removed the handle immediately after successful cancellation and verified
+exited/False/unknown exit code. Ruff and targeted exec ty passed; CodeGraph
+synchronized. No tests added.
+
+### Background operation cancellation ingress
+
+Moved the existing start cancellation check to the single validated invocation
+entrypoint. Already-cancelled ps/logs/send/stop calls now refuse before reading
+state or touching process services, just like start. In particular, cancelled
+stdin and stop requests cannot initiate new mutations. One shared check replaces
+the start-specific check, without adding a dispatch abstraction or lifecycle
+state. Readiness-wait cancellation after a successful start retains its distinct
+meaning: the launched background process continues to exist.
+
+Validation: 66 existing background tests passed; a manual probe of all four
+non-start operations verified cancellation and zero service calls. Updated one
+existing error-text assertion; no tests added. Ruff/format and targeted ty passed;
+CodeGraph synchronized.
+
+### Background readiness boundary and lifecycle review complete
+
+Readiness previously trimmed old+new bytes to the 64 KiB tail before searching.
+A pattern split across two full pages lost its first half. Search now covers
+the retained tail plus the new page before retaining the next tail. Search
+input is bounded to 128 KiB per stream and retained state stays at 64 KiB.
+
+Completed source/SDK reconciliation for start identity persistence, state CAS,
+host-owned handles and process groups, bounded ps/logs, partial stdin writes,
+confirmed/unconfirmed stops, missing supervision, readiness timeout/cancellation
+and deactivation. Persisted identities never grant supervision or trigger replay;
+unknown exit codes remain unknown. Host stop confirmation is authoritative.
+Log scans intentionally expose only an 8 MiB prefix and direct users to original
+log paths beyond it; cancelled ingress touches no services, while readiness
+checks cancellation between bounded reads. Process services retain ownership
+of blocking I/O/termination behavior; no extra manager or polling state added.
+
+Validation: 66 existing background tests passed and a manual two-full-page
+readiness probe detected the split pattern. Ruff/format and targeted ty passed;
+CodeGraph synchronized. No tests added. Overall audit still requires remaining
+file/provider reviews, inventory reconciliation and the full project gate.
+
+### Routed clients: cache per protocol, not per model
+
+Both gateway wire factories ignored their model argument and built identical
+protocol adapters for every model. Removed that unused argument and changed
+RoutedTurnProvider caching to the selected protocol, reducing duplicate SDK
+clients/connection pools when switching models. Model identity remains on each
+request; protocol admission and unsupported-wire errors are unchanged. Native
+providers are stateless across turns apart from their synchronized owned SDK
+clients, so sharing matches their existing multi-session use.
+
+Validation: 91 existing lifecycle/error/dispatch tests passed; a manual probe
+verified two different models share one adapter, preserve request identities,
+and close the adapter exactly once. Ruff/format and targeted ty passed;
+CodeGraph synchronized. Updated one existing factory call; no tests added.
+
+External review: the [current OpenCode model endpoint documentation](https://opencode.ai/v2/docs/console/models/)
+now describes protocol-specific inference paths and Responses models. The
+wrapper's existing gateway defaults and catalog therefore still need reconciliation
+with that source; local loopback checks do not establish current cloud routing
+compatibility. Also inspect chained aliases: the routed OpenAI request currently
+retains endpoint model_map, potentially applying a second alias lookup.
+
+### Gateway aliases: resolve once before protocol dispatch
+
+Confirmed the chained-alias defect in both gateway factories. RoutedTurnProvider
+resolved alias -> middle for protocol selection, but the native Chat adapter
+retained model_map and sent middle -> final. Both factories now pass a dataclass
+copy with an empty map to the Chat adapter; the router retains the original map.
+This matches native Anthropic/Google behavior and avoids both protocol/model
+identity mismatches and adapter-specific alias depth. Original configs remain
+unchanged. No recursive alias resolver or compatibility path introduced.
+
+Validation: 91 existing lifecycle/error/dispatch tests passed; manual payload
+probes for both gateways verified middle was sent, not final, and the original
+map was not mutated. Ruff/format and targeted ty passed; CodeGraph synchronized.
+No tests added. External gateway endpoint reconciliation remains outstanding.
+
+### OpenCode current external contract: client identity
+
+The [official Go client requirements](https://opencode.ai/v2/docs/console/go/)
+request an application-specific User-Agent plus stable x-opencode-session.
+Both wrappers already resolve session identity per request; they now explicitly
+send User-Agent: voidcode instead of a generic SDK identity. The change uses
+the existing per-request headers path for each native protocol.
+
+The [official inference API](https://opencode.ai/v2/docs/console/api/inference/)
+documents protocol-specific /inference/openai, /inference/anthropic and
+/inference/google paths with Bearer authentication. The current Zen table's
+/zen/v1 default is therefore not established as the current documented default.
+Do not claim gateway compatibility from loopback success: endpoint migration
+must reconcile protocol paths, Bearer-vs-SDK auth, configured-host precedence
+and catalog API families together. No per-model override table was added.
+
+Validation: 14 existing dispatch tests passed, both gateway payloads carried
+the application User-Agent, Ruff and targeted ty passed, CodeGraph synchronized.
+No tests added. External endpoint/auth reconciliation remains open.

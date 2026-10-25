@@ -2,14 +2,14 @@
 
 The lease owns the machine — it spawns the process group, bounds each stream's capture, stops the
 group on timeout or lease cancellation, and hands back the decoded text. This tool owns the
-contract around it: the command interceptor, timeout validation, the preview/artifact split per
+contract around it: timeout validation, the preview/artifact split per
 stream, and the failure shapes a caller reads off the result body.
 """
 
 from __future__ import annotations
 
+import codecs
 import os
-import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -45,24 +45,6 @@ _PREVIEW_CHARS = 25 * 1024
 _ARTIFACT_MIME = "text/plain; charset=utf-8"
 #: Longest progress chunk forwarded to the context's progress sink.
 _PROGRESS_CHUNK_CHARS = 12_000
-
-_BASH_INTERCEPTOR_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"^\s*cat\s+(?![-<])"), "Use the `read` tool instead of `cat <file>`."),
-    (re.compile(r"^\s*(grep|rg)\s+"), "Use the `grep` tool instead of grep/rg."),
-    (re.compile(r"^\s*sed\s+(-i|--in-place)"), "Use the `edit` tool instead of sed -i."),
-    (re.compile(r"^\s*find\s+"), "Use the `glob` tool instead of find."),
-)
-_SHELL_SEGMENT_SPLIT = re.compile(r"&&|\|\||;|\|")
-
-
-def _check_bash_interception(command: str) -> str | None:
-    # ponytail: naive split on shell operators ignores quoting, so a quoted
-    # "a && cat f" can false-positive; use a real shell tokenizer if that matters.
-    for segment in _SHELL_SEGMENT_SPLIT.split(command):
-        for pattern, message in _BASH_INTERCEPTOR_RULES:
-            if pattern.match(segment):
-                return f"Blocked: {message}\n\nOriginal command: {command}"
-    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,15 +140,17 @@ def _progress_sink(context: ToolContext) -> Callable[[str, bytes], None] | None:
         return None
     run_id = context.run_id
     invocation_id = context.invocation_id
+    decoders = {stream: codecs.getincrementaldecoder("utf-8")(errors="replace") for stream in ("stdout", "stderr")}
 
     def on_output(stream_name: str, chunk: bytes) -> None:
-        text = chunk.decode("utf-8", errors="replace").replace("\r\n", "\n")
-        payload: dict[str, object] = {"stream": stream_name, "text": text[:_PROGRESS_CHUNK_CHARS]}
-        if run_id:
-            payload["run_id"] = run_id
-        if invocation_id:
-            payload["invocation_id"] = invocation_id
-        emit(payload)
+        text = decoders[stream_name].decode(chunk).replace("\r\n", "\n")
+        for start in range(0, len(text), _PROGRESS_CHUNK_CHARS):
+            payload: dict[str, object] = {"stream": stream_name, "text": text[start : start + _PROGRESS_CHUNK_CHARS]}
+            if run_id:
+                payload["run_id"] = run_id
+            if invocation_id:
+                payload["invocation_id"] = invocation_id
+            emit(payload)
 
     return on_output
 
@@ -184,11 +168,6 @@ class ShellExecTool:
         workspace = context.require_workspace()
         args = ShellExecArgs.model_validate(dict(call.arguments))
         command_text = args.command
-        # Interception is a pre-flight refusal: a refused command never reaches the lease.
-        intercepted = _check_bash_interception(command_text)
-        if intercepted is not None:
-            raise ValueError(intercepted)
-
         workspace_root = Path(workspace).resolve()
         if not workspace_root.exists() or not workspace_root.is_dir():
             raise ValueError("shell_exec workspace must be an existing directory")

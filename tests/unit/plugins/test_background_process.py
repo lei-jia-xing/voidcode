@@ -397,7 +397,7 @@ def test_start_of_a_cancelled_call_launches_nothing(tmp_path: Path) -> None:
     result = _invoke({"op": "start", "command": "serve"}, tmp_path, services, abort_signal=_AbortSignal(cancelled=True))
 
     assert result.status == "error"
-    assert "aborted before launching the process" in (result.error or "")
+    assert "aborted before execution" in (result.error or "")
     assert result.execution is not None and result.execution.cancellation_signalled is True
     assert result.execution.side_effect_state == "settled"
     # The refusal is pre-flight: no process was started and no identity was written.

@@ -55,20 +55,20 @@ class RoutedTurnProvider:
 
     ``build`` is the owning adapter's wire factory (it knows the endpoint, the
     credential and the tool-feedback rules of that gateway); ``RoutedTurnProvider``
-    knows only the table. Sub-providers are built lazily per routed model and
-    cached per model. Cache construction is serialized to avoid losing an owned
+    knows only the table. Sub-providers are built lazily per protocol and
+    cached per protocol. Cache construction is serialized to avoid losing an owned
     SDK client and connection pool.
 
     ``model_map`` aliases resolve here, before dispatch, so a routed model always
-    reaches its wire under the name the table routed: only the chat wire applies
-    the map on its own.
+    reaches its wire under the name the table routed. Gateway factories remove
+    the alias map from native chat configs to prevent a second lookup.
     """
 
     name: str
     routing: WireRouting
-    build: Callable[[str, RoutedWire], StreamableTurnProvider]
+    build: Callable[[RoutedWire], StreamableTurnProvider]
     model_map: Mapping[str, str] = field(default_factory=dict)
-    _providers: dict[str, StreamableTurnProvider] = field(default_factory=dict, compare=False, repr=False)
+    _providers: dict[RoutedWire, StreamableTurnProvider] = field(default_factory=dict, compare=False, repr=False)
     _lock: Lock = field(default_factory=Lock, compare=False, repr=False)
 
     def route_for(self, request: ProviderTurnRequest) -> tuple[str, RoutedWire | None]:
@@ -95,14 +95,13 @@ class RoutedTurnProvider:
                 fallback_allowed=True,
             )
         with self._lock:
-            provider = self._providers.get(model)
+            provider = self._providers.get(route)
             if provider is None:
-                provider = self.build(model, route)
-                self._providers[model] = provider
+                provider = self.build(route)
+                self._providers[route] = provider
         if request.model_name and model != request.model_name:
-            # The routed model is the identity the sub-provider was built for, and
-            # only the chat wire applies ``model_map`` itself: every other wire
-            # would otherwise send the alias upstream.
+            # Every protocol receives the resolved model identity; the native
+            # Anthropic and Google adapters do not apply gateway aliases.
             request = replace(request, model_name=model)
         return provider, request
 

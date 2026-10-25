@@ -151,7 +151,7 @@ def test_zen_google_route_preserves_configured_timeout():
     from voidcode.capabilities.providers.native.opencode import OpenCodeZenModelProvider
 
     gateway = OpenCodeZenModelProvider(config=ProviderEndpointConfig(api_key="gateway-key", timeout_seconds=17))
-    provider = gateway._wire("model", "google-generative-ai")
+    provider = gateway._wire("google-generative-ai")
     assert provider.config.timeout_seconds == 17
     assert provider.config.auth.api_key == "gateway-key"
 
