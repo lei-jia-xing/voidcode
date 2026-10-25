@@ -67,7 +67,7 @@ def test_file_tools_use_any_optional_workspace_provider(tmp_path: Path, mode: st
         "endCharacter": 2,
         "newText": "Z",
         "expectedHash": hashlib.sha256(b"abc\n").hexdigest(),
-        "expectedVersion": 1,
+        "version": 1,
     }
     server = OpenAILoopbackServer(
         [

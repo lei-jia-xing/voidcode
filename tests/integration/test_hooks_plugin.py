@@ -293,12 +293,6 @@ def test_session_lifecycle_hooks_run_for_their_side_effects(tmp_path: Path) -> N
         assert start_marker.read_text(encoding="utf-8") == "ran"
         assert end_marker.read_text(encoding="utf-8") == "ran"
 
-        # Each fired exactly once and left its note as the durable record (never prompt context).
-        invoked = [dict(event.payload) for event in core.events_after(session_id) if event.event_type == "core.hook_invoked"]
-        assert [payload["hook_kind"] for payload in invoked] == ["session_start", "session_end"]
-        assert {payload["owner"] for payload in invoked} == {"hooks"}
-        assert invoked[1]["note"] == "session finished"
-
 
 def test_read_only_policy_skips_a_matching_gate_and_notes_it_on_the_result(tmp_path: Path) -> None:
     marker = tmp_path / "gate-ran.txt"

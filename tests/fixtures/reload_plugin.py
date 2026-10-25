@@ -560,14 +560,17 @@ class OverlayCommand:
 def _session_start(lifecycle, context, services):
     if lifecycle.phase != "start":
         raise ValueError("session_start hook received a non-start lifecycle point")
+    with (context.workspace / "lifecycle.log").open("a", encoding="utf-8") as f:
+        f.write(f"start:{{lifecycle.run_id}}\\n")
     return f"started {{lifecycle.run_id}}"
 
 
 def _session_end(lifecycle, context, services):
     if lifecycle.phase != "end":
         raise ValueError("session_end hook received a non-end lifecycle point")
+    with (context.workspace / "lifecycle.log").open("a", encoding="utf-8") as f:
+        f.write(f"end:{{lifecycle.status}}\\n")
     return f"ended {{lifecycle.status}}"
-
 
 def _pre_tool(intent, context, services):
     if {pre_tool_gate!r} == "explode":

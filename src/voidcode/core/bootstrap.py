@@ -227,7 +227,7 @@ def adopt_generation(*, workspace: Path, state_dir: Path, session_id: str | None
                     status = session.status
                 drafts.append(
                     EventDraft(
-                        EventType.REVISION_ADOPTED,
+                        EventType.ACTIVATION_COMMITTED,
                         "core",
                         "core",
                         {

@@ -249,7 +249,7 @@ def test_activation_is_blocked_by_a_waiting_session(tmp_path: Path) -> None:
         assert "blocked" in (outcome.error or "")
         assert "sess-parked" in (outcome.error or "")
         assert core.revision_id == before
-        blocked_events = [event for event in _events(core, idle.session_id) if event.event_type == "core.activation_blocked"]
+        blocked_events = [event for event in _events(core, idle.session_id) if event.event_type == "core.activation_failed"]
         assert blocked_events and blocked_events[0].payload["blockers"]
 
         # Nothing was cancelled: the parked approval still resolves and completes on v1.

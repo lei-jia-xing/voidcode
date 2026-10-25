@@ -148,7 +148,6 @@ def _wire_object(value: object, what: str) -> Mapping[str, object]:
 _PARKED_INTERVENING_TYPES = frozenset(
     {
         EventType.COMMAND_COMPLETED,
-        EventType.COMMAND_INTENT,
         EventType.CONFIRMATION_REQUESTED,
         EventType.CONFIRMATION_DECIDED,
         EventType.CHILD_SPAWNED,
@@ -162,7 +161,6 @@ _PARKED_INTERVENING_TYPES = frozenset(
         EventType.ACTIVATION_REQUESTED,
         EventType.ACTIVATION_COMMITTED,
         EventType.ACTIVATION_FAILED,
-        EventType.ACTIVATION_BLOCKED,
     }
 )
 
@@ -429,6 +427,7 @@ class _Execution:
     cursor: _Cursor
     events: list[StoredEvent]
     run_id: str
+    lifecycle_started: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -886,7 +885,7 @@ class Core:
                     continue
                 if event.event_type == EventType.ACTIVATION_REQUESTED:
                     requested.add(request_id)
-                elif event.event_type in {EventType.ACTIVATION_COMMITTED, EventType.ACTIVATION_FAILED, EventType.ACTIVATION_BLOCKED}:
+                elif event.event_type in {EventType.ACTIVATION_COMMITTED, EventType.ACTIVATION_FAILED}:
                     answered.add(request_id)
             for request_id in sorted(requested - answered):
                 blockers.append({"session_id": session.session_id, "status": session.status, "reason": "pending_activation", "detail": request_id})
@@ -1164,7 +1163,7 @@ class Core:
             with self._aborts_lock:
                 self._session_aborts[session_id] = abort
             try:
-                self._commit(execution, "running", "ready", EventDraft(EventType.TOOL_DEFERRED_STARTED, "kernel", "plugin", {}))
+                self._commit(execution, "running", "ready")
                 self._drive(execution, max_steps=32)
             finally:
                 with self._aborts_lock:
@@ -1557,30 +1556,6 @@ class Core:
             logical_turn=uuid4().hex,
         )
         with self._dispatch(f"command:{name}"):
-            latest_sess = self.store.session(session_id)
-            intent_event = EventDraft(
-                event_type=EventType.COMMAND_INTENT,
-                source="client",
-                actor=context.actor,
-                payload={
-                    "name": name,
-                    "arguments": json_wire_object(arguments),
-                    "invocation_id": inv_id,
-                    "owner": cmd_desc.owner,
-                },
-            )
-            self.store.commit_staged(
-                session_id,
-                expected_sequence=latest_sess.last_event_sequence,
-                expected_run_id=latest_sess.run_id,
-                run_id=latest_sess.run_id or run_id,
-                revision_id=self.revision_id,
-                events=(intent_event,),
-                status=latest_sess.status,
-                checkpoint_kind=None,
-                checkpoint_payload=None,
-            )
-
             cmd_result, staged_state, staged_events, staged_continuations, staged_cancellations, staged_budget = self.plugin_runtime.invoke_command(
                 session_id,
                 name,
@@ -2127,7 +2102,7 @@ class Core:
                 continue
             if event.event_type == EventType.ACTIVATION_REQUESTED:
                 request = payload
-            elif event.event_type in {EventType.ACTIVATION_COMMITTED, EventType.ACTIVATION_FAILED, EventType.ACTIVATION_BLOCKED}:
+            elif event.event_type in {EventType.ACTIVATION_COMMITTED, EventType.ACTIVATION_FAILED}:
                 answered.add(request_id)
         if request is None:
             return None
@@ -2153,14 +2128,13 @@ class Core:
         if checkpoint is not None and isinstance(checkpoint.payload, Mapping):
             cursor = _Cursor.model_validate(json_wire_object(checkpoint.payload))
         execution = _Execution(session, cursor, list(self.store.events(session_id)), session.run_id or request_id)
-        kind = EventType.ACTIVATION_BLOCKED if blockers else EventType.ACTIVATION_FAILED
         try:
             self._commit(
                 execution,
                 session.status,
                 checkpoint.kind if checkpoint is not None else "ready",
                 EventDraft(
-                    kind,
+                    EventType.ACTIVATION_FAILED,
                     "kernel",
                     "kernel",
                     {
@@ -4031,18 +4005,11 @@ class Core:
         status: str = "",
         error: str | None = None,
     ) -> tuple[EventDraft, ...]:
-        """Notify declared lifecycle hooks and return one durable record per owner.
-
-        Lifecycle hooks are notifications: a note is recorded, and a hook that fails or times out
-        is recorded as failed — neither can change what the run itself decided, and neither is
-        silent. They are fired once per run because the record they leave is the guard.
-        """
+        """Notify declared lifecycle hooks."""
         hooks = [owner for owner, hook_kind in snapshot.plugin_runtime.lifecycle_hooks if hook_kind == kind]
-        events: list[EventDraft] = []
         for owner in hooks:
-            payload: dict[str, object] = {"hook_kind": kind, "owner": owner, "run_id": execution.run_id}
             try:
-                note = snapshot.plugin_runtime.run_lifecycle(
+                snapshot.plugin_runtime.run_lifecycle(
                     owner,
                     kind,
                     session_id=execution.session.session_id,
@@ -4051,22 +4018,9 @@ class Core:
                     status=status,
                     error=error,
                 )
-            except Exception as exc:
-                payload["error"] = f"{type(exc).__name__}: {exc}"
-            else:
-                if note:
-                    payload["note"] = note
-            payload["logical_turn"] = execution.cursor.logical_turn
-            events.append(EventDraft(EventType.HOOK_INVOKED, "plugin", "plugin", payload))
-        return tuple(events)
-
-    def _lifecycle_fired(self, execution: _Execution, kind: str) -> bool:
-        return any(
-            event.event_type == EventType.HOOK_INVOKED
-            and dict(event.payload).get("hook_kind") == kind
-            and dict(event.payload).get("run_id") == execution.run_id
-            for event in execution.events
-        )
+            except Exception:
+                pass
+        return ()
 
     def _gate_denial(
         self,
@@ -4190,12 +4144,6 @@ class Core:
                             execution,
                             "running",
                             "ready",
-                            EventDraft(
-                                EventType.TOOL_DEFERRED_CLAIMED,
-                                "kernel",
-                                "plugin",
-                                {"request_id": request.payload["request_id"], "depth": cursor.deferred_depth},
-                            ),
                             reserve_root=True,
                         )
                     except RootBudgetExhausted:
@@ -4259,10 +4207,9 @@ class Core:
                 self._merge_child_messages(execution)
 
                 with self._dispatch("provider") as snapshot:
-                    if not self._lifecycle_fired(execution, "session_start"):
-                        started = self._lifecycle_events(execution, snapshot, "session_start")
-                        if started:
-                            self._commit(execution, "running", "ready", *started)
+                    if not execution.lifecycle_started:
+                        self._lifecycle_events(execution, snapshot, "session_start")
+                        execution.lifecycle_started = True
                     model = snapshot.config.model.model
                     if model is None:
                         return self._fail(execution, MODEL_CONFIGURATION_GUIDANCE)
@@ -4531,12 +4478,6 @@ class Core:
             execution,
             "interrupted",
             "interrupted",
-            EventDraft(
-                EventType.UPGRADE_PAUSED,
-                "kernel",
-                "kernel",
-                {"upgrade_id": intent, "run_id": execution.run_id, "logical_turn": execution.cursor.logical_turn},
-            ),
         )
         return self._result(execution, error=f"run paused for upgrade {intent}", stop_cause="shutdown")
 
@@ -5029,23 +4970,11 @@ class Core:
             self._abort.set_cancelled(False)
             cursor.resume_intent = ""
             execution = _Execution(session, cursor, list(self.store.events(session_id)), session.run_id or intent)
-            cause = "activation"
-            for event in reversed(execution.events):
-                if event.event_type == EventType.UPGRADE_PAUSED and event.payload.get("upgrade_id") == intent:
-                    cause = "upgrade"
-                    break
-                if event.event_type == EventType.ACTIVATION_REQUESTED and event.payload.get("request_id") == intent:
-                    cause = "activation"
-                    break
-            consumed: dict[str, object] = {"intent": intent, "cause": cause}
-            if cause == "activation":
-                consumed["request_id"] = intent
             try:
                 self._commit(
                     execution,
                     "running",
                     "ready",
-                    EventDraft(EventType.CONTINUATION_CONSUMED, "kernel", "kernel", consumed),
                 )
             except StoreConflict:
                 return
@@ -5084,7 +5013,7 @@ class Core:
                 outcome = None
             elif event.event_type == EventType.ACTIVATION_COMMITTED and candidate == request_id:
                 outcome = ("committed", str(payload.get("to_revision_id", "")))
-            elif outcome is None and candidate == request_id and event.event_type in {EventType.ACTIVATION_FAILED, EventType.ACTIVATION_BLOCKED}:
+            elif outcome is None and candidate == request_id and event.event_type == EventType.ACTIVATION_FAILED:
                 outcome = ("refused", str(payload.get("error", "")))
         if request_id is None or outcome is None:
             return None

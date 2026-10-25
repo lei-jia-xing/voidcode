@@ -214,7 +214,7 @@ def test_apply_workspace_edit_version_match_and_stale_refusal(tmp_path: Path) ->
                         "endCharacter": 6,
                         "newText": "bye",
                         "expectedHash": content_hash,
-                        "expectedVersion": 1,
+                        "version": 1,
                     }
                 ],
             ),
@@ -234,7 +234,7 @@ def test_apply_workspace_edit_version_match_and_stale_refusal(tmp_path: Path) ->
                         "endCharacter": 4,
                         "newText": "zzz",
                         "expectedHash": hashlib.sha256(b"bye\n").hexdigest(),
-                        "expectedVersion": 99,
+                        "version": 99,
                     }
                 ],
             ),

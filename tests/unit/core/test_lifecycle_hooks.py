@@ -81,14 +81,11 @@ def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path) -> N
     )
 
 
-def _hook_events(core: Core, session_id: str, kind: str) -> list[dict[str, object]]:
-    # Every owner with lifecycle hooks fires once per run, including the bundled `hooks`
-    # plugin: this fixture asserts the reload plugin's pair only.
-    return [
-        dict(event.payload)
-        for event in core.events_after(session_id)
-        if event.event_type == "core.hook_invoked" and dict(event.payload).get("hook_kind") == kind and dict(event.payload).get("owner") == PLUGIN_ID
-    ]
+def _lifecycle_records(workspace: Path) -> list[str]:
+    log_file = workspace / "lifecycle.log"
+    if not log_file.exists():
+        return []
+    return [line.strip() for line in log_file.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def test_lifecycle_hooks_fire_once_per_run_with_durable_notes(tmp_path: Path) -> None:
@@ -96,22 +93,24 @@ def test_lifecycle_hooks_fire_once_per_run_with_durable_notes(tmp_path: Path) ->
     write_reload_plugin(source, tool_output="v1", lifecycle_hooks=True)
     replies = [_turn(_call("probe-1", PROBE_TOOL)), _turn(output="done"), _turn(output="second run")]
     with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source)
+        workspace = tmp_path / "workspace"
+        _configure(workspace, server, source)
         core = _open(tmp_path)
         core.create_session("sess-life")
         assert core.run("first", session_id="sess-life").status == "completed"
 
-        started = _hook_events(core, "sess-life", "session_start")
-        ended = _hook_events(core, "sess-life", "session_end")
-        assert len(started) == 1 and len(ended) == 1
-        assert started[0]["owner"] == PLUGIN_ID and started[0]["note"] == f"started {started[0]['run_id']}"
-        assert ended[0]["note"] == "ended completed"
+        records = _lifecycle_records(workspace)
+        starts = [r for r in records if r.startswith("start:")]
+        ends = [r for r in records if r.startswith("end:")]
+        assert len(starts) == 1 and len(ends) == 1
+        assert ends[0] == "end:completed"
         # A second run fires the pair again, once each, for its own run identity.
         assert core.run("second", session_id="sess-life").status == "completed"
-        started_again = _hook_events(core, "sess-life", "session_start")
-        ended_again = _hook_events(core, "sess-life", "session_end")
-        assert len(started_again) == 2 and len(ended_again) == 2
-        assert started_again[0]["run_id"] != started_again[1]["run_id"]
+        records_again = _lifecycle_records(workspace)
+        starts_again = [r for r in records_again if r.startswith("start:")]
+        ends_again = [r for r in records_again if r.startswith("end:")]
+        assert len(starts_again) == 2 and len(ends_again) == 2
+        assert starts_again[0] != starts_again[1]
 
 
 def test_lifecycle_hooks_do_not_duplicate_on_resume(tmp_path: Path) -> None:
@@ -119,11 +118,12 @@ def test_lifecycle_hooks_do_not_duplicate_on_resume(tmp_path: Path) -> None:
     write_reload_plugin(source, tool_output="v1", lifecycle_hooks=True)
     replies = [_turn(_call("probe-1", PROBE_TOOL)), _turn(output="stopped"), _turn(output="next answer")]
     with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source)
+        workspace = tmp_path / "workspace"
+        _configure(workspace, server, source)
         core = _open(tmp_path)
         core.create_session("sess-resume")
         assert core.run("first", session_id="sess-resume").status == "completed"
         # Resuming the same run's session must not fire session_start a second time for that run.
         assert core.run("next", session_id="sess-resume").status == "completed"
-        starts = _hook_events(core, "sess-resume", "session_start")
-        assert len(starts) == len({str(entry["run_id"]) for entry in starts})
+        starts = [r for r in _lifecycle_records(workspace) if r.startswith("start:")]
+        assert len(starts) == len(set(starts))

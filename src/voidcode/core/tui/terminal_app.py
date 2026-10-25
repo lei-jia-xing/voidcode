@@ -533,16 +533,12 @@ class CoreTuiApp:
                 rows.append(f"\x1b[31m✖ Tool {name} failed:\x1b[0m {error}")
             else:
                 rows.append(f"\x1b[32m✔ Tool {name}:\x1b[0m {body}")
-        elif etype in (EventType.COMMAND_COMPLETED, EventType.COMMAND_INTENT):
+        elif etype == EventType.COMMAND_COMPLETED:
             raw_command_result = payload.get("result")
             command_result: dict[str, Any] = raw_command_result if isinstance(raw_command_result, dict) else {}
             raw_name = str(payload.get("name") or "command")
-            name = _safe(raw_name)
-            if etype == EventType.COMMAND_INTENT:
-                rows.append(f"\x1b[36m▷ Command /{name} started\x1b[0m")
-            else:
-                rows.extend(_command_result_rows(raw_name, command_result))
-        elif etype in (EventType.ACTIVATION_COMMITTED, EventType.REVISION_ADOPTED):
+            rows.extend(_command_result_rows(raw_name, command_result))
+        elif etype == EventType.ACTIVATION_COMMITTED:
             # The displayed generation changed: the command catalog is
             # refetched and anything captured under the previous revision is
             # dropped — never relabelled, never retried. Optional views are

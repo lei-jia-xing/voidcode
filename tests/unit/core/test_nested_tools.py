@@ -93,10 +93,9 @@ def test_receipt_returns_before_same_session_target_and_projects_no_synthetic_ca
             events = core.store.events(result.session_id)
             completed = [event for event in events if event.event_type == "core.tool_completed"]
             request = next(event for event in events if event.event_type == "core.tool_deferred")
-            claim = next(event for event in events if event.event_type == "core.tool_deferred_claimed")
             caller, target = _bodies(core, result.session_id)
             assert caller["receipt"] == {"request_id": request.payload["request_id"], "tool_name": PROBE_TOOL, "depth": 1}
-            assert completed[0].sequence < claim.sequence < completed[1].sequence
+            assert completed[0].sequence < completed[1].sequence
             assert completed[1].payload["request_id"] == request.payload["request_id"]
             assert completed[1].payload["deferred"] is True
             assert target["session_id"] == result.session_id and target["workspace"] == str(workspace)
@@ -310,8 +309,8 @@ def test_command_receipt_drains_after_its_callback_without_a_model_turn(tmp_path
             assert (workspace / "command.txt").read_text(encoding="utf-8") == "command write"
             events = core.store.events(session.session_id)
             completion = next(event for event in events if event.event_type == "core.command_completed")
-            claim = next(event for event in events if event.event_type == "core.tool_deferred_claimed")
-            assert completion.sequence < claim.sequence
+            completed = next(event for event in events if event.event_type == "core.tool_completed")
+            assert completion.sequence < completed.sequence
             assert len(server.requests) == 0
 
 

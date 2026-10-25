@@ -42,8 +42,7 @@ class _TextEdit(BaseModel):
     endCharacter: int = Field(ge=1)
     newText: str
     expectedHash: str = Field(description="SHA-256 content hash of the target file from read.")
-    expectedVersion: int | None = Field(default=None, description="Must match the active document-state provider's version when supplied.")
-    version: int | None = Field(default=None, description="LSP documentChanges version; checked when supplied.")
+    version: int | None = Field(default=None, description="LSP document version; must match the active document-state provider when supplied.")
 
 
 class _WorkspaceEditArgs(BaseModel):
@@ -172,12 +171,12 @@ class ApplyWorkspaceEditTool:
                     return answer
                 document_states[path] = answer
             document_state: DocumentState | None = document_states[path]
-            requested_version = edit.expectedVersion if edit.expectedVersion is not None else edit.version
+            requested_version = edit.version
             if requested_version is not None and document_state is None:
                 return _diagnostic_failure(
                     self.definition.name,
                     message=(
-                        f"apply_workspace_edit requested expectedVersion {requested_version} for {edit.path}, "
+                        f"apply_workspace_edit requested version {requested_version} for {edit.path}, "
                         "but no document-state provider has a version for it (fail-closed)."
                     ),
                     error_kind="stale_edit",

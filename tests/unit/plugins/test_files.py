@@ -778,7 +778,7 @@ def test_apply_explicit_utf8_coordinates_win_over_negotiated_utf16(tmp_path: Pat
                         "endCharacter": 7,
                         "newText": "B",
                         "expectedHash": content_hash,
-                        "expectedVersion": 3,
+                        "version": 3,
                     }
                 ],
             },
@@ -816,7 +816,7 @@ def test_apply_omitted_encoding_uses_negotiated_default(tmp_path: Path) -> None:
                         "endCharacter": 5,
                         "newText": "B",
                         "expectedHash": content_hash,
-                        "expectedVersion": 3,
+                        "version": 3,
                     }
                 ],
             },
@@ -853,7 +853,7 @@ def test_apply_matched_version_and_hash_only_succeed_with_correct_bytes(tmp_path
                         "endCharacter": 6,
                         "newText": "omega",
                         "expectedHash": first_hash,
-                        "expectedVersion": 1,
+                        "version": 1,
                     }
                 ],
             },
@@ -1050,7 +1050,7 @@ def test_write_failure_preserves_original_and_removes_temp_file(tmp_path: Path, 
 
 @pytest.mark.parametrize(
     "invalid_fields",
-    [{"startLine": True}, {"startCharacter": "1"}, {"expectedVersion": False}, {"unexpected": "ignored-before"}],
+    [{"startLine": True}, {"startCharacter": "1"}, {"version": False}, {"unexpected": "ignored-before"}],
 )
 def test_workspace_edit_rejects_invalid_batch_before_writing(tmp_path: Path, invalid_fields: dict) -> None:
     from voidcode.capabilities.files.apply_workspace_edit import ApplyWorkspaceEditTool
