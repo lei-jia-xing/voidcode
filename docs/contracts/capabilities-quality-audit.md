@@ -2879,3 +2879,17 @@ passed, targeted Ruff/ty passed. Searches found no remaining core imports in
 capabilities or plugins. CodeGraph synchronized. No tests added. The newly
 shared renderer remains explicitly partial for cursor/projection boundary
 reconciliation; moving it does not establish completion of read_tool review.
+
+### Transcript byte cuts: honor UTF-8 page limits
+
+utf8_cut promised the largest boundary not exceeding the byte budget but moved
+forward across continuation bytes. It now moves backward; only a budget smaller
+than the first complete character uses the existing one-character progress
+exception. Updated the existing weak boundary assertion to require the correct
+three-byte cut instead of allowing an oversized six-byte cut. No new tests.
+
+Validation: 69 existing renderer/file tests passed on the isolated baseline;
+manual cut checks and fourteen multilingual/emoji page sizes reconstructed a
+complete event block exactly, stayed within each >=4-byte budget, and advanced
+every cursor. Ruff/format and targeted ty passed; CodeGraph synchronized. The
+independent uncommitted event rendering edit is still preserved and excluded.

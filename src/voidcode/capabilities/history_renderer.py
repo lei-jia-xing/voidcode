@@ -112,12 +112,12 @@ def iter_event_blocks(events: Iterable[HistoryEvent]) -> Iterator[str]:
 
 
 def utf8_cut(raw: bytes, limit: int) -> int:
-    """Largest cut <= limit that ends on a UTF-8 boundary (always at least one character)."""
+    """Largest UTF-8 boundary <= limit, or the first character when it cannot fit."""
     cut = min(limit, len(raw))
     if cut >= len(raw):
         return len(raw)
-    while cut < len(raw) and raw[cut] & 0xC0 == 0x80:
-        cut += 1
+    while cut > 0 and raw[cut] & 0xC0 == 0x80:
+        cut -= 1
     if cut <= 0:
         cut = 1
         while cut < len(raw) and raw[cut] & 0xC0 == 0x80:

@@ -63,7 +63,7 @@ def test_utf8_cut() -> None:
     assert len(raw) == 6
     cut = utf8_cut(raw, 4)
     # cut should snap to utf-8 boundary
-    assert cut in (3, 6)
+    assert cut == 3
     assert raw[:cut].decode("utf-8")
 
 
