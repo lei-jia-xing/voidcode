@@ -91,7 +91,7 @@ def test_file_tools_use_any_optional_workspace_provider(tmp_path: Path, mode: st
             ),
             encoding="utf-8",
         )
-        with open_core(workspace, state_dir=tmp_path / "state", auto_drain=False) as core:
+        with open_core(workspace, state_dir=tmp_path / "state") as core:
             assert core.plugin_runtime.plugin_ids == (() if mode == "absent" else ("alternate-provider",))
             result = core.run("Read a rule and apply a version-constrained edit")
             assert result.status == "completed", result.error

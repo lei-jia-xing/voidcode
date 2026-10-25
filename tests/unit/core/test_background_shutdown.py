@@ -99,5 +99,5 @@ def test_failed_start_joins_worker_before_closing_store_and_releases_workspace_l
             release.set()
             assert finished.wait(timeout=2)
     assert errors == []
-    reopened = open_core(workspace, state_dir=tmp_path / "state", auto_drain=False)
+    reopened = open_core(workspace, state_dir=tmp_path / "state")
     reopened.close()

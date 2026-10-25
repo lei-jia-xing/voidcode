@@ -60,7 +60,6 @@ def open_core(
     workspace: Path,
     *,
     state_dir: Path | None = None,
-    auto_drain: bool = True,
 ) -> Core:
     workspace = workspace.resolve(strict=True)
     if not workspace.is_dir():
@@ -127,7 +126,6 @@ def open_core(
         revision_payload=admission.revision_payload,
         admission=admission,
         admits=admit_current,
-        auto_drain=auto_drain,
     )
 
 

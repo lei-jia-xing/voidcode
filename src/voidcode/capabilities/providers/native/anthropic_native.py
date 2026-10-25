@@ -185,7 +185,7 @@ def _usage(payload: Mapping[str, object]) -> ProviderTokenUsage | None:
     # the inclusive prompt total every other wire already reports
     # (``ProviderTokenUsage.input_tokens``); ``cache_creation_input_tokens`` stays a
     # separate additive bucket.
-    input_tokens = uncached_input + cache_read if uncached_input is not None and cache_read is not None else uncached_input
+    input_tokens = uncached_input + cache_read if uncached_input is not None and cache_read is not None else None
     return ProviderTokenUsage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
@@ -219,9 +219,7 @@ def _merge_usage(previous: ProviderTokenUsage | None, current: ProviderTokenUsag
         return previous
     uncached = current.uncached_input_tokens if current.uncached_input_tokens is not None else previous.uncached_input_tokens
     cache_read = current.cache_read_tokens if current.cache_read_tokens is not None else previous.cache_read_tokens
-    input_tokens = (
-        uncached + cache_read if uncached is not None and cache_read is not None else (uncached if uncached is not None else previous.input_tokens)
-    )
+    input_tokens = uncached + cache_read if uncached is not None and cache_read is not None else None
     output_tokens = current.output_tokens if current.output_tokens is not None else previous.output_tokens
     cache_write = current.cache_write_tokens if current.cache_write_tokens is not None else previous.cache_write_tokens
     return ProviderTokenUsage(

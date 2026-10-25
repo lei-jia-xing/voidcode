@@ -61,7 +61,7 @@ def test_zero_plugins_read_write_execute_and_restart(tmp_path: Path, monkeypatch
     worker.start()
     try:
         workspace = _workspace(tmp_path, server, mode="yolo")
-        with open_core(workspace, state_dir=tmp_path / "state", auto_drain=False) as core:
+        with open_core(workspace, state_dir=tmp_path / "state") as core:
             assert core.plugin_runtime.plugin_ids == ()
             result = core.run("Read, write, and execute.")
             assert result.status == "completed", result.error
@@ -72,7 +72,7 @@ def test_zero_plugins_read_write_execute_and_restart(tmp_path: Path, monkeypatch
             assert [item.tool_name for item in completed] == ["read", "write", "shell_exec"]
             assert all(isinstance(item, ToolSuccess) for item in completed), completed
             assert (workspace / "result.txt").read_text() == "created\n"
-        with open_core(workspace, state_dir=tmp_path / "state", auto_drain=False) as core:
+        with open_core(workspace, state_dir=tmp_path / "state") as core:
             assert core.plugin_runtime.plugin_ids == ()
             result = core.run("Continue", session_id=session_id)
             assert result.status == "completed", result.error
@@ -91,7 +91,7 @@ def test_zero_plugins_write_still_requires_approval(tmp_path: Path) -> None:
     worker.start()
     try:
         workspace = _workspace(tmp_path, server, mode="ask")
-        with open_core(workspace, state_dir=tmp_path / "state", auto_drain=False) as core:
+        with open_core(workspace, state_dir=tmp_path / "state") as core:
             result = core.run("Write a file")
             assert result.status == "waiting", result.error
             assert not (workspace / "result.txt").exists()

@@ -43,7 +43,6 @@ _COMMANDS = frozenset(
         "run",
         "resume",
         "show",
-        "upgrade",
         "create-session",
         "sessions",
         "catalog",
@@ -213,15 +212,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     serve.add_argument("--port", type=int, default=8000, metavar="PORT", help="Port, 0 for an ephemeral one (default: 8000)")
     serve.add_argument("--bearer-token", default=None, metavar="TOKEN", help="API bearer token, generated when absent")
     serve.add_argument("--open", dest="open_browser", action="store_true", help="Open the served web client in a browser")
-    upgrade = commands.add_parser(
-        "upgrade",
-        help="Upgrade guidance (VoidCode is single-process; restart to upgrade)",
-        description="VoidCode is a local single-process runtime. When code or configuration updates, simply restart the process.",
-    )
-    upgrade.add_argument("what", nargs="*", help=argparse.SUPPRESS)
-    upgrade.add_argument("--candidate", default=None, help=argparse.SUPPRESS)
-    upgrade.add_argument("--session-id", default=None, help=argparse.SUPPRESS)
-    upgrade.add_argument("--timeout", type=float, default=300.0, help=argparse.SUPPRESS)
     normalized = _normalized_argv(argv if argv is not None else sys.argv[1:])
     args = parser.parse_args(normalized)
     if args.command is not None and (args.server is not None or args.token is not None or args.tui_session_id is not None):
@@ -251,17 +241,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         from .bootstrap import open_core, state_directory
 
         directory = args.state_dir if args.state_dir is not None else state_directory(workspace)
-        if args.command == "upgrade":
-            print(
-                json.dumps(
-                    {
-                        "status": "ok",
-                        "message": "VoidCode is a local single-process runtime. To upgrade, update your installation and restart the process.",
-                    },
-                    ensure_ascii=False,
-                )
-            )
-            return 0
         if args.command == "serve":
             from .transport.server import serve_core
 

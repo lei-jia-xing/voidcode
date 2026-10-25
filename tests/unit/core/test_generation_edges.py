@@ -95,7 +95,7 @@ def test_fact_owners_are_frozen_on_the_event_across_restart_with_changed_source(
             ),
             encoding="utf-8",
         )
-        core = open_core(workspace, state_dir=tmp_path / "state", auto_drain=False)
+        core = open_core(workspace, state_dir=tmp_path / "state")
         core.create_session("s")
         assert core.run("one", session_id="s").status == "completed"
         old = next(event for event in core.events_after("s") if event.event_type == "core.run_completed")
@@ -105,7 +105,7 @@ def test_fact_owners_are_frozen_on_the_event_across_restart_with_changed_source(
 
         # The source now subscribes to a different fact, under the same restored generation.
         _write(source, OBSERVER.format(facts=("usage",)))
-        core = open_core(workspace, state_dir=tmp_path / "state", auto_drain=False)
+        core = open_core(workspace, state_dir=tmp_path / "state")
         assert core.revision_id == revision
         assert core._eligible_observers(old) == ("observer",)
         assert core.run("two", session_id="s").status == "completed"
@@ -117,7 +117,7 @@ def test_fact_owners_are_frozen_on_the_event_across_restart_with_changed_source(
         core.close()
 
         # A second restart still reads the frozen owners, never the current source.
-        core = open_core(workspace, state_dir=tmp_path / "state", auto_drain=False)
+        core = open_core(workspace, state_dir=tmp_path / "state")
         assert core._eligible_observers(old) == ("observer",)
         assert core._eligible_observers(new_usage) == ("observer",)
         core.close()
@@ -134,14 +134,14 @@ def test_plain_restart_and_adoption_refuse_schema_mismatch(tmp_path: Path) -> No
     source = _write(workspace / "statep", STATER.format(version=1))
     _config(workspace, {"statep": {"path": "statep"}})
 
-    core = open_core(workspace, state_dir=state, auto_drain=False)
+    core = open_core(workspace, state_dir=state)
     core.create_session("s")
     assert core.invoke_command("s", "statep.touch", {}, expected_revision=core.revision_id).status == "ok"
     core.close()
 
     _write(source, STATER.format(version=2))
     try:
-        open_core(workspace, state_dir=state, auto_drain=False)
+        open_core(workspace, state_dir=state)
     except ValueError as exc:
         assert "state schema mismatch" in str(exc)
     else:  # pragma: no cover - the guard is the subject
@@ -151,7 +151,7 @@ def test_plain_restart_and_adoption_refuse_schema_mismatch(tmp_path: Path) -> No
         adopt_generation(workspace=workspace, state_dir=state, session_id="s")
 
     _write(source, STATER.format(version=1))
-    core = open_core(workspace, state_dir=state, auto_drain=False)
+    core = open_core(workspace, state_dir=state)
     assert core.invoke_command("s", "statep.touch", {}, expected_revision=core.revision_id).status == "ok"
     with pytest.raises(RuntimeError, match="another core owns this workspace"):
         adopt_generation(workspace=workspace, state_dir=state, session_id="s")
@@ -208,7 +208,7 @@ def test_confirmation_is_provenance_not_a_read_only_exemption(tmp_path: Path) ->
     workspace.mkdir()
     _write(workspace / "confirmer", CONFIRMER)
     (workspace / "voidcode.json").write_text(json.dumps({"schema_version": 1, "plugins": {"confirmer": {"path": "confirmer"}}}), encoding="utf-8")
-    core = open_core(workspace, state_dir=tmp_path / "state", auto_drain=False)
+    core = open_core(workspace, state_dir=tmp_path / "state")
     try:
         core.create_session("s")
         pending = core.invoke_command("s", "mutate.confirm", {}, expected_revision=core.revision_id)

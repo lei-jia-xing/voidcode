@@ -2,8 +2,8 @@
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass, field, fields, is_dataclass
-from typing import Literal, Protocol, runtime_checkable
+from dataclasses import asdict, dataclass, field
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import TypeAdapter
 
@@ -91,7 +91,7 @@ class StatusViewData:
     value: str
 
 
-_VIEW_ADAPTERS: dict[str, TypeAdapter[object]] = {
+_VIEW_ADAPTERS: dict[str, TypeAdapter[Any]] = {
     "notice": TypeAdapter(NoticeViewData),
     "markdown": TypeAdapter(MarkdownViewData),
     "fields": TypeAdapter(FieldsViewData),
@@ -105,17 +105,6 @@ _VIEW_ADAPTERS: dict[str, TypeAdapter[object]] = {
 MAX_VIEW_DATA_BYTES = 64 * 1024
 
 
-def _canonical_wire(value: object) -> object:
-    """Serialize a validated view model to wire JSON, including declared field defaults."""
-    if is_dataclass(value) and not isinstance(value, type):
-        return {f.name: _canonical_wire(getattr(value, f.name)) for f in fields(value)}
-    if isinstance(value, Mapping):
-        return {str(k): _canonical_wire(v) for k, v in value.items()}
-    if isinstance(value, (tuple, list)):
-        return [_canonical_wire(v) for v in value]
-    return value
-
-
 def validate_view_data(view_type: ConfirmationUIType, data: Mapping[str, object]) -> Mapping[str, object]:
     """Validate data shape matches view_type exactly, failing visibly on mismatch."""
     adapter = _VIEW_ADAPTERS.get(view_type)
@@ -127,9 +116,7 @@ def validate_view_data(view_type: ConfirmationUIType, data: Mapping[str, object]
     if len(raw_json.encode("utf-8")) > MAX_VIEW_DATA_BYTES:
         raise ValueError(f"View data exceeds {MAX_VIEW_DATA_BYTES} bytes limit")
     parsed = adapter.validate_json(raw_json, strict=True, extra="forbid")
-    canonical = _canonical_wire(parsed)
-    if not isinstance(canonical, Mapping):
-        raise ValueError(f"View data for {view_type} must serialize to an object")
+    canonical = asdict(parsed)
     return own_json_object(canonical)
 
 

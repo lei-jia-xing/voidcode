@@ -138,7 +138,6 @@ def _open(
     server: OpenAILoopbackServer,
     *,
     approval_mode: str = "yolo",
-    auto_drain: bool = True,
 ) -> Core:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -154,7 +153,7 @@ def _open(
             "plugins": {"files": {"enabled": False}, PLUGIN_ID: {"path": str(source), "enabled": True}},
         }
         config_path.write_text(json.dumps(config), encoding="utf-8")
-    core = open_core(workspace, state_dir=tmp_path / "state", auto_drain=auto_drain)
+    core = open_core(workspace, state_dir=tmp_path / "state")
     _CREATED.append(core)
     return core
 
@@ -186,7 +185,7 @@ def test_join_answers_for_the_current_run_not_an_older_fact(tmp_path: Path) -> N
         _turn(_call("probe-1", PROBE_TOOL)),
     ]
     with _server(replies) as server:
-        core = _open(tmp_path, server, approval_mode="ask", auto_drain=False)
+        core = _open(tmp_path, server, approval_mode="ask")
         core.create_session("parent")
         child = core.spawn_child("parent", "first task")
         first = _join(core, "parent", child)
@@ -212,7 +211,7 @@ def test_completion_notice_is_acked_with_the_tool_result_that_consumed_it(tmp_pa
         _turn(output="parent done"),
     ]
     with _server(replies) as server:
-        core = _open(tmp_path, server, auto_drain=False)
+        core = _open(tmp_path, server)
         parent = core.create_session("parent").session_id
 
         result = core.run("delegate and consume", session_id=parent)
@@ -295,7 +294,7 @@ def test_send_authorization_follows_the_current_stance(tmp_path: Path) -> None:
         _turn(output="child two done"),
     ]
     with _server(replies) as server:
-        core = _open(tmp_path, server, auto_drain=False)
+        core = _open(tmp_path, server)
         parent = core.create_session("parent").session_id
         other = core.create_session("other").session_id
         child = core.spawn_child(parent, "first task")
@@ -324,7 +323,7 @@ def _cron_turn(call_id: str) -> dict[str, object]:
     return _turn(_call(call_id, "cron_list"))
 
 
-def _open_bundled(tmp_path: Path, server: OpenAILoopbackServer, *, auto_drain: bool = True) -> Core:
+def _open_bundled(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
     """A real core with the whole bundled plugin set admitted, like production boot."""
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -339,7 +338,7 @@ def _open_bundled(tmp_path: Path, server: OpenAILoopbackServer, *, auto_drain: b
         ),
         encoding="utf-8",
     )
-    core = open_core(workspace, state_dir=tmp_path / "state", auto_drain=auto_drain)
+    core = open_core(workspace, state_dir=tmp_path / "state")
     _CREATED.append(core)
     return core
 
@@ -526,7 +525,7 @@ def test_child_fact_between_batches_does_not_leave_a_merge_hole(tmp_path: Path) 
         _turn(output="parent done"),
     ]
     with _server(replies) as server:
-        core = _open_bundled(tmp_path, server, auto_drain=False)
+        core = _open_bundled(tmp_path, server)
         parent = core.create_session("parent").session_id
 
         release = threading.Event()
@@ -583,7 +582,7 @@ def test_provider_intent_survives_a_concurrent_child_fact_commit(tmp_path: Path)
         _turn(output="parent done"),
     ]
     with _server(replies) as server:
-        core = _open_bundled(tmp_path, server, auto_drain=False)
+        core = _open_bundled(tmp_path, server)
         parent = core.create_session("parent").session_id
 
         release = threading.Event()
@@ -669,7 +668,7 @@ def test_join_during_publication_waits_and_never_returns_an_empty_completed(tmp_
         _turn(output="child answer"),
     ]
     with _server(replies) as server:
-        core = _open(tmp_path, server, auto_drain=False)
+        core = _open(tmp_path, server)
         parent = core.create_session("parent").session_id
 
         release = threading.Event()
@@ -695,7 +694,7 @@ def test_join_after_restart_returns_the_durable_outcome_without_rerunning(tmp_pa
         _turn(output="only answer"),
     ]
     with _server(replies) as server:
-        core = _open(tmp_path, server, auto_drain=False)
+        core = _open(tmp_path, server)
         parent = core.create_session("parent").session_id
         child = core.spawn_child(parent, "single child task", notify_on_completion=False)
         first = _join(core, parent, child)
@@ -706,7 +705,7 @@ def test_join_after_restart_returns_the_durable_outcome_without_rerunning(tmp_pa
         core.close()
         _CREATED.remove(core)
 
-        reopened = _open(tmp_path, server, auto_drain=False)
+        reopened = _open(tmp_path, server)
         recovered = reopened.join_child(parent, child, timeout_seconds=15)
         assert (recovered.status, recovered.output) == ("completed", "only answer")
         assert recovered.run_id == first.run_id
@@ -730,7 +729,7 @@ def test_late_same_run_control_event_does_not_extend_the_history_snapshot(tmp_pa
         _turn(output="LATE DESCENDANT OUTPUT MARKER"),
     ]
     with _server(replies) as server:
-        core = _open(tmp_path, server, auto_drain=False)
+        core = _open(tmp_path, server)
         parent = core.create_session("parent").session_id
 
         release = threading.Event()
@@ -770,7 +769,7 @@ def test_delayed_publication_keeps_each_run_history_at_its_terminal_prefix(tmp_p
         _turn(output="B answer"),
     ]
     with _server(replies) as server:
-        core = _open(tmp_path, server, auto_drain=False)
+        core = _open(tmp_path, server)
         parent = core.create_session("parent").session_id
 
         release = threading.Event()
@@ -810,7 +809,7 @@ def test_restart_with_out_of_order_facts_publishes_nothing_twice(tmp_path: Path)
         _turn(output="parent after restart"),
     ]
     with _server(replies) as server:
-        core = _open(tmp_path, server, auto_drain=False)
+        core = _open(tmp_path, server)
         parent = core.create_session("parent").session_id
 
         release = threading.Event()
@@ -859,7 +858,7 @@ def test_concurrent_sends_to_a_finished_child_start_exactly_one_run(tmp_path: Pa
         _turn(output="merged answer TOKEN-ALPHA TOKEN-BETA"),
     ]
     with _server(replies) as server:
-        core = _open(tmp_path, server, auto_drain=False)
+        core = _open(tmp_path, server)
         parent = core.create_session("parent").session_id
         child = core.spawn_child(parent, "initial child task", notify_on_completion=False)
         initial = _join(core, parent, child)
@@ -924,7 +923,7 @@ def test_concurrent_spawns_at_budget_accept_exactly_one_child(tmp_path: Path) ->
         _turn(output="child done"),
     ]
     with _server(replies) as server:
-        core = _open(tmp_path, server, auto_drain=False)
+        core = _open(tmp_path, server)
         parent = core.create_session("parent").session_id
         assert DELEGATION_SPAWN_BUDGET == 4
         for index in range(3):
@@ -989,7 +988,7 @@ def test_cancelled_child_accepts_a_later_explicit_followup_with_clean_attributio
         _turn(output="followup answer"),
     ]
     with _server(replies) as server:
-        core = _open(tmp_path, server, approval_mode="ask", auto_drain=False)
+        core = _open(tmp_path, server, approval_mode="ask")
         parent = core.create_session("parent").session_id
         child = core.spawn_child(parent, "first task", notify_on_completion=False)
         first = _join(core, parent, child)
@@ -1029,7 +1028,7 @@ def test_send_overlapping_cancel_linearizes_with_observed_run_attribution(tmp_pa
         _turn(output="overlap answer"),
     ]
     with _server(replies) as server:
-        core = _open(tmp_path, server, auto_drain=False)
+        core = _open(tmp_path, server)
         parent = core.create_session("parent").session_id
         child = core.spawn_child(parent, "first task", notify_on_completion=False)
         first = _join(core, parent, child)
@@ -1079,7 +1078,7 @@ def test_restart_recovers_an_older_missing_fact_beside_a_newer_run_without_repla
         _turn(output="B answer"),
     ]
     with _server(replies) as server:
-        core = _open(tmp_path, server, auto_drain=False)
+        core = _open(tmp_path, server)
         parent = core.create_session("parent").session_id
 
         release = threading.Event()
@@ -1106,7 +1105,7 @@ def test_restart_recovers_an_older_missing_fact_beside_a_newer_run_without_repla
                 # core instead of committing A.
                 release.set()
 
-        reopened = _open(tmp_path, server, auto_drain=False)
+        reopened = _open(tmp_path, server)
         assert {str(fact["run_id"]) for fact in _child_facts(reopened, parent)} == {receipt.run_id}, (
             "A's fact is genuinely absent before recovery runs"
         )

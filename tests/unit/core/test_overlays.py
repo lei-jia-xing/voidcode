@@ -270,7 +270,7 @@ def test_confirmed_session_command_under_read_only_stages_state_but_cannot_touch
         ),
         encoding="utf-8",
     )
-    core = open_core(workspace, state_dir=tmp_path / "state", auto_drain=False)
+    core = open_core(workspace, state_dir=tmp_path / "state")
     _CREATED.append(core)
     try:
         core.create_session("sess-ro-confirm")
@@ -305,7 +305,7 @@ def test_session_command_under_read_only_stages_state_but_cannot_touch_the_machi
         ),
         encoding="utf-8",
     )
-    core = open_core(workspace, state_dir=tmp_path / "state", auto_drain=False)
+    core = open_core(workspace, state_dir=tmp_path / "state")
     _CREATED.append(core)
     try:
         core.create_session("sess-ro-probe")

@@ -266,7 +266,7 @@ class PluginStateRow:
 def canonical_json(value: Mapping[str, object]) -> str:
     """Produce deterministic, sorted, compact UTF-8 JSON without NaN."""
     return json.dumps(
-        json_wire_object(own_json_object(value)),
+        json_wire_object(value),
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
