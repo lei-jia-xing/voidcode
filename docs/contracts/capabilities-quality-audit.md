@@ -48,7 +48,7 @@ not establish source review.
 | `providers/native/model_catalog_data.json` | Reviewed packaged schema and generator/consumer contract: 35 providers/1170 rows, strict metadata, protocol/effort/limit/price consumers and scheduled snapshot PR; no live freshness claim |
 | `providers/native/model_routing.py` | Reviewed: routed alias/catalog fallback, typed unsupported wires, serialized cache creation and teardown |
 | `providers/native/naming.py` | Reviewed source/callers: provider normalization, preserved model casing, table-derived labels/reservations and unknown-id diagnostics; removed dead canonical-reference wrapper |
-| `providers/native/openai_native.py` | Partial: lifecycle/stream/error work and ordered gateway feedback reviewed; removed metadata mode/attachment scaffolding and unconsumed wire fingerprints; remaining transport/payload/replay source review pending |
+| `providers/native/openai_native.py` | Reviewed: SDK ownership/auth, schema/history/alias projection, reasoning controls, usage and strict response/stream identity/terminal handling; documented protocol limits |
 | `providers/native/opencode.py` | Partial: configured gateway authority, wire vocabulary, aliases, timeout/key propagation and native URL normalization reviewed; external gateway protocol/header assumptions pending |
 | `providers/native/opencode_go.py` | Partial: nonnullable endpoint path and minimal feedback model set reviewed; configured host precedence reviewed and redundant route URL pins removed; external protocol quirks pending |
 | `providers/native/openrouter.py` | Reviewed: small direct adapter using vendor endpoint normalization and native OpenAI transport |
@@ -2835,3 +2835,27 @@ components. Ruff/format and targeted ty passed; CodeGraph synchronized. No tests
 added. Inventory reconciliation found the newly moved workspace_queries.py; it
 is explicitly partial until its response-field contract is resolved. The three
 absent inventory paths are recorded removals rather than unreviewed files.
+
+### OpenAI response identity and source review complete
+
+Nonstream tool IDs now reject explicitly malformed non-string/empty values
+instead of generating fallback IDs; missing IDs retain the established fallback.
+Stream tool indices now reject negatives in addition to booleans/nonintegers.
+Errors remain typed and nonretryable at the public provider boundary. Corrected
+transport docstrings that still described missing terminal events as unknown
+success and parser failures as transient.
+
+Completed transport/payload/replay review against SDK contracts: configured auth
+header authority and keyless placeholder omission, lazy locked client ownership,
+SDK-owned SSE framing, schema/tool-name projection and reverse maps, authentic
+reasoning replay, gateway history ordering, usage, tool argument objects and
+terminal reporting. Missing nonstream finish reason remains explicitly unknown
+with finish_reason_reported=False; truncated streams fail. Kimi output caps are
+the retained explicit local compatibility convention using catalog max output
+(or 64,000 fallback), not a claim that current vendors universally require them.
+Responses/attachments and undocumented gateway routes are not implemented by
+this Chat adapter; separate gateway reconciliation remains outstanding.
+
+Validation: 48 existing reasoning/protocol/streaming tests passed; five malformed
+ID/index probes failed nonretryably. Ruff/format and targeted ty passed;
+CodeGraph synchronized. No tests added.

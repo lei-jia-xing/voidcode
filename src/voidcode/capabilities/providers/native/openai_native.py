@@ -96,8 +96,8 @@ def _stream_event_error_payload(exc: Exception) -> dict[str, object]:
     The SDK's decoder raises parser/model errors directly (``JSONDecodeError``,
     pydantic errors), so they are reported through the same typed payload shape
     the deleted SSE parser used: ``provider_execution_error_from_payload``
-    then classifies them as a transient stream failure with ``source``/guidance
-    details. Raw parser text is deliberately not forwarded.
+    then classifies the malformed event with ``source``/guidance details.
+    Raw parser text is deliberately not forwarded.
     """
     return {
         "message": "provider stream event was not a valid JSON object",
@@ -115,8 +115,8 @@ class OpenAIChatCompletionsTransport:
     event only on the blank line that terminates it, so events separated by a
     single newline are never delivered and a final event without its
     terminating blank line is discarded. A stream that ends without a finish
-    reason has an ``unknown`` terminal reason rather than an invented stop; an
-    unrecognized reported token is likewise preserved as ``unknown`` with its
+    reason fails as a missing terminal event; an unrecognized reported token
+    is preserved as ``unknown`` with its
     raw value in metadata. The explicit transport terminal marker distinguishes
     a complete model turn from a missing terminal event. Events the decoder
     emits but cannot decode as a JSON object are reported as a bounded,
@@ -733,7 +733,9 @@ class OpenAIChatCompletionsProvider:
                 )
             provider_tool_name = function["name"]
             runtime_name = reverse.get(provider_tool_name, provider_tool_name)
-            explicit_id = item.get("id") if isinstance(item.get("id"), str) else None
+            explicit_id = item.get("id")
+            if explicit_id is not None and (not isinstance(explicit_id, str) or not explicit_id):
+                raise ValueError("provider tool call id was malformed")
             parsed.append(
                 ToolCall(
                     tool_name=runtime_name,
@@ -894,7 +896,7 @@ class OpenAIChatCompletionsProvider:
                             details={"source": "stream", "reason": "malformed_tool_call"},
                         )
                     raw_index = raw_tool.get("index")
-                    if raw_index is not None and (not isinstance(raw_index, int) or isinstance(raw_index, bool)):
+                    if raw_index is not None and (not isinstance(raw_index, int) or isinstance(raw_index, bool) or raw_index < 0):
                         raise ProviderExecutionError(
                             kind="provider_error",
                             provider_name=provider_name,
