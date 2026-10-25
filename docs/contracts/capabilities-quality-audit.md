@@ -25,7 +25,7 @@ not establish source review.
 | `files/glob_tool.py` | Reviewed: strict ingress, root-relative patterns, traversal/ignore rules, bounded path collection, ordering/error results and cooperative cancellation |
 | `files/grep_tool.py` | Reviewed: strict ingress, literal/regex matching and filters, bounded line/context/result collection, immutable rendering, error handling and cooperative cancellation |
 | `files/read_formats.py` | Reviewed: bounded notebook/SQLite/PDF views, source snapshot semantics, pagination/recovery, signature-only image handling, read-only transactions and extractor cleanup |
-| `files/read_tool.py` | Partial: strict ingress, PDF recovery and typed/error-visible bounded directory materialization reviewed; archive member identity/byte bounds and clipped-line recovery reviewed; native file stream/hash/binary bounds and read cancellation ingress reviewed; tool documentation and transcript query ingress reviewed; remaining artifact/transcript projections, native clipped-line recovery, archive metadata/modes and result metadata pending; directory cancellation reviewed |
+| `files/read_tool.py` | Partial: strict ingress, PDF recovery and typed/error-visible bounded directory materialization reviewed; archive member identity/byte bounds and clipped-line recovery reviewed; native file stream/hash/binary bounds and read cancellation ingress reviewed; tool documentation and transcript query ingress reviewed; native clipped-line recovery reviewed; remaining artifact/transcript projections, archive metadata/modes and result metadata pending; directory cancellation reviewed |
 | `files/write_tool.py` | Reviewed: hash/containment/symlink/atomic replace/cancellation; fail visibly on mode errors and always clean temporary files |
 | `frontmatter.py` | Reviewed source/consumers: safe YAML, duplicate/string-key validation, framing/body/bounds; shared parser tests |
 | `providers/__init__.py` | Reviewed: shared registration/facts/view wiring and ExitStack-owned provider teardown |
@@ -2085,3 +2085,26 @@ cancellation. No tests added. Blocking individual OS calls are still limited
 by OS completion; this adds cooperative cancellation between observations.
 Native clipped-line recovery and remaining artifact/archive semantics still
 need review.
+
+## Native clipped-line recovery
+
+When a selected native line exceeds the existing character preview limit, read
+now snapshots the original bytes into the existing artifact store and exposes
+that reference in standard output bounds plus byte-continuation guidance. The
+line-based result body and coverage remain unchanged: clipped lines do not
+claim whole-file visibility. Ordinary short-line reads do not snapshot or spill.
+
+The recovery snapshot reuses the same open descriptor, is bounded by the
+existing 50 MiB binary/artifact materialization ceiling, and must match the hash
+of the observed text stream before it is stored. Oversized recovery requests
+fail explicitly; source changes during snapshot preparation fail rather than
+linking different content to the preview hash. No new cursor/schema fields or
+artifact protocol were introduced. This adds a bounded second read only to
+clipped native pages.
+
+Ruff, formatting and targeted type checking passed; 97 existing file/format/
+artifact/coverage tests passed in 1.08 seconds. Manual probes recovered 30,000
+Chinese characters and original CRLF bytes through artifact byte pages, checked
+no-spill short reads and the recovery size ceiling, and rejected an in-place
+source change before any mismatched spill. No tests added. Remaining read
+artifact/archive projection and lifecycle details are still pending.

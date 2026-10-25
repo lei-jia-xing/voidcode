@@ -826,6 +826,7 @@ def _render_file(
     content_truncated = False
     has_more = False
     digest = hashlib.sha256()
+    recovery_reference: OutputReference | None = None
 
     with candidate.open("rb") as source:
         sample = source.read(BINARY_SNIFF_BYTES)
@@ -891,6 +892,17 @@ def _render_file(
                     raw_content_lines.append(rendered_raw_line)
                     bytes_used += encoded_size
                     content_truncated |= line_truncated
+                if any(line.truncated for line in rendered_lines):
+                    source.seek(0)
+                    original = source.read(MAX_BINARY_READ_BYTES + 1)
+                    if len(original) > MAX_BINARY_READ_BYTES:
+                        raise ValueError(f"long-line recovery exceeds the maximum supported size ({MAX_BINARY_READ_BYTES} bytes): {relative_path}")
+                    if hashlib.sha256(original).digest() != digest.digest():
+                        raise ValueError(f"file changed while preparing long-line recovery; retry read: {relative_path}")
+                    artifact, _, uri = _spill_artifact(
+                        services, kind="text_source", content=original, mime="text/plain; charset=utf-8", source=relative_path
+                    )
+                    recovery_reference = OutputReference(uri=uri, artifact=artifact)
         except UnicodeDecodeError as exc:
             raise ValueError("read only supports UTF-8 text files") from exc
     content_hash = digest.hexdigest()
@@ -918,12 +930,15 @@ def _render_file(
     )
     return _ReadOutcome(
         output=_text_output(
-            f"Read {len(rendered_lines)} line(s) from {relative_path}" + ("; output is truncated." if content_truncated else "."),
+            f"Read {len(rendered_lines)} line(s) from {relative_path}"
+            + ("; output is truncated." if content_truncated else ".")
+            + (f" Full text: read(path={json.dumps(recovery_reference.uri)}, byte_offset=0)." if recovery_reference is not None else ""),
             raw_content=body.raw_content,
             content_hash=body.content_hash,
             next_offset=body.next_offset,
             truncated=body.truncated,
             partial=body.partial,
+            bounds=OutputBounds(truncated=body.truncated, partial=body.partial, reference=recovery_reference, source=relative_path),
         ),
         body=body,
         coverage=(
