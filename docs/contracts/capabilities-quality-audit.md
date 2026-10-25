@@ -18,8 +18,8 @@ not establish source review.
 | `files/__init__.py` | Reviewed: typed Tool wrapper preserves diagnostic failures; shared core/plugin factory |
 | `files/_replace.py` | Reviewed: checked replacement and exclusive atomic creation; cleanup, permissions and race regressions; documented metadata/compare-window limits |
 | `files/apply_patch.py` | Reviewed: marker-only grammar, exact staged preflight, hash/checked commits, cancellation and truthful partial operations; removed unified/Git execution, path decoding and format adapters |
-| `files/apply_workspace_edit.py` | Partial: strict generated schema, frozen-argument conversion, checked replacement, commit projections, LSP coordinates, query-failure flow, cooperative cancellation and structured partial commits reviewed; final ingress/bounds reconciliation pending |
-| `files/edit_tool.py` | Partial: strict generated ingress, exact replacement, checked commit, diagnostic bounds and cancellation reviewed; standard diff rendering/counts and marker delegation reviewed; final output-bound reconciliation pending |
+| `files/apply_workspace_edit.py` | Reviewed: single strict ingress/version field, frozen arguments, checked replacement, shared diffs, LSP coordinates, optional-query failures, cancellation and truthful structured partial commits; bounded model summaries vs complete client diff bodies reconciled |
+| `files/edit_tool.py` | Reviewed: strict generated ingress, exact replacement, checked commit, diagnostic/cancellation behavior, standard diff rendering/counts and marker delegation; short model summaries vs complete structured client diff bodies reconciled |
 | `files/errors.py` | Reviewed: retain only classified diagnostic exception and raising helper |
 | `files/gitignore.py` | Reviewed: root-only pathspec matching; removed unused pattern snapshot/property; syntax/order/escape tests |
 | `files/glob_tool.py` | Reviewed: strict ingress, root-relative patterns, traversal/ignore rules, bounded path collection, ordering/error results and cooperative cancellation |
@@ -2040,3 +2040,29 @@ test cases added. Ruff, formatting and targeted type checking passed, and 97
 existing file/format/artifact/coverage tests passed in 2.02 seconds. Production
 source is 22 lines shorter. Workspace version-field reconciliation remains
 pending; no compatibility behavior was added.
+
+## Workspace version field and edit audit reconciliation
+
+Removed the duplicate expectedVersion alias and its precedence rule; the
+existing LSP `version` field is the sole optional version constraint. Updated
+existing unit and integration callers. Source changes were incorporated by
+concurrent commit `15ebd391`; this audit record does not duplicate that commit.
+Historical changelog entries describe their original release and remain intact.
+
+Revalidated the current worktree: full source type checking passed; 97 existing
+file/format/artifact/coverage tests passed in 2.04 seconds. Two existing LSP and
+optional workspace-query integration modules passed all 10 tests in 22.88
+seconds after granting local loopback access (the first sandboxed run failed
+only at socket creation). A manual ingress/schema probe confirmed only version
+is published, expectedVersion is rejected as an unknown field and version is
+accepted. No tests added.
+
+Completed the remaining ordinary edit/workspace-edit source reconciliation: all
+shape validation precedes filesystem edits; hash/document constraints remain
+explicit; coordinate encoding and overlap checks precede checked commits;
+partial workspace failures project only committed prefixes. Successful model
+output is a short summary, while complete diffs stay in structured client/ledger
+bodies. There is no hidden truncated diff preview requiring a separate recovery
+protocol. Both module inventory rows are now reviewed. Native reads, exec and
+provider adapters still have their separately recorded pending scope; this is
+not full capability or project-gate completion.
