@@ -125,28 +125,7 @@ class ApplyWorkspaceEditTool:
         services: PluginServices,
     ) -> ToolResult:
         workspace = context.require_workspace()
-        arguments = json_wire_object(call.arguments)
-        raw_edits = arguments.get("edits")
-        if isinstance(raw_edits, list):
-            for index, item in enumerate(raw_edits):
-                if isinstance(item, dict) and not isinstance(item.get("expectedHash"), str):
-                    raw_path = item.get("path")
-                    return _diagnostic_failure(
-                        self.definition.name,
-                        message=f"apply_workspace_edit edit #{index + 1} requires a string expectedHash argument.",
-                        error_kind="tool_input_mismatch",
-                        reason="missing_expected_hash",
-                        retry_guidance=(
-                            "Use read on each target path and copy its SHA-256 content hash from the output, "
-                            "then retry apply_workspace_edit with expectedHash on every edit."
-                        ),
-                        details={
-                            "edit_index": index + 1,
-                            "path": raw_path if isinstance(raw_path, str) else None,
-                        },
-                    )
-
-        args = _WorkspaceEditArgs.model_validate(arguments)
+        args = _WorkspaceEditArgs.model_validate(json_wire_object(call.arguments))
         requested_encoding = args.positionEncoding
 
         raw_contents: dict[Path, bytes] = {}

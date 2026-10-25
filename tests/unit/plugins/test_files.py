@@ -1075,16 +1075,15 @@ def test_workspace_edit_rejects_invalid_batch_before_writing(tmp_path: Path, inv
     assert target.read_text(encoding="utf-8") == "original"
 
 
-def test_workspace_edit_missing_hash_returns_diagnostic_from_frozen_arguments(tmp_path: Path) -> None:
+def test_workspace_edit_missing_hash_rejects_frozen_arguments(tmp_path: Path) -> None:
     from voidcode.capabilities.files.apply_workspace_edit import ApplyWorkspaceEditTool
 
-    result = ApplyWorkspaceEditTool().invoke(
-        ToolCall(tool_name="apply_workspace_edit", arguments={"edits": [{"path": "target.txt"}]}),
-        context=_context(tmp_path),
-        services=_SERVICES,
-    )
-    assert isinstance(result, ToolFailure)
-    assert result.diagnostics.details["reason"] == "missing_expected_hash"
+    with pytest.raises(ValueError, match="expectedHash"):
+        ApplyWorkspaceEditTool().invoke(
+            ToolCall(tool_name="apply_workspace_edit", arguments={"edits": [{"path": "target.txt"}]}),
+            context=_context(tmp_path),
+            services=_SERVICES,
+        )
 
 
 @pytest.mark.parametrize("failure", ["replace", "concurrent_change"])

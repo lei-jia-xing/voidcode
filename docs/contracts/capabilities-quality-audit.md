@@ -2025,3 +2025,18 @@ artifact/coverage tests passed in 1.75 seconds. A real workspace edit over
 with missing-newline markers on both, and the intended file bytes. No tests
 added. Workspace version-field/ingress reconciliation and remaining native read
 recovery/lifecycle review still need completion.
+
+## Workspace-edit single ingress validation
+
+Removed the manual raw-edits loop that checked only whether expectedHash was a
+string before the Pydantic model ran. The generated schema and `_TextEdit`
+already require this string; missing and wrong-type hashes now use ordinary
+strict model validation alongside all other malformed fields. This removes a
+second validation path and its special missing-hash diagnostics. Stale content
+hash/version checks after validated ingress remain classified diagnostics.
+
+The existing missing-hash frozen-arguments test now asserts model rejection; no
+test cases added. Ruff, formatting and targeted type checking passed, and 97
+existing file/format/artifact/coverage tests passed in 2.02 seconds. Production
+source is 22 lines shorter. Workspace version-field reconciliation remains
+pending; no compatibility behavior was added.
