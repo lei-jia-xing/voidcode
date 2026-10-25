@@ -270,6 +270,11 @@ def _response_metadata(payload: Mapping[str, object]) -> dict[str, object]:
         metadata["request_id"] = payload["id"]
     if isinstance(payload.get("model"), str) and payload["model"]:
         metadata["served_model"] = payload["model"]
+    content = payload.get("content")
+    if isinstance(content, list):
+        thinking_blocks = [dict(block) for block in content if isinstance(block, Mapping) and block.get("type") in {"thinking", "redacted_thinking"}]
+        if thinking_blocks:
+            metadata["thinking_blocks"] = thinking_blocks
     return metadata
 
 
@@ -388,7 +393,7 @@ class AnthropicMessagesProvider:
                 # Messages API requires a signature on a thinking block, so the
                 # plain ``reasoning`` text is never turned into one.
                 prior = (
-                    [item for item in thinking_blocks if isinstance(item, Mapping) and item.get("type") == "thinking"]
+                    [item for item in thinking_blocks if isinstance(item, Mapping) and item.get("type") in {"thinking", "redacted_thinking"}]
                     if isinstance(thinking_blocks, list)
                     else []
                 )
@@ -611,6 +616,8 @@ class AnthropicMessagesProvider:
             latest_usage: ProviderTokenUsage | None = None
             metadata: dict[str, object] = {}
             accumulators: dict[int, _ToolAccumulator] = {}
+            thinking_blocks: dict[int, dict[str, object]] = {}
+            thinking_fragments: dict[int, list[str]] = {}
             reverse = self._tool_maps(request)[1]
             stop_reason: str | None = None
             message_stopped = False
@@ -639,7 +646,11 @@ class AnthropicMessagesProvider:
                     index_obj = chunk.get("index")
                     index = index_obj if isinstance(index_obj, int) else 0
                     block = chunk.get("content_block")
-                    if isinstance(block, Mapping) and block.get("type") == "tool_use":
+                    if isinstance(block, Mapping) and block.get("type") in {"thinking", "redacted_thinking"}:
+                        thinking_blocks[index] = dict(block)
+                        if block.get("type") == "thinking":
+                            thinking_fragments[index] = [cast(str, block.get("thinking", ""))]
+                    elif isinstance(block, Mapping) and block.get("type") == "tool_use":
                         name = block.get("name")
                         raw_input = block.get("input")
                         if not isinstance(name, str) or not name or not isinstance(raw_input, Mapping):
@@ -666,7 +677,11 @@ class AnthropicMessagesProvider:
                     if delta_type == "text_delta" and isinstance(delta.get("text"), str):
                         yield ProviderStreamEvent(kind="delta", channel="text", text=delta["text"])
                     elif delta_type == "thinking_delta" and isinstance(delta.get("thinking"), str):
+                        thinking_fragments[index].append(delta["thinking"])
                         yield ProviderStreamEvent(kind="delta", channel="reasoning", text=delta["thinking"], metadata={"source": "delta.thinking"})
+                    elif delta_type == "signature_delta" and isinstance(delta.get("signature"), str):
+                        block = thinking_blocks[index]
+                        block["signature"] = cast(str, block.get("signature", "")) + delta["signature"]
                     elif delta_type == "input_json_delta" and isinstance(delta.get("partial_json"), str):
                         fragment = delta["partial_json"]
                         prior = accumulators.setdefault(index, _ToolAccumulator())
@@ -735,6 +750,10 @@ class AnthropicMessagesProvider:
                     tool_call_ordinal=index,
                     parsed_arguments=json_wire_object(parsed),
                 )
+            if thinking_blocks:
+                for index, fragments in thinking_fragments.items():
+                    thinking_blocks[index]["thinking"] = "".join(fragments)
+                metadata["thinking_blocks"] = [block for _, block in sorted(thinking_blocks.items())]
             done_reason = _done_reason(stop_reason)
             if done_reason == "unknown" and isinstance(stop_reason, str) and stop_reason.strip():
                 # Preserve reported but unmapped values for core diagnostics.

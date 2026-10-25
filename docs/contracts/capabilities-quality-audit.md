@@ -1865,3 +1865,29 @@ order, wire JSON serializes, and source metadata remains unchanged. No tests
 added. Important remaining gap: the adapter's response/stream paths do not yet
 record signed thinking blocks themselves; this fixes supplied metadata replay,
 not complete signed-thinking round trips or redacted-block handling.
+
+## Anthropic signed-thinking response round trips
+
+Completed the previously identified response metadata gap. Non-stream responses
+preserve returned thinking/redacted-thinking blocks in existing `thinking_blocks`
+metadata. Streams collect thinking text by block index and retain opaque
+signature deltas and redacted block data; their terminal metadata uses the same
+shape. Replay now accepts both block types. No new SDK fields or storage path
+were introduced. The core already persists provider metadata through
+`encode_provider_result` and restores it into assistant message metadata.
+
+Protocol evidence: [Anthropic thinking documentation](https://platform.claude.com/docs/en/build-with-claude/thinking)
+requires opaque thinking signatures and redacted blocks to be returned unchanged
+for tool continuations; signature deltas arrive before content block stop.
+Installed SDK ThinkingBlock, SignatureDelta and RedactedThinkingBlock types
+confirm the fields. Text fragments append to lists and join once; signature
+fragments concatenate in arrival order without interpretation.
+
+Ruff, formatting and targeted provider type checking passed; 115 existing
+provider tests passed in 11.11 seconds with local loopback permission. Manual
+scripted API/stream responses yielded identical signed/redacted metadata and
+next-request blocks, including split signatures, initial thinking text, tool
+use and SDK-frozen metadata. A provider-result codec round trip also retained
+the blocks. Signatures were not emitted as visible text. No tests added and no
+live vendor calls used. Malformed stream index/duplicate block policy and
+remaining adapter transport/usage reconciliation are still pending review.
