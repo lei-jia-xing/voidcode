@@ -216,17 +216,14 @@ def _render_artifact(
 
     # An explicit PDF view on a non-PDF artifact still fails below, on the magic.
     if media_type in RASTER_IMAGE_MIMES and view != "pdf":
-        raw, total_bytes, content_hash = _full_bytes("Artifact")
-        inline = len(raw) <= MAX_INLINE_ATTACHMENT_BYTES
-        # A payload above the inline bound re-spills its own (already stored)
-        # bytes so the body carries the same reference projection the workspace
-        # branch reports.
-        spilled = None if inline else _spill_artifact(services, kind="content", content=raw, mime=media_type, source=path)
-        artifact: Mapping[str, object] = (
-            spilled[0] if spilled is not None else {"artifact_id": artifact_id, "sha256": content_hash, "byte_count": total_bytes, "uri": path}
-        )
-        uri = cast(str, artifact["uri"])
-        data_uri = f"data:{media_type};base64,{base64.b64encode(raw).decode('ascii')}" if inline else None
+        total_bytes = first_page.total_bytes
+        content_hash = first_page.sha256
+        artifact: Mapping[str, object] = {"artifact_id": artifact_id, "sha256": content_hash, "byte_count": total_bytes, "uri": path}
+        uri = path
+        data_uri = None
+        if total_bytes <= MAX_INLINE_ATTACHMENT_BYTES:
+            raw, _, _ = _full_bytes("Artifact")
+            data_uri = f"data:{media_type};base64,{base64.b64encode(raw).decode('ascii')}"
         presentation = "Image artifact read successfully"
         if data_uri is None:
             presentation += f"; the full image is stored at {uri}."

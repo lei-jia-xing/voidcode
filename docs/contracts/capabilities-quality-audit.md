@@ -1589,3 +1589,19 @@ line advances by line cursor, and verified a four-byte window consumes one
 three-byte character and resumes at byte three. No tests added. Artifact full
 read cancellation/size accounting, duplicate image spills, and remaining result
 metadata are still pending review.
+
+## Reuse existing image artifacts
+
+Removed full-content loading and duplicate spilling for image artifacts above
+the inline attachment limit. The first bounded store page already provides the
+immutable artifact identity, media type and total size; the attachment can use
+that existing reference directly. Small images still load bounded content for
+inline data URIs. The binary full-read ceiling now applies only when bytes are
+actually materialized, rather than refusing an already-stored large reference.
+
+Updated the existing large-image test to require reuse rather than a second
+spill; no test cases added. Ruff and targeted source type checking passed, and
+97 existing file/format/artifact/coverage tests passed. A manual store probe
+refused any second read and confirmed large-image output uses one bounded page,
+the original identity and no additional spill. PDF/full-artifact loop
+cancellation and remaining read result semantics still need review.

@@ -201,7 +201,7 @@ def test_image_artifact_renders_as_attachment(tmp_path: Path) -> None:
     assert store.spills == ["image/png"]
 
 
-def test_large_image_artifact_spills_and_references(tmp_path: Path) -> None:
+def test_large_image_artifact_reuses_stored_reference(tmp_path: Path) -> None:
     store = FakeArtifactStore()
     # Above the inline bound and across two store pages.
     png = b"\x89PNG\r\n\x1a\n" + b"\x00" * (MAX_INLINE_ATTACHMENT_BYTES + MAX_ARTIFACT_PAGE_BYTES)
@@ -222,8 +222,8 @@ def test_large_image_artifact_spills_and_references(tmp_path: Path) -> None:
     assert body["artifact_id"] == sha256
     assert body["uri"] == uri
     assert body["attachment"] == {"mime": "image/png", "reference": uri}
-    # The spill of already-stored bytes is content-addressed back to this artifact.
-    assert store.spills == ["image/png", "image/png"]
+    # Reading an existing artifact must not store its bytes again.
+    assert store.spills == ["image/png"]
 
 
 def test_pdf_artifact_view_uses_the_media_type_claim(tmp_path: Path) -> None:
