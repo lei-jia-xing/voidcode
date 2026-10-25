@@ -965,7 +965,7 @@ def test_searches_respect_gitignore_double_star_and_negation(tmp_path: Path, too
     assert "drop.log" not in result.output.text
 
 
-@pytest.mark.parametrize("operation", ["single", "batch", "marker", "delete"])
+@pytest.mark.parametrize("operation", ["single", "batch"])
 @pytest.mark.parametrize("stale", [False, True])
 def test_edit_without_read_history_keeps_hash_checks(tmp_path: Path, operation: str, stale: bool) -> None:
     target = tmp_path / "sample.txt"
@@ -979,12 +979,6 @@ def test_edit_without_read_history_keeps_hash_checks(tmp_path: Path, operation: 
             "edits": [{"oldString": "beta", "newString": "B"}, {"oldString": "B", "newString": "BETA"}],
             "expectedHash": digest,
         }
-    else:
-        patch = {
-            "marker": "*** Begin Patch\n*** Update File: sample.txt\n@@\n alpha\n-beta\n+BETA\n*** End Patch\n",
-            "delete": "*** Begin Patch\n*** Delete File: sample.txt\n*** End Patch\n",
-        }[operation]
-        arguments = {"patch": patch, "expectedHashes": {target.name: digest}}
     tool = next(t for t in create_plugin({}).tools if t.definition.name == "edit")
     result = tool.invoke(ToolCall(tool_name="edit", arguments=arguments), context=_context(tmp_path))
     if stale:
@@ -994,10 +988,7 @@ def test_edit_without_read_history_keeps_hash_checks(tmp_path: Path, operation: 
         assert target.read_text() == "alpha\nbeta\n"
     else:
         assert isinstance(result, ToolSuccess), result
-        if operation == "delete":
-            assert not target.exists()
-        else:
-            assert target.read_text() == "alpha\nBETA\n"
+        assert target.read_text() == "alpha\nBETA\n"
 
 
 def test_batch_failure_keeps_file_unchanged_without_read_history(tmp_path: Path) -> None:
@@ -1238,16 +1229,17 @@ def test_marker_patch_commit_rejects_changes_after_preflight(tmp_path: Path, mon
         "delete": "*** Delete File: source.txt\n",
         "move": "*** Update File: source.txt\n*** Move to: destination.txt\n@@\n-old\n+new\n",
     }[operation]
-    verify = apply_patch._verify_patch_expected_hashes
+    prepare = apply_patch._PreparedMarkerChange
     changed = destination if operation in {"add", "move"} else source
 
     def concurrent_writer(**kwargs):
-        verify(**kwargs)
+        prepared = prepare(**kwargs)
         changed.write_bytes(b"concurrent writer\n")
+        return prepared
 
-    monkeypatch.setattr(apply_patch, "_verify_patch_expected_hashes", concurrent_writer)
+    monkeypatch.setattr(apply_patch, "_PreparedMarkerChange", concurrent_writer)
     result = apply_patch.execute_patch(
-        {"patch": f"*** Begin Patch\n{body}*** End Patch\n", "expectedHashes": {"source.txt": hashlib.sha256(source.read_bytes()).hexdigest()}},
+        {"patch": f"*** Begin Patch\n{body}*** End Patch\n"},
         context=_context(tmp_path),
     )
     assert isinstance(result, ToolFailure)
@@ -1270,7 +1262,7 @@ def test_marker_patch_commits_new_destination_and_removes_source_only_for_move(t
         else "*** Update File: source.txt\n*** Move to: destination.txt\n@@\n-old\n+new\n"
     )
     result = execute_patch(
-        {"patch": f"*** Begin Patch\n{body}*** End Patch\n", "expectedHashes": {"source.txt": hashlib.sha256(source.read_bytes()).hexdigest()}},
+        {"patch": f"*** Begin Patch\n{body}*** End Patch\n"},
         context=_context(tmp_path),
     )
     assert isinstance(result, ToolSuccess)
@@ -1305,7 +1297,6 @@ def test_marker_patch_preflights_sequential_file_state(tmp_path: Path, operation
     source.write_bytes(b"old\n")
     arguments = {
         "patch": f"*** Begin Patch\n{operations}*** End Patch\n",
-        "expectedHashes": {"source.txt": hashlib.sha256(source.read_bytes()).hexdigest()},
     }
     if error:
         with pytest.raises(ValueError, match=error):

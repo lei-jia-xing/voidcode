@@ -2504,3 +2504,17 @@ protocol-default providers and four effort values were identical, with nested
 extra_body contents kept under their SDK option. No tests added or live vendor
 calls used. Explicit numeric effort handling and the remaining OpenAI source
 reconciliation still need completion.
+
+### Patch protocol: remove mandatory external hashes
+
+Removed `expectedHashes` from the strict patch argument schema and deleted its
+verification/parser path. Marker updates already match exact original text; the
+planner snapshots source bytes and checked commits reject changes after planning.
+No Git or third-party patch parser is used. Pure deletion now targets the file
+observed at execution time, without claiming protection against changes made
+between an earlier model read and this invocation. Single/batch replacement hash
+contracts are unchanged. Obsolete patch-hash test cases were removed; existing
+commit-race cases now inject writes after preparation. No tests added.
+
+Validation: 73 existing files unit tests passed; targeted Ruff and ty passed;
+CodeGraph synchronized. Full capability audit and project gate remain outstanding.

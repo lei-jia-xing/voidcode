@@ -6,7 +6,6 @@ Supports add/update/delete/move operations without external commands.
 from __future__ import annotations
 
 import errno
-import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -316,75 +315,10 @@ def _resolve_patch_path(workspace: Path, raw_path: str) -> Path:
     return candidate.resolve() if candidate.is_absolute() else (workspace / candidate).resolve()
 
 
-def _verify_patch_expected_hashes(
-    *,
-    changes: list[PatchChange],
-    expected_hashes: dict[str, str] | None,
-    workspace: Path,
-    tool_name: str = "edit",
-) -> None:
-    """Verify expected hashes for every existing file the patch modifies, before any write."""
-    normalized_hashes: dict[str, str] = {}
-    if expected_hashes:
-        for key, value in expected_hashes.items():
-            normalized_hashes[_resolve_patch_path(workspace, key).as_posix()] = value
-
-    missing_paths: list[str] = []
-    affected_paths: list[str] = []
-    for change in changes:
-        status = change.status
-        if status == "A":
-            continue
-        raw_path = change.old_path or change.path
-        resolved = _resolve_patch_path(workspace, raw_path)
-        if not resolved.is_file():
-            continue
-        affected_paths.append(raw_path)
-        expected_hash = normalized_hashes.get(resolved.as_posix())
-        if expected_hash is None:
-            missing_paths.append(raw_path)
-            continue
-        actual_hash = hashlib.sha256(resolved.read_bytes()).hexdigest()
-        if actual_hash != expected_hash:
-            raise_tool_diagnostic(
-                message=f"{tool_name} rejected because {raw_path} changed since it was read (stale edit).",
-                error_kind="stale_edit",
-                reason="content_hash_mismatch",
-                retry_guidance=(
-                    "Read the affected file(s) again, use the SHA-256 content hashes shown in the read output, "
-                    f"then retry {tool_name} with an updated expectedHashes map."
-                ),
-                details={
-                    "path": raw_path,
-                    "expected_hash": expected_hash,
-                    "actual_hash": actual_hash,
-                    "affected_paths": affected_paths,
-                },
-            )
-    if missing_paths:
-        raise_tool_diagnostic(
-            message=(
-                f"{tool_name} requires an expectedHashes entry for every existing file the patch "
-                f"modifies; missing: {', '.join(sorted(missing_paths))}."
-            ),
-            error_kind="tool_input_mismatch",
-            reason="missing_expected_hash",
-            retry_guidance=(
-                "Use read on each affected path, copy its SHA-256 content hash from the output into "
-                f"expectedHashes (relative path -> hash), then retry {tool_name}."
-            ),
-            details={
-                "affected_paths": affected_paths,
-                "missing_paths": sorted(missing_paths),
-            },
-        )
-
-
 def _apply_marker_patch(
     patch_text: str,
     *,
     context: ToolContext,
-    expected_hashes: dict[str, str] | None = None,
     tool_name: str = "edit",
 ) -> ToolResult:
     workspace = context.require_workspace().resolve()
@@ -441,13 +375,6 @@ def _apply_marker_patch(
                     )
                 )
 
-    _verify_patch_expected_hashes(
-        changes=[PatchChange(change.path, change.status, change.old_path) for change in prepared],
-        expected_hashes=expected_hashes,
-        workspace=workspace,
-        tool_name=tool_name,
-    )
-
     changes: list[PatchChange] = []
     for change in prepared:
         if context.abort_signal is not None and context.abort_signal.cancelled:
@@ -487,17 +414,7 @@ def execute_patch(
     if not isinstance(patch_text, str):
         raise ValueError(f"{tool_name} requires a string 'patch' argument")
 
-    raw_expected_hashes = arguments.get("expectedHashes")
-    if raw_expected_hashes is None:
-        expected_hashes: dict[str, str] | None = None
-    elif isinstance(raw_expected_hashes, Mapping) and all(
-        isinstance(key, str) and isinstance(value, str) for key, value in raw_expected_hashes.items()
-    ):
-        expected_hashes = dict(raw_expected_hashes)
-    else:
-        raise ValueError(f"{tool_name} expectedHashes must be an object mapping path strings to SHA-256 hash strings")
-
-    return _apply_marker_patch(patch_text, context=context, expected_hashes=expected_hashes, tool_name=tool_name)
+    return _apply_marker_patch(patch_text, context=context, tool_name=tool_name)
 
 
 __all__ = ["ApplyPatchResultBody", "PatchChange", "execute_patch"]

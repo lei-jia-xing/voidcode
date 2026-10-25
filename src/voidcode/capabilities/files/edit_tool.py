@@ -158,7 +158,6 @@ class _PatchEdit(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
     patch: str = Field(min_length=1, description="*** Begin Patch / *** End Patch text with Add File, Update File or Delete File operations.")
-    expectedHashes: dict[str, str] | None = None
 
 
 _EDIT_ARGS = TypeAdapter(_SingleEdit | _BatchEdit | _PatchEdit)
