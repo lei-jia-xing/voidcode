@@ -15,6 +15,7 @@ import tarfile
 import time
 import zipfile
 from collections.abc import Callable, Mapping
+from concurrent.futures import CancelledError
 from dataclasses import dataclass
 from io import TextIOWrapper
 from itertools import islice, takewhile
@@ -174,10 +175,10 @@ def _render_artifact(
         raise ValueError("voidcode://artifact/<id> requires an artifact id")
     if _ARTIFACT_ID_PATTERN.fullmatch(artifact_id) is None:
         raise ValueError(f"invalid artifact id: {artifact_id}")
-    if byte_limit is not None and byte_offset is None:
-        raise ValueError("byte_limit requires byte_offset")
 
     def _window(byte_start: int, byte_length: int = MAX_ARTIFACT_PAGE_BYTES) -> ArtifactPage:
+        if context.abort_signal is not None and context.abort_signal.cancelled:
+            raise CancelledError("read cancelled")
         try:
             return services.read_artifact(artifact_id, offset=byte_start, limit=byte_length)
         except (OSError, ValueError, LookupError) as exc:
@@ -1599,36 +1600,16 @@ class ReadTool:
             outcome = _render_tool_documentation(args.path, context=context, services=services, tool_name_label=self.definition.name)
             return outcome if isinstance(outcome, ToolFailure) else _read_success(outcome)
         if args.path.startswith(VOIDCODE_ARTIFACT_PREFIX):
-            if args.view == "pdf":
-                if (
-                    args.byte_offset is not None
-                    or args.byte_limit is not None
-                    or args.table is not None
-                    or args.query is not None
-                    or args.cell is not None
-                    or args.output_offset is not None
-                    or args.output_limit is not None
-                ):
-                    raise ValueError("PDF artifact view does not accept byte, SQLite, or notebook arguments")
-                return _read_success(
-                    _render_artifact(
-                        args.path,
-                        context=context,
-                        services=services,
-                        offset=args.offset or 1,
-                        limit=args.limit or DEFAULT_READ_LIMIT,
-                        byte_offset=args.byte_offset,
-                        byte_limit=args.byte_limit,
-                        view="pdf",
-                        page=args.page,
-                    )
-                )
-            if args.view not in (None, "raw") or any(
-                value is not None for value in (args.table, args.query, args.cell, args.page, args.output_offset, args.output_limit)
+            if args.view not in (None, "raw", "pdf") or any(
+                value is not None for value in (args.table, args.query, args.cell, args.output_offset, args.output_limit)
             ):
-                raise ValueError("only raw or PDF views are supported for artifact URLs")
-            return _read_success(
-                _render_artifact(
+                raise ValueError("artifact URLs only support raw or PDF views, without SQLite or notebook selectors")
+            if args.page is not None and args.view != "pdf":
+                raise ValueError("page requires an explicit PDF artifact view")
+            if args.view == "pdf" and args.byte_offset is not None:
+                raise ValueError("PDF artifact view does not accept byte arguments")
+            try:
+                outcome = _render_artifact(
                     args.path,
                     context=context,
                     services=services,
@@ -1637,8 +1618,11 @@ class ReadTool:
                     byte_offset=args.byte_offset,
                     byte_limit=args.byte_limit,
                     view=args.view,
+                    page=args.page,
                 )
-            )
+            except CancelledError:
+                return ToolFailure(self.definition.name, error="read cancelled", execution=ConfirmedStop(cancellation_signalled=True))
+            return _read_success(outcome)
         if args.path.startswith(VOIDCODE_TRANSCRIPT_PREFIX):
             outcome = _render_transcript(
                 args.path,

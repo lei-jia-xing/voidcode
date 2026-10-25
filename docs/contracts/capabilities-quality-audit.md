@@ -2204,3 +2204,25 @@ reads with extraction patched to fail confirmed raw and byte reads never invoke
 it; image byte reads returned the requested byte cursor rather than attachment
 output. No tests added. Artifact full-read cancellation and remaining read
 projection semantics still need review.
+
+## One artifact dispatch path with cancellation between pages
+
+Merged the duplicated raw/PDF invocation branches into one renderer call. A
+single ingress block rejects unsupported format selectors, page without an
+explicit PDF view, and byte arguments with an explicit PDF view. Removed the
+private renderer's redundant byte_limit/byte_offset combination validation;
+that constraint is already validated by invocation ingress.
+
+The shared artifact page fetch now observes the existing abort signal before
+each store read. Stdlib CancelledError carries that local stop through the
+renderer; the one dispatch boundary returns the same typed confirmed read
+cancellation as native files/directories. This covers full-PDF materialization
+and line-offset scanning without adding per-loop cancellation implementations
+or a new exception class. Cached first pages remain reused.
+
+Ruff, formatting and targeted type checking passed; 97 existing file/format/
+artifact/coverage tests passed in 1.10 seconds. A scripted multi-page PDF store
+cancelled after page one: no second store read or PDF extraction occurred, and
+the result was ToolFailure with confirmed cancellation. No tests added.
+Remaining archive decompression and artifact/transcript projection scope is
+still recorded separately; the complete capability audit is not yet achieved.
