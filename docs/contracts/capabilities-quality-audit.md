@@ -25,7 +25,7 @@ not establish source review.
 | `files/glob_tool.py` | Reviewed: strict ingress, root-relative patterns, traversal/ignore rules, bounded path collection, ordering/error results and cooperative cancellation |
 | `files/grep_tool.py` | Reviewed: strict ingress, literal/regex matching and filters, bounded line/context/result collection, immutable rendering, error handling and cooperative cancellation |
 | `files/read_formats.py` | Reviewed: bounded notebook/SQLite/PDF views, source snapshot semantics, pagination/recovery, signature-only image handling, read-only transactions and extractor cleanup |
-| `files/read_tool.py` | Partial: strict ingress, PDF recovery and typed/error-visible bounded directory materialization reviewed; archive member identity/byte bounds and clipped-line recovery reviewed; native file stream/hash/binary bounds and read cancellation ingress reviewed; tool documentation and transcript query ingress reviewed; remaining artifact/transcript projections, native clipped-line recovery, archive metadata/modes, directory cancellation and result metadata pending |
+| `files/read_tool.py` | Partial: strict ingress, PDF recovery and typed/error-visible bounded directory materialization reviewed; archive member identity/byte bounds and clipped-line recovery reviewed; native file stream/hash/binary bounds and read cancellation ingress reviewed; tool documentation and transcript query ingress reviewed; remaining artifact/transcript projections, native clipped-line recovery, archive metadata/modes and result metadata pending; directory cancellation reviewed |
 | `files/write_tool.py` | Reviewed: hash/containment/symlink/atomic replace/cancellation; fail visibly on mode errors and always clean temporary files |
 | `frontmatter.py` | Reviewed source/consumers: safe YAML, duplicate/string-key validation, framing/body/bounds; shared parser tests |
 | `providers/__init__.py` | Reviewed: shared registration/facts/view wiring and ExitStack-owned provider teardown |
@@ -2066,3 +2066,22 @@ bodies. There is no hidden truncated diff preview requiring a separate recovery
 protocol. Both module inventory rows are now reviewed. Native reads, exec and
 provider adapters still have their separately recorded pending scope; this is
 not full capability or project-gate completion.
+
+## Directory scan cancellation
+
+Directory traversal now checks the invocation's existing abort signal while
+consuming scandir entries, and before entering recursive scans. `takewhile`
+stops iteration without a custom exception or cancellation state machine; the
+existing scandir context manager closes the iterator. After materialization,
+the renderer returns the same typed confirmed cancellation as native file
+reads rather than a successful partial directory tree. Bounded rendering of
+already-selected entries needs no additional asynchronous mechanism.
+
+Ruff, formatting and targeted source type checking passed; 97 existing
+file/format/artifact/coverage tests passed in 1.01 seconds. A real 50-entry
+directory with cancellation injected on the third scandir entry stopped at
+three entries, closed the iterator and returned ToolFailure with confirmed
+cancellation. No tests added. Blocking individual OS calls are still limited
+by OS completion; this adds cooperative cancellation between observations.
+Native clipped-line recovery and remaining artifact/archive semantics still
+need review.

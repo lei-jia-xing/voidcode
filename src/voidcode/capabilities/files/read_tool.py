@@ -17,6 +17,7 @@ import zipfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from io import TextIOWrapper
+from itertools import takewhile
 from pathlib import Path
 from typing import IO, ClassVar, Literal, cast, final
 from urllib.parse import parse_qs
@@ -999,7 +1000,7 @@ def _relative_age(mtime: float) -> str:
     return f"{int(seconds // (86400 * 365))}y ago"
 
 
-def _tree_entries(directory: Path, limit: int) -> tuple[list[tuple[Path, os.stat_result]], int]:
+def _tree_entries(directory: Path, limit: int, *, cancelled: Callable[[], bool]) -> tuple[list[tuple[Path, os.stat_result]], int]:
     count = 0
 
     def observe(entry: os.DirEntry[str]) -> tuple[Path, os.stat_result]:
@@ -1011,23 +1012,23 @@ def _tree_entries(directory: Path, limit: int) -> tuple[list[tuple[Path, os.stat
     with os.scandir(directory) as entries:
         selected = heapq.nsmallest(
             limit,
-            (observe(entry) for entry in entries if entry.name not in _TREE_IGNORE_DIRS),
+            (observe(entry) for entry in takewhile(lambda _: not cancelled(), entries) if entry.name not in _TREE_IGNORE_DIRS),
             key=lambda item: (-item[1].st_mtime, item[0].name),
         )
     return selected, count
 
 
-def _materialize_tree(root: Path, *, max_depth: int, per_dir_limit: int, entry_limit: int) -> tuple[_TreeNode, bool]:
+def _materialize_tree(root: Path, *, max_depth: int, per_dir_limit: int, entry_limit: int, cancelled: Callable[[], bool]) -> tuple[_TreeNode, bool]:
     """Build a bounded recency-sorted tree; failed reads are never empty directories."""
     budget = entry_limit
     truncated = False
 
     def walk(directory: Path, depth: int, mtime: float = 0.0) -> _TreeNode:
         nonlocal budget, truncated
-        if budget <= 0:
+        if budget <= 0 or cancelled():
             truncated = True
             return _TreeNode(directory.name, True, mtime=mtime)
-        entries, count = _tree_entries(directory, min(per_dir_limit, budget))
+        entries, count = _tree_entries(directory, min(per_dir_limit, budget), cancelled=cancelled)
         children: list[_TreeNode] = []
         for entry, info in entries:
             if budget <= 0:
@@ -1047,13 +1048,19 @@ def _materialize_tree(root: Path, *, max_depth: int, per_dir_limit: int, entry_l
     return walk(root, 0), truncated
 
 
-def _render_directory(root: Path, *, label: str) -> _ReadOutcome:
+def _render_directory(root: Path, *, label: str, context: ToolContext) -> _ReadOutcome | ToolFailure:
+    def cancelled() -> bool:
+        return context.abort_signal is not None and context.abort_signal.cancelled
+
     tree, truncated = _materialize_tree(
         root,
         max_depth=DIRECTORY_MAX_DEPTH,
         per_dir_limit=DIRECTORY_PER_DIR_LIMIT,
         entry_limit=DIRECTORY_ENTRY_LIMIT,
+        cancelled=cancelled,
     )
+    if cancelled():
+        return ToolFailure("read", error="read cancelled", execution=ConfirmedStop(cancellation_signalled=True))
     lines = [f"{label}/"]
     entry_count = 0
 
@@ -1633,7 +1640,8 @@ class ReadTool:
                 raise ValueError("directories do not accept format views or selectors")
             if args.offset is not None or args.limit is not None:
                 raise ValueError("directory trees do not support offset or limit")
-            return _read_success(_render_directory(candidate, label=relative_path))
+            outcome = _render_directory(candidate, label=relative_path, context=context)
+            return outcome if isinstance(outcome, ToolFailure) else _read_success(outcome)
         if not candidate.is_file():
             raise ValueError(f"read only supports regular files: {args.path}")
         with candidate.open("rb") as source:
