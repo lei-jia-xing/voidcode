@@ -43,7 +43,7 @@ not establish source review.
 | `providers/native/config.py` | Reviewed: strict ingress, field/table wiring, typed converters, env resolution, custom names, credential exclusivity and representations; removed dead framework/default paths |
 | `providers/native/errors.py` | Reviewed: classified errors, SDK text extraction and structured retry hints; removed prose scheduling and duplicate conversion functions |
 | `providers/native/google_native.py` | Partial: SDK timeout/transport errors, usage, owned-client cache, stream ownership/chunk cancellation and identity tool mapping reviewed; OAuth and remaining wire semantics pending; dead attachment branch removed, caller cancellation prompt with documented bounded SDK teardown lag |
-| `providers/native/model_catalog.py` | Reviewed static catalog fields/lookups and consumers; removed entire unreferenced remote discovery implementation |
+| `providers/native/model_catalog.py` | Reviewed static catalog fields/lookups and consumers; strict Pydantic data ingress replaces permissive field conversion; removed entire unreferenced remote discovery implementation |
 | `providers/native/model_catalog_data.json` | Pending consumer/data-contract review |
 | `providers/native/model_routing.py` | Reviewed: routed alias/catalog fallback, typed unsupported wires, serialized cache creation and teardown |
 | `providers/native/naming.py` | Reviewed source/callers: provider normalization, preserved model casing, table-derived labels/reservations and unknown-id diagnostics; removed dead canonical-reference wrapper |
@@ -1954,3 +1954,28 @@ Manual probes confirmed SDK stream identity, direct close on blocked-read
 cancellation in under one second, HTTP 429 classification, and parser-error
 redaction of private document/message strings. No tests added or live vendor
 calls used. Broader native adapter source reconciliation remains pending.
+
+## Model catalog typed ingress without field-by-field conversion
+
+ProviderModelMetadata now uses the existing Pydantic validated-dataclass path,
+as ContextPriceTier already did. Reusable constrained scalar annotations define
+positive integer limits, strict optional booleans/nonempty strings and finite
+nonnegative prices. String collections accept JSON arrays and retain immutable
+tuples internally. Removed six permissive conversion helpers, the duplicate
+allowed-field table and the 29-field manual construction map. Model-specific
+loader errors identify provider/model; absent optional facts still remain None.
+
+Wrong types, negative/nonfinite prices, unknown fields and malformed list items
+now fail rather than quietly becoming unknown or being filtered out. This is
+packaged data ingress, not a runtime compatibility path. No new dependency. Net
+production source reduction: 68 lines. The dev-time generator already validates
+its output through this runtime loader before writing a snapshot.
+
+Ruff, formatting and targeted type checking passed. Existing data/generator/
+thinking/usage tests passed 42 tests, and auth/catalog/dispatch/panels/streaming/
+reasoning/lifecycle/error consumer tests passed 157 tests (38.74 seconds, local
+loopback permitted). Compared every packaged row against the committed loader:
+all 1170 model payloads were identical. Six malformed row probes failed visibly;
+False, zero price and missing/unknown values stayed distinct. No tests added.
+The broader data provenance/consumer audit and tokenizer disposition remain
+pending; this establishes loader behavior, not full capability completion.
