@@ -1214,10 +1214,11 @@ def _archive_children(members: list[tuple[str, int, bool]], prefix: str) -> list
         head, _, tail = rest.partition("/")
         if not head:
             continue
-        if tail:
-            children.setdefault(head, (0, True))
-        else:
-            children[head] = (size, is_dir)
+        child = (0, True) if tail else (size, is_dir)
+        previous = children.get(head)
+        if previous is not None and previous[1] != child[1]:
+            raise ValueError(f"archive path is both a file and directory: {prefix + '/' if prefix else ''}{head}")
+        children[head] = child
     return sorted((name, size, is_dir) for name, (size, is_dir) in children.items())
 
 
@@ -1328,6 +1329,8 @@ def _render_archive_members(
         or any(name == normalized_inner and dir_flag for name, _, dir_flag in members)
     )
     if is_directory:
+        if any(name == normalized_inner and not dir_flag for name, _, dir_flag in members):
+            raise ValueError(f"archive path is both a file and directory: {normalized_inner}")
         children = _archive_children(members, normalized_inner)
         if offset > max(1, len(children)):
             raise ValueError(f"Offset {offset} is out of range for this archive directory ({len(children)} entries)")

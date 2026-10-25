@@ -2147,3 +2147,19 @@ with no gaps/duplicates; seven-entry limits and out-of-range offsets were also
 checked. No tests added. Count limits alone do not establish byte-bounded output
 for unusually long member names, and compressed TAR scan work/cancellation and
 file/directory name collisions still need reconciliation.
+
+## Archive file/directory identity conflicts
+
+Archive children now reject a path that is simultaneously a file and an
+explicit/implicit directory, independent of member ordering. Direct reads of
+such a path also fail rather than preferring descendants and hiding the file.
+The same child map detects conflicts; no new identity registry or heuristic
+precedence was added. Repeated file entries still retain the existing last
+member identity/size semantics.
+
+Ruff, formatting and targeted type checking passed; 97 existing file/format/
+artifact/coverage tests passed in 1.04 seconds. Real ZIP/TAR probes rejected
+conflicts in both root listings and selected-member reads. Additional manual
+probes covered reversed member ordering, explicit directory conflicts and
+last-size behavior for repeated files. No tests added. Long-name output bounds
+and compressed archive scan resource/cancellation limits remain pending.
