@@ -169,7 +169,7 @@ def test_same_session_reload_switches_generation_and_preserves_state(tmp_path: P
         assert "v2" in second_dispatch_tools[PROBE_TOOL]
         assert core.session(session.session_id).active_revision_id == result.revision_id
 
-        with SqliteStore(tmp_path / "state" / "kernel-v1.sqlite3") as store:
+        with SqliteStore(tmp_path / "state" / "voidcode.db") as store:
             rows = {row.owner: row for row in store.plugin_state_rows("session", session.session_id)}
             assert rows[PLUGIN_ID].schema_version == 1
             assert rows[PLUGIN_ID].payload == {"note": "v1"}
@@ -178,7 +178,7 @@ def test_same_session_reload_switches_generation_and_preserves_state(tmp_path: P
         # The very next turn continues automatically in the new generation and writes its state.
         assert core.run("probe the new revision", session_id=session.session_id).status == "completed"
         assert _tool_outputs(core, session.session_id)[2] == "probe=v2"
-        with SqliteStore(tmp_path / "state" / "kernel-v1.sqlite3") as store:
+        with SqliteStore(tmp_path / "state" / "voidcode.db") as store:
             row = _owner_row(store, "session", session.session_id)
             assert row.payload == {"note": "v2"}
 
@@ -216,7 +216,7 @@ def test_failed_candidate_keeps_the_old_generation(tmp_path: Path, defect: str) 
         assert second.status == "completed"
         assert second.revision_id == before
         assert _tool_outputs(core, session.session_id)[-1] == "probe=v1"
-        with SqliteStore(tmp_path / "state" / "kernel-v1.sqlite3") as store:
+        with SqliteStore(tmp_path / "state" / "voidcode.db") as store:
             row = _owner_row(store, "session", session.session_id)
             assert row.schema_version == 1
             assert row.payload == {"note": "v1"}
@@ -293,7 +293,7 @@ def test_disable_pauses_owner_state_and_reenable_restores_the_paused_copy(tmp_pa
         disabled_tools = _advertised_tools(server.requests[-1])
         assert PROBE_TOOL not in disabled_tools and DEACTIVATE_TOOL not in disabled_tools
 
-        with SqliteStore(tmp_path / "state" / "kernel-v1.sqlite3") as store:
+        with SqliteStore(tmp_path / "state" / "voidcode.db") as store:
             row = _owner_row(store, "session", session.session_id)
             assert row.payload == {"note": "v1", "paused": True, "tip": tip}
             assert row.schema_version == 1
@@ -306,7 +306,7 @@ def test_disable_pauses_owner_state_and_reenable_restores_the_paused_copy(tmp_pa
         assert enabled.data is not None
         assert _owner_list(enabled.data, "migrated_owners") == []
         assert _owner_list(enabled.data, "deactivated_owners") == []
-        with SqliteStore(tmp_path / "state" / "kernel-v1.sqlite3") as store:
+        with SqliteStore(tmp_path / "state" / "voidcode.db") as store:
             row = _owner_row(store, "session", session.session_id)
             assert row.schema_version == 1
             assert row.payload == {"note": "v1", "paused": True, "tip": tip}
@@ -402,7 +402,7 @@ def test_new_observer_subscription_never_receives_old_facts(tmp_path: Path) -> N
         assert switched.status == "ok", switched.error
         assert core.run("write v2", session_id=session.session_id).status == "completed"
 
-        with SqliteStore(tmp_path / "state" / "kernel-v1.sqlite3") as store:
+        with SqliteStore(tmp_path / "state" / "voidcode.db") as store:
             facts = [event.sequence for event in store.events(session.session_id) if event.event_type == "core.tool_completed"]
             old_facts = [sequence for sequence in facts if sequence <= pre_activation_tip]
             new_facts = [sequence for sequence in facts if sequence > pre_activation_tip]
@@ -422,7 +422,7 @@ def test_new_observer_subscription_never_receives_old_facts(tmp_path: Path) -> N
 def test_failed_cold_start_adopts_nothing_and_retries_after_the_source_is_fixed(tmp_path: Path) -> None:
     source = tmp_path / "plugin"
     write_reload_plugin(source, tool_output="v1", factory_error=True)
-    database = tmp_path / "state" / "kernel-v1.sqlite3"
+    database = tmp_path / "state" / "voidcode.db"
     with _server([_turn(_call("probe-1", PROBE_TOOL)), _turn(output="recovered")]) as server:
         _configure(tmp_path / "workspace", server, source)
         with pytest.raises(ValueError, match="factory failed"):

@@ -107,7 +107,7 @@ def iter_event_blocks(events: Iterable[HistoryEvent]) -> Iterator[str]:
         if block is None:
             continue
         if getattr(event, "payload_truncated", False):
-            block += "\n[payload truncated by the core's event bound]"
+            block += "\n[payload truncated by event bound]"
         yield block
 
 
@@ -151,7 +151,7 @@ def render_history_page(
             cursor_sequence = event.sequence
             continue
         if getattr(event, "payload_truncated", False):
-            block += "\n[payload truncated by the core's event bound]"
+            block += "\n[payload truncated by event bound]"
         block_offset = pending_offset
         raw = block.encode("utf-8")[block_offset:]
         pending_offset = 0

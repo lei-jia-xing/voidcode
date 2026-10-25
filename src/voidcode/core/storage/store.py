@@ -334,7 +334,10 @@ def _verify_existing_file(path: Path, *, supported: frozenset[int] | None = None
         cursor = probe.execute("SELECT magic, schema_version FROM kernel_identity WHERE id = 1")
         row = cursor.fetchone()
         if row is None or row[0] != SCHEMA_MAGIC or (enforce_version and row[1] not in expected):
-            raise ForeignDatabaseError(f"unsupported database identity in {path}: expected ({SCHEMA_MAGIC!r}, {sorted(expected)}), got {row!r}")
+            raise ForeignDatabaseError(
+                f"database is not a valid voidcode database: unsupported identity in {path}: "
+                f"expected ({SCHEMA_MAGIC!r}, {sorted(expected)}), got {row!r}"
+            )
         recorded = int(row[1])
         cursor = probe.execute("SELECT name FROM sqlite_master WHERE type='table'")
         tables = {r[0] for r in cursor.fetchall()}
@@ -433,7 +436,7 @@ def _verify_existing_file(path: Path, *, supported: frozenset[int] | None = None
             raise ForeignDatabaseError(f"unsupported workspace_state schema in {path}: missing {required_workspace_cols - workspace_cols}")
         return recorded
     except sqlite3.Error as exc:
-        raise ForeignDatabaseError(f"unsupported database file or missing identity: {path}") from exc
+        raise ForeignDatabaseError(f"database is not a valid voidcode database: unsupported database file or missing identity: {path}") from exc
     finally:
         probe.close()
 
@@ -2033,7 +2036,7 @@ class SqliteStore:
                 identity_row = self._connection.execute("SELECT schema_version FROM kernel_identity WHERE id = 1").fetchone()
                 live_schema = int(identity_row[0])
                 if live_schema != SCHEMA_VERSION:
-                    raise StoreConflict(f"schema {live_schema} cannot be adopted by this core")
+                    raise StoreConflict(f"schema {live_schema} cannot be adopted")
 
                 acting_was_running = False
                 if session_id is None:
@@ -2347,7 +2350,7 @@ class SqliteStore:
                     target_revision_id,
                     canonical_json(
                         {
-                            "reason": "the core that owned this run is gone; adoption recovered the session at its last committed boundary",
+                            "reason": "the process that owned this run is gone; adoption recovered the session at its last committed boundary",
                             "stop_cause": "shutdown",
                             "logical_turn": logical_turn,
                             "eligible_owners": eligible_owners,

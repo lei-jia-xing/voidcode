@@ -53,7 +53,7 @@ def test_fresh_state_without_config_opens_providerless_and_keeps_commands(tmp_pa
             core.governed_model_query("fresh-session", "hello")
 
         assert not (workspace / "voidcode.json").exists()
-        assert (state / "kernel-v1.sqlite3").is_file()
+        assert (state / "voidcode.db").is_file()
         assert list((state / "private").glob("*.json"))
 
 
@@ -110,7 +110,7 @@ def test_existing_revision_restores_without_live_config_and_reload_stays_strict(
 def test_existing_database_without_a_workspace_revision_stays_strict(tmp_path: Path) -> None:
     workspace, state = _fresh_workspace(tmp_path)
     state.mkdir(parents=True)
-    with SqliteStore(state / "kernel-v1.sqlite3") as store:
+    with SqliteStore(state / "voidcode.db") as store:
         assert store.workspace_current(str(workspace)) is None
     with pytest.raises(FileNotFoundError, match="configuration not found"):
         open_core(workspace, state_dir=state)

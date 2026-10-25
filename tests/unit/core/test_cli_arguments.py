@@ -18,7 +18,7 @@ from voidcode.core.storage.store import SqliteStore
 def _show_fixture(workspace: Path, state_dir: Path, session_id: str) -> str:
     workspace.mkdir(parents=True, exist_ok=True)
     state_dir.mkdir(parents=True, exist_ok=True)
-    with SqliteStore(state_dir / "kernel-v1.sqlite3") as store:
+    with SqliteStore(state_dir / "voidcode.db") as store:
         revision_id = store.put_revision({"marker": "cli-boundary"})
         store.record_workspace_revision(str(workspace.resolve()), revision_id)
         store.create_session(session_id, str(workspace.resolve()), revision_id)
@@ -57,3 +57,12 @@ def test_removed_tui_command_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as refused:
         main(["tui", "--workspace", str(workspace.resolve())])
     assert refused.value.code == 2
+
+
+def test_state_directory_structure(tmp_path: Path) -> None:
+    from voidcode.core.bootstrap import state_directory
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    state_dir = state_directory(workspace)
+    assert state_dir.parent.name == "voidcode"

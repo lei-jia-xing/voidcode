@@ -85,7 +85,7 @@ A plugin is a Python package directory whose `__init__.py` exports `create_plugi
 ## Configuration & State
 
 - **Configuration**: `voidcode.json` at the workspace root, and only that file. The core rejects a legacy `.voidcode.json` explicitly and performs no conversion. See [`docs/configuration.md`](./docs/configuration.md).
-- **State**: `$XDG_STATE_HOME/voidcode/kernel-v1/<workspace-sha256>/`, containing `kernel-v1.sqlite3`, `artifacts/` (tool-output artifacts), `private/` (the 0600 configuration snapshot carrying credentials), `kernel-images/`, and `supervisor/`. The state directory must live outside the workspace; `--state-dir` overrides it.
+- **State**: `$XDG_STATE_HOME/voidcode/<workspace-sha256>/`, containing `voidcode.db`, `artifacts/` (tool-output artifacts), `private/` (the 0600 configuration snapshot carrying credentials), `kernel-images/`, and `supervisor/`. The state directory must live outside the workspace; `--state-dir` overrides it.
 - **Persistence**: session history is an append-only SQLite event stream. There is no fork, undo, revert, checkout, or import: clients are commit-once ledgers over durable facts.
 - **Credentials**: provider `api_key` values live only in the private snapshot; revisions and events carry digests, never secrets.
 

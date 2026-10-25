@@ -185,7 +185,7 @@ class CoreTuiApp:
         #: The capability revision the displayed catalog came from; slash dispatch
         #: echoes it verbatim. Rendered overlays carry their own captured revision.
         self.catalog_revision: str = ""
-        self.status_line = "Connecting to core..."
+        self.status_line = "Connecting to server..."
         self._sse_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         #: Owns the current generation's SSE connection so quit can wake a blocked idle read
@@ -250,7 +250,7 @@ class CoreTuiApp:
             self.catalog_cache = []
             self.catalog_revision = ""
             self.status_line = f"Catalog load failed: {_safe(exc)}"
-            raise RuntimeError(f"Failed to fetch command catalog from core transport: {exc}") from exc
+            raise RuntimeError(f"Failed to fetch command catalog from server: {exc}") from exc
 
     def _start_sse_stream(self) -> None:
         generation = self._generation

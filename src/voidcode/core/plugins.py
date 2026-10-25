@@ -325,7 +325,7 @@ class PluginRuntime:
         for tool in plugin_instance.tools:
             name = tool.definition.name
             if name in RESERVED_TOOL_NAMES:
-                raise ValueError(f"Tool '{name}' in plugin {plugin_id} is a reserved core tool name")
+                raise ValueError(f"Tool '{name}' in plugin {plugin_id} is a reserved tool name")
             if name in seen_tools or name in self._tools:
                 raise ValueError(f"Plugin {plugin_id} registers duplicate tool name: {name}")
             seen_tools.add(name)
@@ -517,7 +517,7 @@ class PluginRuntime:
 
     def require_artifacts(self) -> ArtifactStore:
         if self._artifacts is None:
-            raise RuntimeError("the core did not attach an artifact store to this runtime")
+            raise RuntimeError("artifact store is not attached to this runtime")
         return self._artifacts
 
     def _open_lease(

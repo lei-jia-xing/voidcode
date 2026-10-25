@@ -202,7 +202,7 @@ _CORE_COMMAND_SPECS: tuple[tuple[str, str, Mapping[str, object], tuple[ToolEffec
         (ToolEffect.READ,),
         False,
     ),
-    ("status", "Show core and workspace status", {"type": "object", "additionalProperties": False}, (ToolEffect.READ,), False),
+    ("status", "Show workspace status", {"type": "object", "additionalProperties": False}, (ToolEffect.READ,), False),
     ("help", "Show available commands and documentation", {"type": "object", "additionalProperties": False}, (ToolEffect.READ,), False),
 )
 _CORE_COMMAND_NAMES = frozenset(name for name, _d, _s, _e, _g in _CORE_COMMAND_SPECS)
@@ -293,7 +293,7 @@ class _Snapshot:
         runtime_tools = tuple(plugin_runtime.tools)
         for tool in runtime_tools:
             if tool.name in native:
-                raise ValueError(f"plugin tool {tool.name!r} collides with a reserved core tool")
+                raise ValueError(f"plugin tool {tool.name!r} collides with a reserved tool")
         definitions: dict[str, ToolDefinition] = {tool.name: tool for tool in runtime_tools}
         definitions.update(native)
         return _Snapshot(
@@ -434,10 +434,10 @@ class Core:
             try:
                 fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:
-                raise RuntimeError("another core owns this workspace") from exc
+                raise RuntimeError("another process owns this workspace") from exc
             self._lease_fd = lease
             state_dir.mkdir(parents=True, exist_ok=True)
-            self.store = SqliteStore(state_dir / "kernel-v1.sqlite3")
+            self.store = SqliteStore(state_dir / "voidcode.db")
             resources.callback(self.store.close)
             runtime = PluginRuntime(
                 plugins,
@@ -1797,7 +1797,7 @@ class Core:
 
     def _ensure_open(self) -> None:
         if self._closed:
-            raise RuntimeError("core is closed")
+            raise RuntimeError("engine is closed")
 
     def _check_session(self, session: SessionRecord) -> None:
         if session.workspace != str(self.workspace) or session.active_revision_id != self.revision_id:
@@ -1818,7 +1818,7 @@ class Core:
         except jsonschema.ValidationError as err:
             return CommandResult(status="error", error=f"Command arguments failed schema: {err.message}")
         if self._admits is None:
-            return CommandResult(status="error", error="capability activation is unavailable in this core")
+            return CommandResult(status="error", error="capability activation is unavailable")
         if self.config.policy.read_only:
             return CommandResult(status="error", error="read-only policy denies capability activation")
         session = self.session(session_id)
@@ -1955,7 +1955,7 @@ class Core:
         """
         admits = self._admits
         if admits is None:
-            raise ValueError("capability activation is unavailable in this core")
+            raise ValueError("capability activation is unavailable")
         admission = admits()
         # Only the private configuration is pinned here; the revision row is inserted atomically
         # with the activation commit, after the candidate runtime reported its metadata.
@@ -1967,7 +1967,7 @@ class Core:
         snapshot = load_private_snapshot(self._state_dir, target_revision_id)
         admits = self._admits
         if admits is None:
-            raise ValueError("capability activation is unavailable in this core")
+            raise ValueError("capability activation is unavailable")
         return admits(config=config_from_snapshot(snapshot), revision_id=target_revision_id)
 
     def _prepare_activation(self, snapshot: _Snapshot, *, admission: Admission, source: str) -> _PreparedActivation:
@@ -4046,7 +4046,7 @@ class Core:
 
             # Hard bound check strictly AFTER contributions
             if sum(len(json.dumps(encode_message(message), allow_nan=False).encode("utf-8")) for message in messages) > 256 * 1024:
-                raise ValueError("context exceeded the core's hard bound; explicit compaction is required")
+                raise ValueError("context exceeded hard bound; explicit compaction is required")
 
         return tuple(messages)
 

@@ -968,7 +968,7 @@ def test_active_run_concurrency_and_cancellation_isolation(tmp_path: Path) -> No
 
     # The real side effect happened exactly once, and the interruption is durable.
     assert (workspace / "mut.txt").read_text(encoding="utf-8") == "mutated\n"
-    with SqliteStore(state / "kernel-v1.sqlite3") as store:
+    with SqliteStore(state / "voidcode.db") as store:
         checkpoint = store.checkpoint("session-a")
         assert checkpoint is not None
         assert checkpoint.kind != "ready"
@@ -1042,7 +1042,7 @@ def test_active_run_blocked_in_real_provider_survives_midrun_control(tmp_path: P
     usage_report = _cli(workspace, state, "usage", "provider-blocked")
     assert usage_report["turn_count"] == 2, usage_report
     assert usage_report["has_unknown_usage"] is False, usage_report
-    with SqliteStore(state / "kernel-v1.sqlite3") as store:
+    with SqliteStore(state / "voidcode.db") as store:
         stored, _ = store.plugin_state(_GOV_PLUGIN_ID, "session", "provider-blocked")
         assert stored is not None and stored["value"] == "committed_during_provider_wait"
 
@@ -1148,7 +1148,7 @@ def test_command_committed_during_context_rpc_does_not_shift_dispatch_refs(tmp_p
             assert finished["payload"]["status"] == "completed", finished
             assert finished["payload"]["output"] == "after the race", finished
 
-    with SqliteStore(state / "kernel-v1.sqlite3") as store:
+    with SqliteStore(state / "voidcode.db") as store:
         events = store.events("context-race")
         intent = next(event for event in events if event.event_type == "core.provider_intent")
         model_turn = next(event for event in events if event.event_type == "core.model_turn")
@@ -1193,7 +1193,7 @@ def test_lease_identity_and_workspace_isolation(tmp_path: Path) -> None:
         assert cmd_res["data"]["actor"] == "client"  # Authentic context actor, not forged_actor
 
     # Verify in DB: state stored strictly under gov-plugin, not forged_owner
-    with SqliteStore(state / "kernel-v1.sqlite3") as store:
+    with SqliteStore(state / "voidcode.db") as store:
         assert store.plugin_state("forged_owner", "session", "auth-session")[0] is None
         real_state, _ = store.plugin_state(_GOV_PLUGIN_ID, "session", "auth-session")
         assert real_state is not None
@@ -1208,7 +1208,7 @@ def test_lease_identity_and_workspace_isolation(tmp_path: Path) -> None:
         _cli(ws2, state, "create-session", "--session-id", "ws2-session")
         _cli(ws2, state, "invoke", "ws2-session", "gov_write_cmd", "--arguments", '{"value": "ws2_data", "scope": "workspace"}')
 
-    with SqliteStore(state / "kernel-v1.sqlite3") as store:
+    with SqliteStore(state / "voidcode.db") as store:
         ws1_state, _ = store.plugin_state(_GOV_PLUGIN_ID, "workspace", str(workspace.resolve()))
         ws2_state, _ = store.plugin_state(_GOV_PLUGIN_ID, "workspace", str(ws2.resolve()))
         assert ws1_state is not None and ws1_state["value"] == "ws1_data"
@@ -1241,7 +1241,7 @@ def test_root_read_only_denies_internal_staging_without_side_effects(tmp_path: P
         assert any("clear_budget:" in r for r in rejections)
         assert server.requests == []
 
-    with SqliteStore(state / "kernel-v1.sqlite3") as store:
+    with SqliteStore(state / "voidcode.db") as store:
         stored, _ = store.plugin_state(_GOV_PLUGIN_ID, "session", "ro-session")
         assert stored is None or "illegal" not in stored
         events = store.events("ro-session")
@@ -1410,7 +1410,7 @@ def test_invalid_provider_finish_fails_loudly_but_keeps_the_bill(tmp_path: Path)
         assert usage_report["input_tokens"] == 120, usage_report
         assert usage_report["output_tokens"] == 45, usage_report
 
-        with SqliteStore(state / "kernel-v1.sqlite3") as store:
+        with SqliteStore(state / "voidcode.db") as store:
             events = store.events("finish-session")
             assert [event.event_type for event in events if event.event_type == "core.model_turn"]
             receipt_owner_events = [
@@ -1456,7 +1456,7 @@ def test_durable_claim_crash_recovery_and_prefix_preservation(tmp_path: Path) ->
         _cli(workspace, state, "create-session", "--session-id", "cont-crash-session")
 
         # Test idempotency key deduplication
-        with SqliteStore(state / "kernel-v1.sqlite3") as store:
+        with SqliteStore(state / "voidcode.db") as store:
             revision_id = store.session("cont-crash-session").active_revision_id
             cid1 = store.enqueue_continuation(
                 "cont-001",
@@ -1516,7 +1516,7 @@ def test_durable_claim_crash_recovery_and_prefix_preservation(tmp_path: Path) ->
 
             # Terminal commit finalized the claim atomically: no row stays
             # pending or claimed, so no later drain can re-run the action.
-            with SqliteStore(state / "kernel-v1.sqlite3") as store:
+            with SqliteStore(state / "voidcode.db") as store:
                 assert store.pending_continuations("cont-crash-session") == ()
                 assert store.claimed_continuations("cont-crash-session") == ()
         finally:
@@ -1561,7 +1561,7 @@ def test_idle_command_enqueue_drives_continuation_automatically(tmp_path: Path) 
         prompt = json.dumps(server.requests[0]["messages"], ensure_ascii=False)
         assert "queued_followup" in prompt, prompt
 
-        with SqliteStore(state / "kernel-v1.sqlite3") as store:
+        with SqliteStore(state / "voidcode.db") as store:
             assert store.pending_continuations("auto-drive-session") == ()
             assert store.claimed_continuations("auto-drive-session") == ()
 
@@ -1590,7 +1590,7 @@ def test_continuation_chain_budget_is_inherited_across_drains(tmp_path: Path) ->
     with _provider(replies) as server:
         _configure(workspace, server, source, approval_mode="yolo")
         _cli(workspace, state, "create-session", "--session-id", "chain-session")
-        with SqliteStore(state / "kernel-v1.sqlite3") as store:
+        with SqliteStore(state / "voidcode.db") as store:
             store.enqueue_continuation(
                 "chain-cont",
                 _GOV_PLUGIN_ID,
@@ -1639,7 +1639,7 @@ def test_ordered_cancel_and_enqueue_keep_the_right_rows(tmp_path: Path) -> None:
         assert kept["status"] == "ok", kept
         kept_id = kept["data"]["continuation_id"]
         assert len(server.requests) == 1, server.requests
-        with SqliteStore(state / "kernel-v1.sqlite3") as store:
+        with SqliteStore(state / "voidcode.db") as store:
             assert store.continuation_status(kept_id) == "completed", kept_id
             assert store.pending_continuations("order-session") == ()
             assert store.claimed_continuations("order-session") == ()
@@ -1648,7 +1648,7 @@ def test_ordered_cancel_and_enqueue_keep_the_right_rows(tmp_path: Path) -> None:
         assert dropped["status"] == "ok", dropped
         dropped_id = dropped["data"]["continuation_id"]
         assert len(server.requests) == 1, server.requests
-        with SqliteStore(state / "kernel-v1.sqlite3") as store:
+        with SqliteStore(state / "voidcode.db") as store:
             assert store.continuation_status(dropped_id) == "cancelled", dropped_id
 
 
@@ -1673,7 +1673,7 @@ def test_owner_cancel_stops_own_claimed_run_without_next_turn(tmp_path: Path) ->
     with _provider(replies) as server:
         _configure(workspace, server, source, observer_source=observer_source, approval_mode="yolo")
         _cli(workspace, state, "create-session", "--session-id", "owner-cancel-session")
-        with SqliteStore(state / "kernel-v1.sqlite3") as store:
+        with SqliteStore(state / "voidcode.db") as store:
             store.enqueue_continuation(
                 "owner-claim",
                 _GOV_PLUGIN_ID,
@@ -1713,7 +1713,7 @@ def test_owner_cancel_stops_own_claimed_run_without_next_turn(tmp_path: Path) ->
             assert json.loads(foreign[1])["status"] == "ok", foreign[1].decode()
             time.sleep(0.05)
             assert worker.is_alive(), "a foreign owner cancelled another owner's run"
-            with sqlite3.connect(state / "kernel-v1.sqlite3") as conn:
+            with sqlite3.connect(state / "voidcode.db") as conn:
                 foreign_row = conn.execute("SELECT status FROM continuations WHERE continuation_id = ?", ("owner-claim",)).fetchone()
             assert foreign_row == ("claimed",), foreign_row
             assert len(server.requests) == 1, server.requests
@@ -1740,7 +1740,7 @@ def test_owner_cancel_stops_own_claimed_run_without_next_turn(tmp_path: Path) ->
     # The native effect happened exactly once and the next turn was never billed.
     assert (workspace / "owner_cancel.txt").read_text(encoding="utf-8") == "mutated\n"
     assert len(server.requests) == 1, server.requests
-    with SqliteStore(state / "kernel-v1.sqlite3") as store:
+    with SqliteStore(state / "voidcode.db") as store:
         assert store.continuation_status("owner-claim") == "cancelled"
         assert store.pending_continuations("owner-cancel-session") == ()
         assert store.claimed_continuations("owner-cancel-session") == ()
@@ -1782,7 +1782,7 @@ def test_root_action_budget_shares_main_and_child_dispatches(tmp_path: Path) -> 
         assert shown["status"] == "interrupted", shown
         assert len(server.requests) == 3, (len(server.requests), shown)
 
-    with SqliteStore(state / "kernel-v1.sqlite3") as store:
+    with SqliteStore(state / "voidcode.db") as store:
         checkpoint = store.checkpoint("fanout-session")
         assert checkpoint is not None
         root = str(checkpoint.payload["root_id"])
@@ -1791,7 +1791,7 @@ def test_root_action_budget_shares_main_and_child_dispatches(tmp_path: Path) -> 
         events = store.events("fanout-session")
         intents = [event for event in events if event.event_type == "core.provider_intent"]
         assert len(intents) == 3, intents
-    with sqlite3.connect(state / "kernel-v1.sqlite3") as conn:
+    with sqlite3.connect(state / "voidcode.db") as conn:
         rows = conn.execute(
             "SELECT continuation_id, status, root_id, run_id FROM continuations WHERE session_id = ?",
             ("fanout-session",),
@@ -1831,7 +1831,7 @@ def test_user_stop_cancels_claim_without_auto_resume(tmp_path: Path) -> None:
         _configure(workspace, server, source, approval_mode="yolo")
         _cli(workspace, state, "create-session", "--session-id", "user-stop-session")
 
-        with SqliteStore(state / "kernel-v1.sqlite3") as store:
+        with SqliteStore(state / "voidcode.db") as store:
             store.enqueue_continuation(
                 "cont-user-stop",
                 _GOV_PLUGIN_ID,
@@ -1955,7 +1955,7 @@ def test_two_same_owner_facts_in_one_commit_do_not_cas_conflict(tmp_path: Path) 
 
         # Every fact-carrying event has its own receipt row, so neither fact can
         # be silently dropped or redelivered later.
-        with SqliteStore(state / "kernel-v1.sqlite3") as store:
+        with SqliteStore(state / "voidcode.db") as store:
             facts = [
                 event
                 for event in store.events("two-fact-session")

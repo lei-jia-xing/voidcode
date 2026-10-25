@@ -27,7 +27,7 @@ class CoreModelConfig(BaseModel):
     def _validate_model(cls, v: str | None) -> str | None:
         if v is not None:
             if not v.strip():
-                raise ValueError("core config model.model must be a non-empty string")
+                raise ValueError("config model.model must be a non-empty string")
             return v.strip()
         return v
 
@@ -134,15 +134,19 @@ class CoreConfig(BaseModel):
     @classmethod
     def _validate_schema_version(cls, v: Any) -> int:
         if type(v) is not int or v != CONFIG_SCHEMA_VERSION:
-            raise ValueError(f"core config schema_version must be {CONFIG_SCHEMA_VERSION}")
+            raise ValueError(f"config schema_version must be {CONFIG_SCHEMA_VERSION}")
         return v
 
 
 def parse_core_config(payload: object) -> CoreConfig:
     """Validate an untrusted ``voidcode.json`` payload."""
     if not isinstance(payload, dict):
-        raise ValueError("core config must be an object")
+        raise ValueError("config must be an object")
     try:
         return CoreConfig.model_validate(payload)
     except ValidationError as err:
+        for error in err.errors():
+            if error.get("type") == "extra_forbidden":
+                field = ".".join(str(p) for p in error.get("loc", ()))
+                raise ValueError(f"unsupported field: {field}") from err
         raise ValueError(str(err)) from err

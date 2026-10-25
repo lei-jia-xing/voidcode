@@ -110,7 +110,7 @@ async def _validation_error_handler(_request: Request, exc: RequestValidationErr
 
 
 async def _unhandled_handler(request: Request, exc: Exception) -> Response:
-    logger.error("unhandled core transport failure on %s", request.scope.get("path", ""), exc_info=exc)
+    logger.error("unhandled transport failure on %s", request.scope.get("path", ""), exc_info=exc)
     return _error(HTTPStatus.INTERNAL_SERVER_ERROR, "internal server error")
 
 
@@ -240,7 +240,7 @@ class CoreTransportApp(FastAPI):
 
     def _core_or_503(self) -> Core:
         if self._core is None:
-            raise HttpError(503, "core is not started")
+            raise HttpError(503, "server is not started")
         return self._core
 
     def _require_serving(self) -> None:
@@ -590,7 +590,7 @@ class CoreTransportApp(FastAPI):
         if core is not None:
             revision_id = core.revision_id
         elif self._workspace is not None and self._state_dir is not None:
-            database = self._state_dir / "kernel-v1.sqlite3"
+            database = self._state_dir / "voidcode.db"
             if database.is_file():
                 try:
                     found_revision, _found_payload, _ = await asyncio.to_thread(inspect_existing_workspace, database, str(self._workspace))

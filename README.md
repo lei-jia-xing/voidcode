@@ -137,7 +137,7 @@ For an in-depth explanation, see the [Architecture Overview](./docs/architecture
 ## Configuration & State
 
 - **Configuration**: `voidcode.json` only. A legacy `.voidcode.json` is rejected explicitly and never converted.
-- **State**: `$XDG_STATE_HOME/voidcode/kernel-v1/<workspace-sha256>/kernel-v1.sqlite3`, next to `private/` (the 0600 configuration snapshot). `--state-dir` overrides it; it must be outside the workspace.
+- **State**: `$XDG_STATE_HOME/voidcode/<workspace-sha256>/voidcode.db`, next to `private/` (the 0600 configuration snapshot). `--state-dir` overrides it; it must be outside the workspace.
 - **No migration**: legacy session databases and configuration from earlier architectures are neither imported nor auto-deleted.
 
 ## Development & Testing

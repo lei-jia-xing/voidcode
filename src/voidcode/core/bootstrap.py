@@ -38,7 +38,7 @@ from .storage.store import SCHEMA_VERSION, EventDraft, SqliteStore, canonical_js
 def state_directory(workspace: Path) -> Path:
     identity = hashlib.sha256(os.fsencode(workspace.resolve(strict=True))).hexdigest()
     root = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state")))
-    return root / "voidcode" / "kernel-v1" / identity
+    return root / "voidcode" / identity
 
 
 def load_config(workspace: Path, *, allow_missing: bool = False) -> CoreConfig:
@@ -66,8 +66,8 @@ def open_core(
         raise ValueError("workspace must be a directory")
     state_dir = state_directory(workspace) if state_dir is None else state_dir.resolve()
     if state_dir.is_relative_to(workspace):
-        raise ValueError("core state must be outside the workspace writable by file tools")
-    database = state_dir / "kernel-v1.sqlite3"
+        raise ValueError("state directory must be outside the workspace writable by file tools")
+    database = state_dir / "voidcode.db"
 
     # Read-only inspection first: a fresh state directory must not write anything before
     # configuration is validated.
@@ -105,7 +105,7 @@ def open_core(
         # A restarted core restores the persisted revision, its recorded configuration and
         # credentials, then imports the CURRENT plugin source at those recorded locations.
         if current_payload is None or recorded_schema is None:
-            raise ValueError(f"workspace revision {current_revision} disappeared from the core database")
+            raise ValueError(f"workspace revision {current_revision} disappeared from the database")
         if recorded_schema != SCHEMA_VERSION:
             raise ValueError(f"workspace state is at schema {recorded_schema}; this build reads schema {SCHEMA_VERSION}")
         snapshot = load_private_snapshot(state_dir, current_revision)
@@ -145,7 +145,7 @@ def adopt_generation(*, workspace: Path, state_dir: Path, session_id: str | None
     workspace = workspace.resolve(strict=True)
     if not workspace.is_dir():
         raise ValueError("workspace must be a directory")
-    database = state_dir / "kernel-v1.sqlite3"
+    database = state_dir / "voidcode.db"
     with _workspace_lease(workspace):
         store = SqliteStore(database)
         try:
@@ -213,7 +213,7 @@ def adopt_generation(*, workspace: Path, state_dir: Path, session_id: str | None
                             "core",
                             "core",
                             {
-                                "reason": "the core that owned this run is gone; adoption recovered the session at its last committed boundary",
+                                "reason": "the process that owned this run is gone; adoption recovered the session at its last committed boundary",
                                 "stop_cause": "shutdown",
                                 "logical_turn": logical_turn if isinstance(logical_turn, str) else "",
                                 "eligible_owners": list(fact_observers.get("run_finished", ())),
@@ -288,7 +288,7 @@ def _workspace_lease(workspace: Path) -> Iterator[None]:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise RuntimeError("another core owns this workspace") from exc
+            raise RuntimeError("another process owns this workspace") from exc
         yield
     finally:
         os.close(descriptor)

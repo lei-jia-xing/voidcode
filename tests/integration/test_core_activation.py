@@ -104,7 +104,7 @@ def _await(predicate, process: subprocess.Popen[str], *, timeout: float = _CRASH
 
 
 def _revision_of(state: Path) -> str:
-    connection = sqlite3.connect(f"{(state / 'kernel-v1.sqlite3').resolve().as_uri()}?mode=ro", uri=True)
+    connection = sqlite3.connect(f"{(state / 'voidcode.db').resolve().as_uri()}?mode=ro", uri=True)
     try:
         row = connection.execute("SELECT active_revision_id FROM workspace_state LIMIT 1").fetchone()
         assert row is not None, "workspace has no recorded revision"
@@ -114,7 +114,7 @@ def _revision_of(state: Path) -> str:
 
 
 def _session_row(state: Path, session_id: str) -> tuple[str, str]:
-    connection = sqlite3.connect(f"{(state / 'kernel-v1.sqlite3').resolve().as_uri()}?mode=ro", uri=True)
+    connection = sqlite3.connect(f"{(state / 'voidcode.db').resolve().as_uri()}?mode=ro", uri=True)
     try:
         row = connection.execute("SELECT active_revision_id, status FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
         assert row is not None, "session is not durable"
@@ -256,7 +256,7 @@ def _await_durable(predicate, process: subprocess.Popen[str], *, timeout: float 
 
 
 def _session_status(state: Path, session_id: str) -> str:
-    connection = sqlite3.connect(f"{(state / 'kernel-v1.sqlite3').resolve().as_uri()}?mode=ro", uri=True)
+    connection = sqlite3.connect(f"{(state / 'voidcode.db').resolve().as_uri()}?mode=ro", uri=True)
     try:
         row = connection.execute("SELECT status FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
         return "" if row is None else str(row[0])
@@ -265,7 +265,7 @@ def _session_status(state: Path, session_id: str) -> str:
 
 
 def _tool_texts(state: Path, session_id: str) -> list[str]:
-    connection = sqlite3.connect(f"{(state / 'kernel-v1.sqlite3').resolve().as_uri()}?mode=ro", uri=True)
+    connection = sqlite3.connect(f"{(state / 'voidcode.db').resolve().as_uri()}?mode=ro", uri=True)
     try:
         rows = connection.execute(
             "SELECT payload_json FROM session_events WHERE session_id = ? AND event_type = 'core.tool_completed'",
@@ -277,7 +277,7 @@ def _tool_texts(state: Path, session_id: str) -> list[str]:
 
 
 def _state_row(state: Path, session_id: str) -> tuple[int, str]:
-    connection = sqlite3.connect(f"{(state / 'kernel-v1.sqlite3').resolve().as_uri()}?mode=ro", uri=True)
+    connection = sqlite3.connect(f"{(state / 'voidcode.db').resolve().as_uri()}?mode=ro", uri=True)
     try:
         row = connection.execute(
             "SELECT version, payload_json FROM plugin_state WHERE scope = 'session' AND scope_key = ? AND owner = ?",
@@ -290,7 +290,7 @@ def _state_row(state: Path, session_id: str) -> tuple[int, str]:
 
 
 def _activation_commits(state: Path, session_id: str) -> int:
-    connection = sqlite3.connect(f"{(state / 'kernel-v1.sqlite3').resolve().as_uri()}?mode=ro", uri=True)
+    connection = sqlite3.connect(f"{(state / 'voidcode.db').resolve().as_uri()}?mode=ro", uri=True)
     try:
         row = connection.execute(
             "SELECT COUNT(*) FROM session_events WHERE session_id = ? AND event_type = 'core.activation_committed'",
@@ -302,7 +302,7 @@ def _activation_commits(state: Path, session_id: str) -> int:
 
 
 def _event_payloads(state: Path, session_id: str, event_type: str) -> list[dict]:
-    connection = sqlite3.connect(f"{(state / 'kernel-v1.sqlite3').resolve().as_uri()}?mode=ro", uri=True)
+    connection = sqlite3.connect(f"{(state / 'voidcode.db').resolve().as_uri()}?mode=ro", uri=True)
     try:
         rows = connection.execute(
             "SELECT payload_json FROM session_events WHERE session_id = ? AND event_type = ? ORDER BY sequence",
@@ -314,7 +314,7 @@ def _event_payloads(state: Path, session_id: str, event_type: str) -> list[dict]
 
 
 def _event_sequences(state: Path, session_id: str, event_type: str) -> list[int]:
-    connection = sqlite3.connect(f"{(state / 'kernel-v1.sqlite3').resolve().as_uri()}?mode=ro", uri=True)
+    connection = sqlite3.connect(f"{(state / 'voidcode.db').resolve().as_uri()}?mode=ro", uri=True)
     try:
         rows = connection.execute(
             "SELECT sequence FROM session_events WHERE session_id = ? AND event_type = ? ORDER BY sequence",

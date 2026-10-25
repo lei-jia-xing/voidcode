@@ -162,9 +162,9 @@ declares `read`+`execute` and flows through the existing approval/read-only gate
 
 ## State Directory
 
-`$XDG_STATE_HOME/voidcode/kernel-v1/<sha256-of-workspace-path>/` (default `~/.local/state/...`) holds:
+`$XDG_STATE_HOME/voidcode/<sha256-of-workspace-path>/` (default `~/.local/state/...`) holds:
 
-- `kernel-v1.sqlite3` — sessions, events, checkpoints, revisions, confirmations;
+- `voidcode.db` — sessions, events, checkpoints, revisions, confirmations;
 - `private/<revision>.json` — the 0600 configuration snapshot (credentials included), never referenced by events or revisions;
 - `kernel-images/<digest>/` — immutable installation snapshots; the elected image a revision pins resolves here;
 - `supervisor/` — the supervisor's journal and scratch (observability only; SQLite stays canonical). The control socket is ephemeral under `/tmp/voidcode-<uid>/`, derived from the state directory.

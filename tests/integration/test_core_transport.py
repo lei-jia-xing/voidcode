@@ -260,7 +260,7 @@ def test_cli_show_rescues_history_with_broken_config_and_broken_plugin(tmp_path:
     # Break both the config and the plugin source after history exists.
     (workspace / "voidcode.json").write_text("{not valid json", encoding="utf-8")
     (source / "hello_plugin.py").write_text("raise RuntimeError('broken plugin')\n", encoding="utf-8")
-    assert (state / "kernel-v1.sqlite3").is_file()
+    assert (state / "voidcode.db").is_file()
     shown = _cli(workspace, state, "show", "rescue-1", "--events")
     assert shown["session_id"] == "rescue-1"
     assert shown["status"] == "completed"

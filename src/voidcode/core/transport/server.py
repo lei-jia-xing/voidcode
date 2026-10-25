@@ -28,7 +28,7 @@ def serve_core(
     import uvicorn
 
     if host not in {"127.0.0.1", "::1", "localhost"}:
-        raise ValueError("core transport binds loopback only")
+        raise ValueError("transport binds loopback only")
     token = bearer_token or generate_bearer_token()
     frontend_dist = frontend_distribution()
     app = create_core_app(

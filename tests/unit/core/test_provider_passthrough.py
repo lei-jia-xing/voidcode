@@ -164,7 +164,7 @@ def _field_headers(server: OpenAILoopbackServer) -> list[dict[str, str]]:
 
 
 def _revision_payload(state: Path, revision_id: str) -> Mapping[str, object]:
-    connection = sqlite3.connect(f"{(state / 'kernel-v1.sqlite3').resolve().as_uri()}?mode=ro", uri=True)
+    connection = sqlite3.connect(f"{(state / 'voidcode.db').resolve().as_uri()}?mode=ro", uri=True)
     try:
         row = connection.execute("SELECT payload_json FROM revisions WHERE revision_id = ?", (revision_id,)).fetchone()
         assert row is not None, "revision is not durable"
@@ -248,6 +248,6 @@ def test_vendor_fields_reach_only_the_declaring_plugin(tmp_path: Path) -> None:
 
     # Public records carry only the generation's plugin composition, never a credential field.
     assert PROVIDER_PLUGIN in _revision_payload(state, revision_id)["plugins"]
-    database = b"".join(path.read_bytes() for path in sorted(state.glob("kernel-v1.sqlite3*")))
+    database = b"".join(path.read_bytes() for path in sorted(state.glob("voidcode.db*")))
     for marker in MARKERS:
         assert marker.encode("utf-8") not in database

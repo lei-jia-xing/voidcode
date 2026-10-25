@@ -116,7 +116,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         suggest_on_error=True,
     )
     client = parser.add_argument_group("terminal client (no command)")
-    client.add_argument("--server", metavar="URL", default=None, help="Attach to a running core instead of starting one")
+    client.add_argument("--server", metavar="URL", default=None, help="Attach to a running server instead of starting one")
     client.add_argument("--token", metavar="TOKEN", default=None, help="Bearer token for --server")
     #: The root `--session-id` keeps its own destination so it can never overwrite a command's own `--session-id`.
     client.add_argument(
@@ -156,7 +156,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     sessions.add_argument("--limit", type=int, default=100, metavar="N", help="Maximum sessions to list (default: 100)")
     show = commands.add_parser(
         "show",
-        help="Read durable session history without starting a core",
+        help="Read durable session history without starting a server",
         description="Read durable session history straight from SQLite: no config, runtime, or revision checks.",
     )
     show.add_argument("session_id", metavar="SESSION", help="Session to read")
@@ -275,9 +275,9 @@ def _show(workspace: Path, directory: Path, session_id: str, *, events: bool) ->
     """
     from .storage.store import open_read_only
 
-    database = directory / "kernel-v1.sqlite3"
+    database = directory / "voidcode.db"
     if not database.is_file():
-        raise FileNotFoundError("core database does not exist")
+        raise FileNotFoundError("database does not exist")
     connection = open_read_only(database)
     try:
         row = connection.execute(

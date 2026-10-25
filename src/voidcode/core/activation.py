@@ -256,7 +256,7 @@ def load_private_snapshot(state_dir: Path, revision_id: str) -> Mapping[str, obj
     if not path.is_file():
         raise FileNotFoundError(
             f"private configuration snapshot is missing for the active revision {revision_id} ({path}); "
-            "restore it from backup or start a fresh core state directory"
+            "restore it from backup or start a fresh state directory"
         )
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
@@ -368,7 +368,7 @@ def config_from_snapshot(snapshot: Mapping[str, object]) -> CoreConfig:
     """
     if snapshot.get("version") != PRIVATE_SNAPSHOT_VERSION:
         raise ValueError(
-            "private configuration snapshot predates this build; this build reads only its own snapshot shape: start a fresh core state directory"
+            "private configuration snapshot predates this build; this build reads only its own snapshot shape: start a fresh state directory"
         )
     missing = [name for name in ("providers", "model", "policy", "plugins") if name not in snapshot]
     if missing:

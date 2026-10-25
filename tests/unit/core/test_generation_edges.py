@@ -57,8 +57,15 @@ def create_plugin(config: Mapping[str, object]) -> Plugin:
 
 
 def _write(root: Path, body: str) -> Path:
+    import importlib
+    import shutil
+
     root.mkdir(parents=True, exist_ok=True)
+    pycache = root / "__pycache__"
+    if pycache.exists():
+        shutil.rmtree(pycache)
     (root / "__init__.py").write_text(body, encoding="utf-8")
+    importlib.invalidate_caches()
     return root
 
 
@@ -153,7 +160,7 @@ def test_plain_restart_and_adoption_refuse_schema_mismatch(tmp_path: Path) -> No
     _write(source, STATER.format(version=1))
     core = open_core(workspace, state_dir=state)
     assert core.invoke_command("s", "statep.touch", {}, expected_revision=core.revision_id).status == "ok"
-    with pytest.raises(RuntimeError, match="another core owns this workspace"):
+    with pytest.raises(RuntimeError, match="another process owns this workspace"):
         adopt_generation(workspace=workspace, state_dir=state, session_id="s")
     core.close()
 

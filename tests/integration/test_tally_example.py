@@ -121,7 +121,7 @@ def test_example_command_and_tool_share_durable_session_state(tmp_path: Path) ->
             assert run.status == "completed", run.as_payload()
             assert len(server.requests) == 2, server.requests
 
-            with SqliteStore(state / "kernel-v1.sqlite3") as store:
+            with SqliteStore(state / "voidcode.db") as store:
                 stored, _version = store.plugin_state("tally-counter", "session", "tally-session")
                 assert stored == {"schema_version": 1, "total": 8, "updates": 2}, stored
                 assert type(stored["total"]) is int

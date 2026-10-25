@@ -212,12 +212,12 @@ election); see `docs/contracts/core-upgrade.md`.
 Core state lives outside the workspace, at:
 
 ```text
-$XDG_STATE_HOME/voidcode/kernel-v1/<sha256-of-the-workspace-path>/
+$XDG_STATE_HOME/voidcode/<sha256-of-the-workspace-path>/
 ```
 
 (default `$XDG_STATE_HOME` is `~/.local/state`). It contains:
 
-- `kernel-v1.sqlite3` — sessions, append-only events, checkpoints, revisions, and confirmation records;
+- `voidcode.db` — sessions, append-only events, checkpoints, revisions, and confirmation records;
 - `private/<revision>.json` — the 0600 configuration snapshot for one revision, the only place provider credentials are stored.
 
 `--state-dir PATH` overrides the derived directory. The state directory must not be inside the workspace: the core refuses a state directory that the workspace's file tools could write to.
