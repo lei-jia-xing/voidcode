@@ -403,8 +403,8 @@ def _scan_stream(services: PluginServices, process_id: str, stream: _StreamName)
             return _StreamScan(lines=text.splitlines(keepends=True), truncated=not page.eof)
 
 
-def _wait_for_ready(services: PluginServices, process_id: str, *, pattern: str | None, timeout: float) -> bool | None:
-    """Whether the process printed `pattern`; `None` when no pattern was asked for.
+def _wait_for_ready(services: PluginServices, process_id: str, *, pattern: str | None, timeout: float, context: ToolContext) -> bool | None:
+    """Whether the process printed `pattern`; `None` when not requested or waiting was cancelled.
 
     Both streams are polled from the byte the last poll consumed, keeping the legacy tail window,
     and a process that exits first ends the wait without waiting out the whole timeout.
@@ -418,6 +418,8 @@ def _wait_for_ready(services: PluginServices, process_id: str, *, pattern: str |
         running = False
         drained = True
         for stream in ("stdout", "stderr"):
+            if context.abort_signal is not None and context.abort_signal.cancelled:
+                return None
             page = services.read_process_output(process_id, stream=stream, offset=offsets[stream], limit=_LOG_PAGE_BYTES)
             offsets[stream] += len(page.data)
             running = running or page.running
@@ -570,7 +572,7 @@ class BackgroundProcessTool:
                 args,
                 workspace=workspace,
                 services=services,
-                aborted=context.abort_signal is not None and context.abort_signal.cancelled,
+                context=context,
             )
         if isinstance(args, _LogsArgs):
             return self._logs(args, services=services)
@@ -580,8 +582,8 @@ class BackgroundProcessTool:
             return self._stop(args, services=services)
         return self._ps(services=services)
 
-    def _start(self, args: _StartArgs, *, workspace: Path, services: PluginServices, aborted: bool) -> ToolResult:
-        if aborted:
+    def _start(self, args: _StartArgs, *, workspace: Path, services: PluginServices, context: ToolContext) -> ToolResult:
+        if context.abort_signal is not None and context.abort_signal.cancelled:
             # Pre-flight refusal: a cancelled call launches no process, so nothing is unknown.
             message = "background_process start aborted before launching the process"
             return ToolFailure(
@@ -608,7 +610,7 @@ class BackgroundProcessTool:
         )
         records[handle.process_id] = record
         version = _write_records(services, records, version)
-        ready = _wait_for_ready(services, handle.process_id, pattern=args.ready_pattern, timeout=float(args.ready_timeout))
+        ready = _wait_for_ready(services, handle.process_id, pattern=args.ready_pattern, timeout=float(args.ready_timeout), context=context)
         current = _live_handle(services, handle.process_id) or handle
         running = current.running
         state = "running" if running else "exited"
@@ -620,7 +622,9 @@ class BackgroundProcessTool:
         guidance = _start_guidance(handle.process_id)
         readiness = ""
         if args.ready_pattern is not None and ready is not True:
-            if running:
+            if ready is None:
+                readiness = " Readiness wait was cancelled; the process was started. Use ps to check its current state."
+            elif running:
                 readiness = f" Readiness pattern {args.ready_pattern!r} was not observed within {args.ready_timeout}s; process is still running."
             else:
                 readiness = f" Process exited with code {current.exit_code} before readiness pattern {args.ready_pattern!r} appeared."

@@ -1674,3 +1674,23 @@ Ruff, formatting, full source type checking and 88 existing background/shell
 tests passed. Net reduction: 18 production lines and 15 test lines. Log scan
 cursors, readiness cancellation and remaining lifecycle semantics still need
 review; this does not mark all execution capabilities complete.
+
+## Background readiness cancellation
+
+Readiness polling now checks the live invocation cancellation signal before each
+stream read. Previously `_start` captured a boolean only before spawning, so a
+later cancellation could leave the call waiting the whole 30-second timeout.
+The start path now passes the invocation context instead of a stale boolean.
+
+Cancellation ends only the readiness wait. The already-started supervised
+process keeps its persisted identity and normal explicit stop control; success
+still reports the actual start and current handle. `ready=None` records that
+readiness was not determined, and prose distinguishes cancellation from a false
+pattern timeout. No new state fields or cancellation mechanism were added.
+
+Ruff, formatting, full source type checking and 88 existing background/shell
+tests passed. A manual scripted service cancelled after the first stream read
+with a 30-second requested timeout: start returned in under one second, retained
+the persisted identity, made only one output read and never called process stop.
+No tests added. Log cursor/scan bounds and other operation cancellation remain
+pending review.
