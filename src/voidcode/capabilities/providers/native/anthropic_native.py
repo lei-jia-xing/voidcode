@@ -770,16 +770,25 @@ def _thinking_payload(payload: dict[str, object], *, request: ProviderTurnReques
     if metadata is not None and metadata.supports_reasoning is False:
         return
     effort = normalize_reasoning_effort(request.reasoning_effort)
-    if isinstance(effort, int):
-        payload["thinking"] = {"type": "enabled", "budget_tokens": effort}
-        return
     if effort is None:
+        return
+    if effort in (0, "off"):
+        payload["thinking"] = {"type": "disabled"}
+        return
+    if isinstance(effort, int):
+        if effort < 1024:
+            raise ProviderExecutionError(
+                kind="unsupported_feature",
+                provider_name=request.provider_name or rule.provider,
+                model_name=request.model_name or "unknown",
+                message="Anthropic thinking budget must be zero (disabled) or at least 1024 tokens",
+                retryable=False,
+                fallback_allowed=True,
+            )
+        payload["thinking"] = {"type": "enabled", "budget_tokens": effort}
         return
     supported = metadata.supported_effort_levels if metadata is not None else None
     clamped = clamp_effort_to_supported(effort, supported)
-    if clamped == "off":
-        payload["thinking"] = {"type": "disabled"}
-        return
     if metadata is not None and metadata.supports_reasoning_effort:
         payload["thinking"] = {"type": "adaptive"}
         payload["output_config"] = {"effort": clamped}

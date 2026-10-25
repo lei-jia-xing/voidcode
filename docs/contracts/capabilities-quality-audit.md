@@ -2420,3 +2420,25 @@ old/new payload comparisons across model caps and integer budgets were exactly
 equal. No tests added or live vendor calls used. This proves the deleted cap
 calculation was redundant; it does not establish validity of arbitrary numeric
 thinking budgets, whose zero/minimum/output-cap protocol checks remain pending.
+
+## Anthropic explicit thinking budget boundaries
+
+Numeric zero now shares the existing off/none disabled-thinking path instead
+of sending an invalid enabled budget of zero. Positive explicit budgets below
+1024 fail with a typed unsupported-feature error and a concrete minimum;
+valid explicit budgets retain their value and do not modify the output cap.
+No clamping, inferred budget or model-name compatibility table was added.
+
+[Anthropic extended-thinking documentation](https://platform.claude.com/docs/en/build-with-claude/extended-thinking)
+defines the minimum. It also documents an interleaved-thinking exception to
+the usual budget<max_tokens relation, so that relation and model-specific
+accepted thinking modes remain server-validated rather than imposing an
+incorrect universal local cap. Explicit disabled requests likewise remain
+subject to model capability; the adapter does not substitute a guessed mode.
+
+Ruff, formatting and targeted type checking passed; 139 existing provider
+tests passed in 22.43 seconds with local loopback permission. Manual probes
+checked zero/off/none equivalence, budgets 1 and 1023 refusing locally, and
+1024 preserved alongside an unchanged 8192 output cap. No tests added or live
+vendor calls used. Anthropic usage unknown-state and remaining terminal/source
+reconciliation still need completion.
