@@ -16,7 +16,8 @@ from dataclasses import dataclass, field
 from typing import ClassVar
 from uuid import uuid4
 
-from voidcode.sdk.history import PAGE_BYTES, render_history_page, utf8_cut
+from voidcode.core.history_renderer import render_history_page, utf8_cut
+from voidcode.sdk.history import PAGE_BYTES
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.plugin import Plugin
 from voidcode.sdk.services import ChildOutcome, PluginServices

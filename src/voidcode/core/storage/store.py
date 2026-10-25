@@ -453,17 +453,6 @@ def _verify_existing_file(path: Path, *, supported: frozenset[int] | None = None
 READABLE_SCHEMA_VERSIONS = frozenset({SCHEMA_VERSION})
 
 
-def read_recorded_schema(database: Path) -> int | None:
-    """The schema version a database file records, or ``None`` when there is no database.
-
-    Read-only. Raises :class:`ForeignDatabaseError` for a file that is not a core database,
-    including one whose recorded version no supported transition can read.
-    """
-    if not database.exists():
-        return None
-    return _verify_existing_file(database, supported=READABLE_SCHEMA_VERSIONS)
-
-
 def open_read_only(database: Path) -> sqlite3.Connection:
     """Open one core database for inspection, with writes refused by the connection itself.
     Uses a ``mode=ro`` URI plus ``PRAGMA query_only``, after the same identity check a writer runs.
@@ -628,13 +617,6 @@ class SqliteStore:
                 (revision_id, now, canonical_text),
             )
         return revision_id
-
-    def revision_exists(self, revision_id: str) -> bool:
-        """Whether this generation was already published (its runtime metadata is recorded)."""
-        with self._lock:
-            self._check_open()
-            row = self._connection.execute("SELECT 1 FROM revisions WHERE revision_id = ?", (revision_id,)).fetchone()
-            return row is not None
 
     def revision(self, revision_id: str) -> Mapping[str, object]:
         """Fetch the payload of a revision by ID, returning an immutable mapping snapshot."""
@@ -864,12 +846,6 @@ class SqliteStore:
             self._check_open()
             cursor = self._connection.execute("DELETE FROM window_projections WHERE session_id = ?", (session_id,))
             return cursor.rowcount > 0
-
-    def clear_owner_projections(self, owner: str) -> int:
-        with self._lock:
-            self._check_open()
-            cursor = self._connection.execute("DELETE FROM window_projections WHERE owner = ?", (owner,))
-            return cursor.rowcount
 
     def claim_and_start_wakeup(
         self,
@@ -2555,46 +2531,6 @@ class SqliteStore:
                 return (None, 0)
             return (own_json_object(json.loads(row[0])), row[1])
 
-    def replace_plugin_state(
-        self,
-        owner: str,
-        scope: str,
-        scope_key: str,
-        payload: Mapping[str, object],
-        expected_version: int,
-    ) -> int:
-        """Optimistic CAS state replacement for a plugin owner."""
-        with self._lock:
-            self._check_open()
-            now = int(time.time() * 1000)
-            payload_json = canonical_json(payload)
-            if expected_version == 0:
-                try:
-                    self._connection.execute(
-                        """
-                        INSERT INTO plugin_state (scope, scope_key, owner, version, payload_json, updated_at)
-                        VALUES (?, ?, ?, 1, ?, ?)
-                        """,
-                        (scope, scope_key, owner, payload_json, now),
-                    )
-                    return 1
-                except sqlite3.IntegrityError as exc:
-                    raise StoreConflict(f"state already exists for owner {owner!r} in {scope}:{scope_key}") from exc
-            else:
-                cursor = self._connection.execute(
-                    """
-                    UPDATE plugin_state
-                    SET version = version + 1, payload_json = ?, updated_at = ?
-                    WHERE scope = ? AND scope_key = ? AND owner = ? AND version = ?
-                    """,
-                    (payload_json, now, scope, scope_key, owner, expected_version),
-                )
-                if cursor.rowcount == 0:
-                    raise StoreConflict(
-                        f"optimistic concurrency check failed for {owner!r} in {scope}:{scope_key}: expected version {expected_version}"
-                    )
-                return expected_version + 1
-
     def confirmation(self, request_id: str) -> ActionConfirmationRecord | None:
         """Fetch an action confirmation record by request ID."""
         with self._lock:
@@ -2848,69 +2784,6 @@ class SqliteStore:
             )
             row = cursor.fetchone()
             return None if row is None else (int(row[0]), int(row[1]))
-
-    def claim_continuations(
-        self,
-        session_id: str,
-        limit: int,
-        run_id: str,
-    ) -> tuple[ContinuationRecord, ...]:
-        """Atomically claim up to `limit` pending continuations for a session under run_id."""
-        with self._lock:
-            self._check_open()
-            now = int(time.time() * 1000)
-            capped_limit = max(1, limit)
-            in_transaction = False
-            try:
-                self._connection.execute("BEGIN IMMEDIATE")
-                in_transaction = True
-                cursor = self._connection.execute(
-                    """
-                    SELECT continuation_id, owner, session_id, source, run_id, revision_id,
-                           idempotency_key, root_id, status, payload_json, created_at, updated_at, role
-                    FROM continuations
-                    WHERE session_id = ? AND status = 'pending'
-                    ORDER BY created_at ASC
-                    LIMIT ?
-                    """,
-                    (session_id, capped_limit),
-                )
-                rows = cursor.fetchall()
-                records: list[ContinuationRecord] = []
-                for row in rows:
-                    cid = row[0]
-                    self._connection.execute(
-                        """
-                        UPDATE continuations
-                        SET status = 'claimed', run_id = ?, updated_at = ?
-                        WHERE continuation_id = ?
-                        """,
-                        (run_id, now, cid),
-                    )
-                    records.append(
-                        ContinuationRecord(
-                            continuation_id=row[0],
-                            owner=row[1],
-                            session_id=row[2],
-                            source=row[3],
-                            run_id=run_id,
-                            revision_id=row[5],
-                            idempotency_key=row[6],
-                            status="claimed",
-                            payload=own_json_object(json.loads(row[9])),
-                            created_at=row[10],
-                            updated_at=now,
-                            root_id=row[7],
-                            role=str(row[12]),
-                        )
-                    )
-                self._connection.execute("COMMIT")
-                in_transaction = False
-                return tuple(records)
-            except Exception:
-                if in_transaction:
-                    self._connection.execute("ROLLBACK")
-                raise
 
     def continuation_id_for_idempotency(self, session_id: str, owner: str, idempotency_key: str) -> str | None:
         """Return the durable continuation id already recorded for an idempotency key."""
