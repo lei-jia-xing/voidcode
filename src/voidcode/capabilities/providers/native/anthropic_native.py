@@ -165,15 +165,7 @@ class AnthropicMessagesTransport:
             result = self._sdk().messages.create(**cast(Any, payload), timeout=timeout_seconds)
         except AnthropicAPIError as exc:
             raise AnthropicTransportError(self._api_error_payload(exc)) from exc
-        if bool(payload.get("stream")):
-            return self._iter_sdk_stream(result)
         return result
-
-    def _iter_sdk_stream(self, stream: object) -> Iterator[object]:
-        try:
-            yield from cast(Iterator[object], stream)
-        except AnthropicAPIError as exc:
-            raise AnthropicTransportError(self._api_error_payload(exc)) from exc
 
 
 def _normalize_base_url(base_url: str | None) -> str:
@@ -497,6 +489,13 @@ class AnthropicMessagesProvider:
     def _map_exception(exc: Exception, *, provider_name: str, model_name: str, source: str) -> ProviderExecutionError:
         if isinstance(exc, ProviderExecutionError):
             return exc
+        if isinstance(exc, AnthropicAPIError):
+            return provider_execution_error_from_payload(
+                provider_name=provider_name,
+                model_name=model_name,
+                payload=AnthropicMessagesTransport._api_error_payload(exc),
+                source=source,
+            )
         if isinstance(exc, AnthropicTransportError):
             return provider_execution_error_from_payload(provider_name=provider_name, model_name=model_name, payload=exc.payload, source=source)
         known_network_failure = isinstance(exc, (httpx2.TransportError, AnthropicAPITimeoutError, AnthropicAPIConnectionError))

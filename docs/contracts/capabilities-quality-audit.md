@@ -1913,3 +1913,23 @@ delta and a duplicate tool start without emitting completed calls or success;
 a valid explicit empty input still completed correctly. No tests added. General
 stream terminal ordering, transport ownership and usage reconciliation remain
 pending source review.
+
+## Anthropic SDK stream close ownership
+
+Removed the generator wrapper around SDK streams. The shared timeout pump now
+receives the actual SDK iterator and can invoke its `close()` directly even
+while a worker is blocked reading. Previously closing an executing wrapper
+generator could fail without closing the SDK response, leaving a cancelled
+request's connection until its transport timeout. SDK stream API exceptions now
+map through the existing provider error boundary using the same error payload
+extractor; initial request errors retain their existing transport mapping.
+
+Installed Anthropic Stream implementation confirms it is an iterator with a
+response-closing `close()` method. No new stream wrapper/resource abstraction
+was added. Ruff, formatting and targeted type checking passed; 115 existing
+provider tests passed in 11.44 seconds with local loopback permission. A manual
+blocking SDK stand-in returned by transport identity closed on mid-read
+cancellation in under one second. A real SDK RateLimitError preserved status
+429, retry-after headers and rate_limit classification. No tests added or live
+vendor calls used. OpenAI has a similar wrapper plus separate SSE error
+normalization that still needs reconciliation.
