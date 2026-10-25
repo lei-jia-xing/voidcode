@@ -110,6 +110,8 @@ def _parse_marker_header(lines: list[str], index: int) -> tuple[str, str, str | 
     next_index = index + 1
     if next_index < len(lines) and lines[next_index].startswith("*** Move to:"):
         move_path = lines[next_index][len("*** Move to:") :].strip()
+        if not move_path:
+            raise ValueError("malformed patch: Move to requires a destination path")
         next_index += 1
     return ("update", path, move_path, next_index) if path else None
 
@@ -160,6 +162,8 @@ def _parse_marker_update_chunks(lines: list[str], index: int) -> tuple[tuple[_Ma
             else:
                 raise ValueError(f"malformed patch: update lines must start with space, + or -, got: {change_line}")
             current += 1
+        if not old_lines and not new_lines:
+            raise ValueError("malformed patch: empty update chunk")
         chunks.append(
             _MarkerChunk(
                 old_lines=tuple(old_lines),
@@ -197,6 +201,8 @@ def _parse_marker_patch(patch_text: str) -> tuple[_MarkerHunk, ...]:
             current = next_index
         else:
             chunks, current = _parse_marker_update_chunks(lines, next_index)
+            if not chunks and move_path is None:
+                raise ValueError("malformed patch: Update File requires update chunks or a move destination")
             hunks.append(_MarkerHunk(action="update", path=path, move_path=move_path, chunks=chunks))
 
     if not hunks:
@@ -352,8 +358,11 @@ def _apply_marker_patch(
         else:
             if expected_content is None:
                 raise ValueError(f"Failed to read file to update: {source}")
-            source_content = expected_content.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
-            content = _derive_marker_update_content_from_text(source_content, file_path=source, chunks=hunk.chunks)
+            content = expected_content.decode("utf-8")
+            if hunk.chunks:
+                content = _derive_marker_update_content_from_text(
+                    content.replace("\r\n", "\n").replace("\r", "\n"), file_path=source, chunks=hunk.chunks
+                )
             if hunk.move_path is None:
                 staged_contents[source] = content.encode("utf-8")
                 prepared.append(_PreparedMarkerChange(status="M", path=source.as_posix(), content=content, expected_content=expected_content))

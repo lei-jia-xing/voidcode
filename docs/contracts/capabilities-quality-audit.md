@@ -2518,3 +2518,14 @@ commit-race cases now inject writes after preparation. No tests added.
 
 Validation: 73 existing files unit tests passed; targeted Ruff and ty passed;
 CodeGraph synchronized. Full capability audit and project gate remain outstanding.
+
+### Patch parser: reject empty updates and preserve pure moves
+
+Empty Update File operations and empty @@ chunks now fail during parsing, as do
+Move to headers without a destination. Previously an empty update could report
+success and normalize CRLF despite containing no edit. Pure moves remain valid
+and bypass line normalization, preserving original UTF-8 file bytes.
+
+Validation: 73 existing files unit tests passed, four parser probes passed, and
+an actual pure move preserved CRLF bytes. Ruff/format and targeted ty passed;
+CodeGraph synchronized. No tests added.
