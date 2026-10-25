@@ -2339,3 +2339,19 @@ targeted type checking passed; 131 existing provider/data tests passed in
 sums, zero components, absent components and invalid boolean/negative thinking
 counts. No tests added or live vendor calls used. Remaining adapter and
 capability inventory scope still prevents full goal completion.
+
+## Google non-stream text projection shares the Part loop
+
+Removed the SDK response.text convenience read from propose_turn. Visible text
+is now collected alongside reasoning and tool calls in the existing Part loop.
+This avoids a second text scan and the SDK's warning on normal function-call
+parts, while retaining original signed Part metadata separately. Thought text
+stays in reasoning and does not enter visible output.
+
+Ruff, formatting and targeted type checking passed; 118 existing provider
+streaming/usage/lifecycle/error/thinking tests passed in 11.30 seconds with local
+loopback permission. A real SDK response subclass whose text accessor raises
+confirmed extraction of visible text, reasoning, call identity and signed
+metadata without invoking that accessor. No tests added or live vendor calls
+used. Signed replay for provider-omitted function IDs and remaining adapter
+reconciliation still need review; Google is not marked fully reviewed yet.

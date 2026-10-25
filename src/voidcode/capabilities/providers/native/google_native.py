@@ -486,7 +486,6 @@ class GoogleGenAIProvider:
                     fallback_allowed=True,
                     details={"source": "api", "reason": "malformed_response"},
                 )
-            text = getattr(response, "text", "") or ""
             raw_finish = getattr(candidates[0], "finish_reason", None)
             finish = self._finish_reason(raw_finish)
             # Missing and empty SDK values are not provider-reported reasons;
@@ -494,17 +493,17 @@ class GoogleGenAIProvider:
             finish_reason_reported = self._finish_reason_reported(raw_finish)
             tool_calls: list[ToolCall] = []
             reasoning_parts: list[str] = []
+            text_parts: list[str] = []
             ordinal = 0
             parts = list(self._parts(response))
             for part in parts:
+                text = getattr(part, "text", None)
                 if bool(getattr(part, "thought", False)):
-                    # The SDK's ``response.text`` skips thought parts, so the
-                    # non-streaming path must collect them here to persist the
-                    # same reasoning the streaming path emits as deltas.
-                    thought = getattr(part, "text", None)
-                    if isinstance(thought, str) and thought:
-                        reasoning_parts.append(thought)
+                    if isinstance(text, str) and text:
+                        reasoning_parts.append(text)
                     continue
+                if isinstance(text, str) and text:
+                    text_parts.append(text)
                 tool_call = self._tool_call_from_part(part, request, ordinal=ordinal)
                 if tool_call is not None:
                     tool_calls.append(tool_call)
@@ -514,7 +513,7 @@ class GoogleGenAIProvider:
                 metadata["finish_reason_raw"] = str(getattr(raw_finish, "name", raw_finish))
             return ProviderTurnResult(
                 tool_calls=tuple(tool_calls),
-                output=text,
+                output="".join(text_parts),
                 reasoning="".join(reasoning_parts) or None,
                 usage=self._usage(response),
                 done_reason=finish,
