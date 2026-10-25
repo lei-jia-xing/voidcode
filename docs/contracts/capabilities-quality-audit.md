@@ -44,7 +44,7 @@ not establish source review.
 | `providers/native/errors.py` | Reviewed: classified errors, SDK text extraction and structured retry hints; removed prose scheduling and duplicate conversion functions |
 | `providers/native/google_native.py` | Partial: SDK timeout/transport errors, usage, owned-client cache, stream ownership/chunk cancellation and identity tool mapping reviewed; OAuth and remaining wire semantics pending; dead attachment branch removed, caller cancellation prompt with documented bounded SDK teardown lag |
 | `providers/native/model_catalog.py` | Reviewed static catalog fields/lookups and consumers; strict Pydantic data ingress replaces permissive field conversion; removed entire unreferenced remote discovery implementation |
-| `providers/native/model_catalog_data.json` | Pending consumer/data-contract review |
+| `providers/native/model_catalog_data.json` | Reviewed packaged schema and generator/consumer contract: 35 providers/1170 rows, strict metadata, protocol/effort/limit/price consumers and scheduled snapshot PR; no live freshness claim |
 | `providers/native/model_routing.py` | Reviewed: routed alias/catalog fallback, typed unsupported wires, serialized cache creation and teardown |
 | `providers/native/naming.py` | Reviewed source/callers: provider normalization, preserved model casing, table-derived labels/reservations and unknown-id diagnostics; removed dead canonical-reference wrapper |
 | `providers/native/openai_native.py` | Partial: lifecycle/stream/error work and ordered gateway feedback reviewed; removed metadata mode/attachment scaffolding and unconsumed wire fingerprints; remaining transport/payload/replay source review pending |
@@ -1979,3 +1979,27 @@ all 1170 model payloads were identical. Six malformed row probes failed visibly;
 False, zero price and missing/unknown values stayed distinct. No tests added.
 The broader data provenance/consumer audit and tokenizer disposition remain
 pending; this establishes loader behavior, not full capability completion.
+
+## Catalog identity and packaged snapshot contract
+
+Retained documented case-insensitive catalog matching while making empty or
+colliding normalized provider/model keys explicit ingress errors. Previously
+`Model` and `model` rows could silently replace each other. Uses the existing
+result maps for collision detection; no additional registry or alias mechanism.
+
+Completed the packaged JSON data contract review alongside the generator,
+workflow and consumers: 35 providers/1170 model rows validate; limits/capability
+flags feed native requests, `api` feeds routed-wire selection, effort fields
+feed thinking controls, prices/context tiers feed report-time pricing, and
+model identifiers feed catalog panels. Generator output is validated by the
+same runtime loader before writing; the daily GitHub workflow generates and
+tests a snapshot PR, while runtime reads only the bundled resource. No local
+per-model override table is reintroduced. This review does not assert freshness
+or exact equality with a live upstream API response.
+
+Ruff, formatting and targeted type checking passed; 42 existing data/generator/
+thinking/usage tests passed in 2.82 seconds. Manual probes verified every
+normalized lookup returns its original metadata object and four empty/collision
+shapes fail visibly. No tests added. Original upstream casing is still folded
+by the generator under the existing documented catalog contract; vendor wire
+model names remain preserved by request/config paths.

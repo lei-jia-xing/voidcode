@@ -92,17 +92,23 @@ def _static_catalog_from_payload(data: object) -> dict[str, dict[str, ProviderMo
         raise ValueError("model_catalog_data.json must hold an object of providers")
     result: dict[str, dict[str, ProviderModelMetadata]] = {}
     for provider, models in cast(dict[str, object], data).items():
+        provider_key = provider.strip().lower()
+        if not provider_key or provider_key in result:
+            raise ValueError(f"empty or duplicate normalized catalog provider: {provider!r}")
         if not isinstance(models, dict):
             raise ValueError(f"model catalog provider {provider!r} must hold an object of models")
         per_provider: dict[str, ProviderModelMetadata] = {}
         for model_id, entry in models.items():
+            model_key = model_id.strip().lower()
+            if not model_key or model_key in per_provider:
+                raise ValueError(f"empty or duplicate normalized catalog model: {provider}/{model_id}")
             if not isinstance(entry, dict):
                 raise ValueError(f"model catalog entry {provider}/{model_id} must be an object")
             try:
-                per_provider[model_id.strip().lower()] = _MODEL_METADATA.validate_python(entry)
+                per_provider[model_key] = _MODEL_METADATA.validate_python(entry)
             except ValueError as exc:
                 raise ValueError(f"invalid model catalog entry {provider}/{model_id}: {exc}") from exc
-        result[provider.strip().lower()] = per_provider
+        result[provider_key] = per_provider
     return result
 
 
