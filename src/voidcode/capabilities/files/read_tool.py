@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import heapq
 import json
 import mimetypes
+import os
 import re
+import stat
 import tarfile
 import time
 import zipfile
@@ -965,17 +968,15 @@ ARCHIVE_LIST_LIMIT = 200
 MAX_ARCHIVE_MEMBER_BYTES = 1024 * 1024
 
 
-type _TreeNode = dict[str, object]
-
-
-def _int_field(node: _TreeNode, key: str) -> int:
-    value = node.get(key, 0)
-    return value if isinstance(value, int) else 0
-
-
-def _float_field(node: _TreeNode, key: str) -> float:
-    value = node.get(key, 0.0)
-    return float(value) if isinstance(value, (int, float)) else 0.0
+@dataclass(frozen=True, slots=True)
+class _TreeNode:
+    name: str
+    is_dir: bool
+    size: int = 0
+    mtime: float = 0.0
+    expanded: bool = False
+    omitted: int = 0
+    children: tuple[_TreeNode, ...] = ()
 
 
 #: Directory names pruned from a directory listing: they are almost never the
@@ -1006,60 +1007,56 @@ def _relative_age(mtime: float) -> str:
     return f"{int(seconds // (86400 * 365))}y ago"
 
 
-def _tree_entries(directory: Path) -> list[Path]:
-    try:
-        entries = [entry for entry in directory.iterdir() if entry.name not in _TREE_IGNORE_DIRS]
-    except OSError:
-        return []
+def _tree_entries(directory: Path, limit: int) -> tuple[list[tuple[Path, os.stat_result]], int]:
+    count = 0
 
-    def _mtime(entry: Path) -> float:
-        try:
-            return entry.stat().st_mtime
-        except OSError:
-            return 0.0
+    def observe(entry: os.DirEntry[str]) -> tuple[Path, os.stat_result]:
+        nonlocal count
+        info = entry.stat(follow_symlinks=False)
+        count += 1
+        return Path(entry.path), info
 
-    return sorted(entries, key=lambda entry: (-_mtime(entry), entry.name))
+    with os.scandir(directory) as entries:
+        selected = heapq.nsmallest(
+            limit,
+            (observe(entry) for entry in entries if entry.name not in _TREE_IGNORE_DIRS),
+            key=lambda item: (-item[1].st_mtime, item[0].name),
+        )
+    return selected, count
 
 
 def _materialize_tree(root: Path, *, max_depth: int, per_dir_limit: int, entry_limit: int) -> tuple[_TreeNode, bool]:
-    """Build a bounded tree node for ``root`` (recency-sorted, depth and entry capped)."""
+    """Build a bounded recency-sorted tree; failed reads are never empty directories."""
     budget = entry_limit
     truncated = False
 
-    def _walk(directory: Path, depth: int) -> _TreeNode:
+    def walk(directory: Path, depth: int, mtime: float = 0.0) -> _TreeNode:
         nonlocal budget, truncated
-        entries = _tree_entries(directory)
-        omitted = max(0, len(entries) - per_dir_limit)
-        node: _TreeNode = {"name": directory.name, "is_dir": True, "expanded": depth < max_depth, "omitted": omitted, "children": []}
+        if budget <= 0:
+            truncated = True
+            return _TreeNode(directory.name, True, mtime=mtime)
+        entries, count = _tree_entries(directory, min(per_dir_limit, budget))
         children: list[_TreeNode] = []
-        expanded = depth < max_depth
-        for entry in entries[:per_dir_limit]:
+        for entry, info in entries:
             if budget <= 0:
-                truncated = True
                 break
             budget -= 1
-            try:
-                is_dir = entry.is_dir()
-                size = 0 if is_dir else entry.stat().st_size
-                mtime = entry.stat().st_mtime
-            except OSError:
-                continue
-            child: _TreeNode = {"name": entry.name, "is_dir": is_dir, "size": size, "mtime": mtime, "expanded": False, "omitted": 0, "children": []}
-            if is_dir and expanded:
-                child = _walk(entry, depth + 1)
-                child["size"] = 0
-                child["mtime"] = mtime
-            elif not is_dir:
-                child["expanded"] = False
+            is_dir = stat.S_ISDIR(info.st_mode)
+            if is_dir and depth < max_depth:
+                child = walk(entry, depth + 1, info.st_mtime)
+            else:
+                child = _TreeNode(entry.name, is_dir, size=0 if is_dir else info.st_size, mtime=info.st_mtime)
+                truncated |= is_dir  # This directory's contents were not inspected.
             children.append(child)
-        node["children"] = children
-        return node
+        omitted = count - len(children)
+        truncated |= omitted > 0
+        return _TreeNode(directory.name, True, mtime=mtime, expanded=True, omitted=omitted, children=tuple(children))
 
-    return _walk(root, 0), truncated
+    return walk(root, 0), truncated
 
 
 def _render_directory(root: Path, *, label: str) -> _ReadOutcome:
-    tree, budget_truncated = _materialize_tree(
+    tree, truncated = _materialize_tree(
         root,
         max_depth=DIRECTORY_MAX_DEPTH,
         per_dir_limit=DIRECTORY_PER_DIR_LIMIT,
@@ -1070,40 +1067,32 @@ def _render_directory(root: Path, *, label: str) -> _ReadOutcome:
 
     def _emit(node: _TreeNode, prefix: str) -> None:
         nonlocal entry_count
-        children = node["children"]
-        assert isinstance(children, list)
+        children = node.children
         for index, child in enumerate(children):
-            assert isinstance(child, dict)
             last = index == len(children) - 1
             connector = "└── " if last else "├── "
-            is_dir = bool(child["is_dir"])
-            name = str(child["name"])
-            mtime = _float_field(child, "mtime")
+            is_dir = child.is_dir
+            name = child.name
+            mtime = child.mtime
             if is_dir:
                 lines.append(f"{prefix}{connector}{name}/  ({_relative_age(mtime)})")
             else:
-                lines.append(f"{prefix}{connector}{name} ({_human_size(_int_field(child, 'size'))}, {_relative_age(mtime)})")
+                lines.append(f"{prefix}{connector}{name} ({_human_size(child.size)}, {_relative_age(mtime)})")
             entry_count += 1
             if is_dir:
                 nested_prefix = f"{prefix}{'    ' if last else '│   '}"
-                nested = child["children"]
-                assert isinstance(nested, list)
-                if child["expanded"] and not nested:
+                if child.expanded and not child.children:
                     lines.append(f"{nested_prefix}└── (empty directory)")
                 _emit(child, nested_prefix)
-            omitted = _int_field(child, "omitted")
+            omitted = child.omitted
             if omitted:
                 lines.append(f"{prefix}{'    ' if last else '│   '}… {omitted} more")
 
     _emit(tree, "")
-    root_omitted = _int_field(tree, "omitted")
-    if root_omitted:
-        lines.append(f"… {root_omitted} more")
-    truncated = budget_truncated or root_omitted > 0
+    if tree.omitted:
+        lines.append(f"… {tree.omitted} more")
     if truncated:
-        lines.append(
-            f"… listing truncated at {DIRECTORY_ENTRY_LIMIT} entries / {DIRECTORY_PER_DIR_LIMIT} per directory; read a subdirectory to see the rest."
-        )
+        lines.append("… listing is incomplete; read a subdirectory to see omitted or unexpanded entries.")
     rendered = "\n".join(lines)
     content = f"Listed {entry_count} entr{'y' if entry_count == 1 else 'ies'} in {label}"
     content += "; listing is truncated." if truncated else "."

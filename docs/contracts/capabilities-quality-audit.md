@@ -25,7 +25,7 @@ not establish source review.
 | `files/glob_tool.py` | Reviewed: strict ingress, root-relative patterns, traversal/ignore rules, bounded path collection, ordering/error results and cooperative cancellation |
 | `files/grep_tool.py` | Reviewed: strict ingress, literal/regex matching and filters, bounded line/context/result collection, immutable rendering, error handling and cooperative cancellation |
 | `files/read_formats.py` | Reviewed: bounded notebook/SQLite/PDF views, source snapshot semantics, pagination/recovery, signature-only image handling, read-only transactions and extractor cleanup |
-| `files/read_tool.py` | Partial: strict complete-argument ingress and PDF full-text recovery reviewed; artifact/file/archive/directory/transcript projections and result metadata source audit pending |
+| `files/read_tool.py` | Partial: strict ingress, PDF recovery and typed/error-visible bounded directory materialization reviewed; artifact/file/archive/transcript projections, directory cancellation and result metadata audit pending |
 | `files/write_tool.py` | Reviewed: hash/containment/symlink/atomic replace/cancellation; fail visibly on mode errors and always clean temporary files |
 | `frontmatter.py` | Reviewed source/consumers: safe YAML, duplicate/string-key validation, framing/body/bounds; shared parser tests |
 | `providers/__init__.py` | Reviewed: shared registration/facts/view wiring and ExitStack-owned provider teardown |
@@ -1461,3 +1461,27 @@ or added. Manual calls with boolean offset, string limit, unknown field and
 limit=2001 all failed validation before resolving a nonexistent file. Ruff,
 formatting, full source type checking and CodeGraph sync passed. Implementation
 net reduction: 66 lines. Remaining read projection/metadata review stays open.
+
+
+## Typed directory observations and bounded selection
+
+Directory trees use a frozen internal dataclass instead of generic dictionaries,
+assertions and int/float fallback accessors. Scandir observes each entry's metadata
+once; standard-library heap selection retains only the requested most-recent
+candidates instead of sorting/materializing the whole directory. The listing
+observes symbolic links themselves and does not traverse their targets, retaining
+dangling links without treating them as missing target files.
+
+Filesystem enumeration/stat errors now propagate visibly rather than becoming
+empty directories or zero timestamps. Every nested omission contributes to the
+partial flag; global-budget omissions count actual undisplayed entries, and
+uninspected directories stay unexpanded instead of appearing empty. Guidance no
+longer attributes every incomplete listing to a fixed entry count.
+
+Validation: 94 existing format/file/artifact checks passed (0.91s), no tests added
+or changed. Manual nested overflow, exhausted budget, dangling-link and injected
+permission-error probes matched the stated behavior. Ruff, formatting, targeted
+source type checking and CodeGraph sync passed. A concurrent core/processes.py
+rewrite temporarily failed global type checking outside this change; that source
+was preserved separately. Directory cancellation and remaining read projections
+are still pending audit.
