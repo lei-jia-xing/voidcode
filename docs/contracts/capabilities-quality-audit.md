@@ -1891,3 +1891,25 @@ use and SDK-frozen metadata. A provider-result codec round trip also retained
 the blocks. Signatures were not emitted as visible text. No tests added and no
 live vendor calls used. Malformed stream index/duplicate block policy and
 remaining adapter transport/usage reconciliation are still pending review.
+
+## Anthropic stream index ingress and non-placeholder tool state
+
+Content start/delta events now require an explicit non-negative integer index;
+missing, string, boolean and negative values no longer silently address block
+zero. Repeated tracked tool/thinking start indices fail rather than replacing
+previous blocks. Tool input deltas must reference an existing started call,
+instead of manufacturing an incomplete accumulator and rejecting it later.
+
+With that invariant, accumulator identity/name/initial input are required typed
+fields. Removed nullable placeholder defaults, final missing-name/input checks,
+conditional delta identity emission and repeated final ID normalization. Net
+production reduction: 11 lines. This validates the tool/thinking states actually
+retained; it does not introduce a complete content-event state machine.
+
+Ruff, formatting and targeted provider type checking passed. Five existing
+provider modules passed 115 tests in 11.44 seconds with local loopback
+permission. Manual streams rejected four malformed index forms, an orphan input
+delta and a duplicate tool start without emitting completed calls or success;
+a valid explicit empty input still completed correctly. No tests added. General
+stream terminal ordering, transport ownership and usage reconciliation remain
+pending source review.

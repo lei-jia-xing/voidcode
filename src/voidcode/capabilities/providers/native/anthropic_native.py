@@ -280,10 +280,10 @@ def _response_metadata(payload: Mapping[str, object]) -> dict[str, object]:
 
 @dataclass(slots=True)
 class _ToolAccumulator:
-    tool_call_id: str | None = None
-    tool_name: str | None = None
+    tool_call_id: str
+    tool_name: str
+    initial_input: dict[str, object]
     fragments: list[str] = field(default_factory=list)
-    initial_input: dict[str, object] | None = None
 
     @property
     def arguments(self) -> str:
@@ -637,14 +637,18 @@ class AnthropicMessagesProvider:
                 if chunk.get("type") == "error" or chunk.get("error") is not None:
                     raise AnthropicTransportError(chunk)
                 event_type = chunk.get("type")
+                if event_type in {"content_block_start", "content_block_delta"}:
+                    index = chunk.get("index")
+                    if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+                        raise ValueError("provider content block index must be a non-negative integer")
                 if event_type == "message_start":
                     message = chunk.get("message")
                     if isinstance(message, Mapping):
                         metadata.update(_response_metadata(message))
                         latest_usage = _merge_usage(latest_usage, _usage(message))
                 elif event_type == "content_block_start":
-                    index_obj = chunk.get("index")
-                    index = index_obj if isinstance(index_obj, int) else 0
+                    if index in accumulators or index in thinking_blocks:
+                        raise ValueError("provider stream repeated a tool or thinking block index")
                     block = chunk.get("content_block")
                     if isinstance(block, Mapping) and block.get("type") in {"thinking", "redacted_thinking"}:
                         thinking_blocks[index] = dict(block)
@@ -668,8 +672,6 @@ class AnthropicMessagesProvider:
                         )
 
                 elif event_type == "content_block_delta":
-                    index_obj = chunk.get("index")
-                    index = index_obj if isinstance(index_obj, int) else 0
                     delta = chunk.get("delta")
                     if not isinstance(delta, Mapping):
                         continue
@@ -684,17 +686,16 @@ class AnthropicMessagesProvider:
                         block["signature"] = cast(str, block.get("signature", "")) + delta["signature"]
                     elif delta_type == "input_json_delta" and isinstance(delta.get("partial_json"), str):
                         fragment = delta["partial_json"]
-                        prior = accumulators.setdefault(index, _ToolAccumulator())
+                        prior = accumulators[index]
                         prior.fragments.append(fragment)
-                        if prior.tool_call_id:
-                            yield ProviderStreamEvent(
-                                kind="tool_call_delta",
-                                channel="tool",
-                                tool_call_id=prior.tool_call_id,
-                                arguments_delta=fragment,
-                                tool_call_ordinal=index,
-                                fragment_ordinal=len(prior.fragments) - 1,
-                            )
+                        yield ProviderStreamEvent(
+                            kind="tool_call_delta",
+                            channel="tool",
+                            tool_call_id=prior.tool_call_id,
+                            arguments_delta=fragment,
+                            tool_call_ordinal=index,
+                            fragment_ordinal=len(prior.fragments) - 1,
+                        )
                 elif event_type == "message_delta":
                     delta = chunk.get("delta")
                     if isinstance(delta, Mapping) and isinstance(delta.get("stop_reason"), str):
@@ -718,20 +719,8 @@ class AnthropicMessagesProvider:
                 )
             # message_stop is terminal; without deltas the wire's explicit input object is complete.
             for index, accumulator in sorted(accumulators.items()):
-                if accumulator.tool_name is None:
-                    raise ProviderExecutionError(
-                        kind="provider_error",
-                        provider_name=provider_name,
-                        model_name=model_name,
-                        message="provider stream contained a malformed tool call",
-                        retryable=False,
-                        fallback_allowed=True,
-                        details={"source": "stream", "reason": "malformed_tool_call"},
-                    )
                 try:
                     parsed = _parse_arguments(accumulator.arguments) if accumulator.fragments else accumulator.initial_input
-                    if parsed is None:
-                        raise ValueError("provider stream tool call arguments were missing")
                 except (ValueError, json.JSONDecodeError) as exc:
                     raise ProviderExecutionError(
                         kind="provider_error",
@@ -745,7 +734,7 @@ class AnthropicMessagesProvider:
                 yield ProviderStreamEvent(
                     kind="tool_call_end",
                     channel="tool",
-                    tool_call_id=normalize_tool_call_id(accumulator.tool_call_id, fallback=f"tool_call_{index + 1}"),
+                    tool_call_id=accumulator.tool_call_id,
                     tool_name=reverse.get(accumulator.tool_name, accumulator.tool_name),
                     tool_call_ordinal=index,
                     parsed_arguments=json_wire_object(parsed),
