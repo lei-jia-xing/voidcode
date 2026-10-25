@@ -8,9 +8,8 @@ synchronous invocation.
 Module identity: each plugin root is imported under a unique namespace derived from its
 id plus this runtime's identity, so two generations can coexist (a candidate is built
 before the old runtime closes) and a reloaded generation never reuses stale modules.
-Loading compiles `.py` bytes fresh and bypasses bytecode caches without deleting any
-`__pycache__` directory. `close()` runs every `Plugin.close()`, stops
-generation-owned service processes, and unimports the runtime's namespaces.
+`close()` runs every `Plugin.close()`, stops generation-owned service processes, and
+unimports the runtime's namespaces.
 
 Cancellation is cooperative only: a plugin that never returns blocks its dispatch until
 the core restarts. Real child processes keep their own timeout/cancel/partial-output
@@ -179,52 +178,6 @@ class CallbackChanges:
     errors: tuple[dict[str, str], ...] = ()
 
 
-class _SourceFinder:
-    """Meta-path finder that compiles one plugin root's .py bytes fresh, ignoring bytecode caches.
-
-    Narrow by design: it answers only this runtime's flat module name and its relative
-    submodules. CPython's pyc validity is only (mtime seconds, size), so a same-second
-    same-size edit would silently load stale code; compiling the bytes just read removes
-    that hazard without touching any cache directory. Everything else falls through to the
-    ordinary import system.
-    """
-
-    def __init__(self, mod_name: str, root: Path) -> None:
-        self._mod_name = mod_name
-        self._root = root
-
-    def find_spec(self, fullname: str, _path: Any = None, _target: Any = None) -> Any:
-        import importlib.machinery
-
-        if fullname != self._mod_name and not fullname.startswith(f"{self._mod_name}."):
-            return None
-        rel = fullname[len(self._mod_name) :].lstrip(".")
-        if not rel:
-            source = self._root / "__init__.py"
-        else:
-            candidate = self._root / (rel.replace(".", "/") + ".py")
-            package_init = self._root / rel.replace(".", "/") / "__init__.py"
-            source = package_init if package_init.is_file() else candidate
-        if not source.is_file():
-            return None
-        loader = importlib.machinery.SourceFileLoader(fullname, str(source))
-
-        # Bypass bytecode: get_code compiles the bytes just read instead of consulting pyc.
-        def fresh_code(_fullname: str) -> Any:
-            del _fullname
-            return loader.source_to_code(source.read_bytes(), str(source))
-
-        loader.get_code = fresh_code  # ty: ignore[invalid-assignment]
-        # The stdlib constructor (not a bare ModuleSpec) so __file__/__cached__/__path__
-        # are set exactly as for an ordinary import.
-        return importlib.util.spec_from_file_location(
-            fullname,
-            str(source),
-            loader=loader,
-            submodule_search_locations=[str(source.parent)] if source.name == "__init__.py" else None,
-        )
-
-
 def _check_arity(fn: Any, expected_arity: int, name: str) -> None:
     try:
         sig = inspect.signature(fn)
@@ -337,16 +290,22 @@ class PluginRuntime:
         # and "-" is encoded so distinct ids can never collide after normalization.
         safe_id = plugin_id.replace("_", "__").replace("-", "_")
         mod_name = f"{self._namespace}__{safe_id}"
-        finder = _SourceFinder(mod_name, root)
-        sys.meta_path.insert(0, finder)
-        try:
-            mod = importlib.import_module(mod_name)
-        finally:
-            sys.meta_path.remove(finder)
+        spec = importlib.util.spec_from_file_location(
+            mod_name,
+            str(entry_module),
+            submodule_search_locations=[str(root)],
+        )
+        if spec is None or spec.loader is None:
+            raise ValueError(f"Failed to create module spec for plugin {plugin_id}: {entry_module}")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[mod_name] = mod
         self._modules.append(mod_name)
-        for name in list(sys.modules):
-            if name.startswith(f"{mod_name}.") and name not in self._modules:
-                self._modules.append(name)
+        try:
+            spec.loader.exec_module(mod)
+        finally:
+            for name in list(sys.modules):
+                if name.startswith(f"{mod_name}.") and name not in self._modules:
+                    self._modules.append(name)
 
         factory = getattr(mod, "create_plugin", None)
         if factory is None or not callable(factory):
@@ -1433,7 +1392,7 @@ class PluginRuntime:
                     first_error = exc
         self._builtin_provider_closers.clear()
         # 3. Unimport this generation's namespaces so a reloaded generation never reuses
-        #    stale modules. No cache directories are touched: loading bypasses bytecode.
+        #    stale modules.
         try:
             for name in self._modules:
                 self._forget_module(name)

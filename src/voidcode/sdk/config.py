@@ -2,204 +2,147 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
-from types import MappingProxyType
+from typing import Annotated, Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from .json_values import own_json_object
 
 CONFIG_FILE_NAME = "voidcode.json"
 CONFIG_SCHEMA_VERSION = 1
 
-_CONFIG_IDENT_REGEX = re.compile(r"^[a-z][a-z0-9_-]*$")
+
+ReasoningEffort = Literal["off", "none", "minimal", "low", "medium", "high", "xhigh", "max"] | int
 
 
-@dataclass(frozen=True, slots=True)
-class CoreModelConfig:
+class CoreModelConfig(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
     model: str | None = None
-    reasoning_effort: str | None = None
+    reasoning_effort: ReasoningEffort | None = None
 
-    def __post_init__(self) -> None:
-        if self.model is not None and (not isinstance(self.model, str) or not self.model.strip()):
-            raise ValueError("core config model.model must be a non-empty string")
-        if self.reasoning_effort is not None:
-            if not isinstance(self.reasoning_effort, str):
-                raise ValueError("core config model.reasoning_effort must be a string")
-            if self.reasoning_effort not in {"low", "medium", "high", "none"}:
-                raise ValueError("core config model.reasoning_effort must be one of low/medium/high/none")
+    @field_validator("model")
+    @classmethod
+    def _validate_model(cls, v: str | None) -> str | None:
+        if v is not None:
+            if not v.strip():
+                raise ValueError("core config model.model must be a non-empty string")
+            return v.strip()
+        return v
+
+    @field_validator("reasoning_effort")
+    @classmethod
+    def _validate_reasoning_effort(cls, v: ReasoningEffort | None) -> ReasoningEffort | None:
+        if isinstance(v, int) and v < 0:
+            raise ValueError("reasoning_effort budget must be >= 0")
+        return v
 
 
-@dataclass(frozen=True, slots=True)
-class CorePolicyConfig:
-    approval_mode: str = "ask"
+class CorePolicyConfig(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    approval_mode: Literal["ask", "write", "yolo"] = "ask"
     read_only: bool = False
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.approval_mode, str) or self.approval_mode not in {"ask", "write", "yolo"}:
-            raise ValueError("core config policy.approval_mode must be one of ask/write/yolo")
-        if type(self.read_only) is not bool:
-            raise ValueError("core config policy.read_only must be a boolean")
 
+class CoreProviderEntry(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True, arbitrary_types_allowed=True)
 
-@dataclass(frozen=True, slots=True)
-class CoreProviderEntry:
-    """Endpoint configuration for one provider name registered by a plugin.
+    api_key: str | None = Field(default=None, min_length=1, repr=False)
+    base_url: str | None = Field(default=None, min_length=1)
+    extra: Mapping[str, Any] = Field(default_factory=dict, repr=False, validate_default=True)
 
-    The configured name IS the selection: the core passes it to the runtime unchanged and never
-    knows a wire protocol, vendor, or adapter identity.
-    """
+    @model_validator(mode="before")
+    @classmethod
+    def _extract_vendor_fields(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        raw = dict(data)
+        api_key = raw.pop("api_key", None)
+        base_url = raw.pop("base_url", None)
+        explicit_extra = raw.pop("extra", None)
+        if explicit_extra is not None:
+            if not isinstance(explicit_extra, (dict, Mapping)):
+                raise ValueError("provider extra fields must be an object")
+            if raw:
+                raise ValueError("unexpected fields in provider entry")
+            extra = explicit_extra
+        else:
+            extra = raw
 
-    api_key: str | None = field(default=None, repr=False)
-    base_url: str | None = None
-    #: Every other configured field, passed to the declaring plugin verbatim. The core does
-    #: not know a vendor, a header name, or a query parameter, so it neither validates nor
-    #: interprets these: they are the provider's own credentials vocabulary, and a repr must
-    #: never expose a credential the core cannot recognize.
-    extra: Mapping[str, object] = field(default_factory=dict, repr=False)
-
-    def __post_init__(self) -> None:
-        if self.api_key is not None and (not isinstance(self.api_key, str) or not self.api_key):
-            raise ValueError("provider api_key must be a non-empty string")
-        if self.base_url is not None and (not isinstance(self.base_url, str) or not self.base_url):
-            raise ValueError("provider base_url must be a non-empty string")
-        if not isinstance(self.extra, Mapping):
-            raise ValueError("provider extra fields must be an object")
-        for name in self.extra:
-            if not isinstance(name, str) or not name:
-                raise ValueError("provider extra field names must be non-empty strings")
-        if set(self.extra) & {"api_key", "base_url"}:
+        if "api_key" in extra or "base_url" in extra:
             raise ValueError("provider extra fields must not repeat api_key or base_url")
-        object.__setattr__(self, "extra", own_json_object(self.extra))
+        for k in extra:
+            if not isinstance(k, str) or not k:
+                raise ValueError("provider extra field names must be non-empty strings")
+
+        owned_extra = own_json_object(extra)
+        result: dict[str, Any] = {"extra": owned_extra}
+        if api_key is not None:
+            result["api_key"] = api_key
+        if base_url is not None:
+            result["base_url"] = base_url
+        return result
+
+    @field_validator("extra", mode="after")
+    @classmethod
+    def _freeze_extra(cls, v: Any) -> Mapping[str, Any]:
+        if not isinstance(v, Mapping):
+            raise ValueError("provider extra fields must be an object")
+        return own_json_object(v)
 
 
-@dataclass(frozen=True, slots=True)
-class CorePluginEntry:
+class CorePluginEntry(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True, arbitrary_types_allowed=True)
+
     enabled: bool = True
-    config: Mapping[str, object] = field(default_factory=dict)
+    config: Mapping[str, Any] = Field(default_factory=dict, validate_default=True)
     path: str | None = None
 
-    def __post_init__(self) -> None:
-        if type(self.enabled) is not bool:
-            raise ValueError("plugin entry enabled must be a boolean")
-        if not isinstance(self.config, Mapping):
-            raise ValueError("plugin entry config must be an object")
-        object.__setattr__(self, "config", own_json_object(self.config))
-        if self.path is not None and (not isinstance(self.path, str) or not self.path.strip()):
+    @field_validator("path")
+    @classmethod
+    def _validate_path(cls, v: str | None) -> str | None:
+        if v is not None and not v.strip():
             raise ValueError("plugin entry path must be a non-empty string")
+        return v
+
+    @field_validator("config", mode="after")
+    @classmethod
+    def _freeze_config(cls, v: Any) -> Mapping[str, Any]:
+        if not isinstance(v, Mapping):
+            raise ValueError("plugin entry config must be an object")
+        return own_json_object(v)
 
 
-@dataclass(frozen=True, slots=True)
-class CoreConfig:
-    schema_version: int = CONFIG_SCHEMA_VERSION
-    model: CoreModelConfig = field(default_factory=CoreModelConfig)
-    policy: CorePolicyConfig = field(default_factory=CorePolicyConfig)
-    providers: Mapping[str, CoreProviderEntry] = field(default_factory=dict)
-    plugins: Mapping[str, CorePluginEntry] = field(default_factory=dict)
+class CoreConfig(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
-    def __post_init__(self) -> None:
-        if type(self.schema_version) is not int or self.schema_version != CONFIG_SCHEMA_VERSION:
+    schema_version: Literal[1] = 1
+    model: CoreModelConfig = Field(default_factory=CoreModelConfig)
+    policy: CorePolicyConfig = Field(default_factory=CorePolicyConfig)
+    providers: Mapping[
+        Annotated[str, Field(pattern=r"^[a-z][a-z0-9_-]*$")],
+        CoreProviderEntry,
+    ] = Field(default_factory=dict)
+    plugins: Mapping[
+        Annotated[str, Field(pattern=r"^[a-z][a-z0-9_-]*$")],
+        CorePluginEntry,
+    ] = Field(default_factory=dict)
+
+    @field_validator("schema_version", mode="before")
+    @classmethod
+    def _validate_schema_version(cls, v: Any) -> int:
+        if type(v) is not int or v != CONFIG_SCHEMA_VERSION:
             raise ValueError(f"core config schema_version must be {CONFIG_SCHEMA_VERSION}")
-        for name in self.providers:
-            if not isinstance(name, str) or not _CONFIG_IDENT_REGEX.fullmatch(name):
-                raise ValueError(f"core config provider id must match [a-z][a-z0-9_-]*: {name!r}")
-        for plugin_id in self.plugins:
-            if not isinstance(plugin_id, str) or not _CONFIG_IDENT_REGEX.fullmatch(plugin_id):
-                raise ValueError(f"core config plugin id must match [a-z][a-z0-9_-]*: {plugin_id!r}")
-        object.__setattr__(self, "providers", MappingProxyType(dict(self.providers)))
-        object.__setattr__(self, "plugins", MappingProxyType(dict(self.plugins)))
+        return v
 
 
 def parse_core_config(payload: object) -> CoreConfig:
     """Validate an untrusted ``voidcode.json`` payload."""
     if not isinstance(payload, dict):
         raise ValueError("core config must be an object")
-    unknown = sorted(set(payload) - {"schema_version", "model", "policy", "providers", "plugins"})
-    if unknown:
-        raise ValueError(f"core config has unsupported field: {unknown[0]}")
-    schema_version = payload.get("schema_version", CONFIG_SCHEMA_VERSION)
-    if type(schema_version) is not int:
-        raise ValueError("core config schema_version must be an integer")
-    if schema_version != CONFIG_SCHEMA_VERSION:
-        raise ValueError(f"core config schema_version must be {CONFIG_SCHEMA_VERSION}")
-
-    raw_model = payload.get("model", {})
-    if not isinstance(raw_model, dict):
-        raise ValueError("core config model must be an object")
-    unknown_model = sorted(set(raw_model) - {"model", "reasoning_effort"})
-    if unknown_model:
-        raise ValueError(f"core config model has unsupported field: {unknown_model[0]}")
-    model_ref = raw_model.get("model")
-    if model_ref is not None and (not isinstance(model_ref, str) or not model_ref.strip()):
-        raise ValueError("core config model.model must be a non-empty string")
-    effort = raw_model.get("reasoning_effort")
-    if effort is not None:
-        if not isinstance(effort, str):
-            raise ValueError("core config model.reasoning_effort must be a string")
-        if effort not in {"low", "medium", "high", "none"}:
-            raise ValueError("core config model.reasoning_effort must be one of low/medium/high/none")
-
-    raw_policy = payload.get("policy", {})
-    if not isinstance(raw_policy, dict):
-        raise ValueError("core config policy must be an object")
-    unknown_policy = sorted(set(raw_policy) - {"approval_mode", "read_only"})
-    if unknown_policy:
-        raise ValueError(f"core config policy has unsupported field: {unknown_policy[0]}")
-    approval_mode = raw_policy.get("approval_mode", "ask")
-    if not isinstance(approval_mode, str) or approval_mode not in {"ask", "write", "yolo"}:
-        raise ValueError("core config policy.approval_mode must be one of ask/write/yolo")
-    read_only = raw_policy.get("read_only", False)
-    if type(read_only) is not bool:
-        raise ValueError("core config policy.read_only must be a boolean")
-
-    raw_providers = payload.get("providers", {})
-    if not isinstance(raw_providers, dict):
-        raise ValueError("core config providers must be an object")
-    providers: dict[str, CoreProviderEntry] = {}
-    for name, entry in raw_providers.items():
-        if not isinstance(name, str) or not _CONFIG_IDENT_REGEX.fullmatch(name):
-            raise ValueError(f"core config provider id must match [a-z][a-z0-9_-]*: {name!r}")
-        if not isinstance(entry, dict):
-            raise ValueError(f"core config providers.{name} must be an object")
-        api_key = entry.get("api_key")
-        if api_key is not None and (not isinstance(api_key, str) or not api_key):
-            raise ValueError(f"core config providers.{name}.api_key must be a non-empty string")
-        base_url = entry.get("base_url")
-        if base_url is not None and (not isinstance(base_url, str) or not base_url):
-            raise ValueError(f"core config providers.{name}.base_url must be a non-empty string")
-        # Vendor fields are opaque: everything that is not the typed api_key/base_url travels
-        # to the declaring plugin exactly as configured (auth headers, account ids, regions).
-        extra = {key: value for key, value in entry.items() if key not in {"api_key", "base_url"}}
-        providers[name] = CoreProviderEntry(api_key=api_key, base_url=base_url, extra=extra)
-
-    raw_plugins = payload.get("plugins", {})
-    if not isinstance(raw_plugins, dict):
-        raise ValueError("core config plugins must be an object")
-    plugins: dict[str, CorePluginEntry] = {}
-    for plugin_id, entry in raw_plugins.items():
-        if not isinstance(plugin_id, str) or not _CONFIG_IDENT_REGEX.fullmatch(plugin_id):
-            raise ValueError(f"core config plugin id must match [a-z][a-z0-9_-]*: {plugin_id!r}")
-        if not isinstance(entry, dict):
-            raise ValueError(f"core config plugins.{plugin_id} must be an object")
-        unknown_entry = sorted(set(entry) - {"enabled", "config", "path"})
-        if unknown_entry:
-            raise ValueError(f"core config plugins.{plugin_id} has unsupported field: {unknown_entry[0]}")
-        enabled = entry.get("enabled", True)
-        if type(enabled) is not bool:
-            raise ValueError(f"core config plugins.{plugin_id}.enabled must be a boolean")
-        config_raw = entry.get("config", {})
-        if not isinstance(config_raw, Mapping):
-            raise ValueError(f"core config plugins.{plugin_id}.config must be an object")
-        config = own_json_object(config_raw)
-        path = entry.get("path")
-        if path is not None and (not isinstance(path, str) or not path.strip()):
-            raise ValueError(f"core config plugins.{plugin_id}.path must be a non-empty string")
-        plugins[plugin_id] = CorePluginEntry(enabled=enabled, config=config, path=path)
-
-    return CoreConfig(
-        schema_version=CONFIG_SCHEMA_VERSION,
-        model=CoreModelConfig(model=model_ref.strip() if model_ref else None, reasoning_effort=effort),
-        policy=CorePolicyConfig(approval_mode=approval_mode, read_only=read_only),
-        providers=MappingProxyType(providers),
-        plugins=MappingProxyType(plugins),
-    )
+    try:
+        return CoreConfig.model_validate(payload)
+    except ValidationError as err:
+        raise ValueError(str(err)) from err

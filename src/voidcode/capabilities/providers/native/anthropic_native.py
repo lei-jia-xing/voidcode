@@ -777,12 +777,17 @@ def _thinking_payload(payload: dict[str, object], *, request: ProviderTurnReques
     A model that cannot reason is never handed the knob, and ``off`` simply omits
     it -- the wire has no "disabled" body field.
     """
-    if not request.reasoning_effort:
+    if request.reasoning_effort is None:
         return None
     metadata = static_catalog_metadata(request.provider_name or rule.provider, request.model_name or "")
     if metadata is not None and metadata.supports_reasoning is False:
         return None
     effort = normalize_reasoning_effort(request.reasoning_effort)
+    if isinstance(effort, int):
+        payload["thinking"] = {"type": "enabled", "budget_tokens": effort}
+        return effort
+    if effort is None:
+        return None
     supported = metadata.supported_effort_levels if metadata is not None else None
     clamped = clamp_effort_to_supported(effort, supported)
     if clamped == "off":

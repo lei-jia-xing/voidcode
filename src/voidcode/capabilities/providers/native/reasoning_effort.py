@@ -15,12 +15,18 @@ CANONICAL_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh
 ALL_EFFORTS: tuple[str, ...] = ("off", *CANONICAL_EFFORTS)
 
 
-def normalize_reasoning_effort(value: object) -> str:
-    """Validate and normalize a reasoning-effort value to its canonical form.
-
-    Case-sensitive, no aliases, no trimming: only the exact members of
-    `ALL_EFFORTS` are accepted.
-    """
+def normalize_reasoning_effort(value: str | int | None) -> str | int | None:
+    """Validate and normalize a reasoning-effort value to its canonical form."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"reasoning_effort must be one of: {', '.join(ALL_EFFORTS)}, a non-negative integer budget, or None; got {value!r}")
+    if isinstance(value, int):
+        if value < 0:
+            raise ValueError(f"reasoning_effort budget must be >= 0; got {value!r}")
+        return value
+    if value == "none":
+        return "off"
     if not isinstance(value, str) or value not in ALL_EFFORTS:
         raise ValueError(f"reasoning_effort must be one of: {', '.join(ALL_EFFORTS)}; got {value!r}")
     return value

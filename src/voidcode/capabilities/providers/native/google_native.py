@@ -279,13 +279,17 @@ class GoogleGenAIProvider:
         server's dynamic budget). No hint means "leave the request untouched"; an
         explicit ``off`` disables thinking instead of silently dropping the field.
         """
-        if not request.reasoning_effort:
+        if request.reasoning_effort is None:
             return None
         metadata = static_catalog_metadata(request.provider_name or self.name, request.model_name or "")
         if metadata is not None and metadata.supports_reasoning is False:
             return None
-        rule = thinking_rule_for(request.provider_name or self.name, request.model_name or "")
         effort = normalize_reasoning_effort(request.reasoning_effort)
+        if isinstance(effort, int):
+            return types.ThinkingConfig(thinking_budget=effort, include_thoughts=effort > 0)
+        if effort is None:
+            return None
+        rule = thinking_rule_for(request.provider_name or self.name, request.model_name or "")
         supported = metadata.supported_effort_levels if metadata is not None else None
         effort = clamp_effort_to_supported(effort, supported)
         if rule.mode == "google-level":

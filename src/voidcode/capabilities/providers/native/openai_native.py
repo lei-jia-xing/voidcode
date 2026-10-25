@@ -606,28 +606,29 @@ class OpenAIChatCompletionsProvider:
             payload[rule.max_tokens_field_or_default()] = _output_cap(metadata)
         if request.reasoning_effort and (metadata is None or metadata.supports_reasoning is not False):
             effort = normalize_reasoning_effort(request.reasoning_effort)
-            supported = metadata.supported_effort_levels if metadata is not None else None
-            mapped = reasoning_kwargs(
-                rule=rule,
-                # The clamp decides the level from the model's own metadata; the
-                # mapping only picks the request field (and needs the raw levels
-                # again to resolve an explicit "off").
-                effort=clamp_effort_to_supported(effort, supported),
-                supported_levels=supported,
-            )
-            extra_body = mapped.get("extra_body")
-            if isinstance(extra_body, dict):
-                # The SDK merges ``extra_body`` into the JSON body; flattening its
-                # contents would instead reach ``create()`` as SDK parameters and
-                # raise TypeError for keys the SDK does not know.
-                merged: dict[str, object] = {}
-                existing = payload.get("extra_body")
-                if isinstance(existing, dict):
-                    merged.update(existing)
-                merged.update(extra_body)
-                payload["extra_body"] = merged
-            else:
-                payload.update(mapped)
+            if isinstance(effort, str):
+                supported = metadata.supported_effort_levels if metadata is not None else None
+                mapped = reasoning_kwargs(
+                    rule=rule,
+                    # The clamp decides the level from the model's own metadata; the
+                    # mapping only picks the request field (and needs the raw levels
+                    # again to resolve an explicit "off").
+                    effort=clamp_effort_to_supported(effort, supported),
+                    supported_levels=supported,
+                )
+                extra_body = mapped.get("extra_body")
+                if isinstance(extra_body, dict):
+                    # The SDK merges ``extra_body`` into the JSON body; flattening its
+                    # contents would instead reach ``create()`` as SDK parameters and
+                    # raise TypeError for keys the SDK does not know.
+                    merged: dict[str, object] = {}
+                    existing = payload.get("extra_body")
+                    if isinstance(existing, dict):
+                        merged.update(existing)
+                    merged.update(extra_body)
+                    payload["extra_body"] = merged
+                else:
+                    payload.update(mapped)
         extra_headers = resolve_extra_request_headers(self.extra_request_headers, _session_id(request))
         if extra_headers:
             # A request option, not a body field: the SDK merges it into the HTTP

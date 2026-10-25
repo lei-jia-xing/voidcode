@@ -272,11 +272,15 @@ def test_explicit_off_uses_the_none_level_declared_upstream(loopback_server: Ope
     """The current upstream Grok effort list explicitly supports none."""
     provider = _provider(_entries(loopback_server, provider="xai"), name="xai")
     loopback_server.replies.append(openai_response(message={"content": "ok"}, finish="stop"))
+    loopback_server.replies.append(openai_response(message={"content": "ok"}, finish="stop"))
 
     provider.propose_turn(_request(ProviderMessage("user", "hi"), provider_name="xai", model_name="grok-4.3", reasoning_effort="off"))
+    provider.propose_turn(_request(ProviderMessage("user", "hi"), provider_name="xai", model_name="grok-4.3", reasoning_effort="none"))
 
     assert _wire_requests(loopback_server)[0]["reasoning_effort"] == "none"
     assert "thinking" not in _wire_requests(loopback_server)[0]
+    assert _wire_requests(loopback_server)[1]["reasoning_effort"] == "none"
+    assert "thinking" not in _wire_requests(loopback_server)[1]
 
 
 def test_a_model_that_cannot_reason_gets_no_reasoning_knob(loopback_server: OpenAILoopbackServer) -> None:

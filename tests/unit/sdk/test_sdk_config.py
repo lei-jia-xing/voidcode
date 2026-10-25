@@ -37,8 +37,12 @@ def test_reasoning_effort_type_safety_and_enum() -> None:
         parse_core_config({"model": {"reasoning_effort": {"level": "high"}}})
     with pytest.raises(ValueError):
         parse_core_config({"model": {"reasoning_effort": "ultra"}})
+    with pytest.raises(ValueError):
+        parse_core_config({"model": {"reasoning_effort": -1}})
+    with pytest.raises(ValueError):
+        parse_core_config({"model": {"reasoning_effort": True}})
 
-    for valid in ("none", "low", "medium", "high"):
+    for valid in ("off", "none", "minimal", "low", "medium", "high", "xhigh", "max", 0, 1024):
         cfg = parse_core_config({"model": {"reasoning_effort": valid}})
         assert cfg.model.reasoning_effort == valid
 

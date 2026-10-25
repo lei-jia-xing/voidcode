@@ -22,8 +22,9 @@ from typing import Any, cast
 from fastapi import FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
+from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 from starlette.exceptions import HTTPException
-from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.types import Receive, Scope, Send
 
 from ... import __version__
@@ -111,17 +112,6 @@ async def _validation_error_handler(_request: Request, exc: RequestValidationErr
 async def _unhandled_handler(request: Request, exc: Exception) -> Response:
     logger.error("unhandled core transport failure on %s", request.scope.get("path", ""), exc_info=exc)
     return _error(HTTPStatus.INTERNAL_SERVER_ERROR, "internal server error")
-
-
-def sse_frame(payload: object) -> bytes:
-    return b"data: " + json.dumps(payload, sort_keys=True, allow_nan=False).encode("utf-8") + b"\n\n"
-
-
-class EventStreamResponse(StreamingResponse):
-    media_type = "text/event-stream"
-
-    def __init__(self, frames: AsyncGenerator[bytes]) -> None:
-        super().__init__(frames, media_type="text/event-stream", headers={"cache-control": "no-cache"})
 
 
 def _core_error(error: Exception) -> HttpError:
@@ -377,7 +367,7 @@ class CoreTransportApp(FastAPI):
                 "description": "Server-sent event stream",
                 "content": {"text/event-stream": {"schema": {"type": "string"}}},
             }
-            response_class = EventStreamResponse
+            response_class = EventSourceResponse
         self.add_api_route(
             path,
             endpoint,
@@ -643,89 +633,114 @@ class CoreTransportApp(FastAPI):
         session_id: str,
         after_sequence: int = Query(default=0, ge=0),
         follow: bool = Query(default=False),
-    ) -> Response:
+    ) -> EventSourceResponse:
         _validated_session_id(session_id)
         core = self._core_or_503()
         try:
             record = await asyncio.to_thread(core.session, session_id)
-            initial: list[StoredEvent] = []
-            cursor = after_sequence
-            while True:
-                chunk = await asyncio.to_thread(core.events_after, session_id, after_sequence=cursor, limit=_FOLLOW_TAIL_LIMIT)
-                if not chunk:
-                    break
-                initial.extend(chunk)
-                cursor = chunk[-1].sequence
-                if len(chunk) < _FOLLOW_TAIL_LIMIT:
-                    break
         except Exception as exc:
             raise _core_error(exc) from None
+        return EventSourceResponse(
+            self._follow_frames(core, session_id, after_sequence, follow=follow, record=record),
+            headers={"cache-control": "no-cache"},
+            sep="\n",
+        )
+
+    async def _follow_frames(
+        self,
+        core: Core,
+        session_id: str,
+        after_sequence: int,
+        follow: bool = False,
+        record: SessionRecord | None = None,
+    ) -> AsyncGenerator[ServerSentEvent]:
+        """Stream initial session events and optionally follow new ones until disconnect, error,
+        or a successful drain ends it with the restart frame carrying the last delivered sequence."""
+        if record is None:
+            record = await asyncio.to_thread(core.session, session_id)
+        initial: list[StoredEvent] = []
+        cursor = after_sequence
+        while True:
+            chunk = await asyncio.to_thread(core.events_after, session_id, after_sequence=cursor, limit=_FOLLOW_TAIL_LIMIT)
+            if not chunk:
+                break
+            initial.extend(chunk)
+            cursor = chunk[-1].sequence
+            if len(chunk) < _FOLLOW_TAIL_LIMIT:
+                break
         head = {
             "session": _session_payload(record),
             "events": [_event_payload(session_id, event) for event in initial],
         }
-
-        async def frames() -> AsyncGenerator[bytes]:
-            cursor = after_sequence
-            if initial:
-                cursor = max(event.sequence for event in initial)
-            yield sse_frame(head)
-            if not follow:
-                return
-            done = asyncio.Event()
-            self._follow_streams.add(done)
-            try:
-                async for frame in self._follow_frames(core, session_id, cursor):
-                    yield frame
-            finally:
-                self._follow_streams.discard(done)
-                done.set()
-
-        return EventStreamResponse(frames())
-
-    async def _follow_frames(self, core: Core, session_id: str, cursor: int) -> AsyncGenerator[bytes]:
-        """Follow new events until the client disconnects, a backend failure ends the stream, or a
-        successful drain ends it with the restart frame carrying the last delivered sequence."""
-        # Follow crosses run boundaries: completed/failed/interrupted end a
-        # run, never the session.
-        while True:
-            await asyncio.sleep(_FOLLOW_POLL_SECONDS)
+        if initial:
+            cursor = max(event.sequence for event in initial)
+        yield ServerSentEvent(data=json.dumps(head, sort_keys=True, allow_nan=False), sep="\n")
+        if not follow:
+            return
+        done = asyncio.Event()
+        self._follow_streams.add(done)
+        try:
             while True:
-                try:
-                    pending = await asyncio.to_thread(core.events_after, session_id, after_sequence=cursor, limit=_FOLLOW_TAIL_LIMIT)
-                except Exception as exc:
-                    # Lifespan shutdown closes the core under in-flight streams; when a
-                    # drain already succeeded, that is the restart, not an error, so the
-                    # stream still ends with the frame carrying what it delivered.
-                    if self._restart_ready:
-                        break
-                    yield sse_frame({"kind": "error", "session_id": session_id, "error": f"{type(exc).__name__}: {exc}"})
-                    return
-                if not pending:
-                    break
-                for event in pending:
-                    cursor = event.sequence
-                    yield sse_frame({"kind": "event", "session_id": session_id, "event": _event_payload(session_id, event)})
-                if len(pending) < _FOLLOW_TAIL_LIMIT:
-                    break
-            if self._restart_ready:
-                # A successful drain is the only path here: flush everything committed since
-                # the last fetch, then end the stream with the last sequence this stream
-                # actually delivered. Facts committed after that fetch have higher sequences,
-                # so the client's reconnect replays them instead of skipping them.
+                await asyncio.sleep(_FOLLOW_POLL_SECONDS)
                 while True:
                     try:
-                        tail = await asyncio.to_thread(core.events_after, session_id, after_sequence=cursor, limit=_FOLLOW_TAIL_LIMIT)
-                    except Exception:
-                        # The store is already closed: shorten the flush, never the invariant.
+                        pending = await asyncio.to_thread(core.events_after, session_id, after_sequence=cursor, limit=_FOLLOW_TAIL_LIMIT)
+                    except Exception as exc:
+                        if self._restart_ready:
+                            break
+                        yield ServerSentEvent(
+                            data=json.dumps(
+                                {"kind": "error", "session_id": session_id, "error": f"{type(exc).__name__}: {exc}"},
+                                sort_keys=True,
+                                allow_nan=False,
+                            ),
+                            sep="\n",
+                        )
+                        return
+                    if not pending:
                         break
-                    if not tail:
-                        break
-                    for event in tail:
+                    for event in pending:
                         cursor = event.sequence
-                        yield sse_frame({"kind": "event", "session_id": session_id, "event": _event_payload(session_id, event)})
-                yield sse_frame({"kind": "server_restart", "session_id": session_id, "cursor": cursor})
-                return
+                        yield ServerSentEvent(
+                            data=json.dumps(
+                                {"kind": "event", "session_id": session_id, "event": _event_payload(session_id, event)},
+                                sort_keys=True,
+                                allow_nan=False,
+                            ),
+                            sep="\n",
+                        )
+                    if len(pending) < _FOLLOW_TAIL_LIMIT:
+                        break
+                if self._restart_ready:
+                    while True:
+                        try:
+                            tail = await asyncio.to_thread(core.events_after, session_id, after_sequence=cursor, limit=_FOLLOW_TAIL_LIMIT)
+                        except Exception:
+                            break
+                        if not tail:
+                            break
+                        for event in tail:
+                            cursor = event.sequence
+                            yield ServerSentEvent(
+                                data=json.dumps(
+                                    {"kind": "event", "session_id": session_id, "event": _event_payload(session_id, event)},
+                                    sort_keys=True,
+                                    allow_nan=False,
+                                ),
+                                sep="\n",
+                            )
+                    yield ServerSentEvent(
+                        data=json.dumps(
+                            {"kind": "server_restart", "session_id": session_id, "cursor": cursor},
+                            sort_keys=True,
+                            allow_nan=False,
+                        ),
+                        sep="\n",
+                    )
+                    return
+        finally:
+            self._follow_streams.discard(done)
+            done.set()
 
 
 def _checkpoint_view(checkpoint: Any) -> dict[str, object] | None:

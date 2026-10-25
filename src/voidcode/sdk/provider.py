@@ -62,7 +62,7 @@ class ProviderTurnRequest:
     raw_model: str | None = None
     provider_name: str | None = None
     model_name: str | None = None
-    reasoning_effort: str | None = None
+    reasoning_effort: str | int | None = None
     cache_retention: ProviderCacheRetention | None = None
     attempt: int = 0
     abort_signal: ProviderAbortSignal | None = None
