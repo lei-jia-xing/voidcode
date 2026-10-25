@@ -128,26 +128,6 @@ class ByteFloor:
 # ---- tiling the marked stream ---------------------------------------------------------------
 
 
-def glued_contraction(cn: str) -> str:
-    """Add the closing marker used for a contraction suffix in the marked stream.
-
-    The apostrophe supplies the opening boundary, so there is no ⟨bow⟩.
-    """
-    return cn + EOW_G
-
-
-def build_vocab(pieces, tokens: dict) -> frozenset[str]:
-    """The tiling vocabulary: every parsed piece and the glued contraction spelling.
-
-    The structural markers are not added here: they live in the vocabulary file's `markers` group,
-    which is the one place that decides a marker costs one token.
-    """
-    vocab = set(pieces)
-    # The file stores `'t`, the encoder writes `'t⟨eow⟩` (see `glued_contraction`).
-    vocab.update(glued_contraction(cn) for cn in tokens["contractions"])
-    return frozenset(vocab)
-
-
 def char_cost(model, ch: str) -> int:
     """One codepoint standing alone: 1 if it is itself a token, else its byte-floor tiling.
     The cache avoids repricing repeated characters in long runs."""
@@ -243,17 +223,6 @@ _MAGIC = b"CTOK\x02"
 _TABLE_END = 0x58B
 
 
-def _read_varint(buf: bytes, index: int) -> tuple[int, int]:
-    shift = value = 0
-    while True:
-        byte = buf[index]
-        index += 1
-        value |= (byte & 0x7F) << shift
-        if not byte & 0x80:
-            return value, index
-        shift += 7
-
-
 class VocabCore:
     """One loaded vocabulary: pieces, the byte floor, and the frame scalars.
 
@@ -267,7 +236,6 @@ class VocabCore:
         "unit_pieces",
         "bytes",
         "newline_ladder",
-        "message_overhead",
         "fold_quotes",
         "allcaps_min",
         "frame_bow",
@@ -282,7 +250,6 @@ class VocabCore:
         vocab: set[str],
         byte_tokens: set[bytes],
         *,
-        message_overhead: int,
         fold_quotes: bool,
         allcaps_min: int | None,
         frame_bow: bool,
@@ -295,7 +262,6 @@ class VocabCore:
         # ByteFloor keys on hex strings, the container's own spelling.
         self.bytes = ByteFloor({t.hex() for t in byte_tokens}, self.unit_pieces)
         self.newline_ladder = frozenset(len(p) for p in vocab if p and all(c == "\n" for c in p))
-        self.message_overhead = message_overhead
         self.fold_quotes = fold_quotes
         self.allcaps_min = allcaps_min
         self.frame_bow = frame_bow
@@ -309,7 +275,6 @@ class VocabCore:
         cls,
         blob: bytes,
         *,
-        message_overhead: int,
         fold_quotes: bool,
         allcaps_min: int | None,
         frame_bow: bool,
@@ -350,7 +315,6 @@ class VocabCore:
         return cls(
             vocab,
             byte_tokens,
-            message_overhead=message_overhead,
             fold_quotes=fold_quotes,
             allcaps_min=allcaps_min,
             frame_bow=frame_bow,
@@ -362,13 +326,3 @@ class VocabCore:
 #: Container marker byte -> the glyph the encoder writes. ``0x03`` is ⟨pad⟩,
 #: which never appears in the stream and so has no glyph here.
 _MARKER_BYTES = {"\x01": BOW_G, "\x02": EOW_G, "\x04": SHIFT_G, "\x05": CAPS_G}
-
-
-def content_token_count(text: str, core: VocabCore) -> int:
-    """omp's ``content_token_count``: the min-cost tiling, frame scalars already in ``core``.
-
-    This is the quantity omp reports for every ``countTokens`` call, and the
-    one voidcode budgets with. It excludes the per-message frame
-    (``core.message_overhead``) that ctok's own ``token_count`` adds.
-    """
-    return tile(text, core)[0]

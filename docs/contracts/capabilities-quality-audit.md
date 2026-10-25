@@ -35,11 +35,11 @@ not establish source review.
 | `providers/native/_result_sanitize.py` | Removed: only consumer sat behind an unreachable metadata.data dict check; SDK content is already projected by core |
 | `providers/native/_wire_common.py` | Reviewed: usage counts, tool IDs, request headers, bounded queue/stream timeout/error cleanup, owned-resource initialization |
 | `providers/native/anthropic_native.py` | Reviewed: request/tool/cache assembly, SDK auth/stream ownership, signed/redacted replay, exact tool stream identity, explicit terminal handling, unknown-preserving usage and thinking budget controls; model-specific thinking constraints delegated visibly to API |
-| `providers/native/claude_tokenizer/__init__.py` | Pending full source review |
+| `providers/native/claude_tokenizer/__init__.py` | Reviewed: family configuration, lazy load and count dispatch |
 | `providers/native/claude_tokenizer/constants.py` | Pending full source review |
 | `providers/native/claude_tokenizer/engine.py` | Pending full source review |
 | `providers/native/claude_tokenizer/normalize.py` | Pending full source review |
-| `providers/native/claude_tokenizer/notation.py` | Pending full source review |
+| `providers/native/claude_tokenizer/notation.py` | Removed: unused token rendering/parsing API |
 | `providers/native/config.py` | Reviewed: strict ingress, field/table wiring, typed converters, env resolution, custom names, credential exclusivity and representations; removed dead framework/default paths |
 | `providers/native/errors.py` | Reviewed: classified errors, SDK text extraction and structured retry hints; removed prose scheduling and duplicate conversion functions |
 | `providers/native/google_native.py` | Reviewed: SDK auth/owned-client lifecycle, timeouts/errors, tool capability and ID pairing, signed Part persistence/replay, thinking controls, inclusive/unknown-preserving usage and terminal stream semantics; documented Vertex OAuth/project and bounded teardown limitations |
@@ -57,7 +57,7 @@ not establish source review.
 | `providers/native/reasoning_effort.py` | Reviewed: canonical vocabulary, unknown-preserving clamping, explicit-off and binary/protocol mapping; removed rank maps/aliases/runtime type imports |
 | `providers/native/thinking_rules.json` | Reviewed with parser/consumer and packaged-table tests; source/provenance retained in JSON |
 | `providers/native/thinking_rules.py` | Reviewed: model-name overlays/effort maps removed; upstream capabilities select validated protocol defaults and named budgets; Kimi cap convention pending adapter review |
-| `providers/native/tokenizer.py` | Pending full source review |
+| `providers/native/tokenizer.py` | Reviewed: offline encoding dispatch, lazy loading, normalization and fallback; no runtime consumer |
 | `providers/native/tokenizer_data/Cl100kBase.utok1.bz2` | Pending consumer/data-contract review |
 | `providers/native/tokenizer_data/DeepSeekV3.utok1.bz2` | Pending consumer/data-contract review |
 | `providers/native/tokenizer_data/Glm5.utok1.bz2` | Pending consumer/data-contract review |
@@ -2544,3 +2544,41 @@ payload probes across OpenAI, OpenRouter, Zai and Qwen verified zero/off equalit
 and positive-budget errors for unknown models. Ruff/format and targeted ty
 passed; CodeGraph synchronized. No tests added. OpenAI adapter audit remains
 partial; these checks do not establish live vendor compatibility.
+
+### Tokenizer entrypoint review
+
+Reviewed tokenizer.py in full: canonical aliases, six tiktoken splitter tables,
+optional NFC normalization, lazy cached offline vocabulary construction, ordinary
+encoding without special-token handling, and UTF-8-byte fallback for unknown or
+absent encodings. Removed the separate Claude encoding registry: absence of a
+tiktoken filename in the authoritative encoding table now selects the Claude
+engine. No runtime caller currently consumes this module or catalog tokenizer
+metadata. Retained the feature because NOTICE explicitly records exact counting
+as a project priority; no runtime integration was added as part of this audit.
+Corrected obsolete tokenizer package paths in NOTICE and the data package docstring.
+
+Validation: all ten encodings matched HEAD counts on five empty, multilingual,
+combining-character and code inputs (50 comparisons). All ten manifest rows
+matched actual compressed/decompressed byte sizes and container token counts
+(eight unique blobs). This establishes shipped data consistency, not exactness
+against a current vendor oracle. Files are trusted bundled data; corruption
+fails during load, with no runtime fallback on parsing errors. Ruff/format and
+targeted ty passed. Claude engine and routing source review remain pending;
+no tests added.
+
+### Claude tokenizer: remove unused reconstruction APIs
+
+Reviewed family loading and its callers. Removed the unused message_overhead
+field from family config, VocabCore slots, construction and parsing: no count
+path read it. Removed the unused notation module, public-atom mapping tables,
+old JSON-vocabulary/contraction builders, unused engine varint parser, and a
+count wrapper that only selected tile()[0]. Marker literal escape ordering is
+unchanged, including PAD. The bundled binary vocabulary and actual tiling
+algorithm are unchanged. No compatibility aliases added.
+
+Validation: recorded 200 counts before editing across all four families, using
+empty inputs, multilingual text, marker literals, combining marks, trailing
+whitespace and deterministic mixed strings. All 200 matched after editing.
+Repository searches found no consumers of removed APIs. Ruff/format and targeted
+ty passed; CodeGraph synchronized. No tests added. Full engine, normalization
+and constants review remains outstanding.

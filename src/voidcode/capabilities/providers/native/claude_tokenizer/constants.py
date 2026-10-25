@@ -14,20 +14,10 @@ SHIFT_G, CAPS_G = "\ufdd3", "\ufdd4"
 
 MARKER_GLYPHS = frozenset({BOW_G, EOW_G, SHIFT_G, CAPS_G})
 
-# The public form: named atoms in mathematical angle brackets, practically absent from real text.
-# Literal brackets in text are byte-escaped at render time, so a rendered token always parses back
-# unambiguously.
-L, R = "⟨", "⟩"
-BOW, EOW, SHIFT, CAPS = f"{L}bow{R}", f"{L}eow{R}", f"{L}shift{R}", f"{L}caps{R}"
-PAD = f"{L}pad{R}"
-
-GLYPH_TO_ATOM = {BOW_G: BOW, EOW_G: EOW, PAD_G: PAD, SHIFT_G: SHIFT, CAPS_G: CAPS}
-ATOM_TO_GLYPH = {BOW: BOW_G, EOW: EOW_G, SHIFT: SHIFT_G, CAPS: CAPS_G}
-
 # Scraped text can contain the noncharacters used above. NFC strips BMP private-use input, so these
-# five private-use codepoints are safe internal escapes inserted after NFC. The byte floor and
-# renderer map them back to the original noncharacters.
-LITERAL_MARKER_ESCAPES = {glyph: chr(0xE000 + i) for i, glyph in enumerate(GLYPH_TO_ATOM)}
+# five private-use codepoints are safe internal escapes inserted after NFC.
+# The byte floor maps them back to the original noncharacters.
+LITERAL_MARKER_ESCAPES = {glyph: chr(0xE000 + i) for i, glyph in enumerate((BOW_G, EOW_G, PAD_G, SHIFT_G, CAPS_G))}
 ESCAPED_MARKER_LITERALS = {escape: glyph for glyph, escape in LITERAL_MARKER_ESCAPES.items()}
 LITERAL_MARKER_ESCAPE_TABLE = str.maketrans(LITERAL_MARKER_ESCAPES)
 

@@ -2,7 +2,7 @@ NOTICE
 ======
 
 Third-party data redistributed in this distribution:
-the tokenizer vocabularies under `src/voidcode/provider/tokenizer_data/`.
+the tokenizer vocabularies under `src/voidcode/capabilities/providers/native/tokenizer_data/`.
 
 Two provenance cases (`manifest.json` records `source`/`license` per file):
 

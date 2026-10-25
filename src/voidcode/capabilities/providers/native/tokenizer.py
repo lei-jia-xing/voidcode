@@ -32,14 +32,8 @@ from typing import Final, Literal
 import tiktoken
 
 from .claude_tokenizer import count_tokens as _claude_count_tokens
-from .claude_tokenizer import encodings as _claude_encodings
 
 _DATA_DIR: Final = Path(__file__).resolve().parent / "tokenizer_data"
-
-#: Claude encodings, served by the vendored ctok engine instead of a tiktoken
-#: vocabulary. Held separately because that engine owns normalization and
-#: splitting, so the table's own splitter/normalization columns stay empty.
-_CLAUDE: Final[frozenset[str]] = frozenset(_claude_encodings())
 
 #: Pretokenizer patterns, recovered behaviourally from omp's hand-written Rust
 #: splitter. ``CL100K``/``O200K`` are tiktoken's own published patterns and were
@@ -224,9 +218,9 @@ def count_tokens(text: str, tokenizer: str | None = None) -> int:
     name = _canonical(tokenizer) if tokenizer else None
     if name is None:
         return (len(text.encode("utf-8")) + 3) >> 2
-    if name in _CLAUDE:
-        return _claude_count_tokens(text, name)
     filename, _, normalization = _ENCODINGS[name]
+    if filename is None:
+        return _claude_count_tokens(text, name)
     if normalization is not None:
         text = unicodedata.normalize(normalization, text)
     return len(_encoding_for(name).encode_ordinary(text))

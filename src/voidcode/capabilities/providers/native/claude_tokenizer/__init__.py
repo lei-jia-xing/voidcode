@@ -39,7 +39,7 @@ from functools import cache
 from pathlib import Path
 from typing import Final
 
-from .engine import VocabCore, content_token_count
+from .engine import VocabCore, tile
 
 _DATA_DIR: Final = Path(__file__).resolve().parent.parent / "tokenizer_data"
 
@@ -49,7 +49,6 @@ class _Family:
     """One encoding's vocabulary file plus the frame omp gives it."""
 
     vocab_file: str
-    message_overhead: int
     fold_quotes: bool
     allcaps_min: int | None
     frame_bow: bool
@@ -61,12 +60,12 @@ class _Family:
 #: share the v4.7 vocabulary and differ only in the message frame, exactly as
 #: omp's ``Family::params`` overrides it; ``ClaudeV3`` is the v3 vocabulary.
 _FAMILIES: Final[dict[str, _Family]] = {
-    "ClaudeV3": _Family("ctok_v3.bin.bz2", 7, True, 4, True, "ladder", 2),
-    "ClaudeV47": _Family("ctok_v4_7.bin.bz2", 11, False, None, True, "ladder", 2),
-    "ClaudeV5": _Family("ctok_v4_7.bin.bz2", 6, False, None, False, "free", 0),
+    "ClaudeV3": _Family("ctok_v3.bin.bz2", True, 4, True, "ladder", 2),
+    "ClaudeV47": _Family("ctok_v4_7.bin.bz2", False, None, True, "ladder", 2),
+    "ClaudeV5": _Family("ctok_v4_7.bin.bz2", False, None, False, "free", 0),
     # Measured live against claude-sonnet-5: no frame ⟨bow⟩, trailing ASCII
     # whitespace absorbed, and the frame appends nothing to the newline ladder.
-    "ClaudeV5Sonnet": _Family("ctok_v4_7.bin.bz2", 6, False, None, False, "ladder", 0),
+    "ClaudeV5Sonnet": _Family("ctok_v4_7.bin.bz2", False, None, False, "ladder", 0),
 }
 
 
@@ -77,7 +76,6 @@ def _core(name: str) -> VocabCore:
     blob = bz2.decompress((_DATA_DIR / family.vocab_file).read_bytes())
     return VocabCore.parse(
         blob,
-        message_overhead=family.message_overhead,
         fold_quotes=family.fold_quotes,
         allcaps_min=family.allcaps_min,
         frame_bow=family.frame_bow,
@@ -94,7 +92,7 @@ def count_tokens(text: str, encoding: str) -> int:
 
     ``count_tokens("")`` is a documented divergence: the native addon returns 1
     for v3/v4.7 and 0 for the v5-series, but the shared seam in
-    :mod:`.provider.tokenizer` returns 0 for empty text on every encoding, and
+    :mod:`voidcode.capabilities.providers.native.tokenizer` returns 0 for empty text on every encoding, and
     callers already skip empty payloads. Every non-empty input is exact.
     """
     if not text:
@@ -102,7 +100,7 @@ def count_tokens(text: str, encoding: str) -> int:
         # newline, so an empty message costs zero there; v3/v4.7 still pay for
         # the frame's own ⟨bow⟩.
         return 0 if not _FAMILIES[encoding].frame_bow else 1
-    return content_token_count(text, _core(encoding))
+    return tile(text, _core(encoding))[0]
 
 
 def encodings() -> tuple[str, ...]:
