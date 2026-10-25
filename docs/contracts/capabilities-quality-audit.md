@@ -11,7 +11,7 @@ not establish source review.
 | File | Current audit status |
 | --- | --- |
 | `__init__.py` | Reviewed: documentation-only shared capability boundary |
-| `exec/__init__.py` | Pending full source review |
+| `exec/__init__.py` | Reviewed: stateless factory registers shell/background tools and identity-preserving deactivation; no resources, imports of concrete peers or duplicated config |
 | `exec/args.py` | Reviewed source/consumers: three small nonempty field validators used by strict exec argument models |
 | `exec/background_process.py` | Partial: strict persisted identity ingress, UTF-8/CRLF log pages and final readiness draining reviewed; typed state pipeline reviewed; scan ceiling/cursor and remaining lifecycle review pending |
 | `exec/shell_exec.py` | Partial: typed SDK artifact references and consumers reviewed; interception policy, progress boundaries and remaining result semantics pending |
@@ -1654,3 +1654,23 @@ tests passed. A real 200-cell notebook with 300-character sources produced a
 bounded preview whose standard reference resolved to the complete 200-cell JSON
 view. No tests added. Native clipped-line recovery and remaining read lifecycle
 review are still pending.
+
+## Exec factory and service contract
+
+Reviewed the shared exec factory and its optional plugin adapter. The factory
+creates stateless shell/background tools and registers the pure deactivation
+transform; it owns no resource lifetime or independent configuration. Corrected
+its module description to identify shared capability ownership. Existing
+nonempty argument validators remain small and preserve field-specific messages.
+
+Deleted the background tool's seven-name `getattr`/`callable` service preflight
+and its helper. Those methods are required by the typed SDK `PluginServices`
+contract; core implementations supply them, and invocation code calls the
+required methods directly. This removes a second manually maintained service
+interface and unnecessary per-invocation reflection. Deleted the obsolete test
+that deliberately passed objects outside that interface; no tests added.
+
+Ruff, formatting, full source type checking and 88 existing background/shell
+tests passed. Net reduction: 18 production lines and 15 test lines. Log scan
+cursors, readiness cancellation and remaining lifecycle semantics still need
+review; this does not mark all execution capabilities complete.

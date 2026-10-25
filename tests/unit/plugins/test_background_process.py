@@ -725,21 +725,6 @@ def test_invalid_arguments_fail_before_touching_services(tmp_path: Path, argumen
     assert services.names() == []
 
 
-def test_a_handler_without_the_process_service_fails_visibly(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="background_process requires the core background process service"):
-        _tool().invoke(ToolCall("background_process", {"op": "ps"}), context=_context(tmp_path), services=None)  # type: ignore[arg-type]
-
-    class _StateOnly:
-        def get_state(self, scope: str = "session") -> tuple[Mapping[str, object] | None, int]:
-            return None, 0
-
-        def replace_state(self, state: Mapping[str, object], expected_version: int, scope: str = "session") -> int:
-            return expected_version + 1
-
-    with pytest.raises(ValueError, match="background_process requires the core background process service"):
-        _tool().invoke(ToolCall("background_process", {"op": "start", "command": "serve"}), context=_context(tmp_path), services=_StateOnly())  # type: ignore[arg-type]
-
-
 @pytest.mark.parametrize(
     "state",
     [

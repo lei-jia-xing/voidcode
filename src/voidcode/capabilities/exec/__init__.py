@@ -1,4 +1,4 @@
-"""The official ``exec`` plugin: workspace command execution.
+"""Shared workspace execution capabilities and optional plugin factory.
 
 Owns the shell execution tool: command interception, process-group lifetime,
 bounded capture and the honest partial/settled reporting the runtime relies on.

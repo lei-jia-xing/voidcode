@@ -47,16 +47,6 @@ _READY_SCAN_BYTES = 64 * 1024
 _READY_POLL_SECONDS = 0.03
 #: Persisted workspace-state shape (versioned so a future shape can be migrated, not guessed).
 _STATE_VERSION = 1
-#: The service calls this tool cannot work without; a handler missing them fails visibly.
-_PROCESS_SERVICES = (
-    "spawn_process",
-    "write_process",
-    "read_process_output",
-    "cancel_process",
-    "list_processes",
-    "get_state",
-    "replace_state",
-)
 _EXTERNAL_MESSAGE = (
     "background process {process_id} is externally managed: this host does not supervise it "
     "(it survived a host restart or was started by another session), so its logs, stdin, and "
@@ -297,13 +287,6 @@ class _StreamScan:
 
     lines: list[str]
     truncated: bool
-
-
-def _require_process_service(services: object) -> None:
-    """Refuse a handler without the core's background-process service (never spawn locally)."""
-    for name in _PROCESS_SERVICES:
-        if not callable(getattr(services, name, None)):
-            raise ValueError("background_process requires the core background process service")
 
 
 def _now() -> str:
@@ -579,7 +562,6 @@ class BackgroundProcessTool:
     )
 
     def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:
-        _require_process_service(services)
         workspace = context.require_workspace().resolve()
         context.require_session_id()
         args = _ARGS_ADAPTER.validate_python(dict(call.arguments))
