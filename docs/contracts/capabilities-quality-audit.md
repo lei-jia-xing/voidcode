@@ -1605,3 +1605,22 @@ spill; no test cases added. Ruff and targeted source type checking passed, and
 refused any second read and confirmed large-image output uses one bounded page,
 the original identity and no additional spill. PDF/full-artifact loop
 cancellation and remaining read result semantics still need review.
+
+## Raw archive reads and ignored selectors
+
+Explicit `view="raw"` now bypasses archive auto-detection and unsupported-codec
+rejection. ZIP/TAR and unsupported archive formats can therefore be read as
+ordinary files, matching the existing raw-view contract rather than silently
+listing their members or demanding a codec. Member-address paths still require
+the archive view; raw mode names an actual filesystem path.
+
+Archive views reject SQLite/notebook/PDF views and selectors instead of silently
+ignoring them. Directory trees reject derived format selectors and explicit
+line offset/limit parameters, which their fixed bounded tree renderer never
+used. Default directory behavior and archive line pagination are unchanged.
+
+Ruff, targeted type checking and 97 existing file/format/artifact/coverage tests
+passed. Manual probes confirmed raw ZIP and unsupported 7z bytes use the binary
+file branch, and five incompatible archive/directory selector combinations fail
+explicitly. No tests added. Archive metadata collection bounds and directory
+mid-scan cancellation remain pending.

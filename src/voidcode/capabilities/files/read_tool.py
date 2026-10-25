@@ -1633,8 +1633,11 @@ class ReadTool:
         offset = args.offset or 1
         limit = args.limit or DEFAULT_READ_LIMIT
 
-        archive = _split_archive_path(args.path)
+        format_selectors = (args.table, args.query, args.cell, args.page, args.output_offset, args.output_limit)
+        archive = _split_archive_path(args.path) if args.view != "raw" else None
         if archive is not None:
+            if args.view is not None or any(value is not None for value in format_selectors):
+                raise ValueError("archive views do not accept SQLite, notebook, or PDF selectors")
             archive_path, inner, family = archive
             requested_archive = Path(archive_path)
             resolved_archive = (requested_archive if requested_archive.is_absolute() else workspace_root / requested_archive).resolve()
@@ -1652,7 +1655,7 @@ class ReadTool:
                 )
             )
 
-        if args.path.lower().endswith(UNSUPPORTED_ARCHIVE_SUFFIXES):
+        if args.view != "raw" and args.path.lower().endswith(UNSUPPORTED_ARCHIVE_SUFFIXES):
             suffix = Path(args.path).suffix.lower() or args.path
             raise ValueError(
                 f"read does not support {suffix} archives (third-party codec required); "
@@ -1661,6 +1664,10 @@ class ReadTool:
         if not candidate.exists():
             raise ValueError(f"read target does not exist: {args.path}")
         if candidate.is_dir():
+            if args.view not in (None, "raw") or any(value is not None for value in format_selectors):
+                raise ValueError("directories do not accept format views or selectors")
+            if args.offset is not None or args.limit is not None:
+                raise ValueError("directory trees do not support offset or limit")
             return _read_success(_render_directory(candidate, label=relative_path))
         if not candidate.is_file():
             raise ValueError(f"read only supports regular files: {args.path}")
