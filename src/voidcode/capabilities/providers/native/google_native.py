@@ -423,7 +423,7 @@ class GoogleGenAIProvider:
         # is a component of it), so it is stored as-is and the uncached bucket is the
         # remainder: without it every Google turn would price its input at zero (the
         # provider reports no separate uncached count).
-        uncached = max(0, input_tokens - cache_read) if input_tokens is not None and cache_read is not None else None
+        uncached = input_tokens - cache_read if input_tokens is not None and cache_read is not None and cache_read <= input_tokens else None
         return ProviderTokenUsage(
             input_tokens=input_tokens,
             output_tokens=output_tokens,

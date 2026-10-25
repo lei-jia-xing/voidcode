@@ -27,6 +27,7 @@ not establish source review.
 | `files/read_formats.py` | Reviewed: bounded notebook/SQLite/PDF views, source snapshot semantics, pagination/recovery, signature-only image handling, read-only transactions and extractor cleanup |
 | `files/read_tool.py` | Partial: strict ingress, PDF recovery and typed/error-visible bounded directory materialization reviewed; archive member identity/byte bounds and clipped-line recovery reviewed; native file stream/hash/binary bounds and read cancellation ingress reviewed; tool documentation and transcript query ingress reviewed; native clipped-line recovery reviewed; remaining artifact/transcript projections, archive metadata/modes and result metadata pending; directory cancellation reviewed |
 | `files/write_tool.py` | Reviewed: hash/containment/symlink/atomic replace/cancellation; fail visibly on mode errors and always clean temporary files |
+| `workspace_queries.py` | Partial: newly moved shared contracts inspected; missing required terminal cursor and answer identity/hash checks need reconciliation |
 | `frontmatter.py` | Reviewed source/consumers: safe YAML, duplicate/string-key validation, framing/body/bounds; shared parser tests |
 | `providers/__init__.py` | Reviewed: shared registration/facts/view wiring and ExitStack-owned provider teardown |
 | `providers/dispatch.py` | Reviewed: strict registration ingress, explicit auth conflict handling, typed materialization/selection, locked lazy cache/teardown and usage wrappers |
@@ -2818,3 +2819,19 @@ and catalog API families together. No per-model override table was added.
 Validation: 14 existing dispatch tests passed, both gateway payloads carried
 the application User-Agent, Ruff and targeted ty passed, CodeGraph synchronized.
 No tests added. External endpoint/auth reconciliation remains open.
+
+### Usage arithmetic: inconsistent cache totals remain unknown
+
+OpenAI and Google previously clamped negative derived uncached input counts to
+zero when cache_read exceeded the inclusive input total. Both now preserve the
+reported counters and return None for the inconsistent derived bucket. Valid
+zero remains zero. OpenAI also preserves a known cache count when input/output
+totals are absent, matching the existing Google unknown-preserving contract.
+No guessed count or additional normalization layer introduced.
+
+Validation: 27 existing usage/data tests passed, plus twelve manual projections
+covering valid subtraction, known zero, oversized cache totals and missing
+components. Ruff/format and targeted ty passed; CodeGraph synchronized. No tests
+added. Inventory reconciliation found the newly moved workspace_queries.py; it
+is explicitly partial until its response-field contract is resolved. The three
+absent inventory paths are recorded removals rather than unreviewed files.

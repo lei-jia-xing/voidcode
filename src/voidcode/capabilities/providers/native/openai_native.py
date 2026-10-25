@@ -266,9 +266,9 @@ def _usage(payload: Mapping[str, object]) -> ProviderTokenUsage | None:
     output_tokens = usage_int(raw.get("completion_tokens"))
     details = raw.get("prompt_tokens_details")
     cache_read = usage_int(details.get("cached_tokens")) if isinstance(details, Mapping) else None
-    if input_tokens is None and output_tokens is None:
+    if all(value is None for value in (input_tokens, output_tokens, cache_read)):
         return None
-    uncached = max(0, input_tokens - cache_read) if input_tokens is not None and cache_read is not None else None
+    uncached = input_tokens - cache_read if input_tokens is not None and cache_read is not None and cache_read <= input_tokens else None
     return ProviderTokenUsage(input_tokens=input_tokens, output_tokens=output_tokens, cache_read_tokens=cache_read, uncached_input_tokens=uncached)
 
 
