@@ -1639,3 +1639,18 @@ Net source reduction: 38 lines. Ruff, full source type checking and 97 existing
 file/format/artifact/coverage tests passed. Manual validation checked the thawed
 SDK wire schema against JSON Schema and compared valid arguments plus five
 invalid bound/unknown-field cases with Pydantic ingress. No tests added.
+
+## Derived-view output recovery metadata
+
+When a serialized SQLite/notebook/PDF view exceeds the output budget, its
+existing full-view artifact is now also attached to `TextOutput.bounds.reference`.
+Previously only prose and the opaque body exposed this recovery reference, so
+standard output consumers could not discover it. Reused one UTF-8 encoding for
+the size check and preview slicing. Source snapshot and extracted-text references
+remain distinct from this complete rendered-view reference.
+
+Ruff, full source type checking and 97 existing file/format/artifact/coverage
+tests passed. A real 200-cell notebook with 300-character sources produced a
+bounded preview whose standard reference resolved to the complete 200-cell JSON
+view. No tests added. Native clipped-line recovery and remaining read lifecycle
+review are still pending.

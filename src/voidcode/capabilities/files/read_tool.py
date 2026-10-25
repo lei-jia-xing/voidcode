@@ -1438,13 +1438,16 @@ def _render_format_view(
 
     raw_content = json.dumps(payload, ensure_ascii=False, indent=2)
     output_reference: str | None = None
-    output_truncated = len(raw_content.encode("utf-8")) > MAX_BYTES
+    bounds_reference: OutputReference | None = None
+    raw_bytes = raw_content.encode("utf-8")
+    output_truncated = len(raw_bytes) > MAX_BYTES
     if output_truncated:
         spilled = _spill_artifact(services, kind=f"{view}_view", content=raw_content, mime="application/json", source=label)
         output_reference = spilled[2]
         payload["output_reference"] = output_reference
         payload["output_artifact"] = spilled[0]
-        raw_content = raw_content.encode("utf-8")[: MAX_BYTES // 2].decode("utf-8", "ignore") + "\n…"
+        bounds_reference = OutputReference(uri=output_reference, artifact=spilled[0])
+        raw_content = raw_bytes[: MAX_BYTES // 2].decode("utf-8", "ignore") + "\n…"
     truncated = bool(payload.get("truncated", False)) or output_truncated
     if output_truncated:
         payload["output_truncated"] = True
@@ -1460,7 +1463,7 @@ def _render_format_view(
             next_offset=next_offset if isinstance(next_offset, int) else None,
             truncated=truncated,
             partial=truncated,
-            bounds=OutputBounds(truncated=truncated, partial=truncated, source=label),
+            bounds=OutputBounds(truncated=truncated, partial=truncated, source=label, reference=bounds_reference),
         ),
         body=OpaqueToolBody(payload),
     )
