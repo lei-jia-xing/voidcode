@@ -1827,3 +1827,20 @@ permitted). A scripted 3012-fragment response preserved exact final arguments,
 call identity, all fragment ordinals and the terminal tool-call reason. No tests
 added and no live vendor calls used. Remaining malformed-stream, thinking replay
 and transport reconciliation are still pending.
+
+## OpenAI streamed argument accumulation
+
+OpenAI's private transient accumulator now appends fragments to a list instead
+of recreating a tuple and dataclass on every delta. The used `started` and
+`explicit_streaming` fields remain: they govern partial-call versus completed
+call event emission. The reverse tool name mapping is built once per stream
+instead of once per tool delta. Final validation, event ordering, conflict
+checks, legacy complete-call output and fragment ordinals are unchanged.
+
+Ruff, formatting and targeted provider type checking passed. A full source type
+check encountered 17 missing EventType diagnostics in concurrent unstaged core
+event changes; those files are outside this batch. Existing provider streaming,
+usage, lifecycle, error and thinking tests passed 115 tests in 10.62 seconds
+with local loopback permitted. A 3012-fragment scripted response produced one
+start event, preserved original fragment ordinals/call identity and reconstructed
+the exact input object. No tests added or live vendor calls used.

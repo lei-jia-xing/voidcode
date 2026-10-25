@@ -354,11 +354,11 @@ def _session_id(request: ProviderTurnRequest) -> str:
     return value if isinstance(value, str) else ""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class _ToolAccumulator:
     tool_call_id: str | None = None
     tool_name: str | None = None
-    fragments: tuple[str, ...] = ()
+    fragments: list[str] = field(default_factory=list)
     explicit_streaming: bool = False
     started: bool = False
 
@@ -834,6 +834,7 @@ class OpenAIChatCompletionsProvider:
             finish_reason_reported = False
             raw_finish_reason_token: str | None = None
             accumulators: dict[int, _ToolAccumulator] = {}
+            reverse = self._tool_maps(request)[1]
             for raw_chunk in iter_stream_with_timeout(
                 stream,
                 timeout_seconds=self._timeout(),
@@ -906,7 +907,7 @@ class OpenAIChatCompletionsProvider:
                             details={"source": "stream", "reason": "malformed_tool_call"},
                         )
                     index = raw_index if isinstance(raw_index, int) else 0
-                    previous = accumulators.get(index, _ToolAccumulator())
+                    previous = accumulators.setdefault(index, _ToolAccumulator())
                     raw_id = raw_tool.get("id")
                     if raw_id is not None and (not isinstance(raw_id, str) or not raw_id):
                         raise ProviderExecutionError(
@@ -979,7 +980,6 @@ class OpenAIChatCompletionsProvider:
                             pass
                     explicit = previous.explicit_streaming or (isinstance(raw_id, str) and bool(raw_id) and not complete_first)
                     started = previous.started
-                    reverse = self._tool_maps(request)[1]
                     if explicit and name is not None and not started:
                         yield ProviderStreamEvent(
                             kind="tool_call_start", channel="tool", tool_call_id=tool_id, tool_name=reverse.get(name, name), tool_call_ordinal=index
@@ -994,13 +994,12 @@ class OpenAIChatCompletionsProvider:
                             tool_call_ordinal=index,
                             fragment_ordinal=len(previous.fragments),
                         )
-                    accumulators[index] = _ToolAccumulator(
-                        raw_id if isinstance(raw_id, str) else previous.tool_call_id,
-                        name,
-                        previous.fragments + ((fragment,) if fragment is not None else ()),
-                        explicit,
-                        started,
-                    )
+                    previous.tool_call_id = raw_id if isinstance(raw_id, str) else previous.tool_call_id
+                    previous.tool_name = name
+                    if fragment is not None:
+                        previous.fragments.append(fragment)
+                    previous.explicit_streaming = explicit
+                    previous.started = started
         except Exception as exc:
             raise self._map_exception(exc, provider_name=provider_name, model_name=model_name, source="stream") from exc
         if not finish_reason_reported:
