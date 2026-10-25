@@ -34,7 +34,7 @@ not establish source review.
 | `providers/native/_resources.py` | Reviewed: contained package paths and JSON loading; removed unused installed-data locator/text wrapper |
 | `providers/native/_result_sanitize.py` | Removed: only consumer sat behind an unreachable metadata.data dict check; SDK content is already projected by core |
 | `providers/native/_wire_common.py` | Reviewed: usage counts, tool IDs, request headers, bounded queue/stream timeout/error cleanup, owned-resource initialization |
-| `providers/native/anthropic_native.py` | Partial: request assembly and tool/cache gating reviewed; removed unconsumed wire fingerprints and duplicate history conversion; stream/replay/usage/transport reconciliation pending |
+| `providers/native/anthropic_native.py` | Reviewed: request/tool/cache assembly, SDK auth/stream ownership, signed/redacted replay, exact tool stream identity, explicit terminal handling, unknown-preserving usage and thinking budget controls; model-specific thinking constraints delegated visibly to API |
 | `providers/native/claude_tokenizer/__init__.py` | Pending full source review |
 | `providers/native/claude_tokenizer/constants.py` | Pending full source review |
 | `providers/native/claude_tokenizer/engine.py` | Pending full source review |
@@ -2459,3 +2459,30 @@ probes covered missing and invalid cache counts, completion from split reports,
 explicit zeros and an incomplete final total. No tests added or live vendor
 calls used. Remaining Anthropic stream lifetime/terminal reconciliation and
 other partial capability rows remain open.
+
+## Anthropic explicit terminal event and source audit reconciliation
+
+The stream now stops reading at message_stop rather than continuing until the
+HTTP iterator reaches EOF. This prevents an already complete response becoming
+a timeout when a gateway keeps the connection open after its terminal event.
+Missing message_stop still fails, and terminal processing still validates tool
+arguments and reports usage/signed metadata before the final SDK event.
+
+A before-change lifetime probe confirmed both native adapters already close
+raw streams on parser failure (even retaining the error traceback) and caller
+generator close. No extra closing wrapper was introduced. With the one-line
+terminal fix, a stream blocked after message_stop returned in under 0.5 seconds
+and closed its reader. Ruff and targeted type checking passed; 118 existing
+provider tests passed in 11.40 seconds with local loopback permission. No tests
+added or live vendor calls used.
+
+Completed source reconciliation of Anthropic transport/auth/default endpoint
+normalization and resource ownership, request/name/schema/cache projection,
+thinking controls, signed/redacted history, regular/streamed content and tool
+assembly, cumulative usage, errors and explicit terminal/cancellation behavior.
+The module inventory row is reviewed. Model-specific accepted thinking modes
+and interleaved budget/output-cap exceptions remain API-validated, without
+guessed mode substitutions or per-model rules. SDK calls retain configured
+timeouts; local fixtures establish adapter behavior, not live compatibility
+with every vendor/model. OpenAI and the other pending capability inventory
+rows still need reconciliation and the full project gate remains outstanding.

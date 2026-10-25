@@ -693,6 +693,7 @@ class AnthropicMessagesProvider:
                     latest_usage = _merge_usage(latest_usage, _usage(chunk))
                 elif event_type == "message_stop":
                     message_stopped = True
+                    break
                 elif event_type == "ping":
                     continue
                 elif event_type in {"content_block_stop", "message_start"}:
