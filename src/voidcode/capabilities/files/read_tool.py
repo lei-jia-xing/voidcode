@@ -16,7 +16,7 @@ import zipfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, Literal, cast, final
+from typing import IO, ClassVar, Literal, cast, final
 from urllib.parse import parse_qs
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -1112,7 +1112,7 @@ def _render_directory(root: Path, *, label: str) -> _ReadOutcome:
 
 
 def _normalize_member_path(raw: str) -> str:
-    parts = [part for part in raw.strip().replace("\\", "/").split("/") if part not in ("", ".")]
+    parts = [part for part in raw.replace("\\", "/").split("/") if part not in ("", ".")]
     if any(part == ".." for part in parts):
         raise ValueError(f"archive member path must not contain '..': {raw}")
     return "/".join(parts)
@@ -1124,12 +1124,10 @@ def _split_archive_path(path: str) -> tuple[str, str, str] | None:
     best: tuple[int, str, str] | None = None
     for family, suffixes in (("zip", _ZIP_SUFFIXES), ("tar", _TAR_SUFFIXES)):
         for suffix in suffixes:
-            index = lowered.find(suffix)
-            if index < 0:
+            match = re.search(re.escape(suffix) + r"(?=:|$)", lowered)
+            if match is None:
                 continue
-            end = index + len(suffix)
-            if end < len(lowered) and lowered[end] != ":":
-                continue
+            index = match.start()
             if best is None or index < best[0] or (index == best[0] and len(suffix) > len(best[1])):
                 best = (index, suffix, family)
     if best is None:
@@ -1147,26 +1145,32 @@ def _tar_members(archive: tarfile.TarFile) -> list[tuple[str, int, bool]]:
     return [(_normalize_member_path(member.name), member.size, member.isdir()) for member in archive.getmembers()]
 
 
+def _archive_member_bytes(handle: IO[bytes], normalized: str) -> bytes:
+    with handle:
+        raw = handle.read(MAX_ARCHIVE_MEMBER_BYTES + 1)
+    if len(raw) > MAX_ARCHIVE_MEMBER_BYTES:
+        raise ValueError(f"archive member exceeds the maximum supported size ({MAX_ARCHIVE_MEMBER_BYTES} bytes): {normalized}")
+    return raw
+
+
 def _zip_member_bytes(archive: zipfile.ZipFile, normalized: str) -> bytes:
-    for info in archive.infolist():
-        if info.filename.endswith("/") or _normalize_member_path(info.filename) != normalized:
+    for info in reversed(archive.infolist()):
+        if info.is_dir() or _normalize_member_path(info.filename) != normalized:
             continue
-        if info.file_size > MAX_ARCHIVE_MEMBER_BYTES:
-            raise ValueError(f"archive member exceeds the maximum supported size ({MAX_ARCHIVE_MEMBER_BYTES} bytes): {normalized}")
-        return archive.read(info.filename)
+        return _archive_member_bytes(archive.open(info), normalized)
     raise ValueError(f"archive member not found: {normalized}")
 
 
 def _tar_member_bytes(archive: tarfile.TarFile, normalized: str) -> bytes:
-    for member in archive.getmembers():
-        if not member.isfile() or _normalize_member_path(member.name) != normalized:
+    for member in reversed(archive.getmembers()):
+        if _normalize_member_path(member.name) != normalized:
             continue
-        if member.size > MAX_ARCHIVE_MEMBER_BYTES:
-            raise ValueError(f"archive member exceeds the maximum supported size ({MAX_ARCHIVE_MEMBER_BYTES} bytes): {normalized}")
+        if not member.isfile():
+            raise ValueError(f"archive member is not a regular file: {normalized}")
         handle = archive.extractfile(member)
         if handle is None:
-            break
-        return handle.read()
+            raise ValueError(f"archive member cannot be read: {normalized}")
+        return _archive_member_bytes(handle, normalized)
     raise ValueError(f"archive member not found: {normalized}")
 
 

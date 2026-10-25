@@ -25,7 +25,7 @@ not establish source review.
 | `files/glob_tool.py` | Reviewed: strict ingress, root-relative patterns, traversal/ignore rules, bounded path collection, ordering/error results and cooperative cancellation |
 | `files/grep_tool.py` | Reviewed: strict ingress, literal/regex matching and filters, bounded line/context/result collection, immutable rendering, error handling and cooperative cancellation |
 | `files/read_formats.py` | Reviewed: bounded notebook/SQLite/PDF views, source snapshot semantics, pagination/recovery, signature-only image handling, read-only transactions and extractor cleanup |
-| `files/read_tool.py` | Partial: strict ingress, PDF recovery and typed/error-visible bounded directory materialization reviewed; artifact/file/archive/transcript projections, directory cancellation and result metadata audit pending |
+| `files/read_tool.py` | Partial: strict ingress, PDF recovery and typed/error-visible bounded directory materialization reviewed; archive member identity/byte bounds reviewed; artifact/file/transcript projections, archive metadata/line recovery, directory cancellation and result metadata pending |
 | `files/write_tool.py` | Reviewed: hash/containment/symlink/atomic replace/cancellation; fail visibly on mode errors and always clean temporary files |
 | `frontmatter.py` | Reviewed source/consumers: safe YAML, duplicate/string-key validation, framing/body/bounds; shared parser tests |
 | `providers/__init__.py` | Reviewed: shared registration/facts/view wiring and ExitStack-owned provider teardown |
@@ -1485,3 +1485,25 @@ source type checking and CodeGraph sync passed. A concurrent core/processes.py
 rewrite temporarily failed global type checking outside this change; that source
 was preserved separately. Directory cancellation and remaining read projections
 are still pending audit.
+
+
+## Archive member identity and bounded reads
+
+ZIP member selection now uses the chosen ZipInfo object instead of validating one
+record and resolving its filename again (which selected the last duplicate).
+ZIP/TAR both use last matching record semantics, aligned with listing metadata.
+Their shared byte reader reads at most MAX_ARCHIVE_MEMBER_BYTES+1 and checks the
+actual result, closing the member stream on every path. TAR non-regular members
+fail explicitly rather than falling through to an older duplicate or following
+an archive link. No extraction to workspace paths is performed.
+
+Member normalization preserves filename whitespace. Archive-suffix detection
+finds the first suffix actually followed by colon/end, so an earlier `.zip` inside
+a directory name no longer hides a later real archive suffix.
+
+Validation: 94 existing format/file/artifact checks passed (0.91s), no tests added
+or changed. Real ZIP/TAR manual probes confirmed last duplicate content, rejection
+of an oversized duplicate, preserved trailing-space names and correct detection
+under a folder.zip-cache prefix. Ruff, formatting and targeted source type checks
+passed. Archive metadata enumeration limits and clipped member-line recovery
+remain pending; the entire archive path is not yet marked reviewed.
