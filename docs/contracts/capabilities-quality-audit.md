@@ -36,9 +36,9 @@ not establish source review.
 | `providers/native/_wire_common.py` | Reviewed: usage counts, tool IDs, request headers, bounded queue/stream timeout/error cleanup, owned-resource initialization |
 | `providers/native/anthropic_native.py` | Reviewed: request/tool/cache assembly, SDK auth/stream ownership, signed/redacted replay, exact tool stream identity, explicit terminal handling, unknown-preserving usage and thinking budget controls; model-specific thinking constraints delegated visibly to API |
 | `providers/native/claude_tokenizer/__init__.py` | Reviewed: family configuration, lazy load and count dispatch |
-| `providers/native/claude_tokenizer/constants.py` | Pending full source review |
+| `providers/native/claude_tokenizer/constants.py` | Reviewed: marker escaping and explicit measured Unicode tables |
 | `providers/native/claude_tokenizer/engine.py` | Reviewed: count-only DP, byte floor, frame tail and bundled CTOK loading |
-| `providers/native/claude_tokenizer/normalize.py` | Pending full source review |
+| `providers/native/claude_tokenizer/normalize.py` | Reviewed: normalization, classes, runs and boundary/case markers |
 | `providers/native/claude_tokenizer/notation.py` | Removed: unused token rendering/parsing API |
 | `providers/native/config.py` | Reviewed: strict ingress, field/table wiring, typed converters, env resolution, custom names, credential exclusivity and representations; removed dead framework/default paths |
 | `providers/native/errors.py` | Reviewed: classified errors, SDK text extraction and structured retry hints; removed prose scheduling and duplicate conversion functions |
@@ -2600,3 +2600,21 @@ all four families, including trailing-newline lengths 0–100 and deterministic
 multilingual/marker strings. Ruff/format and targeted ty passed; CodeGraph synced.
 No tests added; current vendor exactness and normalization/constants audit are
 not established by these equivalence checks.
+
+### Claude normalization: use supported Python Unicode data
+
+Reviewed normalization and constants in full: surrogate replacement, control/PUA
+stripping, Thai composition, quote/space folding, script/mark classification,
+case markers, contractions, digit borders, head whitespace and seam rewriting.
+Retained measured separator and punctuation tables: replacing them with broad
+Unicode categories would change the modeled behavior. Removed compatibility
+case pairs and Kannada classification for obsolete Unicode versions; the project
+requires Python 3.14 with Unicode 16.0. Replaced case wrappers with built-ins,
+retained per-codepoint lowering (whole-string lowering changes Final Sigma),
+and removed its consequently redundant sigma replacement. Deleted unused stream
+wrapper; the engine already invokes normalization and stream_norm directly.
+
+Validation: all 65,536 BMP classifications and individual lowerings matched HEAD;
+4,000 mixed-string case mappings and 200 recorded family token counts matched.
+Ruff/format and targeted ty passed. These are equivalence checks against the
+shipped implementation, not a fresh vendor-oracle guarantee. No tests added.

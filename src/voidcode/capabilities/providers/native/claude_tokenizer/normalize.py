@@ -2,7 +2,7 @@
 
     NFC + quote fold  ->  class split  ->  case marking  ->  boundary markers written in
 
-``stream()`` is the output: a single string with word boundaries, case and absorbed spaces written
+``stream_norm()`` produces a single string with word boundaries, case and absorbed spaces written
 in as markers, which ``engine.py`` then tiles. Every rule here is either a designed rewrite of the
 text or a measured fact about the oracle. No costs live in this module.
 """
@@ -42,26 +42,10 @@ from .constants import (
 
 _STRAY_MARK = "stray_mark"
 
-# Python 3.13 ships Unicode 15.1 data; the source models know these Unicode 16.0 case pairs.
-_NEW_CASE_PAIRS = {"\u1c89": "\u1c8a", "\ua7cb": "\u0264"}
-_NEW_CASED = frozenset(_NEW_CASE_PAIRS) | frozenset(_NEW_CASE_PAIRS.values())
-
 
 def _lower(text: str) -> str:
-    return "".join(_NEW_CASE_PAIRS.get(c, c.lower()) for c in text)
-
-
-def _is_upper(c: str) -> bool:
-    return c in _NEW_CASE_PAIRS or c.isupper()
-
-
-def _is_lower(c: str) -> bool:
-    return c in _NEW_CASE_PAIRS.values() or c.islower()
-
-
-def _span_is_upper(text: str) -> bool:
-    cased = [c for c in text if _is_upper(c) or _is_lower(c)]
-    return bool(cased) and all(_is_upper(c) for c in cased)
+    # Lower each codepoint independently: whole-string lower applies Final_Sigma.
+    return "".join(c.lower() for c in text)
 
 
 def nfc(text: str, *, fold_quotes: bool = True) -> str:
@@ -102,8 +86,6 @@ def classify(c: str) -> str:
     """The stream class of one codepoint, derived from Unicode data and measured tables."""
     if is_separator(c):
         return HARD  # separates word runs; `_marks_like_punct` claims its borders
-    if c in _NEW_CASED:
-        return WORDY
     o = ord(c)
     cat = unicodedata.category(c)
     if cat[0] == "Z" or c in "\t\n\r\f\v":
@@ -120,11 +102,6 @@ def classify(c: str) -> str:
         return PUNCT
     if VARIATION_SELECTORS[0] <= o <= VARIATION_SELECTORS[1]:
         return HARD  # gc=Mn, but they take no word model at all
-    if o == 0x0CF3:
-        # KANNADA SIGN COMBINING ANUSVARA ABOVE RIGHT, assigned in Unicode 15.0: `unicodedata`
-        # with older tables reports Cn, which would drop it to HARD. Measured as plain word
-        # material (Mc, ccc 0), so pin it WORDY.
-        return WORDY
     if cat[0] in ("L", "M") and not is_hard_cp(o):
         # Brahmic scripts are subsumed into WORDY: they tile over the same marked-fragment
         # vocabulary plus the per-codepoint byte floor as any other letter script.
@@ -158,20 +135,15 @@ def mark_case(span: str, allcaps_min: int | None = 4, *, head_mark: bool = False
         return span
     if "İ" in span:
         tail = span[1:]
-        if _is_upper(span[:1]) and span[:1] != "İ" and not any(_is_upper(c) for c in tail if c != "İ"):
+        if span[:1].isupper() and span[:1] != "İ" and not any(c.isupper() for c in tail if c != "İ"):
             return SHIFT_G + _lower(span[0]) + "".join(c if c == "İ" else _lower(c) for c in tail)
         return span
-    unlowerable = any(
-        (c in _NEW_CASED or unicodedata.category(c)[0] in ("L", "M")) and not _is_lower(c) and (not _is_upper(c) or _lower(c) == c) for c in span
-    )
-    if allcaps_min is not None and _span_is_upper(span) and len(span) >= allcaps_min and not unlowerable:
-        # str.lower() applies Unicode's Final_Sigma rule; the oracle's ⟨caps⟩ body instead
-        # lowers Σ to σ everywhere. An isupper() span contains no ς of its own, so the replace
-        # only touches what lower() just produced.
-        return CAPS_G + _lower(span).replace("ς", "σ")
+    unlowerable = any(unicodedata.category(c)[0] in ("L", "M") and not c.islower() and (not c.isupper() or _lower(c) == c) for c in span)
+    if allcaps_min is not None and span.isupper() and len(span) >= allcaps_min and not unlowerable:
+        return CAPS_G + _lower(span)
     if _lower(span[:1]) == span[:1]:
         return span
-    if _is_upper(span[:1]) and not any(_is_upper(c) for c in span[1:]):
+    if span[:1].isupper() and not any(c.isupper() for c in span[1:]):
         return SHIFT_G + _lower(span)
     return span
 
@@ -425,16 +397,6 @@ def _marks_like_punct(ch: str) -> bool:
     return (cat[0] in ("P", "S") or cat in ("Cf", "Cn")) and not ideographic_punct
 
 
-def stream(text: str, model) -> str:
-    """Text → the marked stream, in the internal glyph form ``pieces.json`` keys parse to.
-
-    A WORDY run is bracketed by ⟨bow⟩ and ⟨eow⟩ and case-normalized. The ⟨eow⟩⟨bow⟩ seam
-    encodes a single space between two such runs. Every other space stays literal.
-    Punctuation-like, digit, separator, and stray-mark runs receive their measured boundary markers.
-    """
-    return stream_norm(nfc(text, fold_quotes=model.fold_quotes), model, raw_head_space=raw_head_space(text))
-
-
 def raw_head_space(text: str) -> bool:
     """Whether raw text supplies the leading space that the frame absorbs.
 
@@ -449,9 +411,8 @@ def raw_head_space(text: str) -> bool:
 def stream_norm(norm: str, model, *, raw_head_space: bool = True) -> str:
     """The marked stream over already-normalized text.
 
-    This is :func:`stream` over text the caller has already folded. It is split out so a document
-    is NFC-folded once, and the caller can read the content-final newline run before ``rstrip``
-    drops it. See ``engine.frame_tail``.
+    The caller NFC-folds once and reads the content-final newline run before
+    this function strips it. See ``engine.frame_tail``.
     """
     # Protect literal occurrences of the codepoints used as internal markers. PUA input was removed
     # by NFC, so the private-use escape values cannot collide with text.
