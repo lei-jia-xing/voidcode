@@ -25,7 +25,7 @@ not establish source review.
 | `files/glob_tool.py` | Reviewed: strict ingress, root-relative patterns, traversal/ignore rules, bounded path collection, ordering/error results and cooperative cancellation |
 | `files/grep_tool.py` | Reviewed: strict ingress, literal/regex matching and filters, bounded line/context/result collection, immutable rendering, error handling and cooperative cancellation |
 | `files/read_formats.py` | Reviewed: bounded notebook/SQLite/PDF views, source snapshot semantics, pagination/recovery, signature-only image handling, read-only transactions and extractor cleanup |
-| `files/read_tool.py` | Partial: strict ingress, PDF recovery and typed/error-visible bounded directory materialization reviewed; archive member identity/byte bounds and clipped-line recovery reviewed; artifact/file/transcript projections, archive metadata/mode semantics, directory cancellation and result metadata pending |
+| `files/read_tool.py` | Partial: strict ingress, PDF recovery and typed/error-visible bounded directory materialization reviewed; archive member identity/byte bounds and clipped-line recovery reviewed; native file stream/hash/binary bounds and read cancellation ingress reviewed; artifact/transcript projections, native clipped-line recovery, archive metadata/modes, directory cancellation and result metadata pending |
 | `files/write_tool.py` | Reviewed: hash/containment/symlink/atomic replace/cancellation; fail visibly on mode errors and always clean temporary files |
 | `frontmatter.py` | Reviewed source/consumers: safe YAML, duplicate/string-key validation, framing/body/bounds; shared parser tests |
 | `providers/__init__.py` | Reviewed: shared registration/facts/view wiring and ExitStack-owned provider teardown |
@@ -1525,3 +1525,28 @@ or added. Manual real ZIP/TAR calls clipped a multibyte long line, then recovere
 the exact complete text through the returned artifact's byte view. A short-member
 read added no spill. Ruff, formatting, targeted source typing and CodeGraph sync
 passed. Archive metadata bounds/mode semantics remain pending.
+
+
+## Native file data and hash share one observed stream
+
+The file renderer opens one binary descriptor, sniffs/rewinds it, and either reads
+a bounded attachment/binary payload or wraps it in stdlib TextIOWrapper with no
+newline translation. Text hashing occurs while observing every decoded line, so
+UTF-8 BOM and CR/LF/CRLF bytes remain exact and returned lines cannot be tagged
+with the hash from a separate path open. This protects replacement races; it is
+not an atomic filesystem snapshot against in-place concurrent writes.
+
+Merged attachment/binary read/hash/spill/bounds setup. Actual bounded reads replace
+attachment stat-then-unbounded-read, and binary reads now enforce their existing
+50 MiB constant. Removed a separate sniff open and whole-file hash pass. Whole-line
+page boundaries no longer incorrectly mark emitted ReadObservations as clipped.
+Read ingress and text line loops now return explicit confirmed cancellation.
+
+Validation: 97 existing format/file/artifact/coverage checks passed (1.09s). Manual
+atomic path replacement preserved one descriptor's body/hash/BOM/mixed line endings;
+binary overflow was rejected, whole-line byte paging remained partial but unclipped,
+and a pre-cancelled request failed before resolving a nonexistent file. The existing
+cancellation test was adjusted to the explicit failure result and lost its unused
+SQLite setup; no tests added. Ruff, formatting, targeted type checks and CodeGraph
+sync passed. Net implementation reduction: 30 lines. Native clipped-line recovery,
+archive metadata and remaining projections are still pending.
