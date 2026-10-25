@@ -65,36 +65,38 @@ class _StrictArgs(BaseModel):
 
 
 class _StartArgs(_StrictArgs):
-    op: Literal["start"]
-    command: NonEmptyCommand
-    description: OptionalDescription = None
-    ready_pattern: str | None = Field(default=None, min_length=1, max_length=512)
-    ready_timeout: int = Field(default=10, ge=1, le=30)
+    op: Literal["start"] = Field(description="Start a supervised process that outlives this call.")
+    command: NonEmptyCommand = Field(description="Shell command to run in the workspace for the lifetime of the process.")
+    description: OptionalDescription = Field(default=None, description="Human-readable description of the process, persisted with its identity.")
+    ready_pattern: str | None = Field(
+        default=None, min_length=1, max_length=512, description="Text to wait for in the process output before returning."
+    )
+    ready_timeout: int = Field(default=10, ge=1, le=30, description="Seconds to wait for ready_pattern (1-30, default 10).")
 
 
 class _PsArgs(_StrictArgs):
-    op: Literal["ps"]
+    op: Literal["ps"] = Field(description="List the processes of this workspace and session.")
 
 
 class _ProcessIdArgs(_StrictArgs):
-    process_id: NonEmptyProcessId
+    process_id: NonEmptyProcessId = Field(description="Process id returned by op=start.")
 
 
 class _LogsArgs(_ProcessIdArgs):
-    op: Literal["logs"]
-    stream: Literal["stdout", "stderr", "both"] = "both"
-    offset: int = Field(default=0, ge=0, le=1_000_000)
-    limit: int = Field(default=500, ge=1, le=500)
+    op: Literal["logs"] = Field(description="Read a bounded, line-paged window of a process's output.")
+    stream: Literal["stdout", "stderr", "both"] = Field(default="both", description="Which output stream to read.")
+    offset: int = Field(default=0, ge=0, le=1_000_000, description="Number of leading lines to skip; page from next_offset to read on.")
+    limit: int = Field(default=500, ge=1, le=500, description="Maximum lines to return (1-500).")
 
 
 class _SendArgs(_ProcessIdArgs):
-    op: Literal["send"]
-    input: str = Field(min_length=1)
-    newline: bool = True
+    op: Literal["send"] = Field(description="Write to a process's standard input.")
+    input: str = Field(min_length=1, description="Text written to the process's standard input.")
+    newline: bool = Field(default=True, description="Append a newline to input (default true).")
 
 
 class _StopArgs(_ProcessIdArgs):
-    op: Literal["stop"]
+    op: Literal["stop"] = Field(description="Stop a process and its whole process group.")
 
 
 _ProcessArgs = Annotated[_StartArgs | _PsArgs | _LogsArgs | _SendArgs | _StopArgs, Field(discriminator="op")]
@@ -477,89 +479,7 @@ class BackgroundProcessTool:
             "logs to read bounded output, send to write stdin, or stop to terminate a process. "
             "Process rows are scoped to the current owner and workspace."
         ),
-        input_schema={
-            "type": "object",
-            "properties": {},
-            "additionalProperties": True,
-            "oneOf": [
-                {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["op", "command"],
-                    "properties": {
-                        "op": {"const": "start", "description": "Start a supervised process that outlives this call."},
-                        "command": {
-                            "type": "string",
-                            "minLength": 1,
-                            "description": "Shell command to run in the workspace for the lifetime of the process.",
-                        },
-                        "description": {"type": "string", "description": "Human-readable description of the process, persisted with its identity."},
-                        "ready_pattern": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 512,
-                            "description": "Text to wait for in the process output before returning.",
-                        },
-                        "ready_timeout": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 30,
-                            "default": 10,
-                            "description": "Seconds to wait for ready_pattern (1-30, default 10).",
-                        },
-                    },
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["op"],
-                    "properties": {"op": {"const": "ps", "description": "List the processes of this workspace and session."}},
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["op", "process_id"],
-                    "properties": {
-                        "op": {"const": "logs", "description": "Read a bounded, line-paged window of a process's output."},
-                        "process_id": {"type": "string", "description": "Process id returned by op=start."},
-                        "stream": {
-                            "type": "string",
-                            "enum": ["stdout", "stderr", "both"],
-                            "default": "both",
-                            "description": "Which output stream to read.",
-                        },
-                        "offset": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 1000000,
-                            "default": 0,
-                            "description": "Number of leading lines to skip; page from next_offset to read on.",
-                        },
-                        "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 500, "description": "Maximum lines to return (1-500)."},
-                    },
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["op", "process_id", "input"],
-                    "properties": {
-                        "op": {"const": "send", "description": "Write to a process's standard input."},
-                        "process_id": {"type": "string", "description": "Process id returned by op=start."},
-                        "input": {"type": "string", "description": "Text written to the process's standard input."},
-                        "newline": {"type": "boolean", "default": True, "description": "Append a newline to input (default true)."},
-                    },
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["op", "process_id"],
-                    "properties": {
-                        "op": {"const": "stop", "description": "Stop a process and its whole process group."},
-                        "process_id": {"type": "string", "description": "Process id returned by op=start."},
-                    },
-                },
-            ],
-        },
+        input_schema={"type": "object", **_ARGS_ADAPTER.json_schema()},
         effects=frozenset({ToolEffect.EXECUTE, ToolEffect.SPAWN}),
     )
 

@@ -273,7 +273,7 @@ def test_the_plugin_registers_both_tools() -> None:
         ({}, False),
     ],
 )
-def test_the_declared_schema_is_the_legacy_op_contract(arguments: Mapping[str, object], accepted: bool) -> None:
+def test_the_declared_schema_validates_operations(arguments: Mapping[str, object], accepted: bool) -> None:
     tool = next(tool for tool in create_plugin({}).tools if tool.definition.name == "background_process")
     schema = json_wire_object(tool.definition.input_schema)
 

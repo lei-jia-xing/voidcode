@@ -1694,3 +1694,21 @@ with a 30-second requested timeout: start returned in under one second, retained
 the persisted identity, made only one output read and never called process stop.
 No tests added. Log cursor/scan bounds and other operation cancellation remain
 pending review.
+
+## One authoritative background-process argument schema
+
+Deleted the hand-maintained five-operation JSON schema. The existing strict
+discriminated Pydantic union now generates the published schema, with the root
+object wrapper already used by edit. Operation/field descriptions moved onto
+the models, including the inherited process identity field. Numeric bounds,
+defaults and empty-input constraints therefore have a single definition.
+Optional null fields now accurately match invocation ingress. Renamed one
+existing test to describe the current operation contract rather than legacy
+compatibility; no test cases added.
+
+Production source is 80 lines shorter. Ruff, formatting, full source type
+checking and 88 existing background/shell tests passed, including generated
+schema admission and operation validation. Manual probes checked all five
+valid operations and four invalid limit/empty/unknown-field combinations
+against both the wire JSON schema and runtime union. Background lifecycle and
+log scan cursor review remain incomplete.
