@@ -26,7 +26,6 @@ from voidcode.plugins.todo.todo_plugin import (
     decide_todo_mid_run_nudge,
     decide_todo_reminder,
     incomplete_todo_phases,
-    migrate_todo_state,
     parse_todo_config,
     render_provider_state,
     todo_context,
@@ -539,7 +538,7 @@ def test_create_plugin_registers_tool_commands_and_context() -> None:
     assert [command.definition.name for command in plugin.commands] == ["todo", "todo.clear"]
     assert plugin.context is todo_context
     assert plugin.observer is not None
-    assert plugin.migrate_state is migrate_todo_state
+    assert plugin.migrate_state is None
 
 
 # --- Reminder wiring ---
@@ -584,25 +583,12 @@ def test_todo_config_defaults_and_validation() -> None:
         parse_todo_config({"reminders": {"todo": {"max_per_cycle": -1}}})
 
 
-def test_state_v2_round_trip_and_migration_from_v1() -> None:
+def test_state_v2_round_trip() -> None:
     payload = _raw_state(({"name": "A", "tasks": [{"content": "x", "status": "pending"}]},), revision=2)
     state = TodoState.from_payload(payload)
     assert state.cycle_run_id is None
     assert state.invocations == 0
     assert TodoState.from_payload(state.to_payload()) == state
-
-    v1 = {
-        "schema_version": 1,
-        "revision": 2,
-        "phases": payload["phases"],
-        "summary": payload["summary"],
-    }
-    migrated = migrate_todo_state(v1, 1, 2)
-    assert migrated["schema_version"] == 2
-    assert migrated["reminders"]["todo"]["attempts"] == 0
-    assert TodoState.from_payload(migrated).revision == 2
-    with pytest.raises(ValueError, match="supports 1 -> 2"):
-        migrate_todo_state(v1, 1, 3)
 
 
 def test_reminder_state_parse_rejects_unknown_and_missing_fields() -> None:

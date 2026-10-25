@@ -6,10 +6,8 @@ stance only: a read-only or hook lease is refused by the caller.
 
 Every child this registry starts lives in its own process group, so group
 signals touch exactly the owned tree. Service processes (one per generation,
-stopped at generation retire) run behind a foster-parent intermediate in their own
-session: grandchildren that outlive the server reparent to the intermediate and stay
-observable until the whole service stops. Detached background jobs (user jobs that
-survive a reload) own their session directly.
+stopped at generation retire) run in their own session. Detached background jobs
+(user jobs that survive a reload) own their session directly.
 """
 
 from __future__ import annotations
@@ -17,7 +15,6 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
-import sys
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -42,50 +39,6 @@ _STOP_GRACE_SECONDS: Final[float] = 0.25
 _READER_GRACE_SECONDS: Final[float] = 2.0
 #: A cancelled invocation answers inside the core's cooperative-cancel window, partial output and all.
 _CANCEL_RESPONSE_SECONDS: Final[float] = 0.75
-#: Service foster parent: becomes a child subreaper (Linux), spawns the real server with the
-#: core's log fds, reports the server pid, then lingers as the foster parent so grandchildren
-#: that outlive the server reparent here (observable) instead of to init (invisible). It exits
-#: once the server and all fostered children are gone; the registry also signals it on cancel.
-#: The intermediate opens its own session; the server shares the intermediate's group
-#: so one group signal stops the whole tree. argv[3] is the expected core pid, checked
-#: before the server spawns and during both wait loops: a changed parent (hard core death)
-#: kills the foster's own group and exits, so no service outlives its core.
-_SERVICE_INTERMEDIATE: Final[str] = (
-    "import ctypes,os,signal,subprocess,sys,time\n"
-    "control=int(sys.argv[1])\n"
-    "sin=int(sys.argv[2])\n"
-    "core=int(sys.argv[3])\n"
-    "def _orphaned():\n"
-    "    return os.getppid()!=core\n"
-    "def _kill_own_group():\n"
-    "    try:\n"
-    "        os.killpg(os.getpgrp(),signal.SIGKILL)\n"
-    "    except Exception:\n"
-    "        pass\n"
-    "if _orphaned():\n"
-    "    sys.exit(9)\n"
-    "try:\n"
-    "    ctypes.CDLL(None,use_errno=True).prctl(36,1,0,0,0)\n"
-    "except Exception:\n"
-    "    pass\n"
-    "server=subprocess.Popen(sys.argv[4:],stdin=sin,stdout=sys.stdout.fileno(),"
-    "stderr=sys.stderr.fileno(),start_new_session=False,close_fds=True,pass_fds=(sin,))\n"
-    "os.write(control,repr(server.pid).encode())\n"
-    "os.close(control)\n"
-    "os.close(sin)\n"
-    "while server.poll() is None:\n"
-    "    if _orphaned():\n"
-    "        _kill_own_group()\n"
-    "        sys.exit(9)\n"
-    "    time.sleep(0.05)\n"
-    "deadline=time.monotonic()+300\n"
-    "while time.monotonic()<deadline:\n"
-    "    if _orphaned():\n"
-    "        _kill_own_group()\n"
-    "        sys.exit(9)\n"
-    "    time.sleep(0.5)\n"
-    "sys.exit(server.returncode or 0)\n"
-)
 
 
 @dataclass(slots=True)
@@ -219,8 +172,7 @@ def _proc_pgrp(pid: int) -> int | None:
 def _descendant_pids(pid: int) -> tuple[int, ...]:
     """Every live descendant of one pid, deepest last, as far as procfs can tell.
 
-    Used to observe grandchildren a foster intermediate reparented. Without procfs nothing is
-    known, and callers signal the pid only.
+    Without procfs nothing is known, and callers signal the pid only.
     """
     if os.name != "posix" or not Path("/proc").is_dir():
         return ()
@@ -545,69 +497,31 @@ class ProcessRegistry:
         stdout_path: Path,
         stderr_path: Path,
     ) -> ProcessHandle:
-        """Start one service child behind a reaping intermediate in its own session.
-
-        The intermediate opens its own session (never the core's group), double-forks the real
-        server, reports its pid over a pipe, then waits as the foster parent: grandchildren that
-        outlive the server reparent to the intermediate (never to init), so the recorded tree
-        stays observable until the whole service stops. The entry's ``process`` handle is the
-        intermediate — owned session, reaped by us — while the server's stdin handle and log paths
-        serve IO. The reported ``ProcessHandle`` names the server pid the caller observes.
-        """
-        control_reader, control_writer = os.pipe()
-        stdin_reader, stdin_writer = os.pipe()
+        """Start one service child in its own session."""
         try:
             with stdout_path.open("ab") as out, stderr_path.open("ab") as err:
-                intermediate = subprocess.Popen(
-                    [
-                        sys.executable,
-                        "-c",
-                        _SERVICE_INTERMEDIATE,
-                        str(control_writer),
-                        str(stdin_reader),
-                        str(os.getpid()),
-                        *command,
-                    ],
+                server = subprocess.Popen(
+                    command,
                     cwd=None if cwd is None else str(cwd),
                     env=child_env,
-                    stdin=subprocess.DEVNULL,
+                    stdin=subprocess.PIPE,
                     stdout=out,
                     stderr=err,
                     start_new_session=True,
-                    pass_fds=(control_writer, stdin_reader),
                     creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
                 )
         except OSError as exc:
-            os.close(control_reader)
-            os.close(control_writer)
-            os.close(stdin_reader)
-            os.close(stdin_writer)
             raise ValueError(f"failed to start service process: {exc}") from exc
-        os.close(control_writer)
-        os.close(stdin_reader)
-        try:
-            with os.fdopen(control_reader, "rb") as control:
-                reported = control.read().decode("ascii", errors="strict").strip()
-            server_pid = int(reported)
-        except (OSError, ValueError) as exc:
-            os.close(stdin_writer)
-            intermediate.kill()
-            intermediate.wait(timeout=5)
-            raise ValueError(f"service intermediate reported no server pid: {exc}") from exc
-        stdin_pipe = os.fdopen(stdin_writer, "wb", buffering=0)
-        # The server inherits our copies of the log fds through the intermediate's redirection,
-        # so both the intermediate and the server append to the same logs.
         entry = _Background(
             process_id=identifier,
             session_id=session_id,
-            pid=server_pid,
-            start_time=process_start_identity(server_pid),
+            pid=server.pid,
+            start_time=process_start_identity(server.pid),
             stdout_path=stdout_path,
             stderr_path=stderr_path,
-            process=intermediate,
+            process=server,
             own_group=True,
         )
-        entry.process.stdin = stdin_pipe  # type: ignore[assignment]
         with self._lock:
             replaced = self._services.get(identifier)
             if replaced is not None and replaced.pid in self._groups:
@@ -685,15 +599,15 @@ class ProcessRegistry:
         """Stop one supervised process and its owned descendants, reporting whether all are gone."""
         entry = self.background(process_id, session_id=session_id)
         descendants = self._refresh_tree(entry)
-        leaders_alive = entry.process.poll() is None or _pid_alive(entry.pid)
-        if leaders_alive:
+        leader_alive = entry.process.poll() is None or _pid_alive(entry.pid)
+        if leader_alive:
             self._signal_entry(entry, descendants, signal.SIGTERM)
             drain_until = time.monotonic() + _STOP_GRACE_SECONDS
             if not self._wait_owned_exit(entry, descendants, drain_until):
                 self._signal_entry(entry, descendants, signal.SIGKILL)
                 return self._wait_owned_exit(entry, descendants, time.monotonic() + _STOP_GRACE_SECONDS)
         elif descendants:
-            # The leaders already exited: TERM-ignoring descendants are still owned, so sweep the
+            # The leader already exited: TERM-ignoring descendants are still owned, so sweep the
             # recorded tree instead of declaring victory on dead pids.
             self._signal_entry(entry, descendants, signal.SIGKILL)
             return self._wait_owned_exit(entry, descendants, time.monotonic() + _STOP_GRACE_SECONDS)
@@ -702,26 +616,20 @@ class ProcessRegistry:
     def _refresh_tree(self, entry: _Background) -> tuple[int, ...]:
         """Union the live descendant tree into this entry's recorded tree and return it.
 
-        Service children run behind a foster-parent intermediate, so both the server pid and the
-        intermediate pid root the walk: grandchildren that outlived the server reparent to the
-        intermediate and stay observable. Stale numbers are harmless: signals and liveness
-        probes skip dead pids.
+        Stale numbers are harmless: signals and liveness probes skip dead pids.
         """
         seen = set(entry.tree_pids)
         seen.update(_descendant_pids(entry.pid))
-        seen.update(_descendant_pids(entry.process.pid))
         seen.discard(entry.pid)
-        seen.discard(entry.process.pid)
         entry.tree_pids = tuple(sorted(seen))
         return entry.tree_pids
 
     def _wait_owned_exit(self, entry: _Background, descendants: tuple[int, ...], drain_until: float) -> bool:
-        """Whether the leaders and every recorded descendant exited before the deadline."""
+        """Whether the leader and every recorded descendant exited before the deadline."""
         while True:
-            server_alive = _pid_alive(entry.pid)
-            intermediate_alive = entry.process.poll() is None
+            alive = entry.process.poll() is None or _pid_alive(entry.pid)
             survivors = [pid for pid in descendants if _pid_alive(pid)]
-            if not server_alive and not intermediate_alive and not survivors:
+            if not alive and not survivors:
                 return True
             if time.monotonic() >= drain_until:
                 return False
@@ -729,17 +637,19 @@ class ProcessRegistry:
 
     @staticmethod
     def _signal_entry(entry: _Background, descendants: tuple[int, ...], sig: int) -> None:
-        """Signal exactly what this entry owns: its own session group plus its recorded tree.
-
-        The intermediate owns the session and the server shares its group, so one group
-        signal reaches both leaders; the recorded tree covers grandchildren that escaped
-        the group. The core's own group is never signalled.
-        """
-        _kill_group(entry.process, sig)
+        """Signal exactly what this entry owns: its own session group plus its recorded tree."""
+        if os.name == "posix":
+            try:
+                os.killpg(entry.pid, sig)
+            except ProcessLookupError, PermissionError:
+                pass
+        try:
+            entry.process.send_signal(sig)
+        except ProcessLookupError, PermissionError, OSError:
+            pass
         for child_pid in descendants:
             _signal_pid(child_pid, sig)
         _signal_pid(entry.pid, sig)
-        _signal_pid(entry.process.pid, sig)
 
     def stop_background(self) -> None:
         """Stop every supervised background (user job) at the owner's shutdown; a swap keeps them running.
@@ -782,14 +692,14 @@ class ProcessRegistry:
         """Stop every service process this generation started, plus its recorded descendants.
 
         Called by the runtime's own cleanup on retire/reload/owner-shutdown. Each service owns
-        its session, so the stop sweeps exactly its group plus the fostered tree — never the
+        its session, so the stop sweeps exactly its group plus the recorded tree — never the
         shared core group.
         """
         entries = self._drain_bucket(self._services)
         drain_until = time.monotonic() + _READER_GRACE_SECONDS
         for entry in entries:
             descendants = self._refresh_tree(entry)
-            if entry.process.poll() is None:
+            if entry.process.poll() is None or _pid_alive(entry.pid):
                 self._signal_entry(entry, descendants, signal.SIGTERM)
                 if not self._wait_owned_exit(entry, descendants, drain_until):
                     self._signal_entry(entry, descendants, signal.SIGKILL)

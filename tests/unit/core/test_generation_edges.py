@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import threading
 from pathlib import Path
 
@@ -52,14 +51,8 @@ class Touch:
         return CommandResult(status="ok", output=json.dumps(payload))
 
 
-def migrate(payload, from_version, to_version):
-    migrated = dict(payload)
-    migrated["migrated_from"] = from_version
-    return migrated
-
-
 def create_plugin(config: Mapping[str, object]) -> Plugin:
-    return Plugin(commands=(Touch(),), state=StateSchema(version={version}), migrate_state=migrate)
+    return Plugin(commands=(Touch(),), state=StateSchema(version={version}))
 """
 
 
@@ -134,7 +127,7 @@ def test_fact_owners_are_frozen_on_the_event_across_restart_with_changed_source(
         worker.join(timeout=5)
 
 
-def test_plain_restart_refuses_reinterpretation_and_adoption_migrates(tmp_path: Path) -> None:
+def test_plain_restart_and_adoption_refuse_schema_mismatch(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     state = tmp_path / "state"
@@ -154,15 +147,12 @@ def test_plain_restart_refuses_reinterpretation_and_adoption_migrates(tmp_path: 
     else:  # pragma: no cover - the guard is the subject
         raise AssertionError("plain restart reinterpreted stored state under a newer schema")
 
-    assert adopt_generation(workspace=workspace, state_dir=state, session_id="s")["migrated_owners"] == ["statep"]
-    with sqlite3.connect(state / "kernel-v1.sqlite3") as connection:
-        row = connection.execute("SELECT schema_version, payload_json FROM plugin_state WHERE scope='session' AND scope_key='s'").fetchone()
-    assert row is not None and row[0] == 2 and json.loads(row[1])["migrated_from"] == 1
+    with pytest.raises(ValueError, match="state schema mismatch"):
+        adopt_generation(workspace=workspace, state_dir=state, session_id="s")
 
+    _write(source, STATER.format(version=1))
     core = open_core(workspace, state_dir=state, auto_drain=False)
     assert core.invoke_command("s", "statep.touch", {}, expected_revision=core.revision_id).status == "ok"
-    # A live core owns the exclusive workspace lease: adoption must refuse instead of
-    # moving a generation a running process is still serving.
     with pytest.raises(RuntimeError, match="another core owns this workspace"):
         adopt_generation(workspace=workspace, state_dir=state, session_id="s")
     core.close()

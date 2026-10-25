@@ -15,6 +15,7 @@ import time
 import zipfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from io import TextIOWrapper
 from pathlib import Path
 from typing import IO, ClassVar, Literal, cast, final
 from urllib.parse import parse_qs
@@ -28,6 +29,7 @@ from voidcode.sdk.queries import QueryContractError
 from voidcode.sdk.services import ArtifactPage, PluginServices, QueryUnavailable
 from voidcode.sdk.tools import (
     AttachmentOutput,
+    ConfirmedStop,
     OpaqueToolBody,
     OutputBounds,
     OutputReference,
@@ -739,7 +741,7 @@ def _truncate_line(line: str) -> tuple[str, bool]:
     return f"{line[:MAX_LINE_LENGTH]}{_LINE_TRUNCATION_SUFFIX}", True
 
 
-def _is_binary_file(path: Path) -> bool:
+def _is_binary_content(path: Path, sample: bytes) -> bool:
     suffix = path.suffix.lower()
     if suffix in {
         ".zip",
@@ -773,12 +775,6 @@ def _is_binary_file(path: Path) -> bool:
     }:
         return True
 
-    try:
-        with path.open("rb") as fh:
-            sample = fh.read(BINARY_SNIFF_BYTES)
-    except OSError:
-        return False
-
     if not sample:
         return False
     if b"\x00" in sample:
@@ -791,123 +787,94 @@ def _is_binary_file(path: Path) -> bool:
     return non_printable / len(sample) > 0.3
 
 
-def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int, services: PluginServices) -> _ReadOutcome:
+def _render_file(
+    candidate: Path, *, relative_path: str, offset: int, limit: int, services: PluginServices, context: ToolContext
+) -> _ReadOutcome | ToolFailure:
     mime, _ = mimetypes.guess_type(candidate.name)
     is_svg = candidate.suffix.lower() == ".svg" or mime == "image/svg+xml"
-
-    if not is_svg and (mime in RASTER_IMAGE_MIMES or mime == "application/pdf"):
-        attachment_size = candidate.stat().st_size
-        if attachment_size > MAX_ATTACHMENT_BYTES:
-            raise ValueError(f"read attachment exceeds the maximum supported size ({MAX_ATTACHMENT_BYTES} bytes): {relative_path}")
-        raw = candidate.read_bytes()
-        content_hash = hashlib.sha256(raw).hexdigest()
-        spilled = _spill_artifact(services, kind="content", content=raw, mime=mime, source=relative_path)
-        artifact, artifact_id, uri = spilled
-        bounds = OutputBounds(
-            reference=OutputReference(uri=uri, artifact=artifact),
-            source=relative_path,
-        )
-        label = "Image" if mime in RASTER_IMAGE_MIMES else "PDF"
-        message = f"{label} read successfully"
-        if mime == "application/pdf":
-            message = (
-                f'PDF {relative_path} ({mime}, {len(raw)} bytes, sha256:{content_hash}); read the original PDF with read(path="{uri}", view="raw").'
-            )
-        data_uri = (
-            f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
-            if mime in RASTER_IMAGE_MIMES and len(raw) <= MAX_INLINE_ATTACHMENT_BYTES
-            else None
-        )
-        attachment_body: dict[str, object] = {
-            "path": relative_path,
-            "type": "attachment",
-            "content_type": mime,
-            "byte_count": len(raw),
-            "content_hash": content_hash,
-            "artifact_id": artifact_id,
-            "attachment": {"mime": mime, "reference": uri},
-            "bounds": {"reference": uri},
-        }
-        return _ReadOutcome(
-            output=AttachmentOutput(mime, data_uri, presentation=message, bounds=bounds),
-            body=OpaqueToolBody(attachment_body),
-        )
-
-    if _is_binary_file(candidate) and not is_svg:
-        raw = candidate.read_bytes()
-        effective_mime = mime or "application/octet-stream"
-        content_hash = hashlib.sha256(raw).hexdigest()
-        spilled = _spill_artifact(services, kind="content", content=raw, mime=effective_mime, source=relative_path)
-        artifact, artifact_id, uri = spilled
-        bounds = OutputBounds(
-            reference=OutputReference(uri=uri, artifact=artifact),
-            source=relative_path,
-        )
-        presentation = (
-            f'Binary file {relative_path} ({effective_mime}, {len(raw)} bytes, sha256:{content_hash}). Read full content with read(path="{uri}").'
-        )
-        binary_body: dict[str, object] = {
-            "path": relative_path,
-            "type": "binary",
-            "content_type": effective_mime,
-            "byte_count": len(raw),
-            "content_hash": content_hash,
-            "artifact_id": artifact_id,
-            "source": relative_path,
-            "reference": uri,
-        }
-        return _ReadOutcome(
-            output=TextOutput(presentation, bounds=bounds),
-            body=OpaqueToolBody(binary_body),
-        )
-    digest = hashlib.sha256()
-    with candidate.open("rb") as hash_handle:
-        for chunk in iter(lambda: hash_handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    content_hash = digest.hexdigest()
-
-    limit = min(limit, DEFAULT_READ_LIMIT)
+    attachment = not is_svg and (mime in RASTER_IMAGE_MIMES or mime == "application/pdf")
     rendered_lines: list[ReadLine] = []
     raw_content_lines: list[str] = []
     total_lines = 0
     bytes_used = 0
     content_truncated = False
     has_more = False
+    digest = hashlib.sha256()
 
-    try:
-        with candidate.open("r", encoding="utf-8", newline="") as fh:
-            for line_number, raw_line in enumerate(fh, start=1):
-                total_lines = line_number
-                if line_number < offset:
-                    continue
-                if has_more or len(rendered_lines) >= limit:
-                    has_more = True
-                    continue
-
-                line_text = raw_line.rstrip("\r\n")
-                line_ending = raw_line[len(line_text) :]
-                line_text, line_truncated = _truncate_line(line_text)
-                rendered_raw_line = line_text + line_ending if line_truncated else raw_line
-                encoded_size = len(rendered_raw_line.encode("utf-8"))
-                if bytes_used + encoded_size > MAX_BYTES:
-                    content_truncated = True
-                    has_more = True
-                    continue
-
-                rendered_lines.append(ReadLine(line_number, line_text, line_truncated))
-                raw_content_lines.append(rendered_raw_line)
-                bytes_used += encoded_size
-                content_truncated = content_truncated or line_truncated
-    except UnicodeDecodeError as exc:
-        raise ValueError("read only supports UTF-8 text files") from exc
+    with candidate.open("rb") as source:
+        sample = source.read(BINARY_SNIFF_BYTES)
+        source.seek(0)
+        if attachment or (not is_svg and _is_binary_content(candidate, sample)):
+            maximum = MAX_ATTACHMENT_BYTES if attachment else MAX_BINARY_READ_BYTES
+            raw = source.read(maximum + 1)
+            if len(raw) > maximum:
+                raise ValueError(f"read file exceeds the maximum supported size ({maximum} bytes): {relative_path}")
+            effective_mime = mime or "application/octet-stream"
+            content_hash = hashlib.sha256(raw).hexdigest()
+            artifact, artifact_id, uri = _spill_artifact(services, kind="content", content=raw, mime=effective_mime, source=relative_path)
+            bounds = OutputBounds(reference=OutputReference(uri, artifact), source=relative_path)
+            body: dict[str, object] = {
+                "path": relative_path,
+                "type": "attachment" if attachment else "binary",
+                "content_type": effective_mime,
+                "byte_count": len(raw),
+                "content_hash": content_hash,
+                "artifact_id": artifact_id,
+            }
+            if attachment:
+                data_uri = (
+                    f"data:{effective_mime};base64,{base64.b64encode(raw).decode('ascii')}"
+                    if effective_mime in RASTER_IMAGE_MIMES and len(raw) <= MAX_INLINE_ATTACHMENT_BYTES
+                    else None
+                )
+                message = "Image read successfully"
+                if effective_mime == "application/pdf":
+                    message = (
+                        f"PDF {relative_path} ({effective_mime}, {len(raw)} bytes, sha256:{content_hash}); "
+                        f'read the original PDF with read(path="{uri}", view="raw").'
+                    )
+                body.update(attachment={"mime": effective_mime, "reference": uri}, bounds={"reference": uri})
+                return _ReadOutcome(output=AttachmentOutput(effective_mime, data_uri, presentation=message, bounds=bounds), body=OpaqueToolBody(body))
+            body.update(source=relative_path, reference=uri)
+            presentation = (
+                f'Binary file {relative_path} ({effective_mime}, {len(raw)} bytes, sha256:{content_hash}). Read full content with read(path="{uri}").'
+            )
+            return _ReadOutcome(output=TextOutput(presentation, bounds=bounds), body=OpaqueToolBody(body))
+        try:
+            with TextIOWrapper(source, encoding="utf-8", newline="") as text_source:
+                for line_number, raw_line in enumerate(text_source, start=1):
+                    if context.abort_signal is not None and context.abort_signal.cancelled:
+                        return ToolFailure("read", error="read cancelled", execution=ConfirmedStop(cancellation_signalled=True))
+                    digest.update(raw_line.encode("utf-8"))
+                    total_lines = line_number
+                    if line_number < offset:
+                        continue
+                    if has_more or len(rendered_lines) >= limit:
+                        has_more = True
+                        continue
+                    line_text = raw_line.rstrip("\r\n")
+                    line_ending = raw_line[len(line_text) :]
+                    line_text, line_truncated = _truncate_line(line_text)
+                    rendered_raw_line = line_text + line_ending if line_truncated else raw_line
+                    encoded_size = len(rendered_raw_line.encode("utf-8"))
+                    if bytes_used + encoded_size > MAX_BYTES:
+                        content_truncated = True
+                        has_more = True
+                        continue
+                    rendered_lines.append(ReadLine(line_number, line_text, line_truncated))
+                    raw_content_lines.append(rendered_raw_line)
+                    bytes_used += encoded_size
+                    content_truncated |= line_truncated
+        except UnicodeDecodeError as exc:
+            raise ValueError("read only supports UTF-8 text files") from exc
+    content_hash = digest.hexdigest()
 
     if total_lines < offset and not (total_lines == 0 and offset == 1):
         raise ValueError(f"Offset {offset} is out of range for this file ({total_lines} lines)")
 
     next_offset = offset + len(rendered_lines)
-    # A clipped line or a byte-budget cut mangles visible content, while a plain
-    # line window only shortens the page: the visible lines stay truthful.
-    lines_clipped = content_truncated
+    # Paging at a whole-line boundary does not clip the lines actually shown.
+    lines_clipped = any(line.truncated for line in rendered_lines)
     content_truncated = content_truncated or has_more
 
     raw_content = "".join(raw_content_lines)
@@ -1552,6 +1519,8 @@ class ReadTool:
 
     def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:
         args = ReadArgs.model_validate(dict(call.arguments))
+        if context.abort_signal is not None and context.abort_signal.cancelled:
+            return ToolFailure(self.definition.name, error="read cancelled", execution=ConfirmedStop(cancellation_signalled=True))
         if args.path.startswith((RULE_URI_PREFIX, VOIDCODE_TOOL_DOC_PREFIX, VOIDCODE_TRANSCRIPT_PREFIX)) and (
             args.view is not None
             or args.table is not None
@@ -1734,4 +1703,5 @@ class ReadTool:
                 )
             )
 
-        return _read_success(_render_file(candidate, relative_path=relative_path, offset=offset, limit=limit, services=services))
+        outcome = _render_file(candidate, relative_path=relative_path, offset=offset, limit=limit, services=services, context=context)
+        return outcome if isinstance(outcome, ToolFailure) else _read_success(outcome)

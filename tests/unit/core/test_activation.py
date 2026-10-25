@@ -130,7 +130,7 @@ def _tool_outputs(core: Core, session_id: str) -> list[str]:
     return outputs
 
 
-def test_same_session_reload_switches_generation_and_migrates_state(tmp_path: Path) -> None:
+def test_same_session_reload_switches_generation_and_preserves_state(tmp_path: Path) -> None:
     source = tmp_path / "plugin"
     write_reload_plugin(source, tool_output="v1")
     replies = [
@@ -145,7 +145,7 @@ def test_same_session_reload_switches_generation_and_migrates_state(tmp_path: Pa
         session = core.create_session("sess-reload")
         before = core.revision_id
         # The candidate is what the configured source says NOW; the running generation keeps v1.
-        write_reload_plugin(source, tool_output="v2", state_schema_version=2, migration="ok")
+        write_reload_plugin(source, tool_output="v2")
         result = core.run("upgrade", session_id=session.session_id)
 
         assert result.status == "completed"
@@ -162,7 +162,7 @@ def test_same_session_reload_switches_generation_and_migrates_state(tmp_path: Pa
         committed = next(event for event in events if event.event_type == "core.activation_committed")
         assert committed.payload["from_revision_id"] == before
         assert committed.payload["to_revision_id"] == result.revision_id
-        assert list(committed.payload["migrated_owners"]) == [PLUGIN_ID]
+        assert list(committed.payload["migrated_owners"]) == []
         assert committed.payload["source"] == "model"
         # ...and the following dispatch advertised its tool declarations.
         second_dispatch_tools = _advertised_tools(server.requests[1])
@@ -171,8 +171,8 @@ def test_same_session_reload_switches_generation_and_migrates_state(tmp_path: Pa
 
         with SqliteStore(tmp_path / "state" / "kernel-v1.sqlite3") as store:
             rows = {row.owner: row for row in store.plugin_state_rows("session", session.session_id)}
-            assert rows[PLUGIN_ID].schema_version == 2
-            assert rows[PLUGIN_ID].payload == {"note": "v1", "migrated_to": 2}
+            assert rows[PLUGIN_ID].schema_version == 1
+            assert rows[PLUGIN_ID].payload == {"note": "v1"}
             assert store.revision(result.revision_id)["private_config_sha256"]
 
         # The very next turn continues automatically in the new generation and writes its state.
@@ -180,7 +180,7 @@ def test_same_session_reload_switches_generation_and_migrates_state(tmp_path: Pa
         assert _tool_outputs(core, session.session_id)[2] == "probe=v2"
         with SqliteStore(tmp_path / "state" / "kernel-v1.sqlite3") as store:
             row = _owner_row(store, "session", session.session_id)
-            assert row.payload == {"note": "v2", "migrated_to": 2}
+            assert row.payload == {"note": "v2"}
 
 
 @pytest.mark.parametrize("defect", ["syntax", "migration"])
@@ -266,7 +266,7 @@ def _owner_row(store: SqliteStore, scope: str, scope_key: str) -> PluginStateRow
     return rows[0]
 
 
-def test_disable_pauses_owner_state_and_reenable_migrates_the_paused_copy(tmp_path: Path) -> None:
+def test_disable_pauses_owner_state_and_reenable_restores_the_paused_copy(tmp_path: Path) -> None:
     source = tmp_path / "plugin"
     write_reload_plugin(source, tool_output="v1", deactivation="pause", observe=True)
     replies = [
@@ -300,23 +300,22 @@ def test_disable_pauses_owner_state_and_reenable_migrates_the_paused_copy(tmp_pa
 
         # Re-enabling migrates the paused copy; nothing resumes implicitly.
         _configure(tmp_path / "workspace", server, source)
-        write_reload_plugin(source, tool_output="v2", state_schema_version=2, migration="ok", deactivation="pause", observe=True)
+        write_reload_plugin(source, tool_output="v2", deactivation="pause", observe=True)
         enabled = core.invoke_command(session.session_id, "core.reload", {}, expected_revision=core.command_catalog().revision_id)
         assert enabled.status == "ok", enabled.error
         assert enabled.data is not None
-        assert _owner_list(enabled.data, "migrated_owners") == [PLUGIN_ID]
+        assert _owner_list(enabled.data, "migrated_owners") == []
         assert _owner_list(enabled.data, "deactivated_owners") == []
         with SqliteStore(tmp_path / "state" / "kernel-v1.sqlite3") as store:
             row = _owner_row(store, "session", session.session_id)
-            assert row.schema_version == 2
-            assert row.payload == {"note": "v1", "paused": True, "tip": tip, "migrated_to": 2}
-            assert row.version >= 3
+            assert row.schema_version == 1
+            assert row.payload == {"note": "v1", "paused": True, "tip": tip}
+            assert row.version >= 2
         assert core.run("read state", session_id=session.session_id).status == "completed"
         assert json.loads(_tool_outputs(core, session.session_id)[-1]) == {
             "note": "v1",
             "paused": True,
             "tip": tip,
-            "migrated_to": 2,
         }
 
 

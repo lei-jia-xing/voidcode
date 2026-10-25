@@ -179,9 +179,6 @@ def adopt_generation(*, workspace: Path, state_dir: Path, session_id: str | None
                     session_ids=session_ids,
                     old_states=states,
                     candidate_states=states,
-                    migrate=lambda owner, payload, from_version, to_version: candidate_runtime.migrate_owner_state(
-                        owner, payload, from_version=from_version, to_version=to_version
-                    ),
                     # Adoption keeps the recorded configuration, so no owner loses its deactivation
                     # transform here. A bundled plugin removed from this installation must be disabled
                     # in the running old core first, where its real deactivation transform still exists.

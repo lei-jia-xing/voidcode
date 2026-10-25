@@ -2265,9 +2265,6 @@ class Core:
                 session_ids=session_ids,
                 old_states=old_states,
                 candidate_states=candidate_states,
-                migrate=lambda owner, payload, from_version, to_version: self._migrate_state(
-                    candidate_runtime, owner, payload, from_version, to_version
-                ),
                 deactivate=lambda owner, payload, scope, scope_key, tip: self._deactivate_state(
                     snapshot.plugin_runtime, owner, payload, scope, scope_key, tip
                 ),
@@ -3265,19 +3262,6 @@ class Core:
     def _deactivated_owners(self, snapshot: _Snapshot, admission: Admission) -> frozenset[str]:
         """Owners loaded before that the candidate does not admit: disabled, removed, or missing."""
         return frozenset(snapshot.plugin_runtime.plugin_ids) - admission.plugin_ids
-
-    def _migrate_state(
-        self,
-        candidate_runtime: PluginRuntime,
-        owner: str,
-        payload: Mapping[str, object],
-        from_version: int,
-        to_version: int,
-    ) -> Mapping[str, object]:
-        try:
-            return candidate_runtime.migrate_owner_state(owner, payload, from_version=from_version, to_version=to_version)
-        except RuntimeError as exc:
-            raise ValueError(f"state migration for {owner} failed: {exc}") from exc
 
     def _deactivate_state(
         self,

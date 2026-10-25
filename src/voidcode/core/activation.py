@@ -302,8 +302,8 @@ class StateCopyPlan:
     """The owner state copies one activation transaction will write, and who they belong to."""
 
     updates: tuple[StagedStateUpdate, ...]
-    migrated_owners: tuple[str, ...]
-    deactivated_owners: tuple[str, ...]
+    migrated_owners: tuple[str, ...] = ()
+    deactivated_owners: tuple[str, ...] = ()
 
 
 class StateCopySource(Protocol):
@@ -320,7 +320,6 @@ def plan_state_copies(
     session_ids: Sequence[str],
     old_states: Mapping[str, StateSchema],
     candidate_states: Mapping[str, StateSchema],
-    migrate: Callable[[str, Mapping[str, object], int, int], Mapping[str, object]],
     deactivate: Callable[[str, Mapping[str, object], str, str, int | None], Mapping[str, object]],
 ) -> StateCopyPlan:
     """Copy final owner state into the candidate generation with the right pure transform per row.
@@ -331,7 +330,6 @@ def plan_state_copies(
     its schema, and an owner that is neither stays byte-identical.
     """
     updates: list[StagedStateUpdate] = []
-    migrated: list[str] = []
     deactivated: list[str] = []
     deactivate_owners = frozenset(old_states) - frozenset(candidate_states)
     scopes: list[tuple[str, str]] = [("session", session_id) for session_id in session_ids]
@@ -342,27 +340,10 @@ def plan_state_copies(
             candidate = candidate_states.get(row.owner)
             if candidate is not None:
                 target_version = candidate.version
-                if target_version < row.schema_version:
-                    raise ValueError(
-                        f"plugin {row.owner} state is at schema version {row.schema_version}, "
-                        f"but the candidate only declares {target_version}: downgrades are not supported"
-                    )
-                if target_version == row.schema_version:
-                    # Even an unchanged schema version must be able to hold this state.
-                    validate_state_payload(row.payload, candidate)
-                    continue
-                payload = validate_state_payload(migrate(row.owner, row.payload, row.schema_version, target_version), candidate)
-                updates.append(
-                    StagedStateUpdate(
-                        owner=row.owner,
-                        scope=scope,
-                        scope_key=scope_key,
-                        payload=payload,
-                        expected_version=row.version,
-                        schema_version=target_version,
-                    )
-                )
-                migrated.append(row.owner)
+                if target_version != row.schema_version:
+                    raise ValueError(f"plugin {row.owner} state schema mismatch: stored v{row.schema_version}, target v{target_version}")
+                validate_state_payload(row.payload, candidate)
+                continue
             elif row.owner in deactivate_owners:
                 payload = validate_state_payload(deactivate(row.owner, row.payload, scope, scope_key, tip), old_states[row.owner])
                 updates.append(
@@ -376,7 +357,7 @@ def plan_state_copies(
                     )
                 )
                 deactivated.append(row.owner)
-    return StateCopyPlan(updates=tuple(updates), migrated_owners=tuple(sorted(set(migrated))), deactivated_owners=tuple(sorted(set(deactivated))))
+    return StateCopyPlan(updates=tuple(updates), migrated_owners=(), deactivated_owners=tuple(sorted(set(deactivated))))
 
 
 def config_from_snapshot(snapshot: Mapping[str, object]) -> CoreConfig:

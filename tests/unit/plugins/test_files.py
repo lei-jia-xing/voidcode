@@ -6,7 +6,6 @@ import hashlib
 import inspect
 import json
 import os
-import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -204,21 +203,16 @@ def test_read_tool_handles_huge_lines_without_unbounded_allocation(tmp_path: Pat
     assert result.body.content_hash == hashlib.sha256(huge_line.encode("utf-8")).hexdigest()
 
 
-def test_read_tool_honors_cancellation_during_a_long_view(tmp_path: Path) -> None:
+def test_read_tool_honors_cancellation_before_a_view(tmp_path: Path) -> None:
     plugin = create_plugin({})
     read_tool = next(t for t in plugin.tools if t.definition.name == "read")
-    database = tmp_path / "cancelled.db"
-    connection = sqlite3.connect(database)
-    connection.execute("create table t (value integer)")
-    connection.executemany("insert into t values (?)", [(index,) for index in range(50)])
-    connection.commit()
-    connection.close()
-
-    with pytest.raises(ValueError, match="cancelled"):
-        read_tool.invoke(
-            ToolCall(tool_name="read", arguments={"path": "cancelled.db", "view": "sqlite"}),
-            context=_context(tmp_path, abort_signal=DummyAbortSignal(cancelled=True)),
-        )
+    result = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "cancelled.db", "view": "sqlite"}),
+        context=_context(tmp_path, abort_signal=DummyAbortSignal(cancelled=True)),
+    )
+    assert isinstance(result, ToolFailure)
+    assert "cancelled" in result.error
+    assert result.execution == ConfirmedStop(cancellation_signalled=True)
 
 
 def test_read_tool_renders_binary_file_as_attachment(tmp_path: Path) -> None:

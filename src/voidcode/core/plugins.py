@@ -309,7 +309,6 @@ class PluginRuntime:
         self._pre_tool_hooks: list[tuple[Any, tuple[str, ...], bool, str]] = []
         self._lifecycle_hooks: dict[str, tuple[Any, str]] = {}
         self._observers: list[tuple[Any, tuple[str, ...], str]] = []
-        self._state_migrators: dict[str, Any] = {}
         self._state_deactivators: dict[str, Any] = {}
         self._queries: dict[str, tuple[Any, str]] = {}
         self._builtin_provider_closers: list[Callable[[], None]] = []
@@ -416,9 +415,6 @@ class PluginRuntime:
         if plugin_instance.pre_tool is not None:
             _check_arity(plugin_instance.pre_tool, 3, f"Plugin {plugin_id} pre_tool callback")
             self._pre_tool_hooks.append((plugin_instance.pre_tool, plugin_instance.pre_tool_match, plugin_instance.pre_tool_mutating, plugin_id))
-        if plugin_instance.migrate_state is not None:
-            _check_arity(plugin_instance.migrate_state, 3, f"Plugin {plugin_id} migrate_state callback")
-            self._state_migrators[plugin_id] = plugin_instance.migrate_state
         if plugin_instance.prepare_deactivate is not None:
             _check_arity(plugin_instance.prepare_deactivate, 4, f"Plugin {plugin_id} prepare_deactivate callback")
             self._state_deactivators[plugin_id] = plugin_instance.prepare_deactivate
@@ -1361,19 +1357,6 @@ class PluginRuntime:
                 elapsed_seconds=_optional_number(fact, "elapsed_seconds"),
             )
         raise ValueError(f"Unknown fact_type: {fact_type}")
-
-    def migrate_owner_state(self, owner: str, payload: Mapping[str, object], *, from_version: int, to_version: int) -> dict[str, Any]:
-        """Run one owner's pure old->new state transform; no lease, no services."""
-        migrator = self._state_migrators.get(owner)
-        if migrator is None:
-            raise RuntimeError(f"plugin {owner} declares no migrate_state transform")
-        try:
-            migrated = migrator(payload, from_version, to_version)
-        except Exception as exc:
-            raise RuntimeError(f"state migration of {owner} from v{from_version} to v{to_version} failed: {exc}") from exc
-        if not isinstance(migrated, Mapping):
-            raise RuntimeError("migrate_state must return a JSON object")
-        return json_wire_object(migrated)
 
     def prepare_deactivate_owner_state(
         self,

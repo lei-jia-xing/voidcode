@@ -279,22 +279,6 @@ def parse_reminders(raw: object) -> _Reminders:
     )
 
 
-def migrate_todo_state(payload: Mapping[str, object], from_version: int, to_version: int) -> Mapping[str, object]:
-    """Pure v1 -> v2 migration: add empty reminder bookkeeping, rewrite nothing else."""
-    if from_version != 1 or to_version != SCHEMA_VERSION:
-        raise ValueError(f"todo state migration supports 1 -> {SCHEMA_VERSION}, got {from_version} -> {to_version}")
-    migrated = dict(payload)
-    migrated["schema_version"] = SCHEMA_VERSION
-    migrated["reminders"] = {
-        "todo": {"attempts": 0, "awaiting_progress": False, "progress_watermark": 0, "cycle_run_id": None},
-        "todo_mid_run": {"attempts": 0, "mutations": 0, "mutation_baseline": 0, "cycle_run_id": None},
-        "invocations": 0,
-        "cursor_sequence": 0,
-        "cycle_run_id": None,
-    }
-    return migrated
-
-
 def phases_payload(phases: Sequence[TodoPhase]) -> list[dict[str, object]]:
     return [{"name": phase["name"], "tasks": [dict(task) for task in phase["tasks"]]} for phase in phases]
 
@@ -1273,6 +1257,5 @@ def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
                 },
             },
         ),
-        migrate_state=migrate_todo_state,
         prepare_deactivate=prepare_todo_deactivation,
     )
