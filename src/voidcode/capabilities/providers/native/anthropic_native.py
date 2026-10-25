@@ -273,12 +273,11 @@ def _response_metadata(payload: Mapping[str, object]) -> dict[str, object]:
     return metadata
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class _ToolAccumulator:
     tool_call_id: str | None = None
     tool_name: str | None = None
-    fragments: tuple[str, ...] = ()
-    started: bool = False
+    fragments: list[str] = field(default_factory=list)
     initial_input: dict[str, object] | None = None
 
     @property
@@ -624,6 +623,7 @@ class AnthropicMessagesProvider:
             latest_usage: ProviderTokenUsage | None = None
             metadata: dict[str, object] = {}
             accumulators: dict[int, _ToolAccumulator] = {}
+            reverse = self._tool_maps(request)[1]
             stop_reason: str | None = None
             message_stopped = False
             for raw_chunk in iter_stream_with_timeout(
@@ -659,8 +659,7 @@ class AnthropicMessagesProvider:
                         tool_id = normalize_tool_call_id(
                             block.get("id") if isinstance(block.get("id"), str) else None, fallback=f"tool_call_{index + 1}"
                         )
-                        accumulators[index] = _ToolAccumulator(tool_id, name, (), True, dict(raw_input))
-                        reverse = self._tool_maps(request)[1]
+                        accumulators[index] = _ToolAccumulator(tool_call_id=tool_id, tool_name=name, initial_input=dict(raw_input))
                         yield ProviderStreamEvent(
                             kind="tool_call_start",
                             channel="tool",
@@ -682,10 +681,8 @@ class AnthropicMessagesProvider:
                         yield ProviderStreamEvent(kind="delta", channel="reasoning", text=delta["thinking"], metadata={"source": "delta.thinking"})
                     elif delta_type == "input_json_delta" and isinstance(delta.get("partial_json"), str):
                         fragment = delta["partial_json"]
-                        prior = accumulators.get(index, _ToolAccumulator())
-                        accumulators[index] = _ToolAccumulator(
-                            prior.tool_call_id, prior.tool_name, prior.fragments + (fragment,), prior.started, prior.initial_input
-                        )
+                        prior = accumulators.setdefault(index, _ToolAccumulator())
+                        prior.fragments.append(fragment)
                         if prior.tool_call_id:
                             yield ProviderStreamEvent(
                                 kind="tool_call_delta",
@@ -693,7 +690,7 @@ class AnthropicMessagesProvider:
                                 tool_call_id=prior.tool_call_id,
                                 arguments_delta=fragment,
                                 tool_call_ordinal=index,
-                                fragment_ordinal=len(prior.fragments),
+                                fragment_ordinal=len(prior.fragments) - 1,
                             )
                 elif event_type == "message_delta":
                     delta = chunk.get("delta")
@@ -717,7 +714,6 @@ class AnthropicMessagesProvider:
                     details={"source": "stream", "reason": "missing_terminal_event"},
                 )
             # message_stop is terminal; without deltas the wire's explicit input object is complete.
-            reverse = self._tool_maps(request)[1]
             for index, accumulator in sorted(accumulators.items()):
                 if accumulator.tool_name is None:
                     raise ProviderExecutionError(

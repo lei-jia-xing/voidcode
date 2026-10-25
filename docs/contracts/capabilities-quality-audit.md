@@ -1808,3 +1808,22 @@ passed (22.10 seconds, local loopback permitted). Manual probes preserved a
 root `oneOf` schema and its valid/invalid instances, and checked Google true,
 false and unknown capability behavior with identical declaration schemas. No
 tests added. Full adapter/replay/usage and Google OAuth review remain pending.
+
+## Anthropic streamed argument accumulation
+
+Removed the private accumulator's unused `started` flag. Argument fragments now
+append to a per-call list instead of rebuilding an immutable tuple and data
+object for every delta; final parsing still joins once. This avoids quadratic
+fragment-reference copying for long streamed arguments without adding a buffer
+abstraction. Fragment ordinals remain zero-based and contiguous.
+
+Tool name reverse mappings now compute once per stream instead of rescanning
+the full request for every tool start and again at stream completion. The
+accumulator is private transient state; persisted SDK events remain unchanged.
+
+Ruff, formatting, full source type checking and 115 existing streaming, usage,
+lifecycle, error and thinking tests passed in 10.42 seconds (local loopback
+permitted). A scripted 3012-fragment response preserved exact final arguments,
+call identity, all fragment ordinals and the terminal tool-call reason. No tests
+added and no live vendor calls used. Remaining malformed-stream, thinking replay
+and transport reconciliation are still pending.
