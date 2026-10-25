@@ -49,12 +49,8 @@ from .trace import write_provider_trace
 _DEFAULT_ANTHROPIC_BASE_URL = PROVIDER_TABLE_BY_ID["anthropic"].default_base_url
 _DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
 _DEFAULT_TIMEOUT_SECONDS = 300.0
-# OMP's output-token arithmetic (``packages/ai/src/stream.ts:1799-1810``): a
-# request with no known cap asks for this much, and a thinking request keeps
-# this much room for the answer itself after the thinking budget.
+# Required output cap when the catalog does not report one.
 _OUTPUT_CAP_WHEN_UNKNOWN = 64000
-_OUTPUT_FALLBACK_BUFFER = 4000
-_MIN_OUTPUT_TOKENS = 1024
 # The SDK refuses to construct a client without a credential, and an explicit
 # credential also stops it from reading ambient ones (``ANTHROPIC_API_KEY``,
 # profile, workload identity). The placeholder only satisfies that check:
@@ -440,8 +436,7 @@ class AnthropicMessagesProvider:
         # The Anthropic Messages API requires ``max_tokens``, so the cap is the
         # model's own maximum (OMP's ``maxAllowedTokens``); 64000 is only the
         # unknown-model fallback, never a ceiling over a larger known model.
-        model_max_tokens = metadata.max_output_tokens if metadata is not None and metadata.max_output_tokens else _OUTPUT_CAP_WHEN_UNKNOWN
-        max_tokens = model_max_tokens
+        max_tokens = metadata.max_output_tokens if metadata is not None and metadata.max_output_tokens else _OUTPUT_CAP_WHEN_UNKNOWN
         payload: dict[str, object] = {"model": request.model_name, "max_tokens": max_tokens, "messages": messages, "stream": stream}
         if system:
             payload["system"] = system
@@ -454,9 +449,7 @@ class AnthropicMessagesProvider:
                 tools.append({"name": original_to_provider[tool.name], "description": tool.description, "input_schema": schema})
             payload["tools"] = tools
             payload["tool_choice"] = {"type": "auto"}
-        budget = _thinking_payload(payload, request=request, rule=rule)
-        if budget is not None:
-            payload["max_tokens"] = _max_tokens_with_thinking(payload["max_tokens"], budget, model_max_tokens)
+        _thinking_payload(payload, request=request, rule=rule)
         # Precedence: the request's own retention, else the provider config's
         # (its field default is "short", omp upstream default), else -- with no
         # config at all -- "short".
@@ -769,53 +762,31 @@ class AnthropicMessagesProvider:
 __all__ = ["AnthropicMessagesProvider", "AnthropicMessagesTransport", "AnthropicTransport", "AnthropicTransportError"]
 
 
-def _thinking_payload(payload: dict[str, object], *, request: ProviderTurnRequest, rule: ThinkingRule) -> int | None:
-    """Write the thinking knob the row's mode names, returning its token budget.
-
-    The Anthropic Messages wire carries ``thinking.budget_tokens`` (``budget`` /
-    ``anthropic-budget-effort``) and, for the adaptive modes, ``output_config.effort``.
-    A model that cannot reason is never handed the knob, and ``off`` simply omits
-    it -- the wire has no "disabled" body field.
-    """
+def _thinking_payload(payload: dict[str, object], *, request: ProviderTurnRequest, rule: ThinkingRule) -> None:
+    """Set supported budget/adaptive thinking controls, including explicit disable."""
     if request.reasoning_effort is None:
-        return None
+        return
     metadata = static_catalog_metadata(request.provider_name or rule.provider, request.model_name or "")
     if metadata is not None and metadata.supports_reasoning is False:
-        return None
+        return
     effort = normalize_reasoning_effort(request.reasoning_effort)
     if isinstance(effort, int):
         payload["thinking"] = {"type": "enabled", "budget_tokens": effort}
-        return effort
+        return
     if effort is None:
-        return None
+        return
     supported = metadata.supported_effort_levels if metadata is not None else None
     clamped = clamp_effort_to_supported(effort, supported)
     if clamped == "off":
         payload["thinking"] = {"type": "disabled"}
-        return None
+        return
     if metadata is not None and metadata.supports_reasoning_effort:
         payload["thinking"] = {"type": "adaptive"}
         payload["output_config"] = {"effort": clamped}
-        return None
+        return
     if rule.mode != "budget":
-        return None
+        return
     budget = rule.budget_for(clamped)
     if budget is None:
-        return None
+        return
     payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
-    return budget
-
-
-def _max_tokens_with_thinking(max_tokens: object, budget: int, max_allowed_tokens: int) -> object:
-    """``ensureMaxTokensForThinking`` (``packages/ai/src/providers/anthropic.ts:3602-3625``).
-
-    The cap can never exceed the model's own maximum, and the thinking budget's
-    buffer can only raise a cap that is smaller than ``budget + 4000`` -- it never
-    shrinks one. ``64000`` is the unknown-model fallback, not a ceiling.
-    """
-    if not isinstance(max_tokens, int):
-        return max_tokens
-    current = min(max_tokens, max_allowed_tokens)
-    raised = min(max(current, budget + _OUTPUT_FALLBACK_BUFFER), max_allowed_tokens)
-    # The floor can never exceed the model's own maximum either.
-    return min(max(raised, _MIN_OUTPUT_TOKENS), max_allowed_tokens)

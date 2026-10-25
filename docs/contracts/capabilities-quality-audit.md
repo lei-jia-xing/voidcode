@@ -2402,3 +2402,21 @@ review record. A filesystem-to-inventory comparison found every current file
 under capabilities listed, with only the deliberately removed sanitizer still
 recorded as removed. This proves inventory coverage, not review completion of
 rows still marked partial/pending or the outstanding full project gate.
+
+## Remove identity Anthropic output-cap arithmetic
+
+Deleted `_max_tokens_with_thinking`, its buffer/floor constants and the budget
+return value threaded from `_thinking_payload`. Payload assembly already sets
+max_tokens to the catalog model maximum (or the required unknown-model cap).
+The deleted helper clamps any raised result to that same maximum, so it always
+returns the value already present. Thinking controls still write directly into
+the payload; their helper now truthfully returns None. Corrected the stale
+docstring that claimed off omitted a knob despite writing disabled thinking.
+
+Production source is 29 lines shorter. Ruff, formatting and targeted type
+checking passed; 139 existing reasoning/streaming/usage/lifecycle/error/thinking
+tests passed in 25.95 seconds with local loopback permission. Thirty generated
+old/new payload comparisons across model caps and integer budgets were exactly
+equal. No tests added or live vendor calls used. This proves the deleted cap
+calculation was redundant; it does not establish validity of arbitrary numeric
+thinking budgets, whose zero/minimum/output-cap protocol checks remain pending.
