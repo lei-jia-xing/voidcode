@@ -28,6 +28,7 @@ not establish source review.
 | `files/read_tool.py` | Partial: strict ingress, PDF recovery and typed/error-visible bounded directory materialization reviewed; archive member identity/byte bounds and clipped-line recovery reviewed; native file stream/hash/binary bounds and read cancellation ingress reviewed; tool documentation and transcript query ingress reviewed; native clipped-line recovery reviewed; remaining artifact/transcript projections, archive metadata/modes and result metadata pending; directory cancellation reviewed |
 | `files/write_tool.py` | Reviewed: hash/containment/symlink/atomic replace/cancellation; fail visibly on mode errors and always clean temporary files |
 | `workspace_queries.py` | Partial: newly moved shared contracts inspected; missing required terminal cursor and answer identity/hash checks need reconciliation |
+| `history_renderer.py` | Partial: moved shared projection out of core; event/UTF-8 cursor boundary reconciliation remains |
 | `frontmatter.py` | Reviewed source/consumers: safe YAML, duplicate/string-key validation, framing/body/bounds; shared parser tests |
 | `providers/__init__.py` | Reviewed: shared registration/facts/view wiring and ExitStack-owned provider teardown |
 | `providers/dispatch.py` | Reviewed: strict registration ingress, explicit auth conflict handling, typed materialization/selection, locked lazy cache/teardown and usage wrappers |
@@ -2859,3 +2860,22 @@ this Chat adapter; separate gateway reconciliation remains outstanding.
 Validation: 48 existing reasoning/protocol/streaming tests passed; five malformed
 ID/index probes failed nonretryably. Ruff/format and targeted ty passed;
 CodeGraph synchronized. No tests added.
+
+### Shared history projection: remove forbidden core imports
+
+read_tool and the delegation plugin imported core.history_renderer directly,
+violating both capability and plugin dependency boundaries. Moved that pure
+stdlib/SDK renderer to capabilities.history_renderer and updated the core child
+history producer, read consumer, delegation consumer and existing test imports.
+No compatibility forwarding module or duplicate implementation retained.
+
+The worktree already had one independent renderer behavior edit. Its exact
+content was preserved at the new path as an unstaged diff; the migration commit
+contains the original renderer bytes only. Other ongoing read-tool migration
+edits likewise remain unstaged and are excluded from this patch.
+
+Validation on the isolated commit baseline: 69 existing renderer/file tests
+passed, targeted Ruff/ty passed. Searches found no remaining core imports in
+capabilities or plugins. CodeGraph synchronized. No tests added. The newly
+shared renderer remains explicitly partial for cursor/projection boundary
+reconciliation; moving it does not establish completion of read_tool review.

@@ -25,7 +25,7 @@ from urllib.parse import parse_qs
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from voidcode.core.history_renderer import render_history_page
+from voidcode.capabilities.history_renderer import render_history_page
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.queries import QueryContractError
