@@ -20,6 +20,19 @@ class QueryUnavailable(ValueError):
     """No admitted plugin in this runtime generation answers the named query."""
 
 
+class QueryContractError(ValueError):
+    """A query answered, but its answer violated the agreed contract.
+
+    Raised by the *consumer's* answer decoder (e.g. ``workspace_queries``), never by the
+    transport: ``services.query`` raises ``QueryUnavailable`` only when no admitted plugin
+    answers the name, returns ``None`` when the provider knows no matching resource, and
+    lets any other provider failure surface as its own exception. A typed contract's three-way
+    split is therefore: catch ``QueryUnavailable`` for absent providers (take the
+    documented optional path), accept ``None`` as "no such resource", and report
+    ``QueryContractError`` as a provider bug — never as ordinary absence.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class ContinuationResult:
     continuation_id: str

@@ -28,8 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from voidcode.capabilities.workspace_queries import RULE_PAGES, RULE_URI_PREFIX, RulePageRequest
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
-from voidcode.sdk.queries import QueryContractError
-from voidcode.sdk.services import ArtifactPage, PluginServices, QueryUnavailable
+from voidcode.sdk.services import ArtifactPage, PluginServices, QueryContractError, QueryUnavailable
 from voidcode.sdk.tools import (
     AttachmentOutput,
     ConfirmedStop,

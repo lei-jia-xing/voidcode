@@ -72,7 +72,6 @@ from .provider import (
     StreamableTurnProvider,
     TurnProvider,
 )
-from .queries import QueryContractError
 from .services import (
     ArtifactPage,
     ArtifactReference,
@@ -85,6 +84,7 @@ from .services import (
     ProcessHandle,
     ProcessOutput,
     ProcessResult,
+    QueryContractError,
     QueryUnavailable,
     SessionInfo,
     SessionUsageReport,

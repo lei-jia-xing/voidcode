@@ -15,8 +15,7 @@ from voidcode.capabilities.workspace_queries import (
     RulePageRequest,
 )
 from voidcode.sdk.plugin import PluginQueryCaller
-from voidcode.sdk.queries import QueryContractError
-from voidcode.sdk.services import QueryUnavailable
+from voidcode.sdk.services import QueryContractError, QueryUnavailable
 
 
 @pytest.mark.parametrize("version", [True, False, 0, -1, "1", None])

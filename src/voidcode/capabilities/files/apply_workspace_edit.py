@@ -12,8 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from voidcode.capabilities.workspace_queries import DOCUMENT_STATES, DocumentState, DocumentStateRequest
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
-from voidcode.sdk.queries import QueryContractError
-from voidcode.sdk.services import PluginServices, QueryUnavailable
+from voidcode.sdk.services import PluginServices, QueryContractError, QueryUnavailable
 from voidcode.sdk.tools import (
     ConfirmedStop,
     OutputBounds,

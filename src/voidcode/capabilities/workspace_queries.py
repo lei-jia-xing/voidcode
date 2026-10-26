@@ -13,8 +13,7 @@ from dataclasses import dataclass
 from pydantic import BaseModel, ConfigDict, Field
 
 from voidcode.sdk.plugin import PluginQuery, PluginQueryCaller
-from voidcode.sdk.queries import QueryContractError
-from voidcode.sdk.services import PluginServices
+from voidcode.sdk.services import PluginServices, QueryContractError
 
 RULE_URI_PREFIX = "voidcode://rule/"
 RULE_PAGE_QUERY = "workspace.rule_page"
