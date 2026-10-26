@@ -4,6 +4,12 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Streaming turns end-to-end (P1)
+- The engine prefers `stream_turn` when the selected provider offers it, aggregating text/reasoning/tool deltas into the same turn shape `propose_turn` returns; non-streamable providers keep the `propose_turn` fallback. Single-attempt by contract: no retry once bytes flowed.
+- Observational `core.provider_progress` events (dispatch-correlated text fragments) flow through the existing control-event/SSE path ahead of the committed `core.model_turn`.
+- SSE follow poll tightened 1.0s -> 0.1s (measured 2026-10-26: commit-to-delivery 0.1-0.9s down to 0.007-0.09s).
+- The TUI renders the in-flight token buffer as partial markdown in the live region with a theme spinner, settling to committed markdown on `core.model_turn`; the statusline shows spinner + run state.
+
 ### SDK strengthening (BREAKING)
 - `voidcode.sdk` now exports the full unified surface (141 names with `__all__`): `Plugin`, `StateSchema`, `PluginQuery`/`PluginQueryCaller`, tools, providers, commands, `PluginServices` + value types, views, hooks/facts, `ToolContext`, codec, `json_values`, `limits`, and history/transcript types. Submodule paths keep working; no circular imports; the SDK direction guard stays green.
 - `PluginServices.get_state_schema_version` and `clear_window_projection` are deleted (zero in-repo consumers; test-only references migrated). The orphaned `store.plugin_state_meta` and `store.clear_window_projection` go with them. All other 40 protocol members keep at least one caller in `capabilities/**` or `plugins/**`.
