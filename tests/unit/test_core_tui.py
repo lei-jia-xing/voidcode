@@ -1124,3 +1124,78 @@ def test_approval_keys_decide_without_truncation_path() -> None:
     assert approval.handle_key(Key("esc")) == {"request_id": "r1", "decision": "deny"}
     assert approval.handle_key(Key("down")) is None
     assert approval.scroll == 1
+
+
+def test_provider_progress_buffers_partial_text_and_spinner_advances() -> None:
+    """Progress fragments render as partial markdown in the live frame, never as rows."""
+    import re
+
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    terminal = _StubTerminal()
+    app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
+    rows: list[str] = []
+    app._handle_single_event(
+        _event(1, "core.provider_progress", run_id="r", dispatch_id="d1", dispatch_sequence=1, channel="text", text_delta="Hello "),
+        rows,
+    )
+    app._handle_single_event(
+        _event(2, "core.provider_progress", run_id="r", dispatch_id="d1", dispatch_sequence=1, channel="text", text_delta="world"),
+        rows,
+    )
+    assert rows == []
+    app._render_frame()
+    plain = [re.sub(r"\x1b\[[0-9;]*m", "", row) for row in terminal.frames[-1]]
+    assert any("Hello world" in row for row in plain)
+    first = list(terminal.frames[-1])
+    app._render_frame()
+    # The spinner advances every frame while a run is in flight.
+    assert terminal.frames[-1] != first
+
+
+def test_model_turn_settles_stream_buffer_to_committed_markdown() -> None:
+    """The committed turn replaces the live buffer: rows settle once, the live region clears."""
+    import re
+
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    terminal = _StubTerminal()
+    app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
+    rows: list[str] = []
+    app._handle_single_event(
+        _event(1, "core.provider_progress", run_id="r", dispatch_id="d1", dispatch_sequence=1, channel="text", text_delta="partial"),
+        rows,
+    )
+    app._handle_single_event(
+        _event(2, "core.model_turn", result={"output": "final answer", "tool_calls": []}, dispatch_sequence=1, dispatch_id="d1"),
+        rows,
+    )
+    assert any("final answer" in row for row in (" ".join(re.sub(r"\x1b\[[0-9;]*m", "", row) for row in rows)).split("\n"))
+    assert app._stream_dispatch is None
+    app._render_frame()
+    plain = [re.sub(r"\x1b\[[0-9;]*m", "", row) for row in terminal.frames[-1]]
+    assert not any("partial" in row for row in plain)
+
+
+def test_reasoning_progress_does_not_pollute_the_text_buffer() -> None:
+    """Reasoning fragments buffer separately; the live region shows answer text only."""
+    import re
+
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    terminal = _StubTerminal()
+    app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
+    rows: list[str] = []
+    app._handle_single_event(
+        _event(1, "core.provider_progress", run_id="r", dispatch_id="d1", dispatch_sequence=1, channel="reasoning", text_delta="secret plan"),
+        rows,
+    )
+    app._handle_single_event(
+        _event(2, "core.provider_progress", run_id="r", dispatch_id="d1", dispatch_sequence=1, channel="text", text_delta="visible"),
+        rows,
+    )
+    app._render_frame()
+    plain = [re.sub(r"\x1b\[[0-9;]*m", "", row) for row in terminal.frames[-1]]
+    text = "\n".join(plain)
+    assert "visible" in text
+    assert "secret plan" not in text

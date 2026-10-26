@@ -170,6 +170,13 @@ class CoreTuiApp:
         #: result for one of these can never re-open it. ponytail: retained for the
         #: process lifetime (one id per decision); evict if that ever matters.
         self.resolved_confirmations: set[str] = set()
+        #: Live token buffer keyed by dispatch id: text fragments arrive as
+        #: core.provider_progress events and settle on the turn's MODEL_TURN.
+        self._stream_buffers: dict[str, list[str]] = {}
+        self._stream_reasoning: dict[str, list[str]] = {}
+        self._stream_dispatch: str | None = None
+        self._spinner_tick = 0
+        self._run_active = False
         self.catalog_cache: list[dict[str, Any]] = []
         #: The capability revision the displayed catalog came from; slash dispatch
         #: echoes it verbatim. Rendered overlays carry their own captured revision.
@@ -289,6 +296,30 @@ class CoreTuiApp:
             time.sleep(0.033)  # ~30 fps redraw loop
         return 0
 
+    def _live_stream_rows(self, width: int) -> list[str]:
+        """Partial markdown of the in-flight dispatch for the live region, or nothing."""
+        dispatch = self._stream_dispatch
+        if dispatch is None:
+            return []
+        text = "".join(self._stream_buffers.get(dispatch, []))
+        if not text:
+            return []
+        rows = render_assistant_markdown(text, width, self.theme)
+        frames = self.theme.spinner_frames()
+        spinner = frames[self._spinner_tick % len(frames)] if frames else ""
+        head = f"{spinner} " if spinner else ""
+        rows = [f"{head}{rows[0]}", *rows[1:]] if rows else ([head.strip()] if head else [])
+        return rows
+
+    def _status_with_spinner(self) -> str:
+        """Run status with the live spinner while a run is in flight."""
+        if not self._run_active:
+            return self.status_line
+        frames = self.theme.spinner_frames()
+        spinner = frames[self._spinner_tick % len(frames)] if frames else ""
+        base = self.status_line or "Run running"
+        return f"{spinner} {base}" if spinner else base
+
     def _drain_events(self) -> None:
         rows_to_commit: list[str] = []
         while True:
@@ -361,6 +392,10 @@ class CoreTuiApp:
                     detail = frame.get("error")
                     suffix = f": {_safe(detail)}" if detail else ""
                     rows_to_commit.append(self.theme.fg("warning", f"[Run {status}]{suffix}"))
+                if status in ("completed", "failed", "interrupted"):
+                    self._run_active = False
+                elif status in ("running", "waiting"):
+                    self._run_active = True
                 self.status_line = f"Run {status}" if status else self.status_line
             elif kind == "confirmation":
                 confirmation = frame.get("confirmation")
@@ -491,6 +526,7 @@ class CoreTuiApp:
             user = self.theme.style("accent", bold=True).render("User>", color_system=self.theme.color_system)
             rows.append(f"{user} {_safe(payload.get('content'))}")
         elif etype == EventType.MODEL_TURN:
+            self._settle_stream(payload)
             raw_turn = payload.get("result")
             turn: dict[str, Any] = raw_turn if isinstance(raw_turn, dict) else {}
             output = turn.get("output")
@@ -506,6 +542,15 @@ class CoreTuiApp:
                         continue
                     name = _safe(call.get("tool_name") or "tool")
                     rows.extend(render_tool_call(name, json_safe(call.get("arguments")), self.terminal.width, self.theme))
+        elif etype == EventType.PROVIDER_PROGRESS:
+            dispatch = payload.get("dispatch_id")
+            delta = payload.get("text_delta")
+            if isinstance(dispatch, str) and dispatch and isinstance(delta, str) and delta:
+                channel = str(payload.get("channel", "text"))
+                target = self._stream_reasoning if channel == "reasoning" else self._stream_buffers
+                target.setdefault(dispatch, []).append(delta)
+                self._stream_dispatch = dispatch
+                self._run_active = True
         elif etype in (EventType.TOOL_COMPLETED, EventType.TOOL_INTERRUPTED):
             raw_call = payload.get("call")
             call: dict[str, Any] = raw_call if isinstance(raw_call, dict) else {}
@@ -581,13 +626,34 @@ class CoreTuiApp:
             # An authentic terminal fact means nothing is parked any more; a
             # stale gate must never outlive the run that asked for it.
             self.pending_approval = None
+            self._clear_stream()
             self._present_queued_confirmation()
         elif etype == EventType.RUN_FAILED:
             rows.append(self.theme.fg("error", "[Run failed]"))
             self.pending_approval = None
+            self._clear_stream()
             self._present_queued_confirmation()
+        elif etype == EventType.RUN_COMPLETED:
+            self._clear_stream()
         elif etype == EventType.OBSERVER_ERROR:
             rows.append(f"{self.theme.fg('error', '[Plugin observer error]')} {_safe(payload.get('error'))}")
+
+    def _settle_stream(self, payload: dict[str, Any]) -> None:
+        """Drop the live buffer the committed turn replaces; the rows settle, never replay."""
+        dispatch = payload.get("dispatch_id")
+        if isinstance(dispatch, str) and dispatch:
+            self._stream_buffers.pop(dispatch, None)
+            self._stream_reasoning.pop(dispatch, None)
+            if self._stream_dispatch == dispatch:
+                self._stream_dispatch = None
+        else:
+            self._clear_stream()
+
+    def _clear_stream(self) -> None:
+        self._stream_buffers.clear()
+        self._stream_reasoning.clear()
+        self._stream_dispatch = None
+        self._run_active = False
 
     def _show_or_queue_confirmation(self, overlay: InteractiveConfirmation) -> None:
         """Show one pending confirmation, or retain it until the live region frees.
@@ -1045,6 +1111,7 @@ class CoreTuiApp:
             self.status_line = "Core is draining for an upgrade; retry after it restarts"
             return
         self.status_line = "Dispatching agent run..."
+        self._run_active = True
         session_id, generation = self.session_id, self._generation
 
         def run_worker() -> None:
@@ -1198,6 +1265,7 @@ class CoreTuiApp:
         self.active_overlay = None
         self.queued_confirmations.clear()
         self.resolved_confirmations.clear()
+        self._clear_stream()
         # A new stream is about to start: its first frame reconciles.
         self._stream_ready = False
         self.status_line = ""
@@ -1380,11 +1448,12 @@ class CoreTuiApp:
 
     def _render_frame(self) -> None:
         width = self.terminal.width
+        if self._run_active or self._stream_dispatch is not None:
+            self._spinner_tick += 1
         # One status row for every branch, styled only when it has real text:
         # an empty reverse-video row would paint a blank band, not a quiet idle.
-        status_text = (
-            self.theme.style("text", reverse=True).render(self.status_line, color_system=self.theme.color_system) if self.status_line else ""
-        )
+        status_line = self._status_with_spinner()
+        status_text = self.theme.style("text", reverse=True).render(status_line, color_system=self.theme.color_system) if status_line else ""
         status_rows = (status_text,) if status_text else ()
         if self.pending_approval is not None:
             rows = self.pending_approval.render_rows(width, self.theme)
@@ -1398,7 +1467,11 @@ class CoreTuiApp:
             self.composer.set_width(width)
             composer_rows = self.composer.render(status=status_text)
             cursor = self.composer.cursor_position
-            frame = TuiFrame(transcript_rows=(), chrome_rows=tuple(composer_rows), cursor=cursor)
+            live = self._live_stream_rows(width)
+            if cursor is not None and live:
+                row, column = cursor
+                cursor = (row + len(live), column)
+            frame = TuiFrame(transcript_rows=(), chrome_rows=(*live, *composer_rows), cursor=cursor)
             self.terminal.paint_frame(frame)
 
 
