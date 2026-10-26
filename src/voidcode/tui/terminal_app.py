@@ -17,6 +17,7 @@ from voidcode.core.events import EventType
 from .client import CoreClientError, CoreHttpClient, StreamCancellation
 from .composer import Composer, ComposerAction
 from .keys import Key, KeyDecoder
+from .local_client import CoreLocalClient
 from .region import TuiFrame
 from .term import Terminal, escape_terminal_controls
 from .theme import Theme, appearance_mode, palette_names, resolve_theme
@@ -125,7 +126,7 @@ class CoreTuiApp:
 
     def __init__(
         self,
-        client: CoreHttpClient,
+        client: CoreHttpClient | CoreLocalClient,
         *,
         session_id: str | None = None,
         terminal: Terminal | None = None,

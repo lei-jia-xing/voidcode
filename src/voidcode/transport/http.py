@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import secrets
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
@@ -27,7 +26,6 @@ from starlette.exceptions import HTTPException
 from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.types import Receive, Scope, Send
 
-from voidcode import __version__
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core, CoreResult
 from voidcode.core.storage.store import SessionRecord, StoredEvent, inspect_existing_workspace
@@ -52,18 +50,17 @@ from .models import (
     ShowBody,
     StoredEventBody,
 )
-
-LAUNCH_PROTOCOL_VERSION = 1
+from .projection import (
+    FOLLOW_POLL_SECONDS,
+    FOLLOW_TAIL_LIMIT,
+    core_error_status,
+    event_payload,
+    health_payload,
+    session_payload,
+    validated_session_id,
+)
 
 logger = logging.getLogger(__name__)
-
-#: Follow cadence for live event streams. Measured 2026-10-26: at 1.0 s a
-#: committed progress event waited 0.1-0.9 s (mean ~0.5 s) before delivery,
-#: which makes token streaming feel dead. 0.1 s bounds that wait at ~50 ms
-#: mean for one cheap indexed tail read per idle stream — no wake-up channel
-#: needed until stream counts grow.
-_FOLLOW_POLL_SECONDS = 0.1
-_FOLLOW_TAIL_LIMIT = 100
 _JSON_MEDIA_TYPE = "application/json; charset=utf-8"
 
 
@@ -121,56 +118,17 @@ async def _unhandled_handler(request: Request, exc: Exception) -> Response:
 
 
 def _core_error(error: Exception) -> HttpError:
-    message = str(error)
-    # A client acting on a stale or missing displayed revision is refused before
-    # any dispatch: the refusal is visible and never retried automatically.
-    if "is stale; refresh the catalog" in message:
-        return HttpError(409, message, code="stale_revision")
-    if "expected_revision must be the revision the client displayed" in message:
-        return HttpError(400, message, code="invalid_params")
-    if isinstance(error, KeyError) or "unknown session" in message or "does not exist" in message:
-        return HttpError(404, message)
-    if isinstance(error, PermissionError):
-        return HttpError(403, message)
-    if isinstance(error, (ValueError, RuntimeError)):
-        return HttpError(400, message)
-    return HttpError(500, "internal server error")
+    status, code = core_error_status(error)
+    if status == 500:
+        return HttpError(500, "internal server error")
+    return HttpError(status, str(error), code=code)
 
 
 def _validated_session_id(value: str) -> str:
-    if not value or "/" in value or "\0" in value or len(value) > 128:
-        raise HttpError(400, "session_id must be a non-empty string without '/' or NUL within 128 characters")
-    return value
-
-
-def _session_payload(record: SessionRecord) -> dict[str, object]:
-    return {
-        "session_id": record.session_id,
-        "workspace": record.workspace,
-        "status": record.status,
-        "active_revision_id": record.active_revision_id,
-        "run_id": record.run_id,
-        "turn": record.turn,
-        "last_event_sequence": record.last_event_sequence,
-    }
-
-
-def _event_payload(session_id: str, event: StoredEvent) -> dict[str, object]:
     try:
-        entry = transcript_entry(event)
-    except Exception:
-        entry = None
-    return {
-        "session_id": session_id,
-        "sequence": event.sequence,
-        "type": event.event_type,
-        "run_id": event.run_id,
-        "revision_id": event.revision_id,
-        "source": event.source,
-        "actor": event.actor,
-        "payload": json_wire_object(event.payload),
-        "transcript": _wire(entry) if entry is not None else None,
-    }
+        return validated_session_id(value)
+    except ValueError as exc:
+        raise HttpError(400, str(exc)) from None
 
 
 class CoreTransportApp(FastAPI):
@@ -461,7 +419,7 @@ class CoreTransportApp(FastAPI):
             records = await asyncio.to_thread(core.sessions, limit=limit)
         except Exception as exc:
             raise _core_error(exc) from None
-        return _ok({"sessions": [_session_payload(record) for record in records]})
+        return _ok({"sessions": [session_payload(record) for record in records]})
 
     async def _handle_create_session(self, payload: CreateSessionRequest | None = None) -> Response:
         self._require_serving()
@@ -473,7 +431,7 @@ class CoreTransportApp(FastAPI):
             record = await asyncio.to_thread(core.create_session, requested)
         except Exception as exc:
             raise _core_error(exc) from None
-        return _ok(_session_payload(record), status=201)
+        return _ok(session_payload(record), status=201)
 
     async def _handle_get_session(self, session_id: str) -> Response:
         _validated_session_id(session_id)
@@ -482,7 +440,7 @@ class CoreTransportApp(FastAPI):
             record = await asyncio.to_thread(core.session, session_id)
         except Exception as exc:
             raise _core_error(exc) from None
-        return _ok(_session_payload(record))
+        return _ok(session_payload(record))
 
     async def _handle_show_session(self, session_id: str, events: bool = Query(default=False)) -> Response:
         _validated_session_id(session_id)
@@ -605,18 +563,13 @@ class CoreTransportApp(FastAPI):
                 if found_revision is not None:
                     revision_id = found_revision
         return _ok(
-            {
-                "status": "ok",
-                "stage": self._stage,
-                "pid": os.getpid(),
-                "workspace": "" if self._workspace is None else str(self._workspace),
-                "revision_id": revision_id,
-                "launch_protocol": LAUNCH_PROTOCOL_VERSION,
-                "core_version": __version__,
-                "web_bundle": None,
-                "generation": self._generation,
-                "active_upgrade": None if self._upgrade_id is None else {"upgrade_id": self._upgrade_id, "stage": self._stage},
-            }
+            health_payload(
+                revision_id=revision_id,
+                stage=self._stage,
+                workspace="" if self._workspace is None else str(self._workspace),
+                generation=self._generation,
+                upgrade_id=self._upgrade_id,
+            )
         )
 
     async def _handle_cancel(self, session_id: str) -> Response:
@@ -661,16 +614,16 @@ class CoreTransportApp(FastAPI):
         initial: list[StoredEvent] = []
         cursor = after_sequence
         while True:
-            chunk = await asyncio.to_thread(core.events_after, session_id, after_sequence=cursor, limit=_FOLLOW_TAIL_LIMIT)
+            chunk = await asyncio.to_thread(core.events_after, session_id, after_sequence=cursor, limit=FOLLOW_TAIL_LIMIT)
             if not chunk:
                 break
             initial.extend(chunk)
             cursor = chunk[-1].sequence
-            if len(chunk) < _FOLLOW_TAIL_LIMIT:
+            if len(chunk) < FOLLOW_TAIL_LIMIT:
                 break
         head = {
-            "session": _session_payload(record),
-            "events": [_event_payload(session_id, event) for event in initial],
+            "session": session_payload(record),
+            "events": [event_payload(session_id, event) for event in initial],
         }
         if initial:
             cursor = max(event.sequence for event in initial)
@@ -681,10 +634,10 @@ class CoreTransportApp(FastAPI):
         self._follow_streams.add(done)
         try:
             while True:
-                await asyncio.sleep(_FOLLOW_POLL_SECONDS)
+                await asyncio.sleep(FOLLOW_POLL_SECONDS)
                 while True:
                     try:
-                        pending = await asyncio.to_thread(core.events_after, session_id, after_sequence=cursor, limit=_FOLLOW_TAIL_LIMIT)
+                        pending = await asyncio.to_thread(core.events_after, session_id, after_sequence=cursor, limit=FOLLOW_TAIL_LIMIT)
                     except Exception as exc:
                         if self._restart_ready:
                             break
@@ -703,18 +656,18 @@ class CoreTransportApp(FastAPI):
                         cursor = event.sequence
                         yield ServerSentEvent(
                             data=json.dumps(
-                                {"kind": "event", "session_id": session_id, "event": _event_payload(session_id, event)},
+                                {"kind": "event", "session_id": session_id, "event": event_payload(session_id, event)},
                                 sort_keys=True,
                                 allow_nan=False,
                             ),
                             sep="\n",
                         )
-                    if len(pending) < _FOLLOW_TAIL_LIMIT:
+                    if len(pending) < FOLLOW_TAIL_LIMIT:
                         break
                 if self._restart_ready:
                     while True:
                         try:
-                            tail = await asyncio.to_thread(core.events_after, session_id, after_sequence=cursor, limit=_FOLLOW_TAIL_LIMIT)
+                            tail = await asyncio.to_thread(core.events_after, session_id, after_sequence=cursor, limit=FOLLOW_TAIL_LIMIT)
                         except Exception:
                             break
                         if not tail:
@@ -723,7 +676,7 @@ class CoreTransportApp(FastAPI):
                             cursor = event.sequence
                             yield ServerSentEvent(
                                 data=json.dumps(
-                                    {"kind": "event", "session_id": session_id, "event": _event_payload(session_id, event)},
+                                    {"kind": "event", "session_id": session_id, "event": event_payload(session_id, event)},
                                     sort_keys=True,
                                     allow_nan=False,
                                 ),

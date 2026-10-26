@@ -1,6 +1,7 @@
 """Generic HTTP-backed TUI and client for the VoidCode core."""
 
 from .client import CoreClientError, CoreHttpClient
+from .local_client import CoreLocalClient
 from .terminal_app import CoreTuiApp, run_tui
 from .views import (
     InteractiveChoices,
@@ -16,6 +17,7 @@ __all__ = [
     "InteractiveForm",
     "CoreClientError",
     "CoreHttpClient",
+    "CoreLocalClient",
     "CoreTuiApp",
     "UnsupportedViewError",
     "render_plugin_view",

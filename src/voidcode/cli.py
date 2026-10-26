@@ -12,8 +12,6 @@ import argparse
 import json
 import signal
 import sys
-import threading
-import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -310,35 +308,18 @@ def _show(workspace: Path, directory: Path, session_id: str, *, events: bool) ->
 
 
 def _embedded_tui(workspace: Path, directory: Path, *, session_id: str | None) -> int:
-    """Run the TUI directly against an in-process local transport server."""
-    import uvicorn
+    """Run the TUI directly against an in-process core: no socket, no HTTP framing."""
+    from .tui import CoreTuiApp
+    from .tui.local_client import CoreLocalClient
 
-    from .transport.http import create_core_app
-    from .transport.server import generate_bearer_token
-    from .tui import run_tui
-
-    token = generate_bearer_token()
-    app = create_core_app(
-        workspace=workspace,
-        state_dir=directory,
-        bearer_token=token,
-    )
-    config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning")
-    server = uvicorn.Server(config)
-    with config.bind_socket() as sock:
-        port = sock.getsockname()[1]
-        thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
-        thread.start()
-
-        deadline = time.monotonic() + 10.0
-        while time.monotonic() < deadline and not server.started:
-            time.sleep(0.01)
-
+    with open_core(workspace, state_dir=directory) as core:
+        previous = {number: signal.signal(number, lambda *_: core.cancel("user signal")) for number in (signal.SIGINT, signal.SIGTERM)}
         try:
-            return run_tui(f"http://127.0.0.1:{port}", token=token, session_id=session_id)
+            client = CoreLocalClient(core, workspace=workspace)
+            return CoreTuiApp(client, session_id=session_id).run()
         finally:
-            server.should_exit = True
-            thread.join(timeout=2.0)
+            for number, handler in previous.items():
+                signal.signal(number, handler)
 
 
 def _dispatch(core: Core, args: argparse.Namespace) -> int:
