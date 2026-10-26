@@ -1088,6 +1088,10 @@ class CoreTuiApp:
         threading.Thread(target=worker, daemon=True, name="CoreReconcile").start()
 
     def _handle_composer_key(self, key: Any) -> None:
+        if key.name == "tab" and not self.composer.completion:
+            self.composer.set_completion(self._completion_candidates())
+            if len(self.composer.completion) != 1:
+                return  # popup opened (or nothing matched): Tab cycles once open
         outcome = self.composer.handle_key(key)
         if outcome.action == ComposerAction.SUBMIT and outcome.text is not None:
             line = outcome.text.strip()
@@ -1097,6 +1101,16 @@ class CoreTuiApp:
                 self._dispatch_slash_command(line)
             else:
                 self._dispatch_user_prompt(line)
+
+    def _completion_candidates(self) -> list[str]:
+        """Slash-command names matching the draft prefix (catalog + /tui controls)."""
+        draft = self.composer.value
+        if not draft.startswith("/"):
+            return []
+        names = [str(entry.get("name", "")) for entry in self.catalog_cache]
+        names.extend(f"tui {control}" for control in ("help", "sessions", "session", "new", "theme", "views", "cancel", "quit", "exit"))
+        prefix = draft[1:].strip()
+        return sorted(f"/{name}" for name in names if name and name.startswith(prefix))
 
     def _dispatch_user_prompt(self, prompt: str) -> None:
         # No optimistic commit: the durable core.user_message event is the one
@@ -1468,10 +1482,11 @@ class CoreTuiApp:
             composer_rows = self.composer.render(status=status_text)
             cursor = self.composer.cursor_position
             live = self._live_stream_rows(width)
-            if cursor is not None and live:
+            popup = list(self.composer.completion_rows())
+            if cursor is not None and (live or popup):
                 row, column = cursor
-                cursor = (row + len(live), column)
-            frame = TuiFrame(transcript_rows=(), chrome_rows=(*live, *composer_rows), cursor=cursor)
+                cursor = (row + len(live) + len(popup), column)
+            frame = TuiFrame(transcript_rows=(), chrome_rows=(*live, *popup, *composer_rows), cursor=cursor)
             self.terminal.paint_frame(frame)
 
 

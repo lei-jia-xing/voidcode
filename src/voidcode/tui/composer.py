@@ -271,6 +271,8 @@ class Composer:
         self._last_interrupt = float("-inf")
         self._scroll = 0
         self._cursor_position: tuple[int, int] | None = None
+        self._completion: tuple[str, ...] = ()
+        self._completion_index = 0
 
     @property
     def is_bash_mode(self) -> bool:
@@ -330,6 +332,7 @@ class Composer:
         self._history_index = None
         self._draft = ""
         self._scroll = 0
+        self.set_completion(())
 
     def set_text(self, text: str) -> None:
         """Replace the draft with ``text`` (history insertion); the caret lands at the end."""
@@ -337,10 +340,26 @@ class Composer:
         self._cursor = len(text)
         self._history_index = None
         self._scroll = 0
+        self.set_completion(())
 
     def set_enabled(self, enabled: bool) -> None:
         """While disabled the composer ignores every key (streaming/overlay)."""
         self._enabled = enabled
+
+    @property
+    def completion(self) -> tuple[str, ...]:
+        """Open completion candidates (empty when no popup is showing)."""
+        return self._completion
+
+    @property
+    def completion_index(self) -> int:
+        """Highlighted candidate while the popup is open."""
+        return self._completion_index
+
+    def set_completion(self, candidates: Sequence[str]) -> None:
+        """Open the popup over ``candidates`` (empty closes it)."""
+        self._completion = tuple(candidates)
+        self._completion_index = 0
 
     # -- editing primitives ------------------------------------------------
 
@@ -354,6 +373,7 @@ class Composer:
 
     def _edited(self) -> None:
         self._history_index = None
+        self.set_completion(())
 
     def _bounds(self) -> tuple[int, int]:
         """Start and end offsets of the logical line holding the cursor."""
@@ -416,6 +436,25 @@ class Composer:
             self._text = self._draft
         self._cursor = len(self._text)
 
+    # -- completion ----------------------------------------------------------
+
+    def _accept_completion(self) -> None:
+        """Replace the draft with the highlighted candidate."""
+        self._text = self._completion[self._completion_index]
+        self._cursor = len(self._text)
+        self.set_completion(())
+        self._edited()
+
+    def _complete(self) -> ComposerOutcome:
+        """Tab: cycle the open popup, or complete the one candidate inline."""
+        if not self._completion:
+            return ComposerOutcome()
+        if len(self._completion) == 1:
+            self._accept_completion()
+            return ComposerOutcome()
+        self._completion_index = (self._completion_index + 1) % len(self._completion)
+        return ComposerOutcome()
+
     # -- key handling ------------------------------------------------------
 
     def handle_key(self, key: Key) -> ComposerOutcome:
@@ -431,13 +470,24 @@ class Composer:
             return ComposerOutcome()
 
         if name == "escape":
+            if self._completion:
+                # The 50 ms lone-Esc disambiguation already ran in the app loop:
+                # by the time this key arrives it is a real Esc, so cancel the
+                # popup without cancelling the turn.
+                self.set_completion(())
+                return ComposerOutcome()
             return ComposerOutcome(ComposerAction.CANCEL_TURN)
         if name == "ctrl+c":
             return self._handle_ctrl_c()
+        if name == "tab":
+            return self._complete()
         if name in _NEWLINE_KEYS:
             self._insert("\n")
             return ComposerOutcome()
         if name == "enter":
+            if self._completion:
+                self._accept_completion()
+                return ComposerOutcome()
             return self._submit()
         if name == "paste":
             self._insert(key.text)
@@ -691,3 +741,14 @@ class Composer:
     def render(self, status: str = "") -> Sequence[str]:
         """Compose one actual status dock, frame, visible input rows, and cursor."""
         return self._input_rows(status)
+
+    def completion_rows(self) -> Sequence[str]:
+        """Popup rows above the composer (chrome only, never committed)."""
+        rows: list[str] = []
+        for index, candidate in enumerate(self._completion):
+            label = escape_terminal_controls(candidate)
+            if index == self._completion_index:
+                rows.append(self._theme.style("accent", bold=True, reverse=True).render(f"> {label}", color_system=self._theme.color_system))
+            else:
+                rows.append(self._theme.fg("dim", f"  {label}"))
+        return [clamp_row(row, self._width) for row in rows]
