@@ -8,6 +8,7 @@ import pytest
 
 from voidcode.tui.keys import Key
 from voidcode.tui.views import (
+    InteractiveApproval,
     InteractiveChoices,
     InteractiveConfirmation,
     InteractiveForm,
@@ -559,7 +560,7 @@ def test_real_503_handlers_keep_both_gates_then_decided_facts_close_each_once() 
     terminal = _StubTerminal()
     app = CoreTuiApp(client, session_id="s1", terminal=terminal)  # type: ignore[arg-type]
     app._session_cursors["s1"] = 10
-    app.pending_approval = {"request_id": "appr-1", "tool_name": "write", "arguments": {}}
+    app.pending_approval = InteractiveApproval({"request_id": "appr-1", "tool_name": "write", "arguments": {}})
     app.active_overlay = InteractiveConfirmation({"request_id": "conf-9", "title": "t", "detail": "d"}, revision_id="rev-1")
     # Real handlers, real worker threads, real 503 answers. The barrier is the
     # workers' own follow-up envelopes: each failed submission ends with a
@@ -577,18 +578,18 @@ def test_real_503_handlers_keep_both_gates_then_decided_facts_close_each_once() 
     assert "appr-1" not in app._in_flight and "conf-9" not in app._in_flight, "decision workers never answered"
     app._drain_events()
     # Same ids and revision remain actionable; nothing was auto-resent.
-    assert app.pending_approval is not None and app.pending_approval["request_id"] == "appr-1"
+    assert app.pending_approval is not None and app.pending_approval.request_id == "appr-1"
     assert isinstance(app.active_overlay, InteractiveConfirmation) and app.active_overlay.request_id == "conf-9"
     assert app.active_overlay.revision_id == "rev-1"
     assert "appr-1" not in app._in_flight and "conf-9" not in app._in_flight
     # A NEW approval parks while the old gate is still mounted; a late
     # acceptance envelope for the OLD id must not close the new gate.
-    app.pending_approval = {"request_id": "appr-2", "tool_name": "write", "arguments": {}}
+    app.pending_approval = InteractiveApproval({"request_id": "appr-2", "tool_name": "write", "arguments": {}})
     app.event_queue.put(
         {"kind": "approval_accepted", "request_id": "appr-1", "decision": "allow", "status": "completed", "generation": 0, "session_id": "s1"}
     )
     app._drain_events()
-    assert app.pending_approval is not None and app.pending_approval["request_id"] == "appr-2"
+    assert app.pending_approval is not None and app.pending_approval.request_id == "appr-2"
     # The canonical decided facts close each gate exactly once.
     app.event_queue.put(
         {"kind": "event", "event": _event(11, "core.approval_decided", decision="allow", request_id="appr-2"), "generation": 0, "session_id": "s1"}
@@ -717,9 +718,9 @@ def test_durable_gates_survive_automatic_view_refresh() -> None:
         _event(1, "core.approval_requested", request_id="appr-1", call={"tool_name": "write", "arguments": {}}),
         rows,
     )
-    assert app.pending_approval is not None and app.pending_approval["request_id"] == "appr-1"
+    assert app.pending_approval is not None and app.pending_approval.request_id == "appr-1"
     _refresh_connection(app)
-    assert app.pending_approval is not None and app.pending_approval["request_id"] == "appr-1"
+    assert app.pending_approval is not None and app.pending_approval.request_id == "appr-1"
     app._render_frame()
     assert any("Tool approval required" in row for row in terminal.frames[-1]), terminal.frames[-1]
 
@@ -1078,3 +1079,48 @@ def test_tool_result_prefers_presentation_and_flags_failure() -> None:
     text = "\n".join(plain)
     assert "[failed] Tool exec" in text and "exit 1" in text
     assert "Image read successfully" in text and "raw bytes" not in text
+
+
+def test_approval_gate_shows_full_args_with_diff_and_scrolls() -> None:
+    import re
+
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    terminal = _StubTerminal()
+    app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
+    rows: list[str] = []
+    long_value = "x" * 300
+    app._handle_single_event(
+        _event(
+            1,
+            "core.approval_requested",
+            request_id="appr-9",
+            call={"tool_name": "edit", "arguments": {"path": "a.py", "oldString": "old", "newString": "new", "note": long_value}},
+        ),
+        rows,
+    )
+    assert app.pending_approval is not None
+    app._render_frame()
+    plain = [re.sub(r"\x1b\[[0-9;]*m", "", row) for row in terminal.frames[-1]]
+    text = "".join(row.rstrip() for row in plain)
+    # Nothing truncated: the 300-char argument and both diff sides are visible.
+    assert long_value in text
+    assert "old" in text and "new" in text
+    assert "a.py" in text
+
+    first = list(terminal.frames[-1])
+    app.pending_approval.handle_key(Key("down"))
+    app.pending_approval.handle_key(Key("down"))
+    app._render_frame()
+    assert terminal.frames[-1] != first
+    assert any("allow" in row.lower() for row in terminal.frames[-1])
+
+
+def test_approval_keys_decide_without_truncation_path() -> None:
+    approval = InteractiveApproval({"request_id": "r1", "tool_name": "exec", "arguments": {"cmd": "ls"}})
+    assert approval.handle_key(Key("a")) == {"request_id": "r1", "decision": "allow"}
+    assert approval.handle_key(Key("enter")) == {"request_id": "r1", "decision": "allow"}
+    assert approval.handle_key(Key("d")) == {"request_id": "r1", "decision": "deny"}
+    assert approval.handle_key(Key("esc")) == {"request_id": "r1", "decision": "deny"}
+    assert approval.handle_key(Key("down")) is None
+    assert approval.scroll == 1

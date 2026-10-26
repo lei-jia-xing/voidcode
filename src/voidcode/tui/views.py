@@ -314,6 +314,93 @@ class InteractiveConfirmation:
         return render_lines(panel, width, theme=resolved.rich_theme(), color_system=resolved.color_system)
 
 
+class InteractiveApproval:
+    """Native tool-approval gate: full arguments plus a diff preview, scrollable.
+
+    The decision is the only outcome: ``{"request_id", "decision"}`` on allow,
+    deny, or esc (deny). Scroll keys move the preview; they never decide.
+    """
+
+    def __init__(self, approval: Mapping[str, Any]) -> None:
+        self.request_id = str(approval.get("request_id", ""))
+        self.tool_name = str(approval.get("tool_name") or "tool")
+        arguments = approval.get("arguments")
+        self.arguments: Mapping[str, Any] = arguments if isinstance(arguments, Mapping) else {}
+        self.scroll = 0
+
+    def handle_key(self, key: Key) -> dict[str, Any] | None:
+        if key.name in ("up", "k", "pageUp"):
+            self.scroll = max(0, self.scroll - 1)
+            return None
+        if key.name in ("down", "j", "pageDown", "space"):
+            self.scroll += 1
+            return None
+        if key.name in ("a", "enter"):
+            return {"request_id": self.request_id, "decision": "allow"}
+        if key.name in ("d", "esc"):
+            return {"request_id": self.request_id, "decision": "deny"}
+        return None
+
+    def _edit_preview(self) -> tuple[str, str, str] | None:
+        """(path, before, after) for a file edit, else None."""
+        if self.tool_name != "edit":
+            return None
+        path = self.arguments.get("path")
+        if not isinstance(path, str) or not path:
+            return None
+        edits = self.arguments.get("edits")
+        if isinstance(edits, list) and edits:
+            before_parts: list[str] = []
+            after_parts: list[str] = []
+            for edit in edits:
+                if not isinstance(edit, Mapping):
+                    return None
+                old, new = edit.get("oldString"), edit.get("newString")
+                if not isinstance(old, str) or not isinstance(new, str):
+                    return None
+                before_parts.append(old)
+                after_parts.append(new)
+            return path, "\n".join(before_parts), "\n".join(after_parts)
+        old, new = self.arguments.get("oldString"), self.arguments.get("newString")
+        if isinstance(old, str) and isinstance(new, str):
+            return path, old, new
+        return None
+
+    def render_rows(self, width: int, theme: Theme | None = None) -> list[str]:
+        resolved = _theme_arg(theme)
+        icon = resolved.tool_icon(self.tool_name)
+        header = Text.assemble(
+            ((f"{icon} " if icon else ""), resolved.style("warning")),
+            ("Tool approval required", resolved.style("warning", bold=True)),
+        )
+        rows = render_lines(header, width, theme=resolved.rich_theme(), color_system=resolved.color_system)
+        rows.append(resolved.fg("text", f"  tool: {escape_terminal_controls(self.tool_name)}"))
+        rows.append(resolved.fg("dim", f"  request: {escape_terminal_controls(self.request_id)}"))
+        preview = self._edit_preview()
+        if preview is not None:
+            path, before, after = preview
+            rows.extend(render_diff({"before": before, "after": after, "path": path}, width, resolved))
+        pretty = json.dumps(self.arguments, indent=2, ensure_ascii=False, default=str)
+        if pretty and pretty != "{}":
+            rows.append(resolved.fg("dim", "  arguments:"))
+            rows.extend(
+                render_lines(
+                    Syntax(
+                        escape_terminal_controls(pretty, preserve_newlines=True, preserve_tabs=True),
+                        "json",
+                        theme=resolved.syntax_theme(),
+                        word_wrap=True,
+                    ),
+                    width,
+                    theme=resolved.rich_theme(),
+                    color_system=resolved.color_system,
+                )
+            )
+        visible = rows[self.scroll :] if self.scroll < len(rows) else []
+        visible.append(resolved.fg("text", "  [a] allow once    [d] deny    [up/down] scroll"))
+        return visible
+
+
 class InteractiveForm:
     """Interactive Form View supporting text, multiline, integer, number, boolean."""
 

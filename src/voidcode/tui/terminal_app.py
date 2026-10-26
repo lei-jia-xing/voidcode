@@ -21,6 +21,7 @@ from .region import TuiFrame
 from .term import Terminal, escape_terminal_controls
 from .theme import Theme, appearance_mode, palette_names, resolve_theme
 from .views import (
+    InteractiveApproval,
     InteractiveChoices,
     InteractiveConfirmation,
     InteractiveForm,
@@ -35,7 +36,6 @@ logger = logging.getLogger(__name__)
 #: Control bytes inside model/plugin text must never reach the terminal as
 #: commands (they could clear scrollback or switch buffers), so they are made
 #: visible before the row is styled or committed.
-_WRAP_WIDTH = 100
 
 #: A lone ESC byte is ambiguous (it may start a sequence) until no further input
 #: follows: the decoder buffers it, and the loop resolves it after this window.
@@ -162,7 +162,7 @@ class CoreTuiApp:
         self.active_overlay: InteractiveChoices | InteractiveConfirmation | InteractiveForm | None = None
         # Native tool approval (core permission gate) is not a plugin Action
         # confirmation: it resumes the parked run with its own request id.
-        self.pending_approval: dict[str, Any] | None = None
+        self.pending_approval: InteractiveApproval | None = None
         #: Confirmation requests that arrived while another overlay owned the live
         #: region, keyed by request_id in request order: none is ever dropped.
         self.queued_confirmations: dict[str, InteractiveConfirmation] = {}
@@ -335,15 +335,15 @@ class CoreTuiApp:
             elif kind == "approval":
                 approval = frame.get("approval")
                 if isinstance(approval, dict):
-                    self.pending_approval = approval
-                    self.status_line = f"Tool approval required: {approval.get('tool_name', 'tool')}"
+                    self.pending_approval = InteractiveApproval(approval)
+                    self.status_line = f"Tool approval required: {self.pending_approval.tool_name}"
             elif kind == "approval_accepted":
                 # The server accepted this exact request: close the gate it
                 # matches, or nothing when a newer request already replaced it.
                 accepted = str(frame.get("request_id", ""))
                 self._in_flight.discard(accepted)
-                current = self.pending_approval or {}
-                if accepted and str(current.get("request_id", "")) == accepted:
+                current = self.pending_approval
+                if accepted and current is not None and current.request_id == accepted:
                     self.pending_approval = None
                     self._present_queued_confirmation()
                 decision = str(frame.get("decision", ""))
@@ -561,12 +561,10 @@ class CoreTuiApp:
             call: dict[str, Any] = raw_call if isinstance(raw_call, dict) else {}
             request_id = _safe(payload.get("request_id"))
             if request_id:
-                self.pending_approval = {
-                    "request_id": request_id,
-                    "tool_name": _safe(call.get("tool_name") or "tool"),
-                    "arguments": call.get("arguments"),
-                }
-                self.status_line = f"Tool approval required: {self.pending_approval['tool_name']}"
+                self.pending_approval = InteractiveApproval(
+                    {"request_id": request_id, "tool_name": _safe(call.get("tool_name") or "tool"), "arguments": call.get("arguments")}
+                )
+                self.status_line = f"Tool approval required: {self.pending_approval.tool_name}"
         elif etype == EventType.APPROVAL_DECIDED:
             decision = _safe(payload.get("decision"))
             rows.append(self.theme.fg("warning", f"[Approval {decision}]"))
@@ -574,8 +572,8 @@ class CoreTuiApp:
             # local-pending or was decided by a remote client — but only the
             # MATCHING id, so a newer parked request is never dropped.
             decided_approval = _safe(payload.get("request_id"))
-            current = self.pending_approval or {}
-            if decided_approval and str(current.get("request_id", "")) == decided_approval:
+            current = self.pending_approval
+            if decided_approval and current is not None and current.request_id == decided_approval:
                 self.pending_approval = None
                 self._present_queued_confirmation()
         elif etype == EventType.RUN_INTERRUPTED:
@@ -686,17 +684,18 @@ class CoreTuiApp:
         threading.Thread(target=worker, daemon=True, name="CoreCancel").start()
 
     def _handle_approval_key(self, key: Any) -> None:
-        """Native approval gate: a=allow once, d/Esc=deny; both hit /resume."""
-        if key.name in ("a", "enter"):
-            self._resolve_approval("allow")
-        elif key.name in ("d", "esc", "ctrl+c"):
-            self._resolve_approval("deny")
+        """Native approval gate: scroll the preview, a=allow, d/Esc=deny; both hit /resume."""
+        assert self.pending_approval is not None
+        outcome = self.pending_approval.handle_key(key)
+        if outcome is None:
+            return
+        self._resolve_approval(str(outcome.get("decision", "deny")))
 
     def _resolve_approval(self, decision: str) -> None:
         approval = self.pending_approval
-        if not approval:
+        if approval is None:
             return
-        request_id = str(approval.get("request_id", ""))
+        request_id = approval.request_id
         if not request_id:
             self.status_line = "No pending approval to resolve"
             return
@@ -1388,14 +1387,7 @@ class CoreTuiApp:
         )
         status_rows = (status_text,) if status_text else ()
         if self.pending_approval is not None:
-            approval = self.pending_approval
-            arguments = json.dumps(json_safe(approval.get("arguments")), ensure_ascii=False, allow_nan=False)
-            rows = [
-                self.theme.fg("warning", "*** Tool approval required ***"),
-                f"  tool: {_safe(approval.get('tool_name'))}",
-                f"  args: {_safe(arguments)[:_WRAP_WIDTH]}",
-                "  [a] allow once    [d] deny",
-            ]
+            rows = self.pending_approval.render_rows(width, self.theme)
             frame = TuiFrame(transcript_rows=(), chrome_rows=(*rows, *status_rows), cursor=None)
             self.terminal.paint_frame(frame)
         elif self.active_overlay is not None:
