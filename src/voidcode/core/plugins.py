@@ -35,6 +35,7 @@ from uuid import uuid4
 import jsonschema
 from pydantic import TypeAdapter
 
+from voidcode.core.retry import retrying_turn
 from voidcode.sdk.commands import CommandDescriptor, CommandInvocation, CommandResult
 from voidcode.sdk.hooks import (
     ApprovalRequestedFact,
@@ -880,7 +881,7 @@ class PluginRuntime:
         return result
 
     def propose_turn(self, request: ProviderTurnRequest, *, provider: str) -> ProviderTurnResult:
-        """Request a model turn from a registered provider by direct call."""
+        """Request a model turn, retrying adapter-approved transient failures in this runtime."""
         prov_entry = self._providers.get(provider)
         if prov_entry is None:
             raise ProviderExecutionError(
@@ -890,17 +891,22 @@ class PluginRuntime:
                 message=f"Provider '{provider}' not configured",
             )
         provider_instance, _provider_id = prov_entry
-        try:
-            return provider_instance.propose_turn(request)
-        except ProviderExecutionError:
-            raise
-        except Exception as exc:
-            raise ProviderExecutionError(
-                kind="provider_error",
-                provider_name=provider,
-                model_name=request.model_name or "unknown",
-                message=f"Provider {provider} turn failed: {exc}",
-            ) from exc
+        model_name = request.model_name or "unknown"
+        for attempt in retrying_turn(request.abort_signal, provider=provider, model=model_name):
+            with attempt:
+                numbered = replace(request, attempt=attempt.retry_state.attempt_number)
+                try:
+                    return provider_instance.propose_turn(numbered)
+                except ProviderExecutionError:
+                    raise
+                except Exception as exc:
+                    raise ProviderExecutionError(
+                        kind="provider_error",
+                        provider_name=provider,
+                        model_name=model_name,
+                        message=f"Provider {provider} turn failed: {exc}",
+                    ) from exc
+        raise AssertionError("unreachable: tenacity reraise either returns or raises")
 
     def invoke_command(
         self,

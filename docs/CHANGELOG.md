@@ -4,6 +4,10 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Runtime-owned provider retry (tenacity)
+- `PluginRuntime.propose_turn` now retries adapter-approved transient failures in-process: an explicit `retryable is True`, or a `rate_limit` the adapter left undecided. Structured `retry_after` is honored (over-long waits refuse the retry); otherwise a jittered exponential backoff. Bounded at 4 attempts; backoff polls the run's abort signal and raises `cancelled` on it. Each call carries its 1-based `request.attempt`.
+- New dependency `tenacity>=9.1.4` (already in the lockfile via `google-genai`).
+
 ### Minimal core cutover, outer product layer layout, schema v6 (BREAKING)
 - **Minimal core decoupling**: Core now takes neutral `ExecutionConfig` and `ExecutionPolicy` (`approval_mode` and `read_only`), removing `CoreConfig` and product responsibilities. Product configuration schema, `voidcode.json` validation, bundled plugin discovery, and provider credential resolution live in the outer layer (`src/voidcode/config.py` and `src/voidcode/bootstrap.py`).
 - **Plugin-only runtime**: `PluginRuntime._register_builtins` and builtin providers are deleted. Core no longer imports `capabilities`; files, execution, and providers are ordinary plugins with zero fallback. A zero-plugin core manages sessions and SQLite persistence only.

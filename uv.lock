@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = "==3.14.*"
 
 [[package]]
@@ -1502,6 +1502,7 @@ dependencies = [
     { name = "regex" },
     { name = "rich" },
     { name = "sse-starlette" },
+    { name = "tenacity" },
     { name = "tiktoken" },
     { name = "typing-extensions" },
     { name = "uvicorn" },
@@ -1554,6 +1555,7 @@ requires-dist = [
     { name = "rich", specifier = ">=15.0.0" },
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "sse-starlette", specifier = ">=2.1.0" },
+    { name = "tenacity", specifier = ">=9.1.4" },
     { name = "tiktoken" },
     { name = "tree-sitter", marker = "extra == 'syntax'", specifier = ">=0.24" },
     { name = "tree-sitter-language-pack", marker = "extra == 'syntax'", specifier = ">=0.4" },
