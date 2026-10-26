@@ -312,13 +312,17 @@ class CoreTuiApp:
         return rows
 
     def _status_with_spinner(self) -> str:
-        """Run status with the live spinner while a run is in flight."""
-        if not self._run_active:
-            return self.status_line
-        frames = self.theme.spinner_frames()
-        spinner = frames[self._spinner_tick % len(frames)] if frames else ""
-        base = self.status_line or "Run running"
-        return f"{spinner} {base}" if spinner else base
+        """Segments: short session id, run-state + spinner, theme name, notice."""
+        if self._run_active:
+            frames = self.theme.spinner_frames()
+            spinner = frames[self._spinner_tick % len(frames)] if frames else ""
+            run_state = f"{spinner} running" if spinner else "running"
+        else:
+            run_state = "idle"
+        segments = [self.session_id[:8], run_state, self.theme.name]
+        if self.status_line:
+            segments.append(self.status_line)
+        return " · ".join(segment for segment in segments if segment)
 
     def _drain_events(self) -> None:
         rows_to_commit: list[str] = []

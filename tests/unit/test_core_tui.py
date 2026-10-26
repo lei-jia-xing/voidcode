@@ -678,8 +678,8 @@ def test_activation_refresh_is_silent_for_optional_views() -> None:
     assert not any("Objective" in row for row in terminal.frames[-1]), terminal.frames[-1]
 
 
-def test_idle_chrome_omits_session_hash_but_explicit_sessions_keep_it() -> None:
-    """Routine attach passes a truly empty status; ids stay in explicit diagnostics."""
+def test_idle_chrome_shows_status_segments() -> None:
+    """Idle chrome shows session/run-state/theme segments in the status dock."""
     from voidcode.tui.terminal_app import CoreTuiApp
 
     client = _CommandClient()
@@ -691,8 +691,9 @@ def test_idle_chrome_omits_session_hash_but_explicit_sessions_keep_it() -> None:
     assert app.status_line == ""
     app._render_frame()
     frame_text = "\n".join(terminal.frames[-1])
-    assert "s1" not in frame_text
-    assert "\x1b[7m\x1b[0m" not in frame_text
+    assert "s1" in frame_text
+    assert "idle" in frame_text
+    assert "voidcode-dark" in frame_text
 
     app._show_sessions()
     assert any("s1" in row for row in terminal.committed), terminal.committed
