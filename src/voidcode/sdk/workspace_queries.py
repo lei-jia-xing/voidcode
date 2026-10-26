@@ -37,9 +37,9 @@ class RulePage:
         next_offset = value.get("next_offset")
         if not isinstance(rule, str) or not rule:
             return None
-        if not isinstance(content_hash, str) or not content_hash:
+        if not isinstance(content_hash, str) or _SHA256_PATTERN.fullmatch(content_hash) is None:
             return None
-        if not isinstance(text, str):
+        if not isinstance(text, str) or "next_offset" not in value:
             return None
         if next_offset is not None and (not isinstance(next_offset, int) or isinstance(next_offset, bool) or next_offset < 1):
             return None
@@ -108,7 +108,11 @@ class _RulePageQuery:
         if not isinstance(value, Mapping):
             raise QueryContractError(f"query {self.name!r} must answer with a JSON object")
         page = RulePage.from_query(value)
-        if page is None:
+        if (
+            page is None
+            or page.rule != request.uri.removeprefix(RULE_URI_PREFIX).strip()
+            or (page.next_offset is not None and page.next_offset <= request.offset)
+        ):
             raise QueryContractError(f"query {self.name!r} answered outside its request/answer contract")
         return page
 

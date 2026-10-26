@@ -66,7 +66,7 @@ def test_foreign_file_rejection_and_byte_preservation(tmp_path: Path) -> None:
         conn.execute("INSERT INTO kernel_identity VALUES (1, 'wrong-magic', 1)")
         conn.commit()
     bad_id_sha_before = _file_sha256(bad_identity_db)
-    with pytest.raises(ForeignDatabaseError, match="unsupported database identity"):
+    with pytest.raises(ForeignDatabaseError, match="unsupported identity"):
         SqliteStore(bad_identity_db)
     assert _file_sha256(bad_identity_db) == bad_id_sha_before
 

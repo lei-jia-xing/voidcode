@@ -2004,7 +2004,7 @@ def test_observer_receipt_survives_core_kill_exactly_once(tmp_path: Path) -> Non
                 proc.communicate(timeout=5)
 
         # The bill/fact is already durable even though the observer never returned.
-        with SqliteStore(state / "kernel-v1.sqlite3") as store:
+        with SqliteStore(state / "voidcode.db") as store:
             events = store.events("obs-kill-session")
             assert [event.event_type for event in events if event.event_type == "core.model_turn"]
             checkpoint = store.checkpoint("obs-kill-session")
@@ -2019,7 +2019,7 @@ def test_observer_receipt_survives_core_kill_exactly_once(tmp_path: Path) -> Non
         assert len(server.requests) == 1, "recovery must finalize the stored turn, not bill again"
 
         # A real receipt row now exists for the delivered fact (durable dedupe authority).
-        with SqliteStore(state / "kernel-v1.sqlite3") as store:
+        with SqliteStore(state / "voidcode.db") as store:
             model_turn = next(event for event in store.events("obs-kill-session") if event.event_type == "core.model_turn")
             assert store.has_observer_receipt("obs-kill-session", model_turn.sequence, _GOV_PLUGIN_ID)
 
@@ -2216,7 +2216,7 @@ def test_confirmed_effect_crash_never_replays_and_stays_diagnosable(tmp_path: Pa
                 proc.communicate(timeout=5)
 
         # Durable truth: approval was recorded, the handler's own commit never ran.
-        with SqliteStore(state / "kernel-v1.sqlite3") as store:
+        with SqliteStore(state / "voidcode.db") as store:
             record = store.confirmation(request_id)
             assert record is not None and record.status == "allowed", record
             stored, _ = store.plugin_state(_GOV_PLUGIN_ID, "session", "confirm-crash")
@@ -2229,7 +2229,7 @@ def test_confirmed_effect_crash_never_replays_and_stays_diagnosable(tmp_path: Pa
         assert "not pending" in retry["error"], retry
         assert (workspace / "crash_effect.txt").read_text(encoding="utf-8") == "confirmed_effect\n"
 
-        with SqliteStore(state / "kernel-v1.sqlite3") as store:
+        with SqliteStore(state / "voidcode.db") as store:
             stored_after, _ = store.plugin_state(_GOV_PLUGIN_ID, "session", "confirm-crash")
             assert not (stored_after or {}).get("confirmed_done"), stored_after
 
@@ -2289,7 +2289,7 @@ def test_crash_after_turn_append_resumes_the_authentic_native_batch(tmp_path: Pa
 
         # Durable truth: the turn and its member list are billed and referenced by
         # one checkpoint, and the effect did not happen yet.
-        with SqliteStore(state / "kernel-v1.sqlite3") as store:
+        with SqliteStore(state / "voidcode.db") as store:
             events = store.events("crash-batch")
             turn = next(event for event in events if event.event_type == "core.model_turn")
             checkpoint = store.checkpoint("crash-batch")
@@ -2310,7 +2310,7 @@ def test_crash_after_turn_append_resumes_the_authentic_native_batch(tmp_path: Pa
     # never re-dispatched, and the irreversible effect landed exactly once.
     assert len(server.requests) == 2, server.requests
     assert (workspace / "crash_batch.txt").read_text(encoding="utf-8") == "mutated\n"
-    with SqliteStore(state / "kernel-v1.sqlite3") as store:
+    with SqliteStore(state / "voidcode.db") as store:
         intents = [event for event in store.events("crash-batch") if event.event_type == "core.provider_intent"]
         assert len(intents) == 2, [(event.sequence, event.payload["dispatch_id"]) for event in intents]
         assert len({event.payload["dispatch_id"] for event in intents}) == 2
@@ -2346,7 +2346,7 @@ def test_crash_after_approval_append_keeps_the_native_ask(tmp_path: Path) -> Non
         try:
             # Terminate the core as soon as the ask is durable, i.e. before any
             # approval decision could exist.
-            database = state / "kernel-v1.sqlite3"
+            database = state / "voidcode.db"
             deadline = time.monotonic() + 20
             while time.monotonic() < deadline:
                 try:
@@ -2371,7 +2371,7 @@ def test_crash_after_approval_append_keeps_the_native_ask(tmp_path: Path) -> Non
                 proc.kill()
                 proc.communicate(timeout=10)
 
-        with SqliteStore(state / "kernel-v1.sqlite3") as store:
+        with SqliteStore(state / "voidcode.db") as store:
             events = store.events("crash-ask")
             approval = next(event for event in events if event.event_type == "core.approval_requested")
             request_id = approval.payload["request_id"]
@@ -2463,7 +2463,7 @@ def test_two_concurrent_keyed_leases_return_one_durable_continuation(tmp_path: P
             assert continuation_id
 
             # Both returned ids name exactly one durable row for that key.
-            database = state / "kernel-v1.sqlite3"
+            database = state / "voidcode.db"
             with sqlite3.connect(database) as conn:
                 rows = conn.execute(
                     "SELECT continuation_id, status FROM continuations WHERE session_id = ? AND owner = ? AND idempotency_key = ?",
@@ -2478,7 +2478,7 @@ def test_two_concurrent_keyed_leases_return_one_durable_continuation(tmp_path: P
 
     # The single durable row was driven once, by the run's own auto-drain.
     assert len(server.requests) == 3, server.requests
-    with sqlite3.connect(state / "kernel-v1.sqlite3") as conn:
+    with sqlite3.connect(state / "voidcode.db") as conn:
         rows = conn.execute(
             "SELECT continuation_id, status FROM continuations WHERE session_id = ? AND owner = ?",
             ("keyed-session", _GOV_PLUGIN_ID),
@@ -2512,7 +2512,7 @@ def test_cancelled_finite_root_admits_a_fresh_authorized_root(tmp_path: Path) ->
         assert burned["stop_cause"] == "limit_reached", burned
         assert len(server.requests) == 2, server.requests
 
-        with SqliteStore(state / "kernel-v1.sqlite3") as store:
+        with SqliteStore(state / "voidcode.db") as store:
             checkpoint = store.checkpoint("root-cancel")
             assert checkpoint is not None and checkpoint.kind != "terminal"
             old_root = str(checkpoint.payload["root_id"])
@@ -2529,7 +2529,7 @@ def test_cancelled_finite_root_admits_a_fresh_authorized_root(tmp_path: Path) ->
             assert status == 200, body.decode()
             assert json.loads(body)["cancellation_requested"] is True, body.decode()
 
-        with SqliteStore(state / "kernel-v1.sqlite3") as store:
+        with SqliteStore(state / "voidcode.db") as store:
             assert store.session("root-cancel").status == "interrupted"
             assert store.checkpoint("root-cancel").kind == "terminal"
             # Settled to a terminal checkpoint: nothing is left to claim or resume.
@@ -2544,7 +2544,7 @@ def test_cancelled_finite_root_admits_a_fresh_authorized_root(tmp_path: Path) ->
         assert fresh["output"] == "fresh root turn", fresh
 
     assert len(server.requests) == 3, server.requests
-    with SqliteStore(state / "kernel-v1.sqlite3") as store:
+    with SqliteStore(state / "voidcode.db") as store:
         new_root = str(store.checkpoint("root-cancel").payload["root_id"])
         assert new_root and new_root != old_root, (new_root, old_root)
         assert store.root_budget_state(old_root) == (2, 2), store.root_budget_state(old_root)
@@ -2598,7 +2598,7 @@ def test_terminal_interruption_auto_drives_queued_continuation(tmp_path: Path) -
     assert len(server.requests) == 2, server.requests
     driven = json.dumps(server.requests[1]["messages"], ensure_ascii=False)
     assert "queued_followup" in driven and "after terminal cancel" in driven, driven
-    with SqliteStore(state / "kernel-v1.sqlite3") as store:
+    with SqliteStore(state / "voidcode.db") as store:
         assert store.pending_continuations("terminal-cancel") == ()
         assert store.claimed_continuations("terminal-cancel") == ()
         events = store.events("terminal-cancel")
@@ -2631,7 +2631,7 @@ def test_two_owner_partial_receipt_delivers_only_the_missing_owner(tmp_path: Pat
         first = _cli(workspace, state, "run", "observe me", "--session-id", "two-owner")
         assert first["status"] == "completed", first
 
-        with SqliteStore(state / "kernel-v1.sqlite3") as store:
+        with SqliteStore(state / "voidcode.db") as store:
             turn = next(event for event in store.events("two-owner") if event.event_type == "core.model_turn")
             dispatch = next(event for event in store.events("two-owner") if event.event_type == "core.provider_intent")
             assert store.has_observer_receipt("two-owner", turn.sequence, _GOV_PLUGIN_ID)
@@ -2642,7 +2642,7 @@ def test_two_owner_partial_receipt_delivers_only_the_missing_owner(tmp_path: Pat
 
         # Durable partial state: the late owner's receipt for that exact event is
         # gone (as an interrupted delivery would leave it), the first owner's is not.
-        with sqlite3.connect(state / "kernel-v1.sqlite3") as conn:
+        with sqlite3.connect(state / "voidcode.db") as conn:
             conn.execute(
                 "DELETE FROM observer_receipts WHERE session_id = ? AND event_sequence = ? AND owner = ?",
                 ("two-owner", turn.sequence, _OBSERVER_PLUGIN_ID),
@@ -2655,7 +2655,7 @@ def test_two_owner_partial_receipt_delivers_only_the_missing_owner(tmp_path: Pat
             snapshot = _cli(workspace, state, "invoke", "two-owner", "gov_read_cmd")
             assert snapshot["status"] == "ok", snapshot
 
-        with SqliteStore(state / "kernel-v1.sqlite3") as store:
+        with SqliteStore(state / "voidcode.db") as store:
             late_state, _ = store.plugin_state(_OBSERVER_PLUGIN_ID, "session", "two-owner")
             assert late_state is not None
             assert late_state["usage_facts_seen"] == 2, late_state
@@ -2667,7 +2667,7 @@ def test_two_owner_partial_receipt_delivers_only_the_missing_owner(tmp_path: Pat
             assert late_state["last_revision_id"] == turn.revision_id, late_state
             assert late_state["last_logical_turn"] == dispatch.payload["logical_turn"], late_state
 
-    with SqliteStore(state / "kernel-v1.sqlite3") as store:
+    with SqliteStore(state / "voidcode.db") as store:
         owner_state, _ = store.plugin_state(_GOV_PLUGIN_ID, "session", "two-owner")
         assert owner_state is not None
         # The receipted owner's own callback never ran again.
@@ -2695,7 +2695,7 @@ def test_confirmed_owner_cancel_stops_claimed_run(tmp_path: Path) -> None:
     with _provider(replies) as server:
         _configure(workspace, server, source, approval_mode="yolo")
         _cli(workspace, state, "create-session", "--session-id", "confirm-cancel-session")
-        with SqliteStore(state / "kernel-v1.sqlite3") as store:
+        with SqliteStore(state / "voidcode.db") as store:
             store.enqueue_continuation(
                 "confirm-claim",
                 _GOV_PLUGIN_ID,
@@ -2750,7 +2750,7 @@ def test_confirmed_owner_cancel_stops_claimed_run(tmp_path: Path) -> None:
             assert claims[0]["stop_cause"] == "owner_cancel", claims
 
     assert len(server.requests) == 1, server.requests
-    with SqliteStore(state / "kernel-v1.sqlite3") as store:
+    with SqliteStore(state / "voidcode.db") as store:
         assert store.continuation_status("confirm-claim") == "cancelled"
 
 
@@ -2792,7 +2792,7 @@ def test_internal_session_effects_need_no_read_only_waiver_or_approval(tmp_path:
 
         write_run = _cli(workspace, state, "run", "write a file", "--session-id", "session-effects-write")
 
-    with SqliteStore(state / "kernel-v1.sqlite3") as store:
+    with SqliteStore(state / "voidcode.db") as store:
         goal_state, _ = store.plugin_state("goal", "session", "session-effects-goal")
         assert goal_state is not None and goal_state["status"] == "complete", goal_state
         goal_events = [event.event_type for event in store.events("session-effects-goal")]
@@ -2860,7 +2860,7 @@ def test_native_tool_cancellation_is_scoped_to_its_owner(tmp_path: Path, case: s
         _configure(workspace, server, source, observer_source=observer_source, approval_mode="yolo")
         session_id = f"native-scope-{case}"
         _cli(workspace, state, "create-session", "--session-id", session_id)
-        with SqliteStore(state / "kernel-v1.sqlite3") as store:
+        with SqliteStore(state / "voidcode.db") as store:
             store.enqueue_continuation(
                 claim_id,
                 _GOV_PLUGIN_ID,
@@ -2886,7 +2886,7 @@ def test_native_tool_cancellation_is_scoped_to_its_owner(tmp_path: Path, case: s
             claims = drained["payload"]["continuations"]
             assert len(claims) == 1, claims
 
-    with SqliteStore(state / "kernel-v1.sqlite3") as store:
+    with SqliteStore(state / "voidcode.db") as store:
         row_status = store.continuation_status(claim_id)
         events = [event.event_type for event in store.events(session_id)]
 
@@ -2930,7 +2930,7 @@ def test_context_failure_finishes_the_run_failed_without_a_dispatch(tmp_path: Pa
         assert failed["error"], failed
         assert len(server.requests) == 0, server.requests
 
-        with SqliteStore(state / "kernel-v1.sqlite3") as store:
+        with SqliteStore(state / "voidcode.db") as store:
             assert store.session("context-fail").status == "failed"
             checkpoint = store.checkpoint("context-fail")
             assert checkpoint is not None and checkpoint.kind == "terminal"
@@ -2965,7 +2965,7 @@ def test_replayed_run_finished_fact_keeps_its_measured_elapsed(tmp_path: Path) -
         first = _cli(workspace, state, "run", "time this run", "--session-id", "timing-session")
         assert first["status"] == "completed", first
 
-        with SqliteStore(state / "kernel-v1.sqlite3") as store:
+        with SqliteStore(state / "voidcode.db") as store:
             events = store.events("timing-session")
             finished = next(event for event in events if event.event_type == "core.run_completed")
             original_ms = finished.payload["elapsed_ms"]
@@ -2977,7 +2977,7 @@ def test_replayed_run_finished_fact_keeps_its_measured_elapsed(tmp_path: Path) -
             assert store.has_observer_receipt("timing-session", finished.sequence, _GOV_PLUGIN_ID)
 
         # Durable partial delivery state, then real downtime before the replay.
-        with sqlite3.connect(state / "kernel-v1.sqlite3") as conn:
+        with sqlite3.connect(state / "voidcode.db") as conn:
             conn.execute(
                 "DELETE FROM observer_receipts WHERE session_id = ? AND event_sequence = ? AND owner = ?",
                 ("timing-session", finished.sequence, _GOV_PLUGIN_ID),
@@ -2986,7 +2986,7 @@ def test_replayed_run_finished_fact_keeps_its_measured_elapsed(tmp_path: Path) -
         time.sleep(0.05)
         _cli(workspace, state, "invoke", "timing-session", "gov_read_cmd")
 
-        with SqliteStore(state / "kernel-v1.sqlite3") as store:
+        with SqliteStore(state / "voidcode.db") as store:
             replayed, _ = store.plugin_state(_GOV_PLUGIN_ID, "session", "timing-session")
             assert replayed is not None
             assert replayed["run_finished_seen"] == 2, replayed
@@ -3041,7 +3041,7 @@ def test_observer_budget_is_settled_before_the_next_dispatch(tmp_path: Path) -> 
 
         _die_with_unsettled_dispatch(workspace, state, "settled-budget", server)
 
-        with SqliteStore(state / "kernel-v1.sqlite3") as store:
+        with SqliteStore(state / "voidcode.db") as store:
             events = store.events("settled-budget")
             assert [event.event_type for event in events].count("core.provider_intent") == 1
             assert not any(event.event_type == "core.model_turn" for event in events)
@@ -3060,7 +3060,7 @@ def test_observer_budget_is_settled_before_the_next_dispatch(tmp_path: Path) -> 
 
     # The cap was honored before any native dispatch: still exactly one bill.
     assert len(server.arrivals) == 1, server.arrivals
-    with SqliteStore(state / "kernel-v1.sqlite3") as store:
+    with SqliteStore(state / "voidcode.db") as store:
         budgets = store.session_budgets("settled-budget")
         assert [budget.owner for budget in budgets] == [_GOV_PLUGIN_ID], budgets
         assert budgets[0].max_total_tokens == 0, budgets
@@ -3104,7 +3104,7 @@ def test_unknown_elapsed_budget_stops_before_any_provider_dispatch(tmp_path: Pat
         assert "elapsed time unknown" in refused["error"], refused
 
     assert len(server.arrivals) == 1, server.arrivals
-    with SqliteStore(state / "kernel-v1.sqlite3") as store:
+    with SqliteStore(state / "voidcode.db") as store:
         events = store.events("unknown-elapsed")
         assert [event.event_type for event in events].count("core.provider_intent") == 1
         assert not any(event.event_type == "core.model_turn" for event in events)

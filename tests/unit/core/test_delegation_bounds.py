@@ -13,7 +13,8 @@ import pytest
 from tests.fixtures.reload_plugin import DELEGATE_TOOL, OVERLAY_COMMAND, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.core.bootstrap import open_core
-from voidcode.core.engine import CHILD_PROMPT_MAX_BYTES, Core
+from voidcode.core.engine import Core
+from voidcode.sdk.limits import CHILD_PROMPT_MAX_BYTES
 
 PLUGIN_ID = "reload-fixture"
 

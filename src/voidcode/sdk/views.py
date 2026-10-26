@@ -72,11 +72,6 @@ class FormViewData:
     initial_values: Mapping[str, object] = field(default_factory=dict)
     load_action: str | None = None
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.initial_values, Mapping):
-            raise ValueError("initial_values must be a mapping")
-        object.__setattr__(self, "initial_values", own_json_object(self.initial_values))
-
 
 @dataclass(frozen=True, slots=True)
 class DiffViewData:

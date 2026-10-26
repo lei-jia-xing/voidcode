@@ -27,8 +27,8 @@ not establish source review.
 | `files/read_formats.py` | Reviewed: bounded notebook/SQLite/PDF views, source snapshot semantics, pagination/recovery, signature-only image handling, read-only transactions and extractor cleanup |
 | `files/read_tool.py` | Partial: strict ingress, PDF recovery and typed/error-visible bounded directory materialization reviewed; archive member identity/byte bounds and clipped-line recovery reviewed; native file stream/hash/binary bounds and read cancellation ingress reviewed; tool documentation and transcript query ingress reviewed; native clipped-line recovery reviewed; remaining artifact/transcript projections, archive metadata/modes and result metadata pending; directory cancellation reviewed |
 | `files/write_tool.py` | Reviewed: hash/containment/symlink/atomic replace/cancellation; fail visibly on mode errors and always clean temporary files |
-| `workspace_queries.py` | Partial: newly moved shared contracts inspected; missing required terminal cursor and answer identity/hash checks need reconciliation |
-| `history_renderer.py` | Partial: moved shared projection out of core; event/UTF-8 cursor boundary reconciliation remains |
+| `workspace_queries.py` | Reviewed current workspace: strict requests, distinct outcomes, SHA-256/identity checks and required progressing cursors; move still belongs to active migration |
+| `history_renderer.py` | Removed from capabilities by active migration: SDK services now return rendered history from core; existing byte/projection fixes retained |
 | `frontmatter.py` | Reviewed source/consumers: safe YAML, duplicate/string-key validation, framing/body/bounds; shared parser tests |
 | `providers/__init__.py` | Reviewed: shared registration/facts/view wiring and ExitStack-owned provider teardown |
 | `providers/dispatch.py` | Reviewed: strict registration ingress, explicit auth conflict handling, typed materialization/selection, locked lazy cache/teardown and usage wrappers |
@@ -2960,3 +2960,54 @@ ambient Google key. Ruff/format and targeted ty passed; CodeGraph synchronized.
 No tests added. This proves local SDK/configuration contracts, not account-level
 cloud access or live model-catalog freshness; the models.dev snapshot remains
 the routing source and future protocols remain explicit unsupported cases.
+
+### Workspace query responses and service history pagination
+
+Reviewed current workspace query producers/consumers. Rule pages now require
+an explicit next_offset field, a lowercase SHA-256 hash, the requested rule
+identity, and a strictly advancing nonterminal offset. Missing providers, None
+resource answers, malformed responses and handler failures remain distinct.
+The current relocated capability implementation was changed without staging
+the independent SDK-to-capability migration.
+
+Current rendered-history services now retain truncated when a bounded event
+read fills its row limit, even if all rendered text fits. Invisible bookkeeping
+events advance the cursor so an all-invisible page cannot loop forever. Child
+history delegates to the same service path while retaining its self-rejection
+and descendant/workspace checks. These focused fixes remain part of the active
+service-migration worktree until its new API is committed.
+
+Validation: 23 existing workspace-query tests passed. Four malformed response
+probes failed and an explicit terminal page succeeded. Fifty-three existing
+query/history/transcript tests passed; a manual full invisible event page
+advanced to the following readable event. Targeted Ruff/ty passed. No tests added.
+
+Whole-project validation is running on the immutable 8703900 commit baseline.
+Frontend lint/typecheck and 16 frontend tests passed, as did full Python Ruff
+and source ty. The Python suite completed with 1,558 passed, 29 failed, one skipped and one
+collection error. This is not a passing gate.
+
+### Whole-gate findings: one view snapshot boundary, current test references
+
+The existing goal-form consumer test exposed a duplicate snapshot operation:
+FormViewData.__post_init__ froze initial_values into mappingproxy, then
+validate_view_data called asdict, which cannot deepcopy mappingproxy. Removed
+the intermediate freezing/check; Pydantic validates shape once and the final
+own_json_object still owns/freezes the complete admitted view. A manual nested
+mutation probe confirmed snapshot ownership and immutability are preserved.
+
+Updated existing governance fixtures from kernel-v1.sqlite3 to voidcode.db,
+pointed the existing delegation-bound test at the SDK's actual limit constant,
+and corrected one obsolete database-error substring expectation. No test cases
+added. The current workspace's existing TUI fixture also lacked the real
+terminal's required eof field; adding that field made both existing async
+stream-cancellation cases pass, without changing the TUI implementation.
+
+Verification: current view/contract/query subset passed 30 existing cases;
+current query/history subset passed 53; current TUI cancellation subset passed
+two. On the isolated baseline, rerunning prior failures after these reference
+and view fixes yielded 20 passed and six failed. The remaining failures are
+four admission/crash cases still exercising retired migration-fixture behavior
+and two old synchronous-TUI cases; the current workspace already uses an
+asynchronous TUI and its two cases pass. Admission fixture/state-version
+reconciliation and final current-tree gate remain outstanding.
