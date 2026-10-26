@@ -281,6 +281,7 @@ class AnthropicMessagesProvider:
     name: str = "anthropic"
     config: AnthropicProviderConfig | None = None
     transport: AnthropicTransport | None = None
+    auth_header: str | None = None
     # Headers this gateway requires on every request it serves. They reach the wire
     # through the SDK's ``extra_headers`` argument, which the transport passes to
     # ``messages.create`` from the payload, so the JSON body never carries them.
@@ -325,6 +326,7 @@ class AnthropicMessagesProvider:
                     # Anthropic-wire vendor's endpoint (or to the default base URL when
                     # the provider block is absent).
                     api_key=config.api_key if config else None,
+                    auth_header=self.auth_header,
                     version=config.version if config and config.version else _DEFAULT_ANTHROPIC_VERSION,
                     beta_headers=config.beta_headers if config else (),
                 )

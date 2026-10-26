@@ -101,6 +101,7 @@ class GoogleGenAIProvider:
     name: str = "google"
     config: GoogleProviderConfig | None = None
     client: Any | None = None
+    auth_header: str | None = None
     # Headers this gateway requires on every request it serves. They reach the
     # wire through the request config's ``http_options``: the SDK patches them
     # onto the client's own options per request, so they merge with (never
@@ -147,8 +148,17 @@ class GoogleGenAIProvider:
             credentials = oauth_credentials.Credentials(token=auth.access_token)
         elif auth is not None:
             api_key = auth.api_key
-        if credentials is None:
-            api_key = api_key or os.environ.get("GOOGLE_API_KEY")
+            if not api_key:
+                raise ProviderExecutionError(
+                    kind="not_configured",
+                    provider_name=provider_name,
+                    model_name=model_name,
+                    message="Configured API-key authentication requires an API key",
+                    retryable=False,
+                    fallback_allowed=True,
+                )
+        if credentials is None and auth is None:
+            api_key = os.environ.get("GOOGLE_API_KEY")
         kwargs: dict[str, Any] = {}
         if api_key:
             kwargs["api_key"] = api_key
@@ -165,6 +175,7 @@ class GoogleGenAIProvider:
         # endpoint root and the SDK appends only the resource path.
         kwargs["http_options"] = types.HttpOptions(
             base_url=base_url or None,
+            headers={self.auth_header: f"Bearer {api_key}"} if self.auth_header and api_key else None,
             api_version="" if base_url else None,
             timeout=max(1, int(self._timeout() * 1000)),
         )

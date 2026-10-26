@@ -48,9 +48,20 @@ class OpenCodeZenModelProvider:
 
     def _wire(self, route: RoutedWire) -> StreamableTurnProvider:
         endpoint = self.provider_config()
+        vendor_default = self.config is None or self.config.base_url is None
+        if vendor_default:
+            endpoint = replace(
+                endpoint,
+                base_url={
+                    "openai-chat-completions": _OPENCODE_ZEN.default_base_url,
+                    "anthropic-messages": "https://opencode.ai/inference/anthropic",
+                    "google-generative-ai": "https://opencode.ai/inference/google/v1beta",
+                }[route],
+            )
         if route == "anthropic-messages":
             return AnthropicMessagesProvider(
                 name=self.name,
+                auth_header="Authorization" if vendor_default else None,
                 config=AnthropicProviderConfig(
                     api_key=endpoint.api_key,
                     base_url=endpoint.base_url,
@@ -61,6 +72,7 @@ class OpenCodeZenModelProvider:
         if route == "google-generative-ai":
             return GoogleGenAIProvider(
                 name=self.name,
+                auth_header="Authorization" if vendor_default else None,
                 # Same gateway, same key: only the request shape differs, so an
                 # unset endpoint would send the Zen key to Google's own host.
                 config=GoogleProviderConfig(

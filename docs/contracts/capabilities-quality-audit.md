@@ -50,8 +50,8 @@ not establish source review.
 | `providers/native/model_routing.py` | Reviewed: routed alias/catalog fallback, typed unsupported wires, serialized cache creation and teardown |
 | `providers/native/naming.py` | Reviewed source/callers: provider normalization, preserved model casing, table-derived labels/reservations and unknown-id diagnostics; removed dead canonical-reference wrapper |
 | `providers/native/openai_native.py` | Reviewed: SDK ownership/auth, schema/history/alias projection, reasoning controls, usage and strict response/stream identity/terminal handling; documented protocol limits |
-| `providers/native/opencode.py` | Partial: configured gateway authority, wire vocabulary, aliases, timeout/key propagation and native URL normalization reviewed; external gateway protocol/header assumptions pending |
-| `providers/native/opencode_go.py` | Partial: nonnullable endpoint path and minimal feedback model set reviewed; configured host precedence reviewed and redundant route URL pins removed; external protocol quirks pending |
+| `providers/native/opencode.py` | Reviewed: current protocol-specific inference defaults, SDK-level Bearer auth, explicit host precedence, one-pass aliases and shared protocol clients |
+| `providers/native/opencode_go.py` | Reviewed: shared Console wire factory, Go catalog identity, explicit host precedence, protocol admission and minimal feedback convention |
 | `providers/native/openrouter.py` | Reviewed: small direct adapter using vendor endpoint normalization and native OpenAI transport |
 | `providers/native/provider_config.py` | Reviewed: table-owned wire defaults, endpoint/gateway defaults and Copilot token resolution; removed dead projections |
 | `providers/native/provider_table.json` | Reviewed with parser/consumer and packaged-table tests; source/provenance retained in JSON |
@@ -2929,3 +2929,34 @@ Validation: 90 existing file/artifact/format tests passed. Real ZIP/TAR probes
 stopped at the third enumeration check; a read-tool probe returned a confirmed
 cancellation failure. Ruff/format and targeted ty passed; CodeGraph synchronized.
 No tests added.
+
+### OpenCode protocol defaults and SDK authentication
+
+Reconciled wrappers with the [official inference API](https://opencode.ai/v2/docs/console/api/inference/):
+OpenAI defaults to /inference/openai/v1, Anthropic to /inference/anthropic
+(the SDK appends /v1/messages), and Google to /inference/google/v1beta.
+Explicitly configured base URLs remain authoritative and are not rewritten.
+Both table defaults now identify the common Console inference service, which
+reports Go allowance billing in the response. Unsupported Responses metadata
+still fails before constructing a client; no model-name route table was added.
+
+Go delegates its protocol factory to Zen's existing factory instead of copying
+SDK construction and headers. Its own catalog routing/name and the minimal
+synthetic feedback convention remain. Both wrappers accept the same three
+implemented protocol families. Native Anthropic and Google adapters can select
+client-level Bearer authentication for default gateway endpoints; secrets stay
+out of request payloads and provider trace input. This is protocol auth wiring,
+not another user configuration surface. Explicit custom hosts retain native
+protocol authentication behavior.
+
+Also fixed missing explicit Google API keys: they fail not_configured before
+the SDK can reuse an unrelated ambient GOOGLE_API_KEY. Unspecified native Google
+authentication retains its existing environment behavior.
+
+Validation: 123 existing auth/catalog/error/dispatch/lifecycle tests passed.
+Manual SDK probes verified all three default URL roots and Bearer client headers,
+custom-host preservation, shared Go routes and missing-key isolation with an
+ambient Google key. Ruff/format and targeted ty passed; CodeGraph synchronized.
+No tests added. This proves local SDK/configuration contracts, not account-level
+cloud access or live model-catalog freshness; the models.dev snapshot remains
+the routing source and future protocols remain explicit unsupported cases.

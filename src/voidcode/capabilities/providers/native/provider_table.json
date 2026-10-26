@@ -148,27 +148,27 @@
       "id": "opencode-zen",
       "label": "OpenCode Zen",
       "wire": "openai-completions",
-      "default_base_url": "https://opencode.ai/zen/v1",
+      "default_base_url": "https://opencode.ai/inference/openai/v1",
       "env_vars": [
         "OPENCODE_API_KEY"
       ],
       "models_dev_keys": [
         "opencode"
       ],
-      "notes": "renamed from opencode; per-model routing (claude-*/qwen*-plus -> anthropic-messages, gemini-* -> google-generative-ai) is handled by api_routes (W2), default wire shown here."
+      "notes": "Protocol-specific defaults follow https://opencode.ai/v2/docs/console/api/inference/; the wrapper selects the protocol from catalog metadata."
     },
     {
       "id": "opencode-go",
       "label": "OpenCode Go",
       "wire": "openai-completions",
-      "default_base_url": "https://opencode.ai/zen/go",
+      "default_base_url": "https://opencode.ai/inference/openai/v1",
       "env_vars": [
         "OPENCODE_API_KEY"
       ],
       "models_dev_keys": [
         "opencode-go"
       ],
-      "notes": "declared base .../zen/go is normalized to .../zen/go/v1 at the wire. pi flags minimax-m3 as openai-completions (W2 fix)."
+      "notes": "Shares the documented Console inference protocols; Go allowance billing is reported by the service. https://opencode.ai/v2/docs/console/api/inference/"
     },
     {
       "id": "github-copilot",
