@@ -60,7 +60,7 @@ def render_event_block(event: HistoryEvent) -> str | None:
         if event_type == "core.model_turn":
             wire = _as_mapping(payload.get("result"))
             if wire is None:
-                return f"{header}\n{_json(payload)}"
+                return f"{header}\n(missing provider result)"
             turn = decode_provider_result(wire)
             lines = [f"## assistant [{event.sequence}]", turn.output or "(no text)"]
             for call in turn.tool_calls:
@@ -92,6 +92,8 @@ def render_event_block(event: HistoryEvent) -> str | None:
         if event_type == "core.child_finished":
             return f"## child finished [{event.sequence}]\n{_json(payload)}"
     except TypeError, ValueError, KeyError:
+        if event_type == "core.model_turn":
+            return f"{header}\n(malformed provider result)"
         return f"{header}\n{_json(payload)}"
     if event_type.startswith("plugin."):
         return f"## event {event_type} from {event.source} [{event.sequence}]\n{_json(payload)}"

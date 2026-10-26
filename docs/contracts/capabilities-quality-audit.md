@@ -2893,3 +2893,21 @@ manual cut checks and fourteen multilingual/emoji page sizes reconstructed a
 complete event block exactly, stayed within each >=4-byte budget, and advanced
 every cursor. Ruff/format and targeted ty passed; CodeGraph synchronized. The
 independent uncommitted event rendering edit is still preserved and excluded.
+
+### Malformed model history: preserve projection exclusions
+
+Normal model-turn rendering excludes provider reasoning and response metadata,
+but missing/undecodable results previously fell back to the entire event JSON.
+Those paths now render explicit missing/malformed provider-result messages,
+without dumping the raw payload. Other event rendering is unchanged.
+
+The active workspace migration now returns rendered history through SDK
+services and has relocated the renderer back into core; the same focused fix
+was applied there without reverting the service boundary. The isolated commit
+baseline retains the shared renderer until that independent migration is
+committed. Its separate tool-call display change remains preserved.
+
+Validation: 69 existing renderer/file tests passed on both the isolated baseline
+and the current service-based workspace; two missing/malformed payload probes
+with hidden markers rendered neither reasoning nor metadata. Targeted Ruff/ty
+passed; CodeGraph synchronized. No tests added.
