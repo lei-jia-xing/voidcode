@@ -14,6 +14,7 @@ class EventType(StrEnum):
     TOOL_INTERRUPTED = "core.tool_interrupted"
     TOOL_DEFERRED = "core.tool_deferred"
     TOOL_PROGRESS = "core.tool_progress"
+    PROVIDER_PROGRESS = "core.provider_progress"
     RUN_RESUMED = "core.run_resumed"
     RUN_COMPLETED = "core.run_completed"
     RUN_FAILED = "core.run_failed"

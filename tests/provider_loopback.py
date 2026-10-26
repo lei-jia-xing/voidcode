@@ -43,18 +43,33 @@ class _OpenAILoopbackHandler(BaseHTTPRequestHandler):
 def _stream_response_body(response: dict[str, object]) -> bytes:
     choice = cast(dict[str, object], cast(list[object], response["choices"])[0])
     message = cast(dict[str, object], choice["message"])
-    delta: dict[str, object] = {"role": "assistant"}
-    for key in ("content", "reasoning_content", "reasoning", "tool_calls"):
-        if key in message:
-            delta[key] = message[key]
-    chunks = (
+    head: dict[str, object] = {"role": "assistant"}
+    for key in ("content", "reasoning_content", "reasoning"):
+        if key in message and message[key] is not None:
+            head[key] = message[key]
+    raw_calls = message.get("tool_calls")
+    calls = [cast(dict[str, object], call) for call in raw_calls] if isinstance(raw_calls, list) else []
+    # Faithful wire shape: one indexed tool-call entry per delta chunk, never
+    # the whole message list in one delta (the wire never sends that).
+    call_deltas = [{"tool_calls": [{**call, "index": index}]} for index, call in enumerate(calls)]
+    chunks = [
         {
             "id": response["id"],
             "object": "chat.completion.chunk",
             "created": response["created"],
             "model": response["model"],
-            "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+            "choices": [{"index": 0, "delta": head, "finish_reason": None}],
         },
+        *(
+            {
+                "id": response["id"],
+                "object": "chat.completion.chunk",
+                "created": response["created"],
+                "model": response["model"],
+                "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+            }
+            for delta in call_deltas
+        ),
         {
             "id": response["id"],
             "object": "chat.completion.chunk",
@@ -68,7 +83,7 @@ def _stream_response_body(response: dict[str, object]) -> bytes:
                 }
             ],
         },
-    )
+    ]
     frames = (f"data: {json.dumps(chunk, separators=(',', ':'))}\n\n".encode() for chunk in chunks)
     return b"".join((*frames, b"data: [DONE]\n\n"))
 

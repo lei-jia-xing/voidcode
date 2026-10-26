@@ -38,7 +38,7 @@ from ..sdk.commands import (
 from ..sdk.hooks import RequestWindow, StopCause, WindowSegment
 from ..sdk.invocation import ToolContext
 from ..sdk.json_values import json_wire_object
-from ..sdk.provider import ProviderExecutionError, ProviderMessage, ProviderTurnRequest
+from ..sdk.provider import ProviderExecutionError, ProviderMessage, ProviderTurnRequest, ProviderTurnResult
 from ..sdk.services import (
     ChildOutcome,
     ChildSendReceipt,
@@ -152,6 +152,7 @@ _PARKED_INTERVENING_TYPES = frozenset(
         EventType.MODEL_QUERY,
         EventType.TOOL_DEFERRED,
         EventType.TOOL_PROGRESS,
+        EventType.PROVIDER_PROGRESS,
         EventType.OBSERVER_ERROR,
         EventType.WINDOW_PROJECTED,
         EventType.PROVIDER_INTERRUPTED,
@@ -321,6 +322,86 @@ class _Snapshot:
 def _is_parked_intervening(event: StoredEvent) -> bool:
     """Whether an event may legitimately appear after a parked checkpoint."""
     return event.event_type in _PARKED_INTERVENING_TYPES or event.event_type.startswith("plugin.")
+
+
+def _tool_calls_from_content(content: str, *, provider_name: str, model_name: str) -> tuple[ToolCall, ...]:
+    """Decode one whole-message tool content event into turn tool calls."""
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ProviderExecutionError(
+            kind="provider_error",
+            provider_name=provider_name,
+            model_name=model_name,
+            message="provider stream tool content was not JSON",
+            retryable=False,
+        ) from exc
+    if isinstance(payload, Mapping) and isinstance(payload.get("tool_calls"), list):
+        items = payload["tool_calls"]
+    elif isinstance(payload, Mapping):
+        items = [payload]
+    else:
+        raise ProviderExecutionError(
+            kind="provider_error",
+            provider_name=provider_name,
+            model_name=model_name,
+            message="provider stream tool content was not an object",
+            retryable=False,
+        )
+    calls: list[ToolCall] = []
+    for item in items:
+        if not isinstance(item, Mapping) or not isinstance(item.get("tool_name"), str) or not item["tool_name"]:
+            raise ProviderExecutionError(
+                kind="provider_error",
+                provider_name=provider_name,
+                model_name=model_name,
+                message="provider stream tool content was malformed",
+                retryable=False,
+            )
+        arguments = item.get("arguments", {})
+        if not isinstance(arguments, Mapping):
+            raise ProviderExecutionError(
+                kind="provider_error",
+                provider_name=provider_name,
+                model_name=model_name,
+                message="provider stream tool content arguments were not an object",
+                retryable=False,
+            )
+        call_id = item.get("tool_call_id")
+        if call_id is not None and (not isinstance(call_id, str) or not call_id):
+            raise ProviderExecutionError(
+                kind="provider_error",
+                provider_name=provider_name,
+                model_name=model_name,
+                message="provider stream tool content id was malformed",
+                retryable=False,
+            )
+        calls.append(ToolCall(tool_name=item["tool_name"], arguments=dict(arguments), tool_call_id=call_id))
+    return tuple(calls)
+
+
+def _tool_call_from_entry(entry: Mapping[str, object]) -> ToolCall:
+    """One aggregated lifecycle entry into its turn tool call; malformed entries fail the turn."""
+    name = entry.get("tool_name")
+    arguments = entry.get("arguments")
+    call_id = entry.get("tool_call_id")
+    if not isinstance(name, str) or not name or not isinstance(arguments, Mapping):
+        raise ProviderExecutionError(
+            kind="provider_error",
+            provider_name="",
+            model_name="",
+            message="provider stream ended with an incomplete tool call",
+            retryable=False,
+        )
+    if call_id is not None and (not isinstance(call_id, str) or not call_id):
+        raise ProviderExecutionError(
+            kind="provider_error",
+            provider_name="",
+            model_name="",
+            message="provider stream tool call id was malformed",
+            retryable=False,
+        )
+    return ToolCall(tool_name=name, arguments=dict(arguments), tool_call_id=call_id)
 
 
 class _Cursor(BaseModel):
@@ -2227,6 +2308,145 @@ class Core:
             ),
         )
 
+    def _report_provider_progress(
+        self,
+        session_id: str,
+        *,
+        run_id: str,
+        dispatch_id: str,
+        dispatch_sequence: int,
+        channel: str,
+        text_delta: str | None,
+    ) -> None:
+        """Observational stream fragment on the existing control-event path; never raises."""
+        if text_delta is None or not text_delta:
+            return
+        payload = {
+            "run_id": run_id,
+            "dispatch_id": dispatch_id,
+            "dispatch_sequence": dispatch_sequence,
+            "channel": channel,
+            "text_delta": text_delta,
+        }
+        if len(canonical_json(payload).encode("utf-8")) > 16 * 1024:
+            return
+        self._commit_control_event(
+            session_id,
+            EventDraft(EventType.PROVIDER_PROGRESS, "provider", "model", payload),
+        )
+
+    def _stream_provider_turn(
+        self,
+        snapshot: _Snapshot,
+        execution: _Execution,
+        request: ProviderTurnRequest,
+        *,
+        provider_name: str,
+        dispatch_id: str,
+        dispatch_sequence: int,
+    ) -> ProviderTurnResult:
+        """Aggregate one provider stream into propose_turn's turn shape, with progress.
+
+        Single-attempt by contract: once bytes flowed there is no safe resend,
+        so this path never retries — the attempt is attempt 1 of the turn.
+        """
+        numbered = replace(request, attempt=1)
+        text_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        calls: dict[int, dict[str, object]] = {}
+        contents: list[str] = []
+        metadata: dict[str, object] = {}
+        usage = None
+        done_reason = "unknown"
+        finish_reason_reported = False
+        saw_done = False
+        session_id = execution.session.session_id
+        for event in snapshot.plugin_runtime.stream_turn(numbered, provider=provider_name):
+            if event.kind == "delta" and event.text:
+                if event.channel == "reasoning":
+                    reasoning_parts.append(event.text)
+                    self._report_provider_progress(
+                        session_id,
+                        run_id=execution.run_id,
+                        dispatch_id=dispatch_id,
+                        dispatch_sequence=dispatch_sequence,
+                        channel="reasoning",
+                        text_delta=event.text,
+                    )
+                else:
+                    text_parts.append(event.text)
+                    self._report_provider_progress(
+                        session_id,
+                        run_id=execution.run_id,
+                        dispatch_id=dispatch_id,
+                        dispatch_sequence=dispatch_sequence,
+                        channel="text",
+                        text_delta=event.text,
+                    )
+            elif event.kind == "tool_call_start":
+                ordinal = event.tool_call_ordinal if event.tool_call_ordinal is not None else len(calls)
+                calls[ordinal] = {
+                    "tool_call_id": event.tool_call_id,
+                    "tool_name": event.tool_name,
+                    "arguments": {},
+                }
+            elif event.kind == "tool_call_end":
+                ordinal = event.tool_call_ordinal if event.tool_call_ordinal is not None else len(calls)
+                entry = calls.setdefault(ordinal, {})
+                if event.tool_call_id is not None:
+                    entry["tool_call_id"] = event.tool_call_id
+                if event.tool_name is not None:
+                    entry["tool_name"] = event.tool_name
+                entry["arguments"] = dict(event.parsed_arguments or {})
+            elif event.kind == "content" and event.channel == "tool" and event.text:
+                contents.append(event.text)
+            elif event.kind == "error":
+                raise ProviderExecutionError(
+                    kind=event.error_kind or "provider_error",
+                    provider_name=provider_name,
+                    model_name=request.model_name or "unknown",
+                    message=event.error or "provider stream failed",
+                    retryable=False,
+                )
+            elif event.kind == "done":
+                saw_done = True
+                if event.done_reason is not None:
+                    done_reason = event.done_reason
+                if event.usage is not None:
+                    usage = event.usage
+                if event.metadata:
+                    metadata.update(event.metadata)
+                    finish_reason_reported = bool(event.metadata.get("finish_reason_reported", finish_reason_reported))
+        if not saw_done:
+            raise ProviderExecutionError(
+                kind="provider_error",
+                provider_name=provider_name,
+                model_name=request.model_name or "unknown",
+                message="provider stream ended without a terminal event",
+                retryable=False,
+            )
+        try:
+            tool_calls = tuple(_tool_call_from_entry(entry) for _, entry in sorted(calls.items()))
+        except ProviderExecutionError as exc:
+            raise ProviderExecutionError(
+                kind=exc.kind,
+                provider_name=provider_name,
+                model_name=request.model_name or "unknown",
+                message=exc.message,
+                retryable=False,
+            ) from exc
+        for content in contents:
+            tool_calls += _tool_calls_from_content(content, provider_name=provider_name, model_name=request.model_name or "unknown")
+        return ProviderTurnResult(
+            tool_calls=tool_calls,
+            output="".join(text_parts),
+            reasoning="".join(reasoning_parts) or None,
+            usage=usage,
+            done_reason=cast(Any, done_reason),
+            finish_reason_reported=finish_reason_reported,
+            metadata=metadata or None,
+        )
+
     def _deactivated_owners(self, snapshot: _Snapshot, admission: Admission) -> frozenset[str]:
         """Owners loaded before that the candidate does not admit: disabled, removed, or missing."""
         return frozenset(snapshot.plugin_runtime.plugin_ids) - admission.plugin_ids
@@ -3271,7 +3491,17 @@ class Core:
 
                     t0 = time.monotonic()
                     try:
-                        turn = snapshot.plugin_runtime.propose_turn(request, provider=provider_name)
+                        if snapshot.plugin_runtime.provider_supports_streaming(provider_name):
+                            turn = self._stream_provider_turn(
+                                snapshot,
+                                execution,
+                                request,
+                                provider_name=provider_name,
+                                dispatch_id=dispatch_id,
+                                dispatch_sequence=intent_seq,
+                            )
+                        else:
+                            turn = snapshot.plugin_runtime.propose_turn(request, provider=provider_name)
                         elapsed_ms = max(0, int((time.monotonic() - t0) * 1000))
                     except ProviderExecutionError as exc:
                         elapsed_ms = max(0, int((time.monotonic() - t0) * 1000))

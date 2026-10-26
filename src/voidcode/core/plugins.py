@@ -25,7 +25,7 @@ import json
 import sys
 import tempfile
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -58,7 +58,14 @@ from voidcode.sdk.hooks import (
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.plugin import Plugin, PluginQueryCaller, StateSchema
-from voidcode.sdk.provider import ProviderExecutionError, ProviderTokenUsage, ProviderTurnRequest, ProviderTurnResult
+from voidcode.sdk.provider import (
+    ProviderExecutionError,
+    ProviderStreamEvent,
+    ProviderTokenUsage,
+    ProviderTurnRequest,
+    ProviderTurnResult,
+    StreamableTurnProvider,
+)
 from voidcode.sdk.services import (
     EventView,
     PluginBudget,
@@ -443,6 +450,11 @@ class PluginRuntime:
     @property
     def providers(self) -> tuple[str, ...]:
         return self._provider_names
+
+    def provider_supports_streaming(self, provider: str) -> bool:
+        """Whether the registered provider answers stream_turn; unknown names never do."""
+        entry = self._providers.get(provider)
+        return entry is not None and isinstance(entry[0], StreamableTurnProvider)
 
     @property
     def commands(self) -> tuple[CommandDescriptor, ...]:
@@ -882,15 +894,7 @@ class PluginRuntime:
 
     def propose_turn(self, request: ProviderTurnRequest, *, provider: str) -> ProviderTurnResult:
         """Request a model turn, retrying adapter-approved transient failures in this runtime."""
-        prov_entry = self._providers.get(provider)
-        if prov_entry is None:
-            raise ProviderExecutionError(
-                kind="not_configured",
-                provider_name=provider,
-                model_name=request.model_name or "unknown",
-                message=f"Provider '{provider}' not configured",
-            )
-        provider_instance, _provider_id = prov_entry
+        provider_instance = self._provider_instance(request, provider=provider)
         model_name = request.model_name or "unknown"
         for attempt in retrying_turn(request.abort_signal, provider=provider, model=model_name):
             with attempt:
@@ -907,6 +911,46 @@ class PluginRuntime:
                         message=f"Provider {provider} turn failed: {exc}",
                     ) from exc
         raise AssertionError("unreachable: tenacity reraise either returns or raises")
+
+    def stream_turn(self, request: ProviderTurnRequest, *, provider: str) -> Iterator[ProviderStreamEvent]:
+        """Stream one model turn as adapter events, without runtime retry.
+
+        A stream is single-attempt by contract: once bytes flowed there is no
+        safe resend, and a pre-first-byte failure is the caller's to re-drive
+        via propose_turn, never an implicit second stream.
+        """
+        provider_instance = self._provider_instance(request, provider=provider)
+        if not isinstance(provider_instance, StreamableTurnProvider):
+            raise ProviderExecutionError(
+                kind="unsupported_feature",
+                provider_name=provider,
+                model_name=request.model_name or "unknown",
+                message=f"Provider '{provider}' does not support streaming",
+                retryable=False,
+            )
+        try:
+            yield from provider_instance.stream_turn(request)
+        except ProviderExecutionError:
+            raise
+        except Exception as exc:
+            raise ProviderExecutionError(
+                kind="provider_error",
+                provider_name=provider,
+                model_name=request.model_name or "unknown",
+                message=f"Provider {provider} stream failed: {exc}",
+            ) from exc
+
+    def _provider_instance(self, request: ProviderTurnRequest, *, provider: str) -> Any:
+        prov_entry = self._providers.get(provider)
+        if prov_entry is None:
+            raise ProviderExecutionError(
+                kind="not_configured",
+                provider_name=provider,
+                model_name=request.model_name or "unknown",
+                message=f"Provider '{provider}' not configured",
+            )
+        provider_instance, _provider_id = prov_entry
+        return provider_instance
 
     def invoke_command(
         self,
