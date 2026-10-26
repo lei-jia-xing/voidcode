@@ -336,6 +336,10 @@ class _StubTerminal:
 
     width = 100
     eof = False
+    color_system = None
+
+    def query_default_background_rgb(self) -> None:
+        return None
 
     def __init__(self) -> None:
         self.committed: list[str] = []
@@ -942,3 +946,56 @@ def test_run_failure_error_is_rendered_once_from_the_response_path() -> None:
     )
     app._drain_events()
     assert sum("boom" in row for row in terminal.committed) == 1, terminal.committed
+
+
+def test_appearance_mode_picks_dark_for_black_and_light_for_white() -> None:
+    from voidcode.tui.theme import appearance_mode
+
+    assert appearance_mode((0, 0, 0)) == "dark"
+    assert appearance_mode(None) == "dark"
+    assert appearance_mode((255, 255, 255)) == "light"
+
+
+def test_theme_command_switches_palette_and_reports_unknown() -> None:
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    terminal = _StubTerminal()
+    app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
+    assert app.theme.name == "voidcode-dark"
+
+    app._run_local_control("theme", "voidcode-light")
+    assert app.theme.name == "voidcode-light"
+    assert app.status_line == "Theme: voidcode-light"
+
+    app._run_local_control("theme", "no-such-theme")
+    assert app.theme.name == "voidcode-light"
+    assert any("Unknown theme" in row and "no-such-theme" in row for row in terminal.committed)
+
+
+def test_theme_command_lists_available_names() -> None:
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    terminal = _StubTerminal()
+    app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
+    app._run_local_control("theme", "")
+    assert any("voidcode-dark" in row for row in terminal.committed), terminal.committed
+
+
+def test_rows_carry_no_hardcoded_colors() -> None:
+    import re
+
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    terminal = _StubTerminal()
+    app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
+    app._stream_ready = True
+    rows: list[str] = []
+    app._handle_single_event(_event(1, "core.user_message", content="hi"), rows)
+    app._handle_single_event(_event(2, "core.model_turn", result={"output": "hello"}), rows)
+    app._handle_single_event(_event(3, "core.run_failed", error="boom"), rows)
+    # color_system=None strips every SGR code: a hardcoded escape would survive the strip.
+    assert not any("\x1b" in row for row in rows), rows
+    plain = [re.sub(r"\x1b\[[0-9;]*m", "", row) for row in rows]
+    assert any("User>" in row for row in plain)
+    assert any("Assistant>" in row for row in plain)
+    assert any("Run failed" in row for row in plain)

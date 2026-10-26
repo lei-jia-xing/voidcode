@@ -88,6 +88,7 @@ __all__ = [
     "SPINNER_FRAMES",
     "THEME_NAMES",
     "SYMBOL_PRESETS",
+    "appearance_mode",
     "palette_names",
     "resolve_theme",
 ]
@@ -927,6 +928,18 @@ def palette_names(mode: Literal["dark", "light"]) -> tuple[str, ...]:
     if mode not in ("dark", "light"):
         raise ValueError("palette mode must be dark or light")
     return tuple(sorted(name for name, palette_mode in _THEME_MODES.items() if palette_mode == mode))
+
+
+def appearance_mode(rgb: tuple[int, int, int] | None) -> Literal["dark", "light"]:
+    """Pick ``dark``/``light`` from an OSC 11 background probe (``None`` = dark).
+
+    Relative-luminance threshold: a background lighter than mid-grey reads light.
+    """
+    if rgb is None:
+        return "dark"
+    red, green, blue = (channel / 255.0 for channel in rgb)
+    luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+    return "light" if luminance > 0.5 else "dark"
 
 
 def resolve_theme(

@@ -18,7 +18,8 @@ from .client import CoreClientError, CoreHttpClient, StreamCancellation
 from .composer import Composer, ComposerAction
 from .keys import Key, KeyDecoder
 from .region import TuiFrame
-from .term import Terminal, escape_terminal_controls, visible_width
+from .term import Terminal, escape_terminal_controls
+from .theme import Theme, appearance_mode, palette_names, resolve_theme
 from .views import (
     InteractiveChoices,
     InteractiveConfirmation,
@@ -55,12 +56,12 @@ def json_safe(value: object) -> object:
         return str(value)
 
 
-def _prefixed_rows(prefix: str, text: str, *, color: str) -> list[str]:
+def _prefixed_rows(prefix: str, text: str, theme: Theme, *, token: str) -> list[str]:
     """Prefix sanitized multiline text, one row per explicit line.
 
     Terminal owns physical width wrapping, so this helper never clips content.
     """
-    label = f"\x1b[1;{color}m{prefix}\x1b[0m "
+    label = f"{theme.style(token, bold=True).render(prefix, color_system=theme.color_system)} "
     clean = escape_terminal_controls(text, preserve_newlines=True, preserve_tabs=True)
     rows: list[str] = []
     for index, line in enumerate(clean.split("\n")):
@@ -104,7 +105,7 @@ def _command_result_text(result: Mapping[str, Any]) -> str:
     return ""
 
 
-def _command_result_rows(name: str, result: Mapping[str, Any]) -> list[str]:
+def _command_result_rows(name: str, result: Mapping[str, Any], theme: Theme) -> list[str]:
     """One visible command-result block shared by direct receipts and events.
 
     A direct core read receipt and a durable plugin ``core.command_completed``
@@ -116,22 +117,17 @@ def _command_result_rows(name: str, result: Mapping[str, Any]) -> list[str]:
     status = str(result.get("status", ""))
     text = _command_result_text(result)
     if status == "error":
-        return _prefixed_rows(f"[error] Command /{label} failed:", text, color="31")
+        return _prefixed_rows(f"[error] Command /{label} failed:", text, theme, token="error")
     if status == "pending_confirmation":
-        return [f"\x1b[33m[wait] Command /{label} awaits confirmation\x1b[0m"]
+        return [theme.fg("warning", f"[wait] Command /{label} awaits confirmation")]
     if status == "ok":
-        return _prefixed_rows(f"[ok] Command /{label}:", text, color="32")
-    return _prefixed_rows(f"Command /{label} [{status or 'unknown'}]:", text, color="33")
+        return _prefixed_rows(f"[ok] Command /{label}:", text, theme, token="success")
+    return _prefixed_rows(f"Command /{label} [{status or 'unknown'}]:", text, theme, token="warning")
 
 
-def _notice_row(text: object, tone: str) -> str:
-    color = {"ok": "32", "warning": "33", "error": "31"}.get(tone, "36")
-    return f"\x1b[{color}m[{_safe(text)}]\x1b[0m"
-
-
-def _fit(text: str, width: int) -> str:
-    """Trim a row to the current terminal width by characters once its visible width exceeds it."""
-    return text if visible_width(text) <= width else text[:width]
+def _notice_row(text: object, tone: str, theme: Theme) -> str:
+    token = {"ok": "success", "warning": "warning", "error": "error"}.get(tone, "accent")
+    return theme.fg(token, f"[{_safe(text)}]")
 
 
 class CoreTuiApp:
@@ -149,9 +145,9 @@ class CoreTuiApp:
         self.owns_terminal = terminal is None
         self.session_id = session_id or ""
         self.running = False
-        from .theme import resolve_theme
-
-        self.composer = Composer(theme=resolve_theme(), width=self.terminal.width, placeholder="Type a message or /command...")
+        mode = appearance_mode(self.terminal.query_default_background_rgb())
+        self.theme = resolve_theme(mode=mode, color_system=self.terminal.color_system)
+        self.composer = Composer(theme=self.theme, width=self.terminal.width, placeholder="Type a message or /command...")
         self.key_decoder = KeyDecoder()
         self._escape_flush_at = 0.0
         self.event_queue: queue.Queue[dict[str, Any]] = queue.Queue()
@@ -332,7 +328,7 @@ class CoreTuiApp:
             elif kind == "event" and "event" in frame:
                 self._handle_single_event(frame["event"], rows_to_commit)
             elif kind == "notice":
-                rows_to_commit.append(_notice_row(frame.get("text"), str(frame.get("tone", "info"))))
+                rows_to_commit.append(_notice_row(frame.get("text"), str(frame.get("tone", "info")), self.theme))
             elif kind == "command_done":
                 raw_name = str(frame.get("name") or "command")
                 status = str(frame.get("status", ""))
@@ -345,7 +341,7 @@ class CoreTuiApp:
                     self.status_line = f"/{_safe(raw_name)}: {status}"
                 receipt = frame.get("result")
                 if isinstance(receipt, Mapping):
-                    rows_to_commit.extend(_command_result_rows(raw_name, receipt))
+                    rows_to_commit.extend(_command_result_rows(raw_name, receipt, self.theme))
             elif kind == "approval":
                 approval = frame.get("approval")
                 if isinstance(approval, dict):
@@ -374,7 +370,7 @@ class CoreTuiApp:
                 if status in ("failed", "interrupted"):
                     detail = frame.get("error")
                     suffix = f": {_safe(detail)}" if detail else ""
-                    rows_to_commit.append(f"\x1b[33m[Run {status}]{suffix}\x1b[0m")
+                    rows_to_commit.append(self.theme.fg("warning", f"[Run {status}]{suffix}"))
                 self.status_line = f"Run {status}" if status else self.status_line
             elif kind == "confirmation":
                 confirmation = frame.get("confirmation")
@@ -470,7 +466,7 @@ class CoreTuiApp:
                     if isinstance(status, str) and status:
                         self.status_line = f"Run {status}" if status in ("running", "waiting") else self.status_line
                     if isinstance(failures, list) and failures:
-                        rows_to_commit.append(f"\x1b[33m[Reconnect refresh incomplete: {', '.join(str(f) for f in failures)}]\x1b[0m")
+                        rows_to_commit.append(self.theme.fg("warning", f"[Reconnect refresh incomplete: {', '.join(str(f) for f in failures)}]"))
             elif kind == "server_restart":
                 # Watermark only (contract §8.2/§6): the worker already broke
                 # its iterator and is reconnecting from our applied cursor.
@@ -481,7 +477,7 @@ class CoreTuiApp:
                 # blocking request ever runs on this UI thread.
                 self.status_line = "Core restarting -- reconnecting..."
             elif kind == "error":
-                rows_to_commit.append(f"\x1b[31m[Core stream error]\x1b[0m {_safe(frame.get('error'))}")
+                rows_to_commit.append(f"{self.theme.fg('error', '[Core stream error]')} {_safe(frame.get('error'))}")
 
         if rows_to_commit:
             self.terminal.commit_rows(rows_to_commit)
@@ -502,16 +498,17 @@ class CoreTuiApp:
             # The durable event is the single source of the prompt row: the
             # composer never commits it optimistically, and duplicates are
             # excluded by the per-session cursor above (not by a first-only flag).
-            rows.append(f"\x1b[1;36mUser>\x1b[0m {_safe(payload.get('content'))}")
+            user = self.theme.style("accent", bold=True).render("User>", color_system=self.theme.color_system)
+            rows.append(f"{user} {_safe(payload.get('content'))}")
         elif etype == EventType.MODEL_TURN:
             raw_turn = payload.get("result")
             turn: dict[str, Any] = raw_turn if isinstance(raw_turn, dict) else {}
             output = turn.get("output")
             if isinstance(output, str) and output:
-                rows.extend(_prefixed_rows("Assistant>", output, color="32"))
+                rows.extend(_prefixed_rows("Assistant>", output, self.theme, token="success"))
             reasoning = turn.get("reasoning")
             if isinstance(reasoning, str) and reasoning:
-                rows.extend(_prefixed_rows("Reasoning>", reasoning, color="2;37"))
+                rows.extend(_prefixed_rows("Reasoning>", reasoning, self.theme, token="thinkingText"))
             tool_calls = turn.get("tool_calls")
             if isinstance(tool_calls, list):
                 for call in tool_calls:
@@ -519,7 +516,7 @@ class CoreTuiApp:
                         continue
                     name = _safe(call.get("tool_name") or "tool")
                     arguments = json.dumps(json_safe(call.get("arguments")), ensure_ascii=False, allow_nan=False)
-                    rows.append(f"\x1b[33m> Tool call {name}\x1b[0m {_safe(arguments)}")
+                    rows.append(f"{self.theme.fg('warning', f'> Tool call {name}')} {_safe(arguments)}")
         elif etype in (EventType.TOOL_COMPLETED, EventType.TOOL_INTERRUPTED):
             raw_call = payload.get("call")
             call: dict[str, Any] = raw_call if isinstance(raw_call, dict) else {}
@@ -530,14 +527,14 @@ class CoreTuiApp:
             body = _tool_output_text(result)
             if failed:
                 error = _safe(result.get("error") or body or "interrupted")
-                rows.append(f"\x1b[31m[error] Tool {name} failed:\x1b[0m {error}")
+                rows.append(f"{self.theme.fg('error', f'[error] Tool {name} failed:')} {error}")
             else:
-                rows.append(f"\x1b[32m[ok] Tool {name}:\x1b[0m {body}")
+                rows.append(f"{self.theme.fg('success', f'[ok] Tool {name}:')} {body}")
         elif etype == EventType.COMMAND_COMPLETED:
             raw_command_result = payload.get("result")
             command_result: dict[str, Any] = raw_command_result if isinstance(raw_command_result, dict) else {}
             raw_name = str(payload.get("name") or "command")
-            rows.extend(_command_result_rows(raw_name, command_result))
+            rows.extend(_command_result_rows(raw_name, command_result, self.theme))
         elif etype == EventType.ACTIVATION_COMMITTED:
             # The displayed generation changed: the command catalog is
             # refetched and anything captured under the previous revision is
@@ -556,7 +553,7 @@ class CoreTuiApp:
             self._load_catalog()
             self._present_queued_confirmation()
             suffix = " (stale action discarded)" if dropped else ""
-            rows.append(f"\x1b[33m[Capabilities changed: command catalog refreshed{suffix}]\x1b[0m")
+            rows.append(self.theme.fg("warning", f"[Capabilities changed: command catalog refreshed{suffix}]"))
         elif etype == EventType.CONFIRMATION_REQUESTED:
             # Durable pending fact: restores the modal after a reload, bound to
             # the revision that created the request (never the current one).
@@ -589,7 +586,7 @@ class CoreTuiApp:
                 self.status_line = f"Tool approval required: {self.pending_approval['tool_name']}"
         elif etype == EventType.APPROVAL_DECIDED:
             decision = _safe(payload.get("decision"))
-            rows.append(f"\x1b[33m[Approval {decision}]\x1b[0m")
+            rows.append(self.theme.fg("warning", f"[Approval {decision}]"))
             # Durable reduction: the decided request closes whether the gate is
             # local-pending or was decided by a remote client — but only the
             # MATCHING id, so a newer parked request is never dropped.
@@ -599,17 +596,17 @@ class CoreTuiApp:
                 self.pending_approval = None
                 self._present_queued_confirmation()
         elif etype == EventType.RUN_INTERRUPTED:
-            rows.append(f"\x1b[33m[Run interrupted: {_safe(payload.get('stop_cause'))}]\x1b[0m")
+            rows.append(self.theme.fg("warning", f"[Run interrupted: {_safe(payload.get('stop_cause'))}]"))
             # An authentic terminal fact means nothing is parked any more; a
             # stale gate must never outlive the run that asked for it.
             self.pending_approval = None
             self._present_queued_confirmation()
         elif etype == EventType.RUN_FAILED:
-            rows.append("\x1b[31m[Run failed]\x1b[0m")
+            rows.append(self.theme.fg("error", "[Run failed]"))
             self.pending_approval = None
             self._present_queued_confirmation()
         elif etype == EventType.OBSERVER_ERROR:
-            rows.append(f"\x1b[31m[Plugin observer error]\x1b[0m {_safe(payload.get('error'))}")
+            rows.append(f"{self.theme.fg('error', '[Plugin observer error]')} {_safe(payload.get('error'))}")
 
     def _show_or_queue_confirmation(self, overlay: InteractiveConfirmation) -> None:
         """Show one pending confirmation, or retain it until the live region frees.
@@ -1135,7 +1132,7 @@ class CoreTuiApp:
                 return
             if self._run_local_control(local, local_args.strip()):
                 return
-            self.terminal.commit_rows([f"\x1b[31mUnknown TUI control: /tui {_safe(local)}\x1b[0m"])
+            self.terminal.commit_rows([self.theme.fg("error", f"Unknown TUI control: /tui {_safe(local)}")])
             return
 
         # A bare name is a local control only when no admitted command owns it.
@@ -1159,6 +1156,9 @@ class CoreTuiApp:
         if cmd == "new":
             self._create_session()
             return True
+        if cmd == "theme":
+            self._switch_theme(arg_str.strip())
+            return True
         if cmd == "cancel":
             self._cancel_active_run()
             return True
@@ -1169,6 +1169,22 @@ class CoreTuiApp:
             self.running = False
             return True
         return False
+
+    def _switch_theme(self, name: str) -> None:
+        """Switch the app palette live; bare ``/tui theme`` lists what ``mode`` admits."""
+        if not name:
+            options = [*palette_names("dark"), *palette_names("light")]
+            current = f" (current: {self.theme.name})" if self.theme.name in options else ""
+            self.terminal.commit_rows([f"Available themes: {', '.join(options)}{current}"])
+            return
+        try:
+            self.theme = resolve_theme(name, color_system=self.terminal.color_system)
+        except ValueError:
+            options = [*palette_names("dark"), *palette_names("light")]
+            self.terminal.commit_rows([self.theme.fg("error", f"Unknown theme: {_safe(name)} (choose: {', '.join(options)})")])
+            return
+        self.composer.set_appearance(theme=self.theme, style="band", gutter="prompt", padding="normal")
+        self.status_line = f"Theme: {self.theme.name}"
 
     def _action_schema(self, name: str) -> Mapping[str, Any] | None:
         """The target command's declared argument schema, the form's field authority."""
@@ -1210,25 +1226,27 @@ class CoreTuiApp:
             res = self.client.create_session()
             new_id = str(res.get("session_id", ""))
         except Exception as exc:
-            self.terminal.commit_rows([f"\x1b[31mFailed to create session: {_safe(exc)}\x1b[0m"])
+            self.terminal.commit_rows([self.theme.fg("error", f"Failed to create session: {_safe(exc)}")])
             return
         if new_id:
             self._switch_session(new_id)
 
     def _show_help(self) -> None:
+        heading = self.theme.style("accent", bold=True).render("=== VoidCode Terminal Controls ===", color_system=self.theme.color_system)
         lines = [
-            "\x1b[1;34m=== VoidCode Terminal Controls ===\x1b[0m",
+            heading,
             "  /tui help              Show this help (always available)",
             "  /tui sessions          List available sessions",
             "  /tui session <id>      Switch active session",
             "  /tui new               Create new session",
+            "  /tui theme [name]      Show or switch the color theme",
             "  /tui views [name]      Open plugin views/forms (for example goal)",
             "  /tui cancel            Cancel active session run",
             "  /tui quit              Exit TUI",
             "  Ctrl+C                 Cancel a run, or close/deny a dialog",
             "  Ctrl+D                 Quit",
             "  (/views, /sessions, ... are local when no admitted command owns the name)",
-            "\x1b[1;34m=== Admitted Commands ===\x1b[0m",
+            self.theme.style("accent", bold=True).render("=== Admitted Commands ===", color_system=self.theme.color_system),
         ]
         if not self.catalog_cache:
             self._load_catalog()
@@ -1241,7 +1259,7 @@ class CoreTuiApp:
     def _show_sessions(self) -> None:
         try:
             sess_list = self.client.list_sessions()
-            lines = ["\x1b[1;34m=== Active Sessions ===\x1b[0m"]
+            lines = [self.theme.style("accent", bold=True).render("=== Active Sessions ===", color_system=self.theme.color_system)]
             for s in sess_list:
                 sid = s.get("session_id", "")
                 status = s.get("status", "idle")
@@ -1250,7 +1268,7 @@ class CoreTuiApp:
                 lines.append(f"{marker} {sid} (status={status}, turn={turn})")
             self.terminal.commit_rows(lines)
         except Exception as exc:
-            self.terminal.commit_rows([f"\x1b[31mFailed to list sessions: {exc}\x1b[0m"])
+            self.terminal.commit_rows([self.theme.fg("error", f"Failed to list sessions: {_safe(exc)}")])
 
     def _show_views(self, name_filter: str = "") -> None:
         """Render plugin views only when explicitly requested.
@@ -1263,13 +1281,13 @@ class CoreTuiApp:
         try:
             views_revision, v_list = self.client.views(self.session_id)
         except Exception as exc:
-            self.terminal.commit_rows([f"\x1b[31mFailed to read views: {exc}\x1b[0m"])
+            self.terminal.commit_rows([self.theme.fg("error", f"Failed to read views: {_safe(exc)}")])
             return
         if name_filter:
             wanted = name_filter.strip().lower()
             v_list = [v for v in v_list if wanted in str(v.get("name", "")).lower() or wanted in str(v.get("title", "")).lower()]
         if not v_list:
-            self.terminal.commit_rows(["\x1b[33mNo plugin views available for this session.\x1b[0m"])
+            self.terminal.commit_rows([self.theme.fg("warning", "No plugin views available for this session.")])
             return
         for v in v_list:
             vtype = v.get("view_type")
@@ -1291,7 +1309,7 @@ class CoreTuiApp:
                     self.active_overlay = InteractiveConfirmation(v.get("data", {}), revision_id=views_revision)
                 return
             # Non-interactive view: render rows and commit
-            rows = render_plugin_view(v, self.terminal.width)
+            rows = render_plugin_view(v, self.terminal.width, self.theme)
             self.terminal.commit_rows(rows)
 
     def _maybe_load_form_data(self, form: InteractiveForm) -> None:
@@ -1334,7 +1352,7 @@ class CoreTuiApp:
     def _dispatch_catalog_command(self, cmd_name: str, arg_str: str) -> None:
         cmd_desc = next((c for c in self._catalog() if c.get("name") == cmd_name), None)
         if cmd_desc is None:
-            self.terminal.commit_rows([f"\x1b[31mUnknown command: /{_safe(cmd_name)}\x1b[0m (try /help)"])
+            self.terminal.commit_rows([f"{self.theme.fg('error', f'Unknown command: /{_safe(cmd_name)}')} (try /help)"])
             return
         # The revision of the catalog this descriptor was read from.
         revision = self.catalog_revision
@@ -1367,11 +1385,11 @@ class CoreTuiApp:
                 if len(properties) == 1:
                     arguments = {next(iter(properties)): arg_str}
                 else:
-                    self.terminal.commit_rows([f"\x1b[31mArguments must be valid JSON: {_safe(arg_str)}\x1b[0m"])
+                    self.terminal.commit_rows([self.theme.fg("error", f"Arguments must be valid JSON: {_safe(arg_str)}")])
                     return
             else:
                 if not isinstance(parsed, dict):
-                    self.terminal.commit_rows([f"\x1b[31mArguments must be a JSON object: {_safe(arg_str)}\x1b[0m"])
+                    self.terminal.commit_rows([self.theme.fg("error", f"Arguments must be a JSON object: {_safe(arg_str)}")])
                     return
                 arguments = parsed
 
@@ -1382,13 +1400,15 @@ class CoreTuiApp:
         width = self.terminal.width
         # One status row for every branch, styled only when it has real text:
         # an empty reverse-video row would paint a blank band, not a quiet idle.
-        status_text = f"\x1b[7m{self.status_line}\x1b[0m" if self.status_line else ""
+        status_text = (
+            self.theme.style("text", reverse=True).render(self.status_line, color_system=self.theme.color_system) if self.status_line else ""
+        )
         status_rows = (status_text,) if status_text else ()
         if self.pending_approval is not None:
             approval = self.pending_approval
             arguments = json.dumps(json_safe(approval.get("arguments")), ensure_ascii=False, allow_nan=False)
             rows = [
-                "\x1b[33m*** Tool approval required ***\x1b[0m",
+                self.theme.fg("warning", "*** Tool approval required ***"),
                 f"  tool: {_safe(approval.get('tool_name'))}",
                 f"  args: {_safe(arguments)[:_WRAP_WIDTH]}",
                 "  [a] allow once    [d] deny",
@@ -1396,7 +1416,7 @@ class CoreTuiApp:
             frame = TuiFrame(transcript_rows=(), chrome_rows=(*rows, *status_rows), cursor=None)
             self.terminal.paint_frame(frame)
         elif self.active_overlay is not None:
-            overlay_rows = self.active_overlay.render_rows(width)
+            overlay_rows = self.active_overlay.render_rows(width, self.theme)
             frame = TuiFrame(transcript_rows=(), chrome_rows=(*overlay_rows, *status_rows), cursor=None)
             self.terminal.paint_frame(frame)
         else:

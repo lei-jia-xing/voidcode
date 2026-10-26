@@ -24,6 +24,10 @@ class _Terminal:
 
     width = 100
     eof = False
+    color_system = None
+
+    def query_default_background_rgb(self) -> None:
+        return None
 
     def __init__(self) -> None:
         self.committed: list[str] = []

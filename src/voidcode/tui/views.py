@@ -15,6 +15,13 @@ from rich.text import Text
 
 from .keys import Key
 from .term import escape_terminal_controls, render_lines
+from .theme import Theme, resolve_theme
+
+
+def _theme_arg(theme: Theme | None) -> Theme:
+    """The caller's theme, or the default palette when none travels with the call."""
+    return theme if theme is not None else resolve_theme()
+
 
 #: Strict numeric literals: no silent truncation, no scientific-integer coercion.
 _INTEGER_PATTERN = re.compile(r"^[+-]?\d+$")
@@ -40,35 +47,41 @@ class UnsupportedViewError(ValueError):
     """Raised when a plugin attempts to render an unrecognised view type."""
 
 
-def render_notice(data: Mapping[str, Any], width: int) -> list[str]:
+def render_notice(data: Mapping[str, Any], width: int, theme: Theme | None = None) -> list[str]:
     message = str(data.get("message", ""))
     level = str(data.get("level", "info"))
+    resolved = _theme_arg(theme)
     style_map = {
-        "info": ("blue", "[info]"),
-        "warning": ("yellow", "[warn]"),
-        "error": ("red", "[error]"),
+        "info": ("accent", "[info]"),
+        "warning": ("warning", "[warn]"),
+        "error": ("error", "[error]"),
     }
-    color, prefix = style_map.get(level, ("blue", "[info]"))
-    content = Text.assemble((f"{prefix}: ", f"bold {color}"), (message, ""))
-    return render_lines(content, width)
+    token, prefix = style_map.get(level, ("accent", "[info]"))
+    content = Text.assemble((f"{prefix}: ", resolved.style(token, bold=True)), (message, resolved.style("text")))
+    return render_lines(content, width, theme=resolved.rich_theme(), color_system=resolved.color_system)
 
 
-def render_markdown(data: Mapping[str, Any], width: int) -> list[str]:
+def render_markdown(data: Mapping[str, Any], width: int, theme: Theme | None = None) -> list[str]:
     """Render plugin markdown.
 
     Control bytes are escaped first, so plugin text cannot emit terminal
     commands; rich's Markdown then owns headings, lists, tables and code.
     """
+    resolved = _theme_arg(theme)
     content = escape_terminal_controls(str(data.get("content", "")), preserve_newlines=True, preserve_tabs=True)
     document = Markdown(content)
-    return render_lines(document, width)
+    # rich names ``code_theme`` str but hands it straight to ``Syntax(theme=...)``,
+    # which takes a SyntaxTheme: set it post-construction instead of lying in the call.
+    document.__dict__["code_theme"] = resolved.syntax_theme()
+    return render_lines(document, width, theme=resolved.rich_theme(), color_system=resolved.color_system)
 
 
-def render_fields(data: Mapping[str, Any], width: int) -> list[str]:
+def render_fields(data: Mapping[str, Any], width: int, theme: Theme | None = None) -> list[str]:
     rows = data.get("rows", [])
+    resolved = _theme_arg(theme)
     table = Table(show_header=False, box=None, padding=(0, 2), expand=False)
-    table.add_column("Key", style="bold cyan", no_wrap=True)
-    table.add_column("Value", style="white", overflow="fold")
+    table.add_column("Key", style=resolved.style("mdLink", bold=True), no_wrap=True)
+    table.add_column("Value", style=resolved.style("text"), overflow="fold")
     for row in rows:
         if isinstance(row, dict):
             label, value = row.get("label", ""), row.get("value", "")
@@ -80,13 +93,14 @@ def render_fields(data: Mapping[str, Any], width: int) -> list[str]:
             str(label),
             str(value),
         )
-    return render_lines(table, width)
+    return render_lines(table, width, theme=resolved.rich_theme(), color_system=resolved.color_system)
 
 
-def render_diff(data: Mapping[str, Any], width: int) -> list[str]:
+def render_diff(data: Mapping[str, Any], width: int, theme: Theme | None = None) -> list[str]:
     before = str(data.get("before", ""))
     after = str(data.get("after", ""))
     path = data.get("path")
+    resolved = _theme_arg(theme)
     diff_lines = list(
         difflib.unified_diff(
             before.splitlines(),
@@ -98,25 +112,30 @@ def render_diff(data: Mapping[str, Any], width: int) -> list[str]:
     )
     diff_text = Text()
     heading = f"Diff: {escape_terminal_controls(str(path))}" if path else "Diff"
-    diff_text.append(heading, style="bold")
+    diff_text.append(heading, style=resolved.style("text", bold=True))
     for line in diff_lines:
         diff_text.append("\n")
         if line.startswith("+") and not line.startswith("+++"):
-            diff_text.append(line, style="green")
+            diff_text.append(line, style=resolved.style("toolDiffAdded"))
         elif line.startswith("-") and not line.startswith("---"):
-            diff_text.append(line, style="red")
+            diff_text.append(line, style=resolved.style("toolDiffRemoved"))
         elif line.startswith("@@"):
-            diff_text.append(line, style="cyan")
+            diff_text.append(line, style=resolved.style("accent"))
         else:
-            diff_text.append(line, style="dim")
-    return render_lines(diff_text, width)
+            diff_text.append(line, style=resolved.style("toolDiffContext"))
+    return render_lines(diff_text, width, theme=resolved.rich_theme(), color_system=resolved.color_system)
 
 
-def render_status(data: Mapping[str, Any], width: int) -> list[str]:
+def render_status(data: Mapping[str, Any], width: int, theme: Theme | None = None) -> list[str]:
     label = str(data.get("label", "Status"))
     value = str(data.get("value", ""))
-    text = Text.assemble(("* ", "bold green"), (f"{label}: ", "bold"), (value, "white"))
-    return render_lines(text, width)
+    resolved = _theme_arg(theme)
+    text = Text.assemble(
+        ("* ", resolved.style("success", bold=True)),
+        (f"{label}: ", resolved.style("text", bold=True)),
+        (value, resolved.style("text")),
+    )
+    return render_lines(text, width, theme=resolved.rich_theme(), color_system=resolved.color_system)
 
 
 class InteractiveChoices:
@@ -155,16 +174,17 @@ class InteractiveChoices:
             return {"cancel": True}
         return None
 
-    def render_rows(self, width: int) -> list[str]:
+    def render_rows(self, width: int, theme: Theme | None = None) -> list[str]:
+        resolved = _theme_arg(theme)
         text = Text()
-        text.append("Choose an option:\n", style="bold cyan")
+        text.append("Choose an option:\n", style=resolved.style("accent", bold=True))
         for i, opt in enumerate(self.options):
             if i == self.selected_index:
-                text.append(f" > [{i + 1}] {opt['label']}\n", style="bold yellow")
+                text.append(f" > [{i + 1}] {opt['label']}\n", style=resolved.style("warning", bold=True))
             else:
-                text.append(f"   [{i + 1}] {opt['label']}\n", style="white")
-        panel = Panel(text, title=f"Action: {self.action}", border_style="yellow", expand=True)
-        return render_lines(panel, width)
+                text.append(f"   [{i + 1}] {opt['label']}\n", style=resolved.style("text"))
+        panel = Panel(text, title=f"Action: {self.action}", border_style=resolved.style("warning"), expand=True)
+        return render_lines(panel, width, theme=resolved.rich_theme(), color_system=resolved.color_system)
 
 
 class InteractiveConfirmation:
@@ -193,18 +213,24 @@ class InteractiveConfirmation:
             return {"request_id": self.request_id, "decision": "deny"}
         return None
 
-    def render_rows(self, width: int) -> list[str]:
+    def render_rows(self, width: int, theme: Theme | None = None) -> list[str]:
+        resolved = _theme_arg(theme)
         text = Text()
-        text.append(f"{self.message}\n\n", style="bold white")
-        text.append("Request ID: ", style="dim")
-        text.append(f"{self.request_id}\n\n", style="cyan")
+        text.append(f"{self.message}\n\n", style=resolved.style("text", bold=True))
+        text.append("Request ID: ", style=resolved.style("dim"))
+        text.append(f"{self.request_id}\n\n", style=resolved.style("accent"))
         for i, act in enumerate(self.actions):
             is_selected = i == self.selected_index
-            style = "bold reverse green" if (is_selected and act == "allow") else ("bold reverse red" if is_selected else "dim")
+            if is_selected and act == "allow":
+                style = resolved.style("success", bold=True, reverse=True)
+            elif is_selected:
+                style = resolved.style("error", bold=True, reverse=True)
+            else:
+                style = resolved.style("dim")
             text.append(f" [ {act.upper()} ] ", style=style)
             text.append("  ")
-        panel = Panel(text, title="Action Confirmation", border_style="red", expand=True)
-        return render_lines(panel, width)
+        panel = Panel(text, title="Action Confirmation", border_style=resolved.style("error"), expand=True)
+        return render_lines(panel, width, theme=resolved.rich_theme(), color_system=resolved.color_system)
 
 
 class InteractiveForm:
@@ -386,14 +412,15 @@ class InteractiveForm:
 
         return {"action": self.action, "arguments": arguments}
 
-    def render_rows(self, width: int) -> list[str]:
+    def render_rows(self, width: int, theme: Theme | None = None) -> list[str]:
+        resolved = _theme_arg(theme)
         text = Text()
         if self.load_error:
-            text.append(f"[warn] Load failure: {self.load_error}\n", style="bold red")
+            text.append(f"[warn] Load failure: {self.load_error}\n", style=resolved.style("error", bold=True))
         if self.validation_error:
-            text.append(f"[error] Validation: {self.validation_error}\n", style="bold red")
+            text.append(f"[error] Validation: {self.validation_error}\n", style=resolved.style("error", bold=True))
 
-        text.append(f"Form: {self.action} (Enter/Tab next, Ctrl+S submit, Esc cancel)\n\n", style="dim")
+        text.append(f"Form: {self.action} (Enter/Tab next, Ctrl+S submit, Esc cancel)\n\n", style=resolved.style("dim"))
         for i, f in enumerate(self.fields):
             name = f["name"]
             label = f["label"]
@@ -403,7 +430,7 @@ class InteractiveForm:
             req_mark = "*" if f["required"] else ""
 
             prefix = "> " if is_active else "  "
-            label_style = "bold cyan" if is_active else "white"
+            label_style = resolved.style("accent", bold=True) if is_active else resolved.style("text")
             text.append(f"{prefix}{label}{req_mark} [{ftype}]: ", style=label_style)
 
             if ftype == "boolean":
@@ -414,23 +441,30 @@ class InteractiveForm:
                 else:
                     bool_str = "[ ] (unset)"
                 present = val is not None
-                text.append(f"{bool_str}\n", style="bold green" if val is True else ("dim" if present else "italic"))
+                if val is True:
+                    value_style = resolved.style("success", bold=True)
+                elif present:
+                    value_style = resolved.style("dim")
+                else:
+                    value_style = resolved.style("text", italic=True)
+                text.append(f"{bool_str}\n", style=value_style)
             elif ftype == "multiline":
                 lines = str(val).split("\n")
+                value_style = resolved.style("warning") if is_active else resolved.style("dim")
                 if len(lines) <= 1:
-                    text.append(f"'{val}'\n", style="yellow" if is_active else "dim")
+                    text.append(f"'{val}'\n", style=value_style)
                 else:
-                    text.append("\n", style="white")
+                    text.append("\n", style=resolved.style("text"))
                     for line in lines:
-                        text.append(f"    | {line}\n", style="yellow" if is_active else "dim")
+                        text.append(f"    | {line}\n", style=value_style)
             else:
-                text.append(f"'{val}'\n", style="yellow" if is_active else "dim")
+                text.append(f"'{val}'\n", style=resolved.style("warning") if is_active else resolved.style("dim"))
 
-        panel = Panel(text, title=f"Form: {self.action}", border_style="cyan", expand=True)
-        return render_lines(panel, width)
+        panel = Panel(text, title=f"Form: {self.action}", border_style=resolved.style("accent"), expand=True)
+        return render_lines(panel, width, theme=resolved.rich_theme(), color_system=resolved.color_system)
 
 
-def render_plugin_view(descriptor: Mapping[str, Any], width: int) -> list[str]:
+def render_plugin_view(descriptor: Mapping[str, Any], width: int, theme: Theme | None = None) -> list[str]:
     """Render any of the 8 finite view kinds into ANSI rows.
 
     Raises UnsupportedViewError if the view_type is outside the 8 finite kinds.
@@ -441,23 +475,23 @@ def render_plugin_view(descriptor: Mapping[str, Any], width: int) -> list[str]:
         data = {}
 
     if view_type == "notice":
-        return render_notice(data, width)
+        return render_notice(data, width, theme)
     if view_type == "markdown":
-        return render_markdown(data, width)
+        return render_markdown(data, width, theme)
     if view_type == "fields":
-        return render_fields(data, width)
+        return render_fields(data, width, theme)
     if view_type == "diff":
-        return render_diff(data, width)
+        return render_diff(data, width, theme)
     if view_type == "status":
-        return render_status(data, width)
+        return render_status(data, width, theme)
     if view_type == "choices":
         choices = InteractiveChoices(data)
-        return choices.render_rows(width)
+        return choices.render_rows(width, theme)
     if view_type == "confirmation":
         conf = InteractiveConfirmation(data)
-        return conf.render_rows(width)
+        return conf.render_rows(width, theme)
     if view_type == "form":
         form = InteractiveForm(data)
-        return form.render_rows(width)
+        return form.render_rows(width, theme)
 
     raise UnsupportedViewError(f"unsupported view type: {view_type}")
