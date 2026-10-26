@@ -32,5 +32,5 @@ def distribution_for(package_root: Path) -> Path | None:
 
 def frontend_distribution() -> Path | None:
     """The web bundle this installation serves, or ``None`` when none is built."""
-    #: ``src/voidcode/core/transport/static.py`` -> the running package tree.
-    return distribution_for(Path(__file__).resolve().parents[2])
+    #: ``src/voidcode/transport/static.py`` -> the running package tree.
+    return distribution_for(Path(__file__).resolve().parents[1])

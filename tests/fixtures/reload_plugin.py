@@ -79,6 +79,7 @@ def write_reload_plugin(
         pre_tool_match=pre_tool_match,
         lifecycle_hooks=lifecycle_hooks,
     )
+    (source / ".crashed").unlink(missing_ok=True)
     init_path = source / "__init__.py"
     init_path.write_text(body, encoding="utf-8")
     if syntax_error:
@@ -118,27 +119,6 @@ def _plugin_code(
     pre_tool_match: tuple[str, ...],
     lifecycle_hooks: bool,
 ) -> str:
-    marker_repr = "" if marker is None else str(marker)
-    hang_body = (
-        "import time\nfrom pathlib import Path\n"
-        f"Path({marker_repr!r}).write_text('migrating')\n"
-        "deadline = time.time() + 60\n"
-        "while time.time() < deadline:\n"
-        "    time.sleep(0.05)\n"
-        "return state"
-    )
-    migrate_body = {
-        "none": "return None",
-        "ok": 'migrated = dict(state)\nmigrated["migrated_to"] = to_version\nreturn migrated',
-        "raise": 'raise RuntimeError("migration refused by the candidate")',
-        # A parametrized refusal: ValueError text is forwarded to the user verbatim.
-        "refuse": 'raise ValueError("candidate refuses to migrate this state")',
-        "crash": "import os\nos._exit(9)",
-        "invalid": "return {'migrated_to': 'not-an-int' if True else 0, 'note': [1, 2]}",
-        # Blocks (bounded) inside the candidate runtime so a test can kill the core at a
-        # deterministic point before the activation transaction commits.
-        "hang": hang_body,
-    }[migration]
     deactivate_body = {
         "none": "return None",
         "pause": 'paused = dict(state)\npaused["paused"] = True\npaused["tip"] = tip_sequence\nreturn paused',
@@ -164,6 +144,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 
 from voidcode.sdk.commands import CommandDefinition, CommandResult
@@ -524,10 +505,6 @@ class Block:
         return ToolFailure(call.tool_name, "block timed out")
 
 
-def migrate_state(state, from_version, to_version):
-{_indent(migrate_body)}
-
-
 def prepare_deactivate(state, scope, scope_key, tip_sequence):
 {_indent(deactivate_body)}
 {observer_body}
@@ -607,7 +584,18 @@ def create_plugin(config):
     if {factory_error!r}:
         raise RuntimeError("fixture factory failure")
     if {str(marker) if marker else ""!r}:
-        Path({str(marker) if marker else ""!r}).write_text(str(os.getpid()), encoding="utf-8")
+        if {migration == "hang"!r}:
+            _mp = Path({str(marker) if marker else ""!r})
+            if not _mp.exists():
+                _mp.write_text("migrating", encoding="utf-8")
+                time.sleep(60)
+        else:
+            Path({str(marker) if marker else ""!r}).write_text(str(os.getpid()), encoding="utf-8")
+    if {migration == "crash"!r}:
+        _crash_marker = Path(__file__).parent / ".crashed"
+        if not _crash_marker.exists():
+            _crash_marker.touch()
+            os._exit(9)
     tools = []
     if {blocking!r}:
         tools.append(Block())
@@ -639,7 +627,6 @@ def create_plugin(config):
         session_start=session_start,
         session_end=session_end,
         state=StateSchema(version={state_schema_version!r}, schema={state_schema!r}),
-        migrate_state=migrate_state if {migration!r} != "none" else None,
         prepare_deactivate=prepare_deactivate if {deactivation!r} != "none" else None,
         observer=_observe if {observe!r} else None,
         observed_facts=("invocation_finished",) if {observe!r} else (),

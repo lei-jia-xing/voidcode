@@ -18,6 +18,7 @@ semantics via the core-owned `ProcessRegistry`.
 
 from __future__ import annotations
 
+import importlib.machinery
 import importlib.util
 import inspect
 import json
@@ -27,6 +28,7 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Final, Literal, cast, get_args
 from uuid import uuid4
 
@@ -181,14 +183,9 @@ class CallbackChanges:
 def _check_arity(fn: Any, expected_arity: int, name: str) -> None:
     try:
         sig = inspect.signature(fn)
-        params = list(sig.parameters.values())
-        pos_params = [p for p in params if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)]
-        var_args = any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params)
-        if not var_args and len(pos_params) != expected_arity:
-            raise ValueError(f"{name} must accept {expected_arity} positional arguments, got {len(pos_params)}")
-    except (ValueError, TypeError) as exc:
-        if "must accept" in str(exc):
-            raise
+        sig.bind(*([None] * expected_arity))
+    except Exception as exc:
+        raise ValueError(f"{name} must accept {expected_arity} positional arguments: {exc}") from exc
 
 
 class PluginRuntime:
@@ -211,7 +208,6 @@ class PluginRuntime:
         progress_callback: Callable[[LeaseContext, Mapping[str, object]], None] | None = None,
         tool_definition_callback: Callable[[str, str, str], tuple[Mapping[str, object] | None, str]] | None = None,
         artifacts_dir: Path | None = None,
-        builtin_providers: Mapping[str, object] | None = None,
     ) -> None:
         self.workspace = Path(workspace).resolve()
         if not self.workspace.is_dir():
@@ -264,15 +260,14 @@ class PluginRuntime:
         self._observers: list[tuple[Any, tuple[str, ...], str]] = []
         self._state_deactivators: dict[str, Any] = {}
         self._queries: dict[str, tuple[Any, str]] = {}
-        self._builtin_provider_closers: list[Callable[[], None]] = []
+
         self._plugins: list[Plugin] = []
         self._plugin_ids: list[str] = []
         self._plugin_states: dict[str, StateSchema] = {}
         try:
             for source in sources:
                 self._load_plugin(source)
-            if builtin_providers is not None:
-                self._register_builtins(builtin_providers)
+
             self._build_catalog()
         except Exception:
             self.close()
@@ -295,13 +290,18 @@ class PluginRuntime:
             str(entry_module),
             submodule_search_locations=[str(root)],
         )
-        if spec is None or spec.loader is None:
+        if spec is None or not isinstance(spec.loader, importlib.machinery.SourceFileLoader):
             raise ValueError(f"Failed to create module spec for plugin {plugin_id}: {entry_module}")
+        loader = spec.loader
         mod = importlib.util.module_from_spec(spec)
         sys.modules[mod_name] = mod
         self._modules.append(mod_name)
         try:
-            spec.loader.exec_module(mod)
+            # Compile from current source bytes: pyc validation is second-granularity,
+            # so a same-second source rewrite would otherwise serve stale code.
+            source_bytes = loader.get_data(str(entry_module))
+            code = loader.source_to_code(source_bytes, str(entry_module))
+            exec(code, mod.__dict__)
         finally:
             for name in list(sys.modules):
                 if name.startswith(f"{mod_name}.") and name not in self._modules:
@@ -383,33 +383,21 @@ class PluginRuntime:
             _check_arity(query.handler, 2, f"Plugin {plugin_id} query {query.name} handler")
             self._queries[query.name] = (query.handler, plugin_id)
 
-    def _register_builtins(self, provider_config: Mapping[str, object]) -> None:
-        """Static product defaults; optional plugins may replace individual names.
-
-        Builtins use ordinary tool/provider dispatch and leases, but are not admitted
-        plugin sources and do not contribute plugin ids, callbacks, or owner state.
-        """
-        from voidcode.capabilities.exec.shell_exec import ShellExecTool
-        from voidcode.capabilities.files import create_tools
-        from voidcode.capabilities.providers.dispatch import DECLARED_PROVIDER_NAMES, build_registered_providers
-
-        for tool in (*create_tools(), ShellExecTool()):
-            self._tools.setdefault(tool.definition.name, (tool, "core"))
-        # An extension's credentials vocabulary is opaque to built-in adapters.
-        # Parse only configurations whose provider will actually use a built-in.
-        fallback_config = {name: entry for name, entry in provider_config.items() if name not in self._providers and name in DECLARED_PROVIDER_NAMES}
-        for provider in build_registered_providers({"providers": fallback_config}):
-            if provider.name in self._providers:
-                provider.close()
-            else:
-                self._providers[provider.name] = (provider, "core")
-                self._builtin_provider_closers.append(provider.close)
-
     def _build_catalog(self) -> None:
         self._tool_defs = tuple(tool.definition for tool, _ in self._tools.values())
         self._tool_map = {definition.name: definition for definition in self._tool_defs}
         self._provider_names = tuple(self._providers)
         self._tool_owners = {name: plugin_id for name, (_, plugin_id) in self._tools.items()}
+        self._validators = {}
+        for name, definition in self._tool_map.items():
+            if definition.input_schema:
+                schema_json = json_wire_object(definition.input_schema)
+                try:
+                    jsonschema.Draft202012Validator.check_schema(schema_json)
+                except jsonschema.exceptions.SchemaError as err:
+                    plugin_id = self._tool_owners.get(name, "unknown")
+                    raise ValueError(f"Plugin {plugin_id} tool {name} has an invalid input schema: {err.message}") from err
+                self._validators[name] = jsonschema.Draft202012Validator(schema_json)
         self._command_descs = tuple(
             CommandDescriptor(
                 name=command.definition.name,
@@ -423,8 +411,23 @@ class PluginRuntime:
             for command, plugin_id in self._commands.values()
         )
         self._command_map = {desc.name: desc for desc in self._command_descs}
+        self._command_map_view: Mapping[str, CommandDescriptor] = MappingProxyType(self._command_map)
+        self._command_validators = {}
+        for desc in self._command_descs:
+            if desc.argument_schema:
+                schema_json = json_wire_object(desc.argument_schema)
+                try:
+                    jsonschema.Draft202012Validator.check_schema(schema_json)
+                except jsonschema.exceptions.SchemaError as err:
+                    raise ValueError(f"Plugin {desc.owner} command {desc.name} has an invalid argument schema: {err.message}") from err
+                self._command_validators[desc.name] = jsonschema.Draft202012Validator(schema_json)
+            else:
+                self._command_validators[desc.name] = None
         self._view_names = tuple(self._views)
         self._view_owners = {name: plugin_id for name, (_, plugin_id) in self._views.items()}
+        self._tool_map_view: Mapping[str, ToolDefinition] = MappingProxyType(self._tool_map)
+        self._validators_view: Mapping[str, Any] = MappingProxyType(self._validators)
+        self._command_validators_view: Mapping[str, Any] = MappingProxyType(self._command_validators)
         self._context_owners = tuple(self._context_callbacks)
         self._observer_owners: dict[str, tuple[str, ...]] = {
             fact_type: tuple(pid for _, obs_facts, pid in self._observers if fact_type in obs_facts) for fact_type in get_args(ObservedFactKind)
@@ -445,8 +448,20 @@ class PluginRuntime:
         return self._command_descs
 
     @property
-    def command_map(self) -> dict[str, CommandDescriptor]:
-        return dict(self._command_map)
+    def tool_definitions(self) -> Mapping[str, ToolDefinition]:
+        return self._tool_map_view
+
+    @property
+    def tool_validators(self) -> Mapping[str, Any]:
+        return self._validators_view
+
+    @property
+    def command_descriptors(self) -> Mapping[str, CommandDescriptor]:
+        return self._command_map_view
+
+    @property
+    def command_validators(self) -> Mapping[str, Any]:
+        return self._command_validators_view
 
     @property
     def views(self) -> tuple[str, ...]:
@@ -785,11 +800,13 @@ class PluginRuntime:
         if tool_entry is None:
             raise ValueError(f"Unknown tool: {call.tool_name}")
         tool_instance, tool_owner = tool_entry
-        tool_definition = tool_instance.definition
-
-        if tool_definition.input_schema:
+        tool_definition = self._tool_map.get(call.tool_name)
+        if tool_definition is None:
+            raise ValueError(f"Unknown tool: {call.tool_name}")
+        validator = self._validators.get(call.tool_name)
+        if validator is not None:
             try:
-                jsonschema.validate(instance=json_wire_object(call.arguments), schema=json_wire_object(tool_definition.input_schema))
+                validator.validate(json_wire_object(call.arguments))
             except jsonschema.ValidationError as val_err:
                 return ToolFailure(
                     tool_name=call.tool_name,
@@ -909,9 +926,10 @@ class PluginRuntime:
         cmd_definition = cmd_instance.definition
         args = own_json_object(arguments)
 
-        if cmd_definition.argument_schema:
+        cmd_validator = self._command_validators.get(name)
+        if cmd_validator is not None:
             try:
-                jsonschema.validate(instance=json_wire_object(args), schema=json_wire_object(cmd_definition.argument_schema))
+                cmd_validator.validate(json_wire_object(args))
             except jsonschema.ValidationError as val_err:
                 return (CommandResult(status="error", error=f"Input validation error: {val_err.message}"), (), (), (), (), None)
 
@@ -1367,15 +1385,14 @@ class PluginRuntime:
             self._active_leases.clear()
             self._claimed_services.clear()
             self._cancel_events.clear()
-        # 1. Every one-shot child and service process this generation started dies with it;
-        #    supervised background jobs are owned separately and survive a swap.
+        # Child and service processes started by this generation stop with it;
+        # supervised background jobs are owned separately and survive a swap.
         try:
             self.processes.reap_all()
         finally:
             self.processes.stop_services()
-        # 2. True close callbacks: every one runs even when one raises; the first
-        #    error propagates after unimport so no module leaks. A hung callback
-        #    blocks retire until core restart — there is no kill isolation.
+        # Run close callbacks for loaded plugins, propagating first error after unimport.
+        # A hung callback blocks retire until core restart — there is no kill isolation.
         first_error: BaseException | None = None
         for plugin in self._plugins:
             if plugin.close is not None and callable(plugin.close):
@@ -1384,15 +1401,7 @@ class PluginRuntime:
                 except BaseException as exc:
                     if first_error is None:
                         first_error = exc
-        for closer in self._builtin_provider_closers:
-            try:
-                closer()
-            except BaseException as exc:
-                if first_error is None:
-                    first_error = exc
-        self._builtin_provider_closers.clear()
-        # 3. Unimport this generation's namespaces so a reloaded generation never reuses
-        #    stale modules.
+        # Unimport generation namespaces so reloaded generations avoid stale modules.
         try:
             for name in self._modules:
                 self._forget_module(name)

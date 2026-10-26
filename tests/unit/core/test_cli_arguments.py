@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from voidcode.core.__main__ import main
+from voidcode.cli import main
 from voidcode.core.storage.store import SqliteStore
 
 
@@ -60,7 +60,7 @@ def test_removed_tui_command_is_rejected(tmp_path: Path) -> None:
 
 
 def test_state_directory_structure(tmp_path: Path) -> None:
-    from voidcode.core.bootstrap import state_directory
+    from voidcode.bootstrap import state_directory
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()

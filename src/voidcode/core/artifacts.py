@@ -48,10 +48,6 @@ def normalize_media_type(value: object) -> str:
     return text
 
 
-def artifact_digest(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
 @dataclass(slots=True)
 class Spill:
     """One in-progress streaming write; private to the store until it is finalized."""

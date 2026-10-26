@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-from voidcode.core.tui.keys import Key
-from voidcode.core.tui.views import (
+from voidcode.tui.keys import Key
+from voidcode.tui.views import (
     InteractiveChoices,
     InteractiveConfirmation,
     InteractiveForm,
@@ -26,7 +26,7 @@ def test_fields_view_folds_long_cjk_value_without_clipping() -> None:
     """A long unbroken CJK value survives the fields table at 48 columns."""
     import re
 
-    from voidcode.core.tui.term import visible_width
+    from voidcode.tui.term import visible_width
 
     value = "将遗留的导入器逐步迁移到新的" + "迁移" * 30 + "终尾"
     rows = render_plugin_view({"view_type": "fields", "data": {"rows": [{"label": "Objective", "value": value}]}}, 48)
@@ -335,10 +335,14 @@ class _StubTerminal:
     """Commit sink only: records settled rows, never touches a real terminal."""
 
     width = 100
+    eof = False
 
     def __init__(self) -> None:
         self.committed: list[str] = []
         self.frames: list[list[str]] = []
+
+    def read_bytes(self, timeout: float = 0.0) -> bytes:
+        return b""
 
     def commit_rows(self, rows: list[str]) -> None:
         self.committed.extend(rows)
@@ -378,7 +382,7 @@ class _StubClient:
     def get_session(self, session_id: str) -> dict[str, object]:
         return {"session_id": session_id, "status": "idle"}
 
-    def events_stream(self, session_id: str, *, after_sequence: int = 0, follow: bool = True, cancel: object = None):  # type: ignore[no-untyped-def]
+    async def events_stream(self, session_id: str, *, after_sequence: int = 0, follow: bool = True, cancel: object = None):  # type: ignore[no-untyped-def]
         self._connections += 1
         if self._connections == 1:
             # Pre-restart connection: only the settled prefix exists yet.
@@ -393,10 +397,10 @@ class _StubClient:
             yield {"events": backlog}
         # Hold the connection open like a live follow stream until the test
         # stops the worker (never hot-loop on instant EOF).
-        import time as _time
+        import asyncio as _asyncio
 
         while self._stop is None or not self._stop.is_set():
-            _time.sleep(0.01)
+            await _asyncio.sleep(0.01)
 
 
 class _FencedClient(_StubClient):
@@ -404,7 +408,7 @@ class _FencedClient(_StubClient):
 
     def __init__(self) -> None:
         super().__init__()
-        from voidcode.core.tui.client import CoreClientError
+        from voidcode.tui.client import CoreClientError
 
         self._refusal = CoreClientError("core is draining for an upgrade; retry after it restarts", status_code=503, code="upgrade_pending")
 
@@ -500,7 +504,7 @@ def test_reconnect_replays_unseen_rows_despite_ahead_restart_watermark() -> None
     adopted 99 would fetch after 99 and rows 3-4 would never settle — so the
     commit sink alone proves the fix. Only settled visible rows are asserted.
     """
-    from voidcode.core.tui.terminal_app import CoreTuiApp
+    from voidcode.tui.terminal_app import CoreTuiApp
 
     client = _FencedClient()
     client.prefix_events = [_event(1, content="one"), _event(2, content="two")]
@@ -544,8 +548,8 @@ def test_real_503_handlers_keep_both_gates_then_decided_facts_close_each_once() 
     """
     import time
 
-    from voidcode.core.tui.terminal_app import CoreTuiApp
-    from voidcode.core.tui.views import InteractiveConfirmation
+    from voidcode.tui.terminal_app import CoreTuiApp
+    from voidcode.tui.views import InteractiveConfirmation
 
     client = _FencedClient()
     terminal = _StubTerminal()
@@ -599,8 +603,8 @@ def test_real_503_handlers_keep_both_gates_then_decided_facts_close_each_once() 
 
 def test_automatic_refresh_is_silent_until_views_are_explicitly_requested() -> None:
     """Reconnect refreshes only the catalog/status; optional views stay on demand."""
-    from voidcode.core.tui.terminal_app import CoreTuiApp
-    from voidcode.core.tui.views import InteractiveForm
+    from voidcode.tui.terminal_app import CoreTuiApp
+    from voidcode.tui.views import InteractiveForm
 
     status_view = {
         "name": "goal",
@@ -638,7 +642,7 @@ def test_automatic_refresh_is_silent_until_views_are_explicitly_requested() -> N
 
 def test_activation_refresh_is_silent_for_optional_views() -> None:
     """Activation refreshes the catalog only: no passive row, no form, no revision id."""
-    from voidcode.core.tui.terminal_app import CoreTuiApp
+    from voidcode.tui.terminal_app import CoreTuiApp
 
     status_view = {
         "name": "goal",
@@ -671,7 +675,7 @@ def test_activation_refresh_is_silent_for_optional_views() -> None:
 
 def test_idle_chrome_omits_session_hash_but_explicit_sessions_keep_it() -> None:
     """Routine attach passes a truly empty status; ids stay in explicit diagnostics."""
-    from voidcode.core.tui.terminal_app import CoreTuiApp
+    from voidcode.tui.terminal_app import CoreTuiApp
 
     client = _CommandClient()
     terminal = _StubTerminal()
@@ -691,8 +695,8 @@ def test_idle_chrome_omits_session_hash_but_explicit_sessions_keep_it() -> None:
 
 def test_durable_gates_survive_automatic_view_refresh() -> None:
     """Approval/confirmation gates come from durable facts, not views, and stay put."""
-    from voidcode.core.tui.terminal_app import CoreTuiApp
-    from voidcode.core.tui.views import InteractiveConfirmation
+    from voidcode.tui.terminal_app import CoreTuiApp
+    from voidcode.tui.views import InteractiveConfirmation
 
     status_view = {
         "name": "goal",
@@ -738,7 +742,7 @@ def test_durable_gates_survive_automatic_view_refresh() -> None:
 
 def test_core_help_receipt_renders_multiline_and_clears_dispatching() -> None:
     """Bare /help is the core command; its direct receipt must become the visible list."""
-    from voidcode.core.tui.terminal_app import CoreTuiApp
+    from voidcode.tui.terminal_app import CoreTuiApp
 
     catalog = [
         {
@@ -773,7 +777,7 @@ def test_core_help_receipt_renders_multiline_and_clears_dispatching() -> None:
 
 def test_core_data_receipt_preserves_empty_mapping_and_falsy_values() -> None:
     """A data-only core receipt falls back to JSON without truthiness loss."""
-    from voidcode.core.tui.terminal_app import CoreTuiApp
+    from voidcode.tui.terminal_app import CoreTuiApp
 
     catalog = [
         {
@@ -804,8 +808,8 @@ def test_long_settled_command_result_wraps_without_losing_content() -> None:
     import re
     import tempfile
 
-    from voidcode.core.tui.term import Terminal, visible_width
-    from voidcode.core.tui.terminal_app import CoreTuiApp
+    from voidcode.tui.term import Terminal, visible_width
+    from voidcode.tui.terminal_app import CoreTuiApp
 
     payload = "长" * 60 + "\nTAIL-END"
     with tempfile.TemporaryFile() as capture:
@@ -834,7 +838,7 @@ def test_long_settled_command_result_wraps_without_losing_content() -> None:
 
 def test_plugin_command_event_renders_multiple_lines_with_error_precedence() -> None:
     """Plugin results arrive as durable events; lines stay lines and error wins."""
-    from voidcode.core.tui.terminal_app import CoreTuiApp
+    from voidcode.tui.terminal_app import CoreTuiApp
 
     terminal = _StubTerminal()
     app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
@@ -878,7 +882,7 @@ def test_plugin_command_event_renders_multiple_lines_with_error_precedence() -> 
 
 def test_late_completion_does_not_overwrite_gate_or_fence_status() -> None:
     """A command finishing late may clear Dispatching, never a live gate/fence."""
-    from voidcode.core.tui.terminal_app import CoreTuiApp
+    from voidcode.tui.terminal_app import CoreTuiApp
 
     terminal = _StubTerminal()
     app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
@@ -918,7 +922,7 @@ def test_late_completion_does_not_overwrite_gate_or_fence_status() -> None:
 
 def test_run_failure_error_is_rendered_once_from_the_response_path() -> None:
     """The run response owns the error text; the durable event must not repeat it."""
-    from voidcode.core.tui.terminal_app import CoreTuiApp
+    from voidcode.tui.terminal_app import CoreTuiApp
 
     terminal = _StubTerminal()
     app = CoreTuiApp(_RunClient(), session_id="s1", terminal=terminal)

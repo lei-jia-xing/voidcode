@@ -21,7 +21,7 @@ import pytest
 
 from tests.fixtures.reload_plugin import PROBE_TOOL, PROCESS_READ_TOOL, PROCESS_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.core.bootstrap import open_core
+from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
 from voidcode.core.processes import ProcessRegistry
 from voidcode.sdk.services import ProcessResult

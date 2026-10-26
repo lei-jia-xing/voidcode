@@ -532,7 +532,7 @@ export interface components {
         };
         /**
          * HealthBody
-         * @description Core health and identity: the stable surface clients and the supervisor poll.
+         * @description Core health and identity: the stable surface clients poll.
          */
         HealthBody: {
             /** Active Upgrade */

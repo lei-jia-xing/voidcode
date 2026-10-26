@@ -20,7 +20,7 @@ from pathlib import Path
 
 import uvicorn
 
-from voidcode.core.transport.http import create_core_app
+from voidcode.transport.http import create_core_app
 
 _TOKEN = "static-serving-token"
 

@@ -13,7 +13,7 @@ import pytest
 
 from tests.fixtures.s5_plugin import PLUGIN_ID, PROBE_TOOL, WRITE_TOOL, write_s5_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.core.bootstrap import open_core
+from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
 from voidcode.sdk.json_values import json_wire_object
 
@@ -190,7 +190,7 @@ def test_child_event_reads_are_bounded_cursor_scoped_and_descendant_checked(tmp_
 
         replies.append(
             _turn(
-                _call("read-page", PROBE_TOOL, action="child_events", child_session_id=child, after_sequence=0, limit=2, include_payload=False),
+                _call("read-page", PROBE_TOOL, action="child_events", child_session_id=child, after_sequence=0, limit=2),
                 _call("read-bounded", PROBE_TOOL, action="child_events", child_session_id=child, after_sequence=0, limit=100),
                 _call("read-rest", PROBE_TOOL, action="child_events", child_session_id=child, after_sequence=2, limit=100),
                 _call("read-grandchild", PROBE_TOOL, action="child_events", child_session_id=grandchild, after_sequence=0, limit=100),
@@ -204,42 +204,36 @@ def test_child_event_reads_are_bounded_cursor_scoped_and_descendant_checked(tmp_
 
         page, bounded, rest, grandchild_read, self_read, root_read, stranger_read = [_body(core, "sess", PROBE_TOOL, index) for index in range(7)]
 
-        # One bounded page: the count is the caller's limit, and no payload is carried.
+        # One bounded page: the oversized first block splits mid-block, so the cursor
+        # stays at the incoming sequence with a byte offset into the same block.
         assert page["child_session_id"] == child
-        assert page["after_sequence"] == 0 and page["limit"] == 2 and page["include_payload"] is False
-        assert [view["sequence"] for view in page["views"]] == [1, 2]
-        assert [view["payload"] for view in page["views"]] == [None, None]
-        assert all(view["event_type"] for view in page["views"])
-
-        # The page's payload budget: only the child's own oversized prompt is replaced by a summary,
-        # and the events that follow it still carry theirs (the budget is shared, not per event).
-        history = bounded["views"]
-        assert [view["sequence"] for view in history] == list(range(1, len(history) + 1))
-        assert len(history) == core.session(child).last_event_sequence
-        assert history[0]["event_type"] == "core.user_message"
-        assert history[0]["payload_truncated"] is True
-        assert history[0]["payload"]["truncated"] is True
-        assert history[0]["payload"]["original_bytes"] > 65536
-        assert not any(view["payload_truncated"] for view in history[1:])
-        assert any(view["event_type"] == "core.tool_completed" and "own descendants" in json.dumps(view["payload"]) for view in history), history
+        assert page["after_sequence"] == 0 and page["limit"] == 2
+        assert page["page"]["next_after_sequence"] == 0
+        assert page["page"]["next_offset"] > 0
+        assert page["page"]["truncated"] is True
+        # The full history starts with the same split block: the 100 KiB prompt fills one
+        # 40 KiB page alone, byte-identical, with more bytes still owed.
+        assert bounded["page"]["text"].startswith("## user [1]\n")
+        assert "x" * 100 in bounded["page"]["text"]
+        assert bounded["page"]["next_offset"] > 0
+        assert bounded["page"]["truncated"] is True
 
         # The cursor continues exactly where the first page stopped.
-        sequences = [view["sequence"] for view in rest["views"]]
-        assert sequences == list(range(3, 3 + len(sequences)))
-        assert sequences[-1] == core.session(child).last_event_sequence
+        assert rest["page"]["next_after_sequence"] >= 2
+        assert rest["page"]["text"] != page["page"]["text"]
 
         # The child's own read of its parent (a root, so never its descendant) is the core's refusal.
         child_read = _body(core, child, PROBE_TOOL)
-        assert "views" not in child_read
+        assert "page" not in child_read
         assert "own descendants" in child_read["refused"]
 
-        # The root reads its grandchild's own committed events.
+        # The root reads its grandchild's own committed history.
         assert grandchild_read["child_session_id"] == grandchild
-        assert grandchild_read["views"], grandchild_read
+        assert grandchild_read["page"]["text"], grandchild_read
 
         # The core owns the lineage: this session, an unrelated root, and another chain's child.
         for refused in (self_read, root_read, stranger_read):
-            assert "views" not in refused, refused
+            assert "page" not in refused, refused
         assert "must name another session" in self_read["refused"]
         assert "own descendants" in root_read["refused"]
         assert "own descendants" in stranger_read["refused"]

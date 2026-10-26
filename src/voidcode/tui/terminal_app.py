@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 import queue
@@ -10,7 +12,8 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
-from ..events import EventType
+from voidcode.core.events import EventType
+
 from .client import CoreClientError, CoreHttpClient, StreamCancellation
 from .composer import Composer, ComposerAction
 from .keys import Key, KeyDecoder
@@ -203,10 +206,8 @@ class CoreTuiApp:
         finally:
             self.running = False
             self._stop_event.set()
-            # Close our owned connection before joining the worker: an idle follow stream is
-            # blocked in read with no timeout, and only a socket shutdown wakes it. This also
-            # happens before an embedded parent is allowed to stop the supervisor. Terminal
-            # restore still runs if that close raises.
+            # Cancel the stream before joining the worker: an idle follow stream is
+            # waiting on async network events, and task cancellation wakes it immediately.
             try:
                 if self._stream_cancel is not None:
                     self._stream_cancel.close()
@@ -260,39 +261,38 @@ class CoreTuiApp:
             previous.close()
         cancel = self._stream_cancel
 
-        def stream_worker() -> None:
+        async def stream_worker() -> None:
             first_connection = True
             while not self._stop_event.is_set() and generation == self._generation:
-                # The applied cursor is owned by event application
-                # (_handle_single_event): reconnect from the rows actually
-                # committed, never from a stale capture or a restart watermark.
                 after_seq = self._session_cursors.get(session_id, 0)
                 if not first_connection:
-                    # Rearm BEFORE opening the stream: the first frame of the
-                    # new connection reconciles, announced or silent.
                     self._stream_ready = False
                 first_connection = False
                 try:
-                    for frame in self.client.events_stream(session_id, after_sequence=after_seq, follow=True, cancel=cancel):
-                        if self._stop_event.is_set() or generation != self._generation:
-                            return
-                        tagged = dict(frame)
-                        tagged["generation"] = generation
-                        tagged["session_id"] = session_id
-                        self.event_queue.put(tagged)
-                        if frame.get("kind") == "server_restart":
-                            # The server replaced itself: break the inner
-                            # iterator so this loop reconnects from the live
-                            # applied cursor (duplicate fetch is fine; a missed
-                            # fact is not).
-                            break
+                    async with contextlib.aclosing(
+                        self.client.events_stream(session_id, after_sequence=after_seq, follow=True, cancel=cancel)
+                    ) as stream:
+                        async for frame in stream:
+                            if self._stop_event.is_set() or generation != self._generation:
+                                return
+                            tagged = dict(frame)
+                            tagged["generation"] = generation
+                            tagged["session_id"] = session_id
+                            self.event_queue.put(tagged)
+                            if frame.get("kind") == "server_restart":
+                                break
+                except asyncio.CancelledError:
+                    return
                 except Exception as exc:
                     if self._stop_event.is_set() or generation != self._generation:
                         return
                     logger.debug("SSE stream reconnecting after: %s", exc)
-                    time.sleep(1.0)
+                    await asyncio.sleep(1.0)
 
-        self._sse_thread = threading.Thread(target=stream_worker, daemon=True, name=f"CoreTuiSSE{generation}")
+        def run_worker() -> None:
+            asyncio.run(stream_worker())
+
+        self._sse_thread = threading.Thread(target=run_worker, daemon=True, name=f"CoreTuiSSE{generation}")
         self._sse_thread.start()
 
     def _main_loop(self) -> int:
@@ -646,10 +646,12 @@ class CoreTuiApp:
     def _process_input(self) -> None:
         now = time.monotonic()
         chunk = self.terminal.read_bytes(timeout=0.001)
+        if self.terminal.eof:
+            self.running = False
+            return
         if chunk:
             # A lone ESC is ambiguous until no further bytes follow: the standard
-            # disambiguation window resolves it as Esc (never as part of the next
-            # byte). The pre-cutover client used the same 50 ms.
+            # disambiguation window resolves it as Esc.
             self._escape_flush_at = now + _ESCAPE_FLUSH_SECONDS
             keys = list(self.key_decoder.feed(chunk))
         elif self._escape_flush_at and now >= self._escape_flush_at:

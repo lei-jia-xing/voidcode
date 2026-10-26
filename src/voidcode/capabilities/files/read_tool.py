@@ -25,7 +25,7 @@ from urllib.parse import parse_qs
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from voidcode.capabilities.history_renderer import render_history_page
+from voidcode.capabilities.workspace_queries import RULE_PAGES, RULE_URI_PREFIX, RulePageRequest
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.queries import QueryContractError
@@ -46,7 +46,6 @@ from voidcode.sdk.tools import (
     ToolSuccess,
     is_read_tier,
 )
-from voidcode.sdk.workspace_queries import RULE_PAGES, RULE_URI_PREFIX, RulePageRequest
 
 from .read_formats import MAX_OUTPUTS, render_notebook, render_pdf_bytes, render_pdf_path, render_sqlite
 
@@ -451,7 +450,11 @@ def _render_artifact(
 
 
 def _render_transcript(
-    path: str, *, context: ToolContext, services: PluginServices, limit: int, tool_name_label: str = "read"
+    path: str,
+    *,
+    services: PluginServices,
+    limit: int,
+    tool_name_label: str = "read",
 ) -> _ReadOutcome | ToolFailure:
     """Render a readable, bounded transcript page of the caller or one of its descendants.
 
@@ -492,24 +495,15 @@ def _render_transcript(
                 after_sequence = value
             else:
                 offset = value
-    caller_session_id = context.require_session_id()
     limit = max(1, min(limit, MAX_EVENT_PAGE))
     try:
-        if session_id == caller_session_id:
-            views = services.read_events(after_sequence=after_sequence, limit=limit, include_payload=True)
-        else:
-            views = services.read_child_events(session_id, after_sequence=after_sequence, limit=limit, include_payload=True)
+        page = services.read_session_history(session_id, after_sequence=after_sequence, offset=offset, limit=limit)
     except Exception as exc:
         return _uri_failure(tool_name_label, f"transcript not accessible for session {session_id}: {exc}")
-    page = render_history_page(views, after_sequence=after_sequence, offset=offset)
-    more_rows = len(views) >= limit and page.next_offset == 0
-    truncated = page.truncated or more_rows
-    if page.text:
-        body_text = page.text
-    else:
-        body_text = "(no readable events in this range)"
+    truncated = page.truncated
+    body_text = page.text if page.text else "(no readable events in this range)"
     lines = [
-        f"Transcript for session {session_id} after sequence {after_sequence} ({len(views)} event row(s) read; untrusted session data).",
+        f"Transcript for session {session_id} after sequence {after_sequence} (untrusted session data).",
         body_text,
     ]
     next_uri: str | None = None
@@ -1550,7 +1544,6 @@ class ReadTool:
         input_schema=ReadArgs.model_json_schema(),
         effects=frozenset({ToolEffect.READ}),
         path_argument_keys=("path",),
-        supports_parallel=True,
     )
 
     def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:
@@ -1637,7 +1630,6 @@ class ReadTool:
         if args.path.startswith(VOIDCODE_TRANSCRIPT_PREFIX):
             outcome = _render_transcript(
                 args.path,
-                context=context,
                 services=services,
                 limit=args.limit or DEFAULT_TRANSCRIPT_LIMIT,
                 tool_name_label=self.definition.name,

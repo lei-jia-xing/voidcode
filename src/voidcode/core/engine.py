@@ -35,19 +35,16 @@ from ..sdk.commands import (
     CommandDescriptor,
     CommandResult,
 )
-from ..sdk.config import CoreConfig
 from ..sdk.hooks import RequestWindow, StopCause, WindowSegment
 from ..sdk.invocation import ToolContext
 from ..sdk.json_values import json_wire_object
 from ..sdk.provider import ProviderExecutionError, ProviderMessage, ProviderTurnRequest
 from ..sdk.services import (
-    CHILD_MESSAGE_OWNER,
     ChildOutcome,
     ChildSendReceipt,
     ContinuationResult,
     PluginBudget,
     SessionUsageReport,
-    child_completion_notice_id,
 )
 from ..sdk.tools import (
     TextOutput,
@@ -63,12 +60,10 @@ from ..sdk.tools import (
 from ..sdk.views import PluginViewDescriptor, ViewsSnapshot
 from .activation import (
     Admission,
+    ExecutionConfig,
     StateCopyPlan,
-    config_from_snapshot,
     load_private_snapshot,
     plan_state_copies,
-    resolved_providers,
-    validate_providers,
     write_private_snapshot,
 )
 from .artifacts import ArtifactStore
@@ -79,10 +74,9 @@ from .delegation import (
 from .delegation import (
     DelegationManager,
     _child_run_status,
-    _ChildRunFacts,
     _terminal_run_result,
 )
-from .events import EventType
+from .events import CHILD_MESSAGE_OWNER, EventType, child_completion_notice_id
 from .facts import FACT_EVENT_TYPES as _FACT_EVENT_TYPES
 from .facts import fact_for_event
 from .plugins import LeaseContext, PluginRuntime, PluginSource, ToolInvocationOutcome
@@ -228,9 +222,7 @@ CLIENT_PROMPT_MAX_BYTES = 64 * 1024
 
 #: One truthful, actionable message for a providerless core. Launch, commands, tools, and
 #: sessions stay available; only a model turn or governed query fails with this text.
-MODEL_CONFIGURATION_GUIDANCE = (
-    'no model configured: create a valid voidcode.json with model.model "<provider>/<model>" and providers.<provider>.base_url, then run core.reload'
-)
+MODEL_CONFIGURATION_GUIDANCE = "no model configured or registered"
 
 #: Reserved core command that activates the configured sources on explicit request.
 RELOAD_COMMAND_NAME = "core.reload"
@@ -271,47 +263,59 @@ class _Snapshot:
     """One immutable capability generation. Every dispatch reads this single pointer."""
 
     revision_id: str
-    config: CoreConfig
+    config: ExecutionConfig
     admission: Admission | None
     plugin_runtime: PluginRuntime
-    tools: tuple[ToolDefinition, ...]
-    definitions: Mapping[str, ToolDefinition]
-    validators: Mapping[str, Any]
-    commands: tuple[CommandDescriptor, ...]
     native_tools: Mapping[str, ToolDefinition]
+    native_validators: Mapping[str, Any]
+    native_commands: Mapping[str, CommandDescriptor]
+    tools: tuple[ToolDefinition, ...]
+    commands: tuple[CommandDescriptor, ...]
 
     @staticmethod
     def build(
         *,
         revision_id: str,
-        config: CoreConfig,
+        config: ExecutionConfig,
         admission: Admission | None,
         plugin_runtime: PluginRuntime,
         with_reload: bool,
     ) -> _Snapshot:
-        native = MappingProxyType(_core_tool_definitions()) if with_reload else MappingProxyType({})
-        runtime_tools = tuple(plugin_runtime.tools)
-        for tool in runtime_tools:
-            if tool.name in native:
-                raise ValueError(f"plugin tool {tool.name!r} collides with a reserved tool")
-        definitions: dict[str, ToolDefinition] = {tool.name: tool for tool in runtime_tools}
-        definitions.update(native)
+        native_tools = MappingProxyType(_core_tool_definitions()) if with_reload else MappingProxyType({})
+        for name in plugin_runtime.tool_definitions:
+            if name in native_tools:
+                raise ValueError(f"plugin tool {name!r} collides with a reserved tool")
+        native_validators_dict = {}
+        for name, definition in native_tools.items():
+            if definition.input_schema:
+                schema_json = json_wire_object(definition.input_schema)
+                jsonschema.Draft202012Validator.check_schema(schema_json)
+                native_validators_dict[name] = jsonschema.Draft202012Validator(schema_json)
+        native_validators = MappingProxyType(native_validators_dict)
+        native_commands = MappingProxyType({desc.name: desc for desc in _core_command_descriptors(with_reload=with_reload)})
         return _Snapshot(
             revision_id=revision_id,
             config=config,
             admission=admission,
             plugin_runtime=plugin_runtime,
-            tools=runtime_tools + tuple(native.values()),
-            definitions=MappingProxyType(definitions),
-            validators=MappingProxyType(
-                {name: jsonschema.Draft202012Validator(json_wire_object(definition.input_schema)) for name, definition in definitions.items()}
-            ),
-            commands=_core_command_descriptors(with_reload=with_reload) + plugin_runtime.commands,
-            native_tools=native,
+            native_tools=native_tools,
+            native_validators=native_validators,
+            native_commands=native_commands,
+            tools=(*plugin_runtime.tools, *native_tools.values()),
+            commands=(*native_commands.values(), *plugin_runtime.commands),
         )
 
+    def definition_of(self, name: str) -> ToolDefinition | None:
+        return self.native_tools.get(name) or self.plugin_runtime.tool_definitions.get(name)
+
+    def validator_of(self, name: str) -> Any | None:
+        return self.native_validators.get(name) or self.plugin_runtime.tool_validators.get(name)
+
+    def command_of(self, name: str) -> CommandDescriptor | None:
+        return self.native_commands.get(name) or self.plugin_runtime.command_descriptors.get(name)
+
     def owner_of(self, tool_name: str) -> str:
-        return "kernel" if tool_name in self.native_tools else self.plugin_runtime.owner(tool_name)
+        return "core" if tool_name in self.native_tools else self.plugin_runtime.owner(tool_name)
 
 
 def _is_parked_intervening(event: StoredEvent) -> bool:
@@ -332,10 +336,9 @@ class _Cursor(BaseModel):
     step: int = Field(default=0, ge=0)
     abandon_batch: bool = False
     continuation_id: str | None = None
-    chain_step: int = Field(default=0, ge=0)
     logical_turn: str = ""
     stop_cause: StopCause | None = None
-    action_budget_remaining: int | None = None
+    initial_root_budget: int | None = None
     root_id: str = ""
     #: Staged continuation this session owes itself: an activation request id or an upgrade pause id.
     resume_intent: str = ""
@@ -393,7 +396,7 @@ class Core:
         *,
         workspace: Path,
         state_dir: Path,
-        config: CoreConfig,
+        config: ExecutionConfig,
         plugins: tuple[PluginSource, ...],
         revision_id: str,
         revision_payload: Mapping[str, object],
@@ -441,7 +444,6 @@ class Core:
             resources.callback(self.store.close)
             runtime = PluginRuntime(
                 plugins,
-                builtin_providers=resolved_providers(config),
                 workspace=self.workspace,
                 revision_id=revision_id,
                 store=self.store,
@@ -474,7 +476,8 @@ class Core:
             # failed construction, and the late-bound cleanup callback is registered only after
             # the generation that owns this runtime is complete.
             try:
-                validate_providers(config, runtime.providers)
+                if admission is not None and admission.validate is not None:
+                    admission.validate(runtime.providers)
                 self.store.put_revision(revision_payload, revision_id=revision_id)
                 if admission is not None and admission.revision_id != revision_id:
                     raise ValueError("admission does not describe the generation it was opened with")
@@ -505,11 +508,7 @@ class Core:
             self._resources = resources.pop_all()
 
     def _assert_state_schema_compatible(self) -> None:
-        """Refuse to reinterpret stored owner state under a newer declared schema on plain restart.
-
-        Migration is an explicit transaction (activation/adoption) with the owner's real
-        transform; a restart after a source change is never a migration authority.
-        """
+        """Refuse to reinterpret stored owner state under a different declared schema."""
         states = self._snapshot.plugin_runtime.state_metadata()
         scopes: list[tuple[str, str]] = [("workspace", str(self.workspace))]
         scopes.extend(("session", record.session_id) for record in self.store.sessions(workspace=str(self.workspace)))
@@ -567,7 +566,7 @@ class Core:
         return self._snapshot.plugin_runtime
 
     @property
-    def config(self) -> CoreConfig:
+    def config(self) -> ExecutionConfig:
         return self._snapshot.config
 
     @property
@@ -577,14 +576,6 @@ class Core:
     @property
     def revision_id(self) -> str:
         return self._snapshot.revision_id
-
-    @property
-    def _definitions(self) -> Mapping[str, ToolDefinition]:
-        return self._snapshot.definitions
-
-    @property
-    def _validators(self) -> Mapping[str, Any]:
-        return self._snapshot.validators
 
     @contextmanager
     def _dispatch(self, description: str) -> Iterator[_Snapshot]:
@@ -773,7 +764,7 @@ class Core:
                 self.store.ensure_root_budget(root_id, max_steps)
                 execution = _Execution(
                     session,
-                    _Cursor(root_id=root_id, action_budget_remaining=max_steps),
+                    _Cursor(root_id=root_id, initial_root_budget=max_steps),
                     list(self.store.events(session_id)),
                     uuid4().hex,
                 )
@@ -791,7 +782,7 @@ class Core:
                         self._interrupt_batch(execution)
                     # The new user turn owns its own fresh root budget: the stopped
                     # chain's exhausted root is never reused or reset.
-                    execution.cursor = _Cursor(root_id=root_id, action_budget_remaining=max_steps)
+                    execution.cursor = _Cursor(root_id=root_id, initial_root_budget=max_steps)
                 self._commit(
                     execution, "running", "ready", EventDraft(EventType.USER_MESSAGE, "client", "user", {"content": prompt}), start_turn=True
                 )
@@ -865,7 +856,7 @@ class Core:
                     if decision == "deny":
                         self._report(execution, call, ToolFailure(call.tool_name, "user denied this invocation"))
                     else:
-                        definition = self._definitions.get(call.tool_name)
+                        definition = self._snapshot.definition_of(call.tool_name)
                         if definition is None:
                             raise ValueError("approved tool is not in the active capability revision")
                         resume_read_only = self._session_read_only(execution.session.session_id)
@@ -893,8 +884,8 @@ class Core:
                 result = self._drive(execution, max_steps=max_steps)
                 if session.parent_session_id is not None and _terminal_run_result(result):
                     child_now = self.store.session(session_id)
-                    notify = self._notify_requested(child_now, self.store.events(session_id))
-                    self._publish_child_terminal(
+                    notify = self._delegation._notify_requested(child_now, self.store.events(session_id))
+                    self._delegation._publish_child_terminal(
                         session.parent_session_id,
                         session_id,
                         run_id=result.run_id,
@@ -915,7 +906,7 @@ class Core:
                 with self._aborts_lock:
                     self._session_aborts.pop(session_id, None)
         if resumed_notice is not None:
-            self._deliver_child_notice(*resumed_notice)
+            self._delegation._deliver_child_notice(*resumed_notice)
         self._drive_pending(session_id, max_steps)
         return result
 
@@ -951,7 +942,7 @@ class Core:
             root_id = uuid4().hex
             execution = _Execution(
                 session,
-                _Cursor(root_id=root_id, action_budget_remaining=32, deferred_only=True, logical_turn=uuid4().hex),
+                _Cursor(root_id=root_id, initial_root_budget=32, deferred_only=True, logical_turn=uuid4().hex),
                 list(self.store.events(session_id)),
                 uuid4().hex,
             )
@@ -1261,8 +1252,7 @@ class Core:
         self._check_expected_revision(expected_revision)
         s = self.session(session_id)
 
-        # 1. Dispatch core reserved commands through the same typed contract the
-        # catalog advertises: the session id is outer authority, never an argument.
+        # Core reserved commands dispatch through the advertised typed contract.
         if name == RELOAD_COMMAND_NAME:
             return self._invoke_reload_command(session_id, arguments)
         if name in _CORE_COMMAND_NAMES:
@@ -1296,7 +1286,7 @@ class Core:
                 return CommandResult(status="ok", data=data)
             if name == "status":
                 data = self.show(session_id, events=False)
-                model = self.config.model.model
+                model = self.config.model
                 output = "\n".join(
                     (
                         f"session: {s.session_id}",
@@ -1320,29 +1310,24 @@ class Core:
                 return CommandResult(status="ok", output="\n".join(lines), data=payload)
             return CommandResult(status="ok", data=dict(self.command_catalog().as_payload()))
 
-        # 2. Plugin command lookup
-        cmd_desc = self.plugin_runtime.command_map.get(name)
+        cmd_desc = self._snapshot.command_of(name)
         if cmd_desc is None:
             raise ValueError(f"Unknown command: {name}")
 
-        # 3. Busy gate check
         if cmd_desc.busy_gate and s.status not in {"idle", "completed", "failed"}:
             raise ValueError(f"Session {session_id} is busy and command '{name}' requires an idle session")
 
-        # 5. Core read-only policy check: external mutation only, so reads and
-        # internal SESSION state operations stay available in every mode.
+        # Core read-only policy check: external mutation only.
         self._check_session(s)
         if self._session_read_only(session_id) and denied_under_restriction(frozenset(cmd_desc.effects)):
             return CommandResult(status="error", error="read-only policy denies command write effects")
 
-        # 6. Schema validation of arguments
         if cmd_desc.argument_schema:
             try:
                 jsonschema.Draft202012Validator(json_wire_object(cmd_desc.argument_schema)).validate(json_wire_object(arguments))
             except jsonschema.ValidationError as val_err:
                 return CommandResult(status="error", error=f"Command arguments failed schema: {val_err.message}")
 
-        # 8. Execution
         run_id = s.run_id or uuid4().hex
         inv_id = uuid4().hex
         context = ToolContext(
@@ -1476,7 +1461,7 @@ class Core:
             self._commit_confirmation_decision(session_id, request_id, rec.command_name, "deny")
             return CommandResult(status="ok", output="Action denied by user")
 
-        cmd_desc = self.plugin_runtime.command_map.get(rec.command_name)
+        cmd_desc = self._snapshot.command_of(rec.command_name)
         if cmd_desc is None:
             raise ValueError(f"Command '{rec.command_name}' is not admitted")
         if rec.owner != cmd_desc.owner:
@@ -1665,8 +1650,7 @@ class Core:
                                 run_id,
                                 logical_turn,
                                 revision_id=self.revision_id,
-                                chain_step=0,
-                                action_budget_remaining=max_steps,
+                                initial_root_budget=max_steps,
                                 continuation_id=continuation_id,
                             )
                         except StoreConflict:
@@ -1721,8 +1705,7 @@ class Core:
                             continuation_id=cont_record.continuation_id,
                             root_id=root_id,
                             logical_turn=logical_turn,
-                            chain_step=0,
-                            action_budget_remaining=max_steps,
+                            initial_root_budget=max_steps,
                         )
                         session_record = cur_session
 
@@ -1771,7 +1754,7 @@ class Core:
                         parent_id = child.parent_session_id
                         notify = bool(cont_record.payload.get("notify_on_completion", True))
                         if parent_id is not None and _terminal_run_result(run_res):
-                            self._publish_child_terminal(
+                            self._delegation._publish_child_terminal(
                                 parent_id,
                                 session_id,
                                 run_id=run_res.run_id,
@@ -1792,7 +1775,7 @@ class Core:
                     self._session_aborts.pop(session_id, None)
 
         for parent_id, notice_id in dict.fromkeys(parent_deliveries):
-            self._deliver_child_notice(parent_id, notice_id)
+            self._delegation._deliver_child_notice(parent_id, notice_id)
         return tuple(results)
 
     def _ensure_open(self) -> None:
@@ -1871,7 +1854,6 @@ class Core:
             "request_id": request_id,
             "from_revision_id": snapshot.revision_id,
             "to_revision_id": prepared.admission.revision_id,
-            "migrated_owners": list(prepared.copies.migrated_owners),
             "deactivated_owners": list(prepared.copies.deactivated_owners),
         }
 
@@ -1968,10 +1950,10 @@ class Core:
         admits = self._admits
         if admits is None:
             raise ValueError("capability activation is unavailable")
-        return admits(config=config_from_snapshot(snapshot), revision_id=target_revision_id)
+        return admits(snapshot=snapshot, revision_id=target_revision_id)
 
     def _prepare_activation(self, snapshot: _Snapshot, *, admission: Admission, source: str) -> _PreparedActivation:
-        """Build, verify and migrate a candidate generation under the activation fence."""
+        """Build and verify a candidate generation under the activation fence."""
         thread_id = threading.get_ident()
         with self._calls_lock:
             if self._activating_thread is not None:
@@ -1994,7 +1976,6 @@ class Core:
         try:
             candidate_runtime = PluginRuntime(
                 admission.plugins,
-                builtin_providers=resolved_providers(admission.config),
                 workspace=self.workspace,
                 revision_id=target_revision_id,
                 store=self.store,
@@ -2027,7 +2008,8 @@ class Core:
             # away. An eligible owner the candidate re-registers receives its fact right after the
             # swap, so that fact is deferred instead of aborting the activation.
             self._replay_pending_observers(require_complete=True, defer_to_candidate=admission.plugin_ids)
-            validate_providers(admission.config, candidate_runtime.providers)
+            if admission.validate is not None:
+                admission.validate(candidate_runtime.providers)
             session_ids = tuple(record.session_id for record in self.store.sessions(workspace=str(self.workspace)))
             old_states = snapshot.plugin_runtime.state_metadata()
             candidate_states = candidate_runtime.state_metadata()
@@ -2053,24 +2035,6 @@ class Core:
             source=source,
             prepared_against=snapshot.revision_id,
         )
-
-    # --- Child delegation forwarding ------------------------------------------
-
-    @property
-    def _child_finished(self) -> dict[str, dict[str, dict[str, object]]]:
-        return self._delegation._child_finished
-
-    @property
-    def _child_finished_lock(self) -> threading.Condition:
-        return self._delegation._child_finished_lock
-
-    @property
-    def _published_child_runs(self) -> set[tuple[str, str]]:
-        return self._delegation._published_child_runs
-
-    @property
-    def _child_publication_inflight(self) -> set[tuple[str, str]]:
-        return self._delegation._child_publication_inflight
 
     def spawn_child(
         self,
@@ -2116,176 +2080,6 @@ class Core:
     def cancel_child(self, parent_session_id: str, child_id: str, reason: str = "owner cancellation") -> bool:
         return self._delegation.cancel_child(parent_session_id, child_id, reason=reason)
 
-    def _child_tool_scope(self, parent: SessionRecord, requested: tuple[str, ...] | None) -> tuple[str, ...] | None:
-        return self._delegation._child_tool_scope(parent, requested)
-
-    def _run_child(
-        self,
-        parent_session_id: str,
-        child_id: str,
-        prompt: str,
-        max_steps: int,
-        label: str,
-        notify_on_completion: bool,
-    ) -> None:
-        return self._delegation._run_child(
-            parent_session_id,
-            child_id,
-            prompt,
-            max_steps,
-            label,
-            notify_on_completion,
-        )
-
-    def _owned_child(self, parent_session_id: str, child_id: str) -> SessionRecord:
-        return self._delegation._owned_child(parent_session_id, child_id)
-
-    def _child_has_outstanding_work(self, child: SessionRecord) -> bool:
-        return self._delegation._child_has_outstanding_work(child)
-
-    def _latest_child_fact(self, child_id: str, run_id: str | None) -> dict[str, object] | None:
-        return self._delegation._latest_child_fact(child_id, run_id)
-
-    def _remember_child_outcome(self, child_id: str, run_id: str, payload: Mapping[str, object]) -> None:
-        return self._delegation._remember_child_outcome(child_id, run_id, payload)
-
-    def _child_status_outcome(self, child: SessionRecord) -> ChildOutcome:
-        return self._delegation._child_status_outcome(child)
-
-    def _child_wait_outcome(self, child: SessionRecord) -> ChildOutcome:
-        return self._delegation._child_wait_outcome(child)
-
-    def _child_outcome(self, child_id: str, payload: Mapping[str, object]) -> ChildOutcome:
-        return self._delegation._child_outcome(child_id, payload)
-
-    def _publish_child_terminal(
-        self,
-        parent_session_id: str,
-        child_id: str,
-        *,
-        run_id: str,
-        status: str,
-        output: str | None,
-        error: str | None,
-        stop_cause: str | None,
-        label: str,
-        notify: bool,
-        deliver: bool,
-    ) -> None:
-        return self._delegation._publish_child_terminal(
-            parent_session_id,
-            child_id,
-            run_id=run_id,
-            status=status,
-            output=output,
-            error=error,
-            stop_cause=stop_cause,
-            label=label,
-            notify=notify,
-            deliver=deliver,
-        )
-
-    def _child_fact_payload(
-        self,
-        child_id: str,
-        *,
-        run_id: str,
-        status: str,
-        output: str | None,
-        error: str | None,
-        stop_cause: str | None,
-        label: str,
-        notify: bool,
-        notice_id: str | None,
-    ) -> dict[str, object]:
-        return self._delegation._child_fact_payload(
-            child_id,
-            run_id=run_id,
-            status=status,
-            output=output,
-            error=error,
-            stop_cause=stop_cause,
-            label=label,
-            notify=notify,
-            notice_id=notice_id,
-        )
-
-    def _child_notice_payload(
-        self,
-        child_id: str,
-        *,
-        run_id: str,
-        status: str,
-        stop_cause: str | None,
-        label: str,
-        output: str | None,
-        error: str | None,
-        payload: Mapping[str, object],
-        notice_id: str,
-    ) -> dict[str, object]:
-        return self._delegation._child_notice_payload(
-            child_id,
-            run_id=run_id,
-            status=status,
-            stop_cause=stop_cause,
-            label=label,
-            output=output,
-            error=error,
-            payload=payload,
-            notice_id=notice_id,
-        )
-
-    def _spill_child_output(self, text: str) -> dict[str, object]:
-        return self._delegation._spill_child_output(text)
-
-    def _commit_child_fact(
-        self,
-        parent_session_id: str,
-        event: EventDraft,
-        notice: StagedContinuationDraft | None,
-    ) -> bool:
-        return self._delegation._commit_child_fact(parent_session_id, event, notice)
-
-    def _child_fact(self, parent_session_id: str, child_id: str, run_id: str) -> dict[str, object] | None:
-        return self._delegation._child_fact(parent_session_id, child_id, run_id)
-
-    def _durable_child_fact(self, parent_session_id: str, child_id: str, run_id: str | None) -> dict[str, object] | None:
-        return self._delegation._durable_child_fact(parent_session_id, child_id, run_id)
-
-    def _child_fact_exists(self, parent_session_id: str, child_id: str, run_id: str) -> bool:
-        return self._delegation._child_fact_exists(parent_session_id, child_id, run_id)
-
-    def _child_label(self, parent_session_id: str, child_id: str) -> str:
-        return self._delegation._child_label(parent_session_id, child_id)
-
-    def _child_run_label(self, parent_id: str | None, child_id: str, run_id: str, events: Sequence[StoredEvent]) -> str:
-        return self._delegation._child_run_label(parent_id, child_id, run_id, events)
-
-    def _notify_requested(self, session: SessionRecord, events: Sequence[StoredEvent], *, run_id: str | None = None) -> bool:
-        return self._delegation._notify_requested(session, events, run_id=run_id)
-
-    @staticmethod
-    def _terminal_child_event(run_events: Sequence[StoredEvent]) -> tuple[str, StoredEvent] | None:
-        return DelegationManager._terminal_child_event(run_events)
-
-    def _child_run_facts(self, session: SessionRecord, run_id: str, events: Sequence[StoredEvent]) -> _ChildRunFacts | None:
-        return self._delegation._child_run_facts(session, run_id, events)
-
-    def _reconstruct_child_outcome(self, child: SessionRecord) -> _ChildRunFacts | None:
-        return self._delegation._reconstruct_child_outcome(child)
-
-    def _recover_child_publications(self) -> list[tuple[str, str]]:
-        return self._delegation._recover_child_publications()
-
-    def _deliver_child_notice(self, session_id: str, continuation_id: str | None = None) -> None:
-        return self._delegation._deliver_child_notice(session_id, continuation_id)
-
-    def _deliver_child_messages(self, session_id: str, continuation_id: str) -> None:
-        return self._delegation._deliver_child_messages(session_id, continuation_id)
-
-    def _merge_child_messages(self, execution: _Execution) -> int:
-        return self._delegation._merge_child_messages(execution)
-
     def tick(self, now_ms: int | None = None) -> dict[str, object]:
         """Fire at most one due wakeup: claim it atomically with its run, then drive that run."""
         self._ensure_open()
@@ -2306,7 +2100,7 @@ class Core:
             return {"fired": None}
         wakeup, session = claimed
         self.store.ensure_root_budget(wakeup.wakeup_id, 32)
-        cursor = _Cursor(root_id=wakeup.wakeup_id, logical_turn=logical_turn, action_budget_remaining=32)
+        cursor = _Cursor(root_id=wakeup.wakeup_id, logical_turn=logical_turn, initial_root_budget=32)
         execution = _Execution(session, cursor, list(self.store.events(session.session_id)), run_id)
         with self._session_lock(session.session_id):
             self._deliver_facts(execution, (self._event(execution, session.last_event_sequence, EventType.WAKEUP_FIRED),))
@@ -2349,11 +2143,11 @@ class Core:
             raise ValueError("model query prompt must be nonempty UTF-8 text within 64 KiB")
         self._ensure_open()
         self.session(session_id)
-        selected = model or self.config.model.model
+        selected = model or self.config.model
         if selected is None:
             raise ValueError(MODEL_CONFIGURATION_GUIDANCE)
         provider_name, separator, model_name = selected.partition("/")
-        if not separator or not model_name or provider_name not in self.config.providers:
+        if not separator or not model_name or provider_name not in self._snapshot.plugin_runtime.providers:
             raise ValueError("model must name a configured provider/model")
         metadata: dict[str, object] = {"session_id": session_id, "purpose": "plugin_query"}
         if max_output_tokens is not None:
@@ -2371,7 +2165,7 @@ class Core:
             raw_model=selected,
             provider_name=provider_name,
             model_name=model_name,
-            reasoning_effort=self.config.model.reasoning_effort,
+            reasoning_effort=self.config.reasoning_effort,
             metadata=metadata,
             abort_signal=self._abort,
         )
@@ -2485,14 +2279,13 @@ class Core:
         events = (
             EventDraft(
                 EventType.ACTIVATION_COMMITTED,
-                "kernel",
-                "kernel",
+                "core",
+                "core",
                 {
                     "request_id": request_id,
                     "source": source,
                     "from_revision_id": snapshot.revision_id,
                     "to_revision_id": target_revision_id,
-                    "migrated_owners": list(prepared.copies.migrated_owners),
                     "deactivated_owners": list(prepared.copies.deactivated_owners),
                 },
             ),
@@ -2517,7 +2310,7 @@ class Core:
         )
         # Publication: one pointer swap, then revoke the old generation. Nothing can be
         # dispatched to the old runtime afterwards (it is closed and never respawns), and the
-        # candidate runtime was already validated and migrated before the commit.
+        # candidate runtime was already validated before the commit.
         with self._calls_lock:
             self._snapshot = _Snapshot.build(
                 revision_id=target_revision_id,
@@ -2879,7 +2672,7 @@ class Core:
             root_id = execution.cursor.root_id
             root_reservation: tuple[str, int] | None = None
             if reserve_root and root_id:
-                root_budget = execution.cursor.action_budget_remaining
+                root_budget = execution.cursor.initial_root_budget
                 root_reservation = (root_id, max(0, root_budget if root_budget is not None else 32))
             stamped_continuations = tuple(
                 draft if draft.root_id is not None or not root_id else replace(draft, root_id=root_id) for draft in staged_continuations
@@ -3283,7 +3076,7 @@ class Core:
         snapshot = self._snapshot
         if snapshot.revision_id != revision_id:
             raise ValueError("the lease's revision is no longer the active capability revision")
-        definition = snapshot.definitions.get(name)
+        definition = snapshot.definition_of(name)
         if definition is None:
             return None, "unknown"
         session = self.store.session(session_id)
@@ -3295,10 +3088,12 @@ class Core:
         return encode_tool_definition(definition), "visible"
 
     def _denial(self, call: ToolCall, definition: ToolDefinition, *, read_only: bool | None = None) -> str | None:
-        try:
-            self._validators[definition.name].validate(json_wire_object(call.arguments))
-        except jsonschema.ValidationError:
-            return "tool arguments failed the admitted JSON schema"
+        validator = self._snapshot.validator_of(definition.name)
+        if validator is not None:
+            try:
+                validator.validate(json_wire_object(call.arguments))
+            except jsonschema.ValidationError:
+                return "tool arguments failed the admitted JSON schema"
         # read_only denies EXTERNAL mutation only: reads and internal state
         # operations (SESSION) stay available in every mode. The session's effective
         # restriction includes its owner overlays (plan mode) as well as the frozen policy.
@@ -3394,18 +3189,17 @@ class Core:
                 # committed, so messages addressed to this running session may join THIS run
                 # before the next provider dispatch. Never across an in-flight tool call, an
                 # approval checkpoint, or a token stream.
-                self._merge_child_messages(execution)
+                self._delegation._merge_child_messages(execution)
 
                 with self._dispatch("provider") as snapshot:
                     if not execution.lifecycle_started:
                         self._lifecycle_events(execution, snapshot, "session_start")
                         execution.lifecycle_started = True
-                    model = snapshot.config.model.model
+                    model = snapshot.config.model
                     if model is None:
                         return self._fail(execution, MODEL_CONFIGURATION_GUIDANCE)
                     provider_name, separator, model_name = model.partition("/")
-                    entry = snapshot.config.providers.get(provider_name)
-                    if not separator or not model_name or entry is None:
+                    if not separator or not model_name or provider_name not in snapshot.plugin_runtime.providers:
                         return self._fail(execution, "model must name a configured provider/model")
                     # Settle any earlier dispatch of this run that never completed BEFORE
                     # context assembly: observers see unknown usage exactly once, and any
@@ -3428,7 +3222,7 @@ class Core:
                         raw_model=model,
                         provider_name=provider_name,
                         model_name=model_name,
-                        reasoning_effort=snapshot.config.model.reasoning_effort,
+                        reasoning_effort=snapshot.config.reasoning_effort,
                         abort_signal=effective_abort,
                     )
 
@@ -3614,7 +3408,7 @@ class Core:
                     ToolFailure(call.tool_name, "tool is outside this session's profile scope"),
                 )
                 continue
-            definition = self._definitions.get(call.tool_name)
+            definition = self._snapshot.definition_of(call.tool_name)
             if definition is None:
                 self._report(execution, call, ToolFailure(call.tool_name, "tool is not in the active capability revision"))
                 continue
@@ -3671,7 +3465,7 @@ class Core:
                             "owner": snapshot.owner_of(call.tool_name),
                             "effects": sorted(effect.value for effect in definition.effects),
                             "semantics": [],
-                            "replay_policy": definition.replay_policy_for(call.arguments),
+                            "replay_policy": definition.effective_replay_policy,
                             "logical_turn": execution.cursor.logical_turn,
                             "depth": cursor.deferred_depth,
                         },
@@ -3807,7 +3601,7 @@ class Core:
             invocation_id = raw_invocation if isinstance(raw_invocation, str) else None
         cursor.intent_sequence = None
         cursor.approval_sequence = None
-        definition = self._snapshot.definitions.get(call.tool_name)
+        definition = self._snapshot.definition_of(call.tool_name)
         declaration = intent.payload if intent is not None else {}
         diagnostic = result.diagnostics if isinstance(result, ToolFailure) else None
         _, projection_clipped = model_result_text(result)
@@ -4076,13 +3870,13 @@ class Core:
         # A crash can land between a child's terminal run commit and the parent fact that
         # publishes it. Rebuild the outcome from durable events; never rerun child work.
         try:
-            notices = self._recover_child_publications()
+            notices = self._delegation._recover_child_publications()
         except Exception:
             notices = []
         for parent_id, notice_id in notices:
             if self._closed:
                 return
-            self._deliver_child_notice(parent_id, notice_id)
+            self._delegation._deliver_child_notice(parent_id, notice_id)
         # Queued follow-ups and notices are durable messages: deliver each exact identity once.
         for session in self.store.sessions(workspace=str(self.workspace)):
             if self._closed:
@@ -4090,7 +3884,7 @@ class Core:
             if not self._admits_fresh_work(session):
                 continue
             for _ in range(8):
-                message = self._first_child_message(session.session_id)
+                message = self._delegation._first_child_message(session.session_id)
                 if message is None:
                     break
                 try:

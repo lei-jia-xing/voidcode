@@ -27,16 +27,17 @@ from starlette.exceptions import HTTPException
 from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.types import Receive, Scope, Send
 
-from ... import __version__
-from ...sdk.codec import _wire
-from ...sdk.commands import CommandCatalog, CommandResult
-from ...sdk.json_values import json_wire_object
-from ...sdk.services import SessionUsageReport
-from ...sdk.views import ViewsSnapshot
-from ..bootstrap import open_core
-from ..engine import Core, CoreResult
-from ..storage.store import SessionRecord, StoredEvent, inspect_existing_workspace
-from ..transcript import transcript_entry
+from voidcode import __version__
+from voidcode.bootstrap import open_core
+from voidcode.core.engine import Core, CoreResult
+from voidcode.core.storage.store import SessionRecord, StoredEvent, inspect_existing_workspace
+from voidcode.core.transcript import transcript_entry
+from voidcode.sdk.codec import _wire
+from voidcode.sdk.commands import CommandCatalog, CommandResult
+from voidcode.sdk.json_values import json_wire_object
+from voidcode.sdk.services import SessionUsageReport
+from voidcode.sdk.views import ViewsSnapshot
+
 from .models import (
     CheckpointBody,
     ConfirmRequest,
@@ -210,7 +211,7 @@ class CoreTransportApp(FastAPI):
         self._workspace = workspace
         self._state_dir = state_dir
         # An app born unfenced is already serving; a fenced child reports its validation
-        # stage until the supervisor promotes it.
+        # stage until promoted.
         self._stage = "serving" if not fenced else "validating"
         # Live follow streams, for the drain to wait on: a successful drain returns only after
         # every open stream ended with its restart frame, so no SIGTERM can race frame delivery.
@@ -228,7 +229,7 @@ class CoreTransportApp(FastAPI):
         core = await asyncio.to_thread(self._core_factory)
         self._core = core
         # The factory returning at all is the validation: a child whose generation cannot be
-        # served raises inside the factory instead, and uvicorn exits non-zero for the supervisor.
+        # served raises inside the factory instead, and uvicorn exits non-zero.
         if self._fenced:
             self._stage = "validated"
         try:
@@ -303,7 +304,7 @@ class CoreTransportApp(FastAPI):
         schemas = doc.setdefault("components", {}).setdefault("schemas", {})
         from pydantic import TypeAdapter
 
-        from ...sdk.views import (
+        from voidcode.sdk.views import (
             ChoicesViewData,
             ConfirmationViewData,
             DiffViewData,

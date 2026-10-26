@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from voidcode.sdk.workspace_queries import RULE_URI_PREFIX, RulePage
+from voidcode.capabilities.workspace_queries import RULE_URI_PREFIX, RulePage
 
 RULE_FILE_NAME = "AGENTS.md"
 LOCAL_RULE_FILE_NAME = "AGENTS.override.md"

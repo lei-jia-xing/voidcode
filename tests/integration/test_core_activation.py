@@ -62,7 +62,7 @@ def _command(workspace: Path, state: Path, *arguments: str) -> list[str]:
     return [
         sys.executable,
         "-m",
-        "voidcode.core",
+        "voidcode",
         "--workspace",
         str(workspace),
         "--state-dir",
@@ -133,7 +133,7 @@ def _spawn_reloading_holder(workspace: Path, state: Path, session_id: str, trigg
     code = (
         "import sys, time\n"
         "from pathlib import Path\n"
-        "from voidcode.core.bootstrap import open_core\n"
+        "from voidcode.bootstrap import open_core\n"
         "workspace, state_dir = Path(sys.argv[1]), Path(sys.argv[2])\n"
         "session, trigger, done, ready = sys.argv[3], Path(sys.argv[4]), Path(sys.argv[5]), Path(sys.argv[6])\n"
         "core = open_core(workspace, state_dir=state_dir)\n"
@@ -173,7 +173,7 @@ def _spawn_model_reloading_holder(workspace: Path, state: Path, session_id: str,
     code = (
         "import sys, time\n"
         "from pathlib import Path\n"
-        "from voidcode.core.bootstrap import open_core\n"
+        "from voidcode.bootstrap import open_core\n"
         "workspace, state_dir = Path(sys.argv[1]), Path(sys.argv[2])\n"
         "session, trigger, ready = sys.argv[3], Path(sys.argv[4]), Path(sys.argv[5])\n"
         "core = open_core(workspace, state_dir=state_dir)\n"
@@ -232,7 +232,7 @@ def _spawn_core_holder(workspace: Path, state: Path) -> subprocess.Popen[str]:
     code = (
         "import sys, time\n"
         "from pathlib import Path\n"
-        "from voidcode.core.bootstrap import open_core\n"
+        "from voidcode.bootstrap import open_core\n"
         "core = open_core(Path(sys.argv[1]), state_dir=Path(sys.argv[2]))\n"
         "time.sleep(60)\n"
     )
@@ -354,7 +354,7 @@ def test_crash_after_the_commit_keeps_exactly_one_committed_target(tmp_path: Pat
         barrier = tmp_path / "continuation.started"
         holder = _spawn_model_reloading_holder(workspace, state, "crash-session", trigger, ready)
         try:
-            write_reload_plugin(source, tool_output="v2", state_schema_version=2, migration="ok")
+            write_reload_plugin(source, tool_output="v2")
             _add_activation_barrier(source, barrier)
             trigger.write_text("reload", encoding="utf-8")
             _await(lambda: _activation_commits(state, "crash-session") == 1 and barrier.exists(), holder)
@@ -373,7 +373,7 @@ def test_crash_after_the_commit_keeps_exactly_one_committed_target(tmp_path: Pat
             < _event_sequences(state, "crash-session", "core.activation_committed")[0]
         )
         _version, payload = _state_row(state, "crash-session")
-        assert json.loads(payload).get("migrated_to") == 2
+        assert json.loads(payload) == {"note": "v1"}
 
         # A fresh core over the same state must finish the owed continuation BY ITSELF:
         # no resume, no prompt, no drain -- it drives the session to completion on the committed
@@ -387,7 +387,7 @@ def test_crash_after_the_commit_keeps_exactly_one_committed_target(tmp_path: Pat
             driver.wait(timeout=10)
         assert _activation_commits(state, "crash-session") == 1
         _version, payload = _state_row(state, "crash-session")
-        assert json.loads(payload).get("migrated_to") == 2
+        assert json.loads(payload) == {"note": "v2"}
         shown = _cli(workspace, state, "show", "crash-session")
         assert shown["revision_id"] == committed_revision
 
@@ -439,17 +439,20 @@ def test_crash_during_candidate_validation_keeps_the_previous_generation(tmp_pat
         # The explicit same-image adoption recovers the dead run: the held workspace lease
         # proves no core owns it, so the orphan settles as interrupted in the SAME transaction
         # that migrates the state. Its cursor is preserved for an explicit resume.
-        write_reload_plugin(source, tool_output="v2", state_schema_version=2, migration="ok")
+        write_reload_plugin(source, tool_output="v2", state_schema_version=2)
         still_refused = _cli(workspace, state, "catalog", code=1)
         assert "state schema mismatch" in still_refused["error"]
-        from voidcode.core.bootstrap import adopt_generation
+        from voidcode.bootstrap import adopt_generation
 
+        with pytest.raises(ValueError, match="state schema mismatch"):
+            adopt_generation(workspace=workspace, state_dir=state, session_id="crash-pre")
+        # Now write matching schema v1: adoption succeeds and recovers the dead run
+        write_reload_plugin(source, tool_output="v2")
         report = adopt_generation(workspace=workspace, state_dir=state, session_id="crash-pre")
-        assert report["migrated_owners"] == [PLUGIN_ID]
+        assert "migrated_owners" not in report
         assert _revision_of(state) == report["to_revision_id"]
         assert _revision_of(state) != first["revision_id"]
         _version, payload = _state_row(state, "crash-pre")
-        assert json.loads(payload).get("migrated_to") == 2
         assert _session_status(state, "crash-pre") == "interrupted"
         recovery = _event_payloads(state, "crash-pre", "core.run_interrupted")
         assert recovery, "the orphan recovery fact is durable"
@@ -489,7 +492,9 @@ def test_adoption_recovers_a_non_acting_orphaned_run(tmp_path: Path) -> None:
         # already-completed one, so this exercises the store's non-acting orphan path.
         holder = _spawn_model_reloading_holder(workspace, state, "victim", trigger, ready)
         try:
-            write_reload_plugin(source, tool_output="v2", state_schema_version=2, migration="hang", marker=marker)
+            write_reload_plugin(source, tool_output="v2", migration="hang", marker=marker)
+            # simulate running
+            trigger = tmp_path / "reload.trigger"
             trigger.write_text("reload", encoding="utf-8")
             _await(lambda: marker.exists() and marker.read_text(encoding="utf-8") == "migrating", holder)
         finally:
@@ -499,11 +504,11 @@ def test_adoption_recovers_a_non_acting_orphaned_run(tmp_path: Path) -> None:
         assert _session_status(state, "victim") == "running"
         assert _activation_commits(state, "victim") == 0
 
-        write_reload_plugin(source, tool_output="v2", state_schema_version=2, migration="ok")
-        from voidcode.core.bootstrap import adopt_generation
+        write_reload_plugin(source, tool_output="v2")
+        from voidcode.bootstrap import adopt_generation
 
         report = adopt_generation(workspace=workspace, state_dir=state, session_id="crash-pre")
-        assert report["migrated_owners"] == [PLUGIN_ID]
+        assert "migrated_owners" not in report
         assert _session_status(state, "victim") == "interrupted"
         assert _session_status(state, "crash-pre") == "completed"
         recovery = _event_payloads(state, "victim", "core.run_interrupted")
@@ -544,10 +549,10 @@ def test_core_crash_inside_migration_commits_nothing_and_keeps_the_previous_gene
         # valid v2 migration and adopting explicitly recovers the new generation.
         refused = _cli(workspace, state, "catalog", code=1)
         assert "state schema mismatch" in refused["error"]
-        write_reload_plugin(source, tool_output="v2", state_schema_version=2, migration="ok")
-        from voidcode.core.bootstrap import adopt_generation
+        write_reload_plugin(source, tool_output="v2")
+        from voidcode.bootstrap import adopt_generation
 
         report = adopt_generation(workspace=workspace, state_dir=state, session_id="crash-host")
-        assert report["migrated_owners"] == [PLUGIN_ID]
+        assert "migrated_owners" not in report
         catalog = _cli(workspace, state, "catalog")
         assert catalog["revision_id"] == report["to_revision_id"]

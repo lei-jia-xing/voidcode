@@ -29,9 +29,10 @@ from tests.fixtures.s5_plugin import PLUGIN_ID as S5_PLUGIN_ID
 from tests.fixtures.s5_plugin import PROBE_TOOL as S5_PROBE_TOOL
 from tests.fixtures.s5_plugin import write_s5_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.core.bootstrap import open_core
+from voidcode.bootstrap import open_core
 from voidcode.core.engine import DELEGATION_SPAWN_BUDGET, Core
-from voidcode.sdk.services import ChildOutcome, ChildSendReceipt, child_completion_notice_id
+from voidcode.core.events import child_completion_notice_id
+from voidcode.sdk.services import ChildOutcome, ChildSendReceipt
 
 PLUGIN_ID = "collaboration-fixture"
 ACK_TOOL = "collaboration_ack"
@@ -250,7 +251,7 @@ def test_restart_republishes_an_uncommitted_child_fact_once_without_rerunning(
         parent = core.create_session("parent").session_id
 
         # Simulate a crash after the child's terminal commit and before its parent fact.
-        monkeypatch.setattr(core, "_publish_child_terminal", lambda *args, **kwargs: None)
+        monkeypatch.setattr(core._delegation, "_publish_child_terminal", lambda *args, **kwargs: None)
         child = core.spawn_child(parent, "child prompt", notify_on_completion=True)
         _wait_for(lambda: core.session(child).status == "completed", what="the child's terminal commit")
         run_id = core.session(child).run_id
@@ -364,7 +365,7 @@ def _assert_contiguous_prefix(core: Core, session_id: str) -> list[str]:
 def _gated_publication(core: Core, release: threading.Event) -> Iterator[threading.Event]:
     """Hold the next real child publication at entry; release it when the test's event fires."""
     ready = threading.Event()
-    original = core._publish_child_terminal
+    original = core._delegation._publish_child_terminal
     used = False
 
     def gated_publish(*args: object, **kwargs: object) -> None:
@@ -377,11 +378,11 @@ def _gated_publication(core: Core, release: threading.Event) -> Iterator[threadi
         assert release.wait(timeout=30), "publication release never arrived"
         original(*args, **kwargs)
 
-    core._publish_child_terminal = gated_publish  # type: ignore[method-assign]
+    core._delegation._publish_child_terminal = gated_publish  # type: ignore[method-assign]
     try:
         yield ready
     finally:
-        core._publish_child_terminal = original  # type: ignore[method-assign]
+        core._delegation._publish_child_terminal = original  # type: ignore[method-assign]
 
 
 @contextmanager
@@ -433,7 +434,7 @@ def _gated_first_two_calls(store: object, method: str, barrier: threading.Barrie
 def _gated_first_payload(core: Core, release: threading.Event) -> Iterator[threading.Event]:
     """Hold the first real fact-payload build (before its history snapshot read) at entry."""
     ready = threading.Event()
-    original = core._child_fact_payload
+    original = core._delegation._child_fact_payload
     used = False
 
     def gated_payload(*args: object, **kwargs: object) -> dict[str, object]:
@@ -445,11 +446,11 @@ def _gated_first_payload(core: Core, release: threading.Event) -> Iterator[threa
         assert release.wait(timeout=30), "payload release never arrived"
         return original(*args, **kwargs)  # type: ignore[arg-type]
 
-    core._child_fact_payload = gated_payload  # type: ignore[method-assign]
+    core._delegation._child_fact_payload = gated_payload  # type: ignore[method-assign]
     try:
         yield ready
     finally:
-        core._child_fact_payload = original  # type: ignore[method-assign]
+        core._delegation._child_fact_payload = original  # type: ignore[method-assign]
 
 
 def test_concurrent_child_publication_does_not_duplicate_the_parent_prefix(tmp_path: Path) -> None:
@@ -807,6 +808,7 @@ def test_restart_with_out_of_order_facts_publishes_nothing_twice(tmp_path: Path)
         _turn(output="A answer"),
         _turn(output="B answer"),
         _turn(output="parent after restart"),
+        _turn(output="parent second notice"),
     ]
     with _server(replies) as server:
         core = _open(tmp_path, server)
@@ -1109,7 +1111,7 @@ def test_restart_recovers_an_older_missing_fact_beside_a_newer_run_without_repla
         assert {str(fact["run_id"]) for fact in _child_facts(reopened, parent)} == {receipt.run_id}, (
             "A's fact is genuinely absent before recovery runs"
         )
-        reopened._recover_child_publications()
+        reopened._delegation._recover_child_publications()
         facts_after = {str(fact["run_id"]): fact for fact in _child_facts(reopened, parent)}
         assert set(facts_after) == {run_a, receipt.run_id}, "A recovered; B untouched"
         assert facts_after[run_a]["output"] == "A answer"

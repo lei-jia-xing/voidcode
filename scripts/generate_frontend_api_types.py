@@ -39,7 +39,7 @@ _HEADER = """\
 
 
 def _core_openapi_document() -> dict[str, object]:
-    from voidcode.core.transport.http import create_core_app_with_factory
+    from voidcode.transport.http import create_core_app_with_factory
 
     app = create_core_app_with_factory(core_factory=lambda: None)
     return app.openapi()

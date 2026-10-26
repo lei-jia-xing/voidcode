@@ -775,7 +775,6 @@ def test_create_plugin_registers_the_command_and_the_observer() -> None:
     assert plugin.observer is not None
     assert plugin.tools == ()
     assert plugin.context is None
-    assert plugin.migrate_state is None
 
 
 def test_summary_uses_reported_resources_and_actual_children_with_arbitrary_tool_names():

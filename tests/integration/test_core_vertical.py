@@ -60,7 +60,7 @@ def _command(workspace: Path, state: Path, *arguments: str) -> list[str]:
     return [
         sys.executable,
         "-m",
-        "voidcode.core",
+        "voidcode",
         "--workspace",
         str(workspace),
         "--state-dir",

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from voidcode.capabilities.frontmatter import load_frontmatter_mapping, split_frontmatter
+from voidcode.capabilities.workspace_queries import RULE_PAGES, RulePage, RulePageRequest
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
 from voidcode.sdk.hooks import ContextContribution, InvocationFinishedFact, PluginFact
 from voidcode.sdk.invocation import ToolContext
@@ -29,7 +30,6 @@ from voidcode.sdk.tools import (
     ToolResult,
     ToolSuccess,
 )
-from voidcode.sdk.workspace_queries import RULE_PAGES, RulePage, RulePageRequest
 
 from .rules import build_rule_catalog, read_rule_page, render_file_rules, rulebook_prompt_context, runtime_file_rule_contexts
 

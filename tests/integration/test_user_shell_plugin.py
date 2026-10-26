@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from voidcode.core.bootstrap import open_core
+from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
 
 _SHELL_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "user_shell"

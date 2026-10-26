@@ -417,7 +417,6 @@ class CronListTool:
         input_schema={"type": "object", "properties": {}, "additionalProperties": False},
         effects=frozenset({ToolEffect.READ}),
         replay_policy="safe",
-        supports_parallel=True,
     )
 
     def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:

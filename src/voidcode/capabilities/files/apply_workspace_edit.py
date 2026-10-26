@@ -9,6 +9,7 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from voidcode.capabilities.workspace_queries import DOCUMENT_STATES, DocumentState, DocumentStateRequest
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.queries import QueryContractError
@@ -26,7 +27,6 @@ from voidcode.sdk.tools import (
     ToolResult,
     ToolSuccess,
 )
-from voidcode.sdk.workspace_queries import DOCUMENT_STATES, DocumentState, DocumentStateRequest
 
 from ._replace import replace_file
 from .edit_tool import summarize_diff

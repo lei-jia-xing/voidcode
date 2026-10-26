@@ -56,9 +56,8 @@ rename" below.
 
 ## Across the rename (one direction, stated once)
 
-- What the rename changed (new builds only): the Python package is
-  `src/voidcode/core/` (`python -m voidcode.core`, console script
-  `voidcode.core.__main__:main`, `Core`/`CoreResult`/`CoreConfig`/`open_core`/
+  `src/voidcode/` (`python -m voidcode`, console script
+  `voidcode.cli:main`, `Core`/`CoreResult`/`open_core`/
   `create_core_app*`), the reserved names are `core.reload`/`core_reload`, health
   reports `core_version`, new revision pins record
   `image: {digest, core_version, launch_protocol}`, the supervisor and server print
@@ -139,9 +138,9 @@ without changing logical content (row-level dumps are identical either way).
 The dry-run then executes the candidate's plugin code in a throwaway runtime, because a generation
 that cannot load or migrate must fail here and not after downtime: the target generation is
 built with no store and no callbacks. The existing state-copy planner runs its real
-`migrate_state` / `prepare_deactivate` transforms through it; the plan is reported
-(`migrated_owners`, `deactivated_owners`) and discarded. Admission, load, and transform failures
-are `admission_failed`, `plugin_load_failed`, and `migration_failed`, each naming the owner.
+`prepare_deactivate` transforms through it; the plan is reported
+(`deactivated_owners`) and discarded. Admission, load, and transform failures
+are `admission_failed`, `plugin_load_failed`, and `deactivation_failed`, each naming the owner.
 
 ## Drain: two modes, two phases, one pause rule
 

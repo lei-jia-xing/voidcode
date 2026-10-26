@@ -1,13 +1,10 @@
 """Readable Markdown rendering of committed session events.
 
 One shared projection, used by the core's immutable child-history snapshot and by the
-delegation plugin's paged ``task history`` operation, so both consumers agree on what a
-transcript looks like. It knows durable event shapes, never a provider or plugin module:
-user messages, assistant output and tool calls, tool results, progress reports, and child
-facts. Provider reasoning and response metadata are deliberately not rendered.
-
-Stored history is never truncated: the snapshot spill streams every block, and live reads are
-paged at block/byte granularity so a caller can always reach the full content.
+history services, so both agree on what a transcript looks like. It knows durable event
+shapes, never a provider or plugin module: user messages, assistant output and tool calls,
+tool results, progress reports, and child facts. Provider reasoning and response metadata
+are deliberately not rendered.
 """
 
 from __future__ import annotations
@@ -66,7 +63,7 @@ def render_event_block(event: HistoryEvent) -> str | None:
             for call in turn.tool_calls:
                 encoded = encode_tool_call(call)
                 lines.append(f"### call {call.tool_name}")
-                lines.append(_json(encoded.get("function", encoded)))
+                lines.append(_json(encoded))
             return "\n".join(lines)
         if event_type in {"core.tool_completed", "core.tool_interrupted"}:
             wire = _as_mapping(payload.get("result"))
@@ -115,12 +112,12 @@ def iter_event_blocks(events: Iterable[HistoryEvent]) -> Iterator[str]:
 
 def utf8_cut(raw: bytes, limit: int) -> int:
     """Largest UTF-8 boundary <= limit, or the first character when it cannot fit."""
-    cut = min(limit, len(raw))
-    if cut >= len(raw):
+    if limit >= len(raw):
         return len(raw)
+    cut = limit
     while cut > 0 and raw[cut] & 0xC0 == 0x80:
         cut -= 1
-    if cut <= 0:
+    if cut == 0:
         cut = 1
         while cut < len(raw) and raw[cut] & 0xC0 == 0x80:
             cut += 1
@@ -132,43 +129,39 @@ def render_history_page(
     *,
     after_sequence: int = 0,
     offset: int = 0,
-    max_bytes: int = PAGE_BYTES,
+    page_bytes: int = PAGE_BYTES,
+    max_bytes: int | None = None,
 ) -> HistoryPage:
-    """Render one page from a byte cursor; a single large block is split, never clipped.
-
-    The cursor is ``(after_sequence, offset)``: events must be the durable page that starts
-    after ``after_sequence``; ``offset`` is the byte offset into the first block that follows.
-    """
-    if offset < 0:
-        raise ValueError("history offset must be non-negative")
-    if max_bytes <= 0:
-        raise ValueError("history page size must be positive")
+    """Render one page from a byte cursor; a single large block is split, never clipped."""
+    limit_bytes = page_bytes if max_bytes is None else max_bytes
     chunks: list[str] = []
-    used = 0
+    used_bytes = 0
     cursor_sequence = after_sequence
-    pending_offset = offset
     for event in events:
         block = render_event_block(event)
         if block is None:
             cursor_sequence = event.sequence
             continue
-        if getattr(event, "payload_truncated", False):
-            block += "\n[payload truncated by event bound]"
-        block_offset = pending_offset
-        raw = block.encode("utf-8")[block_offset:]
-        pending_offset = 0
-        if not raw:
-            cursor_sequence = event.sequence
-            continue
-        separator = 2 if chunks else 0
-        remaining = max_bytes - used - separator
-        if remaining <= 0:
-            return HistoryPage("\n\n".join(chunks), cursor_sequence, block_offset, True)
-        if len(raw) > remaining:
-            cut = utf8_cut(raw, remaining)
-            chunks.append(raw[:cut].decode("utf-8"))
-            return HistoryPage("\n\n".join(chunks), cursor_sequence, block_offset + cut, True)
-        chunks.append(raw.decode("utf-8"))
-        used += len(raw) + separator
-        cursor_sequence = event.sequence
+        raw = block.encode("utf-8")
+        if offset > 0:
+            raw = raw[offset:]
+            offset = 0
+        while raw:
+            remaining = limit_bytes - used_bytes
+            overhead = 2 if chunks else 0
+            budget = remaining - overhead
+            if budget <= 0:
+                return HistoryPage("\n\n".join(chunks), cursor_sequence, len(block.encode("utf-8")) - len(raw), True)
+            if len(raw) <= budget:
+                chunks.append(raw.decode("utf-8"))
+                used_bytes += len(raw) + overhead
+                raw = b""
+                cursor_sequence = event.sequence
+                break
+            cut = utf8_cut(raw, budget)
+            chunk = raw[:cut].decode("utf-8")
+            chunks.append(chunk)
+            remaining_bytes = len(raw) - cut
+            next_offset = len(block.encode("utf-8")) - remaining_bytes
+            return HistoryPage("\n\n".join(chunks), cursor_sequence, next_offset, True)
     return HistoryPage("\n\n".join(chunks), cursor_sequence, 0, False)

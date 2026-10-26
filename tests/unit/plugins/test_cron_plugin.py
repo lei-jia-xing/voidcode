@@ -536,7 +536,6 @@ def test_plugin_registers_tools_loop_command_and_observer() -> None:
     assert [tool.definition.name for tool in plugin.tools] == ["cron_create", "cron_delete", "cron_list"]
     assert [command.definition.name for command in plugin.commands] == ["loop"]
     assert plugin.observer is cron_observer
-    assert plugin.migrate_state is None
     assert plugin.context is None
     assert plugin.providers == ()
     assert plugin.views == ()

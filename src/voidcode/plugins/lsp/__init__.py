@@ -13,8 +13,8 @@ already-opened documents without starting a server or sending didOpen/didChange.
 from collections.abc import Mapping
 from pathlib import Path
 
+from voidcode.capabilities.workspace_queries import DOCUMENT_STATES, DocumentState, DocumentStateRequest
 from voidcode.sdk.plugin import Plugin, PluginQuery, PluginQueryCaller
-from voidcode.sdk.workspace_queries import DOCUMENT_STATES, DocumentState, DocumentStateRequest
 
 from .inventory import LspInventoryCommand
 from .lsp_manager import LspManager, build_lsp_manager

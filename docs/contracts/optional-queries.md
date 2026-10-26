@@ -7,7 +7,7 @@ services and must remain read-only. Queries are a trusted-code convention, not a
 
 ## Typed requests and answers
 
-`voidcode.sdk.queries.QueryContract` binds a Pydantic request type to a typed answer decoder.
+`voidcode.capabilities.workspace_queries` binds Pydantic request types to typed answer decoders.
 The request model defines strict ingress validation, unknown-field rejection, and defaults.
 The answer decoder validates the consumer's ingress, including request/answer correlation
 where needed (a document answer must name the exact requested canonical path).
@@ -16,7 +16,7 @@ A provider registers the shared contract, without restating parameter parsing:
 
 ```python
 from voidcode.sdk.plugin import Plugin, PluginQueryCaller
-from voidcode.sdk.workspace_queries import RULE_PAGES, RulePage, RulePageRequest
+from voidcode.capabilities.workspace_queries import RULE_PAGES, RulePage, RulePageRequest
 
 
 def page(request: RulePageRequest, caller: PluginQueryCaller) -> RulePage | None:
@@ -32,7 +32,7 @@ def create_plugin(config):
 The consumer uses the same contract:
 
 ```python
-from voidcode.sdk.workspace_queries import RULE_PAGES, RulePageRequest
+from voidcode.capabilities.workspace_queries import RULE_PAGES, RulePageRequest
 
 page = RULE_PAGES.ask(services, RulePageRequest(uri="voidcode://rule/style"))
 ```

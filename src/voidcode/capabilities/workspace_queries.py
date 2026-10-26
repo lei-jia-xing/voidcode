@@ -12,9 +12,9 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .plugin import PluginQuery, PluginQueryCaller
-from .queries import QueryContractError
-from .services import PluginServices
+from voidcode.sdk.plugin import PluginQuery, PluginQueryCaller
+from voidcode.sdk.queries import QueryContractError
+from voidcode.sdk.services import PluginServices
 
 RULE_URI_PREFIX = "voidcode://rule/"
 RULE_PAGE_QUERY = "workspace.rule_page"
@@ -89,13 +89,10 @@ class RulePageRequest(BaseModel):
     limit: int = Field(default=2000, ge=1, le=2000)
 
 
-class DocumentVersionRequest(BaseModel):
+class DocumentStateRequest(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
 
     path: str = Field(min_length=1)
-
-
-DocumentStateRequest = DocumentVersionRequest
 
 
 class _RulePageQuery:
@@ -128,7 +125,7 @@ class _RulePageQuery:
 class _DocumentStateQuery:
     name: str = DOCUMENT_VERSION_QUERY
 
-    def ask(self, services: PluginServices, request: DocumentVersionRequest) -> DocumentState | None:
+    def ask(self, services: PluginServices, request: DocumentStateRequest) -> DocumentState | None:
         value = services.query(self.name, request.model_dump())
         if value is None:
             return None
@@ -139,9 +136,9 @@ class _DocumentStateQuery:
             raise QueryContractError(f"query {self.name!r} answered outside its request/answer contract")
         return state
 
-    def bind(self, handler: Callable[[DocumentVersionRequest, PluginQueryCaller], DocumentState | None]) -> PluginQuery:
+    def bind(self, handler: Callable[[DocumentStateRequest, PluginQueryCaller], DocumentState | None]) -> PluginQuery:
         def invoke(arguments: Mapping[str, object], caller: PluginQueryCaller) -> Mapping[str, object] | None:
-            req = DocumentVersionRequest.model_validate(arguments)
+            req = DocumentStateRequest.model_validate(arguments)
             ans = handler(req, caller)
             return None if ans is None else ans.as_payload()
 

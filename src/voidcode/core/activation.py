@@ -1,26 +1,16 @@
-"""Plugin admission: configured trusted sources become the runtime inputs of one generation.
-
-Plugins are trusted code equal to the application. Admission resolves each configured plugin's
-source directory against the installation or the workspace, injects the resolved provider
-credentials the core owns, and hands the runtime the same runtime objects a plugin factory will
-register. Nothing is copied, hashed, or pinned: a restart re-imports the current source with the
-recorded configuration, and a generation is a composition snapshot with an opaque id. The private
-snapshot (0600) is the only place credentials are persisted.
-"""
+"""Core capability generation, activation, state copies, and private snapshot storage."""
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 import jsonschema
 
-from ..sdk.config import CoreConfig, CorePluginEntry, parse_core_config
 from ..sdk.json_values import json_wire_object, own_json_object
 from ..sdk.plugin import StateSchema
 from .plugins import PluginSource
@@ -33,58 +23,35 @@ from .storage.store import (
 
 __all__ = [
     "Admission",
-    "BUNDLED_PLUGIN_IDS",
-    "PRIVATE_SNAPSHOT_VERSION",
-    "admit_live",
-    "bundled_sources",
-    "config_from_snapshot",
+    "ExecutionConfig",
+    "ExecutionPolicy",
+    "StateCopyPlan",
+    "StateCopySource",
     "load_private_snapshot",
-    "merged_entries",
     "plan_state_copies",
-    "resolved_providers",
-    "restore_admission",
     "snapshot_path",
-    "validate_providers",
     "validate_state_payload",
     "write_private_snapshot",
 ]
 
-#: The private snapshot shape this build reads and writes. Older shapes are refused, never guessed.
-PRIVATE_SNAPSHOT_VERSION = 2
-
 _PRIVATE_DIR_NAME = "private"
 
-#: The shipped default-on plugin set: every product mechanism is an ordinary plugin, so this
-#: list is the product surface. A workspace can disable any of them by id.
-BUNDLED_PLUGIN_IDS = (
-    "ast_grep",
-    "btw",
-    "compaction",
-    "cron",
-    "delegation",
-    "effectiveness",
-    "exec",
-    "files",
-    "goal",
-    "hooks",
-    "lsp",
-    "mcp",
-    "plan",
-    "providers",
-    "review",
-    "session_info",
-    "skills",
-    "todo",
-    "user_shell",
-    "web",
-)
+
+@dataclass(frozen=True, slots=True)
+class ExecutionPolicy:
+    """Execution policy governing approval and read-only constraints."""
+
+    approval_mode: Literal["ask", "write", "yolo"] = "ask"
+    read_only: bool = False
 
 
-def bundled_sources(package_root: Path | None = None) -> dict[str, Path]:
-    """The plugin sources shipped with one installation: id -> source directory."""
-    root = Path(__file__).resolve().parents[1] if package_root is None else Path(package_root)
-    bundled = root / "plugins"
-    return {plugin_id: bundled / plugin_id.replace("-", "_") for plugin_id in BUNDLED_PLUGIN_IDS}
+@dataclass(frozen=True, slots=True)
+class ExecutionConfig:
+    """Core execution options for model selection and policy."""
+
+    model: str | None = None
+    reasoning_effort: str | int | None = None
+    policy: ExecutionPolicy = ExecutionPolicy()
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,7 +62,8 @@ class Admission:
     plugins: tuple[PluginSource, ...]
     revision_payload: Mapping[str, object]
     private_snapshot: Mapping[str, object]
-    config: CoreConfig
+    config: ExecutionConfig
+    validate: Callable[[Sequence[str]], None] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.revision_id, str) or not self.revision_id:
@@ -107,117 +75,6 @@ class Admission:
     @property
     def plugin_ids(self) -> frozenset[str]:
         return frozenset(plugin.plugin_id for plugin in self.plugins)
-
-
-def merged_entries(config: CoreConfig, bundled_sources_: Mapping[str, Path]) -> dict[str, CorePluginEntry]:
-    """Every configured entry: the shipped bundled defaults first, the user's entries on top.
-
-    Bundled ids are the product surface; the configuration can disable or reconfigure one by id,
-    and can add an external plugin with an explicit ``path``.
-    """
-    entries = {plugin_id: config.plugins.get(plugin_id, CorePluginEntry()) for plugin_id in bundled_sources_}
-    entries.update(config.plugins)
-    return entries
-
-
-def resolved_providers(config: CoreConfig) -> dict[str, object]:
-    """Resolve the private provider vocabulary once: configured fields plus the environment key.
-
-    Provider names are opaque: the core neither knows nor validates a wire protocol. Each name
-    reaches every plugin factory as the reserved ``providers`` config key, flattened to the
-    vendor's own vocabulary plus the two typed fields the core resolves itself.
-    """
-    private: dict[str, object] = {}
-    for name, entry in config.providers.items():
-        if entry.base_url is None:
-            raise ValueError(f"provider {name} requires an explicit base_url")
-        key = entry.api_key or os.environ.get(f"{name.upper().replace('-', '_')}_API_KEY")
-        private[name] = {**entry.extra, "api_key": key, "base_url": entry.base_url}
-    return private
-
-
-def _plugin_root(
-    workspace: Path,
-    bundled: Mapping[str, Path],
-    plugin_id: str,
-    entry: CorePluginEntry,
-) -> Path:
-    if entry.path is not None:
-        root = (workspace / entry.path).resolve(strict=True)
-        if not root.is_dir():
-            raise ValueError(f"plugin {plugin_id} path is not a directory: {root}")
-    else:
-        source = bundled.get(plugin_id)
-        if source is None:
-            raise ValueError(f"plugin {plugin_id} requires an explicit path")
-        if not source.is_dir():
-            raise ValueError(f"bundled plugin {plugin_id} is missing from this installation: {source}")
-        root = source.resolve(strict=True)
-    if not (root / "__init__.py").is_file():
-        raise ValueError(f"plugin {plugin_id} source is not a package with an __init__.py: {root}")
-    return root
-
-
-def admit_live(
-    config: CoreConfig,
-    *,
-    workspace: Path,
-    bundled_sources: Mapping[str, Path],
-) -> tuple[PluginSource, ...]:
-    """Resolve every enabled configured plugin to a runtime input; imports no plugin code.
-
-    The resolved provider credentials are injected as the reserved ``providers`` config key on
-    every plugin factory config; a plugin may not configure provider credentials itself.
-    """
-    workspace = Path(workspace).resolve(strict=True)
-    providers = resolved_providers(config)
-    plugins: list[PluginSource] = []
-    for plugin_id, entry in sorted(merged_entries(config, bundled_sources).items()):
-        if not entry.enabled:
-            continue
-        root = _plugin_root(workspace, bundled_sources, plugin_id, entry)
-        if "providers" in entry.config:
-            raise ValueError(f"plugin {plugin_id} must configure provider credentials in the root providers section")
-        resolved = dict(entry.config)
-        if providers:
-            resolved["providers"] = providers
-        plugins.append(PluginSource(root=root, plugin_id=plugin_id, config=resolved))
-    return tuple(plugins)
-
-
-def restore_admission(
-    payload: Mapping[str, object],
-    snapshot: Mapping[str, object],
-    *,
-    revision_id: str,
-    workspace: Path,
-    bundled_sources: Mapping[str, Path],
-) -> Admission:
-    """Rebuild a generation from durable records, importing the CURRENT plugin source.
-
-    The recorded configuration and credentials are the truth; the source bytes are the ones this
-    installation ships now (no byte pin exists). Everything is type-checked: a stored snapshot
-    either restores exactly or the core refuses to open.
-    """
-    payload = json_wire_object(payload)
-    snapshot = json_wire_object(snapshot)
-    digest = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
-    if payload.get("private_config_sha256") != digest:
-        raise ValueError("private configuration snapshot does not match the revision it belongs to")
-    config = config_from_snapshot(snapshot)
-    plugins = admit_live(config, workspace=workspace, bundled_sources=bundled_sources)
-    recorded = payload.get("plugins")
-    if not isinstance(recorded, list) or not all(isinstance(plugin_id, str) for plugin_id in recorded):
-        raise ValueError("revision payload has no plugin composition")
-    if set(recorded) != {plugin.plugin_id for plugin in plugins}:
-        raise ValueError("recorded plugin composition does not match the recorded configuration")
-    return Admission(
-        revision_id=revision_id,
-        plugins=plugins,
-        revision_payload=payload,
-        private_snapshot=snapshot,
-        config=config,
-    )
 
 
 def snapshot_path(state_dir: Path, revision_id: str) -> Path:
@@ -275,34 +132,11 @@ def validate_state_payload(payload: Mapping[str, object], state: StateSchema | N
     return owned
 
 
-def validate_providers(config: CoreConfig, registered: Sequence[str]) -> None:
-    """A configured provider name must be a name some admitted plugin actually registered.
-
-    The init catalog is the proof of registration; the configured root section is the authority
-    for which names may resolve credentials. A typo fails visibly instead of silently disabling
-    model execution.
-    """
-    if not config.providers:
-        return
-    names = set(registered)
-    missing = sorted(set(config.providers) - names)
-    if missing:
-        raise ValueError(f"provider {missing[0]!r} is not registered by any admitted plugin")
-    model = config.model.model
-    if model is not None:
-        provider_name, separator, model_name = model.partition("/")
-        if not separator or not model_name or provider_name not in config.providers:
-            raise ValueError("model must name a configured provider/model")
-        if provider_name not in names:
-            raise ValueError(f"model provider {provider_name!r} is not registered by any admitted plugin")
-
-
 @dataclass(frozen=True, slots=True)
 class StateCopyPlan:
     """The owner state copies one activation transaction will write, and who they belong to."""
 
     updates: tuple[StagedStateUpdate, ...]
-    migrated_owners: tuple[str, ...] = ()
     deactivated_owners: tuple[str, ...] = ()
 
 
@@ -322,12 +156,11 @@ def plan_state_copies(
     candidate_states: Mapping[str, StateSchema],
     deactivate: Callable[[str, Mapping[str, object], str, str, int | None], Mapping[str, object]],
 ) -> StateCopyPlan:
-    """Copy final owner state into the candidate generation with the right pure transform per row.
+    """Validate or deactivate owner state for the candidate generation.
 
-    Every row is transformed at most once: an owner admitted by the candidate is migrated to
-    the candidate's declared state schema version (or validated against it when no migration is
-    needed), an owner the candidate does not admit is deactivated by the runtime that still holds
-    its schema, and an owner that is neither stays byte-identical.
+    An owner admitted by the candidate must match the candidate's declared state schema version
+    and payload schema (version mismatch is explicitly rejected). An owner the candidate does not
+    admit is deactivated by the runtime that still holds its schema.
     """
     updates: list[StagedStateUpdate] = []
     deactivated: list[str] = []
@@ -357,26 +190,4 @@ def plan_state_copies(
                     )
                 )
                 deactivated.append(row.owner)
-    return StateCopyPlan(updates=tuple(updates), migrated_owners=(), deactivated_owners=tuple(sorted(set(deactivated))))
-
-
-def config_from_snapshot(snapshot: Mapping[str, object]) -> CoreConfig:
-    """Rebuild the effective configuration a stored revision was admitted with.
-
-    The snapshot's model/policy/providers/plugins shape is the same shape ``voidcode.json`` has
-    (the private snapshot is just credential-bearing), so the one strict parser validates it.
-    """
-    if snapshot.get("version") != PRIVATE_SNAPSHOT_VERSION:
-        raise ValueError(
-            "private configuration snapshot predates this build; this build reads only its own snapshot shape: start a fresh state directory"
-        )
-    missing = [name for name in ("providers", "model", "policy", "plugins") if name not in snapshot]
-    if missing:
-        raise ValueError("private configuration snapshot is missing " + ", ".join(missing))
-    sections: dict[str, object] = {}
-    for name in ("model", "policy", "providers", "plugins"):
-        section = snapshot[name]
-        if not isinstance(section, Mapping):
-            raise ValueError(f"private configuration snapshot section {name!r} must be an object")
-        sections[name] = json_wire_object(section)
-    return parse_core_config({"schema_version": 1, **sections})
+    return StateCopyPlan(updates=tuple(updates), deactivated_owners=tuple(sorted(set(deactivated))))

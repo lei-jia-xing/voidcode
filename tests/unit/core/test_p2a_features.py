@@ -11,10 +11,10 @@ from pathlib import Path
 
 import pytest
 
+from voidcode.core.activation import ExecutionConfig, ExecutionPolicy
 from voidcode.core.engine import Core
 from voidcode.core.plugins import PluginSource
 from voidcode.core.storage.store import EventDraft
-from voidcode.sdk.config import CoreConfig, CoreModelConfig, CorePolicyConfig, CoreProviderEntry
 
 
 def make_p2a_plugin(
@@ -299,10 +299,9 @@ def make_configured_core(
     )
     plugin_source = PluginSource(root=root, plugin_id="hello-state", config={})
 
-    config = CoreConfig(
-        model=CoreModelConfig(model="endpoint/test-model" if include_provider else None),
-        providers={"endpoint": CoreProviderEntry(base_url="http://127.0.0.1:1/v1")} if include_provider else {},
-        policy=CorePolicyConfig(approval_mode="ask", read_only=read_only),
+    config = ExecutionConfig(
+        model="endpoint/test-model" if include_provider else None,
+        policy=ExecutionPolicy(approval_mode="ask", read_only=read_only),
     )
     core = Core(
         workspace=workspace,
@@ -566,7 +565,7 @@ def test_p2a_reserved_command_name_rejection(tmp_path: Path) -> None:
         with Core(
             workspace=workspace,
             state_dir=state_dir,
-            config=CoreConfig(),
+            config=ExecutionConfig(),
             plugins=(plugin_source,),
             revision_id=uuid.uuid4().hex,
             revision_payload={"test": 1},
@@ -579,7 +578,7 @@ def test_p2a_reserved_command_name_rejection(tmp_path: Path) -> None:
         with Core(
             workspace=workspace,
             state_dir=state_dir,
-            config=CoreConfig(),
+            config=ExecutionConfig(),
             plugins=(plugin_source2,),
             revision_id=uuid.uuid4().hex,
             revision_payload={"test": 2},

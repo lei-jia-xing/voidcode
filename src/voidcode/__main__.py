@@ -1,6 +1,6 @@
-"""``python -m voidcode``: the core CLI is the product entry point."""
+"""``python -m voidcode``: product CLI entry point."""
 
-from .core.__main__ import main
+from .cli import main
 
 if __name__ == "__main__":
     raise SystemExit(main())

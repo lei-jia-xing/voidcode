@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import threading
 import urllib.parse
-from collections.abc import Iterator
+from collections.abc import AsyncGenerator
 from typing import Any, NoReturn
 
 import httpx
@@ -27,27 +28,36 @@ class StreamCancellation:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._closed = False
-        self._response: httpx.Response | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._task: asyncio.Task[Any] | None = None
+
+    @property
+    def is_closed(self) -> bool:
+        with self._lock:
+            return self._closed
 
     def close(self) -> None:
         with self._lock:
             self._closed = True
-            response, self._response = self._response, None
-        if response is not None:
-            response.close()
+            if self._loop is not None and self._task is not None and not self._task.done():
+                if not self._loop.is_closed():
+                    self._loop.call_soon_threadsafe(self._task.cancel)
+            self._loop = None
+            self._task = None
 
-    def _attach(self, response: httpx.Response) -> None:
+    def _attach(self, loop: asyncio.AbstractEventLoop, task: asyncio.Task[Any]) -> None:
         with self._lock:
             if self._closed:
-                stale = response
+                if not loop.is_closed():
+                    loop.call_soon_threadsafe(task.cancel)
             else:
-                stale, self._response = self._response, response
-        if stale is not None:
-            stale.close()
+                self._loop = loop
+                self._task = task
 
     def _detach(self) -> None:
         with self._lock:
-            self._response = None
+            self._loop = None
+            self._task = None
 
 
 class CoreHttpClient:
@@ -125,11 +135,9 @@ class CoreHttpClient:
         res = self._request("GET", "/api/commands")
         return str(res.get("revision_id", "")), list(res.get("commands", []))
 
-    def sessions(self, limit: int = 100) -> list[dict[str, Any]]:
+    def list_sessions(self, limit: int = 100) -> list[dict[str, Any]]:
         res = self._request("GET", "/api/sessions", query={"limit": limit})
         return list(res.get("sessions", []))
-
-    list_sessions = sessions
 
     def create_session(self, session_id: str | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {}
@@ -180,14 +188,11 @@ class CoreHttpClient:
         self,
         session_id: str,
         name: str,
-        args: dict[str, Any] | None = None,
-        expected_revision: str = "",
-        *,
         arguments: dict[str, Any] | None = None,
+        expected_revision: str = "",
     ) -> dict[str, Any]:
-        cmd_args = args if args is not None else (arguments or {})
         body: dict[str, Any] = {
-            "arguments": cmd_args,
+            "arguments": arguments or {},
             "expected_revision": expected_revision,
         }
         return self._request(
@@ -239,35 +244,40 @@ class CoreHttpClient:
     def cancel(self, session_id: str) -> dict[str, Any]:
         return self._request("POST", f"/api/sessions/{urllib.parse.quote(session_id)}/cancel")
 
-    def stream_events(
+    async def events_stream(
         self,
         session_id: str,
         after_sequence: int = 0,
         *,
         follow: bool = True,
         cancel: StreamCancellation | None = None,
-    ) -> Iterator[dict[str, Any]]:
+    ) -> AsyncGenerator[dict[str, Any]]:
         params = {
-            "after_sequence": after_sequence,
+            "after_sequence": str(after_sequence),
             "follow": "true" if follow else "false",
         }
         headers = {
             "Accept": "text/event-stream",
             "Origin": self.origin,
         }
-        url = f"/api/sessions/{urllib.parse.quote(session_id)}/events"
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        url = f"{self.base_url}/api/sessions/{urllib.parse.quote(session_id)}/events"
+
+        if cancel is not None:
+            task = asyncio.current_task()
+            if task is not None:
+                cancel._attach(asyncio.get_running_loop(), task)
         try:
-            with self._client.stream("GET", url, params=params, headers=headers, timeout=None) as response:
-                if response.is_error:
-                    response.read()
-                    try:
-                        response.raise_for_status()
-                    except httpx.HTTPStatusError as exc:
-                        self._handle_status_error(exc)
-                if cancel is not None:
-                    cancel._attach(response)
-                try:
-                    for line in response.iter_lines():
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream("GET", url, params=params, headers=headers) as response:
+                    if response.is_error:
+                        await response.aread()
+                        try:
+                            response.raise_for_status()
+                        except httpx.HTTPStatusError as exc:
+                            self._handle_status_error(exc)
+                    async for line in response.aiter_lines():
                         if line.startswith("data:"):
                             data_str = line[5:].strip()
                             if data_str:
@@ -275,12 +285,12 @@ class CoreHttpClient:
                                     yield json.loads(data_str)
                                 except json.JSONDecodeError as exc:
                                     raise CoreClientError(f"malformed SSE frame: {exc}") from exc
-                finally:
-                    if cancel is not None:
-                        cancel._detach()
+        except asyncio.CancelledError:
+            return
         except (httpx.StreamClosed, httpx.RequestError) as exc:
-            if cancel is not None and cancel._closed:
+            if cancel is not None and cancel.is_closed:
                 return
             raise CoreClientError(f"connection error: {exc}") from exc
-
-    events_stream = stream_events
+        finally:
+            if cancel is not None:
+                cancel._detach()

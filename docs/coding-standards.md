@@ -14,10 +14,11 @@ VoidCode prioritizes readability, explicit boundaries, and repeatable local veri
 
 VoidCode enforces clean boundaries across its backend layers:
 
-- **`src/voidcode/sdk/`**: The shared contract surface (plugin, tools, commands, services, provider, hooks, views, invocation, config). It may import only the standard library, `pydantic`, and `jsonschema` — never the core or a plugin.
-- **`src/voidcode/core/`**: Governance, append-only persistence, plugin admission and activation, the in-process plugin runtime (`plugins.py`, `services.py`, `processes.py`), HTTP/SSE transport, and the TUI. It imports no concrete plugin.
-- **`src/voidcode/capabilities/`**: Shared files, execution, and provider implementations. Imports the SDK and third-party libraries; never imports core or plugins.
-- **`src/voidcode/plugins/`**: The bundled plugins, built on the public SDK and shared capabilities. Optional peer queries use SDK contracts rather than cross-plugin imports.
+- **`src/voidcode/sdk/`**: The shared contract surface (plugin, tools, commands, services, provider, hooks, views, invocation, history, queries). It may import only the standard library, `pydantic`, and `jsonschema` — never the core or a plugin.
+- **`src/voidcode/core/`**: Governance, append-only persistence, plugin admission and activation, the in-process plugin runtime (`plugins.py`, `services.py`, `processes.py`), and the readable history projection. It imports no concrete plugin, no capability module, and no outer adapter.
+- **`src/voidcode/` (outer product layer)**: `cli.py`, `config.py`, `bootstrap.py`, HTTP/SSE transport (`transport/`), and the TUI (`tui/`).
+- **`src/voidcode/capabilities/`**: Shared files, execution, and provider implementations, plus the optional workspace query contracts (`workspace_queries.py`). Imports the SDK and third-party libraries; never imports core or plugins.
+- **`src/voidcode/plugins/`**: The bundled plugins, built on the public SDK and shared capabilities. Optional peer queries use the shared `bind`/`ask` helpers rather than cross-plugin imports.
 
 ## Python Standards
 

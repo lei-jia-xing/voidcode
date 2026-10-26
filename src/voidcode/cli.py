@@ -1,4 +1,4 @@
-"""The VoidCode CLI: one core process, its plugins, and its clients.
+"""The VoidCode CLI: one product process, its plugins, and its clients.
 
 ``run/resume`` drive work and ``show`` reads durable session state without a core;
 ``create-session/sessions/catalog/invoke/confirm/views/drain/usage`` are client surfaces,
@@ -18,12 +18,13 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .. import __version__
-from ..sdk.json_values import json_wire_object, own_json_object
-from .storage.store import SessionRecord
+from . import __version__
+from .bootstrap import open_core, state_directory
+from .core.storage.store import SessionRecord, open_read_only
+from .sdk.json_values import json_wire_object, own_json_object
 
 if TYPE_CHECKING:
-    from .engine import Core
+    from .core.engine import Core
 
 
 def _parse_arguments(raw: str) -> dict[str, object]:
@@ -33,8 +34,6 @@ def _parse_arguments(raw: str) -> dict[str, object]:
         raise ValueError(f"arguments must be a JSON object: {exc}") from exc
     if not isinstance(payload, dict):
         raise ValueError("arguments must be a JSON object")
-    # No blacklist on business keys: the admitted command schema validates
-    # arguments, and identity always comes from the core-owned context.
     return json_wire_object(own_json_object(payload))
 
 
@@ -60,22 +59,14 @@ _COMMAND_SCAN_VALUE_OPTIONS = _ROOT_VALUE_OPTIONS | frozenset({"--server", "--to
 
 
 def _normalized_argv(argv: Sequence[str]) -> list[str]:
-    """Accept root options before *or* after the subcommand.
-
-    ``argparse`` only knows the root options before the subcommand, but
-    ``voidcode serve --workspace .`` is what a user types; the root pairs found
-    after the command are hoisted in front of it. The command scan skips the
-    separate value of every root value option, so a session named e.g. ``run``
-    never reads as a subcommand; only the durable root options are hoisted, never
-    a command's own ``--session-id``.
-    """
+    """Accept root options before *or* after the subcommand."""
     tokens = list(argv)
     command_at: int | None = None
     scan = 0
     while scan < len(tokens):
         name, separator, _inline = tokens[scan].partition("=")
         if name in _COMMAND_SCAN_VALUE_OPTIONS and not separator:
-            scan += 2  # the option and its separate value are never the command
+            scan += 2
             continue
         if tokens[scan] in _COMMANDS:
             command_at = scan
@@ -85,7 +76,7 @@ def _normalized_argv(argv: Sequence[str]) -> list[str]:
         return tokens
     head, rest = tokens[:command_at], tokens[command_at:]
     tail: list[str] = []
-    index = 1  # rest[0] is the command itself
+    index = 1
     while index < len(rest):
         name, separator, _inline = rest[index].partition("=")
         if name in _ROOT_VALUE_OPTIONS:
@@ -118,7 +109,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     client = parser.add_argument_group("terminal client (no command)")
     client.add_argument("--server", metavar="URL", default=None, help="Attach to a running server instead of starting one")
     client.add_argument("--token", metavar="TOKEN", default=None, help="Bearer token for --server")
-    #: The root `--session-id` keeps its own destination so it can never overwrite a command's own `--session-id`.
     client.add_argument(
         "--session-id", dest="tui_session_id", metavar="ID", default=None, help="Attach to an existing session (default: latest, or a new one)"
     )
@@ -218,42 +208,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--server/--token/--session-id are bare-client options and cannot be combined with a subcommand")
     try:
         workspace = args.workspace.resolve(strict=True)
+        bare_directory = args.state_dir if args.state_dir is not None else state_directory(workspace)
         if args.command is None:
-            from .bootstrap import state_directory
             from .tui import run_tui
 
-            bare_directory = args.state_dir if args.state_dir is not None else state_directory(workspace)
             if args.server is not None:
                 return run_tui(args.server, token=args.token, session_id=args.tui_session_id)
             return _embedded_tui(workspace, bare_directory, session_id=args.tui_session_id)
         if args.command == "show":
-            if args.state_dir is not None:
-                directory = args.state_dir
-            else:
-                from .bootstrap import state_directory
-
-                directory = state_directory(workspace)
-            return _show(workspace, directory, args.session_id, events=args.events)
-        # Pure ingress validation before opening the core: malformed client
-        # input fails fast without touching config, runtime, or storage.
+            return _show(workspace, bare_directory, args.session_id, events=args.events)
         if args.command == "invoke":
             args.parsed_arguments = _parse_arguments(args.arguments)
-        from .bootstrap import open_core, state_directory
 
-        directory = args.state_dir if args.state_dir is not None else state_directory(workspace)
         if args.command == "serve":
             from .transport.server import serve_core
 
             serve_core(
                 workspace=workspace,
-                state_dir=directory,
+                state_dir=bare_directory,
                 host=args.host,
                 port=args.port,
                 bearer_token=args.bearer_token,
                 open_browser=args.open_browser,
             )
             return 0
-        with open_core(workspace, state_dir=directory) as core:
+        with open_core(workspace, state_dir=bare_directory) as core:
             previous = {number: signal.signal(number, lambda *_: core.cancel("user signal")) for number in (signal.SIGINT, signal.SIGTERM)}
             try:
                 return _dispatch(core, args)
@@ -266,15 +245,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _show(workspace: Path, directory: Path, session_id: str, *, events: bool) -> int:
-    """Rescue path: read durable history without config, runtime, or revision checks.
-
-    Runs before any core bootstrap so broken configuration, untrusted or
-    broken plugins, and revision drift cannot hide already-persisted history.
-    Never creates a database: a missing file is an explicit failure. Reads through
-    the schema-tolerant reader, so a pre-transition database stays readable too.
-    """
-    from .storage.store import open_read_only
-
     database = directory / "voidcode.db"
     if not database.is_file():
         raise FileNotFoundError("database does not exist")
@@ -341,8 +311,6 @@ def _show(workspace: Path, directory: Path, session_id: str, *, events: bool) ->
 
 def _embedded_tui(workspace: Path, directory: Path, *, session_id: str | None) -> int:
     """Run the TUI directly against an in-process local transport server."""
-    import socket
-
     import uvicorn
 
     from .transport.http import create_core_app
@@ -355,24 +323,22 @@ def _embedded_tui(workspace: Path, directory: Path, *, session_id: str | None) -
         state_dir=directory,
         bearer_token=token,
     )
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-
-    config = uvicorn.Config(app, log_level="warning")
+    config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning")
     server = uvicorn.Server(config)
-    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
-    thread.start()
+    with config.bind_socket() as sock:
+        port = sock.getsockname()[1]
+        thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+        thread.start()
 
-    deadline = time.monotonic() + 10.0
-    while time.monotonic() < deadline and not server.started:
-        time.sleep(0.01)
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and not server.started:
+            time.sleep(0.01)
 
-    try:
-        return run_tui(f"http://127.0.0.1:{port}", token=token, session_id=session_id)
-    finally:
-        server.should_exit = True
-        thread.join(timeout=2.0)
+        try:
+            return run_tui(f"http://127.0.0.1:{port}", token=token, session_id=session_id)
+        finally:
+            server.should_exit = True
+            thread.join(timeout=2.0)
 
 
 def _dispatch(core: Core, args: argparse.Namespace) -> int:

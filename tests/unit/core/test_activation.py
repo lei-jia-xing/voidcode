@@ -13,7 +13,7 @@ import pytest
 
 from tests.fixtures.reload_plugin import DEACTIVATE_TOOL, PROBE_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.core.bootstrap import open_core
+from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
 from voidcode.core.storage.store import PluginStateRow, SqliteStore
 from voidcode.sdk.json_values import json_wire_object
@@ -162,7 +162,7 @@ def test_same_session_reload_switches_generation_and_preserves_state(tmp_path: P
         committed = next(event for event in events if event.event_type == "core.activation_committed")
         assert committed.payload["from_revision_id"] == before
         assert committed.payload["to_revision_id"] == result.revision_id
-        assert list(committed.payload["migrated_owners"]) == []
+        assert "migrated_owners" not in committed.payload
         assert committed.payload["source"] == "model"
         # ...and the following dispatch advertised its tool declarations.
         second_dispatch_tools = _advertised_tools(server.requests[1])
@@ -304,7 +304,7 @@ def test_disable_pauses_owner_state_and_reenable_restores_the_paused_copy(tmp_pa
         enabled = core.invoke_command(session.session_id, "core.reload", {}, expected_revision=core.command_catalog().revision_id)
         assert enabled.status == "ok", enabled.error
         assert enabled.data is not None
-        assert _owner_list(enabled.data, "migrated_owners") == []
+        assert "migrated_owners" not in enabled.data
         assert _owner_list(enabled.data, "deactivated_owners") == []
         with SqliteStore(tmp_path / "state" / "voidcode.db") as store:
             row = _owner_row(store, "session", session.session_id)
@@ -346,7 +346,7 @@ def test_restart_restores_the_persisted_generation_until_an_explicit_reload(tmp_
         restarted = open_core(tmp_path / "workspace", state_dir=tmp_path / "state")
         _CREATED.append(restarted)
         assert restarted.revision_id == persisted
-        assert restarted.config.model.model == "endpoint/exact-model"
+        assert restarted.config.model == "endpoint/exact-model"
         resumed = restarted.run("still v1", session_id=session.session_id)
         assert resumed.status == "completed"
         assert resumed.revision_id == persisted

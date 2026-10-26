@@ -75,15 +75,11 @@ the activation adopts that exact recorded config/composition and its private con
 the durable records. The approval covers config/composition only: source on disk can change
 before the runtime loads it.
 
-## State migration and deactivation are pure copies
+## State validation and deactivation
 
-- `Plugin.migrate_state(payload, from_version, to_version) -> Mapping`, arity 3, no services, no
-  leases, no store access: run in the candidate runtime for owners whose `StateSchema.version`
-  increased. The migrated copy is validated against the candidate registration's optional
-  `state.schema` before the commit; a downgrade (candidate version < stored version) is refused,
-  and a missing transform fails the activation visibly. A schema increase on a plain restart is
-  refused the same way; the supervised `serve --session-id` path preflights and adopts the
-  migration even on the same image.
+- Admitted owners must match the candidate's declared state schema version exactly; a mismatch
+  is refused explicitly, with no compatibility migration and no automatic data deletion. Stored
+  payloads are validated against the candidate's declared schema before committing.
 - `Plugin.prepare_deactivate(payload, scope, scope_key, tip_sequence) -> Mapping`, arity 4, run in
   the *current* runtime for owners the candidate drops (disabled or removed from config). This
   is what turns "an owner was disabled" into an explicit lifecycle state instead of leaving opaque
@@ -170,7 +166,7 @@ never be papered over); during ordinary replay it surfaces visibly and stays pen
 - `GET /api/commands` and the session views return `revision_id` captured together with their data.
 - Mutating invokes and confirmations send that `expected_revision`; a mismatch is a visible stale
   error with no side effect. An omitted expected revision is an error, never "current".
-- `kernel.activation_committed` (`from_revision_id`, `to_revision_id`, `migrated_owners`,
+- `kernel.activation_committed` (`from_revision_id`, `to_revision_id`,
   `deactivated_owners`, `source`) on the session stream tells clients to refetch catalog and views;
   `kernel.activation_requested`, `kernel.activation_failed` and `kernel.activation_blocked` are the
   request lifecycle around it.

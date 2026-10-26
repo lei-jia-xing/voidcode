@@ -14,7 +14,7 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.core.bootstrap import open_core
+from voidcode.bootstrap import open_core
 from voidcode.core.storage.store import SqliteStore
 
 _EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "tally-counter"

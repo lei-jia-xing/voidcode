@@ -173,7 +173,6 @@ class LspTool:
         },
         effects=frozenset({ToolEffect.READ, ToolEffect.EXECUTE}),
         path_argument_keys=("path",),
-        supports_parallel=True,
     )
 
     def __init__(self, manager: LspManager) -> None:

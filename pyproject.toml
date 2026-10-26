@@ -70,7 +70,7 @@ syntax = [
 ]
 
 [project.scripts]
-voidcode = "voidcode.core.__main__:main"
+voidcode = "voidcode.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/lei-jia-xing/voidcode"

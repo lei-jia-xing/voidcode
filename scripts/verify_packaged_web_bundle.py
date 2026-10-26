@@ -3,7 +3,6 @@ from __future__ import annotations
 import io
 import os
 import queue
-import socket
 import subprocess
 import sys
 import tempfile
@@ -99,12 +98,6 @@ def _probe_launcher(url: str) -> None:
     raise SystemExit(f"timed out probing packaged server URL: {url}")
 
 
-def _free_port() -> int:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
-
-
 def _verify_installed_server(wheel_path: Path) -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
@@ -113,8 +106,6 @@ def _verify_installed_server(wheel_path: Path) -> None:
         workspace.mkdir()
         state_dir = root / "state"
         state_dir.mkdir()
-        # The core requires an explicit workspace configuration; this probe only needs the
-        # transport to boot and serve the packaged web bundle.
         (workspace / "voidcode.json").write_text('{"schema_version": 1}', encoding="utf-8")
         venv.EnvBuilder(with_pip=True).create(venv_dir)
         python = _venv_python(venv_dir)
@@ -136,7 +127,7 @@ def _verify_installed_server(wheel_path: Path) -> None:
                 "--host",
                 "127.0.0.1",
                 "--port",
-                str(_free_port()),
+                "0",
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

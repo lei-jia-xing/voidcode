@@ -12,8 +12,8 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Iterable
 
-from ..capabilities.history_renderer import iter_event_blocks
 from .artifacts import ArtifactStore
+from .history_renderer import iter_event_blocks
 from .storage.store import StoredEvent
 
 MEDIA_TYPE = "text/markdown; charset=utf-8"

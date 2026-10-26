@@ -22,7 +22,7 @@ import pytest
 
 from tests.fixtures.reload_plugin import SERVICES_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.core.bootstrap import open_core
+from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
 
 PLUGIN_ID = "reload-fixture"

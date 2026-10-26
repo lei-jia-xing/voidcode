@@ -8,20 +8,22 @@ blocked read sees the connection close — no logger or traceback is inspected.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from voidcode.core.tui.client import CoreHttpClient
-from voidcode.core.tui.terminal_app import CoreTuiApp
+from voidcode.tui.client import CoreHttpClient
+from voidcode.tui.terminal_app import CoreTuiApp
 
 
 class _Terminal:
     """The app's terminal surface without a real TTY: no keys, recorded committed rows."""
 
     width = 100
+    eof = False
 
     def __init__(self) -> None:
         self.committed: list[str] = []
@@ -115,16 +117,14 @@ def test_quit_cancels_an_idle_follow_stream_before_joining() -> None:
 
         # Open/close race: a stream attached after close must terminate immediately instead of
         # blocking forever on a fresh idle connection.
-        frames = client.events_stream("s1", cancel=closed_cancel)
+        async def consume() -> None:
+            async for _frame in client.events_stream("s1", cancel=closed_cancel):
+                pass
 
-        def consume() -> None:
-            try:
-                for _frame in frames:
-                    pass
-            except OSError:
-                pass  # shutdown may surface as a read error; either way the stream ended
+        def run_consume() -> None:
+            asyncio.run(consume())
 
-        consumer = threading.Thread(target=consume, daemon=True)
+        consumer = threading.Thread(target=run_consume, daemon=True)
         consumer.start()
         consumer.join(timeout=5.0)
         assert not consumer.is_alive(), "a stream opened after cancellation blocked"

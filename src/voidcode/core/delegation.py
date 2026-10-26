@@ -16,13 +16,11 @@ from uuid import uuid4
 from ..sdk.codec import decode_provider_result
 from ..sdk.limits import CHILD_PROMPT_MAX_BYTES
 from ..sdk.services import (
-    CHILD_MESSAGE_OWNER,
     ChildOutcome,
     ChildSendReceipt,
-    child_completion_notice_id,
 )
 from .child_history import spill_history
-from .events import EventType
+from .events import CHILD_MESSAGE_OWNER, EventType, child_completion_notice_id
 from .storage.store import (
     ContinuationRecord,
     EventDraft,
@@ -192,7 +190,7 @@ class DelegationManager:
         if not isinstance(requested, (list, tuple)) or not requested:
             raise ValueError("tool_allowlist must be a non-empty sequence of tool names")
         names = tuple(sorted({str(name) for name in requested}))
-        unknown = [name for name in names if name not in self.core._definitions]
+        unknown = [name for name in names if self.core._snapshot.definition_of(name) is None]
         if unknown:
             raise ValueError(f"tool_allowlist names an unknown tool: {unknown[0]}")
         if parent.tool_allowlist is not None:
@@ -232,8 +230,7 @@ class DelegationManager:
             # interruption keeps its durable resume checkpoint. A public resume/cancel later
             # publishes the real terminal result exactly once; this thread must not guess one.
             return
-        publish = getattr(self.core, "_publish_child_terminal", self._publish_child_terminal)
-        publish(
+        self._publish_child_terminal(
             parent_session_id,
             child_id,
             run_id=run_id,
@@ -352,8 +349,7 @@ class DelegationManager:
                     run_id,
                     uuid4().hex,
                     revision_id=self.core.revision_id,
-                    chain_step=0,
-                    action_budget_remaining=32,
+                    initial_root_budget=32,
                     continuation_id=message_id,
                 )
             except StoreConflict:
@@ -392,8 +388,7 @@ class DelegationManager:
         if child.parent_session_id is not None and target_run and child.run_id == target_run:
             facts = self._reconstruct_child_outcome(child)
             if facts is not None and not self._child_fact_exists(parent_session_id, child_id, target_run):
-                publish = getattr(self.core, "_publish_child_terminal", self._publish_child_terminal)
-                publish(
+                self._publish_child_terminal(
                     parent_session_id,
                     child_id,
                     run_id=target_run,
@@ -513,21 +508,30 @@ class DelegationManager:
         if not run_id or status not in ("completed", "failed", "interrupted", "cancelled"):
             return
         key = (child_id, run_id)
+        # A concurrent publication for this run is already working: join it instead of
+        # silently skipping, so the caller never observes "done" before the fact lands.
+        deadline = time.monotonic() + 30.0
         with self._child_finished_lock:
-            if key in self._published_child_runs:
-                return
-            self._published_child_runs.add(key)
-            self._child_publication_inflight.add(key)
-            self._child_finished_lock.notify_all()
+            while key in self._child_publication_inflight and time.monotonic() < deadline:
+                self._child_finished_lock.wait(timeout=0.2)
+            already_done = key in self._published_child_runs
+            if not already_done:
+                self._published_child_runs.add(key)
+                self._child_publication_inflight.add(key)
+                self._child_finished_lock.notify_all()
+        claimed_here = not already_done
         try:
             existing = self._child_fact(parent_session_id, child_id, run_id)
             if existing is not None:
                 self._remember_child_outcome(child_id, run_id, existing)
                 return
+            if already_done:
+                # Winner still working past the deadline (or lost the race after it):
+                # never double-commit; retry paths observe the terminal child again.
+                return
             resolved_label = label or self._child_label(parent_session_id, child_id)
             notice_id = child_completion_notice_id(parent_session_id, child_id, run_id) if notify else None
-            fact_payload_fn = getattr(self.core, "_child_fact_payload", self._child_fact_payload)
-            payload = fact_payload_fn(
+            payload = self._child_fact_payload(
                 child_id,
                 run_id=run_id,
                 status=status,
@@ -571,17 +575,18 @@ class DelegationManager:
                 return
             self._remember_child_outcome(child_id, run_id, payload)
             if deliver and notice_id is not None:
-                deliver_fn = getattr(self.core, "_deliver_child_notice", self._deliver_child_notice)
-                deliver_fn(parent_session_id, notice_id)
+                self._deliver_child_notice(parent_session_id, notice_id)
         except Exception:
             # A failed publication is retried by the next path that observes the terminal child
             # (startup recovery, a later join, or a new run). Never lose the claim for retries.
             with self._child_finished_lock:
-                self._published_child_runs.discard(key)
+                if claimed_here:
+                    self._published_child_runs.discard(key)
             raise
         finally:
             with self._child_finished_lock:
-                self._child_publication_inflight.discard(key)
+                if claimed_here:
+                    self._child_publication_inflight.discard(key)
                 self._child_finished_lock.notify_all()
 
     def _child_fact_payload(
@@ -876,8 +881,7 @@ class DelegationManager:
                 if facts is None:
                     continue
                 notify = facts.notify
-                publish = getattr(self.core, "_publish_child_terminal", self._publish_child_terminal)
-                publish(
+                self._publish_child_terminal(
                     parent_id,
                     session.session_id,
                     run_id=run_id,

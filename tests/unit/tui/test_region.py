@@ -1,4 +1,4 @@
-from voidcode.core.tui.region import TuiFrame, diff_rows
+from voidcode.tui.region import TuiFrame, diff_rows
 
 
 def test_tui_frame_properties() -> None:

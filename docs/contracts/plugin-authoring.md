@@ -10,7 +10,7 @@ of the code.
   `src/voidcode/sdk/commands.py`, `src/voidcode/sdk/services.py`,
   `src/voidcode/sdk/views.py`, `src/voidcode/sdk/invocation.py`
 - Admission/activation: `src/voidcode/core/activation.py`,
-  `src/voidcode/core/bootstrap.py`, `docs/contracts/hot-activation.md`
+  `src/voidcode/bootstrap.py`, `docs/contracts/hot-activation.md`
 - Runnable reference: `examples/tally-counter/` (one model tool + one user
   command + one view over shared session state)
 
@@ -49,7 +49,7 @@ same public seam, so an author hits no ceiling they do not also hit.
 
 Each tool declares `effects` (`read`, `write`, `execute`, `network`,
 `spawn`, `session`), an `input_schema`, `replay_policy`,
-`path_argument_keys`, and `supports_parallel`. The core validates the model's
+`path_argument_keys`. The core validates the model's
 arguments against the registered schema before dispatch; a schema failure is
 `"tool arguments failed the admitted JSON schema"`, never a handler call.
 
@@ -69,8 +69,6 @@ arguments against the registered schema before dispatch; a schema failure is
   success. Use the typed SDK results (`ToolSuccess`/`ToolFailure` with
   `TextOutput`/`EmptyOutput`/`AttachmentOutput`); results cross only the
   storage/HTTP boundary as strict JSON (`sdk/codec.py`), never a plugin RPC.
-- **Parallelism**: `supports_parallel` opts into native-batch parallel
-  dispatch; default `False` is sequential and safe.
 
 ## 4. Commands: revision binding, busy gate
 
@@ -108,16 +106,13 @@ Conventions that keep state debuggable:
   Missing state (`None`) is the legitimate first-run case — construct a
   default, never fabricate a version.
 - Declare `state=StateSchema(version, schema)` (default version 1, no
-  schema) when the shape matters. The core validates migrated AND
+  schema) when the shape matters. The core validates
   unchanged-version copies against it at activation; a row above the
   declared version is a downgrade and refuses.
-- Migration is pure: `migrate_state(payload, from_version, to_version)`
-  (arity 3, no services/store) runs in the candidate runtime for rows whose
-  version increased; `prepare_deactivate(payload, scope, scope_key, tip)`
+- Deactivation is pure: `prepare_deactivate(payload, scope, scope_key, tip)`
   (arity 4) runs in the current runtime for owners the candidate drops. A
-  missing transform, or a candidate below the stored version, fails the
-  activation visibly. See `docs/contracts/hot-activation.md` for the full
-  transaction.
+  missing transform fails the deactivation visibly. See
+  `docs/contracts/hot-activation.md` for the full transaction.
 - Observers declare `observed_facts` (`usage`, `invocation_finished`,
   `run_finished`); the registration must provide an observer callback
   exactly when that tuple is non-empty.
@@ -157,9 +152,9 @@ window projection, scoped restrictive overlays, reads,
 budgets, usage, `model_query` (one tool-free turn), processes, and
 artifacts. Callbacks receive lease-scoped services only — never arbitrary
 core access, never a sibling plugin's state, never an unrestricted store
-scan. Own state stays owner/scope-bound; event reads cover the bound session
-plus true descendants via explicit `read_child_events` (parent, sibling, and
-unrelated sessions are refused).
+scan. Own state stays owner/scope-bound; session or descendant history reads through typed
+`read_session_history` / `read_child_history` return bounded Markdown `HistoryPage` (parent,
+sibling, and unrelated sessions are refused).
 - Neutral cross-plugin reads: `services.tool_definition(name)` answers from
   the active revision's dispatch snapshot with the caller's scope and stance
   applied (`None` covers unknown/hidden equally; the runtime keeps no copy),

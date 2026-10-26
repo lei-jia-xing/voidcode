@@ -1,22 +1,24 @@
-"""Core configuration schema and strict payload parser for ``voidcode.json``."""
+"""Product configuration schema, voidcode.json parser, and provider resolution."""
 
 from __future__ import annotations
 
+import json
+import os
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from .json_values import own_json_object
+from .sdk.json_values import own_json_object
 
 CONFIG_FILE_NAME = "voidcode.json"
 CONFIG_SCHEMA_VERSION = 1
 
-
 ReasoningEffort = Literal["off", "none", "minimal", "low", "medium", "high", "xhigh", "max"] | int
 
 
-class CoreModelConfig(BaseModel):
+class ProductModelConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     model: str | None = None
@@ -25,10 +27,8 @@ class CoreModelConfig(BaseModel):
     @field_validator("model")
     @classmethod
     def _validate_model(cls, v: str | None) -> str | None:
-        if v is not None:
-            if not v.strip():
-                raise ValueError("config model.model must be a non-empty string")
-            return v.strip()
+        if v is not None and not v.strip():
+            raise ValueError("model must be a non-empty string")
         return v
 
     @field_validator("reasoning_effort")
@@ -39,49 +39,38 @@ class CoreModelConfig(BaseModel):
         return v
 
 
-class CorePolicyConfig(BaseModel):
+class ProductPolicyConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     approval_mode: Literal["ask", "write", "yolo"] = "ask"
     read_only: bool = False
 
 
-class CoreProviderEntry(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid", strict=True, arbitrary_types_allowed=True)
+class ProductProviderEntry(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True, arbitrary_types_allowed=True, hide_input_in_errors=True)
 
     api_key: str | None = Field(default=None, min_length=1, repr=False)
     base_url: str | None = Field(default=None, min_length=1)
-    extra: Mapping[str, Any] = Field(default_factory=dict, repr=False, validate_default=True)
+    extra: Mapping[str, Any] = Field(default_factory=dict, repr=False)
 
     @model_validator(mode="before")
-    @classmethod
     def _extract_vendor_fields(cls, data: Any) -> Any:
         if not isinstance(data, dict):
             return data
         raw = dict(data)
+        if "extra" in raw:
+            raise ValueError("nested 'extra' in provider entry is forbidden; configure provider fields flat")
+        has_key = "api_key" in raw
+        has_url = "base_url" in raw
         api_key = raw.pop("api_key", None)
         base_url = raw.pop("base_url", None)
-        explicit_extra = raw.pop("extra", None)
-        if explicit_extra is not None:
-            if not isinstance(explicit_extra, (dict, Mapping)):
-                raise ValueError("provider extra fields must be an object")
-            if raw:
-                raise ValueError("unexpected fields in provider entry")
-            extra = explicit_extra
-        else:
-            extra = raw
-
-        if "api_key" in extra or "base_url" in extra:
-            raise ValueError("provider extra fields must not repeat api_key or base_url")
-        for k in extra:
+        for k in raw:
             if not isinstance(k, str) or not k:
-                raise ValueError("provider extra field names must be non-empty strings")
-
-        owned_extra = own_json_object(extra)
-        result: dict[str, Any] = {"extra": owned_extra}
-        if api_key is not None:
+                raise ValueError("provider field names must be non-empty strings")
+        result: dict[str, Any] = {"extra": raw}
+        if has_key:
             result["api_key"] = api_key
-        if base_url is not None:
+        if has_url:
             result["base_url"] = base_url
         return result
 
@@ -93,11 +82,11 @@ class CoreProviderEntry(BaseModel):
         return own_json_object(v)
 
 
-class CorePluginEntry(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid", strict=True, arbitrary_types_allowed=True)
+class ProductPluginEntry(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True, arbitrary_types_allowed=True, hide_input_in_errors=True)
 
     enabled: bool = True
-    config: Mapping[str, Any] = Field(default_factory=dict, validate_default=True)
+    config: Mapping[str, Any] = Field(default_factory=dict)
     path: str | None = None
 
     @field_validator("path")
@@ -115,19 +104,19 @@ class CorePluginEntry(BaseModel):
         return own_json_object(v)
 
 
-class CoreConfig(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+class ProductConfig(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True, hide_input_in_errors=True)
 
     schema_version: Literal[1] = 1
-    model: CoreModelConfig = Field(default_factory=CoreModelConfig)
-    policy: CorePolicyConfig = Field(default_factory=CorePolicyConfig)
+    model: ProductModelConfig = Field(default_factory=ProductModelConfig)
+    policy: ProductPolicyConfig = Field(default_factory=ProductPolicyConfig)
     providers: Mapping[
         Annotated[str, Field(pattern=r"^[a-z][a-z0-9_-]*$")],
-        CoreProviderEntry,
+        ProductProviderEntry,
     ] = Field(default_factory=dict)
     plugins: Mapping[
         Annotated[str, Field(pattern=r"^[a-z][a-z0-9_-]*$")],
-        CorePluginEntry,
+        ProductPluginEntry,
     ] = Field(default_factory=dict)
 
     @field_validator("schema_version", mode="before")
@@ -138,15 +127,39 @@ class CoreConfig(BaseModel):
         return v
 
 
-def parse_core_config(payload: object) -> CoreConfig:
+def parse_product_config(payload: object) -> ProductConfig:
     """Validate an untrusted ``voidcode.json`` payload."""
     if not isinstance(payload, dict):
         raise ValueError("config must be an object")
     try:
-        return CoreConfig.model_validate(payload)
+        return ProductConfig.model_validate(payload)
     except ValidationError as err:
         for error in err.errors():
             if error.get("type") == "extra_forbidden":
                 field = ".".join(str(p) for p in error.get("loc", ()))
                 raise ValueError(f"unsupported field: {field}") from err
         raise ValueError(str(err)) from err
+
+
+def resolve_providers(config: ProductConfig) -> dict[str, object]:
+    """Resolve the private provider vocabulary once: configured fields plus the environment key."""
+    private: dict[str, object] = {}
+    for name, entry in config.providers.items():
+        if entry.base_url is None:
+            raise ValueError(f"provider {name} requires an explicit base_url")
+        key = entry.api_key if "api_key" in entry.model_fields_set else os.environ.get(f"{name.upper().replace('-', '_')}_API_KEY")
+        private[name] = {**entry.extra, "api_key": key, "base_url": entry.base_url}
+    return private
+
+
+def load_config(workspace: Path, *, allow_missing: bool = False) -> ProductConfig:
+    path = workspace / CONFIG_FILE_NAME
+    if not path.exists():
+        if allow_missing:
+            return ProductConfig()
+        raise FileNotFoundError(f"configuration not found: {path.name}")
+    if not path.is_file():
+        raise ValueError(f"not a regular file: {path.name}")
+    if path.stat().st_size > 256 * 1024:
+        raise ValueError("configuration file too large")
+    return parse_product_config(json.loads(path.read_text(encoding="utf-8")))

@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import socket
 import threading
 import time
-from contextlib import closing
+from contextlib import aclosing
 from pathlib import Path
 
 import uvicorn
 
 from tests.fixtures.s5_plugin import PLUGIN_ID, PROBE_TOOL
 from tests.unit.core.test_nested_tools import _call, _configure, _server, _turn
-from voidcode.core.transport.http import create_core_app
-from voidcode.core.tui.client import CoreHttpClient
+from voidcode.transport.http import create_core_app
+from voidcode.tui.client import CoreHttpClient
 
 
 def test_live_tool_progress_uses_existing_session_sse_stream(tmp_path: Path) -> None:
@@ -43,15 +44,18 @@ def test_live_tool_progress_uses_existing_session_sse_stream(tmp_path: Path) -> 
         observed = threading.Event()
 
         def observe() -> None:
-            try:
-                with closing(client.events_stream("progress-session", follow=True)) as frames:
-                    for frame in frames:
+            async def _consume() -> None:
+                async with aclosing(client.events_stream("progress-session", follow=True)) as frames:
+                    async for frame in frames:
                         events = [frame["event"]] if frame.get("kind") == "event" else frame.get("events", [])
                         for event in events:
                             if event.get("type") == "core.tool_progress":
                                 reports.append(event)
                                 observed.set()
                                 return
+
+            try:
+                asyncio.run(_consume())
             except BaseException as exc:
                 failures.append(exc)
                 observed.set()

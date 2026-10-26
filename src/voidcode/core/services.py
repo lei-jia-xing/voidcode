@@ -9,15 +9,15 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
+from voidcode.sdk.history import HistoryPage
 from voidcode.sdk.hooks import FactPage
 from voidcode.sdk.json_values import own_json_object
 from voidcode.sdk.services import (
-    CHILD_MESSAGE_OWNER,
     ArtifactPage,
     ArtifactReference,
     ChildOutcome,
@@ -30,11 +30,11 @@ from voidcode.sdk.services import (
     SessionInfo,
     SessionUsageReport,
     ToolInvocationReceipt,
-    child_completion_notice_id,
 )
 from voidcode.sdk.transcript import ContextHistory, TranscriptPage
 
-from .events import EventType
+from .events import CHILD_MESSAGE_OWNER, EventType, child_completion_notice_id
+from .history_renderer import render_history_page
 
 if TYPE_CHECKING:
     from voidcode.sdk.tools import ToolDefinition
@@ -86,7 +86,8 @@ class RuntimeServices:
             "read_facts",
             "read_transcript",
             "read_context_history",
-            "read_child_events",
+            "read_child_history",
+            "read_session_history",
             "session_info",
             "get_usage",
             "get_budget",
@@ -688,27 +689,42 @@ class RuntimeServices:
         lease = self._active_lease()
         return self._runtime.require_store().session_info(lease.session_id, lease.owner)
 
-    def read_child_events(
+    def read_child_history(
         self,
         child_session_id: str,
         *,
         after_sequence: int = 0,
+        offset: int = 0,
         limit: int = 100,
-        include_payload: bool = True,
-    ) -> tuple[EventView, ...]:
+    ) -> HistoryPage:
         lease = self._active_lease()
         if not isinstance(child_session_id, str) or not child_session_id or child_session_id == lease.session_id:
             raise ValueError("child_session_id must name another session")
-        if type(after_sequence) is not int or after_sequence < 0 or type(limit) is not int or limit < 1 or limit > 200:
-            raise ValueError("after_sequence must be >= 0 and limit within 1..200")
-        if type(include_payload) is not bool:
-            raise ValueError("include_payload must be a boolean")
+        return self.read_session_history(child_session_id, after_sequence=after_sequence, offset=offset, limit=limit)
+
+    def read_session_history(
+        self,
+        session_id: str,
+        *,
+        after_sequence: int = 0,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> HistoryPage:
+        lease = self._active_lease()
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("session_id must be a non-empty string")
+        if type(after_sequence) is not int or after_sequence < 0 or type(offset) is not int or offset < 0:
+            raise ValueError("after_sequence and offset must be non-negative integers")
+        limit = max(1, min(limit, 200))
         store = self._runtime.require_store()
-        caller = store.session(lease.session_id)
-        child = store.session(child_session_id)
-        if child.workspace != caller.workspace or not self._runtime.is_descendant(child, caller.session_id):
-            raise PermissionError("child events are readable only for this session's own descendants")
-        return self._runtime.event_views(child_session_id, after_sequence, limit, include_payload)
+        if session_id != lease.session_id:
+            caller = store.session(lease.session_id)
+            target = store.session(session_id)
+            if target.workspace != caller.workspace or not self._runtime.is_descendant(target, caller.session_id):
+                raise PermissionError("session history is readable only for this session or its own descendants")
+        events = store.events(session_id, after_sequence=after_sequence, limit=limit + 1)
+        page = render_history_page(events[:limit], after_sequence=after_sequence, offset=offset)
+        return replace(page, truncated=page.truncated or len(events) > limit)
 
     def tool_definition(self, name: str) -> ToolDefinition | None:
         """One definition from the active revision's dispatch snapshot, with this session's visibility.

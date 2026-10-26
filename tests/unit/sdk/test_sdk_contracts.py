@@ -34,4 +34,4 @@ def test_call_and_reasoning_snapshots_do_not_change_with_their_inputs() -> None:
 def test_implicit_replay_requires_unambiguously_read_only_effects(effects: frozenset[ToolEffect], replay: str) -> None:
     # The name and arguments cannot turn an executable tool into a safe read.
     definition = ToolDefinition("ast_grep", "search", effects=effects)
-    assert definition.replay_policy_for({"mode": "search"}) == replay
+    assert definition.effective_replay_policy == replay

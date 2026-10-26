@@ -1,3 +1,4 @@
+import hashlib
 from enum import StrEnum
 
 
@@ -32,3 +33,11 @@ class EventType(StrEnum):
     ACTIVATION_FAILED = "core.activation_failed"
     OBSERVER_ERROR = "core.observer_error"
     MODEL_QUERY = "core.model_query"
+
+
+CHILD_MESSAGE_OWNER = "@core/child"
+
+
+def child_completion_notice_id(parent_session_id: str, child_session_id: str, run_id: str) -> str:
+    """The durable identity of one run's completion notice."""
+    return hashlib.sha256("\0".join((CHILD_MESSAGE_OWNER, parent_session_id, child_session_id, run_id)).encode("utf-8")).hexdigest()

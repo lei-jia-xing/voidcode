@@ -60,28 +60,33 @@ def _session_info(services):
 
 
 def _child_events(services, call):
-    """One bounded child read; a refusal is the core's, so the fixture reports it verbatim."""
+    """One bounded child history page; a refusal is the core's, so the fixture reports it verbatim."""
     child_session_id = str(call.arguments.get("child_session_id", ""))
     after_sequence = int(call.arguments.get("after_sequence", 0))
     limit = int(call.arguments.get("limit", 100))
-    include_payload = bool(call.arguments.get("include_payload", True))
+    offset = int(call.arguments.get("offset", 0))
     body = {
         "child_session_id": child_session_id,
         "after_sequence": after_sequence,
         "limit": limit,
-        "include_payload": include_payload,
+        "offset": offset,
     }
     try:
-        views = services.read_child_events(
+        page = services.read_child_history(
             child_session_id,
             after_sequence=after_sequence,
+            offset=offset,
             limit=limit,
-            include_payload=include_payload,
         )
     except Exception as exc:
         body["refused"] = f"{type(exc).__name__}: {exc}"
         return body
-    body["views"] = [view.as_payload() for view in views]
+    body["page"] = {
+        "text": page.text,
+        "next_after_sequence": page.next_after_sequence,
+        "next_offset": page.next_offset,
+        "truncated": page.truncated,
+    }
     return body
 
 

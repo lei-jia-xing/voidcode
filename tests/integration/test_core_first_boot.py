@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from voidcode.core.bootstrap import open_core
+from voidcode.bootstrap import open_core
 from voidcode.core.engine import MODEL_CONFIGURATION_GUIDANCE
 from voidcode.core.storage.store import SqliteStore
 
@@ -27,8 +27,7 @@ def test_fresh_state_without_config_opens_providerless_and_keeps_commands(tmp_pa
     """No file is required on first boot, but nothing pretends a model or provider exists."""
     workspace, state = _fresh_workspace(tmp_path)
     with open_core(workspace, state_dir=state) as core:
-        assert core.config.model.model is None
-        assert dict(core.config.providers) == {}
+        assert core.config.model is None
         assert not (workspace / "voidcode.json").exists()
         revision = core.revision_id
         core.create_session("fresh-session")
@@ -65,7 +64,7 @@ def test_fresh_cli_catalog_without_config_opens(tmp_path: Path) -> None:
             "-X",
             "utf8",
             "-m",
-            "voidcode.core",
+            "voidcode",
             "--workspace",
             str(workspace),
             "--state-dir",

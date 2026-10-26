@@ -3,8 +3,7 @@
 import json
 
 from tests.unit.core.test_nested_tools import _call, _server, _turn
-from voidcode.core.activation import BUNDLED_PLUGIN_IDS
-from voidcode.core.bootstrap import open_core
+from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
 from voidcode.sdk.provider import ProviderMessage, ProviderTurnResult
 from voidcode.sdk.transcript import TranscriptDispatch, TranscriptTool
 
@@ -46,6 +45,7 @@ def test_public_transcript_and_panels_survive_restart_without_clipping_messages(
     answer = "完整答复" * 20_000 + "\n```python\nprint('complete')\n```"
     with _server([_turn(_call("lookup-1", "arbitrary_lookup")), _turn(output=answer)]) as server:
         plugins = {name: {"enabled": False} for name in BUNDLED_PLUGIN_IDS}
+        plugins["providers"] = {"enabled": True}
         plugins["session_info"] = {"enabled": True}
         plugins["probe"] = {"path": str(source)}
         (workspace / "voidcode.json").write_text(

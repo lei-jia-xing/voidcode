@@ -15,11 +15,11 @@ from typing import Literal, Self, cast
 from uuid import uuid4
 
 from ...sdk.json_values import json_wire_object, own_json_object
-from ...sdk.services import CHILD_MESSAGE_OWNER, PluginBudget, SessionInfo
-from ..events import EventType
+from ...sdk.services import PluginBudget, SessionInfo
+from ..events import CHILD_MESSAGE_OWNER, EventType
 
 SCHEMA_MAGIC = "voidcode-kernel-v1"
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 class StorageError(RuntimeError):
@@ -849,7 +849,7 @@ class SqliteStore:
         logical_turn: str,
         revision_id: str,
         eligible_owners: Sequence[str],
-        action_budget_remaining: int = 32,
+        initial_root_budget: int = 32,
     ) -> tuple[WakeupRecord, SessionRecord] | None:
         """Claim ONE due wakeup and create its authentic running session in the same transaction.
 
@@ -944,10 +944,9 @@ class SqliteStore:
                         "step": 0,
                         "abandon_batch": False,
                         "continuation_id": None,
-                        "chain_step": 0,
                         "logical_turn": logical_turn,
                         "stop_cause": None,
-                        "action_budget_remaining": action_budget_remaining,
+                        "initial_root_budget": initial_root_budget,
                         "root_id": wakeup.wakeup_id,
                         "resume_intent": "",
                     }
@@ -1402,10 +1401,10 @@ class SqliteStore:
                     raise StoreConflict(f"active revision mismatch for session {session_id!r}: active is {curr_revision_id!r}, got {revision_id!r}")
                 now = int(time.time() * 1000)
 
-                # 1. Apply staged state updates
+                # Apply staged state updates
                 self._apply_state_updates(staged_state, default_revision_id=revision_id, now=now)
 
-                # 2. Apply staged continuation operations in their recorded order, so
+                # Apply staged continuation operations in their recorded order, so
                 # cancel-then-enqueue keeps the new continuation while enqueue-then-cancel
                 # (including by returned id) cancels exactly the one that was enqueued.
                 ops: list[tuple[int, Literal["enqueue", "cancel"], object]] = []
@@ -1472,7 +1471,7 @@ class SqliteStore:
                                 (now, session_id, canc.owner),
                             )
 
-                # 2c. Apply staged budgets
+                # Apply staged budgets
                 for bu in staged_budgets:
                     if bu.action == "clear":
                         self._connection.execute(
@@ -1509,7 +1508,7 @@ class SqliteStore:
                             ),
                         )
 
-                # 2c2. Create pending action confirmations with the event that announces them.
+                # Create pending action confirmations with the event that announces them.
                 for confirmation in staged_confirmations:
                     try:
                         self._connection.execute(
@@ -1535,7 +1534,7 @@ class SqliteStore:
                     except sqlite3.IntegrityError as exc:
                         raise StoreConflict(f"confirmation {confirmation.request_id!r} already exists") from exc
 
-                # 2c3. Schedule or cancel owner wakeups with the callback that asked for them.
+                # Schedule or cancel owner wakeups with the callback that asked for them.
                 for wakeup in staged_wakeups:
                     try:
                         self._connection.execute(
@@ -1568,7 +1567,7 @@ class SqliteStore:
                         (now, cancel.wakeup_id, cancel.owner),
                     )
 
-                # 2d. Apply observer receipts
+                # Apply observer receipts
                 for r in observer_receipts:
                     self._connection.execute(
                         """
@@ -1578,7 +1577,7 @@ class SqliteStore:
                         (session_id, r.event_sequence, r.owner, now),
                     )
 
-                # 2e. Update completed continuation
+                # Update completed continuation
                 if completed_continuation_id is not None:
                     self._connection.execute(
                         """
@@ -1589,7 +1588,7 @@ class SqliteStore:
                         (completed_continuation_status, now, completed_continuation_id),
                     )
 
-                # 3. Append events
+                # Append events
                 current_seq = curr_seq
                 first_sequence_by_type: dict[str, int] = {}
                 for draft in events:
@@ -1627,7 +1626,7 @@ class SqliteStore:
 
                 new_turn = curr_turn + 1 if start_turn else curr_turn
 
-                # 4. Update session
+                # Update session
                 self._connection.execute(
                     """
                     UPDATE sessions
@@ -2904,8 +2903,7 @@ class SqliteStore:
         logical_turn: str,
         *,
         revision_id: str,
-        chain_step: int = 0,
-        action_budget_remaining: int = 32,
+        initial_root_budget: int = 32,
         continuation_id: str | None = None,
     ) -> tuple[ContinuationRecord, SessionRecord]:
         """Atomically claim ONE continuation, emit continuation_started, advance session, and commit ready CP.
@@ -3086,8 +3084,7 @@ class SqliteStore:
                     "continuation_id": cont_record.continuation_id,
                     "root_id": cont_record.root_id or cont_record.continuation_id,
                     "logical_turn": logical_turn,
-                    "chain_step": chain_step,
-                    "action_budget_remaining": action_budget_remaining,
+                    "initial_root_budget": initial_root_budget,
                 }
                 checkpoint_json = canonical_json(checkpoint_payload)
                 self._connection.execute(

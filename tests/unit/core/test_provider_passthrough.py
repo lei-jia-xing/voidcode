@@ -18,7 +18,8 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.core.activation import bundled_sources, config_from_snapshot, load_private_snapshot, snapshot_path
+from voidcode.bootstrap import bundled_sources, config_from_snapshot
+from voidcode.core.activation import load_private_snapshot, snapshot_path
 from voidcode.sdk.json_values import json_wire_object
 
 PROVIDER_NAME = "vendor-passthrough"
@@ -141,7 +142,7 @@ def _cli(workspace: Path, state: Path, *arguments: str) -> dict:
     command = [
         sys.executable,
         "-m",
-        "voidcode.core",
+        "voidcode",
         "--workspace",
         str(workspace),
         "--state-dir",

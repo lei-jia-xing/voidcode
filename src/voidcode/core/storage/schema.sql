@@ -1,12 +1,12 @@
--- Core schema v5. The store verifies an existing database's identity BEFORE
+-- Core schema v6. The store verifies an existing database's identity BEFORE
 -- setting pragmas or executing this DDL; foreign/legacy files are never changed.
--- This build reads exactly version 5; any other version is refused read-only. This file
+-- This build reads exactly version 6; any other version is refused read-only. This file
 -- is the whole schema: tables are added here together with the owner that uses them.
 
 CREATE TABLE kernel_identity (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     magic TEXT NOT NULL CHECK (magic = 'voidcode-kernel-v1'),
-    schema_version INTEGER NOT NULL CHECK (schema_version = 5)
+    schema_version INTEGER NOT NULL CHECK (schema_version = 6)
 ) STRICT;
 
 CREATE TABLE revisions (

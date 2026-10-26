@@ -538,7 +538,6 @@ def test_create_plugin_registers_tool_commands_and_context() -> None:
     assert [command.definition.name for command in plugin.commands] == ["todo", "todo.clear"]
     assert plugin.context is todo_context
     assert plugin.observer is not None
-    assert plugin.migrate_state is None
 
 
 # --- Reminder wiring ---

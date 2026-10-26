@@ -49,7 +49,7 @@ def _validated_match(match: tuple[str, ...], *, field_name: str) -> tuple[str, .
 
 @dataclass(frozen=True, slots=True)
 class StateSchema:
-    """The owner-state contract a plugin's ``migrate_state``/``prepare_deactivate`` operators assume."""
+    """The owner-state contract a plugin's ``prepare_deactivate`` operator assumes."""
 
     version: int = 1
     schema: Mapping[str, object] | None = None
@@ -113,10 +113,8 @@ class Plugin:
     post_tool_match: tuple[str, ...] = ("*",)
     #: Whether the hook may mutate the workspace while observing.
     post_tool_mutating: bool = False
-    #: Owner-state schema the migration/deactivation operators below assume.
+    #: Owner-state schema the deactivation operator below assumes.
     state: StateSchema = StateSchema()
-    #: Pure old-version -> new-version state transform, run before a capability switch.
-    migrate_state: Callable[[Mapping[str, object], int, int], Mapping[str, object]] | None = None
     #: Pure deactivation transform, run in the current runtime when this owner is disabled.
     prepare_deactivate: Callable[[Mapping[str, object], str, str, int | None], Mapping[str, object]] | None = None
     close: Callable[[], None] | None = None

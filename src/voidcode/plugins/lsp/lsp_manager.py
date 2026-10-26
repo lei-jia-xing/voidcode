@@ -26,7 +26,7 @@ from urllib.request import url2pathname
 from lsprotocol import converters as lsp_converters
 from lsprotocol import types as lsp_types
 
-from voidcode.sdk.config import CONFIG_FILE_NAME
+from voidcode.config import CONFIG_FILE_NAME
 from voidcode.sdk.provider import ProviderAbortSignal
 from voidcode.sdk.services import PluginServices
 

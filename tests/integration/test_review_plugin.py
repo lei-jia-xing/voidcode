@@ -12,8 +12,7 @@ from threading import Thread
 import pytest
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.core.activation import BUNDLED_PLUGIN_IDS
-from voidcode.core.bootstrap import open_core
+from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
 from voidcode.core.engine import Core
 
 _REVIEW_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "review"
@@ -75,6 +74,8 @@ def _core(tmp_path: Path, server: OpenAILoopbackServer, *, custom_reader: bool =
         },
         "plugins": {
             **{name: {"enabled": False} for name in BUNDLED_PLUGIN_IDS},
+            "files": {"enabled": True},
+            "providers": {"enabled": True},
             "review": {"path": str(_REVIEW_PLUGIN_ROOT), "enabled": True},
         },
     }

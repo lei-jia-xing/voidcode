@@ -9,8 +9,7 @@ from pathlib import Path
 import pytest
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.core.activation import bundled_sources
-from voidcode.core.bootstrap import adopt_generation, open_core
+from voidcode.bootstrap import adopt_generation, bundled_sources, open_core
 
 OBSERVER = """
 from __future__ import annotations

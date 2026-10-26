@@ -10,8 +10,7 @@ from threading import Thread
 import pytest
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.core.activation import BUNDLED_PLUGIN_IDS
-from voidcode.core.bootstrap import open_core
+from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
 from voidcode.sdk.codec import decode_tool_result
 from voidcode.sdk.tools import ToolFailure, ToolSuccess
 
@@ -19,7 +18,7 @@ _PROVIDER = """
 from hashlib import sha256
 from pathlib import Path
 from voidcode.sdk.plugin import Plugin
-from voidcode.sdk.workspace_queries import RULE_PAGES, DOCUMENT_STATES, RulePage, DocumentState
+from voidcode.capabilities.workspace_queries import RULE_PAGES, DOCUMENT_STATES, RulePage, DocumentState
 
 
 def create_plugin(config):
@@ -57,6 +56,8 @@ def test_file_tools_use_any_optional_workspace_provider(tmp_path: Path, mode: st
     provider.mkdir()
     (provider / "__init__.py").write_text(_PROVIDER, encoding="utf-8")
     plugins: dict[str, object] = {name: {"enabled": False} for name in BUNDLED_PLUGIN_IDS}
+    plugins["files"] = {"enabled": True}
+    plugins["providers"] = {"enabled": True}
     if mode != "absent":
         plugins["alternate-provider"] = {"path": str(provider), "config": {"broken": mode == "broken"}}
     edit = {
@@ -92,7 +93,7 @@ def test_file_tools_use_any_optional_workspace_provider(tmp_path: Path, mode: st
             encoding="utf-8",
         )
         with open_core(workspace, state_dir=tmp_path / "state") as core:
-            assert core.plugin_runtime.plugin_ids == (() if mode == "absent" else ("alternate-provider",))
+            assert core.plugin_runtime.plugin_ids == (("files", "providers") if mode == "absent" else ("alternate-provider", "files", "providers"))
             result = core.run("Read a rule and apply a version-constrained edit")
             assert result.status == "completed", result.error
             answers = [

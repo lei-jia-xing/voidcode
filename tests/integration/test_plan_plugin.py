@@ -16,7 +16,7 @@ from threading import Thread
 import pytest
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.core.bootstrap import open_core
+from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
 from voidcode.plugins.plan.plan_plugin import PLAN_MODE_INSTRUCTION
 

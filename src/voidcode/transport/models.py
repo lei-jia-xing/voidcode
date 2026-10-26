@@ -15,8 +15,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ...sdk.services import ContinuationResult
-from ..storage.store import SessionRecord
+from voidcode.core.storage.store import SessionRecord
+from voidcode.sdk.services import ContinuationResult
 
 
 class CoreHttpModel(BaseModel):
@@ -40,7 +40,6 @@ class ResumeRequest(CoreHttpModel):
 
 
 class InvokeRequest(CoreHttpModel):
-    model_config = ConfigDict(extra="ignore")
     arguments: dict[str, Any] = Field(default_factory=dict)
     #: The capability revision the client actually displayed. Required: a client
     #: must never let the core fall back to "whatever is current now".
@@ -48,7 +47,6 @@ class InvokeRequest(CoreHttpModel):
 
 
 class ConfirmRequest(CoreHttpModel):
-    model_config = ConfigDict(extra="ignore")
     request_id: str = Field(min_length=1, max_length=128)
     #: The revision of the catalog the confirmation was displayed under.
     expected_revision: str = Field(min_length=1, max_length=128)
@@ -60,7 +58,7 @@ class DrainRequest(CoreHttpModel):
 
 
 class HealthBody(CoreHttpModel):
-    """Core health and identity: the stable surface clients and the supervisor poll."""
+    """Core health and identity: the stable surface clients poll."""
 
     status: str
     stage: str

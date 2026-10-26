@@ -48,7 +48,7 @@ import uvicorn
 
 from tests.provider_loopback import OpenAILoopbackServer, _OpenAILoopbackHandler, openai_response
 from voidcode.core.storage.store import SqliteStore
-from voidcode.core.transport.http import create_core_app
+from voidcode.transport.http import create_core_app
 
 _GOV_PLUGIN_ID = "gov-plugin"
 _OBSERVER_PLUGIN_ID = "gov-observer2"
@@ -762,7 +762,7 @@ def _command(workspace: Path, state: Path, *arguments: str) -> list[str]:
     return [
         sys.executable,
         "-m",
-        "voidcode.core",
+        "voidcode",
         "--workspace",
         str(workspace),
         "--state-dir",

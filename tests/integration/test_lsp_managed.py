@@ -23,7 +23,7 @@ from threading import Thread
 import pytest
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.core.bootstrap import open_core
+from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
 from voidcode.sdk.codec import decode_tool_result
 from voidcode.sdk.tools import ToolFailure, ToolSuccess

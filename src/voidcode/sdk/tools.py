@@ -24,7 +24,6 @@ from .limits import (
 )
 from .services import PluginServices
 
-type SideEffectState = Literal["settled", "unknown"]
 type ToolDiagnosticsDetails = Mapping[str, object]
 type ToolReplayPolicy = Literal["safe", "never"]
 
@@ -62,11 +61,6 @@ def is_read_tier(effects: frozenset[ToolEffect]) -> bool:
     return ToolEffect.READ in effects or not has_external_mutations(effects)
 
 
-#: Side-effect state the runtime may claim for a timed-out execution. ``settled``
-#: means the runtime confirmed the execution stopped; it never means the side
-#: effects already performed were rolled back. ``unknown`` means the execution
-#: may still be in flight.
-type ToolSideEffectState = Literal["settled", "unknown"]
 #: Appended to a timeout message when the runtime could not confirm that the
 #: execution stopped, so no surface reports a plain failure.
 UNCONFIRMED_STOP_CLAUSE = (
@@ -179,7 +173,6 @@ class ToolDefinition:
     # Safe read/query tools may be replayed after a process crash. Mutating
     # tools default to never replay unless they explicitly opt in.
     replay_policy: ToolReplayPolicy | None = None
-    supports_parallel: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "input_schema", own_json_object(self.input_schema))
@@ -192,7 +185,8 @@ class ToolDefinition:
         ):
             raise ValueError("mutating tools cannot declare safe replay")
 
-    def replay_policy_for(self, _arguments: Mapping[str, object] | None = None) -> ToolReplayPolicy:
+    @property
+    def effective_replay_policy(self) -> ToolReplayPolicy:
         if self.replay_policy is not None:
             return self.replay_policy
         if self.effects == frozenset({ToolEffect.READ}):
@@ -211,24 +205,6 @@ class ToolCall:
 
     def __deepcopy__(self, memo: dict[int, object]) -> ToolCall:
         return self
-
-
-@dataclass(frozen=True, slots=True)
-class ToolInvocation:
-    """Runtime-owned boundary for one resolved tool call.
-
-    Governance and execution metadata deliberately remain outside ``ToolCall``
-    and ``ToolResult``. The runtime resolves the definition and constructs the
-    invocation context before handing this immutable bundle to the executor.
-    """
-
-    tool_call: ToolCall
-    tool_definition: ToolDefinition
-    context: ToolContext
-
-    def __post_init__(self) -> None:
-        if self.tool_call.tool_name != self.tool_definition.name:
-            raise ValueError("tool invocation call and definition must refer to the same tool")
 
 
 @dataclass(frozen=True, slots=True)

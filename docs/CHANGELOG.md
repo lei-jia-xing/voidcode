@@ -4,6 +4,14 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Minimal core cutover, outer product layer layout, schema v6 (BREAKING)
+- **Minimal core decoupling**: Core now takes neutral `ExecutionConfig` and `ExecutionPolicy` (`approval_mode` and `read_only`), removing `CoreConfig` and product responsibilities. Product configuration schema, `voidcode.json` validation, bundled plugin discovery, and provider credential resolution live in the outer layer (`src/voidcode/config.py` and `src/voidcode/bootstrap.py`).
+- **Plugin-only runtime**: `PluginRuntime._register_builtins` and builtin providers are deleted. Core no longer imports `capabilities`; files, execution, and providers are ordinary plugins with zero fallback. A zero-plugin core manages sessions and SQLite persistence only.
+- **Outer product layer & CLI cutover**: Outer adapters are organized as `src/voidcode/cli.py`, `src/voidcode/config.py`, `src/voidcode/bootstrap.py`, `src/voidcode/transport/`, and `src/voidcode/tui/`. Entry points `python -m voidcode` and console script `voidcode` point to `voidcode.cli:main`; `voidcode.core.__main__`, `voidcode.core.bootstrap`, and `voidcode.sdk.config` are removed.
+- **Storage schema v6**: `chain_step` is removed from checkpoints and engine cursor; `action_budget_remaining` is renamed to `initial_root_budget` preserving seed semantics. Storage schema is bumped to v6; legacy v5 databases are refused read-only with no automatic migration or silent deletion.
+- **Removal of `migrated_owners`**: `StateCopyPlan.migrated_owners` and event passthrough are deleted. Plugin state schema mismatches are explicitly rejected.
+- **Transport & TUI improvements**: Uvicorn server dynamically binds via `Config.bind_socket()` with bracketed IPv6 URLs; manual socket creation is eliminated. TUI SSE streaming uses `httpx.AsyncClient` with asyncio task cancellation, and `InvokeRequest`/`ConfirmRequest` strictly forbid extra fields.
+- **Typed history services**: raw `read_child_events` is deleted; plugins read bounded Markdown pages via `read_child_history` / `read_session_history`. Config parser `hide_input_in_errors` prevents credential echo.
 ### Web tools: `web_fetch` removed, `web_search` fixed provider order (BREAKING)
 - The `web_fetch` tool is gone: there is no bundled page fetcher anymore. Ask the model to search instead, or fetch pages through your own command or script.
 - `web_search` tries its search backends in a fixed order (Exa first) and uses the first one with a credential set — one attempt, no silent hop to the next backend on failure. Set any one of the search keys below and search works; with none set it fails with a visible message naming the credentials instead of silently falling back to a weaker engine. The search-engine scraping fallbacks are deleted, so results come from a real search API or the call fails explicitly.

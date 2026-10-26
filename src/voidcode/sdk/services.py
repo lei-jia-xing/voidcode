@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +10,7 @@ from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 from .json_values import json_wire_object, own_json_object
 
 if TYPE_CHECKING:
+    from .history import HistoryPage
     from .hooks import FactPage
     from .tools import ToolDefinition
     from .transcript import ContextHistory, TranscriptPage
@@ -161,21 +161,6 @@ class ChildSendReceipt:
         if self.message_id is not None:
             payload["message_id"] = self.message_id
         return payload
-
-
-#: Continuation owner for core child messages. Plugin ids match ``[a-z][a-z0-9_-]*``, so the
-#: leading ``@`` makes this value unforgeable by any admitted plugin: a plugin cannot own,
-#: claim, or cancel these rows through the generic continuation surface.
-CHILD_MESSAGE_OWNER = "@core/child"
-
-
-def child_completion_notice_id(parent_session_id: str, child_session_id: str, run_id: str) -> str:
-    """The durable identity of one run's completion notice.
-
-    Run-scoped on purpose: keying by the child alone would let an older completion mask a newer
-    follow-up run. The core publishes under this id and an acknowledgement cancels exactly it.
-    """
-    return hashlib.sha256("\0".join((CHILD_MESSAGE_OWNER, parent_session_id, child_session_id, run_id)).encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -602,21 +587,26 @@ class PluginServices(Protocol):
         """
         ...
 
-    def read_child_events(
+    def read_child_history(
         self,
         child_session_id: str,
         *,
         after_sequence: int = 0,
+        offset: int = 0,
         limit: int = 100,
-        include_payload: bool = True,
-    ) -> tuple[EventView, ...]:
-        """Read a child session's committed events, bounded in count and payload size.
+    ) -> HistoryPage:
+        """Render one bounded Markdown transcript page for an owned child session."""
+        ...
 
-        Restricted to this session's OWN descendants: the core walks the target's parent chain
-        back to the caller, so a sibling, a parent, an unrelated root, or another workspace's
-        session is refused — a descendant of a common root is not enough. Bounds are the same
-        as `read_events`.
-        """
+    def read_session_history(
+        self,
+        session_id: str,
+        *,
+        after_sequence: int = 0,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> HistoryPage:
+        """Render one bounded Markdown transcript page for the bound session or an owned child."""
         ...
 
     def tool_definition(self, name: str) -> ToolDefinition | None:

@@ -22,7 +22,7 @@ from pathlib import Path
 import uvicorn
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.core.transport.http import create_core_app
+from voidcode.transport.http import create_core_app
 
 _HELLO_ID = "hello-state"
 
@@ -174,7 +174,7 @@ def _turn(*calls: dict[str, object], output: str | None = None, usage: dict[str,
 
 
 def _cli(workspace: Path, state: Path, *arguments: str, code: int = 0) -> dict[str, object]:
-    command = [sys.executable, "-m", "voidcode.core", "--workspace", str(workspace), "--state-dir", str(state)]
+    command = [sys.executable, "-m", "voidcode", "--workspace", str(workspace), "--state-dir", str(state)]
     arguments = _with_displayed_revision(command, arguments)
     completed = subprocess.run([*command, *arguments], capture_output=True, text=True, timeout=60, check=False)
     assert completed.returncode == code, completed.stdout + completed.stderr

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from voidcode.capabilities.history_renderer import (
+from voidcode.core.history_renderer import (
     iter_event_blocks,
     render_event_block,
     render_history_page,

@@ -17,8 +17,7 @@ from threading import Thread
 import pytest
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.core.activation import BUNDLED_PLUGIN_IDS
-from voidcode.core.bootstrap import open_core
+from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
 from voidcode.core.engine import Core
 from voidcode.plugins.delegation.profiles.builtin import EXPLORE_AGENT
 
@@ -84,6 +83,8 @@ def _core(tmp_path: Path, server: OpenAILoopbackServer, *, minimal: bool = False
     if minimal:
         config["plugins"] = {
             **{name: {"enabled": False} for name in BUNDLED_PLUGIN_IDS},
+            "providers": {"enabled": True},
+            "files": {"enabled": True},
             "delegation": {"path": str(_admitted_source(tmp_path)), "enabled": True},
         }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")

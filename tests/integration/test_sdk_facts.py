@@ -4,7 +4,7 @@ import json
 from dataclasses import asdict
 
 from tests.unit.core.test_nested_tools import _call, _server, _turn
-from voidcode.core.bootstrap import open_core
+from voidcode.bootstrap import open_core
 from voidcode.core.storage.store import EventDraft
 from voidcode.sdk.hooks import ContextProjectedFact, InvocationFinishedFact, RequestWindow
 from voidcode.sdk.json_values import json_wire_value

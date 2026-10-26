@@ -11,8 +11,7 @@ from threading import Thread
 import pytest
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.core.activation import BUNDLED_PLUGIN_IDS
-from voidcode.core.bootstrap import open_core
+from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
 from voidcode.plugins.mcp import _mcp_config
 from voidcode.plugins.mcp.mcp_manager import build_mcp_manager
 
@@ -97,6 +96,7 @@ def test_admitted_mcp_tool_reaches_the_model_and_updates_inventory(tmp_path: Pat
             "providers": {"endpoint": {"api_key": "test-key", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
             "plugins": {
                 **{name: {"enabled": False} for name in BUNDLED_PLUGIN_IDS},
+                "providers": {"enabled": True},
                 "mcp": {"config": {"servers": {"demo": {"command": [sys.executable, str(source)]}}}},
             },
         }

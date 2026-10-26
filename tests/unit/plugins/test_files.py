@@ -559,12 +559,14 @@ class _UriServices:
         assert include_payload is True
         return tuple(event for event in self._events if event.sequence > after_sequence)[:limit]
 
-    def read_child_events(self, child_session_id: str, *, after_sequence: int = 0, limit: int = 100, include_payload: bool = True):  # type: ignore[no-untyped-def]
-        assert include_payload is True
-        self.child_session_ids.append(child_session_id)
+    def read_session_history(self, session_id: str, *, after_sequence: int = 0, offset: int = 0, limit: int = 100):  # type: ignore[no-untyped-def]
+        self.child_session_ids.append(session_id)
         if self._refuse_child is not None:
             raise self._refuse_child
-        return self._child_events[:limit]
+        from voidcode.core.history_renderer import render_history_page
+
+        events = self._events if session_id == "session-test" else self._child_events
+        return render_history_page(events, after_sequence=after_sequence, offset=offset)
 
     def query(self, name: str, arguments: dict | None = None):  # type: ignore[no-untyped-def]
         assert name == "workspace.rule_page"
@@ -717,7 +719,7 @@ def test_read_rule_reports_unavailable_unknown_and_malformed(tmp_path: Path) -> 
         context=_context(tmp_path),
         services=cast(
             Any,
-            _UriServices(rule_answer={"rule": "notes", "content_hash": "abc", "text": "Read me", "next_offset": None}),
+            _UriServices(rule_answer={"rule": "notes", "content_hash": "a" * 64, "text": "Read me", "next_offset": None}),
         ),
     )
     assert isinstance(page, ToolSuccess)

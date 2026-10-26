@@ -14,6 +14,7 @@ import pytest
 
 from voidcode.core.storage.store import StoredEvent
 from voidcode.core.transcript import context_records
+from voidcode.sdk.history import HistoryPage
 from voidcode.sdk.hooks import FactPage
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.services import (
@@ -350,16 +351,32 @@ class FakeServices(PluginServices):
         self.cancel_calls.append((child_session_id, reason))
         return self.cancel_result
 
-    def read_child_events(
+    def read_child_history(
         self,
         child_session_id: str,
         *,
         after_sequence: int = 0,
+        offset: int = 0,
         limit: int = 100,
-        include_payload: bool = True,
-    ) -> tuple[EventView, ...]:
-        _ = include_payload
-        return tuple(event for event in self.child_events.get(child_session_id, ()) if event.sequence > after_sequence)[:limit]
+    ) -> HistoryPage:
+        from voidcode.core.history_renderer import render_history_page
+
+        events = [e for e in self.child_events.get(child_session_id, ()) if e.sequence > after_sequence][:limit]
+        return render_history_page(events, after_sequence=after_sequence, offset=offset)
+
+    def read_session_history(
+        self,
+        session_id: str,
+        *,
+        after_sequence: int = 0,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> HistoryPage:
+        from voidcode.core.history_renderer import render_history_page
+
+        pool = self.events if session_id == self.session_id else self.child_events.get(session_id, ())
+        events = [e for e in pool if e.sequence > after_sequence][:limit]
+        return render_history_page(events, after_sequence=after_sequence, offset=offset)
 
     # --- Window Projections ---
 
