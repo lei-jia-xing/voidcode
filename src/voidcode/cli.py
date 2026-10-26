@@ -309,17 +309,9 @@ def _show(workspace: Path, directory: Path, session_id: str, *, events: bool) ->
 
 def _embedded_tui(workspace: Path, directory: Path, *, session_id: str | None) -> int:
     """Run the TUI directly against an in-process core: no socket, no HTTP framing."""
-    from .tui import CoreTuiApp
-    from .tui.local_client import CoreLocalClient
+    from .tui import run_embedded_tui
 
-    with open_core(workspace, state_dir=directory) as core:
-        previous = {number: signal.signal(number, lambda *_: core.cancel("user signal")) for number in (signal.SIGINT, signal.SIGTERM)}
-        try:
-            client = CoreLocalClient(core, workspace=workspace)
-            return CoreTuiApp(client, session_id=session_id).run()
-        finally:
-            for number, handler in previous.items():
-                signal.signal(number, handler)
+    return run_embedded_tui(workspace, directory, session_id=session_id)
 
 
 def _dispatch(core: Core, args: argparse.Namespace) -> int:

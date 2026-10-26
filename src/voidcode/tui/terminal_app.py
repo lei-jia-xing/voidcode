@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import json
 import logging
 import queue
@@ -13,11 +14,59 @@ from collections.abc import Mapping
 from typing import Any
 
 from voidcode.core.events import EventType
+from voidcode.sdk.client import (
+    CommandCatalog,
+    CommandResult,
+    CoreClientError,
+    ErrorFrame,
+    EventFrame,
+    HeadFrame,
+    HealthStatus,
+    RestartFrame,
+    ResumeSpec,
+    RunSpec,
+    SessionClient,
+    StreamCancellation,
+    StreamEvent,
+)
+from voidcode.sdk.codec import decode_tool_call, encode_tool_result
+from voidcode.sdk.commands import CommandDescriptor, ConfirmationRequest
+from voidcode.sdk.gates import (
+    ActivationCommitted,
+    ApprovalGate,
+    ApprovalRequested,
+    ConfirmationGate,
+    ConfirmationRequested,
+    GateChange,
+    GateDecided,
+    GateState,
+    RunTerminated,
+    reduce_gates,
+)
+from voidcode.sdk.provider import ProviderMessage, ProviderTurnResult
+from voidcode.sdk.tools import (
+    ToolEffect,
+    ToolResult,
+)
+from voidcode.sdk.transcript import (
+    TranscriptChild,
+    TranscriptContent,
+    TranscriptDispatch,
+    TranscriptEntry,
+    TranscriptInterrupted,
+    TranscriptPage,
+    TranscriptRun,
+    TranscriptTool,
+)
+from voidcode.sdk.views import (
+    ConfirmationViewData,
+    PluginViewDescriptor,
+    is_read_only_load,
+    parse_view_data,
+)
 
-from .client import CoreClientError, CoreHttpClient, StreamCancellation
 from .composer import Composer, ComposerAction
 from .keys import Key, KeyDecoder
-from .local_client import CoreLocalClient
 from .region import TuiFrame
 from .term import Terminal, escape_terminal_controls
 from .theme import Theme, appearance_mode, palette_names, resolve_theme
@@ -54,8 +103,10 @@ def _safe(value: object) -> str:
 
 def json_safe(value: object) -> object:
     """Round-trip unknown payload pieces through JSON so anything is serializable."""
+    from voidcode.sdk.json_values import json_wire_value
+
     try:
-        return json.loads(json.dumps(value, ensure_ascii=False, allow_nan=False, default=str))
+        return json.loads(json.dumps(json_wire_value(value), ensure_ascii=False, allow_nan=False, default=str))
     except TypeError, ValueError:
         return str(value)
 
@@ -74,7 +125,7 @@ def _prefixed_rows(prefix: str, text: str, theme: Theme, *, token: str) -> list[
     return rows or [label]
 
 
-def _command_result_text(result: Mapping[str, Any]) -> str:
+def _command_result_text(result: CommandResult) -> str:
     """One command result's human text: error, then output, then pretty data.
 
     ``CommandResult`` carries both human text (``output``) and machine data
@@ -83,20 +134,16 @@ def _command_result_text(result: Mapping[str, Any]) -> str:
     fallback preserves an empty mapping and nested falsy values because it
     serializes the value itself, never a truthiness test.
     """
-    status = str(result.get("status", ""))
-    error = result.get("error")
-    output = result.get("output")
-    if status == "error" and isinstance(error, str) and error:
-        return error
-    if isinstance(output, str) and output:
-        return output
-    data = result.get("data")
-    if data is not None:
-        return json.dumps(json_safe(data), indent=2, ensure_ascii=False)
+    if result.status == "error" and isinstance(result.error, str) and result.error:
+        return result.error
+    if isinstance(result.output, str) and result.output:
+        return result.output
+    if result.data is not None:
+        return json.dumps(json_safe(result.data), indent=2, ensure_ascii=False)
     return ""
 
 
-def _command_result_rows(name: str, result: Mapping[str, Any], theme: Theme) -> list[str]:
+def _command_result_rows(name: str, result: CommandResult, theme: Theme) -> list[str]:
     """One visible command-result block shared by direct receipts and events.
 
     A direct core read receipt and a durable plugin ``core.command_completed``
@@ -105,15 +152,143 @@ def _command_result_rows(name: str, result: Mapping[str, Any], theme: Theme) -> 
     name needs a branch. Unknown statuses never render as success.
     """
     label = _safe(name or "command")
-    status = str(result.get("status", ""))
     text = _command_result_text(result)
-    if status == "error":
+    if result.status == "error":
         return _prefixed_rows(f"[error] Command /{label} failed:", text, theme, token="error")
-    if status == "pending_confirmation":
+    if result.status == "pending_confirmation":
         return [theme.fg("warning", f"[wait] Command /{label} awaits confirmation")]
-    if status == "ok":
+    if result.status == "ok":
         return _prefixed_rows(f"[ok] Command /{label}:", text, theme, token="success")
-    return _prefixed_rows(f"Command /{label} [{status or 'unknown'}]:", text, theme, token="warning")
+    return _prefixed_rows(f"Command /{label} [{result.status or 'unknown'}]:", text, theme, token="warning")
+
+
+def _tool_result_rows(name: str, result: ToolResult, width: int, theme: Theme, *, interrupted: bool) -> list[str]:
+    """One tool-result block from the typed result; same pixels as the wire path."""
+    return render_tool_result(name, encode_tool_result(result), width, theme, interrupted=interrupted)
+
+
+def _content_rows(content: TranscriptContent, width: int, theme: Theme) -> list[str]:
+    """Render one typed transcript content into settled rows."""
+    if isinstance(content, ProviderMessage):
+        if content.role == "user":
+            user = theme.style("accent", bold=True).render("User>", color_system=theme.color_system)
+            return [f"{user} {_safe(content.content)}"]
+        if content.role == "system":
+            return _prefixed_rows("System>", content.content or "", theme, token="dim")
+        rows: list[str] = []
+        if content.content:
+            rows.extend(render_assistant_markdown(content.content, width, theme))
+        return rows
+    if isinstance(content, ProviderTurnResult):
+        rows = []
+        if isinstance(content.output, str) and content.output:
+            rows.extend(render_assistant_markdown(content.output, width, theme))
+        if isinstance(content.reasoning, str) and content.reasoning:
+            rows.extend(_prefixed_rows("Reasoning>", content.reasoning, theme, token="thinkingText"))
+        for call in content.tool_calls:
+            rows.extend(render_tool_call(_safe(call.tool_name or "tool"), json_safe(call.arguments), width, theme))
+        return rows
+    if isinstance(content, TranscriptTool):
+        name = _safe(content.result.tool_name or "unknown")
+        return _tool_result_rows(name, content.result, width, theme, interrupted=content.interrupted)
+    if isinstance(content, TranscriptRun):
+        if content.status == "failed":
+            return [theme.fg("error", "[Run failed]")]
+        if content.status == "interrupted":
+            return [theme.fg("warning", "[Run interrupted]")]
+        return []
+    if isinstance(content, TranscriptInterrupted):
+        return [theme.fg("dim", "[interrupted: usage unknown]")]
+    if isinstance(content, TranscriptChild):
+        return [theme.fg("dim", f"[child session: {_safe(content.child_session_id)}]")]
+    if isinstance(content, TranscriptDispatch):
+        return []
+    raise ValueError(f"unknown transcript content: {type(content).__name__}")
+
+
+def _approval_gate_from_payload(payload: Mapping[str, object], *, run_id: str, revision_id: str) -> ApprovalGate:
+    """Decode one core approval request payload into its typed gate (outer only)."""
+    request_id = payload.get("request_id")
+    if not isinstance(request_id, str) or not request_id:
+        raise ValueError("approval payload requires a non-empty request_id")
+    raw_call = payload.get("call")
+    if not isinstance(raw_call, Mapping):
+        raise ValueError("approval payload requires a call object")
+    call = decode_tool_call(raw_call)
+    return ApprovalGate(call=call, request_id=request_id, run_id=run_id, revision_id=revision_id)
+
+
+def _gate_changes(event: StreamEvent) -> tuple[list[GateChange], bool]:
+    """Decode one stream event's gate changes plus whether the run terminated.
+
+    Returns ``(changes, run_terminated)``; the caller folds changes through
+    the reducer and applies the same gate UI rules as before.
+    """
+    payload = event.payload if isinstance(event.payload, Mapping) else {}
+    if event.type == EventType.CONFIRMATION_REQUESTED:
+        if str(payload.get("ui_type", "")) != "confirmation":
+            return [], False
+        request = ConfirmationRequest.from_payload(payload)
+        return [ConfirmationRequested(ConfirmationGate.from_request(request, revision_id=event.revision_id))], False
+    if event.type == EventType.CONFIRMATION_DECIDED:
+        request_id = str(payload.get("request_id") or "")
+        return ([GateDecided(request_id)] if request_id else []), False
+    if event.type == EventType.APPROVAL_REQUESTED:
+        request_id = payload.get("request_id")
+        raw_call = payload.get("call")
+        if not isinstance(request_id, str) or not request_id or not isinstance(raw_call, Mapping):
+            return [], False
+        gate = _approval_gate_from_payload(payload, run_id=event.run_id, revision_id=event.revision_id)
+        return [ApprovalRequested(gate)], False
+    if event.type == EventType.APPROVAL_DECIDED:
+        request_id = str(payload.get("request_id") or "")
+        return ([GateDecided(request_id)] if request_id else []), False
+    if event.type == EventType.ACTIVATION_COMMITTED:
+        return [ActivationCommitted(str(payload.get("to_revision_id") or ""))], False
+    if event.type in (EventType.RUN_INTERRUPTED, EventType.RUN_FAILED):
+        return [RunTerminated(event.run_id)], True
+    if event.type == EventType.RUN_COMPLETED:
+        return [RunTerminated(event.run_id)], False
+    return [], False
+
+
+def _hydrate_head_events(client: SessionClient, session_id: str, head: HeadFrame, *, after_sequence: int = 0) -> tuple[StreamEvent, ...]:
+    """Overlay typed transcript entries onto one head backlog, in source order.
+
+    The head's last event sequence is the tip: transcript pages walk from the
+    applied cursor through empty bookkeeping pages until that tip, and entries
+    at or below it are the AUTHORITATIVE transcript for matching head events
+    by sequence (page data replaces any stream-carried entry, including None).
+    The walk never touches the TUI's settled cursor; a stalled page cursor or
+    a short page below the tip fails visibly instead of rendering incomplete.
+    """
+    events = head.events
+    if not events:
+        return ()
+    tip = max(event.sequence for event in events)
+    by_sequence: dict[int, TranscriptEntry] = {}
+    cursor = after_sequence
+    while True:
+        page: TranscriptPage = client.transcript(session_id, after_sequence=cursor, limit=100)
+        if page.next_sequence < cursor:
+            raise ValueError(f"transcript page moved backwards: {page.next_sequence} < {cursor}")
+        for entry in page.entries:
+            if entry.sequence <= tip:
+                by_sequence[entry.sequence] = entry
+        advanced = page.next_sequence > cursor
+        cursor = page.next_sequence
+        if cursor >= tip:
+            break
+        if not page.has_more:
+            raise ValueError(f"transcript pages ended at {cursor} below head tip {tip}")
+        if not advanced:
+            raise ValueError(f"transcript page stalled at {cursor} below head tip {tip}")
+    merged: list[StreamEvent] = []
+    for event in events:
+        # Page entries are authoritative for head-source sequences: the stream
+        # entry is replaced even when the page has no entry (bookkeeping None).
+        merged.append(dataclasses.replace(event, transcript=by_sequence.get(event.sequence)))
+    return tuple(merged)
 
 
 def _notice_row(text: object, tone: str, theme: Theme) -> str:
@@ -126,7 +301,7 @@ class CoreTuiApp:
 
     def __init__(
         self,
-        client: CoreHttpClient | CoreLocalClient,
+        client: SessionClient,
         *,
         session_id: str | None = None,
         terminal: Terminal | None = None,
@@ -146,7 +321,7 @@ class CoreTuiApp:
         self._generation = 0
         #: Last known server identity/liveness from /api/health. The fence bit
         #: pauses dispatch; the identity triple detects a replaced server.
-        self.upgrade: dict[str, Any] | None = None
+        self.upgrade: HealthStatus | None = None
         #: False until the current generation's stream delivers its first frame;
         #: the stream worker rearms it on every reconnect so each established
         #: stream reconciles exactly once (announced restart or silent drop).
@@ -167,10 +342,8 @@ class CoreTuiApp:
         #: Confirmation requests that arrived while another overlay owned the live
         #: region, keyed by request_id in request order: none is ever dropped.
         self.queued_confirmations: dict[str, InteractiveConfirmation] = {}
-        #: Request ids already terminally decided: a late duplicate fact or direct
-        #: result for one of these can never re-open it. ponytail: retained for the
-        #: process lifetime (one id per decision); evict if that ever matters.
-        self.resolved_confirmations: set[str] = set()
+        #: Typed pending gates (the reducer truth) plus decided-id tombstones.
+        self._gates = GateState()
         #: Live token buffer keyed by dispatch id: text fragments arrive as
         #: core.provider_progress events and settle on the turn's MODEL_TURN.
         self._stream_buffers: dict[str, list[str]] = {}
@@ -178,7 +351,7 @@ class CoreTuiApp:
         self._stream_dispatch: str | None = None
         self._spinner_tick = 0
         self._run_active = False
-        self.catalog_cache: list[dict[str, Any]] = []
+        self.catalog_cache: tuple[CommandDescriptor, ...] = ()
         #: The capability revision the displayed catalog came from; slash dispatch
         #: echoes it verbatim. Rendered overlays carry their own captured revision.
         self.catalog_revision: str = ""
@@ -215,7 +388,7 @@ class CoreTuiApp:
         if self.session_id:
             # Explicit requested session: must exist on the backend; never silently create new
             record = self.client.get_session(self.session_id)
-            actual_id = str(record.get("session_id") or "")
+            actual_id = record.session_id
             if not actual_id:
                 raise RuntimeError(f"Server returned invalid session record for {self.session_id!r}")
             self.session_id = actual_id
@@ -223,13 +396,13 @@ class CoreTuiApp:
             # No session requested: list sessions; if none exist, create one
             sessions = self.client.list_sessions(limit=1)
             if sessions:
-                actual_id = str(sessions[0].get("session_id") or "")
+                actual_id = sessions[0].session_id
                 if not actual_id:
                     raise RuntimeError("Server returned session without session_id")
                 self.session_id = actual_id
             else:
                 new_session = self.client.create_session()
-                actual_id = str(new_session.get("session_id") or "")
+                actual_id = new_session.session_id
                 if not actual_id:
                     raise RuntimeError("Server created session without session_id")
                 self.session_id = actual_id
@@ -238,11 +411,11 @@ class CoreTuiApp:
 
     def _load_catalog(self) -> None:
         try:
-            revision, commands = self.client.command_catalog()
-            self.catalog_cache = commands
-            self.catalog_revision = revision
+            catalog = self.client.command_catalog()
+            self.catalog_cache = catalog.commands
+            self.catalog_revision = catalog.revision_id
         except Exception as exc:
-            self.catalog_cache = []
+            self.catalog_cache = ()
             self.catalog_revision = ""
             self.status_line = f"Catalog load failed: {_safe(exc)}"
             raise RuntimeError(f"Failed to fetch command catalog from server: {exc}") from exc
@@ -269,12 +442,34 @@ class CoreTuiApp:
                         async for frame in stream:
                             if self._stop_event.is_set() or generation != self._generation:
                                 return
-                            tagged = dict(frame)
-                            tagged["generation"] = generation
-                            tagged["session_id"] = session_id
-                            self.event_queue.put(tagged)
-                            if frame.get("kind") == "server_restart":
+                            if isinstance(frame, HeadFrame):
+                                try:
+                                    hydrated = await asyncio.to_thread(_hydrate_head_events, self.client, session_id, frame, after_sequence=after_seq)
+                                except Exception as exc:
+                                    self.event_queue.put(
+                                        {
+                                            "kind": "error",
+                                            "error": f"transcript replay failed: {exc}",
+                                            "session_id": session_id,
+                                            "generation": generation,
+                                        }
+                                    )
+                                    raise
+                                self.event_queue.put(
+                                    {
+                                        "kind": "stream_head",
+                                        "frame": HeadFrame(session=frame.session, events=hydrated),
+                                        "session_id": session_id,
+                                        "generation": generation,
+                                    }
+                                )
+                            elif isinstance(frame, EventFrame):
+                                self.event_queue.put({"kind": "stream_event", "frame": frame, "session_id": session_id, "generation": generation})
+                            elif isinstance(frame, RestartFrame):
+                                self.event_queue.put({"kind": "server_restart", "session_id": session_id, "generation": generation})
                                 break
+                            elif isinstance(frame, ErrorFrame):
+                                self.event_queue.put({"kind": "error", "error": frame.error, "session_id": session_id, "generation": generation})
                 except asyncio.CancelledError:
                     return
                 except Exception as exc:
@@ -341,18 +536,22 @@ class CoreTuiApp:
                 continue  # a result for another session can never commit rows here
 
             kind = frame.get("kind")
-            if not self._stream_ready and ("events" in frame or kind in ("event", "server_restart", "error")):
+            if not self._stream_ready and kind in ("stream_head", "stream_event", "server_restart", "error"):
                 # A frame on a not-ready stream means a (re)connection was just
                 # established: run the one reconciliation path. The worker
                 # rearms the flag on every reconnect, so announced restarts and
                 # silent drops share this code path — no per-frame re-trigger.
                 self._stream_ready = True
                 self._reconcile_connection_async()
-            if "events" in frame and isinstance(frame["events"], list):
-                for ev in frame["events"]:
-                    self._handle_single_event(ev, rows_to_commit)
-            elif kind == "event" and "event" in frame:
-                self._handle_single_event(frame["event"], rows_to_commit)
+            if kind == "stream_head":
+                head = frame.get("frame")
+                if isinstance(head, HeadFrame):
+                    for event in head.events:
+                        self._handle_stream_event(event, rows_to_commit)
+            elif kind == "stream_event":
+                head = frame.get("frame")
+                if isinstance(head, EventFrame):
+                    self._handle_stream_event(head.event, rows_to_commit)
             elif kind == "notice":
                 rows_to_commit.append(_notice_row(frame.get("text"), str(frame.get("tone", "info")), self.theme))
             elif kind == "command_done":
@@ -361,27 +560,20 @@ class CoreTuiApp:
                 # A real pending gate and a fenced core own the status line.
                 # Never replace "approval required"/"confirmation required"/
                 # "upgrade in progress" with a late completion notice.
-                fenced = isinstance(self.upgrade, dict) and self.upgrade.get("fenced") is True
+                fenced = self.upgrade is not None and self.upgrade.fenced
                 gate_open = self.pending_approval is not None or isinstance(self.active_overlay, InteractiveConfirmation)
                 if status in ("ok", "error") and not fenced and not gate_open:
                     self.status_line = f"/{_safe(raw_name)}: {status}"
                 receipt = frame.get("result")
-                if isinstance(receipt, Mapping):
+                if isinstance(receipt, CommandResult):
                     rows_to_commit.extend(_command_result_rows(raw_name, receipt, self.theme))
-            elif kind == "approval":
-                approval = frame.get("approval")
-                if isinstance(approval, dict):
-                    self.pending_approval = InteractiveApproval(approval)
-                    self.status_line = f"Tool approval required: {self.pending_approval.tool_name}"
             elif kind == "approval_accepted":
                 # The server accepted this exact request: close the gate it
                 # matches, or nothing when a newer request already replaced it.
                 accepted = str(frame.get("request_id", ""))
                 self._in_flight.discard(accepted)
-                current = self.pending_approval
-                if accepted and current is not None and current.request_id == accepted:
-                    self.pending_approval = None
-                    self._present_queued_confirmation()
+                if accepted:
+                    self._apply_gate_change(GateDecided(accepted))
                 decision = str(frame.get("decision", ""))
                 status = str(frame.get("status", ""))
                 self.status_line = f"Approval {decision}: {status}"
@@ -402,31 +594,26 @@ class CoreTuiApp:
                 elif status in ("running", "waiting"):
                     self._run_active = True
                 self.status_line = f"Run {status}" if status else self.status_line
+            elif kind == "run_waiting":
+                gate = frame.get("gate")
+                if isinstance(gate, ApprovalGate):
+                    self._apply_gate_change(ApprovalRequested(gate))
             elif kind == "confirmation":
                 confirmation = frame.get("confirmation")
-                if isinstance(confirmation, dict):
-                    ui_type = str(confirmation.get("ui_type", ""))
-                    ui_data = confirmation.get("ui_data")
-                    if ui_type == "confirmation" and isinstance(ui_data, dict):
-                        # Bound to the revision the client invoked under, never to
-                        # whatever happens to be current when the user decides.
-                        self._show_or_queue_confirmation(InteractiveConfirmation(ui_data, revision_id=str(frame.get("revision_id", ""))))
+                if isinstance(confirmation, ConfirmationRequest):
+                    # Bound to the revision the client invoked under, never to
+                    # whatever happens to be current when the user decides.
+                    gate = ConfirmationGate.from_request(confirmation, revision_id=str(frame.get("revision_id", "")))
+                    self._apply_gate_change(ConfirmationRequested(gate))
             elif kind == "confirmation_accepted":
                 # The server accepted this exact request: close the overlay it
                 # matches, or nothing when a newer request already replaced it.
                 # A decided id never resurrects: the durable decided fact (or
-                # resolved_confirmations) already closed it permanently.
+                # the reducer tombstone) already closed it permanently.
                 accepted = str(frame.get("request_id", ""))
                 self._in_flight.discard(accepted)
-                overlay = self.active_overlay
-                if (
-                    accepted
-                    and accepted not in self.resolved_confirmations
-                    and isinstance(overlay, InteractiveConfirmation)
-                    and overlay.request_id == accepted
-                ):
-                    self.active_overlay = None
-                    self._present_queued_confirmation()
+                if accepted:
+                    self._apply_gate_change(GateDecided(accepted))
                 decision = str(frame.get("decision", ""))
                 status = str(frame.get("status", ""))
                 self.status_line = f"Confirmation {decision}: {status}"
@@ -464,17 +651,15 @@ class CoreTuiApp:
                 # newer round has not applied yet (>= would let the older win
                 # the race). Health and reconciled are two envelopes of ONE
                 # round sharing its serial, so == matches both.
-                if isinstance(snapshot, dict) and isinstance(serial, int) and serial == self._reconcile_serial and serial > self._reconcile_applied:
+                if (
+                    isinstance(snapshot, HealthStatus)
+                    and isinstance(serial, int)
+                    and serial == self._reconcile_serial
+                    and serial > self._reconcile_applied
+                ):
                     self._reconcile_applied = serial
-                    self.upgrade = {
-                        "fenced": snapshot.get("fenced") is True,
-                        "stage": str(snapshot.get("stage") or ""),
-                        "core_version": str(snapshot.get("core_version") or ""),
-                        "image_digest": str(snapshot.get("image_digest") or ""),
-                        "generation": snapshot.get("generation", -1),
-                        "active_upgrade": snapshot.get("active_upgrade"),
-                    }
-                    if self.upgrade["fenced"]:
+                    self.upgrade = snapshot
+                    if snapshot.fenced:
                         self.status_line = "Core upgrade in progress: dispatch paused"
                     else:
                         self.status_line = ""
@@ -490,8 +675,8 @@ class CoreTuiApp:
                     self._reconcile_applied = serial
                     catalog = frame.get("catalog")
                     failures = frame.get("failures")
-                    if isinstance(catalog, tuple) and len(catalog) == 2:
-                        self.catalog_revision, self.catalog_cache = str(catalog[0]), list(catalog[1])
+                    if isinstance(catalog, CommandCatalog):
+                        self.catalog_revision, self.catalog_cache = catalog.revision_id, catalog.commands
                     status = frame.get("session_status")
                     if isinstance(status, str) and status:
                         self.status_line = f"Run {status}" if status in ("running", "waiting") else self.status_line
@@ -512,42 +697,28 @@ class CoreTuiApp:
         if rows_to_commit:
             self.terminal.commit_rows(rows_to_commit)
 
-    def _handle_single_event(self, event: dict[str, Any], rows: list[str]) -> None:
-        seq = int(event.get("sequence", 0))
+    def _handle_stream_event(self, event: StreamEvent, rows: list[str]) -> None:
         committed = self._session_cursors.get(self.session_id, 0)
-        if seq <= committed:
+        if event.sequence <= committed:
             return  # Settled ledger: never replay already committed events
-        self._session_cursors[self.session_id] = seq
-
-        etype = str(event.get("type", ""))
-        payload = event.get("payload", {})
-        if not isinstance(payload, dict):
-            payload = {}
-
-        if etype == EventType.USER_MESSAGE:
-            # The durable event is the single source of the prompt row: the
-            # composer never commits it optimistically, and duplicates are
-            # excluded by the per-session cursor above (not by a first-only flag).
-            user = self.theme.style("accent", bold=True).render("User>", color_system=self.theme.color_system)
-            rows.append(f"{user} {_safe(payload.get('content'))}")
-        elif etype == EventType.MODEL_TURN:
-            self._settle_stream(payload)
-            raw_turn = payload.get("result")
-            turn: dict[str, Any] = raw_turn if isinstance(raw_turn, dict) else {}
-            output = turn.get("output")
-            if isinstance(output, str) and output:
-                rows.extend(render_assistant_markdown(output, self.terminal.width, self.theme))
-            reasoning = turn.get("reasoning")
-            if isinstance(reasoning, str) and reasoning:
-                rows.extend(_prefixed_rows("Reasoning>", reasoning, self.theme, token="thinkingText"))
-            tool_calls = turn.get("tool_calls")
-            if isinstance(tool_calls, list):
-                for call in tool_calls:
-                    if not isinstance(call, dict):
-                        continue
-                    name = _safe(call.get("tool_name") or "tool")
-                    rows.extend(render_tool_call(name, json_safe(call.get("arguments")), self.terminal.width, self.theme))
-        elif etype == EventType.PROVIDER_PROGRESS:
+        self._session_cursors[self.session_id] = event.sequence
+        payload = event.payload if isinstance(event.payload, Mapping) else {}
+        etype = event.type
+        entry = event.transcript
+        if (
+            entry is not None
+            and entry.sequence == event.sequence
+            and etype
+            not in (
+                EventType.RUN_COMPLETED,
+                EventType.RUN_FAILED,
+                EventType.RUN_INTERRUPTED,
+            )
+        ):
+            if isinstance(entry.content, ProviderTurnResult):
+                self._settle_stream(payload)
+            rows.extend(_content_rows(entry.content, self.terminal.width, self.theme))
+        if etype == EventType.PROVIDER_PROGRESS:
             dispatch = payload.get("dispatch_id")
             delta = payload.get("text_delta")
             if isinstance(dispatch, str) and dispatch and isinstance(delta, str) and delta:
@@ -556,18 +727,11 @@ class CoreTuiApp:
                 target.setdefault(dispatch, []).append(delta)
                 self._stream_dispatch = dispatch
                 self._run_active = True
-        elif etype in (EventType.TOOL_COMPLETED, EventType.TOOL_INTERRUPTED):
-            raw_call = payload.get("call")
-            call: dict[str, Any] = raw_call if isinstance(raw_call, dict) else {}
-            raw_result = payload.get("result")
-            result: dict[str, Any] = raw_result if isinstance(raw_result, dict) else {}
-            name = _safe(result.get("tool_name") or "unknown")
-            rows.extend(render_tool_result(name, result, self.terminal.width, self.theme, interrupted=etype == EventType.TOOL_INTERRUPTED))
         elif etype == EventType.COMMAND_COMPLETED:
-            raw_command_result = payload.get("result")
-            command_result: dict[str, Any] = raw_command_result if isinstance(raw_command_result, dict) else {}
+            raw_result = payload.get("result")
             raw_name = str(payload.get("name") or "command")
-            rows.extend(_command_result_rows(raw_name, command_result, self.theme))
+            if isinstance(raw_result, Mapping):
+                rows.extend(_command_result_rows(raw_name, CommandResult.from_payload(raw_result), self.theme))
         elif etype == EventType.ACTIVATION_COMMITTED:
             # The displayed generation changed: the command catalog is
             # refetched and anything captured under the previous revision is
@@ -578,72 +742,80 @@ class CoreTuiApp:
             dropped = overlay is not None and getattr(overlay, "revision_id", "") != to_revision_id
             if dropped:
                 self.active_overlay = None
-            # A queued request from another generation can never be resolved
-            # against this one either, so it is discarded with the same rule.
-            for queued_id in [i for i, q in self.queued_confirmations.items() if q.revision_id != to_revision_id]:
-                del self.queued_confirmations[queued_id]
-            self.pending_approval = None
+            self._apply_gate_change(ActivationCommitted(to_revision_id))
             self._load_catalog()
             self._present_queued_confirmation()
             suffix = " (stale action discarded)" if dropped else ""
             rows.append(self.theme.fg("warning", f"[Capabilities changed: command catalog refreshed{suffix}]"))
-        elif etype == EventType.CONFIRMATION_REQUESTED:
-            # Durable pending fact: restores the modal after a reload, bound to
-            # the revision that created the request (never the current one).
-            request_id = _safe(payload.get("request_id"))
-            ui_data = payload.get("ui_data")
-            if request_id and str(payload.get("ui_type", "")) == "confirmation" and isinstance(ui_data, dict):
-                self._show_or_queue_confirmation(InteractiveConfirmation(ui_data, revision_id=str(event.get("revision_id", ""))))
-        elif etype == EventType.CONFIRMATION_DECIDED:
-            # Durable reduction: the request is closed whether or not its modal
-            # is on screen, so replayed history never resurrects it.
-            decided = _safe(payload.get("request_id"))
-            if decided:
-                self.resolved_confirmations.add(decided)
-                self.queued_confirmations.pop(decided, None)
-                overlay = self.active_overlay
-                if isinstance(overlay, InteractiveConfirmation) and overlay.request_id == decided:
-                    self.active_overlay = None
-                    self.status_line = "Confirmation resolved"
-                    self._present_queued_confirmation()
-        elif etype == EventType.APPROVAL_REQUESTED:
-            raw_call = payload.get("call")
-            call: dict[str, Any] = raw_call if isinstance(raw_call, dict) else {}
-            request_id = _safe(payload.get("request_id"))
-            if request_id:
-                self.pending_approval = InteractiveApproval(
-                    {"request_id": request_id, "tool_name": _safe(call.get("tool_name") or "tool"), "arguments": call.get("arguments")}
-                )
-                self.status_line = f"Tool approval required: {self.pending_approval.tool_name}"
-        elif etype == EventType.APPROVAL_DECIDED:
-            decision = _safe(payload.get("decision"))
-            rows.append(self.theme.fg("warning", f"[Approval {decision}]"))
-            # Durable reduction: the decided request closes whether the gate is
-            # local-pending or was decided by a remote client — but only the
-            # MATCHING id, so a newer parked request is never dropped.
-            decided_approval = _safe(payload.get("request_id"))
-            current = self.pending_approval
-            if decided_approval and current is not None and current.request_id == decided_approval:
-                self.pending_approval = None
-                self._present_queued_confirmation()
+        elif etype in (EventType.CONFIRMATION_REQUESTED, EventType.CONFIRMATION_DECIDED, EventType.APPROVAL_REQUESTED, EventType.APPROVAL_DECIDED):
+            if etype == EventType.APPROVAL_DECIDED:
+                rows.append(self.theme.fg("warning", f"[Approval {_safe(payload.get('decision'))}]"))
+            for change in _gate_changes(event)[0]:
+                self._apply_gate_change(change)
         elif etype == EventType.RUN_INTERRUPTED:
             rows.append(self.theme.fg("warning", f"[Run interrupted: {_safe(payload.get('stop_cause'))}]"))
-            # An authentic terminal fact means nothing is parked any more; a
-            # stale gate must never outlive the run that asked for it.
-            self.pending_approval = None
+            for change in _gate_changes(event)[0]:
+                self._apply_gate_change(change)
             self._clear_stream()
             self._present_queued_confirmation()
         elif etype == EventType.RUN_FAILED:
             rows.append(self.theme.fg("error", "[Run failed]"))
-            self.pending_approval = None
+            for change in _gate_changes(event)[0]:
+                self._apply_gate_change(change)
             self._clear_stream()
             self._present_queued_confirmation()
         elif etype == EventType.RUN_COMPLETED:
+            for change in _gate_changes(event)[0]:
+                self._apply_gate_change(change)
             self._clear_stream()
         elif etype == EventType.OBSERVER_ERROR:
             rows.append(f"{self.theme.fg('error', '[Plugin observer error]')} {_safe(payload.get('error'))}")
 
-    def _settle_stream(self, payload: dict[str, Any]) -> None:
+    def _apply_gate_change(self, change: GateChange) -> None:
+        """Fold one typed gate change and sync the mounted widgets to the reducer."""
+        before = self._gates
+        after = reduce_gates(before, change)
+        self._gates = after
+        if isinstance(change, ApprovalRequested):
+            if after.approval is not None and after.approval.request_id == change.gate.request_id:
+                current = self.pending_approval
+                if current is None or current.request_id != change.gate.request_id:
+                    self.pending_approval = InteractiveApproval(change.gate)
+                self.status_line = f"Tool approval required: {change.gate.tool_name}"
+            return
+        if isinstance(change, ConfirmationRequested):
+            gate = change.gate
+            if gate.request_id in after.decided or not any(entry.request_id == gate.request_id for entry in after.confirmations):
+                return
+            self._show_or_queue_confirmation(InteractiveConfirmation(gate.view, revision_id=gate.revision_id))
+            return
+        if isinstance(change, GateDecided):
+            decided = change.request_id
+            self.queued_confirmations.pop(decided, None)
+            current = self.pending_approval
+            if current is not None and current.request_id == decided:
+                self.pending_approval = None
+            overlay = self.active_overlay
+            if isinstance(overlay, InteractiveConfirmation) and overlay.request_id == decided:
+                self.active_overlay = None
+                self._present_queued_confirmation()
+            return
+        if isinstance(change, ActivationCommitted):
+            self.pending_approval = None
+            for queued_id in [i for i, q in self.queued_confirmations.items() if q.revision_id != change.to_revision_id]:
+                del self.queued_confirmations[queued_id]
+            if before.approval is not None or len(before.confirmations) != len(after.confirmations):
+                self._present_queued_confirmation()
+            return
+        if isinstance(change, RunTerminated):
+            current = self.pending_approval
+            if current is not None and after.approval is None:
+                self.pending_approval = None
+                self._present_queued_confirmation()
+            return
+        raise ValueError(f"unknown gate change: {type(change).__name__}")
+
+    def _settle_stream(self, payload: Mapping[str, object]) -> None:
         """Drop the live buffer the committed turn replaces; the rows settle, never replay."""
         dispatch = payload.get("dispatch_id")
         if isinstance(dispatch, str) and dispatch:
@@ -668,7 +840,7 @@ class CoreTuiApp:
         decided request never comes back.
         """
         request_id = overlay.request_id
-        if not request_id or request_id in self.resolved_confirmations:
+        if not request_id or request_id in self._gates.decided:
             return
         current = self.active_overlay
         if isinstance(current, InteractiveConfirmation) and current.request_id == request_id:
@@ -686,7 +858,7 @@ class CoreTuiApp:
         while self.queued_confirmations:
             request_id, overlay = next(iter(self.queued_confirmations.items()))
             del self.queued_confirmations[request_id]
-            if request_id in self.resolved_confirmations:
+            if request_id in self._gates.decided:
                 continue
             self.active_overlay = overlay
             self.status_line = "Confirmation required"
@@ -742,7 +914,7 @@ class CoreTuiApp:
         def worker() -> None:
             try:
                 res = self.client.cancel(session_id)
-                requested = bool(res.get("cancellation_requested"))
+                requested = bool(res.cancellation_requested)
                 self._queue_notice(
                     "Cancellation requested" if requested else "No active run to cancel",
                     tone="warning" if requested else "info",
@@ -763,6 +935,10 @@ class CoreTuiApp:
         self._resolve_approval(str(outcome.get("decision", "deny")))
 
     def _resolve_approval(self, decision: str) -> None:
+        if decision not in ("allow", "deny"):
+            self.status_line = f"Unknown approval decision: {_safe(decision)}"
+            return
+        assert decision == "allow" or decision == "deny"
         approval = self.pending_approval
         if approval is None:
             return
@@ -781,7 +957,7 @@ class CoreTuiApp:
 
         def worker() -> None:
             try:
-                res = self.client.resume(session_id, approval_request_id=request_id, decision=decision)
+                res = self.client.resume(session_id, ResumeSpec(approval_request_id=request_id, decision=decision))
             except CoreClientError as exc:
                 if exc.code == "upgrade_pending":
                     # Still armed with the same request id: no auto-resend, the
@@ -795,7 +971,7 @@ class CoreTuiApp:
                 self._queue_notice(f"Approval {decision} failed: {exc}", tone="error", session_id=session_id, generation=generation)
                 self.event_queue.put({"kind": "decision_done", "request_id": request_id, "session_id": session_id, "generation": generation})
                 return
-            status = str(res.get("status", ""))
+            status = res.status
             self.event_queue.put(
                 {
                     "kind": "approval_accepted",
@@ -839,6 +1015,10 @@ class CoreTuiApp:
 
     def _resolve_confirmation(self, decision: str) -> None:
         """Submit the stored request id's decision; the overlay never lies about it."""
+        if decision not in ("allow", "deny"):
+            self.status_line = f"Unknown confirmation decision: {_safe(decision)}"
+            return
+        assert decision == "allow" or decision == "deny"
         request_id = getattr(self.active_overlay, "request_id", "")
         # The revision of the envelope that displayed this confirmation.
         revision = getattr(self.active_overlay, "revision_id", "")
@@ -875,7 +1055,7 @@ class CoreTuiApp:
                 self._queue_notice(f"Confirmation {decision} failed: {exc}", tone="error", session_id=session_id, generation=generation)
                 self.event_queue.put({"kind": "decision_done", "request_id": request_id, "session_id": session_id, "generation": generation})
                 return
-            status = str(res.get("status", ""))
+            status = res.status
             self.event_queue.put(
                 {
                     "kind": "confirmation_accepted",
@@ -908,7 +1088,7 @@ class CoreTuiApp:
         """
         session_id, generation = self.session_id, self._generation
 
-        def finish(status: str, result: Mapping[str, Any] | None = None) -> None:
+        def finish(status: str, result: CommandResult | None = None) -> None:
             """Hand this command's captured completion to the UI thread once."""
             self.event_queue.put(
                 {
@@ -944,10 +1124,10 @@ class CoreTuiApp:
                 if submit_key is not None:
                     self.event_queue.put({"kind": "decision_done", "request_id": submit_key, "session_id": session_id, "generation": generation})
                 return
-            status = str(res.get("status", ""))
+            status = res.status
             if status == "pending_confirmation":
-                confirmation = res.get("confirmation")
-                if isinstance(confirmation, dict):
+                confirmation = res.confirmation
+                if confirmation is not None:
                     self.event_queue.put(
                         {
                             "kind": "confirmation",
@@ -959,7 +1139,7 @@ class CoreTuiApp:
                     )
             elif status == "error":
                 self._queue_notice(
-                    f"/{name} failed: {res.get('error') or 'error'}",
+                    f"/{name} failed: {res.error or 'error'}",
                     tone="error",
                     session_id=session_id,
                     generation=generation,
@@ -1065,7 +1245,7 @@ class CoreTuiApp:
                 catalog = None
                 failures.append(f"catalog ({exc})")
             try:
-                session_status = str(self.client.get_session(session_id).get("status", ""))
+                session_status = self.client.get_session(session_id).status
             except Exception as exc:
                 session_status = ""
                 failures.append(f"session status ({exc})")
@@ -1112,7 +1292,7 @@ class CoreTuiApp:
         draft = self.composer.value
         if not draft.startswith("/"):
             return []
-        names = [str(entry.get("name", "")) for entry in self.catalog_cache]
+        names = [entry.name for entry in self.catalog_cache]
         names.extend(f"tui {control}" for control in ("help", "sessions", "session", "new", "theme", "views", "cancel", "quit", "exit"))
         prefix = draft[1:].strip()
         return sorted(f"/{name}" for name in names if name and name.startswith(prefix))
@@ -1120,7 +1300,7 @@ class CoreTuiApp:
     def _dispatch_user_prompt(self, prompt: str) -> None:
         # No optimistic commit: the durable core.user_message event is the one
         # and only source of the prompt row on screen.
-        if isinstance(self.upgrade, dict) and self.upgrade.get("fenced") is True:
+        if self.upgrade is not None and self.upgrade.fenced:
             # Never queue a prompt behind a fence: the user re-sends after
             # reconnect. Composer._submit already cleared the draft, so restore
             # the exact text — but never overwrite a newer draft the user typed
@@ -1135,27 +1315,31 @@ class CoreTuiApp:
 
         def run_worker() -> None:
             try:
-                res = self.client.run(session_id, prompt)
-                status = str(res.get("status", ""))
+                res = self.client.run(session_id, RunSpec(prompt))
+                status = res.status
                 self.event_queue.put(
                     {
                         "kind": "run_status",
                         "status": status,
-                        "error": res.get("error"),
+                        "error": res.error,
                         "session_id": session_id,
                         "generation": generation,
                     }
                 )
-                if status == "waiting":
-                    record = self.client.get_session(session_id)
-                    self.event_queue.put(
-                        {
-                            "kind": "waiting",
-                            "session_id": session_id,
-                            "generation": generation,
-                            "session": record,
-                        }
-                    )
+                if status == "waiting" and res.pending_approval is not None:
+                    try:
+                        gate = _approval_gate_from_payload(res.pending_approval, run_id=res.run_id, revision_id=res.revision_id)
+                    except ValueError as exc:
+                        self._queue_notice(f"Approval receipt malformed: {exc}", tone="error", session_id=session_id, generation=generation)
+                    else:
+                        self.event_queue.put(
+                            {
+                                "kind": "run_waiting",
+                                "gate": gate,
+                                "session_id": session_id,
+                                "generation": generation,
+                            }
+                        )
             except CoreClientError as exc:
                 if exc.code == "upgrade_pending":
                     self._upgrade_pending_notice("the prompt", session_id=session_id, generation=generation)
@@ -1189,7 +1373,7 @@ class CoreTuiApp:
         cmd = parts[0]
         arg_str = parts[1] if len(parts) > 1 else ""
 
-        admitted = {str(c.get("name", "")) for c in self._catalog()}
+        admitted = {c.name for c in self._catalog()}
 
         # "/tui <control>" always reaches the client's own controls, so a plugin
         # that declares e.g. "help" cannot make local navigation unreachable.
@@ -1257,12 +1441,11 @@ class CoreTuiApp:
     def _action_schema(self, name: str) -> Mapping[str, Any] | None:
         """The target command's declared argument schema, the form's field authority."""
         for descriptor in self._catalog():
-            if descriptor.get("name") == name:
-                schema = descriptor.get("argument_schema")
-                return schema if isinstance(schema, Mapping) else None
+            if descriptor.name == name:
+                return descriptor.argument_schema
         return None
 
-    def _catalog(self) -> list[dict[str, Any]]:
+    def _catalog(self) -> tuple[CommandDescriptor, ...]:
         if not self.catalog_cache:
             self._load_catalog()
         return self.catalog_cache
@@ -1282,8 +1465,9 @@ class CoreTuiApp:
                 break
         self.session_id = session_id
         self.active_overlay = None
+        self.pending_approval = None
         self.queued_confirmations.clear()
-        self.resolved_confirmations.clear()
+        self._gates = GateState()
         self._clear_stream()
         # A new stream is about to start: its first frame reconciles.
         self._stream_ready = False
@@ -1293,7 +1477,7 @@ class CoreTuiApp:
     def _create_session(self) -> None:
         try:
             res = self.client.create_session()
-            new_id = str(res.get("session_id", ""))
+            new_id = res.session_id
         except Exception as exc:
             self.terminal.commit_rows([self.theme.fg("error", f"Failed to create session: {_safe(exc)}")])
             return
@@ -1320,9 +1504,7 @@ class CoreTuiApp:
         if not self.catalog_cache:
             self._load_catalog()
         for c in self.catalog_cache:
-            name = c.get("name", "")
-            desc = c.get("description", "")
-            lines.append(f"  /{name:<16} {desc}")
+            lines.append(f"  /{c.name:<16} {c.description}")
         self.terminal.commit_rows(lines)
 
     def _show_sessions(self) -> None:
@@ -1330,11 +1512,8 @@ class CoreTuiApp:
             sess_list = self.client.list_sessions()
             lines = [self.theme.style("accent", bold=True).render("=== Active Sessions ===", color_system=self.theme.color_system)]
             for s in sess_list:
-                sid = s.get("session_id", "")
-                status = s.get("status", "idle")
-                turn = s.get("turn", 0)
-                marker = " >" if sid == self.session_id else "  "
-                lines.append(f"{marker} {sid} (status={status}, turn={turn})")
+                marker = " >" if s.session_id == self.session_id else "  "
+                lines.append(f"{marker} {s.session_id} (status={s.status}, turn={s.turn})")
             self.terminal.commit_rows(lines)
         except Exception as exc:
             self.terminal.commit_rows([self.theme.fg("error", f"Failed to list sessions: {_safe(exc)}")])
@@ -1348,34 +1527,43 @@ class CoreTuiApp:
         are restored separately from their durable events.
         """
         try:
-            views_revision, v_list = self.client.views(self.session_id)
+            snapshot = self.client.views(self.session_id)
         except Exception as exc:
             self.terminal.commit_rows([self.theme.fg("error", f"Failed to read views: {_safe(exc)}")])
             return
+        views_revision = snapshot.revision_id
+        descriptors: list[PluginViewDescriptor] = list(snapshot.views)
         if name_filter:
             wanted = name_filter.strip().lower()
-            v_list = [v for v in v_list if wanted in str(v.get("name", "")).lower() or wanted in str(v.get("title", "")).lower()]
-        if not v_list:
+            descriptors = [v for v in descriptors if wanted in v.name.lower() or wanted in v.title.lower()]
+        if not descriptors:
             self.terminal.commit_rows([self.theme.fg("warning", "No plugin views available for this session.")])
             return
-        for v in v_list:
-            vtype = v.get("view_type")
+        for v in descriptors:
+            vtype = v.view_type
             if vtype in ("choices", "form", "confirmation"):
                 # The overlay carries the revision of this very envelope, so
                 # the action it dispatches can never be relabelled later.
+                data = parse_view_data(v.view_type, v.data)
                 if vtype == "choices":
-                    self.active_overlay = InteractiveChoices(v.get("data", {}), revision_id=views_revision)
+                    from voidcode.sdk.views import ChoicesViewData
+
+                    assert isinstance(data, ChoicesViewData)
+                    self.active_overlay = InteractiveChoices(data, revision_id=views_revision)
                 elif vtype == "form":
-                    form_data = v.get("data", {})
+                    from voidcode.sdk.views import FormViewData
+
+                    assert isinstance(data, FormViewData)
                     form = InteractiveForm(
-                        form_data,
-                        action_schema=self._action_schema(str(form_data.get("action", ""))),
+                        data,
+                        action_schema=self._action_schema(data.action),
                         revision_id=views_revision,
                     )
                     self._maybe_load_form_data(form)
                     self.active_overlay = form
                 elif vtype == "confirmation":
-                    self.active_overlay = InteractiveConfirmation(v.get("data", {}), revision_id=views_revision)
+                    assert isinstance(data, ConfirmationViewData)
+                    self.active_overlay = InteractiveConfirmation(data, revision_id=views_revision)
                 return
             # Non-interactive view: render rows and commit
             rows = render_plugin_view(v, self.terminal.width, self.theme)
@@ -1386,8 +1574,8 @@ class CoreTuiApp:
         if not form.load_action:
             return
         load_action = str(form.load_action)
-        effects = [str(e).lower() for cmd in self._catalog() if cmd.get("name") == load_action for e in (cmd.get("effects") or [])]
-        if effects != ["read"]:
+        catalog = CommandCatalog(revision_id=self.catalog_revision or "rev-unknown", commands=self._catalog())
+        if not is_read_only_load(form.view, catalog):
             form.load_error = f"load_action '{load_action}' must declare exactly the read effect"
             return
 
@@ -1407,11 +1595,11 @@ class CoreTuiApp:
                     load_action,
                     expected_revision=target.revision_id,
                 )
-                data = res.get("data")
-                if isinstance(data, dict):
+                data = res.data
+                if isinstance(data, Mapping):
                     payload["data"] = data
-                elif res.get("error"):
-                    payload["error"] = str(res["error"])
+                elif res.error:
+                    payload["error"] = str(res.error)
             except Exception as exc:
                 payload["error"] = str(exc)
             self.event_queue.put(payload)
@@ -1419,7 +1607,7 @@ class CoreTuiApp:
         threading.Thread(target=worker, daemon=True, name="CoreFormLoad").start()
 
     def _dispatch_catalog_command(self, cmd_name: str, arg_str: str) -> None:
-        cmd_desc = next((c for c in self._catalog() if c.get("name") == cmd_name), None)
+        cmd_desc = next((c for c in self._catalog() if c.name == cmd_name), None)
         if cmd_desc is None:
             self.terminal.commit_rows([f"{self.theme.fg('error', f'Unknown command: /{_safe(cmd_name)}')} (try /help)"])
             return
@@ -1428,12 +1616,13 @@ class CoreTuiApp:
         # Core read commands answer over HTTP only; plugin commands and run/resume
         # already project through durable events. Classify by contract metadata,
         # never by a client-side command name list.
-        effects = frozenset(str(effect) for effect in (cmd_desc.get("effects") or ()))
-        surface_result = str(cmd_desc.get("owner", "")) == "core" and effects <= {"read"}
+        effects = frozenset(cmd_desc.effects)
+        surface_result = cmd_desc.owner == "core" and effects <= {ToolEffect.READ}
 
-        schema = cmd_desc.get("argument_schema") or {}
-        properties = schema.get("properties") or {}
-        required = schema.get("required") or []
+        schema = cmd_desc.argument_schema if isinstance(cmd_desc.argument_schema, Mapping) else {}
+        properties = schema.get("properties") if isinstance(schema.get("properties"), Mapping) else {}
+        required = schema.get("required") if isinstance(schema.get("required"), list) else []
+        assert isinstance(properties, Mapping) and isinstance(required, list)
 
         arguments: dict[str, Any]
         if not arg_str:
@@ -1496,7 +1685,37 @@ class CoreTuiApp:
 
 
 def run_tui(server_url: str, *, token: str | None = None, session_id: str | None = None) -> int:
-    """Launch the HTTP-backed generic TUI connected to a running core."""
-    client = CoreHttpClient(server_url, token=token)
-    app = CoreTuiApp(client, session_id=session_id)
-    return app.run()
+    """Launch the generic TUI connected to a running core."""
+    from voidcode.bootstrap import open_session_client
+
+    with open_session_client(server_url=server_url, token=token) as client:
+        app = CoreTuiApp(client, session_id=session_id)
+        return app.run()
+
+
+def run_embedded_tui(workspace: object, state_dir: object, *, session_id: str | None = None) -> int:
+    """Launch the TUI against an in-process core: no socket, no HTTP framing."""
+    import signal
+    from pathlib import Path
+
+    from voidcode.bootstrap import open_session_client
+
+    workspace_path = Path(str(workspace))
+    state_path = None if state_dir is None else Path(str(state_dir))
+    with open_session_client(workspace=workspace_path, state_dir=state_path) as client:
+        app = CoreTuiApp(client, session_id=session_id)
+        active = app
+
+        def _cancel(*_: object) -> None:
+            if active.session_id:
+                try:
+                    client.cancel(active.session_id)
+                except Exception:
+                    pass
+
+        previous = {number: signal.signal(number, lambda *_: _cancel()) for number in (signal.SIGINT, signal.SIGTERM)}
+        try:
+            return app.run()
+        finally:
+            for number, handler in previous.items():
+                signal.signal(number, handler)

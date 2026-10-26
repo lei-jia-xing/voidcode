@@ -10,9 +10,9 @@ import { useTranslation } from "react-i18next";
 import { CoreClient, CoreApiError } from "../lib/core/client";
 import type { CommandCatalog } from "../lib/core/client";
 import type {
-  HealthBody,
+  HealthStatus,
   PluginViewDescriptor,
-  SessionRecord,
+  SessionRow,
   SseEventFrame,
 } from "../lib/core/types";
 import { PluginViewRenderer } from "./views/PluginViewRenderer";
@@ -44,7 +44,7 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
     () => new CoreClient(effectiveBaseUrl, effectiveToken),
     [effectiveBaseUrl, effectiveToken],
   );
-  const [sessions, setSessions] = useState<SessionRecord[]>([]);
+  const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string>("");
   // The catalog travels with the revision it was captured under: every command
   // it advertises is dispatched with exactly that revision.
@@ -348,7 +348,7 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
       const serial = ++healthRequestRef.current;
       client
         .health()
-        .then((snapshot: HealthBody) => {
+        .then((snapshot: HealthStatus) => {
           if (healthRequestRef.current !== serial) return;
           if (!isCurrent(sessionId, epoch, clientKey)) return;
           setUpgrade({
@@ -394,7 +394,7 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
       const round = ++healthRequestRef.current;
       client
         .health()
-        .then((snapshot: HealthBody) => {
+        .then((snapshot: HealthStatus) => {
           if (healthRequestRef.current !== round) return;
           if (!isCurrent(sessionId, epoch, clientKey)) return;
           const next = {

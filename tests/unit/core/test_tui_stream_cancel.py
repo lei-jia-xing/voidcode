@@ -19,6 +19,31 @@ from voidcode.tui.client import CoreHttpClient
 from voidcode.tui.terminal_app import CoreTuiApp
 
 
+def _session_payload(session_id: str) -> dict[str, object]:
+    return {
+        "session_id": session_id,
+        "workspace": "/tmp/ws",
+        "status": "idle",
+        "active_revision_id": "rev-1",
+        "run_id": None,
+        "turn": 0,
+        "last_event_sequence": 0,
+    }
+
+
+_SYSTEM_EVENT = {
+    "session_id": "s1",
+    "sequence": 1,
+    "type": "core.observer_error",
+    "run_id": "run-1",
+    "revision_id": "rev-1",
+    "source": "kernel",
+    "actor": "system",
+    "payload": {"error": "after-switch"},
+    "transcript": None,
+}
+
+
 class _Terminal:
     """The app's terminal surface without a real TTY: no keys, recorded committed rows."""
 
@@ -69,7 +94,7 @@ def test_quit_cancels_an_idle_follow_stream_before_joining() -> None:
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Cache-Control", "no-cache")
                 self.end_headers()
-                self.wfile.write(b'data: {"kind": "head", "session_id": "s1"}\n\n')
+                self.wfile.write(b"data: " + json.dumps({"session": _session_payload("s1"), "events": []}).encode("utf-8") + b"\n\n")
                 self.wfile.flush()
                 head_sent.set()
                 # Idle follow: nothing else is written. The client's only wakeup is a connection
@@ -77,7 +102,7 @@ def test_quit_cancels_an_idle_follow_stream_before_joining() -> None:
                 self.rfile.read(1)
                 disconnected.set()
             elif self.path.startswith("/api/sessions/s1"):
-                self._json({"session_id": "s1", "status": "idle"})
+                self._json(_session_payload("s1"))
             elif self.path.startswith("/api/commands"):
                 self._json({"revision_id": "rev-1", "commands": []})
             else:
@@ -185,7 +210,7 @@ def test_session_switch_survives_a_late_old_stream_attach() -> None:
                 release_old.wait(10.0)
                 try:
                     self._open_sse()
-                    self.wfile.write(b'data: {"kind": "head", "session_id": "s1"}\n\n')
+                    self.wfile.write(b"data: " + json.dumps({"session": _session_payload("s1"), "events": []}).encode("utf-8") + b"\n\n")
                     self.wfile.flush()
                     self.rfile.read(1)
                 except OSError:
@@ -195,11 +220,12 @@ def test_session_switch_survives_a_late_old_stream_attach() -> None:
             elif self.path.startswith("/api/sessions/s2/events"):
                 try:
                     self._open_sse()
-                    self.wfile.write(b'data: {"kind": "head", "session_id": "s2"}\n\n')
+                    self.wfile.write(b"data: " + json.dumps({"session": _session_payload("s2"), "events": []}).encode("utf-8") + b"\n\n")
                     self.wfile.flush()
                     new_head_sent.set()
                     new_event_ready.wait(10.0)
-                    self.wfile.write(b'data: {"kind": "notice", "text": "after-switch"}\n\n')
+                    notice = dict(_SYSTEM_EVENT, session_id="s2")
+                    self.wfile.write(b"data: " + json.dumps({"kind": "event", "session_id": "s2", "event": notice}).encode("utf-8") + b"\n\n")
                     self.wfile.flush()
                     new_event_sent.set()
                     self.rfile.read(1)
@@ -208,7 +234,7 @@ def test_session_switch_survives_a_late_old_stream_attach() -> None:
                 finally:
                     new_closed.set()
             elif self.path.startswith("/api/sessions/s1"):
-                self._json({"session_id": "s1", "status": "idle"})
+                self._json(_session_payload("s1"))
             elif self.path.startswith("/api/commands"):
                 self._json({"revision_id": "rev-1", "commands": []})
             else:

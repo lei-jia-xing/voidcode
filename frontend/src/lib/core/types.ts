@@ -8,9 +8,9 @@ export type Schemas = components["schemas"];
 
 export type CommandDescriptor = Schemas["CommandDescriptor"];
 export type CommandResult = Schemas["CommandResult"];
-export type HealthBody = Schemas["HealthBody"];
-export type SessionRecord = Schemas["SessionRecord"];
-export type CoreResult = Schemas["CoreResult"];
+export type HealthStatus = Schemas["HealthStatus"];
+export type SessionRow = Schemas["SessionRow"];
+export type RunResult = Schemas["RunResult"];
 export type SessionUsageReport = Schemas["SessionUsageReport"];
 export type StoredEventBody = Schemas["StoredEventBody"];
 export type ShowBody = Schemas["ShowBody"];
@@ -48,7 +48,7 @@ export interface SseEventFrame {
     payload: Record<string, unknown>;
     transcript?: Record<string, unknown> | null;
   };
-  session?: SessionRecord;
+  session?: SessionRow;
   events?: Array<{
     session_id: string;
     sequence: number;

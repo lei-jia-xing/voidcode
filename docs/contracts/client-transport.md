@@ -7,7 +7,7 @@ This document defines how clients (the core CLI, the inline TUI, and the web cli
 | Surface | Entry | Transport |
 |---|---|---|
 | Core CLI | `python -m voidcode <subcommand>` (also the `voidcode` console script) | direct process for one-shot commands, or HTTP via the TUI's remote mode |
-| TUI | `python -m voidcode [--server URL --token TOKEN --session-id ID]` (bare command) | HTTP/SSE against an in-process local server by default (same behavior as `--server`), or a remote core |
+| TUI | `python -m voidcode [--server URL --token TOKEN --session-id ID]` (bare command) | Direct in-process core by default (`CoreLocalClient`, same typed `SessionClient` surface), or HTTP/SSE against `--server` |
 | Web | built React bundle served at `/` | HTTP/SSE, same origin; `/api` requires the bearer token |
 | HTTP | `python -m voidcode serve [--host --port --bearer-token] [--open]` | FastAPI app, loopback bind only; binds dynamically on port 0 with IPv6 bracketed |
 
@@ -28,7 +28,7 @@ The server binds `127.0.0.1`, `::1`, or `localhost` only. Every request under `/
 | `views <session_id>` | Print the rendered plugin views envelope. | `0` |
 | `drain <session_id> [--limit]` | Execute pending durable continuations. | `0` |
 | `usage <session_id> [--since-sequence --until-sequence]` | Print the truthful session usage report. | `0` |
-| *(bare command)* `[--server --token --session-id]` | Start the TUI (in-process local server unless `--server` is given). | — |
+| *(bare command)* `[--server --token --session-id]` | Start the TUI (direct local core unless `--server` is given). | — |
 | `serve [--host --port --bearer-token] [--open]` | Run the HTTP server: SSE event stream plus static web client at `/` (`--open` launches a browser). | — |
 
 Root options: `--workspace PATH` (default: current directory), `--state-dir PATH`. `invoke` arguments must be a JSON object. Every failure (including malformed arguments or a missing config) prints `{"status": "failed", "error": "..."}` and exits non-zero.
@@ -50,6 +50,8 @@ Root options: `--workspace PATH` (default: current directory), `--state-dir PATH
 | `GET` | `/api/sessions/{session_id}/views` | Render plugin views: one envelope (`revision_id` + `views`). |
 | `POST` | `/api/sessions/{session_id}/continuations` | Drain and execute pending durable continuations. |
 | `GET` | `/api/sessions/{session_id}/usage?since_sequence=&until_sequence=` | Truthful token usage for the session. |
+| `GET` | `/api/sessions/{session_id}/transcript?after_sequence=&limit=` | One bounded transcript page (`entries`, `next_sequence`, `has_more`, `source_events`); advance while `has_more`, even when `entries` is empty. Content is explicitly discriminated (`kind`: `message`/`turn`/`tool`/`dispatch`/`run`/`interrupted`/`child` + `body`); the OpenAPI `TranscriptPageWire` schema is the exact response contract. |
+| `GET` | `/api/sessions/{session_id}/context?limit=` | One bounded context prefix (`records`, `reached_end`) from the session's first record. |
 | `POST` | `/api/sessions/{session_id}/cancel` | Request cancellation for one session. |
 | `GET` | `/api/sessions/{session_id}/events?after_sequence=&follow=` | Replay (and optionally follow) the session event stream over SSE. |
 | `GET` | `/api/health` | Core health and identity: fence, stage, revision, SDK/image pins, generation, active upgrade. |
@@ -100,14 +102,44 @@ A request id from one gate is never sent to the other endpoint. Both are project
 
 ## TUI Client
 
-- Launched embedded (in-process local server talked to over HTTP exactly like `--server` mode) or remote with `--server`/`--token`.
+- Launched embedded against a direct in-process core (`CoreLocalClient`: no socket, same refusals and frames as HTTP) or remote with `--server`/`--token` (`CoreHttpClient`). Both implement the typed `SessionClient` Protocol (`sdk/client.py`); programmatic callers open either arm with `bootstrap.open_session_client()`.
 - Inline scrollback with a **commit-once ledger**: rows are committed to the native scrollback exactly once by the main loop, driven by a durable `last_sequence` cursor. Committed text wraps to terminal cell width without dropping long output; live input/dialog geometry remains bounded. Reconnects, follow polling, resizes, and session switches never replay or clear settled output; only the live region repaints.
-- Renders durable event payloads (`kernel.user_message`, `kernel.model_turn`, `kernel.tool_completed`, `kernel.command_intent`/`kernel.command_completed`) plus the direct `CommandResult` of core read-only commands (`help`, `status`, `show`), which have no command event. Plugin and run/resume results remain event-projected; one shared formatter renders each result once, preserving multi-line output and falling back to JSON for data-only receipts. Every model- and plugin-provided string is escaped for terminal control bytes.
+- Renders durable event payloads (`core.user_message`, `core.model_turn`, `core.tool_completed`, `core.command_completed`) plus the direct `CommandResult` of core read-only commands (`help`, `status`, `show`), which have no command event. Plugin and run/resume results remain event-projected; one shared formatter renders each result once, preserving multi-line output and falling back to JSON for data-only receipts. Every model- and plugin-provided string is escaped for terminal control bytes.
 - Startup, connect, reconnect, session switch, and capability activation never fetch or display optional plugin views: the TUI reconciles health, the catalog, durable session state, and the event-projected decision gates only. `/tui views [name]` explicitly fetches a revision-bound views envelope and displays passive content inline and borderless — passive field values wrap rather than ellipsize (deliberate plugin-level previews/limits still apply) — or an interactive form/choices/confirmation as a framed dialog. The two decision gates above remain event-projected and are never closed or denied by a refresh.
 - Idle chrome carries no session, revision, or request hashes and no Attached/Created banners; the transient status line shows meaningful progress, errors, gates, fence state, and command status only. A real command completion updates it from its actual `status`; explicit `/status`, `/show`, `/session_status`, and `/tui sessions` keep diagnostics and ids.
 - Slash input resolves against the displayed catalog and echoes its revision; overlays capture the revision that rendered them. `Esc`/`Ctrl+C` on a confirmation overlay submit an explicit `deny`, never a local "cancelled".
 - Local controls that are not admitted commands: `/tui help|sessions|session <id>|new|views [name]|cancel|quit` (bare forms work when no admitted command owns the name). `/tui <control>` always reaches the client control, so a plugin cannot shadow navigation.
 - All HTTP work happens on worker threads; only the main loop writes rows.
+
+## Typed Programmatic Clients
+
+Both arms satisfy `sdk.client.SessionClient` (runtime-checkable Protocol) and
+return the same SDK types; only the transport differs. Failures raise
+`sdk.client.CoreClientError` (`str` = server message, `.code` machine code,
+`.status_code` HTTP status).
+
+```python
+from voidcode.bootstrap import open_session_client
+from voidcode.sdk.client import ResumeSpec, RunSpec
+
+with open_session_client(workspace=ws) as client:  # or server_url=..., token=...
+    session = client.create_session()
+    catalog = client.command_catalog()
+    result = client.run(session.session_id, RunSpec(prompt="hello"))
+    page = client.transcript(session.session_id)
+    while page.has_more:  # advance even when entries is empty
+        page = client.transcript(session.session_id, after_sequence=page.next_sequence)
+```
+
+History comes in two shapes. The SSE event stream keeps its legacy wire:
+each event carries an untagged `transcript` projection (or `null`), decoded
+client-side by `transport.projection.decode_stream_event` (the event type
+disambiguates the `{}` empty-content case) into `StreamEvent.transcript:
+TranscriptEntry | None`. The `/transcript` and `/context` routes instead
+serve the explicitly discriminated wire (`{kind, body}`, OpenAPI
+`TranscriptPageWire`/`ContextHistoryWire`), decoded by
+`decode_transcript_page`/`decode_context_history`. Same conversation facts;
+new consumers should prefer the routes.
 
 ## Web Client
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from voidcode.sdk.client import CommandCatalog
+from voidcode.sdk.commands import CommandDescriptor
 from voidcode.tui.composer import Composer, ComposerAction, ComposerOutcome
 from voidcode.tui.keys import Key
 from voidcode.tui.terminal_app import CoreTuiApp
@@ -30,14 +32,21 @@ class _StubTerminal:
 
 
 class _StubClient:
-    def command_catalog(self) -> tuple[str, list[dict[str, object]]]:
-        return "rev-1", [{"name": "help"}, {"name": "show"}, {"name": "shell"}]
+    def command_catalog(self) -> CommandCatalog:
+        return CommandCatalog(
+            revision_id="rev-1",
+            commands=(
+                CommandDescriptor(name="help", owner="core", description="help"),
+                CommandDescriptor(name="show", owner="core", description="show"),
+                CommandDescriptor(name="shell", owner="core", description="shell"),
+            ),
+        )
 
 
 def _app() -> tuple[CoreTuiApp, _StubTerminal]:
     terminal = _StubTerminal()
     app = CoreTuiApp(_StubClient(), session_id="s1", terminal=terminal)  # type: ignore[arg-type]
-    app.catalog_cache = [{"name": "help"}, {"name": "show"}, {"name": "shell"}]
+    app.catalog_cache = _StubClient().command_catalog().commands
     return app, terminal
 
 

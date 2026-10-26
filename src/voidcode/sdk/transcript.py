@@ -4,9 +4,13 @@ This is committed history, not the current model window: compaction does not era
 entries, and a provider dispatch can be visible before its result exists.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal
+from typing import Annotated, Any, Literal
 
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+
+from .codec import ToolResultWire
 from .hooks import RequestWindow
 from .provider import ProviderMessage, ProviderTurnResult
 from .tools import ToolCall, ToolResult
@@ -97,3 +101,327 @@ class ContextHistory:
 
     records: tuple[ContextRecord, ...]
     reached_end: bool
+
+
+class TranscriptWireModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class ToolCallWire(TranscriptWireModel):
+    tool_name: str = Field(min_length=1)
+    arguments: dict[str, Any]
+    tool_call_id: str | None = None
+
+
+class TranscriptToolWire(TranscriptWireModel):
+    call: ToolCallWire
+    result: ToolResultWire
+    interrupted: bool
+    batch_sequence: int = Field(ge=1)
+    deferred: bool
+
+
+class WindowSegmentWire(TranscriptWireModel):
+    role: str
+    characters: int
+    sha256: str
+    tool_calls: int
+    tool_name: str | None
+    reasoning_characters: int
+
+
+class RequestWindowWire(TranscriptWireModel):
+    message_characters: int
+    tool_schema_characters: int
+    tool_count: int
+    segments: list[WindowSegmentWire]
+
+
+class TranscriptDispatchWire(TranscriptWireModel):
+    provider_name: str = Field(min_length=1)
+    model_name: str = Field(min_length=1)
+    window: RequestWindowWire
+
+
+class TranscriptRunWire(TranscriptWireModel):
+    status: Literal["completed", "failed", "interrupted"]
+
+
+class TranscriptChildWire(TranscriptWireModel):
+    child_session_id: str = Field(min_length=1)
+
+
+class TranscriptInterruptedWire(TranscriptWireModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class TranscriptMessageWire(TranscriptWireModel):
+    kind: Literal["message"] = "message"
+    body: ProviderMessage
+
+
+class TranscriptTurnWire(TranscriptWireModel):
+    kind: Literal["turn"] = "turn"
+    body: ProviderTurnResult
+
+
+class TranscriptToolContentWire(TranscriptWireModel):
+    kind: Literal["tool"] = "tool"
+    body: TranscriptToolWire
+
+
+class TranscriptDispatchContentWire(TranscriptWireModel):
+    kind: Literal["dispatch"] = "dispatch"
+    body: TranscriptDispatchWire
+
+
+class TranscriptRunContentWire(TranscriptWireModel):
+    kind: Literal["run"] = "run"
+    body: TranscriptRunWire
+
+
+class TranscriptInterruptedContentWire(TranscriptWireModel):
+    kind: Literal["interrupted"] = "interrupted"
+    body: TranscriptInterruptedWire
+
+
+class TranscriptChildContentWire(TranscriptWireModel):
+    kind: Literal["child"] = "child"
+    body: TranscriptChildWire
+
+
+TranscriptContentWire = Annotated[
+    TranscriptMessageWire
+    | TranscriptTurnWire
+    | TranscriptToolContentWire
+    | TranscriptDispatchContentWire
+    | TranscriptRunContentWire
+    | TranscriptInterruptedContentWire
+    | TranscriptChildContentWire,
+    Field(discriminator="kind"),
+]
+
+
+class TranscriptEntryWire(TranscriptWireModel):
+    sequence: int = Field(ge=1)
+    run_id: str
+    revision_id: str
+    source: str
+    content: TranscriptContentWire
+    dispatch_sequence: int | None = Field(default=None, ge=1)
+
+
+class TranscriptPageWire(TranscriptWireModel):
+    entries: list[TranscriptEntryWire]
+    next_sequence: int
+    has_more: bool
+    source_events: int
+
+
+class ContextRecordWire(TranscriptWireModel):
+    sequence: int
+    payload_bytes: int
+    safe_boundary: bool
+    entry: TranscriptEntryWire | None
+
+
+class ContextHistoryWire(TranscriptWireModel):
+    records: list[ContextRecordWire]
+    reached_end: bool
+
+
+_PAGE_WIRE = TypeAdapter(TranscriptPageWire)
+_HISTORY_WIRE = TypeAdapter(ContextHistoryWire)
+_ENTRY_WIRE = TypeAdapter(TranscriptEntryWire)
+_CONTENT_WIRE = TypeAdapter(TranscriptContentWire)
+
+
+def encode_transcript_content(content: TranscriptContent) -> dict[str, object]:
+    """Encode one transcript content with an explicit kind discriminator.
+
+    The discriminator is required: an untagged ``{}`` is ambiguous between
+    ``TranscriptInterrupted`` and an all-default ``ProviderTurnResult``.
+    """
+    from .codec import encode_message, encode_provider_result, encode_tool_call, encode_tool_result
+
+    if isinstance(content, ProviderMessage):
+        return {"kind": "message", "body": encode_message(content)}
+    if isinstance(content, ProviderTurnResult):
+        return {"kind": "turn", "body": encode_provider_result(content)}
+    if isinstance(content, TranscriptTool):
+        return {
+            "kind": "tool",
+            "body": {
+                "call": encode_tool_call(content.call),
+                "result": encode_tool_result(content.result),
+                "interrupted": content.interrupted,
+                "batch_sequence": content.batch_sequence,
+                "deferred": content.deferred,
+            },
+        }
+    if isinstance(content, TranscriptDispatch):
+        return {
+            "kind": "dispatch",
+            "body": {
+                "provider_name": content.provider_name,
+                "model_name": content.model_name,
+                "window": content.window.as_payload(),
+            },
+        }
+    if isinstance(content, TranscriptRun):
+        return {"kind": "run", "body": {"status": content.status}}
+    if isinstance(content, TranscriptInterrupted):
+        return {"kind": "interrupted", "body": {}}
+    if isinstance(content, TranscriptChild):
+        return {"kind": "child", "body": {"child_session_id": content.child_session_id}}
+    raise ValueError(f"unsupported transcript content: {type(content).__name__}")
+
+
+def _tool_wire_to_domain(tool: TranscriptToolWire) -> TranscriptTool:
+    from .codec import decode_tool_call, decode_tool_result
+
+    return TranscriptTool(
+        decode_tool_call(tool.call.model_dump()),
+        decode_tool_result(tool.result.model_dump()),
+        interrupted=tool.interrupted,
+        batch_sequence=tool.batch_sequence,
+        deferred=tool.deferred,
+    )
+
+
+def _dispatch_wire_to_domain(dispatch: TranscriptDispatchWire) -> TranscriptDispatch:
+    return TranscriptDispatch(
+        dispatch.provider_name,
+        dispatch.model_name,
+        RequestWindow.from_payload(dispatch.window.model_dump()),
+    )
+
+
+def decode_transcript_content(payload: Mapping[str, object]) -> TranscriptContent:
+    """Decode one discriminated transcript content; unknown kinds fail visibly."""
+    return _content_wire_to_domain(_decode_json(_CONTENT_WIRE, payload, "transcript content"))
+
+
+def encode_transcript_entry(entry: TranscriptEntry) -> dict[str, object]:
+    return {
+        "sequence": entry.sequence,
+        "run_id": entry.run_id,
+        "revision_id": entry.revision_id,
+        "source": entry.source,
+        "content": encode_transcript_content(entry.content),
+        "dispatch_sequence": entry.dispatch_sequence,
+    }
+
+
+def _content_wire_to_domain(
+    wire: (
+        TranscriptMessageWire
+        | TranscriptTurnWire
+        | TranscriptToolContentWire
+        | TranscriptDispatchContentWire
+        | TranscriptRunContentWire
+        | TranscriptInterruptedContentWire
+        | TranscriptChildContentWire
+    ),
+) -> TranscriptContent:
+    if isinstance(wire, TranscriptMessageWire):
+        return wire.body
+    if isinstance(wire, TranscriptTurnWire):
+        return wire.body
+    if isinstance(wire, TranscriptToolContentWire):
+        return _tool_wire_to_domain(wire.body)
+    if isinstance(wire, TranscriptDispatchContentWire):
+        return _dispatch_wire_to_domain(wire.body)
+    if isinstance(wire, TranscriptRunContentWire):
+        return TranscriptRun(wire.body.status)
+    if isinstance(wire, TranscriptInterruptedContentWire):
+        return TranscriptInterrupted()
+    return TranscriptChild(wire.body.child_session_id)
+
+
+def _decode_json[T](adapter: TypeAdapter[T], payload: Mapping[str, object], label: str) -> T:
+    import json
+
+    from .json_values import json_wire_object
+
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"{label} must be an object")
+    return adapter.validate_json(json.dumps(json_wire_object(payload), allow_nan=False), strict=True, extra="forbid")
+
+
+def decode_transcript_entry(payload: Mapping[str, object]) -> TranscriptEntry:
+    wire = _decode_json(_ENTRY_WIRE, payload, "transcript entry")
+    return TranscriptEntry(
+        wire.sequence,
+        wire.run_id,
+        wire.revision_id,
+        wire.source,
+        _content_wire_to_domain(wire.content),
+        wire.dispatch_sequence,
+    )
+
+
+def encode_transcript_page(page: TranscriptPage) -> dict[str, object]:
+    return {
+        "entries": [encode_transcript_entry(entry) for entry in page.entries],
+        "next_sequence": page.next_sequence,
+        "has_more": page.has_more,
+        "source_events": page.source_events,
+    }
+
+
+def decode_transcript_page(payload: Mapping[str, object]) -> TranscriptPage:
+    wire = _decode_json(_PAGE_WIRE, payload, "transcript page")
+    return TranscriptPage(
+        tuple(
+            TranscriptEntry(
+                item.sequence,
+                item.run_id,
+                item.revision_id,
+                item.source,
+                _content_wire_to_domain(item.content),
+                item.dispatch_sequence,
+            )
+            for item in wire.entries
+        ),
+        wire.next_sequence,
+        wire.has_more,
+        wire.source_events,
+    )
+
+
+def encode_context_history(history: ContextHistory) -> dict[str, object]:
+    return {
+        "records": [
+            {
+                "sequence": record.sequence,
+                "payload_bytes": record.payload_bytes,
+                "safe_boundary": record.safe_boundary,
+                "entry": None if record.entry is None else encode_transcript_entry(record.entry),
+            }
+            for record in history.records
+        ],
+        "reached_end": history.reached_end,
+    }
+
+
+def _decode_entry_wire(item: TranscriptEntryWire) -> TranscriptEntry:
+    return TranscriptEntry(
+        item.sequence,
+        item.run_id,
+        item.revision_id,
+        item.source,
+        _content_wire_to_domain(item.content),
+        item.dispatch_sequence,
+    )
+
+
+def decode_context_history(payload: Mapping[str, object]) -> ContextHistory:
+    wire = _decode_json(_HISTORY_WIRE, payload, "context history")
+    return ContextHistory(
+        tuple(
+            ContextRecord(item.sequence, item.payload_bytes, item.safe_boundary, None if item.entry is None else _decode_entry_wire(item.entry))
+            for item in wire.records
+        ),
+        wire.reached_end,
+    )

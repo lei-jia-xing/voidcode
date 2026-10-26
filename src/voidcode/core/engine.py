@@ -38,6 +38,7 @@ from ..sdk.commands import (
 from ..sdk.hooks import RequestWindow, StopCause, WindowSegment
 from ..sdk.invocation import ToolContext
 from ..sdk.json_values import json_wire_object
+from ..sdk.limits import CLIENT_PROMPT_MAX_BYTES
 from ..sdk.provider import ProviderExecutionError, ProviderMessage, ProviderTurnRequest, ProviderTurnResult
 from ..sdk.services import (
     ChildOutcome,
@@ -57,6 +58,7 @@ from ..sdk.tools import (
     denied_under_restriction,
     has_external_mutations,
 )
+from ..sdk.transcript import ContextHistory, TranscriptPage
 from ..sdk.views import PluginViewDescriptor, ViewsSnapshot
 from .activation import (
     Admission,
@@ -218,8 +220,6 @@ _CORE_TOOL_SPECS: tuple[tuple[str, str, Mapping[str, object], tuple[ToolEffect, 
 )
 CORE_TOOL_NAMES = frozenset(name for name, _d, _s, _e in _CORE_TOOL_SPECS)
 
-#: Client ingress guard for a prompt typed by a client.
-CLIENT_PROMPT_MAX_BYTES = 64 * 1024
 
 #: One truthful, actionable message for a providerless core. Launch, commands, tools, and
 #: sessions stay available; only a model turn or governed query fails with this text.
@@ -1173,6 +1173,24 @@ class Core:
         self._ensure_open()
         self.session(session_id)
         return self.store.events_after(session_id, after_sequence=after_sequence, limit=limit)
+
+    def transcript_page(self, session_id: str, *, after_sequence: int = 0, limit: int = 100) -> TranscriptPage:
+        """One bounded transcript page; advance to next_sequence while has_more, even when empty."""
+        self._ensure_open()
+        self.session(session_id)
+        if type(after_sequence) is not int or after_sequence < 0:
+            raise ValueError("after_sequence must be a non-negative integer")
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError("limit must be an integer in 1..1000")
+        return self.plugin_runtime.transcript_page(session_id, after_sequence, limit)
+
+    def context_history(self, session_id: str, *, limit: int = 100) -> ContextHistory:
+        """One bounded context prefix from the session's first record."""
+        self._ensure_open()
+        self.session(session_id)
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError("limit must be an integer in 1..1000")
+        return self.plugin_runtime.context_history(session_id, limit)
 
     def usage(self, session_id: str, *, since_sequence: int = 0, until_sequence: int | None = None) -> SessionUsageReport:
         """Calculate truthful token usage metrics strictly from immutable core facts."""

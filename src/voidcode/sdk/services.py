@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
+
+from pydantic import TypeAdapter
 
 from .json_values import json_wire_object, own_json_object
 
@@ -68,6 +71,15 @@ class ContinuationResult:
         if self.stop_cause is not None:
             result["stop_cause"] = self.stop_cause
         return result
+
+    @staticmethod
+    def from_payload(payload: Mapping[str, object]) -> ContinuationResult:
+        if not isinstance(payload, Mapping):
+            raise ValueError("continuation result payload must be an object")
+        return _CONTINUATION_ADAPTER.validate_json(json.dumps(json_wire_object(payload), allow_nan=False), strict=True, extra="forbid")
+
+
+_CONTINUATION_ADAPTER: TypeAdapter[ContinuationResult] = TypeAdapter(ContinuationResult)
 
 
 @dataclass(frozen=True, slots=True)
@@ -392,6 +404,15 @@ class SessionUsageReport:
             "until_sequence": self.until_sequence,
             "through_sequence": self.through_sequence,
         }
+
+    @staticmethod
+    def from_payload(payload: Mapping[str, object]) -> SessionUsageReport:
+        if not isinstance(payload, Mapping):
+            raise ValueError("usage report payload must be an object")
+        return _USAGE_ADAPTER.validate_json(json.dumps(json_wire_object(payload), allow_nan=False), strict=True, extra="forbid")
+
+
+_USAGE_ADAPTER: TypeAdapter[SessionUsageReport] = TypeAdapter(SessionUsageReport)
 
 
 @runtime_checkable

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from voidcode.sdk.client import CommandCatalog
 from voidcode.tui.terminal_app import CoreTuiApp
 
 
@@ -28,8 +29,8 @@ class _StubTerminal:
 
 
 class _StubClient:
-    def command_catalog(self) -> tuple[str, list[dict[str, object]]]:
-        return "rev-1", []
+    def command_catalog(self) -> CommandCatalog:
+        return CommandCatalog(revision_id="rev-1", commands=())
 
 
 def _frame_text(terminal: _StubTerminal) -> str:

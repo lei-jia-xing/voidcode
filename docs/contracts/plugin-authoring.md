@@ -203,7 +203,16 @@ Run these in order; each step's failure names the layer at fault.
    (`tests/integration/test_tally_example.py` is the working template).
 5. **Views** — `views <sid>` renders every contributed view under one
    captured revision; a failing view degrades to a `notice` naming the
-   view, never a missing payload.
+   view, never a missing payload. Plugin authors keep constructing
+   `PluginViewDescriptor(..., data={...})` with plain mappings; clients
+   decode with the strict `from_payload` constructors
+   (`NoticeViewData` … `StatusViewData`, `PluginViewDescriptor`,
+   `ViewsSnapshot`, `CommandCatalog`, `CommandDescriptor`,
+   `CommandResult`, `ConfirmationRequest`) or `parse_view_data(view_type,
+   descriptor.data)`. Dispatch semantics live in `choices_dispatch`,
+   `validate_form_submission` (native numeric prefill accepted; typed
+   strings validated strictly), and `is_read_only_load` (load runs only
+   when the catalog command declares exactly the `read` effect).
 6. **Durable truth** — `show <sid> --events` (no config/runtime/revision
    needed) and the SQLite store (`plugin_state`, `kernel.tool_completed`,
    `kernel.command_completed`) confirm what actually committed.

@@ -27,13 +27,15 @@ from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.types import Receive, Scope, Send
 
 from voidcode.bootstrap import open_core
-from voidcode.core.engine import Core, CoreResult
+from voidcode.core.engine import Core
 from voidcode.core.storage.store import SessionRecord, StoredEvent, inspect_existing_workspace
 from voidcode.core.transcript import transcript_entry
+from voidcode.sdk.client import HealthStatus, RunResult, SessionRow
 from voidcode.sdk.codec import _wire
 from voidcode.sdk.commands import CommandCatalog, CommandResult
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.services import SessionUsageReport
+from voidcode.sdk.transcript import ContextHistoryWire, TranscriptPageWire, encode_context_history, encode_transcript_page
 from voidcode.sdk.views import ViewsSnapshot
 
 from .models import (
@@ -42,7 +44,6 @@ from .models import (
     ContinuationsBody,
     CreateSessionRequest,
     DrainRequest,
-    HealthBody,
     InvokeRequest,
     ResumeRequest,
     RunRequest,
@@ -345,13 +346,11 @@ class CoreTransportApp(FastAPI):
         route("/api/openapi.json", self._handle_openapi_document, methods=["GET"], summary="Read this API as OpenAPI", in_schema=False)
         route("/api/commands", self._handle_command_catalog, methods=["GET"], summary="List admitted commands", response_model=CommandCatalog)
         route("/api/sessions", self._handle_list_sessions, methods=["GET"], summary="List sessions", response_model=SessionsBody)
-        route(
-            "/api/sessions", self._handle_create_session, methods=["POST"], summary="Create a session", response_model=SessionRecord, status_code=201
-        )  # noqa: E501
-        route("/api/sessions/{session_id}", self._handle_get_session, methods=["GET"], summary="Get a session", response_model=SessionRecord)
+        route("/api/sessions", self._handle_create_session, methods=["POST"], summary="Create a session", response_model=SessionRow, status_code=201)  # noqa: E501
+        route("/api/sessions/{session_id}", self._handle_get_session, methods=["GET"], summary="Get a session", response_model=SessionRow)
         route("/api/sessions/{session_id}/show", self._handle_show_session, methods=["GET"], summary="Show session state", response_model=ShowBody)
-        route("/api/sessions/{session_id}/run", self._handle_run, methods=["POST"], summary="Run an agent turn", response_model=CoreResult)
-        route("/api/sessions/{session_id}/resume", self._handle_resume, methods=["POST"], summary="Resume a session", response_model=CoreResult)
+        route("/api/sessions/{session_id}/run", self._handle_run, methods=["POST"], summary="Run an agent turn", response_model=RunResult)
+        route("/api/sessions/{session_id}/resume", self._handle_resume, methods=["POST"], summary="Resume a session", response_model=RunResult)
         route(
             "/api/sessions/{session_id}/invoke/{name}",
             self._handle_invoke,
@@ -377,9 +376,23 @@ class CoreTransportApp(FastAPI):
         route(
             "/api/sessions/{session_id}/usage", self._handle_usage, methods=["GET"], summary="Read session usage", response_model=SessionUsageReport
         )  # noqa: E501
+        route(
+            "/api/sessions/{session_id}/transcript",
+            self._handle_transcript,
+            methods=["GET"],
+            summary="Read a bounded transcript page",
+            response_model=TranscriptPageWire,
+        )
+        route(
+            "/api/sessions/{session_id}/context",
+            self._handle_context,
+            methods=["GET"],
+            summary="Read a bounded context prefix",
+            response_model=ContextHistoryWire,
+        )
         route("/api/sessions/{session_id}/cancel", self._handle_cancel, methods=["POST"], summary="Request cancellation for one session")
         route("/api/sessions/{session_id}/events", self._handle_events, methods=["GET"], summary="Replay session events", streaming_frame=ShowBody)
-        route("/api/health", self._handle_health, methods=["GET"], summary="Read core health and identity", response_model=HealthBody)
+        route("/api/health", self._handle_health, methods=["GET"], summary="Read core health and identity", response_model=HealthStatus)
         if self._frontend_dist is not None:
             # The single-page client: an exact file when one exists, otherwise index.html, so a
             # client-side route survives a reload. Registered last so every /api route wins, and
@@ -426,6 +439,8 @@ class CoreTransportApp(FastAPI):
         core = self._core_or_503()
         requested = payload.session_id if payload is not None else None
         if requested is not None:
+            if not requested:
+                raise HttpError(400, "session_id must be a non-empty string", code="invalid_params")
             _validated_session_id(requested)
         try:
             record = await asyncio.to_thread(core.create_session, requested)
@@ -547,6 +562,33 @@ class CoreTransportApp(FastAPI):
         except Exception as exc:
             raise _core_error(exc) from None
         return _ok(report.as_payload())
+
+    async def _handle_transcript(
+        self,
+        session_id: str,
+        after_sequence: int = Query(default=0, ge=0),
+        limit: int = Query(default=100, ge=1, le=1000),
+    ) -> Response:
+        _validated_session_id(session_id)
+        core = self._core_or_503()
+        try:
+            page = await asyncio.to_thread(core.transcript_page, session_id, after_sequence=after_sequence, limit=limit)
+        except Exception as exc:
+            raise _core_error(exc) from None
+        return _ok(encode_transcript_page(page))
+
+    async def _handle_context(
+        self,
+        session_id: str,
+        limit: int = Query(default=100, ge=1, le=1000),
+    ) -> Response:
+        _validated_session_id(session_id)
+        core = self._core_or_503()
+        try:
+            history = await asyncio.to_thread(core.context_history, session_id, limit=limit)
+        except Exception as exc:
+            raise _core_error(exc) from None
+        return _ok(encode_context_history(history))
 
     async def _handle_health(self) -> Response:
         core = self._core

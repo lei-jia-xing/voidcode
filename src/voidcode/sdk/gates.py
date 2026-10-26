@@ -1,0 +1,214 @@
+"""Typed decision gates: native approvals and plugin confirmations.
+
+Contracts only: frozen dataclasses plus a pure reducer. No sockets, no
+storage, no ``Core`` — and no raw event payloads. The outer layer decodes
+stream events and run receipts into :data:`GateChange`, then folds them with
+:func:`reduce_gates`.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from .commands import ConfirmationRequest
+from .hooks import ApprovalRequestedFact
+from .tools import ToolCall
+from .views import ConfirmationViewData, parse_view_data
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalGate:
+    """One parked native tool approval: the resume identity plus its call."""
+
+    call: ToolCall
+    request_id: str
+    run_id: str
+    revision_id: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.call, ToolCall):
+            raise ValueError("approval gate requires a ToolCall")
+        if not self.call.tool_name or not isinstance(self.call.tool_name, str):
+            raise ValueError("approval gate requires a non-empty tool_name")
+        if not isinstance(self.request_id, str) or not self.request_id:
+            raise ValueError("approval gate requires a non-empty request_id")
+        if not isinstance(self.run_id, str) or not self.run_id:
+            raise ValueError("approval gate requires a non-empty run_id")
+        if not isinstance(self.revision_id, str):
+            raise ValueError("approval gate revision_id must be a string")
+
+    @property
+    def tool_name(self) -> str:
+        return self.call.tool_name
+
+    @property
+    def arguments(self) -> object:
+        return self.call.arguments
+
+    @staticmethod
+    def from_fact(fact: ApprovalRequestedFact, call: ToolCall) -> ApprovalGate:
+        """Build one gate from the public fact plus its decoded call."""
+        if not isinstance(fact, ApprovalRequestedFact):
+            raise ValueError("approval gate fact must be an ApprovalRequestedFact")
+        return ApprovalGate(call=call, request_id=fact.request_id, run_id=fact.run_id, revision_id=fact.revision_id)
+
+
+@dataclass(frozen=True, slots=True)
+class ConfirmationGate:
+    """One pending plugin confirmation plus the revision it was displayed under."""
+
+    request: ConfirmationRequest
+    revision_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.request, ConfirmationRequest):
+            raise ValueError("confirmation gate requires a ConfirmationRequest")
+        if not isinstance(self.revision_id, str):
+            raise ValueError("confirmation gate revision_id must be a string")
+
+    @property
+    def request_id(self) -> str:
+        return self.request.request_id
+
+    @property
+    def view(self) -> ConfirmationViewData:
+        """The typed dialog; non-confirmation requests fail visibly."""
+        if self.request.ui_type != "confirmation":
+            raise ValueError(f"confirmation gate requires ui_type 'confirmation', got {self.request.ui_type!r}")
+        data = parse_view_data(self.request.ui_type, self.request.ui_data)
+        if not isinstance(data, ConfirmationViewData):
+            raise ValueError("confirmation gate ui_data is not confirmation view data")
+        return data
+
+    @staticmethod
+    def from_request(request: ConfirmationRequest, *, revision_id: str) -> ConfirmationGate:
+        return ConfirmationGate(request=request, revision_id=revision_id)
+
+
+type PendingGate = ApprovalGate | ConfirmationGate
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalRequested:
+    gate: ApprovalGate
+
+
+@dataclass(frozen=True, slots=True)
+class ConfirmationRequested:
+    gate: ConfirmationGate
+
+
+@dataclass(frozen=True, slots=True)
+class GateDecided:
+    """One terminal decision: durable decided fact or accepted server receipt."""
+
+    request_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.request_id, str) or not self.request_id:
+            raise ValueError("decided gate requires a non-empty request_id")
+
+
+@dataclass(frozen=True, slots=True)
+class ActivationCommitted:
+    to_revision_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.to_revision_id, str):
+            raise ValueError("activation revision must be a string")
+
+
+@dataclass(frozen=True, slots=True)
+class RunTerminated:
+    """One run end: clears only the approval parked by that run."""
+
+    run_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.run_id, str) or not self.run_id:
+            raise ValueError("terminated run requires a non-empty run_id")
+
+
+type GateChange = ApprovalRequested | ConfirmationRequested | GateDecided | ActivationCommitted | RunTerminated
+
+
+@dataclass(frozen=True, slots=True)
+class GateState:
+    """Pending gates plus decided-id tombstones; decisions never resurrect."""
+
+    approval: ApprovalGate | None = None
+    confirmations: tuple[ConfirmationGate, ...] = ()
+    decided: frozenset[str] = frozenset()
+
+    def __post_init__(self) -> None:
+        if self.approval is not None and not isinstance(self.approval, ApprovalGate):
+            raise ValueError("gate state approval must be an ApprovalGate or None")
+        object.__setattr__(self, "confirmations", tuple(self.confirmations))
+        for gate in self.confirmations:
+            if not isinstance(gate, ConfirmationGate):
+                raise ValueError("gate state confirmations must be ConfirmationGate entries")
+        object.__setattr__(self, "decided", frozenset(self.decided))
+
+
+def reduce_gates(state: GateState, change: GateChange) -> GateState:
+    """Fold one typed change; same-request repeats never reset pending UI."""
+    if isinstance(change, ApprovalRequested):
+        gate = change.gate
+        if gate.request_id in state.decided:
+            return state
+        if state.approval is not None and state.approval.request_id == gate.request_id:
+            return state
+        return GateState(approval=gate, confirmations=state.confirmations, decided=state.decided)
+    if isinstance(change, ConfirmationRequested):
+        gate = change.gate
+        if gate.request_id in state.decided:
+            return state
+        if any(entry.request_id == gate.request_id for entry in state.confirmations):
+            return state
+        return GateState(approval=state.approval, confirmations=(*state.confirmations, gate), decided=state.decided)
+    if isinstance(change, GateDecided):
+        request_id = change.request_id
+        approval = None if state.approval is not None and state.approval.request_id == request_id else state.approval
+        confirmations = tuple(entry for entry in state.confirmations if entry.request_id != request_id)
+        if request_id in state.decided and approval is state.approval and len(confirmations) == len(state.confirmations):
+            return state
+        return GateState(approval=approval, confirmations=confirmations, decided=state.decided | {request_id})
+    if isinstance(change, ActivationCommitted):
+        dropped = {entry.request_id for entry in state.confirmations if entry.revision_id != change.to_revision_id}
+        confirmations = tuple(entry for entry in state.confirmations if entry.revision_id == change.to_revision_id)
+        approval = state.approval
+        if approval is not None:
+            dropped.add(approval.request_id)
+            approval = None
+        if not dropped:
+            return state
+        return GateState(approval=approval, confirmations=confirmations, decided=state.decided | dropped)
+    if isinstance(change, RunTerminated):
+        approval = state.approval
+        if approval is None or approval.run_id != change.run_id:
+            return state
+        return GateState(approval=None, confirmations=state.confirmations, decided=state.decided | {approval.request_id})
+    raise ValueError(f"unknown gate change: {type(change).__name__}")
+
+
+def pending_gates(state: GateState) -> tuple[PendingGate, ...]:
+    """Ordered pending gates: the blocking approval first, then confirmations."""
+    if state.approval is None:
+        return state.confirmations
+    return (state.approval, *state.confirmations)
+
+
+__all__ = [
+    "ActivationCommitted",
+    "ApprovalGate",
+    "ApprovalRequested",
+    "ConfirmationGate",
+    "ConfirmationRequested",
+    "GateChange",
+    "GateDecided",
+    "GateState",
+    "PendingGate",
+    "RunTerminated",
+    "pending_gates",
+    "reduce_gates",
+]

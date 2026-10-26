@@ -2,25 +2,125 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import AsyncIterator, Mapping
+from typing import Any, Literal
 
 import pytest
 
+from voidcode.sdk.client import (
+    CommandCatalog,
+    CommandResult,
+    CoreClientError,
+    EventFrame,
+    HeadFrame,
+    HealthStatus,
+    RestartFrame,
+    ResumeSpec,
+    RunResult,
+    RunSpec,
+    SessionRow,
+    SseFrame,
+    StreamCancellation,
+    StreamEvent,
+)
+from voidcode.sdk.commands import CommandDescriptor, ConfirmationRequest
+from voidcode.sdk.gates import ApprovalGate
+from voidcode.sdk.provider import ProviderMessage, ProviderTurnResult
+from voidcode.sdk.tools import OutputBounds, TextOutput, ToolCall, ToolEffect, ToolFailure, ToolSuccess
+from voidcode.sdk.transcript import TranscriptEntry, TranscriptPage, TranscriptRun, TranscriptTool
+from voidcode.sdk.views import (
+    ChoiceOption,
+    ChoicesViewData,
+    ConfirmationViewData,
+    FormField,
+    FormViewData,
+    PluginViewDescriptor,
+    ViewsSnapshot,
+)
 from voidcode.tui.keys import Key
 from voidcode.tui.views import (
     InteractiveApproval,
     InteractiveChoices,
     InteractiveConfirmation,
     InteractiveForm,
-    UnsupportedViewError,
     render_plugin_view,
 )
 
 
+def _session_row(session_id: str = "s1", status: str = "idle", turn: int = 0) -> SessionRow:
+    return SessionRow(
+        session_id=session_id,
+        workspace="/tmp/ws",
+        status=status,
+        active_revision_id="rev-1",
+        run_id=None,
+        turn=turn,
+        last_event_sequence=0,
+    )
+
+
+def _health(*, fenced: bool = False) -> HealthStatus:
+    return HealthStatus(
+        status="ok",
+        stage="draining" if fenced else "serving",
+        pid=1,
+        workspace="/tmp/ws",
+        revision_id="rev-1",
+        launch_protocol=1,
+        core_version="t",
+        web_bundle=None,
+        generation=2,
+        active_upgrade=None,
+    )
+
+
+def _approval_gate(request_id: str = "appr-1", run_id: str = "run-1", tool_name: str = "write") -> ApprovalGate:
+    return ApprovalGate(call=ToolCall(tool_name=tool_name, arguments={}), request_id=request_id, run_id=run_id, revision_id="rev-1")
+
+
+def _event(
+    sequence: int,
+    event_type: str = "core.user_message",
+    run_id: str = "run-1",
+    revision_id: str = "rev-1",
+    content: Any = None,
+    **payload: object,
+) -> StreamEvent:
+    entry: TranscriptEntry | None = None
+    if content is not None:
+        entry = TranscriptEntry(sequence, run_id, revision_id, "kernel", content)
+    return StreamEvent(
+        session_id="s1",
+        sequence=sequence,
+        type=event_type,
+        run_id=run_id,
+        revision_id=revision_id,
+        source="kernel",
+        actor="user",
+        payload=dict(payload),
+        transcript=entry,
+    )
+
+
+def _user_event(sequence: int, text: str) -> StreamEvent:
+    event = _event(sequence, "core.user_message", content=ProviderMessage("user", text))
+    return StreamEvent(
+        session_id=event.session_id,
+        sequence=event.sequence,
+        type=event.type,
+        run_id=event.run_id,
+        revision_id=event.revision_id,
+        source=event.source,
+        actor=event.actor,
+        payload={"content": text},
+        transcript=event.transcript,
+    )
+
+
 def test_unsupported_view_raises_error() -> None:
     """A view kind outside the eight finite kinds fails visibly, never silently."""
-    with pytest.raises(UnsupportedViewError):
-        render_plugin_view({"view_type": "invalid_magic_type", "data": {}}, 80)
+    with pytest.raises(ValueError, match="bogus"):
+        PluginViewDescriptor(owner="o", name="n", title="t", view_type="bogus", data={})  # type: ignore[arg-type]
 
 
 def test_fields_view_folds_long_cjk_value_without_clipping() -> None:
@@ -30,7 +130,8 @@ def test_fields_view_folds_long_cjk_value_without_clipping() -> None:
     from voidcode.tui.term import visible_width
 
     value = "将遗留的导入器逐步迁移到新的" + "迁移" * 30 + "终尾"
-    rows = render_plugin_view({"view_type": "fields", "data": {"rows": [{"label": "Objective", "value": value}]}}, 48)
+    descriptor = PluginViewDescriptor(owner="o", name="n", title="t", view_type="fields", data={"rows": [{"label": "Objective", "value": value}]})
+    rows = render_plugin_view(descriptor, 48)
     plain = [re.sub(r"\x1b\[[0-9;]*m", "", row) for row in rows]
     assert all(visible_width(row) <= 48 for row in plain), [visible_width(row) for row in plain]
     compact = "".join(char for row in plain for char in row if not char.isspace())
@@ -40,14 +141,11 @@ def test_fields_view_folds_long_cjk_value_without_clipping() -> None:
 
 def test_interactive_choices_navigation_and_selection() -> None:
     choices = InteractiveChoices(
-        {
-            "action": "select_target",
-            "argument_name": "target_id",
-            "options": [
-                {"id": "a", "label": "Option A"},
-                {"id": "b", "label": "Option B"},
-            ],
-        }
+        ChoicesViewData(
+            options=(ChoiceOption(id="a", label="Option A"), ChoiceOption(id="b", label="Option B")),
+            action="select_target",
+            argument_name="target_id",
+        )
     )
 
     # Navigate down
@@ -61,15 +159,7 @@ def test_interactive_choices_navigation_and_selection() -> None:
     # Esc cancels
     assert choices.handle_key(Key("esc")) == {"cancel": True}
 
-
-def test_interactive_confirmation_key_handling() -> None:
-    conf = InteractiveConfirmation(
-        {
-            "request_id": "req-abc",
-            "message": "Are you sure?",
-            "actions": ["allow", "deny"],
-        }
-    )
+    conf = InteractiveConfirmation(ConfirmationViewData(request_id="req-abc", message="Are you sure?", actions=("allow", "deny")))
     assert conf.selected_index == 0
 
     # Enter on first action allows
@@ -86,15 +176,15 @@ def test_interactive_confirmation_key_handling() -> None:
 
 def test_interactive_form_field_editing_and_submission() -> None:
     form = InteractiveForm(
-        {
-            "action": "save_config",
-            "fields": [
-                {"name": "title", "label": "Title", "field_type": "text", "required": True},
-                {"name": "count", "label": "Count", "field_type": "integer", "required": False},
-                {"name": "enabled", "label": "Enabled", "field_type": "boolean", "required": False},
-            ],
-            "initial_values": {"title": "Init", "count": 5, "enabled": False},
-        }
+        FormViewData(
+            fields=(
+                FormField(name="title", label="Title", field_type="text", required=True),
+                FormField(name="count", label="Count", field_type="integer", required=False),
+                FormField(name="enabled", label="Enabled", field_type="boolean", required=False),
+            ),
+            action="save_config",
+            initial_values={"title": "Init", "count": 5, "enabled": False},
+        )
     )
 
     assert form.values["title"] == "Init"
@@ -130,17 +220,14 @@ def test_interactive_form_field_editing_and_submission() -> None:
         },
     }
 
-
-def test_interactive_form_never_fabricates_numbers_and_omits_blank_optionals() -> None:
     form = InteractiveForm(
-        {
-            "action": "set_limits",
-            "fields": [
-                {"name": "budget", "label": "Budget", "field_type": "integer", "required": False},
-                {"name": "ratio", "label": "Ratio", "field_type": "number", "required": False},
-            ],
-            "initial_values": {},
-        }
+        FormViewData(
+            fields=(
+                FormField(name="budget", label="Budget", field_type="integer", required=False),
+                FormField(name="ratio", label="Ratio", field_type="number", required=False),
+            ),
+            action="set_limits",
+        )
     )
 
     # Absent optionals submit as omitted keys, never as 0 or null.
@@ -168,33 +255,26 @@ def test_interactive_form_never_fabricates_numbers_and_omits_blank_optionals() -
         "arguments": {"budget": 12, "ratio": 0.025},
     }
 
-
-def test_interactive_form_validates_required_fields() -> None:
     form = InteractiveForm(
-        {
-            "action": "create_item",
-            "fields": [
-                {"name": "req_field", "label": "Required Field", "field_type": "text", "required": True},
-            ],
-        }
+        FormViewData(
+            fields=(FormField(name="req_field", label="Required Field", field_type="text", required=True),),
+            action="create_item",
+        )
     )
     # Submit with empty value should fail validation and return None
     outcome = form.handle_key(Key("ctrl+s"))
     assert outcome is None
     assert form.validation_error
 
-
-def test_interactive_form_load_action_prefills_without_overwriting_dirty_edits() -> None:
     form = InteractiveForm(
-        {
-            "action": "edit_item",
-            "load_action": "get_item",
-            "fields": [
-                {"name": "desc", "label": "Description", "field_type": "text"},
-                {"name": "notes", "label": "Notes", "field_type": "text"},
-            ],
-            "initial_values": {},
-        }
+        FormViewData(
+            fields=(
+                FormField(name="desc", label="Description", field_type="text"),
+                FormField(name="notes", label="Notes", field_type="text"),
+            ),
+            action="edit_item",
+            load_action="get_item",
+        )
     )
 
     # User starts typing into desc
@@ -212,13 +292,12 @@ def test_interactive_form_load_action_prefills_without_overwriting_dirty_edits()
 
 
 def test_form_nullable_field_clears_instead_of_omitting() -> None:
-    """A field the command declares nullable submits null, so a value can be cleared."""
     form = InteractiveForm(
-        {
-            "action": "set_nullable",
-            "fields": [{"name": "budget", "label": "Budget", "field_type": "integer", "required": False}],
-            "initial_values": {"budget": 42},
-        },
+        FormViewData(
+            fields=(FormField(name="budget", label="Budget", field_type="integer", required=False),),
+            action="set_nullable",
+            initial_values={"budget": 42},
+        ),
         action_schema={
             "type": "object",
             "properties": {"budget": {"anyOf": [{"type": "integer"}, {"type": "null"}]}},
@@ -238,13 +317,13 @@ def test_form_boolean_missing_optional_nullable_and_explicit_values_stay_distinc
         },
     }
     form = InteractiveForm(
-        {
-            "action": "set_flags",
-            "fields": [
-                {"name": "flag", "label": "Flag", "field_type": "boolean", "required": False},
-                {"name": "maybe", "label": "Maybe", "field_type": "boolean", "required": False},
-            ],
-        },
+        FormViewData(
+            fields=(
+                FormField(name="flag", label="Flag", field_type="boolean", required=False),
+                FormField(name="maybe", label="Maybe", field_type="boolean", required=False),
+            ),
+            action="set_flags",
+        ),
         action_schema=schema,
     )
 
@@ -275,10 +354,10 @@ def test_form_boolean_missing_optional_nullable_and_explicit_values_stay_distinc
 
 def test_form_missing_required_nullable_is_refused_until_provided() -> None:
     form = InteractiveForm(
-        {
-            "action": "set_budget",
-            "fields": [{"name": "budget", "label": "Budget", "field_type": "integer", "required": True}],
-        },
+        FormViewData(
+            fields=(FormField(name="budget", label="Budget", field_type="integer", required=True),),
+            action="set_budget",
+        ),
         action_schema={
             "type": "object",
             "properties": {"budget": {"anyOf": [{"type": "integer"}, {"type": "null"}]}},
@@ -299,10 +378,10 @@ def test_form_missing_required_nullable_is_refused_until_provided() -> None:
 
 def test_form_required_boolean_missing_is_a_validation_error() -> None:
     form = InteractiveForm(
-        {
-            "action": "set_flag",
-            "fields": [{"name": "flag", "label": "Flag", "field_type": "boolean", "required": True}],
-        }
+        FormViewData(
+            fields=(FormField(name="flag", label="Flag", field_type="boolean", required=True),),
+            action="set_flag",
+        )
     )
     assert form.handle_key(Key("ctrl+s")) is None
     assert form.validation_error
@@ -310,10 +389,10 @@ def test_form_required_boolean_missing_is_a_validation_error() -> None:
 
 def test_form_optional_non_nullable_blank_is_omitted() -> None:
     form = InteractiveForm(
-        {
-            "action": "set_limits",
-            "fields": [{"name": "ratio", "label": "Ratio", "field_type": "number", "required": False}],
-        },
+        FormViewData(
+            fields=(FormField(name="ratio", label="Ratio", field_type="number", required=False),),
+            action="set_limits",
+        ),
         action_schema={"type": "object", "properties": {"ratio": {"type": "number"}}},
     )
     assert form.handle_key(Key("ctrl+s")) == {"action": "set_limits", "arguments": {}}
@@ -322,10 +401,10 @@ def test_form_optional_non_nullable_blank_is_omitted() -> None:
 def test_form_preserves_typed_text_verbatim() -> None:
     """Non-empty text keeps its whitespace; only blanks are normalised."""
     form = InteractiveForm(
-        {
-            "action": "submit_form",
-            "fields": [{"name": "summary", "label": "Summary", "field_type": "multiline", "required": True}],
-        }
+        FormViewData(
+            fields=(FormField(name="summary", label="Summary", field_type="multiline", required=True),),
+            action="submit_form",
+        )
     )
     form.values["summary"] = "  keep my spacing  \n"
     outcome = form.handle_key(Key("ctrl+s"))
@@ -368,38 +447,55 @@ class _StubClient:
 
     def __init__(self) -> None:
         self.health_calls = 0
-        self.prefix_events: list[dict[str, object]] = []
-        self.full_events: list[dict[str, object]] = []
+        self.prefix_events: list[StreamEvent] = []
+        self.full_events: list[StreamEvent] = []
         self.restart_cursor = 0
         self._connections = 0
         self._stop: Any = None
 
-    def health(self) -> dict[str, object]:
+    def health(self) -> HealthStatus:
         self.health_calls += 1
-        return {"fenced": False, "stage": "serving", "generation": 2, "core_version": "t", "image_digest": "d"}
+        return _health()
 
-    def command_catalog(self) -> tuple[str, list[dict[str, object]]]:
-        return "rev-1", []
+    def command_catalog(self) -> CommandCatalog:
+        return CommandCatalog(revision_id="rev-1", commands=())
 
-    def views(self, session_id: str) -> tuple[str, list[dict[str, object]]]:
-        return "rev-1", []
+    def views(self, session_id: str) -> ViewsSnapshot:
+        return ViewsSnapshot(revision_id="rev-1", views=())
 
-    def get_session(self, session_id: str) -> dict[str, object]:
-        return {"session_id": session_id, "status": "idle"}
+    def get_session(self, session_id: str) -> SessionRow:
+        return _session_row(session_id)
 
-    async def events_stream(self, session_id: str, *, after_sequence: int = 0, follow: bool = True, cancel: object = None):  # type: ignore[no-untyped-def]
+    def transcript(self, session_id: str, *, after_sequence: int = 0, limit: int = 100) -> TranscriptPage:
+        del session_id
+        ordered = sorted(self.full_events or self.prefix_events, key=lambda ev: ev.sequence)
+        window = [ev for ev in ordered if ev.sequence > after_sequence][:limit]
+        entries = tuple(ev.transcript for ev in window if ev.transcript is not None)
+        consumed = len(window)
+        nxt = window[-1].sequence if window else after_sequence
+        remaining = [ev for ev in ordered if ev.sequence > nxt]
+        return TranscriptPage(entries=entries, next_sequence=nxt, has_more=bool(remaining), source_events=consumed)
+
+    async def events_stream(
+        self,
+        session_id: str,
+        after_sequence: int = 0,
+        *,
+        follow: bool = True,
+        cancel: StreamCancellation | None = None,
+    ) -> AsyncIterator[SseFrame]:
         self._connections += 1
         if self._connections == 1:
             # Pre-restart connection: only the settled prefix exists yet.
-            backlog = [ev for ev in self.prefix_events if int(ev["sequence"]) > after_sequence]
+            backlog = [ev for ev in self.prefix_events if ev.sequence > after_sequence]
             if backlog:
-                yield {"events": backlog}
-            yield {"kind": "server_restart", "cursor": self.restart_cursor}
+                yield HeadFrame(session=_session_row(session_id), events=tuple(backlog))
+            yield RestartFrame(session_id=session_id, cursor=self.restart_cursor)
             return
         # Post-restart connections: the full log, filtered by the resume cursor.
-        backlog = [ev for ev in self.full_events if int(ev["sequence"]) > after_sequence]
+        backlog = [ev for ev in self.full_events if ev.sequence > after_sequence]
         if backlog:
-            yield {"events": backlog}
+            yield HeadFrame(session=_session_row(session_id), events=tuple(backlog))
         # Hold the connection open like a live follow stream until the test
         # stops the worker (never hot-loop on instant EOF).
         import asyncio as _asyncio
@@ -413,14 +509,12 @@ class _FencedClient(_StubClient):
 
     def __init__(self) -> None:
         super().__init__()
-        from voidcode.tui.client import CoreClientError
-
         self._refusal = CoreClientError("core is draining for an upgrade; retry after it restarts", status_code=503, code="upgrade_pending")
 
-    def resume(self, session_id: str, **kwargs: object) -> dict[str, object]:
+    def resume(self, session_id: str, spec: ResumeSpec | None = None) -> RunResult:
         raise self._refusal
 
-    def confirm(self, session_id: str, request_id: str, decision: str, **kwargs: object) -> dict[str, object]:
+    def confirm(self, session_id: str, request_id: str, decision: Literal["allow", "deny"], expected_revision: str = "") -> CommandResult:
         raise self._refusal
 
 
@@ -430,9 +524,9 @@ class _CommandClient(_StubClient):
     def __init__(
         self,
         *,
-        catalog: list[dict[str, object]] | None = None,
-        view_list: list[dict[str, object]] | None = None,
-        results: dict[str, dict[str, object]] | None = None,
+        catalog: list[CommandDescriptor] | None = None,
+        view_list: list[PluginViewDescriptor] | None = None,
+        results: dict[str, CommandResult] | None = None,
     ) -> None:
         super().__init__()
         self.catalog = list(catalog or [])
@@ -440,36 +534,31 @@ class _CommandClient(_StubClient):
         self.results = dict(results or {})
         self.invoked: list[tuple[str, str, dict[str, object], str]] = []
 
-    def command_catalog(self) -> tuple[str, list[dict[str, object]]]:
-        return "rev-1", list(self.catalog)
+    def command_catalog(self) -> CommandCatalog:
+        return CommandCatalog(revision_id="rev-1", commands=tuple(self.catalog))
 
-    def list_sessions(self, limit: int = 20) -> list[dict[str, object]]:
-        return [{"session_id": "s1", "status": "idle", "turn": 0}]
+    def list_sessions(self, limit: int = 20) -> list[SessionRow]:
+        return [_session_row("s1")]
 
-    def views(self, session_id: str) -> tuple[str, list[dict[str, object]]]:
-        return "rev-1", list(self.view_list)
+    def views(self, session_id: str) -> ViewsSnapshot:
+        return ViewsSnapshot(revision_id="rev-1", views=tuple(self.view_list))
 
     def invoke_command(
         self,
         session_id: str,
         name: str,
-        arguments: dict[str, object] | None = None,
-        *,
-        expected_revision: str,
-    ) -> dict[str, object]:
+        arguments: Mapping[str, object] | None = None,
+        expected_revision: str = "",
+    ) -> CommandResult:
         self.invoked.append((session_id, name, dict(arguments or {}), expected_revision))
-        return dict(self.results.get(name, {"status": "ok"}))
-
-
-def _event(sequence: int, event_type: str = "core.user_message", **payload: object) -> dict[str, object]:
-    return {"sequence": sequence, "type": event_type, "revision_id": "rev-1", "payload": dict(payload)}
+        return self.results.get(name, CommandResult(status="ok"))
 
 
 class _RunClient(_CommandClient):
     """Run returns the existing failed result; the durable event repeats the error."""
 
-    def run(self, session_id: str, prompt: str, *, max_steps: int = 32) -> dict[str, object]:
-        return {"status": "failed", "error": "boom"}
+    def run(self, session_id: str, spec: RunSpec) -> RunResult:
+        return RunResult(session_id=session_id, run_id="run-1", revision_id="rev-1", status="failed", error="boom")
 
 
 def _drain_until(app: Any, terminal: Any, marker: str, *, timeout: float = 5.0) -> None:
@@ -512,12 +601,12 @@ def test_reconnect_replays_unseen_rows_despite_ahead_restart_watermark() -> None
     from voidcode.tui.terminal_app import CoreTuiApp
 
     client = _FencedClient()
-    client.prefix_events = [_event(1, content="one"), _event(2, content="two")]
+    client.prefix_events = [_user_event(1, "one"), _user_event(2, "two")]
     client.full_events = [
-        _event(1, content="one"),
-        _event(2, content="two"),
-        _event(3, content="three"),
-        _event(4, content="four"),
+        _user_event(1, "one"),
+        _user_event(2, "two"),
+        _user_event(3, "three"),
+        _user_event(4, "four"),
     ]
     client.restart_cursor = 99
     terminal = _StubTerminal()
@@ -560,9 +649,8 @@ def test_real_503_handlers_keep_both_gates_then_decided_facts_close_each_once() 
     terminal = _StubTerminal()
     app = CoreTuiApp(client, session_id="s1", terminal=terminal)  # type: ignore[arg-type]
     app._session_cursors["s1"] = 10
-    app.pending_approval = InteractiveApproval({"request_id": "appr-1", "tool_name": "write", "arguments": {}})
-    app.active_overlay = InteractiveConfirmation({"request_id": "conf-9", "title": "t", "detail": "d"}, revision_id="rev-1")
-    # Real handlers, real worker threads, real 503 answers. The barrier is the
+    app.pending_approval = InteractiveApproval(_approval_gate("appr-1"))
+    app.active_overlay = InteractiveConfirmation(ConfirmationViewData(request_id="conf-9", message="Confirm?"), revision_id="rev-1")
     # workers' own follow-up envelopes: each failed submission ends with a
     # decision_done frame that clears its in-flight marker, so both markers
     # clearing means both workers answered. No production thread registry, no
@@ -584,7 +672,7 @@ def test_real_503_handlers_keep_both_gates_then_decided_facts_close_each_once() 
     assert "appr-1" not in app._in_flight and "conf-9" not in app._in_flight
     # A NEW approval parks while the old gate is still mounted; a late
     # acceptance envelope for the OLD id must not close the new gate.
-    app.pending_approval = InteractiveApproval({"request_id": "appr-2", "tool_name": "write", "arguments": {}})
+    app.pending_approval = InteractiveApproval(_approval_gate("appr-2"))
     app.event_queue.put(
         {"kind": "approval_accepted", "request_id": "appr-1", "decision": "allow", "status": "completed", "generation": 0, "session_id": "s1"}
     )
@@ -592,15 +680,34 @@ def test_real_503_handlers_keep_both_gates_then_decided_facts_close_each_once() 
     assert app.pending_approval is not None and app.pending_approval.request_id == "appr-2"
     # The canonical decided facts close each gate exactly once.
     app.event_queue.put(
-        {"kind": "event", "event": _event(11, "core.approval_decided", decision="allow", request_id="appr-2"), "generation": 0, "session_id": "s1"}
+        {
+            "kind": "stream_event",
+            "frame": EventFrame(session_id="s1", event=_event(11, "core.approval_decided", decision="allow", request_id="appr-2")),
+            "generation": 0,
+            "session_id": "s1",
+        }
     )
-    app.event_queue.put({"kind": "event", "event": _event(12, "core.confirmation_decided", request_id="conf-9"), "generation": 0, "session_id": "s1"})
+    app.event_queue.put(
+        {
+            "kind": "stream_event",
+            "frame": EventFrame(session_id="s1", event=_event(12, "core.confirmation_decided", request_id="conf-9")),
+            "generation": 0,
+            "session_id": "s1",
+        }
+    )
     app._drain_events()
     assert app.pending_approval is None
-    assert "conf-9" in app.resolved_confirmations
+    assert "conf-9" in app._gates.decided
     assert app.active_overlay is None
     # Replayed decided facts never resurrect either gate.
-    app.event_queue.put({"kind": "event", "event": _event(12, "core.confirmation_decided", request_id="conf-9"), "generation": 0, "session_id": "s1"})
+    app.event_queue.put(
+        {
+            "kind": "stream_event",
+            "frame": EventFrame(session_id="s1", event=_event(12, "core.confirmation_decided", request_id="conf-9")),
+            "generation": 0,
+            "session_id": "s1",
+        }
+    )
     app._drain_events()
     assert app.active_overlay is None
     assert list(app.queued_confirmations) == []
@@ -611,22 +718,18 @@ def test_automatic_refresh_is_silent_until_views_are_explicitly_requested() -> N
     from voidcode.tui.terminal_app import CoreTuiApp
     from voidcode.tui.views import InteractiveForm
 
-    status_view = {
-        "name": "goal",
-        "title": "Goal",
-        "view_type": "status",
-        "data": {"label": "Goal", "value": "No active goal"},
-    }
-    form_view = {
-        "name": "goal.form",
-        "title": "Set Goal",
-        "view_type": "form",
-        "data": {
+    status_view = PluginViewDescriptor(owner="goal", name="goal", title="Goal", view_type="status", data={"label": "Goal", "value": "No active goal"})
+    form_view = PluginViewDescriptor(
+        owner="goal",
+        name="goal.form",
+        title="Set Goal",
+        view_type="form",
+        data={
             "fields": [{"name": "objective", "label": "Objective", "field_type": "multiline", "required": True}],
             "action": "goal.set",
             "initial_values": {},
         },
-    }
+    )
     client = _CommandClient(view_list=[status_view, form_view])
     terminal = _StubTerminal()
     app = CoreTuiApp(client, session_id="s1", terminal=terminal)
@@ -649,28 +752,24 @@ def test_activation_refresh_is_silent_for_optional_views() -> None:
     """Activation refreshes the catalog only: no passive row, no form, no revision id."""
     from voidcode.tui.terminal_app import CoreTuiApp
 
-    status_view = {
-        "name": "goal",
-        "title": "Goal",
-        "view_type": "status",
-        "data": {"label": "Goal", "value": "No active goal"},
-    }
-    form_view = {
-        "name": "goal.form",
-        "title": "Set Goal",
-        "view_type": "form",
-        "data": {
+    status_view = PluginViewDescriptor(owner="goal", name="goal", title="Goal", view_type="status", data={"label": "Goal", "value": "No active goal"})
+    form_view = PluginViewDescriptor(
+        owner="goal",
+        name="goal.form",
+        title="Set Goal",
+        view_type="form",
+        data={
             "fields": [{"name": "objective", "label": "Objective", "field_type": "multiline", "required": True}],
             "action": "goal.set",
             "initial_values": {},
         },
-    }
+    )
     client = _CommandClient(view_list=[status_view, form_view])
     terminal = _StubTerminal()
     app = CoreTuiApp(client, session_id="s1", terminal=terminal)
 
     rows: list[str] = []
-    app._handle_single_event(_event(1, "core.activation_committed", to_revision_id="rev-2"), rows)
+    app._handle_stream_event(_event(1, "core.activation_committed", to_revision_id="rev-2"), rows)
     app._render_frame()
     assert app.active_overlay is None
     assert not any("No active goal" in row for row in rows)
@@ -704,18 +803,13 @@ def test_durable_gates_survive_automatic_view_refresh() -> None:
     from voidcode.tui.terminal_app import CoreTuiApp
     from voidcode.tui.views import InteractiveConfirmation
 
-    status_view = {
-        "name": "goal",
-        "title": "Goal",
-        "view_type": "status",
-        "data": {"label": "Goal", "value": "No active goal"},
-    }
+    status_view = PluginViewDescriptor(owner="goal", name="goal", title="Goal", view_type="status", data={"label": "Goal", "value": "No active goal"})
     client = _CommandClient(view_list=[status_view])
     terminal = _StubTerminal()
     app = CoreTuiApp(client, session_id="s1", terminal=terminal)
     rows: list[str] = []
 
-    app._handle_single_event(
+    app._handle_stream_event(
         _event(1, "core.approval_requested", request_id="appr-1", call={"tool_name": "write", "arguments": {}}),
         rows,
     )
@@ -726,7 +820,7 @@ def test_durable_gates_survive_automatic_view_refresh() -> None:
     assert any("Tool approval required" in row for row in terminal.frames[-1]), terminal.frames[-1]
 
     app.pending_approval = None
-    app._handle_single_event(
+    app._handle_stream_event(
         _event(
             2,
             "core.confirmation_requested",
@@ -751,22 +845,22 @@ def test_core_help_receipt_renders_multiline_and_clears_dispatching() -> None:
     from voidcode.tui.terminal_app import CoreTuiApp
 
     catalog = [
-        {
-            "name": "help",
-            "owner": "core",
-            "description": "Show available commands and documentation",
-            "effects": ["read"],
-            "argument_schema": {"type": "object", "properties": {}},
-        }
+        CommandDescriptor(
+            name="help",
+            owner="core",
+            description="Show available commands and documentation",
+            argument_schema={"type": "object", "properties": {}},
+            effects=(ToolEffect.READ,),
+        )
     ]
     client = _CommandClient(
         catalog=catalog,
         results={
-            "help": {
-                "status": "ok",
-                "output": "Available commands:\n  /status — Show core and workspace status",
-                "data": {"commands": [{"name": "status"}]},
-            }
+            "help": CommandResult(
+                status="ok",
+                output="Available commands:\n  /status — Show core and workspace status",
+                data={"commands": [{"name": "status"}]},
+            )
         },
     )
     terminal = _StubTerminal()
@@ -786,17 +880,17 @@ def test_core_data_receipt_preserves_empty_mapping_and_falsy_values() -> None:
     from voidcode.tui.terminal_app import CoreTuiApp
 
     catalog = [
-        {
-            "name": "show",
-            "owner": "core",
-            "description": "Show session state",
-            "effects": ["read"],
-            "argument_schema": {"type": "object", "properties": {}},
-        }
+        CommandDescriptor(
+            name="show",
+            owner="core",
+            description="Show session state",
+            argument_schema={"type": "object", "properties": {}},
+            effects=(ToolEffect.READ,),
+        )
     ]
     client = _CommandClient(
         catalog=catalog,
-        results={"show": {"status": "ok", "data": {"empty": {}, "turn": 0, "ok": False, "none": None}}},
+        results={"show": CommandResult(status="ok", data={"empty": {}, "turn": 0, "ok": False, "none": None})},
     )
     terminal = _StubTerminal()
     app = CoreTuiApp(client, session_id="s1", terminal=terminal)
@@ -824,8 +918,11 @@ def test_long_settled_command_result_wraps_without_losing_content() -> None:
         app._stream_ready = True
         app.event_queue.put(
             {
-                "kind": "event",
-                "event": _event(1, "core.command_completed", name="providers", result={"status": "ok", "output": payload}),
+                "kind": "stream_event",
+                "frame": EventFrame(
+                    session_id="s1",
+                    event=_event(1, "core.command_completed", name="providers", result={"status": "ok", "output": payload}),
+                ),
                 "session_id": "s1",
                 "generation": 0,
             }
@@ -852,12 +949,15 @@ def test_plugin_command_event_renders_multiple_lines_with_error_precedence() -> 
 
     app.event_queue.put(
         {
-            "kind": "event",
-            "event": _event(
-                1,
-                "core.command_completed",
-                name="usage",
-                result={"status": "ok", "output": "turns: 0\ninput tokens: 0"},
+            "kind": "stream_event",
+            "frame": EventFrame(
+                session_id="s1",
+                event=_event(
+                    1,
+                    "core.command_completed",
+                    name="usage",
+                    result={"status": "ok", "output": "turns: 0\ninput tokens: 0"},
+                ),
             ),
             "session_id": "s1",
             "generation": 0,
@@ -870,12 +970,15 @@ def test_plugin_command_event_renders_multiple_lines_with_error_precedence() -> 
 
     app.event_queue.put(
         {
-            "kind": "event",
-            "event": _event(
-                2,
-                "core.command_completed",
-                name="broken",
-                result={"status": "error", "error": "boom", "output": "partial"},
+            "kind": "stream_event",
+            "frame": EventFrame(
+                session_id="s1",
+                event=_event(
+                    2,
+                    "core.command_completed",
+                    name="broken",
+                    result={"status": "error", "error": "boom", "output": "partial"},
+                ),
             ),
             "session_id": "s1",
             "generation": 0,
@@ -893,7 +996,7 @@ def test_late_completion_does_not_overwrite_gate_or_fence_status() -> None:
     terminal = _StubTerminal()
     app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
 
-    app.pending_approval = {"request_id": "appr-1", "tool_name": "write", "arguments": {}}
+    app.pending_approval = InteractiveApproval(_approval_gate("appr-1"))
     app.status_line = "Tool approval required: write"
     app.event_queue.put(
         {
@@ -910,7 +1013,7 @@ def test_late_completion_does_not_overwrite_gate_or_fence_status() -> None:
 
     app.pending_approval = None
     app.active_overlay = None
-    app.upgrade = {"fenced": True}
+    app.upgrade = _health(fenced=True)
     app.status_line = "Core upgrade in progress: dispatch paused"
     app.event_queue.put(
         {
@@ -940,8 +1043,8 @@ def test_run_failure_error_is_rendered_once_from_the_response_path() -> None:
 
     app.event_queue.put(
         {
-            "kind": "event",
-            "event": _event(1, "core.run_failed", error="boom", logical_turn="turn-1"),
+            "kind": "stream_event",
+            "frame": EventFrame(session_id="s1", event=_event(1, "core.run_failed", error="boom", logical_turn="turn-1")),
             "session_id": "s1",
             "generation": 0,
         }
@@ -992,9 +1095,9 @@ def test_rows_carry_no_hardcoded_colors() -> None:
     app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
     app._stream_ready = True
     rows: list[str] = []
-    app._handle_single_event(_event(1, "core.user_message", content="hi"), rows)
-    app._handle_single_event(_event(2, "core.model_turn", result={"output": "hello", "reasoning": "why"}), rows)
-    app._handle_single_event(_event(3, "core.run_failed", error="boom"), rows)
+    app._handle_stream_event(_user_event(1, "hi"), rows)
+    app._handle_stream_event(_event(2, "core.model_turn", content=ProviderTurnResult(output="hello", reasoning="why"), dispatch_sequence=2), rows)
+    app._handle_stream_event(_event(3, "core.run_failed", content=TranscriptRun("failed"), error="boom"), rows)
     # color_system=None strips every SGR code: a hardcoded escape would survive the strip.
     assert not any("\x1b" in row for row in rows), rows
     plain = [re.sub(r"\x1b\[[0-9;]*m", "", row) for row in rows]
@@ -1012,27 +1115,29 @@ def test_model_turn_renders_markdown_and_structured_tool_rows() -> None:
     terminal = _StubTerminal()
     app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
     rows: list[str] = []
-    app._handle_single_event(
+    app._handle_stream_event(
         _event(
             1,
             "core.model_turn",
-            result={
-                "output": "# Title\n\nSome **bold** text",
-                "tool_calls": [{"tool_name": "read", "arguments": {"path": "a.txt"}}],
-            },
+            content=ProviderTurnResult(
+                output="# Title\n\nSome **bold** text",
+                tool_calls=(ToolCall(tool_name="read", arguments={"path": "a.txt"}),),
+            ),
+            dispatch_sequence=1,
         ),
         rows,
     )
-    app._handle_single_event(
+    app._handle_stream_event(
         _event(
             2,
             "core.tool_completed",
-            call={"tool_name": "read"},
-            result={
-                "tool_name": "read",
-                "status": "ok",
-                "output": {"type": "text", "text": "file body", "bounds": {"truncated": True, "source": "read:42"}},
-            },
+            content=TranscriptTool(
+                ToolCall(tool_name="read", arguments={"path": "a.txt"}),
+                ToolSuccess(tool_name="read", output=TextOutput(text="file body", bounds=OutputBounds(truncated=True, source="read:42"))),
+                interrupted=False,
+                batch_sequence=1,
+                deferred=False,
+            ),
         ),
         rows,
     )
@@ -1054,25 +1159,31 @@ def test_tool_result_prefers_presentation_and_flags_failure() -> None:
     terminal = _StubTerminal()
     app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
     rows: list[str] = []
-    app._handle_single_event(
+    app._handle_stream_event(
         _event(
             1,
             "core.tool_completed",
-            call={"tool_name": "exec"},
-            result={"tool_name": "exec", "status": "error", "error": "exit 1", "output": {"type": "text", "text": "raw"}},
+            content=TranscriptTool(
+                ToolCall(tool_name="exec", arguments={}),
+                ToolFailure(tool_name="exec", error="exit 1", output=TextOutput(text="raw")),
+                interrupted=False,
+                batch_sequence=1,
+                deferred=False,
+            ),
         ),
         rows,
     )
-    app._handle_single_event(
+    app._handle_stream_event(
         _event(
             2,
             "core.tool_completed",
-            call={"tool_name": "read"},
-            result={
-                "tool_name": "read",
-                "status": "ok",
-                "output": {"type": "text", "text": "raw bytes", "presentation": "Image read successfully"},
-            },
+            content=TranscriptTool(
+                ToolCall(tool_name="read", arguments={}),
+                ToolSuccess(tool_name="read", output=TextOutput(text="raw bytes", presentation="Image read successfully")),
+                interrupted=False,
+                batch_sequence=1,
+                deferred=False,
+            ),
         ),
         rows,
     )
@@ -1091,7 +1202,7 @@ def test_approval_gate_shows_full_args_with_diff_and_scrolls() -> None:
     app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
     rows: list[str] = []
     long_value = "x" * 300
-    app._handle_single_event(
+    app._handle_stream_event(
         _event(
             1,
             "core.approval_requested",
@@ -1118,13 +1229,40 @@ def test_approval_gate_shows_full_args_with_diff_and_scrolls() -> None:
 
 
 def test_approval_keys_decide_without_truncation_path() -> None:
-    approval = InteractiveApproval({"request_id": "r1", "tool_name": "exec", "arguments": {"cmd": "ls"}})
+    gate = ApprovalGate(call=ToolCall(tool_name="exec", arguments={"cmd": "ls"}), request_id="r1", run_id="run-1", revision_id="rev-1")
+    approval = InteractiveApproval(gate)
     assert approval.handle_key(Key("a")) == {"request_id": "r1", "decision": "allow"}
     assert approval.handle_key(Key("enter")) == {"request_id": "r1", "decision": "allow"}
     assert approval.handle_key(Key("d")) == {"request_id": "r1", "decision": "deny"}
     assert approval.handle_key(Key("esc")) == {"request_id": "r1", "decision": "deny"}
     assert approval.handle_key(Key("down")) is None
     assert approval.scroll == 1
+
+
+def test_approval_multi_edit_preview_and_nested_json_survive_owned_mappings() -> None:
+    """Owned tuples render as JSON arrays with a joined multi-edit diff, never mappingproxy repr."""
+    import re
+
+    gate = ApprovalGate(
+        call=ToolCall(
+            tool_name="edit",
+            arguments={
+                "path": "a.py",
+                "edits": ({"oldString": "old-one", "newString": "new-one"}, {"oldString": "old-two", "newString": "new-two"}),
+                "nested": {"items": (1, {"deep": (True, None)}), "empty": {}},
+            },
+        ),
+        request_id="r-owned",
+        run_id="run-1",
+        revision_id="rev-1",
+    )
+    approval = InteractiveApproval(gate)
+    rows = approval.render_rows(100)
+    plain = [re.sub(r"\x1b\[[0-9;]*m", "", row) for row in rows]
+    text = "\n".join(plain)
+    assert "old-one" in text and "new-two" in text
+    assert '"deep"' in text and "mappingproxy" not in text and "mappingproxy" not in repr(text)
+    assert '"items": [\n' in text or '"items": ["' in text or '"items"' in text
 
 
 def test_provider_progress_buffers_partial_text_and_spinner_advances() -> None:
@@ -1136,11 +1274,11 @@ def test_provider_progress_buffers_partial_text_and_spinner_advances() -> None:
     terminal = _StubTerminal()
     app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
     rows: list[str] = []
-    app._handle_single_event(
+    app._handle_stream_event(
         _event(1, "core.provider_progress", run_id="r", dispatch_id="d1", dispatch_sequence=1, channel="text", text_delta="Hello "),
         rows,
     )
-    app._handle_single_event(
+    app._handle_stream_event(
         _event(2, "core.provider_progress", run_id="r", dispatch_id="d1", dispatch_sequence=1, channel="text", text_delta="world"),
         rows,
     )
@@ -1163,12 +1301,12 @@ def test_model_turn_settles_stream_buffer_to_committed_markdown() -> None:
     terminal = _StubTerminal()
     app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
     rows: list[str] = []
-    app._handle_single_event(
+    app._handle_stream_event(
         _event(1, "core.provider_progress", run_id="r", dispatch_id="d1", dispatch_sequence=1, channel="text", text_delta="partial"),
         rows,
     )
-    app._handle_single_event(
-        _event(2, "core.model_turn", result={"output": "final answer", "tool_calls": []}, dispatch_sequence=1, dispatch_id="d1"),
+    app._handle_stream_event(
+        _event(2, "core.model_turn", content=ProviderTurnResult(output="final answer"), dispatch_sequence=2, dispatch_id="d1"),
         rows,
     )
     assert any("final answer" in row for row in (" ".join(re.sub(r"\x1b\[[0-9;]*m", "", row) for row in rows)).split("\n"))
@@ -1187,11 +1325,11 @@ def test_reasoning_progress_does_not_pollute_the_text_buffer() -> None:
     terminal = _StubTerminal()
     app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
     rows: list[str] = []
-    app._handle_single_event(
+    app._handle_stream_event(
         _event(1, "core.provider_progress", run_id="r", dispatch_id="d1", dispatch_sequence=1, channel="reasoning", text_delta="secret plan"),
         rows,
     )
-    app._handle_single_event(
+    app._handle_stream_event(
         _event(2, "core.provider_progress", run_id="r", dispatch_id="d1", dispatch_sequence=1, channel="text", text_delta="visible"),
         rows,
     )
@@ -1200,3 +1338,90 @@ def test_reasoning_progress_does_not_pollute_the_text_buffer() -> None:
     text = "\n".join(plain)
     assert "visible" in text
     assert "secret plan" not in text
+
+
+def test_terminated_run_cannot_resurrect_then_newer_run_keeps_its_gate() -> None:
+    """A late pending receipt for a dead run never reopens; an old run end keeps a newer gate."""
+    from voidcode.sdk.gates import ApprovalRequested, GateState, RunTerminated, reduce_gates
+
+    first = _approval_gate("appr-old", run_id="run-old")
+    state = reduce_gates(GateState(), ApprovalRequested(first))
+    assert state.approval is not None and state.approval.request_id == "appr-old"
+    state = reduce_gates(state, RunTerminated("run-old"))
+    assert state.approval is None
+    # A late duplicate for the terminated run is tombstoned: it never reopens.
+    state = reduce_gates(state, ApprovalRequested(first))
+    assert state.approval is None
+    # A newer run parks; a late end for the old run preserves the newer gate.
+    newer = _approval_gate("appr-new", run_id="run-new")
+    state = reduce_gates(state, ApprovalRequested(newer))
+    assert state.approval is not None and state.approval.request_id == "appr-new"
+    state = reduce_gates(state, RunTerminated("run-old"))
+    assert state.approval is not None and state.approval.request_id == "appr-new"
+
+
+def test_activation_tombstones_old_revision_confirmation() -> None:
+    """A late old-revision confirmation after activation never reopens the queue."""
+    from voidcode.sdk.gates import ActivationCommitted, ConfirmationRequested, GateState, reduce_gates
+    from voidcode.sdk.gates import ConfirmationGate as Gate
+
+    request = ConfirmationRequest(
+        request_id="conf-old",
+        owner="goal",
+        command_name="goal.set",
+        arguments={},
+        ui_type="confirmation",
+        ui_data={"request_id": "conf-old", "message": "Apply goal?"},
+    )
+    gate = Gate.from_request(request, revision_id="rev-1")
+    state = reduce_gates(GateState(), ConfirmationRequested(gate))
+    assert [entry.request_id for entry in state.confirmations] == ["conf-old"]
+    state = reduce_gates(state, ActivationCommitted("rev-2"))
+    assert state.confirmations == ()
+    state = reduce_gates(state, ConfirmationRequested(gate))
+    assert state.confirmations == ()
+
+
+def test_head_hydration_walks_empty_pages_and_keeps_gate_order_without_duplicates() -> None:
+    """Transcript pages walk through empty bookkeeping; head gates still apply in order, once."""
+    from voidcode.tui.terminal_app import CoreTuiApp, _hydrate_head_events
+
+    approval = _event(1, "core.approval_requested", request_id="appr-1", call={"tool_name": "write", "arguments": {}})
+    prompt = _user_event(2, "hello")
+    command = _event(
+        3,
+        "core.command_completed",
+        name="status",
+        result={"status": "ok", "output": "status-ok"},
+    )
+    head = HeadFrame(session=_session_row("s1"), events=(approval, prompt, command))
+
+    class _PagedClient(_CommandClient):
+        def transcript(self, session_id: str, *, after_sequence: int = 0, limit: int = 100) -> TranscriptPage:
+            del session_id, limit
+            if after_sequence < 1:
+                return TranscriptPage(entries=(), next_sequence=1, has_more=True, source_events=1)
+            if after_sequence < 2:
+                assert prompt.transcript is not None
+                return TranscriptPage(entries=(prompt.transcript,), next_sequence=2, has_more=True, source_events=1)
+            return TranscriptPage(entries=(), next_sequence=3, has_more=False, source_events=1)
+
+    client = _PagedClient()
+    merged = _hydrate_head_events(client, "s1", head)
+    assert [event.sequence for event in merged] == [1, 2, 3]
+    assert merged[0].transcript is None and merged[1].transcript is not None
+
+    terminal = _StubTerminal()
+    app = CoreTuiApp(client, session_id="s1", terminal=terminal)
+    app.event_queue.put({"kind": "stream_head", "frame": HeadFrame(session=head.session, events=merged), "session_id": "s1", "generation": 0})
+    app._stream_ready = True
+    app._drain_events()
+    assert sum("hello" in row for row in terminal.committed) == 1
+    assert sum("status-ok" in row for row in terminal.committed) == 1
+    assert app.pending_approval is not None and app.pending_approval.request_id == "appr-1"
+    assert app._session_cursors["s1"] == 3
+    # Replaying the same head hydrates nothing twice.
+    app.event_queue.put({"kind": "stream_head", "frame": HeadFrame(session=head.session, events=merged), "session_id": "s1", "generation": 0})
+    app._drain_events()
+    assert sum("hello" in row for row in terminal.committed) == 1
+    assert sum("status-ok" in row for row in terminal.committed) == 1

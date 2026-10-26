@@ -5,59 +5,69 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import threading
 import urllib.parse
-from collections.abc import AsyncGenerator
-from typing import Any, NoReturn
+from collections.abc import AsyncGenerator, Mapping
+from typing import Any, Literal, NoReturn
 
 import httpx
+
+from voidcode.sdk.client import (
+    CancelReceipt,
+    CommandCatalog,
+    CommandResult,
+    ContinuationResult,
+    CoreClientError,
+    HealthStatus,
+    ResumeSpec,
+    RunResult,
+    RunSpec,
+    SessionRow,
+    SessionUsageReport,
+    SseFrame,
+    StreamCancellation,
+    ViewsSnapshot,
+)
+from voidcode.sdk.transcript import ContextHistory, TranscriptPage, decode_context_history, decode_transcript_page
+from voidcode.transport.projection import validated_session_id
 
 logger = logging.getLogger(__name__)
 
 
-class CoreClientError(Exception):
-    def __init__(self, message: str, *, status_code: int = 0, code: str | None = None) -> None:
-        super().__init__(message)
-        self.status_code = status_code
-        self.code = code
+def _checked_session_id(session_id: str) -> str:
+    try:
+        return validated_session_id(session_id)
+    except ValueError as exc:
+        raise CoreClientError(str(exc), status_code=400, code="invalid_params") from None
 
 
-class StreamCancellation:
-    """Cancels one owned event-stream connection from another thread."""
+def _decode_frame(raw: object) -> SseFrame:
+    """Decode one raw SSE frame: outer adapter normalizes legacy event payloads."""
+    from voidcode.sdk.client import ErrorFrame, EventFrame, HeadFrame, RestartFrame, SessionRow
+    from voidcode.transport.projection import decode_stream_event
 
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._closed = False
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._task: asyncio.Task[Any] | None = None
-
-    @property
-    def is_closed(self) -> bool:
-        with self._lock:
-            return self._closed
-
-    def close(self) -> None:
-        with self._lock:
-            self._closed = True
-            if self._loop is not None and self._task is not None and not self._task.done():
-                if not self._loop.is_closed():
-                    self._loop.call_soon_threadsafe(self._task.cancel)
-            self._loop = None
-            self._task = None
-
-    def _attach(self, loop: asyncio.AbstractEventLoop, task: asyncio.Task[Any]) -> None:
-        with self._lock:
-            if self._closed:
-                if not loop.is_closed():
-                    loop.call_soon_threadsafe(task.cancel)
-            else:
-                self._loop = loop
-                self._task = task
-
-    def _detach(self) -> None:
-        with self._lock:
-            self._loop = None
-            self._task = None
+    if not isinstance(raw, Mapping):
+        raise ValueError("SSE frame must be an object")
+    if "events" in raw or "session" in raw:
+        session = raw.get("session")
+        events = raw.get("events", ())
+        if not isinstance(session, Mapping) or not isinstance(events, (list, tuple)):
+            raise ValueError("head frame must carry a session object and events array")
+        return HeadFrame(
+            session=SessionRow.from_payload(session),
+            events=tuple(decode_stream_event(item) for item in events),
+        )
+    kind = raw.get("kind")
+    if kind == "event":
+        event = raw.get("event")
+        session_id = raw.get("session_id")
+        if not isinstance(event, Mapping) or not isinstance(session_id, str):
+            raise ValueError("event frame must carry a session_id and event object")
+        return EventFrame(session_id=session_id, event=decode_stream_event(event))
+    if kind == "error":
+        return ErrorFrame.from_payload({k: v for k, v in raw.items() if k != "kind"})
+    if kind == "server_restart":
+        return RestartFrame.from_payload({k: v for k, v in raw.items() if k != "kind"})
+    raise ValueError(f"unknown SSE frame kind: {kind!r}")
 
 
 class CoreHttpClient:
@@ -90,16 +100,13 @@ class CoreHttpClient:
         self.close()
 
     def _handle_status_error(self, exc: httpx.HTTPStatusError) -> NoReturn:
-        err_msg = f"HTTP {exc.response.status_code}"
-        err_code = None
         try:
-            data = exc.response.json()
-            if isinstance(data, dict):
-                err_msg = str(data.get("error", err_msg))
-                err_code = data.get("code")
+            body = exc.response.json()
         except Exception:
-            pass
-        raise CoreClientError(err_msg, status_code=exc.response.status_code, code=err_code) from exc
+            body = None
+        if isinstance(body, Mapping):
+            raise CoreClientError.from_refusal(body, status_code=exc.response.status_code) from exc
+        raise CoreClientError(f"HTTP {exc.response.status_code}", status_code=exc.response.status_code) from exc
 
     def _request(
         self,
@@ -128,121 +135,158 @@ class CoreHttpClient:
         except httpx.RequestError as exc:
             raise CoreClientError(f"connection error: {exc}") from exc
 
-    def health(self) -> dict[str, Any]:
-        return self._request("GET", "/api/health")
+    def health(self) -> HealthStatus:
+        return HealthStatus.from_payload(self._request("GET", "/api/health"))
 
-    def command_catalog(self) -> tuple[str, list[dict[str, Any]]]:
-        res = self._request("GET", "/api/commands")
-        return str(res.get("revision_id", "")), list(res.get("commands", []))
+    def command_catalog(self) -> CommandCatalog:
+        return CommandCatalog.from_payload(self._request("GET", "/api/commands"))
 
-    def list_sessions(self, limit: int = 100) -> list[dict[str, Any]]:
+    def list_sessions(self, limit: int = 100) -> list[SessionRow]:
         res = self._request("GET", "/api/sessions", query={"limit": limit})
-        return list(res.get("sessions", []))
+        rows = res.get("sessions", [])
+        if not isinstance(rows, list):
+            raise CoreClientError("malformed sessions response")
+        return [SessionRow.from_payload(item) for item in rows]
 
-    def create_session(self, session_id: str | None = None) -> dict[str, Any]:
+    def create_session(self, session_id: str | None = None) -> SessionRow:
+        if session_id is not None and not session_id:
+            raise CoreClientError("session_id must be a non-empty string", status_code=400, code="invalid_params")
         payload: dict[str, Any] = {}
         if session_id:
             payload["session_id"] = session_id
-        return self._request("POST", "/api/sessions", body=payload)
+        return SessionRow.from_payload(self._request("POST", "/api/sessions", body=payload))
 
-    def get_session(self, session_id: str) -> dict[str, Any]:
-        return self._request("GET", f"/api/sessions/{urllib.parse.quote(session_id)}")
+    def get_session(self, session_id: str) -> SessionRow:
+        _checked_session_id(session_id)
+        return SessionRow.from_payload(self._request("GET", f"/api/sessions/{urllib.parse.quote(session_id)}"))
 
-    def show(self, session_id: str, events: bool = False) -> dict[str, Any]:
+    def show(self, session_id: str, events: bool = False) -> Mapping[str, Any]:
+        _checked_session_id(session_id)
         return self._request(
             "GET",
             f"/api/sessions/{urllib.parse.quote(session_id)}/show",
             query={"events": "true" if events else "false"},
         )
 
-    def run(self, session_id: str, prompt: str, max_steps: int | None = None) -> dict[str, Any]:
-        steps = 32 if max_steps is None else max_steps
-        return self._request(
-            "POST",
-            f"/api/sessions/{urllib.parse.quote(session_id)}/run",
-            body={"prompt": prompt, "session_id": session_id, "max_steps": steps},
-            timeout=300.0,
+    def run(self, session_id: str, spec: RunSpec) -> RunResult:
+        _checked_session_id(session_id)
+        return RunResult.from_payload(
+            self._request(
+                "POST",
+                f"/api/sessions/{urllib.parse.quote(session_id)}/run",
+                body={"prompt": spec.prompt, "session_id": session_id, "max_steps": spec.max_steps},
+                timeout=300.0,
+            )
         )
 
     def resume(
         self,
         session_id: str,
-        approval_request_id: str | None = None,
-        decision: str | None = None,
-        max_steps: int | None = None,
-    ) -> dict[str, Any]:
-        steps = 32 if max_steps is None else max_steps
-        body: dict[str, Any] = {"max_steps": steps}
-        if approval_request_id is not None:
-            body["approval_request_id"] = approval_request_id
-        if decision is not None:
-            body["decision"] = decision
-        return self._request(
-            "POST",
-            f"/api/sessions/{urllib.parse.quote(session_id)}/resume",
-            body=body,
-            timeout=300.0,
+        spec: ResumeSpec | None = None,
+    ) -> RunResult:
+        _checked_session_id(session_id)
+        active = spec or ResumeSpec()
+        body: dict[str, Any] = {"max_steps": active.max_steps}
+        if active.approval_request_id is not None:
+            body["approval_request_id"] = active.approval_request_id
+        if active.decision is not None:
+            body["decision"] = active.decision
+        return RunResult.from_payload(
+            self._request(
+                "POST",
+                f"/api/sessions/{urllib.parse.quote(session_id)}/resume",
+                body=body,
+                timeout=300.0,
+            )
         )
 
     def invoke_command(
         self,
         session_id: str,
         name: str,
-        arguments: dict[str, Any] | None = None,
+        arguments: Mapping[str, object] | None = None,
         expected_revision: str = "",
-    ) -> dict[str, Any]:
+    ) -> CommandResult:
+        _checked_session_id(session_id)
         body: dict[str, Any] = {
-            "arguments": arguments or {},
+            "arguments": dict(arguments or {}),
             "expected_revision": expected_revision,
         }
-        return self._request(
-            "POST",
-            f"/api/sessions/{urllib.parse.quote(session_id)}/invoke/{urllib.parse.quote(name)}",
-            body=body,
-            timeout=120.0,
+        return CommandResult.from_payload(
+            self._request(
+                "POST",
+                f"/api/sessions/{urllib.parse.quote(session_id)}/invoke/{urllib.parse.quote(name)}",
+                body=body,
+                timeout=120.0,
+            )
         )
 
     def confirm(
         self,
         session_id: str,
         request_id: str,
-        decision: str,
+        decision: Literal["allow", "deny"],
         expected_revision: str = "",
-    ) -> dict[str, Any]:
+    ) -> CommandResult:
+        _checked_session_id(session_id)
         body: dict[str, Any] = {
             "request_id": request_id,
             "decision": decision,
             "expected_revision": expected_revision,
         }
-        return self._request(
-            "POST",
-            f"/api/sessions/{urllib.parse.quote(session_id)}/confirm",
-            body=body,
-            timeout=60.0,
+        return CommandResult.from_payload(
+            self._request(
+                "POST",
+                f"/api/sessions/{urllib.parse.quote(session_id)}/confirm",
+                body=body,
+                timeout=60.0,
+            )
         )
 
-    def views(self, session_id: str) -> tuple[str, list[dict[str, Any]]]:
-        res = self._request("GET", f"/api/sessions/{urllib.parse.quote(session_id)}/views")
-        return str(res.get("revision_id", "")), list(res.get("views", []))
+    def views(self, session_id: str) -> ViewsSnapshot:
+        _checked_session_id(session_id)
+        return ViewsSnapshot.from_payload(self._request("GET", f"/api/sessions/{urllib.parse.quote(session_id)}/views"))
 
-    def drain(self, session_id: str, *, limit: int = 10) -> list[dict[str, Any]]:
+    def drain(self, session_id: str, *, limit: int = 10) -> list[ContinuationResult]:
+        _checked_session_id(session_id)
         res = self._request(
             "POST",
             f"/api/sessions/{urllib.parse.quote(session_id)}/continuations",
             body={"limit": limit},
             timeout=120.0,
         )
-        return list(res.get("continuations", []))
+        items = res.get("continuations", [])
+        if not isinstance(items, list):
+            raise CoreClientError("malformed continuations response")
+        return [ContinuationResult.from_payload(item) for item in items]
 
-    def usage(self, session_id: str, *, since_sequence: int = 0, until_sequence: int | None = None) -> dict[str, Any]:
-        return self._request(
-            "GET",
-            f"/api/sessions/{urllib.parse.quote(session_id)}/usage",
-            query={"since_sequence": since_sequence, "until_sequence": until_sequence},
+    def usage(self, session_id: str, *, since_sequence: int = 0, until_sequence: int | None = None) -> SessionUsageReport:
+        _checked_session_id(session_id)
+        return SessionUsageReport.from_payload(
+            self._request(
+                "GET",
+                f"/api/sessions/{urllib.parse.quote(session_id)}/usage",
+                query={"since_sequence": since_sequence, "until_sequence": until_sequence},
+            )
         )
 
-    def cancel(self, session_id: str) -> dict[str, Any]:
-        return self._request("POST", f"/api/sessions/{urllib.parse.quote(session_id)}/cancel")
+    def cancel(self, session_id: str) -> CancelReceipt:
+        _checked_session_id(session_id)
+        return CancelReceipt.from_payload(self._request("POST", f"/api/sessions/{urllib.parse.quote(session_id)}/cancel"))
+
+    def transcript(self, session_id: str, *, after_sequence: int = 0, limit: int = 100) -> TranscriptPage:
+        _checked_session_id(session_id)
+        return decode_transcript_page(
+            self._request(
+                "GET",
+                f"/api/sessions/{urllib.parse.quote(session_id)}/transcript",
+                query={"after_sequence": after_sequence, "limit": limit},
+            )
+        )
+
+    def context_history(self, session_id: str, *, limit: int = 100) -> ContextHistory:
+        _checked_session_id(session_id)
+        return decode_context_history(self._request("GET", f"/api/sessions/{urllib.parse.quote(session_id)}/context", query={"limit": limit}))
 
     async def events_stream(
         self,
@@ -251,7 +295,8 @@ class CoreHttpClient:
         *,
         follow: bool = True,
         cancel: StreamCancellation | None = None,
-    ) -> AsyncGenerator[dict[str, Any]]:
+    ) -> AsyncGenerator[SseFrame]:
+        _checked_session_id(session_id)
         params = {
             "after_sequence": str(after_sequence),
             "follow": "true" if follow else "false",
@@ -267,7 +312,7 @@ class CoreHttpClient:
         if cancel is not None:
             task = asyncio.current_task()
             if task is not None:
-                cancel._attach(asyncio.get_running_loop(), task)
+                cancel.attach(asyncio.get_running_loop(), task)
         try:
             async with httpx.AsyncClient(timeout=None) as client:
                 async with client.stream("GET", url, params=params, headers=headers) as response:
@@ -282,8 +327,12 @@ class CoreHttpClient:
                             data_str = line[5:].strip()
                             if data_str:
                                 try:
-                                    yield json.loads(data_str)
+                                    raw = json.loads(data_str)
                                 except json.JSONDecodeError as exc:
+                                    raise CoreClientError(f"malformed SSE frame: {exc}") from exc
+                                try:
+                                    yield _decode_frame(raw)
+                                except ValueError as exc:
                                     raise CoreClientError(f"malformed SSE frame: {exc}") from exc
         except asyncio.CancelledError:
             return
@@ -293,4 +342,4 @@ class CoreHttpClient:
             raise CoreClientError(f"connection error: {exc}") from exc
         finally:
             if cancel is not None:
-                cancel._detach()
+                cancel.detach()

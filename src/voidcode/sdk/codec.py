@@ -19,6 +19,7 @@ from .tools import (
     EmptyOutput,
     OpaqueToolBody,
     OutputBounds,
+    OutputReference,
     ReadObservation,
     ResourceChange,
     TextOutput,
@@ -101,7 +102,9 @@ def decode_message(payload: Mapping[str, object]) -> ProviderMessage:
     return _decode(_MESSAGE, payload)
 
 
-class _WireModel(BaseModel):
+class WireModel(BaseModel):
+    """Strict wire-model base shared by codec and history wire docs."""
+
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
@@ -113,34 +116,47 @@ def decode_provider_result(payload: Mapping[str, object]) -> ProviderTurnResult:
     return _decode(_PROVIDER_RESULT, payload)
 
 
-class _Text(_WireModel):
+class OutputReferenceWire(WireModel):
+    uri: str
+    artifact: dict[str, object] | None = None
+
+
+class OutputBoundsWire(WireModel):
+    truncated: bool = False
+    partial: bool = False
+    reference: OutputReferenceWire | None = None
+    source: str | None = None
+    fallback_reason: str | None = None
+
+
+class TextOutputWire(WireModel):
     type: Literal["text"] = "text"
     text: str
     presentation: str | None = None
-    bounds: OutputBounds = OutputBounds()
+    bounds: OutputBoundsWire = OutputBoundsWire()
 
 
-class _Empty(_WireModel):
+class EmptyOutputWire(WireModel):
     type: Literal["empty"] = "empty"
     presentation: str | None = None
-    bounds: OutputBounds = OutputBounds()
+    bounds: OutputBoundsWire = OutputBoundsWire()
 
 
-class _Attachment(_WireModel):
+class AttachmentOutputWire(WireModel):
     type: Literal["attachment"] = "attachment"
     mime: str
     data_uri: str | None
     presentation: str | None = None
-    bounds: OutputBounds = OutputBounds()
+    bounds: OutputBoundsWire = OutputBoundsWire()
 
 
-class _Execution(_WireModel):
+class ExecutionWire(WireModel):
     cancellation_signalled: bool
     execution_stopped: bool
     side_effect_state: Literal["settled", "unknown"]
 
 
-class _ReadObservation(_WireModel):
+class ReadObservationWire(WireModel):
     path: str = Field(min_length=1)
     content_hash: str
     lines: list[int] = Field(default_factory=list)
@@ -149,27 +165,27 @@ class _ReadObservation(_WireModel):
     clipped: bool = False
 
 
-class _ResourceChange(_WireModel):
+class ResourceChangeWire(WireModel):
     path: str = Field(min_length=1)
     operation: Literal["create", "update", "delete", "move"] = "update"
     old_path: str | None = None
 
 
-class _ToolResult(_WireModel):
+class ToolResultWire(WireModel):
     status: Literal["ok", "error"]
     tool_name: str = Field(min_length=1)
-    output: Annotated[_Text | _Empty | _Attachment, Field(discriminator="type")]
+    output: Annotated[TextOutputWire | EmptyOutputWire | AttachmentOutputWire, Field(discriminator="type")]
     body: dict[str, object] | None = None
     #: Only ever sent by a read-shaped success; absent means "made no file visible".
-    coverage: list[_ReadObservation] | None = None
-    changes: list[_ResourceChange] | None = None
+    coverage: list[ReadObservationWire] | None = None
+    changes: list[ResourceChangeWire] | None = None
     error: str | None = None
     diagnostics: ToolDiagnostics | None = None
-    execution: _Execution | None = None
+    execution: ExecutionWire | None = None
     timeout_seconds: int | None = Field(default=None, ge=0)
 
 
-_RESULT = TypeAdapter(_ToolResult)
+_RESULT = TypeAdapter(ToolResultWire)
 
 
 def encode_tool_result(result: ToolResult | Mapping[str, object]) -> dict[str, object]:
@@ -209,12 +225,15 @@ def encode_tool_result(result: ToolResult | Mapping[str, object]) -> dict[str, o
 def decode_tool_result(payload: Mapping[str, object]) -> ToolResult:
     wire = _decode(_RESULT, payload)
     output = wire.output
-    if isinstance(output, _Text):
-        decoded = TextOutput(output.text, output.presentation, output.bounds)
-    elif isinstance(output, _Empty):
-        decoded = EmptyOutput(output.presentation, output.bounds)
+    bounds = output.bounds
+    reference = None if bounds.reference is None else OutputReference(bounds.reference.uri, bounds.reference.artifact)
+    decoded_bounds = OutputBounds(bounds.truncated, bounds.partial, reference, bounds.source, bounds.fallback_reason)
+    if isinstance(output, TextOutputWire):
+        decoded = TextOutput(output.text, output.presentation, decoded_bounds)
+    elif isinstance(output, EmptyOutputWire):
+        decoded = EmptyOutput(output.presentation, decoded_bounds)
     else:
-        decoded = AttachmentOutput(output.mime, output.data_uri, output.presentation, output.bounds)
+        decoded = AttachmentOutput(output.mime, output.data_uri, output.presentation, decoded_bounds)
     body = None if wire.body is None else OpaqueToolBody(wire.body)
     if wire.status == "ok":
         if any(value is not None for value in (wire.error, wire.diagnostics, wire.execution, wire.timeout_seconds)):

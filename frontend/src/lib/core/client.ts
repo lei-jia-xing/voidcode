@@ -5,10 +5,10 @@
 import type {
   CommandDescriptor,
   CommandResult,
-  HealthBody,
-  CoreResult,
+  HealthStatus,
+  RunResult,
   PluginViewDescriptor,
-  SessionRecord,
+  SessionRow,
   SessionUsageReport,
   ShowBody,
   SseEventFrame,
@@ -110,8 +110,8 @@ export class CoreClient {
     return (await resp.json()) as T;
   }
 
-  async health(): Promise<HealthBody> {
-    return await this.request<HealthBody>("GET", "/api/health");
+  async health(): Promise<HealthStatus> {
+    return await this.request<HealthStatus>("GET", "/api/health");
   }
 
   async commandCatalog(): Promise<CommandCatalog> {
@@ -122,8 +122,8 @@ export class CoreClient {
     return { revisionId: res.revision_id, commands: res.commands || [] };
   }
 
-  async listSessions(limit: number = 100): Promise<SessionRecord[]> {
-    const res = await this.request<{ sessions: SessionRecord[] }>(
+  async listSessions(limit: number = 100): Promise<SessionRow[]> {
+    const res = await this.request<{ sessions: SessionRow[] }>(
       "GET",
       "/api/sessions",
       {
@@ -133,14 +133,14 @@ export class CoreClient {
     return res.sessions || [];
   }
 
-  async createSession(sessionId?: string): Promise<SessionRecord> {
-    return await this.request<SessionRecord>("POST", "/api/sessions", {
+  async createSession(sessionId?: string): Promise<SessionRow> {
+    return await this.request<SessionRow>("POST", "/api/sessions", {
       body: sessionId ? { session_id: sessionId } : {},
     });
   }
 
-  async getSession(sessionId: string): Promise<SessionRecord> {
-    return await this.request<SessionRecord>(
+  async getSession(sessionId: string): Promise<SessionRow> {
+    return await this.request<SessionRow>(
       "GET",
       `/api/sessions/${encodeURIComponent(sessionId)}`,
     );
@@ -158,8 +158,8 @@ export class CoreClient {
     sessionId: string,
     prompt: string,
     maxSteps: number = 32,
-  ): Promise<CoreResult> {
-    return await this.request<CoreResult>(
+  ): Promise<RunResult> {
+    return await this.request<RunResult>(
       "POST",
       `/api/sessions/${encodeURIComponent(sessionId)}/run`,
       {
@@ -173,7 +173,7 @@ export class CoreClient {
     approvalRequestId?: string,
     decision?: "allow" | "deny",
     maxSteps: number = 32,
-  ): Promise<CoreResult> {
+  ): Promise<RunResult> {
     const body: Record<string, unknown> = { max_steps: maxSteps };
     if (approvalRequestId) {
       body.approval_request_id = approvalRequestId;
@@ -181,7 +181,7 @@ export class CoreClient {
     if (decision) {
       body.decision = decision;
     }
-    return await this.request<CoreResult>(
+    return await this.request<RunResult>(
       "POST",
       `/api/sessions/${encodeURIComponent(sessionId)}/resume`,
       { body },

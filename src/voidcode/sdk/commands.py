@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, runtime_checkable
+
+from pydantic import TypeAdapter
 
 from .invocation import ToolContext
 from .json_values import json_wire_object, own_json_object
@@ -12,6 +15,12 @@ from .services import PluginServices
 from .tools import ToolEffect
 
 ConfirmationUIType = Literal["notice", "markdown", "fields", "choices", "confirmation", "form", "diff", "status"]
+
+
+def _decode_command[T](adapter: TypeAdapter[T], payload: Mapping[str, object], label: str) -> T:
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"{label} payload must be an object")
+    return adapter.validate_json(json.dumps(json_wire_object(payload), allow_nan=False), strict=True, extra="forbid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +61,42 @@ class ConfirmationRequest:
             "expected_state_version": self.expected_state_version,
         }
 
+    @staticmethod
+    def from_payload(payload: Mapping[str, object]) -> ConfirmationRequest:
+        return _decode_command(_CONFIRMATION_REQUEST_ADAPTER, payload, "confirmation request")
+
+
+@dataclass(frozen=True, slots=True)
+class CommandDescriptor:
+    """Catalog entry describing a plugin command or reserved core command."""
+
+    name: str
+    owner: str
+    description: str
+    argument_schema: Mapping[str, object] = field(default_factory=dict)
+    effects: tuple[ToolEffect, ...] = ()
+    busy_gate: bool = False
+    #: Declarative client syntax prefix, when the command declares one.
+    client_syntax: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "argument_schema", own_json_object(self.argument_schema))
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "owner": self.owner,
+            "description": self.description,
+            "argument_schema": json_wire_object(self.argument_schema),
+            "effects": [e.value for e in self.effects],
+            "busy_gate": self.busy_gate,
+            "client_syntax": self.client_syntax,
+        }
+
+    @staticmethod
+    def from_payload(payload: Mapping[str, object]) -> CommandDescriptor:
+        return _decode_command(_DESCRIPTOR_ADAPTER, payload, "command descriptor")
+
 
 @dataclass(frozen=True, slots=True)
 class CommandCatalog:
@@ -74,6 +119,10 @@ class CommandCatalog:
             "revision_id": self.revision_id,
             "commands": [command.as_payload() for command in self.commands],
         }
+
+    @staticmethod
+    def from_payload(payload: Mapping[str, object]) -> CommandCatalog:
+        return _decode_command(_CATALOG_ADAPTER, payload, "command catalog")
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,33 +159,15 @@ class CommandResult:
             "confirmation": None if self.confirmation is None else self.confirmation.as_payload(),
         }
 
+    @staticmethod
+    def from_payload(payload: Mapping[str, object]) -> CommandResult:
+        return _decode_command(_RESULT_ADAPTER, payload, "command result")
 
-@dataclass(frozen=True, slots=True)
-class CommandDescriptor:
-    """Catalog entry describing a plugin command or reserved core command."""
 
-    name: str
-    owner: str
-    description: str
-    argument_schema: Mapping[str, object] = field(default_factory=dict)
-    effects: tuple[ToolEffect, ...] = ()
-    busy_gate: bool = False
-    #: Declarative client syntax prefix, when the command declares one.
-    client_syntax: str | None = None
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "argument_schema", own_json_object(self.argument_schema))
-
-    def as_payload(self) -> dict[str, object]:
-        return {
-            "name": self.name,
-            "owner": self.owner,
-            "description": self.description,
-            "argument_schema": json_wire_object(self.argument_schema),
-            "effects": [e.value for e in self.effects],
-            "busy_gate": self.busy_gate,
-            "client_syntax": self.client_syntax,
-        }
+_CONFIRMATION_REQUEST_ADAPTER: TypeAdapter[ConfirmationRequest] = TypeAdapter(ConfirmationRequest)
+_DESCRIPTOR_ADAPTER: TypeAdapter[CommandDescriptor] = TypeAdapter(CommandDescriptor)
+_CATALOG_ADAPTER: TypeAdapter[CommandCatalog] = TypeAdapter(CommandCatalog)
+_RESULT_ADAPTER: TypeAdapter[CommandResult] = TypeAdapter(CommandResult)
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,3 +208,15 @@ class Command(Protocol):
     def definition(self) -> CommandDefinition: ...
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult: ...
+
+
+__all__ = [
+    "Command",
+    "CommandCatalog",
+    "CommandDefinition",
+    "CommandDescriptor",
+    "CommandInvocation",
+    "CommandResult",
+    "ConfirmationRequest",
+    "ConfirmationUIType",
+]

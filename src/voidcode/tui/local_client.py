@@ -1,29 +1,44 @@
 """In-process client for a locally owned core.
 
-Same method surface and frame shapes as :class:`CoreHttpClient`, but every
-call is a direct ``Core`` invocation in this process: no socket, no HTTP
-framing, no JSON round-trip. Errors arrive as ``CoreClientError`` with the
-transport's ``(status, code)`` refusal, so the TUI cannot tell the two
-clients apart.
+Same typed surface as :class:`CoreHttpClient`, but every call is a direct
+``Core`` invocation in this process: no socket, no HTTP framing, no JSON
+round-trip. Errors arrive as ``CoreClientError`` with the transport's
+``(status, code)`` refusal, so the TUI cannot tell the two clients apart.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Any, cast
+from collections.abc import AsyncGenerator, Mapping
+from typing import TYPE_CHECKING, Any, Literal, cast
 
+from voidcode.sdk.client import (
+    CancelReceipt,
+    CommandCatalog,
+    CommandResult,
+    ContinuationResult,
+    CoreClientError,
+    HealthStatus,
+    ResumeSpec,
+    RunResult,
+    RunSpec,
+    SessionRow,
+    SessionUsageReport,
+    SseFrame,
+    StreamCancellation,
+    ViewsSnapshot,
+)
+from voidcode.sdk.transcript import ContextHistory, TranscriptPage
 from voidcode.transport.projection import (
     FOLLOW_POLL_SECONDS,
     FOLLOW_TAIL_LIMIT,
     core_error_status,
+    decode_stream_event,
     event_payload,
     health_payload,
     session_payload,
     validated_session_id,
 )
-
-from .client import CoreClientError, StreamCancellation
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -59,93 +74,89 @@ class CoreLocalClient:
         except ValueError as exc:
             raise CoreClientError(str(exc), status_code=400, code="invalid_params") from None
 
-    def health(self) -> dict[str, Any]:
-        return health_payload(
-            revision_id=self._core.revision_id,
-            stage="serving",
-            workspace=self._workspace,
-            generation=1,
-            upgrade_id=None,
+    def health(self) -> HealthStatus:
+        return HealthStatus.from_payload(
+            health_payload(
+                revision_id=self._core.revision_id,
+                stage="serving",
+                workspace=self._workspace,
+                generation=1,
+                upgrade_id=None,
+            )
         )
 
-    def command_catalog(self) -> tuple[str, list[dict[str, Any]]]:
+    def command_catalog(self) -> CommandCatalog:
         try:
-            catalog = self._core.command_catalog()
+            return self._core.command_catalog()
         except Exception as exc:
             raise self._refusal(exc) from None
-        payload = catalog.as_payload()
-        commands = cast(list[dict[str, Any]], payload.get("commands", []))
-        return str(payload.get("revision_id", "")), list(commands)
 
-    def list_sessions(self, limit: int = 100) -> list[dict[str, Any]]:
+    def list_sessions(self, limit: int = 100) -> list[SessionRow]:
         try:
             records = self._core.sessions(limit=limit)
         except Exception as exc:
             raise self._refusal(exc) from None
-        return [dict(session_payload(record)) for record in records]
+        return [SessionRow.from_payload(session_payload(record)) for record in records]
 
-    def create_session(self, session_id: str | None = None) -> dict[str, Any]:
+    def create_session(self, session_id: str | None = None) -> SessionRow:
         if session_id is not None:
+            if not session_id:
+                raise CoreClientError("session_id must be a non-empty string", status_code=400, code="invalid_params")
             self._validated(session_id)
         try:
             record = self._core.create_session(session_id)
         except Exception as exc:
             raise self._refusal(exc) from None
-        return dict(session_payload(record))
+        return SessionRow.from_payload(session_payload(record))
 
-    def get_session(self, session_id: str) -> dict[str, Any]:
+    def get_session(self, session_id: str) -> SessionRow:
         self._validated(session_id)
         try:
             record = self._core.session(session_id)
         except Exception as exc:
             raise self._refusal(exc) from None
-        return dict(session_payload(record))
+        return SessionRow.from_payload(session_payload(record))
 
-    def show(self, session_id: str, events: bool = False) -> dict[str, Any]:
+    def show(self, session_id: str, events: bool = False) -> Mapping[str, Any]:
         self._validated(session_id)
         try:
-            return dict(self._core.show(session_id, events=events))
+            return self._core.show(session_id, events=events)
         except Exception as exc:
             raise self._refusal(exc) from None
 
-    def run(self, session_id: str, prompt: str, max_steps: int | None = None) -> dict[str, Any]:
+    def run(self, session_id: str, spec: RunSpec) -> RunResult:
         self._validated(session_id)
-        steps = 32 if max_steps is None else max_steps
         try:
-            result = self._core.run(prompt, session_id=session_id, max_steps=steps)
+            result = self._core.run(spec.prompt, session_id=session_id, max_steps=spec.max_steps)
         except Exception as exc:
             raise self._refusal(exc) from None
-        return dict(result.as_payload())
+        return RunResult.from_payload(result.as_payload())
 
     def resume(
         self,
         session_id: str,
-        approval_request_id: str | None = None,
-        decision: str | None = None,
-        max_steps: int | None = None,
-    ) -> dict[str, Any]:
+        spec: ResumeSpec | None = None,
+    ) -> RunResult:
         self._validated(session_id)
-        steps = 32 if max_steps is None else max_steps
-        if decision is not None and decision not in ("allow", "deny"):
-            raise CoreClientError("decision must be 'allow' or 'deny'", status_code=400, code="invalid_params")
+        active = spec or ResumeSpec()
         try:
             result = self._core.resume(
                 session_id,
-                approval_request_id=approval_request_id,
-                decision=cast(Any, decision),
-                max_steps=steps,
+                approval_request_id=active.approval_request_id,
+                decision=cast(Any, active.decision),
+                max_steps=active.max_steps,
             )
         except Exception as exc:
             raise self._refusal(exc) from None
-        return dict(result.as_payload())
+        return RunResult.from_payload(result.as_payload())
 
     def invoke_command(
         self,
         session_id: str,
         name: str,
-        arguments: dict[str, Any] | None = None,
+        arguments: Mapping[str, object] | None = None,
         expected_revision: str = "",
-    ) -> dict[str, Any]:
+    ) -> CommandResult:
         self._validated(session_id)
         if not name or "/" in name or "\0" in name or len(name) > 128:
             raise CoreClientError(
@@ -156,62 +167,69 @@ class CoreLocalClient:
         if not expected_revision:
             raise CoreClientError("expected_revision must be the revision the client displayed", status_code=400, code="invalid_params")
         try:
-            result = self._core.invoke_command(session_id, name, dict(arguments or {}), expected_revision=expected_revision)
+            return self._core.invoke_command(session_id, name, dict(arguments or {}), expected_revision=expected_revision)
         except Exception as exc:
             raise self._refusal(exc) from None
-        return dict(result.as_payload())
 
     def confirm(
         self,
         session_id: str,
         request_id: str,
-        decision: str,
+        decision: Literal["allow", "deny"],
         expected_revision: str = "",
-    ) -> dict[str, Any]:
+    ) -> CommandResult:
         self._validated(session_id)
-        if not expected_revision:
-            raise CoreClientError("expected_revision must be the revision the client displayed", status_code=400, code="invalid_params")
         if decision not in ("allow", "deny"):
             raise CoreClientError("decision must be 'allow' or 'deny'", status_code=400, code="invalid_params")
+        if not expected_revision:
+            raise CoreClientError("expected_revision must be the revision the client displayed", status_code=400, code="invalid_params")
         try:
-            result = self._core.confirm_action(session_id, request_id, cast(Any, decision), expected_revision=expected_revision)
+            return self._core.confirm_action(session_id, request_id, cast(Any, decision), expected_revision=expected_revision)
         except Exception as exc:
             raise self._refusal(exc) from None
-        return dict(result.as_payload())
 
-    def views(self, session_id: str) -> tuple[str, list[dict[str, Any]]]:
+    def views(self, session_id: str) -> ViewsSnapshot:
         self._validated(session_id)
         try:
-            snapshot = self._core.plugin_views(session_id)
+            return self._core.plugin_views(session_id)
         except Exception as exc:
             raise self._refusal(exc) from None
-        payload = snapshot.as_payload()
-        views = cast(list[dict[str, Any]], payload.get("views", []))
-        return str(payload.get("revision_id", "")), list(views)
 
-    def drain(self, session_id: str, *, limit: int = 10) -> list[dict[str, Any]]:
+    def drain(self, session_id: str, *, limit: int = 10) -> list[ContinuationResult]:
         self._validated(session_id)
         try:
-            results = self._core.drain_continuations(session_id, limit=limit)
+            return list(self._core.drain_continuations(session_id, limit=limit))
         except Exception as exc:
             raise self._refusal(exc) from None
-        return [dict(item.as_payload()) for item in results]
 
-    def usage(self, session_id: str, *, since_sequence: int = 0, until_sequence: int | None = None) -> dict[str, Any]:
+    def usage(self, session_id: str, *, since_sequence: int = 0, until_sequence: int | None = None) -> SessionUsageReport:
         self._validated(session_id)
         try:
-            report = self._core.usage(session_id, since_sequence=since_sequence, until_sequence=until_sequence)
+            return self._core.usage(session_id, since_sequence=since_sequence, until_sequence=until_sequence)
         except Exception as exc:
             raise self._refusal(exc) from None
-        return dict(report.as_payload())
 
-    def cancel(self, session_id: str) -> dict[str, Any]:
+    def cancel(self, session_id: str) -> CancelReceipt:
         self._validated(session_id)
         try:
             accepted = self._core.cancel_session(session_id, reason=f"local cancel for session {session_id}")
         except Exception as exc:
             raise self._refusal(exc) from None
-        return {"cancellation_requested": bool(accepted), "session_id": session_id}
+        return CancelReceipt(session_id=session_id, cancellation_requested=bool(accepted))
+
+    def transcript(self, session_id: str, *, after_sequence: int = 0, limit: int = 100) -> TranscriptPage:
+        self._validated(session_id)
+        try:
+            return self._core.transcript_page(session_id, after_sequence=after_sequence, limit=limit)
+        except Exception as exc:
+            raise self._refusal(exc) from None
+
+    def context_history(self, session_id: str, *, limit: int = 100) -> ContextHistory:
+        self._validated(session_id)
+        try:
+            return self._core.context_history(session_id, limit=limit)
+        except Exception as exc:
+            raise self._refusal(exc) from None
 
     async def events_stream(
         self,
@@ -220,30 +238,32 @@ class CoreLocalClient:
         *,
         follow: bool = True,
         cancel: StreamCancellation | None = None,
-    ) -> AsyncGenerator[dict[str, Any]]:
+    ) -> AsyncGenerator[SseFrame]:
+        from voidcode.sdk.client import ErrorFrame, EventFrame, HeadFrame
+
         self._validated(session_id)
         if cancel is not None:
             task = asyncio.current_task()
             if task is not None:
-                cancel._attach(asyncio.get_running_loop(), task)
+                cancel.attach(asyncio.get_running_loop(), task)
         try:
-            record = await asyncio.to_thread(self._core.session, session_id)
-        except Exception as exc:
-            raise self._refusal(exc) from None
-        initial: list[dict[str, Any]] = []
-        cursor = after_sequence
-        while True:
-            chunk = await asyncio.to_thread(self._core.events_after, session_id, after_sequence=cursor, limit=FOLLOW_TAIL_LIMIT)
-            if not chunk:
-                break
-            initial.extend(dict(event_payload(session_id, event)) for event in chunk)
-            cursor = chunk[-1].sequence
-            if len(chunk) < FOLLOW_TAIL_LIMIT:
-                break
-        yield {"session": dict(session_payload(record)), "events": initial}
-        if not follow:
-            return
-        try:
+            try:
+                record = await asyncio.to_thread(self._core.session, session_id)
+            except Exception as exc:
+                raise self._refusal(exc) from None
+            initial = []
+            cursor = after_sequence
+            while True:
+                chunk = await asyncio.to_thread(self._core.events_after, session_id, after_sequence=cursor, limit=FOLLOW_TAIL_LIMIT)
+                if not chunk:
+                    break
+                initial.extend(decode_stream_event(event_payload(session_id, event)) for event in chunk)
+                cursor = chunk[-1].sequence
+                if len(chunk) < FOLLOW_TAIL_LIMIT:
+                    break
+            yield HeadFrame(session=SessionRow.from_payload(session_payload(record)), events=tuple(initial))
+            if not follow:
+                return
             while True:
                 if cancel is not None and cancel.is_closed:
                     return
@@ -252,17 +272,17 @@ class CoreLocalClient:
                     try:
                         pending = await asyncio.to_thread(self._core.events_after, session_id, after_sequence=cursor, limit=FOLLOW_TAIL_LIMIT)
                     except Exception as exc:
-                        yield {"kind": "error", "session_id": session_id, "error": f"{type(exc).__name__}: {exc}"}
+                        yield ErrorFrame(session_id=session_id, error=f"{type(exc).__name__}: {exc}")
                         return
                     if not pending:
                         break
                     for event in pending:
                         cursor = event.sequence
-                        yield {"kind": "event", "session_id": session_id, "event": dict(event_payload(session_id, event))}
+                        yield EventFrame(session_id=session_id, event=decode_stream_event(event_payload(session_id, event)))
                     if len(pending) < FOLLOW_TAIL_LIMIT:
                         break
         except asyncio.CancelledError:
             return
         finally:
             if cancel is not None:
-                cancel._detach()
+                cancel.detach()

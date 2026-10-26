@@ -117,6 +117,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/context": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a bounded context prefix */
+        get: operations["_handle_context_api_sessions__session_id__context_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions/{session_id}/continuations": {
         parameters: {
             query?: never;
@@ -219,6 +236,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/transcript": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a bounded transcript page */
+        get: operations["_handle_transcript_api_sessions__session_id__transcript_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions/{session_id}/usage": {
         parameters: {
             query?: never;
@@ -257,6 +291,27 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AttachmentOutputWire */
+        AttachmentOutputWire: {
+            /**
+             * @default {
+             *       "partial": false,
+             *       "truncated": false
+             *     }
+             */
+            bounds: components["schemas"]["OutputBoundsWire"];
+            /** Data Uri */
+            data_uri: string | null;
+            /** Mime */
+            mime: string;
+            /** Presentation */
+            presentation?: string | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "attachment";
+        };
         /** CheckpointBody */
         CheckpointBody: {
             /** Kind */
@@ -400,6 +455,23 @@ export interface components {
             /** Request Id */
             request_id: string;
         };
+        /** ContextHistoryWire */
+        ContextHistoryWire: {
+            /** Reached End */
+            reached_end: boolean;
+            /** Records */
+            records: components["schemas"]["ContextRecordWire"][];
+        };
+        /** ContextRecordWire */
+        ContextRecordWire: {
+            entry: components["schemas"]["TranscriptEntryWire"] | null;
+            /** Payload Bytes */
+            payload_bytes: number;
+            /** Safe Boundary */
+            safe_boundary: boolean;
+            /** Sequence */
+            sequence: number;
+        };
         /** ContinuationResult */
         ContinuationResult: {
             /** Continuation Id */
@@ -433,27 +505,6 @@ export interface components {
             /** Continuations */
             continuations: components["schemas"]["ContinuationResult"][];
         };
-        /** CoreResult */
-        CoreResult: {
-            /** Error */
-            error?: string | null;
-            /** Output */
-            output?: string | null;
-            /** Pending Approval */
-            pending_approval?: {
-                [key: string]: unknown;
-            } | null;
-            /** Revision Id */
-            revision_id: string;
-            /** Run Id */
-            run_id: string;
-            /** Session Id */
-            session_id: string;
-            /** Status */
-            status: string;
-            /** Stop Cause */
-            stop_cause?: ("completed" | "error" | "user_stop" | "owner_cancel" | "limit_reached" | "shutdown") | null;
-        };
         /** CreateSessionRequest */
         CreateSessionRequest: {
             /** Session Id */
@@ -478,6 +529,35 @@ export interface components {
              * @default 10
              */
             limit: number;
+        };
+        /** EmptyOutputWire */
+        EmptyOutputWire: {
+            /**
+             * @default {
+             *       "partial": false,
+             *       "truncated": false
+             *     }
+             */
+            bounds: components["schemas"]["OutputBoundsWire"];
+            /** Presentation */
+            presentation?: string | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "empty";
+        };
+        /** ExecutionWire */
+        ExecutionWire: {
+            /** Cancellation Signalled */
+            cancellation_signalled: boolean;
+            /** Execution Stopped */
+            execution_stopped: boolean;
+            /**
+             * Side Effect State
+             * @enum {string}
+             */
+            side_effect_state: "settled" | "unknown";
         };
         /** FieldRow */
         FieldRow: {
@@ -531,10 +611,10 @@ export interface components {
             detail?: components["schemas"]["ValidationError"][];
         };
         /**
-         * HealthBody
+         * HealthStatus
          * @description Core health and identity: the stable surface clients poll.
          */
-        HealthBody: {
+        HealthStatus: {
             /** Active Upgrade */
             active_upgrade: {
                 [key: string]: unknown;
@@ -583,6 +663,33 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** OutputBoundsWire */
+        OutputBoundsWire: {
+            /** Fallback Reason */
+            fallback_reason?: string | null;
+            /**
+             * Partial
+             * @default false
+             */
+            partial: boolean;
+            reference?: components["schemas"]["OutputReferenceWire"] | null;
+            /** Source */
+            source?: string | null;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+        };
+        /** OutputReferenceWire */
+        OutputReferenceWire: {
+            /** Artifact */
+            artifact?: {
+                [key: string]: unknown;
+            } | null;
+            /** Uri */
+            uri: string;
+        };
         PluginViewData: components["schemas"]["NoticeViewData"] | components["schemas"]["MarkdownViewData"] | components["schemas"]["FieldsViewData"] | components["schemas"]["ChoicesViewData"] | components["schemas"]["ConfirmationViewData"] | components["schemas"]["FormViewData"] | components["schemas"]["DiffViewData"] | components["schemas"]["StatusViewData"];
         /**
          * PluginViewDescriptor
@@ -601,6 +708,128 @@ export interface components {
              * @enum {string}
              */
             view_type: "notice" | "markdown" | "fields" | "choices" | "confirmation" | "form" | "diff" | "status";
+        };
+        /** @enum {string} */
+        ProviderDoneReason: "stop" | "tool_calls" | "length" | "content_filter" | "function_call" | "cancelled" | "error" | "unknown" | "completed";
+        /**
+         * ProviderMessage
+         * @description One neutral conversation message handed to a provider adapter.
+         */
+        ProviderMessage: {
+            /** Content */
+            content?: string | null;
+            /**
+             * Is Error
+             * @default false
+             */
+            is_error: boolean;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            };
+            /** Reasoning */
+            reasoning?: string | null;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "system" | "user" | "assistant" | "tool";
+            /** Tool Call Id */
+            tool_call_id?: string | null;
+            /**
+             * Tool Calls
+             * @default []
+             */
+            tool_calls: components["schemas"]["ToolCall"][];
+            /** Tool Name */
+            tool_name?: string | null;
+        };
+        /** ProviderTokenUsage */
+        ProviderTokenUsage: {
+            /** Cache Read Tokens */
+            cache_read_tokens?: number | null;
+            /** Cache Write Tokens */
+            cache_write_tokens?: number | null;
+            /** Cost Usd */
+            cost_usd?: number | null;
+            /** Input Tokens */
+            input_tokens?: number | null;
+            /** Output Tokens */
+            output_tokens?: number | null;
+            /** Uncached Input Tokens */
+            uncached_input_tokens?: number | null;
+        };
+        /** ProviderTurnResult */
+        ProviderTurnResult: {
+            /** @default completed */
+            done_reason: components["schemas"]["ProviderDoneReason"];
+            /**
+             * Finish Reason Reported
+             * @default false
+             */
+            finish_reason_reported: boolean;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            } | null;
+            /** Output */
+            output?: string | null;
+            /** Reasoning */
+            reasoning?: string | null;
+            /**
+             * Tool Calls
+             * @default []
+             */
+            tool_calls: components["schemas"]["ToolCall"][];
+            usage?: components["schemas"]["ProviderTokenUsage"] | null;
+        };
+        /** ReadObservationWire */
+        ReadObservationWire: {
+            /**
+             * Clipped
+             * @default false
+             */
+            clipped: boolean;
+            /** Content Hash */
+            content_hash: string;
+            /**
+             * Line Count
+             * @default 0
+             */
+            line_count: number;
+            /** Lines */
+            lines?: number[];
+            /** Path */
+            path: string;
+            /**
+             * Whole File
+             * @default false
+             */
+            whole_file: boolean;
+        };
+        /** RequestWindowWire */
+        RequestWindowWire: {
+            /** Message Characters */
+            message_characters: number;
+            /** Segments */
+            segments: components["schemas"]["WindowSegmentWire"][];
+            /** Tool Count */
+            tool_count: number;
+            /** Tool Schema Characters */
+            tool_schema_characters: number;
+        };
+        /** ResourceChangeWire */
+        ResourceChangeWire: {
+            /** Old Path */
+            old_path?: string | null;
+            /**
+             * Operation
+             * @default update
+             * @enum {string}
+             */
+            operation: "create" | "update" | "delete" | "move";
+            /** Path */
+            path: string;
         };
         /** ResumeRequest */
         ResumeRequest: {
@@ -626,32 +855,45 @@ export interface components {
             /** Session Id */
             session_id?: string | null;
         };
-        /** SessionRecord */
-        SessionRecord: {
+        /**
+         * RunResult
+         * @description Outcome of one run/resume call: terminal facts, never a live handle.
+         */
+        RunResult: {
+            /** Error */
+            error?: string | null;
+            /** Output */
+            output?: string | null;
+            /** Pending Approval */
+            pending_approval?: {
+                [key: string]: unknown;
+            } | null;
+            /** Revision Id */
+            revision_id: string;
+            /** Run Id */
+            run_id: string;
+            /** Session Id */
+            session_id: string;
+            /** Status */
+            status: string;
+            /** Stop Cause */
+            stop_cause?: ("completed" | "error" | "user_stop" | "owner_cancel" | "limit_reached" | "shutdown") | null;
+        };
+        /**
+         * SessionRow
+         * @description One workspace session as clients list it.
+         */
+        SessionRow: {
             /** Active Revision Id */
             active_revision_id: string;
-            /**
-             * Depth
-             * @default 0
-             */
-            depth: number;
             /** Last Event Sequence */
             last_event_sequence: number;
-            /** Parent Session Id */
-            parent_session_id?: string | null;
-            /**
-             * Root Session Id
-             * @default
-             */
-            root_session_id: string;
             /** Run Id */
             run_id: string | null;
             /** Session Id */
             session_id: string;
             /** Status */
             status: string;
-            /** Tool Allowlist */
-            tool_allowlist?: string[] | null;
             /** Turn */
             turn: number;
             /** Workspace */
@@ -702,7 +944,7 @@ export interface components {
         /** SessionsBody */
         SessionsBody: {
             /** Sessions */
-            sessions: components["schemas"]["SessionRecord"][];
+            sessions: components["schemas"]["SessionRow"][];
         };
         /** ShowBody */
         ShowBody: {
@@ -752,11 +994,217 @@ export interface components {
             /** Type */
             type: string;
         };
+        /** TextOutputWire */
+        TextOutputWire: {
+            /**
+             * @default {
+             *       "partial": false,
+             *       "truncated": false
+             *     }
+             */
+            bounds: components["schemas"]["OutputBoundsWire"];
+            /** Presentation */
+            presentation?: string | null;
+            /** Text */
+            text: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "text";
+        };
+        /** ToolCall */
+        ToolCall: {
+            /** Arguments */
+            arguments?: {
+                [key: string]: unknown;
+            };
+            /** Tool Call Id */
+            tool_call_id?: string | null;
+            /** Tool Name */
+            tool_name: string;
+        };
+        /** ToolCallWire */
+        ToolCallWire: {
+            /** Arguments */
+            arguments: {
+                [key: string]: unknown;
+            };
+            /** Tool Call Id */
+            tool_call_id?: string | null;
+            /** Tool Name */
+            tool_name: string;
+        };
+        /**
+         * ToolDiagnostics
+         * @description Runtime-wide diagnostic slot shared by every tool result.
+         */
+        ToolDiagnostics: {
+            details?: components["schemas"]["ToolDiagnosticsDetails"];
+            /** Guidance */
+            guidance?: string | null;
+            /** Kind */
+            kind?: string | null;
+            /** Summary */
+            summary?: string | null;
+        };
+        ToolDiagnosticsDetails: {
+            [key: string]: unknown;
+        };
         /**
          * ToolEffect
          * @enum {string}
          */
         ToolEffect: "read" | "write" | "execute" | "network" | "spawn" | "session";
+        /** ToolResultWire */
+        ToolResultWire: {
+            /** Body */
+            body?: {
+                [key: string]: unknown;
+            } | null;
+            /** Changes */
+            changes?: components["schemas"]["ResourceChangeWire"][] | null;
+            /** Coverage */
+            coverage?: components["schemas"]["ReadObservationWire"][] | null;
+            diagnostics?: components["schemas"]["ToolDiagnostics"] | null;
+            /** Error */
+            error?: string | null;
+            execution?: components["schemas"]["ExecutionWire"] | null;
+            /** Output */
+            output: components["schemas"]["TextOutputWire"] | components["schemas"]["EmptyOutputWire"] | components["schemas"]["AttachmentOutputWire"];
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ok" | "error";
+            /** Timeout Seconds */
+            timeout_seconds?: number | null;
+            /** Tool Name */
+            tool_name: string;
+        };
+        /** TranscriptChildContentWire */
+        TranscriptChildContentWire: {
+            body: components["schemas"]["TranscriptChildWire"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "child";
+        };
+        /** TranscriptChildWire */
+        TranscriptChildWire: {
+            /** Child Session Id */
+            child_session_id: string;
+        };
+        /** TranscriptDispatchContentWire */
+        TranscriptDispatchContentWire: {
+            body: components["schemas"]["TranscriptDispatchWire"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "dispatch";
+        };
+        /** TranscriptDispatchWire */
+        TranscriptDispatchWire: {
+            /** Model Name */
+            model_name: string;
+            /** Provider Name */
+            provider_name: string;
+            window: components["schemas"]["RequestWindowWire"];
+        };
+        /** TranscriptEntryWire */
+        TranscriptEntryWire: {
+            /** Content */
+            content: components["schemas"]["TranscriptMessageWire"] | components["schemas"]["TranscriptTurnWire"] | components["schemas"]["TranscriptToolContentWire"] | components["schemas"]["TranscriptDispatchContentWire"] | components["schemas"]["TranscriptRunContentWire"] | components["schemas"]["TranscriptInterruptedContentWire"] | components["schemas"]["TranscriptChildContentWire"];
+            /** Dispatch Sequence */
+            dispatch_sequence?: number | null;
+            /** Revision Id */
+            revision_id: string;
+            /** Run Id */
+            run_id: string;
+            /** Sequence */
+            sequence: number;
+            /** Source */
+            source: string;
+        };
+        /** TranscriptInterruptedContentWire */
+        TranscriptInterruptedContentWire: {
+            body: components["schemas"]["TranscriptInterruptedWire"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "interrupted";
+        };
+        /** TranscriptInterruptedWire */
+        TranscriptInterruptedWire: Record<string, never>;
+        /** TranscriptMessageWire */
+        TranscriptMessageWire: {
+            body: components["schemas"]["ProviderMessage"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "message";
+        };
+        /** TranscriptPageWire */
+        TranscriptPageWire: {
+            /** Entries */
+            entries: components["schemas"]["TranscriptEntryWire"][];
+            /** Has More */
+            has_more: boolean;
+            /** Next Sequence */
+            next_sequence: number;
+            /** Source Events */
+            source_events: number;
+        };
+        /** TranscriptRunContentWire */
+        TranscriptRunContentWire: {
+            body: components["schemas"]["TranscriptRunWire"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "run";
+        };
+        /** TranscriptRunWire */
+        TranscriptRunWire: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "completed" | "failed" | "interrupted";
+        };
+        /** TranscriptToolContentWire */
+        TranscriptToolContentWire: {
+            body: components["schemas"]["TranscriptToolWire"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "tool";
+        };
+        /** TranscriptToolWire */
+        TranscriptToolWire: {
+            /** Batch Sequence */
+            batch_sequence: number;
+            call: components["schemas"]["ToolCallWire"];
+            /** Deferred */
+            deferred: boolean;
+            /** Interrupted */
+            interrupted: boolean;
+            result: components["schemas"]["ToolResultWire"];
+        };
+        /** TranscriptTurnWire */
+        TranscriptTurnWire: {
+            body: components["schemas"]["ProviderTurnResult"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "turn";
+        };
         /** ValidationError */
         ValidationError: {
             /** Context */
@@ -782,6 +1230,21 @@ export interface components {
             revision_id: string;
             /** Views */
             views: components["schemas"]["PluginViewDescriptor"][];
+        };
+        /** WindowSegmentWire */
+        WindowSegmentWire: {
+            /** Characters */
+            characters: number;
+            /** Reasoning Characters */
+            reasoning_characters: number;
+            /** Role */
+            role: string;
+            /** Sha256 */
+            sha256: string;
+            /** Tool Calls */
+            tool_calls: number;
+            /** Tool Name */
+            tool_name: string | null;
         };
     };
     responses: never;
@@ -862,7 +1325,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json; charset=utf-8": components["schemas"]["HealthBody"];
+                    "application/json; charset=utf-8": components["schemas"]["HealthStatus"];
                 };
             };
             /** @description Invalid request */
@@ -987,7 +1450,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json; charset=utf-8": components["schemas"]["SessionRecord"];
+                    "application/json; charset=utf-8": components["schemas"]["SessionRow"];
                 };
             };
             /** @description Invalid request */
@@ -1053,7 +1516,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json; charset=utf-8": components["schemas"]["SessionRecord"];
+                    "application/json; charset=utf-8": components["schemas"]["SessionRow"];
                 };
             };
             /** @description Invalid request */
@@ -1190,6 +1653,74 @@ export interface operations {
                 };
                 content: {
                     "application/json; charset=utf-8": components["schemas"]["CommandResult"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    _handle_context_api_sessions__session_id__context_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ContextHistoryWire"];
                 };
             };
             /** @description Invalid request */
@@ -1469,7 +2000,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json; charset=utf-8": components["schemas"]["CoreResult"];
+                    "application/json; charset=utf-8": components["schemas"]["RunResult"];
                 };
             };
             /** @description Invalid request */
@@ -1539,7 +2070,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json; charset=utf-8": components["schemas"]["CoreResult"];
+                    "application/json; charset=utf-8": components["schemas"]["RunResult"];
                 };
             };
             /** @description Invalid request */
@@ -1608,6 +2139,75 @@ export interface operations {
                 };
                 content: {
                     "application/json; charset=utf-8": components["schemas"]["ShowBody"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    _handle_transcript_api_sessions__session_id__transcript_get: {
+        parameters: {
+            query?: {
+                after_sequence?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["TranscriptPageWire"];
                 };
             };
             /** @description Invalid request */

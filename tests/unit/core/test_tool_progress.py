@@ -13,6 +13,7 @@ import uvicorn
 
 from tests.fixtures.s5_plugin import PLUGIN_ID, PROBE_TOOL
 from tests.unit.core.test_nested_tools import _call, _configure, _server, _turn
+from voidcode.sdk.client import EventFrame, HeadFrame, RunResult, RunSpec, StreamEvent
 from voidcode.transport.http import create_core_app
 from voidcode.tui.client import CoreHttpClient
 
@@ -38,8 +39,8 @@ def test_live_tool_progress_uses_existing_session_sse_stream(tmp_path: Path) -> 
         assert server.started
         client = CoreHttpClient(f"http://127.0.0.1:{port}", token="progress-token")
         client.create_session("progress-session")
-        reports: list[dict[str, object]] = []
-        results: list[dict[str, object]] = []
+        reports: list[StreamEvent] = []
+        results: list[RunResult] = []
         failures: list[BaseException] = []
         observed = threading.Event()
 
@@ -47,9 +48,14 @@ def test_live_tool_progress_uses_existing_session_sse_stream(tmp_path: Path) -> 
             async def _consume() -> None:
                 async with aclosing(client.events_stream("progress-session", follow=True)) as frames:
                     async for frame in frames:
-                        events = [frame["event"]] if frame.get("kind") == "event" else frame.get("events", [])
+                        if isinstance(frame, EventFrame):
+                            events = [frame.event]
+                        elif isinstance(frame, HeadFrame):
+                            events = list(frame.events)
+                        else:
+                            events = []
                         for event in events:
-                            if event.get("type") == "core.tool_progress":
+                            if event.type == "core.tool_progress":
                                 reports.append(event)
                                 observed.set()
                                 return
@@ -62,7 +68,7 @@ def test_live_tool_progress_uses_existing_session_sse_stream(tmp_path: Path) -> 
 
         def run() -> None:
             try:
-                results.append(client.run("progress-session", "Report progress while waiting."))
+                results.append(client.run("progress-session", RunSpec("Report progress while waiting.")))
             except BaseException as exc:
                 failures.append(exc)
 
@@ -77,19 +83,19 @@ def test_live_tool_progress_uses_existing_session_sse_stream(tmp_path: Path) -> 
             assert not results
             assert len(reports) == 1
             event = reports[0]
-            assert event["session_id"] == "progress-session"
-            assert event["source"] == f"plugin.{PLUGIN_ID}"
-            assert event["payload"]["owner"] == PLUGIN_ID
-            assert event["payload"]["progress"] == {"stream": "stdout", "text": "ready"}
-            assert event["payload"]["invocation_id"]
-            assert event["run_id"] == event["payload"]["run_id"]
+            assert event.session_id == "progress-session"
+            assert event.source == f"plugin.{PLUGIN_ID}"
+            assert event.payload["owner"] == PLUGIN_ID
+            assert dict(event.payload["progress"]) == {"stream": "stdout", "text": "ready"}  # type: ignore[arg-type]
+            assert event.payload["invocation_id"]
+            assert event.run_id == event.payload["run_id"]
             (workspace / "release").touch()
             run_worker.join(timeout=10)
             stream_worker.join(timeout=5)
             assert not run_worker.is_alive() and not stream_worker.is_alive()
             assert not failures
-            assert results[0]["status"] == "completed"
-            assert results[0]["output"] == "complete"
+            assert results[0].status == "completed"
+            assert results[0].output == "complete"
         finally:
             (workspace / "release").touch()
             run_worker.join(timeout=10)

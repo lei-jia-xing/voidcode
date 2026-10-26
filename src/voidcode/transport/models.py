@@ -1,12 +1,10 @@
 """HTTP-owned wire models for the core transport.
 
-Request bodies validate at ingress (extra=forbid). Responses reuse the SDK and
-storage dataclasses directly as ``response_model`` documentation — including the
-``CommandCatalog``/``ViewsSnapshot`` envelopes, which are SDK-owned — and
-handlers return their own ``Response`` built from ``as_payload()``, so FastAPI
-never re-serializes ``MappingProxy`` payloads. Only list envelopes, the
-``core.show`` dict shape (which has no SDK dataclass), and the error
-envelope live here — no second copy of SDK DTOs.
+Request bodies validate at ingress (extra=forbid). Responses reuse SDK-owned
+types directly as ``response_model`` documentation; handlers return their own
+``Response`` built from ``as_payload()``, so FastAPI never re-serializes
+``MappingProxy`` payloads. Only list envelopes and the ``core.show`` dict shape
+(which has no SDK dataclass) live here — no second copy of SDK DTOs.
 """
 
 from __future__ import annotations
@@ -15,7 +13,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from voidcode.core.storage.store import SessionRecord
+from voidcode.sdk.client import SessionRow
 from voidcode.sdk.services import ContinuationResult
 
 
@@ -57,23 +55,8 @@ class DrainRequest(CoreHttpModel):
     limit: int = Field(default=10, ge=1, le=100)
 
 
-class HealthBody(CoreHttpModel):
-    """Core health and identity: the stable surface clients poll."""
-
-    status: str
-    stage: str
-    pid: int
-    workspace: str
-    revision_id: str
-    launch_protocol: int
-    core_version: str
-    web_bundle: str | None
-    generation: int
-    active_upgrade: dict[str, Any] | None
-
-
 class SessionsBody(CoreHttpModel):
-    sessions: list[SessionRecord]
+    sessions: list[SessionRow]
 
 
 class ContinuationsBody(CoreHttpModel):
@@ -105,8 +88,3 @@ class ShowBody(CoreHttpModel):
     last_event_sequence: int
     checkpoint: CheckpointBody | None
     events: list[StoredEventBody] | None = None
-
-
-class ErrorBody(CoreHttpModel):
-    error: str
-    code: str | None = None

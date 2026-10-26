@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from importlib.metadata import version
 from pathlib import Path
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 from uuid import uuid4
 
 from .config import (
@@ -40,6 +40,9 @@ from .core.storage.store import (
     inspect_existing_workspace,
 )
 from .sdk.json_values import json_wire_object
+
+if TYPE_CHECKING:
+    from .sdk.client import SessionClient
 
 PRIVATE_SNAPSHOT_VERSION = 2
 
@@ -320,6 +323,40 @@ def open_core(
         admission=admission,
         admits=admit_callback,
     )
+
+
+@contextmanager
+def open_session_client(
+    *,
+    workspace: Path | None = None,
+    state_dir: Path | None = None,
+    server_url: str | None = None,
+    token: str | None = None,
+) -> Iterator[SessionClient]:
+    """Open one typed session client: local owned core or remote HTTP.
+
+    Exactly one of ``workspace`` (local arm, owns its ``Core``) or
+    ``server_url`` (remote arm) is required. Closing the context closes the
+    client, and the local arm's core with it.
+    """
+    from .tui.client import CoreHttpClient
+    from .tui.local_client import CoreLocalClient
+
+    if (workspace is None) == (server_url is None):
+        raise ValueError("open_session_client needs exactly one of workspace or server_url")
+    if workspace is not None:
+        core = open_core(workspace, state_dir=state_dir)
+        try:
+            yield CoreLocalClient(core, workspace=core.workspace)
+        finally:
+            core.close()
+    else:
+        assert server_url is not None
+        client = CoreHttpClient(server_url, token=token)
+        try:
+            yield client
+        finally:
+            client.close()
 
 
 def adopt_generation(*, workspace: Path, state_dir: Path, session_id: str | None) -> dict[str, object]:
