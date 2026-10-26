@@ -991,11 +991,90 @@ def test_rows_carry_no_hardcoded_colors() -> None:
     app._stream_ready = True
     rows: list[str] = []
     app._handle_single_event(_event(1, "core.user_message", content="hi"), rows)
-    app._handle_single_event(_event(2, "core.model_turn", result={"output": "hello"}), rows)
+    app._handle_single_event(_event(2, "core.model_turn", result={"output": "hello", "reasoning": "why"}), rows)
     app._handle_single_event(_event(3, "core.run_failed", error="boom"), rows)
     # color_system=None strips every SGR code: a hardcoded escape would survive the strip.
     assert not any("\x1b" in row for row in rows), rows
     plain = [re.sub(r"\x1b\[[0-9;]*m", "", row) for row in rows]
     assert any("User>" in row for row in plain)
-    assert any("Assistant>" in row for row in plain)
+    assert any("hello" in row for row in plain)
+    assert any("Reasoning>" in row for row in plain)
     assert any("Run failed" in row for row in plain)
+
+
+def test_model_turn_renders_markdown_and_structured_tool_rows() -> None:
+    import re
+
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    terminal = _StubTerminal()
+    app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
+    rows: list[str] = []
+    app._handle_single_event(
+        _event(
+            1,
+            "core.model_turn",
+            result={
+                "output": "# Title\n\nSome **bold** text",
+                "tool_calls": [{"tool_name": "read", "arguments": {"path": "a.txt"}}],
+            },
+        ),
+        rows,
+    )
+    app._handle_single_event(
+        _event(
+            2,
+            "core.tool_completed",
+            call={"tool_name": "read"},
+            result={
+                "tool_name": "read",
+                "status": "ok",
+                "output": {"type": "text", "text": "file body", "bounds": {"truncated": True, "source": "read:42"}},
+            },
+        ),
+        rows,
+    )
+    plain = [re.sub(r"\x1b\[[0-9;]*m", "", row) for row in rows]
+    text = "\n".join(plain)
+    assert "Title" in text and "bold" in text
+    assert any("> Tool call read" in row for row in plain)
+    assert any('"path"' in row for row in plain)
+    assert any("[ok] Tool read" in row for row in plain)
+    assert any("file body" in row for row in plain)
+    assert any("truncated" in row for row in plain)
+
+
+def test_tool_result_prefers_presentation_and_flags_failure() -> None:
+    import re
+
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    terminal = _StubTerminal()
+    app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
+    rows: list[str] = []
+    app._handle_single_event(
+        _event(
+            1,
+            "core.tool_completed",
+            call={"tool_name": "exec"},
+            result={"tool_name": "exec", "status": "error", "error": "exit 1", "output": {"type": "text", "text": "raw"}},
+        ),
+        rows,
+    )
+    app._handle_single_event(
+        _event(
+            2,
+            "core.tool_completed",
+            call={"tool_name": "read"},
+            result={
+                "tool_name": "read",
+                "status": "ok",
+                "output": {"type": "text", "text": "raw bytes", "presentation": "Image read successfully"},
+            },
+        ),
+        rows,
+    )
+    plain = [re.sub(r"\x1b\[[0-9;]*m", "", row) for row in rows]
+    text = "\n".join(plain)
+    assert "[failed] Tool exec" in text and "exit 1" in text
+    assert "Image read successfully" in text and "raw bytes" not in text

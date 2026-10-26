@@ -24,7 +24,10 @@ from .views import (
     InteractiveChoices,
     InteractiveConfirmation,
     InteractiveForm,
+    render_assistant_markdown,
     render_plugin_view,
+    render_tool_call,
+    render_tool_result,
 )
 
 logger = logging.getLogger(__name__)
@@ -68,19 +71,6 @@ def _prefixed_rows(prefix: str, text: str, theme: Theme, *, token: str) -> list[
         head = label if index == 0 else " " * len(prefix) + " "
         rows.append(f"{head}{line}")
     return rows or [label]
-
-
-def _tool_output_text(result: dict[str, Any]) -> str:
-    """The durable tool result's display text (canonical ``result.output`` shape)."""
-    output = result.get("output")
-    if isinstance(output, dict):
-        output_type = str(output.get("type", ""))
-        if output_type == "text":
-            return _safe(output.get("text"))
-        if output_type == "attachment":
-            mime = _safe(output.get("mime") or "attachment")
-            return f"[{mime}]"
-    return ""
 
 
 def _command_result_text(result: Mapping[str, Any]) -> str:
@@ -505,7 +495,7 @@ class CoreTuiApp:
             turn: dict[str, Any] = raw_turn if isinstance(raw_turn, dict) else {}
             output = turn.get("output")
             if isinstance(output, str) and output:
-                rows.extend(_prefixed_rows("Assistant>", output, self.theme, token="success"))
+                rows.extend(render_assistant_markdown(output, self.terminal.width, self.theme))
             reasoning = turn.get("reasoning")
             if isinstance(reasoning, str) and reasoning:
                 rows.extend(_prefixed_rows("Reasoning>", reasoning, self.theme, token="thinkingText"))
@@ -515,21 +505,14 @@ class CoreTuiApp:
                     if not isinstance(call, dict):
                         continue
                     name = _safe(call.get("tool_name") or "tool")
-                    arguments = json.dumps(json_safe(call.get("arguments")), ensure_ascii=False, allow_nan=False)
-                    rows.append(f"{self.theme.fg('warning', f'> Tool call {name}')} {_safe(arguments)}")
+                    rows.extend(render_tool_call(name, json_safe(call.get("arguments")), self.terminal.width, self.theme))
         elif etype in (EventType.TOOL_COMPLETED, EventType.TOOL_INTERRUPTED):
             raw_call = payload.get("call")
             call: dict[str, Any] = raw_call if isinstance(raw_call, dict) else {}
             raw_result = payload.get("result")
             result: dict[str, Any] = raw_result if isinstance(raw_result, dict) else {}
             name = _safe(result.get("tool_name") or "unknown")
-            failed = etype == EventType.TOOL_INTERRUPTED or result.get("status") == "error"
-            body = _tool_output_text(result)
-            if failed:
-                error = _safe(result.get("error") or body or "interrupted")
-                rows.append(f"{self.theme.fg('error', f'[error] Tool {name} failed:')} {error}")
-            else:
-                rows.append(f"{self.theme.fg('success', f'[ok] Tool {name}:')} {body}")
+            rows.extend(render_tool_result(name, result, self.terminal.width, self.theme, interrupted=etype == EventType.TOOL_INTERRUPTED))
         elif etype == EventType.COMMAND_COMPLETED:
             raw_command_result = payload.get("result")
             command_result: dict[str, Any] = raw_command_result if isinstance(raw_command_result, dict) else {}

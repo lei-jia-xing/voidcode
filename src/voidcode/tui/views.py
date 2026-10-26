@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import json
 import math
 import re
 from collections.abc import Mapping
@@ -10,6 +11,7 @@ from typing import Any
 
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
@@ -59,6 +61,85 @@ def render_notice(data: Mapping[str, Any], width: int, theme: Theme | None = Non
     token, prefix = style_map.get(level, ("accent", "[info]"))
     content = Text.assemble((f"{prefix}: ", resolved.style(token, bold=True)), (message, resolved.style("text")))
     return render_lines(content, width, theme=resolved.rich_theme(), color_system=resolved.color_system)
+
+
+def render_assistant_markdown(text: str, width: int, theme: Theme | None = None) -> list[str]:
+    """Assistant prose through the same markdown path as plugin views.
+
+    One shared renderer for both so assistant output and plugin markdown can
+    never drift apart in styling or control-byte handling.
+    """
+    return render_markdown({"content": text}, width, theme)
+
+
+def render_tool_call(name: str, arguments: object, width: int, theme: Theme | None = None) -> list[str]:
+    """One tool-call header plus its pretty JSON arguments, never one raw line."""
+    resolved = _theme_arg(theme)
+    pretty = json.dumps(arguments, indent=2, ensure_ascii=False, default=str)
+    icon = resolved.tool_icon(name)
+    header = Text.assemble(
+        ((f"{icon} " if icon else ""), resolved.style("warning")),
+        (f"> Tool call {name}", resolved.style("warning", bold=True)),
+    )
+    rows = render_lines(header, width, theme=resolved.rich_theme(), color_system=resolved.color_system)
+    if pretty and pretty != "{}":
+        syntax = Syntax(
+            escape_terminal_controls(pretty, preserve_newlines=True, preserve_tabs=True),
+            "json",
+            theme=resolved.syntax_theme(),
+            word_wrap=True,
+        )
+        rows.extend(render_lines(syntax, width, theme=resolved.rich_theme(), color_system=resolved.color_system))
+    return rows
+
+
+def render_tool_result(
+    name: str,
+    result: Mapping[str, Any],
+    width: int,
+    theme: Theme | None = None,
+    *,
+    interrupted: bool = False,
+) -> list[str]:
+    """One tool-result block: themed header, then text or a bounds note."""
+    resolved = _theme_arg(theme)
+    failed = interrupted or result.get("status") == "error"
+    token = "error" if failed else "success"
+    verb = "failed" if failed else "ok"
+    header = Text.assemble((f"[{verb}] Tool {name}", resolved.style(token, bold=True)))
+    rows = render_lines(header, width, theme=resolved.rich_theme(), color_system=resolved.color_system)
+    output = result.get("output")
+    body = ""
+    suffix = ""
+    if isinstance(output, Mapping):
+        output_type = str(output.get("type", ""))
+        if output_type == "text":
+            presentation = output.get("presentation")
+            body = str(presentation) if isinstance(presentation, str) and presentation else str(output.get("text", ""))
+        elif output_type == "attachment":
+            body = f"[{output.get('mime') or 'attachment'}]"
+        bounds = output.get("bounds")
+        if isinstance(bounds, Mapping):
+            flags = [key for key in ("truncated", "partial") if bounds.get(key) is True]
+            source = bounds.get("source")
+            note = ", ".join([*flags, str(source)] if isinstance(source, str) and source else flags)
+            if note:
+                suffix = f"[{note}]"
+    if failed:
+        error = result.get("error")
+        rows.append(resolved.fg("error", escape_terminal_controls(str(error or body or "interrupted"))))
+    elif body:
+        rows.extend(
+            render_lines(
+                Text(escape_terminal_controls(body, preserve_newlines=True, preserve_tabs=True), style=resolved.style("text")),
+                width,
+                theme=resolved.rich_theme(),
+                color_system=resolved.color_system,
+            )
+        )
+    if suffix:
+        rows.append(resolved.fg("dim", suffix))
+    return rows
 
 
 def render_markdown(data: Mapping[str, Any], width: int, theme: Theme | None = None) -> list[str]:
