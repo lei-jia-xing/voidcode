@@ -2911,3 +2911,21 @@ Validation: 69 existing renderer/file tests passed on both the isolated baseline
 and the current service-based workspace; two missing/malformed payload probes
 with hidden markers rendered neither reasoning nor metadata. Targeted Ruff/ty
 passed; CodeGraph synchronized. No tests added.
+
+### Archive metadata enumeration: cooperative cancellation
+
+ZIP/TAR member enumeration now checks the invocation abort signal between
+members. TAR normalizes directly into the bounded result list instead of first
+materializing a second TarInfo list with islice. The read entrypoint converts
+enumeration cancellation into the same confirmed-stop failure as artifact
+reads; context managers close archive handles. Member count and byte bounds,
+exact selected-member identity and format restrictions are unchanged.
+
+Cancellation remains cooperative: stdlib ZIP central-directory loading and a
+single compressed TAR advance/read are not preempted mid-call. No worker, timer
+or persistent archive index was introduced.
+
+Validation: 90 existing file/artifact/format tests passed. Real ZIP/TAR probes
+stopped at the third enumeration check; a read-tool probe returned a confirmed
+cancellation failure. Ruff/format and targeted ty passed; CodeGraph synchronized.
+No tests added.

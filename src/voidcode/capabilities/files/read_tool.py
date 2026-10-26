@@ -18,7 +18,7 @@ from collections.abc import Callable, Mapping
 from concurrent.futures import CancelledError
 from dataclasses import dataclass
 from io import TextIOWrapper
-from itertools import islice, takewhile
+from itertools import takewhile
 from pathlib import Path
 from typing import IO, ClassVar, Literal, cast, final
 from urllib.parse import parse_qs
@@ -1161,18 +1161,27 @@ def _split_archive_path(path: str) -> tuple[str, str, str] | None:
     return path[: index + len(suffix)], inner[1:] if inner.startswith(":") else inner, family
 
 
-def _zip_members(archive: zipfile.ZipFile) -> list[tuple[str, int, bool]]:
+def _zip_members(archive: zipfile.ZipFile, *, cancelled: Callable[[], bool]) -> list[tuple[str, int, bool]]:
     members = archive.infolist()
     if len(members) > MAX_ARCHIVE_MEMBERS:
         raise ValueError(f"archive exceeds the maximum supported member count ({MAX_ARCHIVE_MEMBERS})")
-    return [(_normalize_member_path(info.filename), info.file_size, info.is_dir()) for info in members]
+    result: list[tuple[str, int, bool]] = []
+    for info in members:
+        if cancelled():
+            raise CancelledError("read cancelled")
+        result.append((_normalize_member_path(info.filename), info.file_size, info.is_dir()))
+    return result
 
 
-def _tar_members(archive: tarfile.TarFile) -> list[tuple[str, int, bool]]:
-    members = list(islice(archive, MAX_ARCHIVE_MEMBERS + 1))
-    if len(members) > MAX_ARCHIVE_MEMBERS:
-        raise ValueError(f"archive exceeds the maximum supported member count ({MAX_ARCHIVE_MEMBERS})")
-    return [(_normalize_member_path(member.name), member.size, member.isdir()) for member in members]
+def _tar_members(archive: tarfile.TarFile, *, cancelled: Callable[[], bool]) -> list[tuple[str, int, bool]]:
+    result: list[tuple[str, int, bool]] = []
+    for member in archive:
+        if cancelled():
+            raise CancelledError("read cancelled")
+        if len(result) >= MAX_ARCHIVE_MEMBERS:
+            raise ValueError(f"archive exceeds the maximum supported member count ({MAX_ARCHIVE_MEMBERS})")
+        result.append((_normalize_member_path(member.name), member.size, member.isdir()))
+    return result
 
 
 def _archive_member_bytes(handle: IO[bytes], normalized: str) -> bytes:
@@ -1287,12 +1296,14 @@ def _render_archive_lines(text: str, *, label: str, offset: int, limit: int, ser
     )
 
 
-def _render_archive(archive_path: Path, inner: str, *, family: str, label: str, offset: int, limit: int, services: PluginServices) -> _ReadOutcome:
+def _render_archive(
+    archive_path: Path, inner: str, *, family: str, label: str, offset: int, limit: int, services: PluginServices, cancelled: Callable[[], bool]
+) -> _ReadOutcome:
     if family == "zip":
         try:
             with zipfile.ZipFile(archive_path) as zip_archive:
                 return _render_archive_members(
-                    _zip_members(zip_archive),
+                    _zip_members(zip_archive, cancelled=cancelled),
                     reader=lambda normalized: _zip_member_bytes(zip_archive, normalized),
                     inner=inner,
                     label=label,
@@ -1305,7 +1316,7 @@ def _render_archive(archive_path: Path, inner: str, *, family: str, label: str, 
     try:
         with tarfile.TarFile.open(archive_path) as tar_archive:
             return _render_archive_members(
-                _tar_members(tar_archive),
+                _tar_members(tar_archive, cancelled=cancelled),
                 reader=lambda normalized: _tar_member_bytes(tar_archive, normalized),
                 inner=inner,
                 label=label,
@@ -1652,8 +1663,8 @@ class ReadTool:
             resolved_archive = (requested_archive if requested_archive.is_absolute() else workspace_root / requested_archive).resolve()
             if not resolved_archive.is_file():
                 raise ValueError(f"read target does not exist: {archive_path}")
-            return _read_success(
-                _render_archive(
+            try:
+                outcome = _render_archive(
                     resolved_archive,
                     inner,
                     family=family,
@@ -1661,8 +1672,11 @@ class ReadTool:
                     offset=offset,
                     limit=limit,
                     services=services,
+                    cancelled=lambda: context.abort_signal is not None and context.abort_signal.cancelled,
                 )
-            )
+            except CancelledError:
+                return ToolFailure(self.definition.name, error="read cancelled", execution=ConfirmedStop(cancellation_signalled=True))
+            return _read_success(outcome)
 
         if args.view != "raw" and args.path.lower().endswith(UNSUPPORTED_ARCHIVE_SUFFIXES):
             suffix = Path(args.path).suffix.lower() or args.path
