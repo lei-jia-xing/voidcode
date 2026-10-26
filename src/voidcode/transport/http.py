@@ -57,7 +57,12 @@ LAUNCH_PROTOCOL_VERSION = 1
 
 logger = logging.getLogger(__name__)
 
-_FOLLOW_POLL_SECONDS = 1.0
+#: Follow cadence for live event streams. Measured 2026-10-26: at 1.0 s a
+#: committed progress event waited 0.1-0.9 s (mean ~0.5 s) before delivery,
+#: which makes token streaming feel dead. 0.1 s bounds that wait at ~50 ms
+#: mean for one cheap indexed tail read per idle stream — no wake-up channel
+#: needed until stream counts grow.
+_FOLLOW_POLL_SECONDS = 0.1
 _FOLLOW_TAIL_LIMIT = 100
 _JSON_MEDIA_TYPE = "application/json; charset=utf-8"
 
