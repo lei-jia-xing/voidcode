@@ -86,7 +86,6 @@ class HelloGetCommand:
                 "action_done": action_done,
                 "last_observed": last_obs,
                 "version": ver,
-                "schema_version": services.get_state_schema_version("session"),
                 "observed_owner": (st or {{}}).get("last_owner", ""),
                 "observed_effects": (st or {{}}).get("last_effects", []),
             }},
@@ -328,8 +327,6 @@ def test_p2a_hello_state_with_context_and_persistence(tmp_path: Path) -> None:
         assert get_res0.data is not None
         assert get_res0.data["greeting"] == "none"
         assert get_res0.data["version"] == 0
-        # No row yet: the accessor reports the absence, not a fabricated version.
-        assert get_res0.data["schema_version"] == 0
 
         # 2. Invoke hello_set command
         set_res = core.invoke_command("sess-p2a-main", "hello_set", {"greeting": "awesome"}, expected_revision=core.command_catalog().revision_id)
@@ -341,8 +338,6 @@ def test_p2a_hello_state_with_context_and_persistence(tmp_path: Path) -> None:
         assert get_res1.data is not None
         assert get_res1.data["greeting"] == "awesome"
         assert get_res1.data["version"] == 1
-        # The stored row carries this plugin's declared state schema version.
-        assert get_res1.data["schema_version"] == 1
 
         # 4. Plugin views render from durable state
         views = core.plugin_views("sess-p2a-main").views

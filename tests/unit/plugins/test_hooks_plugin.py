@@ -28,9 +28,6 @@ class _NoServices(PluginServices):
     def get_state(self, scope: Literal["session", "workspace"] = "session"):  # type: ignore[no-untyped-def]
         raise AssertionError("hooks reads no state")
 
-    def get_state_schema_version(self, scope: Literal["session", "workspace"] = "session") -> int:
-        raise AssertionError("hooks reads no state")
-
     def replace_state(self, state, expected_version, scope: Literal["session", "workspace"] = "session"):  # type: ignore[no-untyped-def]
         raise AssertionError("hooks writes no state")
 

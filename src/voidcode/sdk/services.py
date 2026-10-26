@@ -394,10 +394,6 @@ class PluginServices(Protocol):
         """Fetch current state and version for the bound owner in the given scope."""
         ...
 
-    def get_state_schema_version(self, scope: Literal["session", "workspace"] = "session") -> int:
-        """Declared state schema version of the bound owner's current row (0 when it has none)."""
-        ...
-
     def replace_state(
         self,
         state: Mapping[str, object],
@@ -504,10 +500,6 @@ class PluginServices(Protocol):
 
     def window_projection(self) -> Mapping[str, object] | None:
         """The session's current verified projection (coverage, replacement, measured accounting)."""
-        ...
-
-    def clear_window_projection(self) -> bool:
-        """Drop this session's projection, making the raw window visible again."""
         ...
 
     def set_overlay(self, tier: Literal["read-only"] = "read-only") -> None:

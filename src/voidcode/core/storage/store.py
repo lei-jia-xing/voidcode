@@ -833,13 +833,6 @@ class SqliteStore:
             created_at=int(row[7]),
         )
 
-    def clear_window_projection(self, session_id: str) -> bool:
-        """Drop a projection when its owner is deactivated: the raw window becomes visible again."""
-        with self._lock:
-            self._check_open()
-            cursor = self._connection.execute("DELETE FROM window_projections WHERE session_id = ?", (session_id,))
-            return cursor.rowcount > 0
-
     def claim_and_start_wakeup(
         self,
         workspace: str,
@@ -2477,23 +2470,6 @@ class SqliteStore:
         with self._lock:
             self._check_open()
             return tuple(self._activation_blockers_locked(workspace, acting_session_id, exclude_claimed_in_session=False))
-
-    def plugin_state_meta(self, owner: str, scope: str, scope_key: str) -> tuple[Mapping[str, object] | None, int, int]:
-        """Owner state with its optimistic version AND its declared schema version (0 when absent)."""
-        with self._lock:
-            self._check_open()
-            cursor = self._connection.execute(
-                """
-                SELECT payload_json, version, schema_version
-                FROM plugin_state
-                WHERE scope = ? AND scope_key = ? AND owner = ?
-                """,
-                (scope, scope_key, owner),
-            )
-            row = cursor.fetchone()
-            if row is None:
-                return (None, 0, 0)
-            return (own_json_object(json.loads(row[0])), int(row[1]), int(row[2]))
 
     def plugin_state(self, owner: str, scope: str, scope_key: str) -> tuple[Mapping[str, object] | None, int]:
         """Fetch current plugin state and version for the given owner, scope, and scope_key."""

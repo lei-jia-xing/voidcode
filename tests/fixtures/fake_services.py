@@ -63,7 +63,6 @@ class FakeServices(PluginServices):
 
     facts: list[object] = field(default_factory=list)
     through_sequence: int = 0
-    schema_version: int = 0
     cancelled_continuations: list[str | None] = field(default_factory=list)
 
     budget: PluginBudget | None = None
@@ -178,10 +177,6 @@ class FakeServices(PluginServices):
     ) -> None:
         key = (self.session_id, owner or self.owner, scope)
         self.states[key] = (version, dict(payload) if payload else {})
-
-    def get_state_schema_version(self, scope: Literal["session", "workspace"] = "session") -> int:
-        _ = scope
-        return self.schema_version
 
     # --- Event staging ---
 
@@ -407,11 +402,6 @@ class FakeServices(PluginServices):
 
     def window_projection(self) -> Mapping[str, object] | None:
         return self.row
-
-    def clear_window_projection(self) -> bool:
-        had = self.row is not None
-        self.row = None
-        return had
 
     # --- Overlays ---
 

@@ -81,7 +81,6 @@ class RuntimeServices:
     _HOOK_METHODS: frozenset[str] = frozenset(
         {
             "get_state",
-            "get_state_schema_version",
             "read_events",
             "read_facts",
             "read_transcript",
@@ -305,13 +304,6 @@ class RuntimeServices:
             return (own_json_object(st) if isinstance(st, Mapping) else None, ver)
         st, ver = self._runtime.require_store().plugin_state(lease.owner, scope, key)
         return (own_json_object(st) if isinstance(st, Mapping) else None, ver)
-
-    def get_state_schema_version(self, scope: Literal["session", "workspace"] = "session") -> int:
-        lease = self._active_lease()
-        _payload, _version, stored_schema = self._runtime.require_store().plugin_state_meta(lease.owner, scope, self._scope_key(scope))
-        # The stored row's schema version only: 0 means "nothing stored yet", which is
-        # unambiguous for an owner deciding whether it must migrate its own state.
-        return stored_schema
 
     def replace_state(
         self,
@@ -596,13 +588,6 @@ class RuntimeServices:
                 return dict(event.payload)
         record = self._runtime.require_store().window_projection(lease.session_id)
         return None if record is None else asdict(record)
-
-    def clear_window_projection(self) -> bool:
-        lease = self._active_lease()
-        self._check_hook("clear_window_projection")
-        if lease.internal_restricted:
-            raise PermissionError("Cannot clear a session window projection from a read-only service lease")
-        return self._runtime.require_store().clear_window_projection(lease.session_id)
 
     def set_overlay(self, tier: Literal["read-only"] = "read-only") -> None:
         lease = self._active_lease()
