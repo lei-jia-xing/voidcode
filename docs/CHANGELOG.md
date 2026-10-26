@@ -9,6 +9,9 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 - Observational `core.provider_progress` events (dispatch-correlated text fragments) flow through the existing control-event/SSE path ahead of the committed `core.model_turn`.
 - SSE follow poll tightened 1.0s -> 0.1s (measured 2026-10-26: commit-to-delivery 0.1-0.9s down to 0.007-0.09s).
 - The TUI renders the in-flight token buffer as partial markdown in the live region with a theme spinner, settling to committed markdown on `core.model_turn`; the statusline shows spinner + run state.
+- Tab completes `/-command` names from the catalog plus `/tui` controls: a single match completes inline, multiple matches open a chrome popup above the composer (Tab cycles, Enter accepts, Esc cancels).
+- The statusline is segmented: short session id, run-state with spinner, theme name, plus the current notice.
+- The spinner advances once per frame while a run is active and stays static when idle, reusing the existing run-active tracking.
 
 ### SDK strengthening (BREAKING)
 - `voidcode.sdk` now exports the full unified surface (141 names with `__all__`): `Plugin`, `StateSchema`, `PluginQuery`/`PluginQueryCaller`, tools, providers, commands, `PluginServices` + value types, views, hooks/facts, `ToolContext`, codec, `json_values`, `limits`, and history/transcript types. Submodule paths keep working; no circular imports; the SDK direction guard stays green.
