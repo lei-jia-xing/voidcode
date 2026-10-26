@@ -4,6 +4,11 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### SDK strengthening (BREAKING)
+- `voidcode.sdk` now exports the full unified surface (141 names with `__all__`): `Plugin`, `StateSchema`, `PluginQuery`/`PluginQueryCaller`, tools, providers, commands, `PluginServices` + value types, views, hooks/facts, `ToolContext`, codec, `json_values`, `limits`, and history/transcript types. Submodule paths keep working; no circular imports; the SDK direction guard stays green.
+- `PluginServices.get_state_schema_version` and `clear_window_projection` are deleted (zero in-repo consumers; test-only references migrated). The orphaned `store.plugin_state_meta` and `store.clear_window_projection` go with them. All other 40 protocol members keep at least one caller in `capabilities/**` or `plugins/**`.
+- `QueryContractError` moves from `voidcode.sdk.queries` into `voidcode.sdk.services` beside `QueryUnavailable` and the `query()` transport; `sdk/queries.py` is deleted. The Unavailable-vs-ContractError distinction is documented once on the error: `QueryUnavailable` = no admitted provider (take the optional path), `None` = provider knows no matching resource, `QueryContractError` = malformed answer, a provider bug. Import sites in `workspace_queries`, `read_tool`, and `apply_workspace_edit` are migrated.
+
 ### Runtime-owned provider retry (tenacity)
 - `PluginRuntime.propose_turn` now retries adapter-approved transient failures in-process: an explicit `retryable is True`, or a `rate_limit` the adapter left undecided. Structured `retry_after` is honored (over-long waits refuse the retry); otherwise a jittered exponential backoff. Bounded at 4 attempts; backoff polls the run's abort signal and raises `cancelled` on it. Each call carries its 1-based `request.attempt`.
 - New dependency `tenacity>=9.1.4` (already in the lockfile via `google-genai`).
