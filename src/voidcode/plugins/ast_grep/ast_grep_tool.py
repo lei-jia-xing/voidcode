@@ -123,7 +123,7 @@ def _match_result_output(
 ) -> tuple[TextOutput, dict[str, object]]:
     if artifact is None:
         reference = services.spill_artifact(native_jsonl, media_type="text/x-ndjson; charset=utf-8")
-        uri = f"voidcode://artifact/{reference.sha256}"
+        uri = f"artifact://{reference.sha256}"
         artifact = {
             "artifact_id": reference.sha256,
             "sha256": reference.sha256,
@@ -136,7 +136,7 @@ def _match_result_output(
             "source": "ast-grep:json-stream",
         }
     else:
-        uri = f"voidcode://artifact/{artifact['artifact_id']}"
+        uri = f"artifact://{artifact['artifact_id']}"
     return (
         TextOutput(
             f'Full native AST match JSONL: read(path="{uri}").\n{output}',
@@ -151,7 +151,7 @@ def _match_result_output(
 
 
 def _add_match_artifact(body: dict[str, Any], artifact: dict[str, object]) -> None:
-    uri = f"voidcode://artifact/{artifact['artifact_id']}"
+    uri = f"artifact://{artifact['artifact_id']}"
     body.update(body_artifact=artifact, artifacts=[artifact], response_reference=uri)
 
 

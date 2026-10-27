@@ -93,7 +93,7 @@ def _spill_artifact(
 ) -> dict[str, object]:
     """Spill a payload through the core artifact service and project its reference."""
     reference = services.spill_artifact(content, media_type=mime)
-    uri = f"voidcode://artifact/{reference.sha256}"
+    uri = f"artifact://{reference.sha256}"
     return {
         "artifact_id": reference.sha256,
         "sha256": reference.sha256,

@@ -267,7 +267,7 @@ class ToolResultFact:
         """The legacy one-line preview: identity, refs, then a clipped content/error excerpt."""
         parts = [self.tool_name, self.status]
         if self.artifact_id is not None:
-            parts.extend((f"artifact_id={self.artifact_id}", f"uri=voidcode://artifact/{self.artifact_id}"))
+            parts.extend((f"artifact_id={self.artifact_id}", f"uri=artifact://{self.artifact_id}"))
             if self.artifact_byte_count is not None:
                 parts.append(f"byte_count={self.artifact_byte_count}")
             if self.artifact_line_count is not None:

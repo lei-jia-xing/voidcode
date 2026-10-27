@@ -33,11 +33,13 @@ def model_result_text(result: ToolResult) -> tuple[str | None, bool]:
 
 
 def canonical_path(workspace: Path, path: str) -> str:
-    """Absolute, symlink-resolved form of ``path``, resolved against ``workspace`` when relative.
+    """Preserve a resource URI; resolve a filesystem path absolutely against ``workspace``.
 
     A tool declares paths in its own notation; every reader of this module must agree on one
     spelling, so the resolution rule lives here rather than in each caller.
     """
+    if "://" in path:
+        return path
     candidate = Path(path)
     if not candidate.is_absolute():
         candidate = Path(workspace) / candidate

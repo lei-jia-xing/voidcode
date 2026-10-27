@@ -141,7 +141,7 @@ Notable changes to the VoidCode runtime, grouped by milestone.
   the tool result that carried the outcome (a crash cannot lose or duplicate the notice). Startup
   recovery republishes a terminal child run whose parent fact a crash never committed, without
   rerunning the child, and delivers its notice.
-- `voidcode://transcript/<child>` and `task(operation="history")` render readable payloads
+- `transcript://<child>` and `task(operation="history")` render readable payloads
   (user, assistant with tool calls, tool results, child facts, progress, plugin events) instead of
   a payload-stripped skeleton. Pages are bounded by 40 KiB, split oversized blocks on UTF-8
   boundaries without clipping, and stay under the core's 256 KiB context bound; output pages
@@ -210,10 +210,10 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 - `serve` runs the supervisor (with `--session-id` attribution for a first adoption); the bare command without `--server` spawns a supervisor child and behaves like remote mode; ordinary one-shot commands execute inside the elected image. The single supported schema transition is 4 → 5 inside the adoption transaction; anything else refuses read-only, and `show` stays a config-free rescue read on either version.
 
 ### Tool contracts: derived views, document guards, managed language servers
-- `read` serves its `voidcode://` views end to end: `voidcode://tool/<name>` renders the active
+- `read` serves its resource URI views end to end: `tool://<name>` renders the active
   revision's dispatch definition with this session's scope/stance applied (plugin and reserved
-  core tools, no second catalog); `voidcode://transcript/<session>` composes a bounded,
-  payload-stripped page for the caller's own session or its own descendants; `voidcode://rule/`
+  core tools, no second catalog); `transcript://<session>` composes a bounded,
+  payload-stripped page for the caller's own session or its own descendants; `rule://`
   is answered by the skills plugin's rulebook semantics. URI failures return model-visible text.
 - `PluginServices` gains neutral `query`/`tool_definition`/`spawn_service_process` (plus typed
   `QueryUnavailable`); `Plugin` gains host-local read-only `queries`. Child-event reads are

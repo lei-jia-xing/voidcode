@@ -289,7 +289,7 @@ def test_shell_exec_preview_overflow_spills_the_full_stream(tmp_path: Path) -> N
     assert body.stdout_artifact.sha256 == hashlib.sha256(full.encode()).hexdigest()
     reference = result.output.bounds.reference
     assert reference is not None
-    assert reference.uri == f"voidcode://artifact/{body.stdout_artifact.sha256}"
+    assert reference.uri == f"artifact://{body.stdout_artifact.sha256}"
     assert result.output.text == f"Captured process output: {reference.uri}\n\n{body.stdout}"
 
 

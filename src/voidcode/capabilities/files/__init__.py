@@ -43,5 +43,5 @@ class _ModelVisibleTool:
 
 
 def create_tools() -> tuple[Tool, ...]:
-    """Fresh file tools shared by static core defaults and the optional adapter."""
+    """Create the file plugin's tools."""
     return tuple(_ModelVisibleTool(tool) for tool in (ReadTool(), WriteTool(), EditTool(), ApplyWorkspaceEditTool(), GlobTool(), GrepTool()))

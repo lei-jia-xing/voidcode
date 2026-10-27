@@ -119,8 +119,8 @@ class ChildOutcome:
     ``run_id`` identifies the logical turn this outcome belongs to; a follow-up run is a new
     ``run_id`` in the same child session, so a caller can never mistake an older terminal fact
     for the result of newer work. ``history_sha256`` names the immutable snapshot of the child's
-    readable history at that terminal point (``voidcode://artifact/<sha256>``); the live,
-    paged view stays ``voidcode://transcript/<child_session_id>``.
+    readable history at that terminal point (``artifact://<sha256>``); the live,
+    paged view stays ``transcript://<child_session_id>``.
     """
 
     child_session_id: str

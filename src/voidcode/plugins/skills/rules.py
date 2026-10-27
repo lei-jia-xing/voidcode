@@ -28,7 +28,7 @@ MAX_RULEBOOK_FILES = 64
 MAX_RULEBOOK_CONTENT_CHARS = 12_000
 MAX_RULEBOOK_METADATA_CHARS = 240
 MAX_RULEBOOK_PROMPT_CHARS = 12_000
-#: Rule URI prefix, shared verbatim with the files plugin's ``voidcode://rule/`` reader.
+#: Rule URI prefix, shared verbatim with the files plugin's ``rule://`` reader.
 
 _RULE_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 
@@ -379,7 +379,7 @@ def rulebook_prompt_context(catalog: RuleCatalog) -> str:
 
 
 def read_rule_page(workspace: Path | None, uri: str, *, offset: int = 1, limit: int = 2000) -> RulePage | None:
-    """Read one line page of the rulebook rule named by a ``voidcode://rule/<name>`` URI.
+    """Read one line page of the rulebook rule named by a ``rule://<name>`` URI.
 
     The same catalog the context hook publishes (`build_rule_catalog`), so a URI the model was
     shown always resolves to the same text; ``None`` means no such rule exists in this workspace.

@@ -3880,7 +3880,7 @@ class Core:
             metadata["reads"] = [
                 {
                     **item.as_payload(),
-                    "path": item.path if item.path.startswith("voidcode://") else canonical_path(self.workspace, item.path),
+                    "path": canonical_path(self.workspace, item.path),
                     "clipped": item.clipped or projection_clipped,
                 }
                 for item in result.coverage
@@ -3888,12 +3888,12 @@ class Core:
         metadata["changes"] = [
             {
                 **asdict(item),
-                "path": item.path if item.path.startswith("voidcode://") else canonical_path(self.workspace, item.path),
+                "path": canonical_path(self.workspace, item.path),
                 "old_path": canonical_path(self.workspace, item.old_path) if item.old_path is not None else None,
             }
             for item in result.changes
         ]
-        metadata["resource_paths"] = sorted({str((self.workspace / path).resolve()) for path in paths if not path.startswith("voidcode://")})
+        metadata["resource_paths"] = sorted({str((self.workspace / path).resolve()) for path in paths if "://" not in path})
         if deferred:
             cursor.deferred_sequence = None
             cursor.deferred_depth = 0

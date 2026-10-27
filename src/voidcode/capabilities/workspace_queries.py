@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from voidcode.sdk.plugin import PluginQuery, PluginQueryCaller
 from voidcode.sdk.services import PluginServices, QueryContractError
 
-RULE_URI_PREFIX = "voidcode://rule/"
+RULE_URI_PREFIX = "rule://"
 RULE_PAGE_QUERY = "workspace.rule_page"
 DOCUMENT_VERSION_QUERY = "workspace.document_version"
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")

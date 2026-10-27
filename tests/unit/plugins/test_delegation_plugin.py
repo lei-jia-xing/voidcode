@@ -173,7 +173,7 @@ def test_spawn_passes_arguments_through_and_records_roster_event(tmp_path: Path)
         "operation": "spawn",
         "task_id": "child-1",
         "label": "explore",
-        "history_uri": "voidcode://transcript/child-1",
+        "history_uri": "transcript://child-1",
     }
     assert "child-1" in res.output.text
     assert "background" in res.output.text
@@ -226,7 +226,7 @@ def test_profile_spawn_materializes_the_prompt_and_applies_its_scope(tmp_path: P
         "task_id": "child-1",
         "label": "explore",
         "subagent_type": "explore",
-        "history_uri": "voidcode://transcript/child-1",
+        "history_uri": "transcript://child-1",
     }
     assert "profile=explore" in res.output.text
     assert _stored(services).children == {"child-1": ChildRecord(label="explore", subagent_type="explore")}
@@ -354,7 +354,7 @@ def test_output_joins_with_the_requested_timeout_and_surfaces_running(tmp_path: 
         "task_id": "child-1",
         "label": "long",
         "status": "running",
-        "history_uri": "voidcode://transcript/child-1",
+        "history_uri": "transcript://child-1",
     }
     assert "status=running" in res.output.text
     assert 'task(operation="output"' in res.output.text
@@ -397,7 +397,7 @@ def test_send_maps_the_receipt_without_claiming_consumption(tmp_path: Path) -> N
     assert payload["child_status"] == "running"
     assert payload["run_id"] == "run-2"
     assert payload["message_id"] == "msg-1"
-    assert payload["history_uri"] == "voidcode://transcript/child-1"
+    assert payload["history_uri"] == "transcript://child-1"
     assert isinstance(res.output, TextOutput)
     assert "started in the same session" in res.output.text
 
@@ -661,13 +661,13 @@ def test_batch_group_read_returns_bounded_per_child_statuses(tmp_path: Path) -> 
         "operation": "output",
         "parallel_group_id": group_id,
         "children": [
-            {"task_id": "child-1", "status": "running", "history_uri": "voidcode://transcript/child-1"},
+            {"task_id": "child-1", "status": "running", "history_uri": "transcript://child-1"},
             {
                 "task_id": "child-2",
                 "status": "failed",
                 "stop_cause": "error",
                 "error": "child blew up",
-                "history_uri": "voidcode://transcript/child-2",
+                "history_uri": "transcript://child-2",
             },
         ],
     }
@@ -740,9 +740,9 @@ def test_batch_group_read_reports_each_child_profile(tmp_path: Path) -> None:
             "task_id": "child-1",
             "status": "running",
             "subagent_type": "explore",
-            "history_uri": "voidcode://transcript/child-1",
+            "history_uri": "transcript://child-1",
         },
-        {"task_id": "child-2", "status": "completed", "history_uri": "voidcode://transcript/child-2"},
+        {"task_id": "child-2", "status": "completed", "history_uri": "transcript://child-2"},
     ]
     assert "profile=explore" in res.output.text
 

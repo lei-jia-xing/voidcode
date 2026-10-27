@@ -566,11 +566,11 @@ def _failure(tool_name: str, message: str) -> ToolResult:
 
 
 def _artifact_uri(sha256: str) -> str:
-    return f"voidcode://artifact/{sha256}"
+    return f"artifact://{sha256}"
 
 
 def _transcript_uri(task_id: str) -> str:
-    return f"voidcode://transcript/{task_id}"
+    return f"transcript://{task_id}"
 
 
 def _utf8_cut(raw: bytes, limit: int) -> int:

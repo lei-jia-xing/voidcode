@@ -336,8 +336,8 @@ def test_rulebook_prompt_context_is_verbatim_and_capped(tmp_path: Path) -> None:
         "Rule style (scope=repo, precedence=5):\n"
         "Use tabs.\n"
         "\n"
-        "Discoverable runtime rules (metadata only; read voidcode://rule/<name> when needed):\n"
-        f"- notes: Read me (scope=workspace, precedence=0, hash={notes.content_hash}, uri=voidcode://rule/notes)"
+        "Discoverable runtime rules (metadata only; read rule://<name> when needed):\n"
+        f"- notes: Read me (scope=workspace, precedence=0, hash={notes.content_hash}, uri=rule://notes)"
     )
     assert style.payload() == {
         "name": "style",
@@ -511,13 +511,13 @@ def test_rule_page_reads_the_same_catalog_the_prompt_publishes(tmp_path: Path) -
     root = tmp_path / ".voidcode" / "rules"
     _write(root / "notes.md", _rule_document(name="notes", body="line one\nline two\nline three", application="discoverable"))
 
-    page = read_rule_page(tmp_path, "voidcode://rule/notes", offset=2, limit=1)
+    page = read_rule_page(tmp_path, "rule://notes", offset=2, limit=1)
     assert page is not None
     assert (page.rule, page.text, page.next_offset) == ("notes", "line two", 3)
     assert page.content_hash == build_rule_catalog(tmp_path).entries[0].metadata.content_hash
 
-    assert read_rule_page(tmp_path, "voidcode://rule/missing") is None
-    assert read_rule_page(tmp_path, "voidcode://rule/Bad Name") is None
+    assert read_rule_page(tmp_path, "rule://missing") is None
+    assert read_rule_page(tmp_path, "rule://Bad Name") is None
 
 
 def test_rule_page_query_validates_arguments_and_never_fabricates(tmp_path: Path) -> None:
@@ -528,12 +528,12 @@ def test_rule_page_query_validates_arguments_and_never_fabricates(tmp_path: Path
     caller = PluginQueryCaller(session_id="sess", workspace=tmp_path)
     query = next(query for query in create_plugin(None).queries if query.name == "workspace.rule_page")
 
-    answered = query.handler({"uri": "voidcode://rule/notes", "offset": 1, "limit": 2000}, caller)
+    answered = query.handler({"uri": "rule://notes", "offset": 1, "limit": 2000}, caller)
     assert answered is not None and answered["text"] == "Read me" and answered["next_offset"] is None
-    assert query.handler({"uri": "voidcode://rule/missing", "offset": 1, "limit": 2000}, caller) is None
+    assert query.handler({"uri": "rule://missing", "offset": 1, "limit": 2000}, caller) is None
     with pytest.raises(ValueError, match="uri"):
         query.handler({"uri": "  "}, caller)
     with pytest.raises(ValueError, match="offset"):
-        query.handler({"uri": "voidcode://rule/notes", "offset": 0}, caller)
+        query.handler({"uri": "rule://notes", "offset": 0}, caller)
     with pytest.raises(ValueError, match="limit"):
-        query.handler({"uri": "voidcode://rule/notes", "limit": 2001}, caller)
+        query.handler({"uri": "rule://notes", "limit": 2001}, caller)

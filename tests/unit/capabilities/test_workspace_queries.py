@@ -55,7 +55,7 @@ class Transport:
 
 
 def test_optional_query_distinguishes_absence_resource_missing_and_handler_failure() -> None:
-    request = RulePageRequest(uri="voidcode://rule/example")
+    request = RulePageRequest(uri="rule://example")
     assert RULE_PAGES.ask(cast(Any, Transport(None)), request) is None
     for failure in (QueryUnavailable("no implementation"), RuntimeError("provider bug")):
         with pytest.raises(type(failure)) as caught:
@@ -66,7 +66,7 @@ def test_optional_query_distinguishes_absence_resource_missing_and_handler_failu
 @pytest.mark.parametrize("answer", [[], "bad", {}, {"rule": "style", "text": "body"}])
 def test_query_rejects_malformed_answers(answer: object) -> None:
     with pytest.raises(QueryContractError):
-        RULE_PAGES.ask(cast(Any, Transport(answer)), RulePageRequest(uri="voidcode://rule/style"))
+        RULE_PAGES.ask(cast(Any, Transport(answer)), RulePageRequest(uri="rule://style"))
 
 
 def test_document_answer_must_belong_to_requested_document() -> None:

@@ -84,7 +84,7 @@ def test_spill_then_read_line_page_round_trips(tmp_path: Path) -> None:
     artifact = store.spill_artifact(text, media_type="text/plain; charset=utf-8")
     sha256 = artifact.sha256
     assert sha256 == hashlib.sha256(text.encode("utf-8")).hexdigest()
-    uri = f"voidcode://artifact/{sha256}"
+    uri = f"artifact://{sha256}"
 
     body, output = _read_body(store, tmp_path, path=uri, offset=2, limit=2)
     assert body["offset"] == 2
@@ -108,7 +108,7 @@ def test_spill_then_read_line_page_round_trips(tmp_path: Path) -> None:
 def test_artifact_byte_page_honors_byte_window(tmp_path: Path) -> None:
     store = FakeArtifactStore()
     artifact = store.spill_artifact(b"0123456789abcdef", media_type="application/octet-stream")
-    uri = f"voidcode://artifact/{artifact.sha256}"
+    uri = f"artifact://{artifact.sha256}"
 
     body, _ = _read_body(store, tmp_path, path=uri, byte_offset=4, byte_limit=4)
     assert body["offset_unit"] == "bytes"
@@ -129,47 +129,16 @@ def test_artifact_byte_page_honors_byte_window(tmp_path: Path) -> None:
 
 def test_unknown_artifact_id_is_refused(tmp_path: Path) -> None:
     store = FakeArtifactStore()
-    with pytest.raises(ValueError, match="cannot resolve voidcode://artifact URL"):
-        _read_body(store, tmp_path, path=f"voidcode://artifact/{'0' * 64}")
+    with pytest.raises(ValueError, match="cannot resolve artifact URI"):
+        _read_body(store, tmp_path, path=f"artifact://{'0' * 64}")
 
 
 def test_invalid_artifact_id_is_refused(tmp_path: Path) -> None:
     store = FakeArtifactStore()
     with pytest.raises(ValueError, match="invalid artifact id: not-a-sha256"):
-        _read_body(store, tmp_path, path="voidcode://artifact/not-a-sha256")
+        _read_body(store, tmp_path, path="artifact://not-a-sha256")
     with pytest.raises(ValueError, match="requires an artifact id"):
-        _read_body(store, tmp_path, path="voidcode://artifact/")
-
-
-def test_pdf_magic_is_required_for_the_pdf_view(tmp_path: Path) -> None:
-    store = FakeArtifactStore()
-    artifact = store.spill_artifact(b"plain text, not a PDF\n", media_type="application/octet-stream")
-    with pytest.raises(ValueError, match="PDF artifact view requires a readable PDF artifact"):
-        _read_body(store, tmp_path, path=f"voidcode://artifact/{artifact.sha256}", view="pdf")
-
-
-def _simple_pdf(text: str) -> bytes:
-    """A minimal single-page PDF whose text layer `pdftotext` extracts."""
-
-    content = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode("ascii")
-    objects = [
-        b"<< /Type /Catalog /Pages 2 0 R >>",
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
-        b"<< /Length " + str(len(content)).encode() + b" >>\nstream\n" + content + b"\nendstream",
-        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-    ]
-    out = bytearray(b"%PDF-1.4\n")
-    offsets = [0]
-    for index, body in enumerate(objects, 1):
-        offsets.append(len(out))
-        out.extend(f"{index} 0 obj\n".encode() + body + b"\nendobj\n")
-    xref = len(out)
-    out.extend(f"xref\n0 {len(offsets)}\n0000000000 65535 f \n".encode())
-    for offset in offsets[1:]:
-        out.extend(f"{offset:010d} 00000 n \n".encode())
-    out.extend(f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
-    return bytes(out)
+        _read_body(store, tmp_path, path="artifact://")
 
 
 def test_image_artifact_renders_as_attachment(tmp_path: Path) -> None:
@@ -177,7 +146,7 @@ def test_image_artifact_renders_as_attachment(tmp_path: Path) -> None:
     png = b"\x89PNG\r\n\x1a\n" + bytes(range(64))
     artifact = store.spill_artifact(png, media_type="image/png")
     sha256 = artifact.sha256
-    uri = f"voidcode://artifact/{sha256}"
+    uri = f"artifact://{sha256}"
 
     body, output = _read_attachment(store, tmp_path, path=uri)
 
@@ -207,7 +176,7 @@ def test_large_image_artifact_reuses_stored_reference(tmp_path: Path) -> None:
     png = b"\x89PNG\r\n\x1a\n" + b"\x00" * (MAX_INLINE_ATTACHMENT_BYTES + MAX_ARTIFACT_PAGE_BYTES)
     artifact = store.spill_artifact(png, media_type="image/png")
     sha256 = artifact.sha256
-    uri = f"voidcode://artifact/{sha256}"
+    uri = f"artifact://{sha256}"
 
     body, output = _read_attachment(store, tmp_path, path=uri)
 
@@ -226,57 +195,10 @@ def test_large_image_artifact_reuses_stored_reference(tmp_path: Path) -> None:
     assert store.spills == ["image/png"]
 
 
-def test_pdf_artifact_view_uses_the_media_type_claim(tmp_path: Path) -> None:
-    store = FakeArtifactStore()
-    pdf = _simple_pdf("artifact-pdf-text")
-    artifact = store.spill_artifact(pdf, media_type="application/pdf")
-    sha256 = artifact.sha256
-    uri = f"voidcode://artifact/{sha256}"
-
-    try:
-        body, output = _read_body(store, tmp_path, path=uri)
-    except ValueError as exc:
-        if "Poppler" in str(exc):
-            pytest.skip("pdftotext is not installed")
-        raise
-
-    assert body["type"] == "pdf"
-    assert body["path"] == uri
-    assert body["source_reference"] == uri
-    assert body["source_artifact"] == {"artifact_id": sha256, "sha256": sha256, "byte_count": len(pdf), "uri": uri}
-    assert body["raw_content"].strip() == "artifact-pdf-text"
-    assert output.startswith(f"Extracted PDF text from {uri}")
-
-
-def test_pdf_magic_fallback_only_applies_to_an_empty_claim(tmp_path: Path) -> None:
-    store = FakeArtifactStore()
-    pdf = _simple_pdf("fallback-pdf-text")
-    unclaimed = store.spill_artifact(pdf, media_type="")
-    # One artifact carries one claim: different bytes for the claimed variant.
-    claimed_binary = store.spill_artifact(pdf + b"% claimed as binary\n", media_type="application/octet-stream")
-
-    try:
-        body, _ = _read_body(store, tmp_path, path=f"voidcode://artifact/{unclaimed.sha256}")
-    except ValueError as exc:
-        if "Poppler" in str(exc):
-            pytest.skip("pdftotext is not installed")
-        raise
-    assert body["type"] == "pdf"
-
-    # A non-empty claim wins over the magic, and image bytes without a claim stay text.
-    page, _ = _read_body(store, tmp_path, path=f"voidcode://artifact/{claimed_binary.sha256}")
-    assert page["type"] == "artifact"
-    assert page["offset_unit"] == "lines"
-    unclaimed_png = store.spill_artifact(b"\x89PNG\r\n\x1a\nplain\n", media_type="")
-    image_page, _ = _read_body(store, tmp_path, path=f"voidcode://artifact/{unclaimed_png.sha256}")
-    assert image_page["type"] == "artifact"
-    assert image_page["offset_unit"] == "lines"
-
-
 def test_text_artifact_still_pages_as_text(tmp_path: Path) -> None:
     store = FakeArtifactStore()
     artifact = store.spill_artifact("first\nsecond\nthird\n", media_type="text/plain")
-    uri = f"voidcode://artifact/{artifact.sha256}"
+    uri = f"artifact://{artifact.sha256}"
 
     body, output = _read_body(store, tmp_path, path=uri, offset=2, limit=1)
 

@@ -34,7 +34,7 @@ The consumer uses the same contract:
 ```python
 from voidcode.capabilities.workspace_queries import RULE_PAGES, RulePageRequest
 
-page = RULE_PAGES.ask(services, RulePageRequest(uri="voidcode://rule/style"))
+page = RULE_PAGES.ask(services, RulePageRequest(uri="rule://style"))
 ```
 
 No consumer checks whether `skills` or `lsp` is enabled. `RULE_PAGES` and `DOCUMENT_STATES`

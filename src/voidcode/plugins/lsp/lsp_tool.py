@@ -441,7 +441,7 @@ class LspTool:
             mime="application/json",
             source=f"lsp:{source_operation.value}",
         )
-        artifact_uri = f"voidcode://artifact/{response_artifact['artifact_id']}"
+        artifact_uri = f"artifact://{response_artifact['artifact_id']}"
         next_offset = offset + limit if is_truncated else None
         if item_count and offset <= item_count:
             page_summary = f"Items {offset}-{min(offset + limit - 1, item_count)} of {item_count}."
@@ -492,7 +492,7 @@ def _spill_response_artifact(
 ) -> dict[str, object]:
     """Spill the full JSON-RPC response through the core artifact store."""
     reference = services.spill_artifact(content, media_type=mime)
-    uri = f"voidcode://artifact/{reference.sha256}"
+    uri = f"artifact://{reference.sha256}"
     return {
         "artifact_id": reference.sha256,
         "sha256": reference.sha256,

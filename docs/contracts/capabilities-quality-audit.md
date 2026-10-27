@@ -24,8 +24,8 @@ not establish source review.
 | `files/gitignore.py` | Reviewed: root-only pathspec matching; removed unused pattern snapshot/property; syntax/order/escape tests |
 | `files/glob_tool.py` | Reviewed: strict ingress, root-relative patterns, traversal/ignore rules, bounded path collection, ordering/error results and cooperative cancellation |
 | `files/grep_tool.py` | Reviewed: strict ingress, literal/regex matching and filters, bounded line/context/result collection, immutable rendering, error handling and cooperative cancellation |
-| `files/read_formats.py` | Reviewed: bounded notebook/SQLite/PDF views, source snapshot semantics, pagination/recovery, signature-only image handling, read-only transactions and extractor cleanup |
-| `files/read_tool.py` | Reviewed: strict ingress; stream/hash observations; typed bounded directory rendering; archive identity, modes and recovery; artifact/PDF/image dispatch, UTF-8 budgets and cancellation; SDK transcript projections and result metadata |
+| `files/read_formats.py` | Removed: notebook/PDF/SQLite parsing belongs to CLI tools |
+| `files/read_tool.py` | Reviewed simplified source: regular files and resource URIs; strict five-argument ingress, bounded UTF-8 pages, cancellation, image references, content observations and SDK history |
 | `files/write_tool.py` | Reviewed: hash/containment/symlink/atomic replace/cancellation; fail visibly on mode errors and always clean temporary files |
 | `workspace_queries.py` | Reviewed current workspace: strict requests, distinct outcomes, SHA-256/identity checks and required progressing cursors; shared capability contract; no concrete peer imports |
 | `history_renderer.py` | Moved out of capabilities: SDK services now return rendered history from core; existing byte/projection fixes retained |
@@ -83,15 +83,15 @@ not establish source review.
   cancellation and truthful partial-commit results.
 - Strict ingress models are authoritative; removed hand-built schema mirrors,
   permissive conversions and unused configuration/framework fields.
-- File and derived-view reads preserve recovery references and advancing
-  continuations. Native content and hash come from the same observed stream;
-  notebook/SQLite/PDF views use bounded projections and complete artifacts where
-  needed. Archive reads preserve member identity, reject file/directory conflicts,
-  bound counts/member bytes, and check cancellation while enumerating members.
-- Artifact UTF-8 decoding preserves incomplete trailing characters across byte
-  pages. Replacement-character expansion now respects the output budget and
-  continues through the same byte cursor (`65da3ab`). Large image artifacts reuse
-  their existing reference instead of loading and spilling another copy.
+- File reads preserve content hashes, bounded pages and long-line recovery.
+  Removed notebook/PDF/SQLite/archives, directory trees, format selectors and an
+  unused persisted-body decoder. Artifact pages preserve incomplete UTF-8 and
+  budget replacement-character expansion (`65da3ab`). Image artifacts reuse
+  their existing reference and inline images use the already-read first page.
+- Resource schemes are `artifact://`, `tool://`, `rule://` and `transcript://`.
+  Producers, readers, scoped queries, history links and documentation share the
+  new spelling; no old aliases remain. Core path canonicalization preserves
+  resource URIs generically instead of hardcoding a product scheme.
 - Execution delegates process ownership to host services. Removed shell
   command-name interception and unused adapters; bounded progress decoding,
   readiness detection, log cursors and confirmed-stop projections were corrected.
@@ -120,33 +120,30 @@ this file's Git history; they are not a second current-state specification.
 No test cases were added for this audit. Existing cases were updated when their
 contracts or paths changed, and targeted manual probes covered new findings.
 
-Current checkpoint after `65da3ab`:
+Current verification:
 
 - Whole-tree Ruff and source ty pass.
 - Frontend lint, typecheck, 16 tests and generated API consistency pass.
-- All 10 existing artifact cases pass. Manual invalid-byte, newline and mixed
-  Chinese/emoji pagination stayed below 50 KiB and reconstructed the complete
-  replacement-decoded input.
-- Four current admission/crash recovery cases pass; old migration callbacks were
-  not restored to satisfy obsolete fixtures.
-- The fresh full Python suite completed: 1,625 passed, six failed, one skipped.
-  Five failures involved missing streamed usage; the sixth was goal execution.
-  All six passed on rerun against the corrected loopback usage fixture
-  (79.23 seconds). Final full-suite verification remains pending.
+- Manual invalid-byte and mixed Chinese/emoji artifact pagination stayed below
+  50 KiB and reconstructed the complete replacement-decoded input.
+- The complete pre-simplification Python suite passed: 1,632 passed, one skipped
+  in 380.63 seconds. This is baseline evidence; verification of format removal,
+  directory removal and URI changes has passed 337 relevant existing cases.
+  This includes loopback integration for optional queries, transcript and public
+  read facts. Directory/legacy-URI rejection, the five-argument schema, plain-text
+  notebook reads and generic core URI preservation also passed manual probes.
+  Final full-suite verification of this new source is pending.
 
-All 60 current capability files are listed, including packaged tokenizer data.
+All 59 current capability files are listed, including packaged tokenizer data.
 A filesystem comparison found no missing inventory entries; import inspection
 found no capability imports of core, concrete plugins or outer product adapters.
 Changes since the last source-review checkpoint were reconciled: query contracts
 moved into capabilities, history rendering moved into core services, and obsolete
 parallel-tool flags were removed.
 
-Directory rendering previously emitted 55,469 bytes despite its 200-entry bound.
-It now budgets the actual UTF-8 lines, including room for summary/footer, stops
-at whole lines, and counts only displayed entries. The same long-name probe now
-emits 51,034 bytes with 184 entries; ordinary short names still show 200 entries.
-The existing 114 file/format/artifact/transcript cases pass after this change.
-No pagination protocol, compatibility path, dependency or test case was added.
+The earlier directory output-budget repair (`853de21`) is superseded by deleting
+directory reads at the user's request. Format-only tests were deleted with the
+feature and existing consumer fixtures were updated; no test cases were added.
 
 ## Explicit boundaries
 
@@ -155,11 +152,8 @@ No pagination protocol, compatibility path, dependency or test case was added.
 - Filesystem checked replacement has an unavoidable compare/replace race and
   does not promise preservation of every filesystem metadata attribute. External
   mutation during observation is not a transactional filesystem snapshot.
-- Cancellation is cooperative. ZIP central-directory loading, compressed TAR
-  traversal, PDF extraction and blocking vendor SDK/socket operations may run
+- Cancellation is cooperative. Blocking vendor SDK/socket operations may run
   until the underlying operation returns or its configured timeout expires.
-  Archive limits bound exposed member count/materialized bytes, not every unit
-  of decompressor CPU work.
 - Provider fixture tests establish local wire behavior, not live vendor service
   compatibility. Unknown usage remains unknown. The Chat Completions adapter
   does not implement Responses or arbitrary attachment protocols. Google OAuth
@@ -171,5 +165,5 @@ No pagination protocol, compatibility path, dependency or test case was added.
 - Offline tokenizer assets are manifest-checked local data, not a claim of
   equivalence to a changing remote billing oracle. Trace records are bounded
   individually; trace-file retention is not automatic.
-- Workspace ignore matching is root-based. Directory/search views are bounded
-  observations; reading a narrower subtree is the recovery path for omissions.
+- Workspace ignore matching is root-based. Search results are bounded
+  observations; narrower searches are the recovery path for omissions.

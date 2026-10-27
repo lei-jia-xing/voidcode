@@ -44,7 +44,7 @@ def spill_history(
         f"- status: {status}\n"
         f"- label: {label or '(none)'}\n"
         f"- events: {len(items)}\n"
-        f"- live view (paged): voidcode://transcript/{child_session_id}\n\n"
+        f"- live view (paged): transcript://{child_session_id}\n\n"
     )
     spill_id, spill = store.start_spill(MEDIA_TYPE, owner=SPILL_OWNER)
     try:

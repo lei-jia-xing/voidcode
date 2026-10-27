@@ -1,6 +1,6 @@
 # Agent Collaboration Contract
 
-Delegated agent work is core-owned: a parent session starts child sessions, steers them, and reads their durable outcomes through SDK services. The bundled `task`/`task_batch` tools (Delegation plugin) are the model-facing surface; `voidcode://transcript/<child>` and `read` expose the readable transcript. No plugin owns child lifecycle state, and no caller can widen scope, stance, or budget.
+Delegated agent work is core-owned: a parent session starts child sessions, steers them, and reads their durable outcomes through SDK services. The bundled `task`/`task_batch` tools (Delegation plugin) are the model-facing surface; `transcript://<child>` and `read` expose the readable transcript. No plugin owns child lifecycle state, and no caller can widen scope, stance, or budget.
 
 ## Durable facts
 

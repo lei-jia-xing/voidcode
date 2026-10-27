@@ -203,11 +203,11 @@ def test_read_tool_handles_huge_lines_without_unbounded_allocation(tmp_path: Pat
     assert result.body.content_hash == hashlib.sha256(huge_line.encode("utf-8")).hexdigest()
 
 
-def test_read_tool_honors_cancellation_before_a_view(tmp_path: Path) -> None:
+def test_read_tool_honors_cancellation_before_reading(tmp_path: Path) -> None:
     plugin = create_plugin({})
     read_tool = next(t for t in plugin.tools if t.definition.name == "read")
     result = read_tool.invoke(
-        ToolCall(tool_name="read", arguments={"path": "cancelled.db", "view": "sqlite"}),
+        ToolCall(tool_name="read", arguments={"path": "cancelled.txt"}),
         context=_context(tmp_path, abort_signal=DummyAbortSignal(cancelled=True)),
     )
     assert isinstance(result, ToolFailure)
@@ -307,7 +307,7 @@ def test_read_tool_uri_read_grants_no_coverage(tmp_path: Path) -> None:
         )
 
     result = read_tool.invoke(
-        ToolCall(tool_name="read", arguments={"path": f"voidcode://artifact/{artifact_id}"}),
+        ToolCall(tool_name="read", arguments={"path": f"artifact://{artifact_id}"}),
         context=_context(tmp_path),
         services=cast(Any, SimpleNamespace(read_artifact=read_artifact)),
     )
@@ -529,7 +529,7 @@ def test_write_tool_honors_cancellation_before_side_effects(tmp_path: Path) -> N
 
 
 class _UriServices:
-    """The narrow service surface the `voidcode://` branches consume, scripted per test."""
+    """The narrow service surface the resource URI branches consume, scripted per test."""
 
     def __init__(
         self,
@@ -587,7 +587,7 @@ def test_read_tool_documentation_renders_visible_definition_and_refuses_hidden(t
         effects=frozenset({ToolEffect.READ}),
     )
     visible = read_tool.invoke(
-        ToolCall(tool_name="read", arguments={"path": "voidcode://tool/read"}),
+        ToolCall(tool_name="read", arguments={"path": "tool://read"}),
         context=_context(tmp_path),
         services=cast(Any, _UriServices(definitions={"read": definition})),
     )
@@ -596,7 +596,7 @@ def test_read_tool_documentation_renders_visible_definition_and_refuses_hidden(t
     assert visible.body.as_payload()["tool_name"] == "read"  # type: ignore[union-attr]
 
     hidden = read_tool.invoke(
-        ToolCall(tool_name="read", arguments={"path": "voidcode://tool/write"}),
+        ToolCall(tool_name="read", arguments={"path": "tool://write"}),
         context=_context(tmp_path),
         services=cast(Any, _UriServices(definitions={"read": definition})),
     )
@@ -632,7 +632,7 @@ def test_read_transcript_returns_readable_pages_with_a_cursor_and_reports_core_r
         ),
     )
     own = read_tool.invoke(
-        ToolCall(tool_name="read", arguments={"path": "voidcode://transcript/session-test"}),
+        ToolCall(tool_name="read", arguments={"path": "transcript://session-test"}),
         context=_context(tmp_path),
         services=cast(Any, _UriServices(events=views)),
     )
@@ -644,7 +644,7 @@ def test_read_transcript_returns_readable_pages_with_a_cursor_and_reports_core_r
     assert "PROMPT-END" not in own.output.text  # type: ignore[union-attr]
     assert "More history: read(path=" in own.output.text  # type: ignore[union-attr]
 
-    next_uri = f"voidcode://transcript/session-test?after_sequence={first['next_after_sequence']}&offset={first['next_offset']}"
+    next_uri = f"transcript://session-test?after_sequence={first['next_after_sequence']}&offset={first['next_offset']}"
     rest = read_tool.invoke(
         ToolCall(tool_name="read", arguments={"path": next_uri}),
         context=_context(tmp_path),
@@ -668,7 +668,7 @@ def test_read_transcript_returns_readable_pages_with_a_cursor_and_reports_core_r
     )
     child_services = _UriServices(child_events=child_views)
     child = read_tool.invoke(
-        ToolCall(tool_name="read", arguments={"path": "voidcode://transcript/child-test"}),
+        ToolCall(tool_name="read", arguments={"path": "transcript://child-test"}),
         context=_context(tmp_path),
         services=cast(Any, child_services),
     )
@@ -677,7 +677,7 @@ def test_read_transcript_returns_readable_pages_with_a_cursor_and_reports_core_r
     assert child_services.child_session_ids == ["child-test"]
 
     sibling = read_tool.invoke(
-        ToolCall(tool_name="read", arguments={"path": "voidcode://transcript/sibling"}),
+        ToolCall(tool_name="read", arguments={"path": "transcript://sibling"}),
         context=_context(tmp_path),
         services=cast(Any, _UriServices(refuse_child=PermissionError("child events are readable only for this session's own descendants"))),
     )
@@ -691,7 +691,7 @@ def test_read_rule_reports_unavailable_unknown_and_malformed(tmp_path: Path) -> 
     read_tool = next(t for t in plugin.tools if t.definition.name == "read")
 
     disabled = read_tool.invoke(
-        ToolCall(tool_name="read", arguments={"path": "voidcode://rule/notes"}),
+        ToolCall(tool_name="read", arguments={"path": "rule://notes"}),
         context=_context(tmp_path),
         services=cast(Any, _UriServices(rule_unanswered=True)),
     )
@@ -699,7 +699,7 @@ def test_read_rule_reports_unavailable_unknown_and_malformed(tmp_path: Path) -> 
     assert "rule catalog is unavailable" in disabled.error
 
     unknown = read_tool.invoke(
-        ToolCall(tool_name="read", arguments={"path": "voidcode://rule/notes"}),
+        ToolCall(tool_name="read", arguments={"path": "rule://notes"}),
         context=_context(tmp_path),
         services=cast(Any, _UriServices(rule_answer=None)),
     )
@@ -707,7 +707,7 @@ def test_read_rule_reports_unavailable_unknown_and_malformed(tmp_path: Path) -> 
     assert "unknown rule in this workspace" in unknown.error
 
     malformed = read_tool.invoke(
-        ToolCall(tool_name="read", arguments={"path": "voidcode://rule/notes"}),
+        ToolCall(tool_name="read", arguments={"path": "rule://notes"}),
         context=_context(tmp_path),
         services=cast(Any, _UriServices(rule_answer={"rule": "notes"})),
     )
@@ -715,7 +715,7 @@ def test_read_rule_reports_unavailable_unknown_and_malformed(tmp_path: Path) -> 
     assert "provider shape violated" in malformed.error
 
     page = read_tool.invoke(
-        ToolCall(tool_name="read", arguments={"path": "voidcode://rule/notes"}),
+        ToolCall(tool_name="read", arguments={"path": "rule://notes"}),
         context=_context(tmp_path),
         services=cast(
             Any,

@@ -96,7 +96,7 @@ class ShellExecResultBody:
 def _artifact_reference(artifact: ArtifactReference | None) -> OutputReference | None:
     if artifact is None:
         return None
-    return OutputReference(f"voidcode://artifact/{artifact.sha256}", artifact.as_payload())
+    return OutputReference(f"artifact://{artifact.sha256}", artifact.as_payload())
 
 
 class ShellExecArgs(BaseModel):
@@ -189,7 +189,7 @@ class ShellExecTool:
         output_truncated = _preview_truncated(result.stdout) or _preview_truncated(result.stderr) or output_limit_exceeded
         output_reference = _artifact_reference(stdout_artifact) or _artifact_reference(stderr_artifact)
         output = f"{stderr}{stdout}" if output_truncated and stderr else f"{stdout}{stderr}"
-        artifact_refs = [f"voidcode://artifact/{artifact.sha256}" for artifact in (stdout_artifact, stderr_artifact) if artifact is not None]
+        artifact_refs = [f"artifact://{artifact.sha256}" for artifact in (stdout_artifact, stderr_artifact) if artifact is not None]
         if output_truncated and artifact_refs:
             output = "Captured process output: " + ", ".join(artifact_refs) + "\n\n" + output
 

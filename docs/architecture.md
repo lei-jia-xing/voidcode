@@ -146,13 +146,18 @@ legacy tools directory.
 add/update/delete/move operations. File editing uses Python filesystem operations
 and does not require Git; unified diffs are output previews, not edit input.
 
-`read` also serves bounded derived views: `voidcode://tool/<name>` renders the definition the
+`read` reads regular files and bounded resource URIs. It does not list directories
+or parse notebook, PDF, SQLite or archive formats; use shell tools for those
+operations and read their text output when needed. The only read arguments are
+`path`, `offset`, `limit`, `byte_offset` and `byte_limit` (byte cursors apply only
+to artifacts). Resource URIs use their own schemes, without legacy aliases:
+ `tool://<name>` renders the definition the
 core's active dispatch snapshot advertises to this session (plugin plus reserved core tools,
-with profile scope and read-only stance applied); `voidcode://transcript/<session>` composes a
+with profile scope and read-only stance applied); `transcript://<session>` composes a
 payload-included page from committed events for the caller's own session or one of its own
 descendants (parents, siblings, unrelated roots, and foreign workspaces are refused by the
-core's lineage guard); `voidcode://rule/<name>` asks the skills plugin's `workspace.rule_page`
-query, which owns the rulebook semantics; `voidcode://artifact/<id>` reads through
+core's lineage guard); `rule://<name>` asks the skills plugin's `workspace.rule_page`
+query, which owns the rulebook semantics; `artifact://<id>` reads through
 `PluginServices.read_artifact`. `apply_workspace_edit` demands `expectedHash`, and version
 constraints are checked against the LSP plugin's `workspace.document_version` query — a pure
 read of documents this session already opened (never a server start) — failing closed with a
