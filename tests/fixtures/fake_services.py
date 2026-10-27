@@ -553,21 +553,18 @@ class FakeServices(PluginServices):
 
     def read_artifact(
         self,
-        reference: ArtifactReference | Mapping[str, object] | str,
+        sha256: str,
         *,
         offset: int = 0,
         limit: int = 65536,
     ) -> ArtifactPage:
-        sha = str(getattr(reference, "sha256", reference))
-        data = self.artifacts.get(sha, b"")
+        data = self.artifacts[sha256]
         page = data[offset : offset + limit]
         return ArtifactPage(
-            sha256=sha,
+            artifact=ArtifactReference(sha256, len(data), "text/plain; charset=utf-8"),
             offset=offset,
-            total_bytes=len(data),
             data=page,
             eof=offset + len(page) >= len(data),
-            media_type="text/plain; charset=utf-8",
         )
 
     # --- Processes ---

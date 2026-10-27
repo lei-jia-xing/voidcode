@@ -4,13 +4,13 @@ import base64
 import json
 from hashlib import sha256
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from voidcode.plugins.mcp.mcp_tool import McpTool
 from voidcode.plugins.mcp.types import McpToolCallResult
 from voidcode.sdk.invocation import ToolContext
+from voidcode.sdk.services import ArtifactReference
 from voidcode.sdk.tools import AttachmentOutput, TextOutput, ToolCall
 
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3ioAAAAASUVORK5CYII=")
@@ -35,7 +35,7 @@ class Services:
         data = content.encode() if isinstance(content, str) else content
         digest = sha256(data).hexdigest()
         self.artifacts[digest] = data
-        return SimpleNamespace(sha256=digest, bytes=len(data), media_type=media_type)
+        return ArtifactReference(sha256=digest, bytes=len(data), media_type=media_type)
 
 
 def invoke(tmp_path, content, *, is_error=False):
@@ -54,7 +54,7 @@ def test_empty_content_still_references_the_original_json(tmp_path: Path):
     assert isinstance(result.output, TextOutput)
     reference = result.output.bounds.reference
     assert reference is not None
-    assert json.loads(services.artifacts[reference.artifact["artifact_id"]]) == {"content": [], "structured_content": None, "is_error": False}
+    assert json.loads(services.artifacts[reference.sha256]) == {"content": [], "structured_content": None, "is_error": False}
     assert reference.uri in result.output.text
 
 
@@ -66,8 +66,8 @@ def test_image_projection_preserves_binary_and_json_references(tmp_path: Path, s
     assert isinstance(result.output, AttachmentOutput if attachment else TextOutput)
     assert services.artifacts[sha256(data).hexdigest()] == data
     assert result.output.bounds.reference is not None
-    expected_source = "mcp-image" if attachment else "mcp-result"
-    assert result.output.bounds.reference.artifact["kind"] == expected_source
+    expected_mime = "image/png" if attachment else "application/json"
+    assert result.output.bounds.reference.media_type == expected_mime
     assert result.output.bounds.truncated is False
 
 
@@ -85,7 +85,7 @@ def test_projection_failure_keeps_original_json_available(tmp_path: Path, conten
     assert result.status == "error"
     assert result.output.bounds.partial is True
     reference = result.body.as_payload()["result_artifact"]
-    assert json.loads(services.artifacts[reference["artifact_id"]])["content"] == content
+    assert json.loads(services.artifacts[reference["sha256"]])["content"] == content
     assert "projection failed" in result.error
 
 
@@ -100,9 +100,9 @@ def test_resource_blob_without_mime_is_preserved_as_generic_bytes(tmp_path: Path
     result, services = invoke(tmp_path, [{"type": "resource", "resource": {"uri": "custom://bytes", "blob": "YQ=="}}])
     assert result.status == "ok"
     artifacts = result.body.as_payload()["artifacts"]
-    resource = next(artifact for artifact in artifacts if artifact["kind"] == "mcp-resource")
-    assert resource["mime"] == "application/octet-stream"
-    assert services.artifacts[resource["artifact_id"]] == b"a"
+    resource = artifacts[0]
+    assert resource["media_type"] == "application/octet-stream"
+    assert services.artifacts[resource["sha256"]] == b"a"
 
 
 @pytest.mark.parametrize(
@@ -127,9 +127,9 @@ def test_large_binary_does_not_hide_result_reference_from_model(tmp_path: Path):
     text, clipped = model_result_text(result)
     assert clipped is False
     reference = result.body.as_payload()["result_artifact"]
-    assert reference["uri"] in text
+    assert f"artifact://{reference['sha256']}" in text
     assert encoded not in text
-    original = json.loads(services.artifacts[reference["artifact_id"]])
+    original = json.loads(services.artifacts[reference["sha256"]])
     assert original["content"][0]["data"] == encoded
 
 
@@ -146,4 +146,4 @@ def test_nonstandard_or_incomplete_resources_are_explicit_projection_failures(tm
     assert result.status == "error"
     assert result.output.bounds.partial is True
     artifact = result.body.as_payload()["result_artifact"]
-    assert json.loads(services.artifacts[artifact["artifact_id"]])["content"] == content
+    assert json.loads(services.artifacts[artifact["sha256"]])["content"] == content

@@ -181,3 +181,12 @@ Verification of this follow-up: 102 existing rule/file/query unit cases and 22
 existing artifact/service/query integration cases passed; revoked-lease rejection
 was reproduced manually before and after the fix. Ruff and source ty passed.
 No test cases were added.
+
+Artifact references were subsequently unified: OutputBounds accepts the SDK's
+ArtifactReference directly or an ordinary URI string. Removed OutputReference,
+polymorphic artifact read inputs, per-plugin identity/size/MIME aliases and
+compaction's metadata-shape guessing. URI is derived; wire metadata contains
+only sha256, bytes and media_type. ArtifactPage carries the same reference as
+.artifact rather than duplicating its metadata. Repeated spills now return the
+stored MIME claim, matching subsequent reads. Existing codec/plugin subset: 276 passed;
+artifact/service/query/transcript/compaction integration subset: 22 passed.

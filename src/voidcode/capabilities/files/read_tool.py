@@ -8,7 +8,6 @@ import hashlib
 import json
 import mimetypes
 import re
-from collections.abc import Mapping
 from concurrent.futures import CancelledError
 from dataclasses import dataclass
 from io import TextIOWrapper
@@ -20,13 +19,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
-from voidcode.sdk.services import ArtifactPage, PluginServices
+from voidcode.sdk.services import ArtifactPage, ArtifactReference, PluginServices
 from voidcode.sdk.tools import (
     AttachmentOutput,
     ConfirmedStop,
     OpaqueToolBody,
     OutputBounds,
-    OutputReference,
     ReadObservation,
     TextOutput,
     ToolCall,
@@ -47,31 +45,6 @@ RASTER_IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/jpg", "image/w
 TOOL_URI_PREFIX = "tool://"
 ARTIFACT_URI_PREFIX = "artifact://"
 TRANSCRIPT_URI_PREFIX = "transcript://"
-
-
-def _spill_artifact(
-    services: PluginServices,
-    *,
-    kind: str,
-    content: str | bytes,
-    mime: str,
-    source: str,
-) -> tuple[Mapping[str, object], str, str]:
-    """Spill a payload and project its reference as ``(artifact, artifact_id, uri)``."""
-    reference = services.spill_artifact(content, media_type=mime)
-    uri = f"artifact://{reference.sha256}"
-    artifact: dict[str, object] = {
-        "artifact_id": reference.sha256,
-        "sha256": reference.sha256,
-        "byte_count": reference.bytes,
-        "content_type": reference.media_type,
-        "mime": reference.media_type,
-        "uri": uri,
-        "kind": kind,
-        "status": "available",
-        "source": source,
-    }
-    return artifact, reference.sha256, uri
 
 
 def _render_tool_documentation(
@@ -157,15 +130,13 @@ def _render_artifact(
         return _window(byte_start, byte_length)
 
     first_page = _page(0)
-    media_type = first_page.media_type
+    artifact = first_page.artifact
+    media_type = artifact.media_type
 
     if byte_offset is None and media_type in RASTER_IMAGE_MIMES:
-        total_bytes = first_page.total_bytes
-        content_hash = first_page.sha256
-        artifact: Mapping[str, object] = {"artifact_id": artifact_id, "sha256": content_hash, "byte_count": total_bytes, "uri": path}
         uri = path
         data_uri = None
-        if total_bytes <= MAX_INLINE_ATTACHMENT_BYTES:
+        if artifact.bytes <= MAX_INLINE_ATTACHMENT_BYTES:
             raw = first_page.data
             data_uri = f"data:{media_type};base64,{base64.b64encode(raw).decode('ascii')}"
         presentation = "Image artifact read successfully"
@@ -176,21 +147,13 @@ def _render_artifact(
                 media_type,
                 data_uri,
                 presentation=presentation,
-                bounds=OutputBounds(reference=OutputReference(uri=uri, artifact=artifact), source=path),
+                bounds=OutputBounds(reference=artifact, source=path),
             ),
             body=OpaqueToolBody(
                 {
                     "path": path,
                     "type": "attachment",
-                    "content_type": media_type,
-                    "mime": media_type,
-                    "byte_count": total_bytes,
-                    "content_hash": content_hash,
-                    "sha256": content_hash,
-                    "artifact_id": artifact_id,
-                    "uri": uri,
-                    "attachment": {"mime": media_type, "reference": uri},
-                    "bounds": {"reference": uri},
+                    "artifact": artifact.as_payload(),
                 }
             ),
         )
@@ -199,8 +162,6 @@ def _render_artifact(
         window_limit = min(byte_limit if byte_limit is not None else MAX_ARTIFACT_PAGE_BYTES, MAX_ARTIFACT_PAGE_BYTES)
         window = _page(byte_offset, window_limit)
         data = window.data
-        total_bytes = window.total_bytes
-        content_hash = window.sha256
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
         raw_content = decoder.decode(data, final=window.eof)
         if len(raw_content.encode("utf-8")) > MAX_ARTIFACT_PAGE_BYTES:
@@ -211,34 +172,30 @@ def _render_artifact(
         consumed = len(data) - len(decoder.getstate()[0])
         next_byte_offset = None if window.eof and consumed == len(window.data) else window.offset + consumed
         truncated = next_byte_offset is not None
-        artifact: Mapping[str, object] = {"artifact_id": artifact_id, "sha256": content_hash, "byte_count": total_bytes, "uri": path}
         summary = f"Read {consumed} artifact byte(s) from byte offset {byte_offset}"
         summary += f"; continue with byte_offset={next_byte_offset}." if next_byte_offset is not None else "."
         return _ReadOutcome(
             output=_text_output(
                 summary,
                 raw_content=raw_content,
-                content_hash=content_hash,
+                content_hash=artifact.sha256,
                 next_byte_offset=next_byte_offset,
                 truncated=truncated,
                 partial=truncated,
-                bounds=OutputBounds(truncated=truncated, partial=truncated, reference=OutputReference(uri=path, artifact=artifact)),
+                bounds=OutputBounds(truncated=truncated, partial=truncated, reference=artifact),
             ),
             body=OpaqueToolBody(
                 {
                     "path": path,
                     "type": "artifact",
-                    "artifact_id": artifact_id,
+                    "artifact": artifact.as_payload(),
                     "offset": byte_offset,
                     "offset_unit": "bytes",
-                    "byte_offset": byte_offset,
                     "byte_limit": window_limit,
                     "next_byte_offset": next_byte_offset,
                     "truncated": truncated,
                     "partial": truncated,
                     "byte_count": consumed,
-                    "artifact_byte_count": total_bytes,
-                    "content_hash": content_hash,
                     "raw_content": raw_content,
                 }
             ),
@@ -266,8 +223,6 @@ def _render_artifact(
 
     window = _page(byte_start)
     data = window.data
-    total_bytes = window.total_bytes
-    content_hash = window.sha256
     # A byte window may stop inside a line. Leave that fragment for the next
     # line page; a line larger than the window must continue by byte instead.
     if not window.eof:
@@ -288,7 +243,6 @@ def _render_artifact(
     raw_content = "\n".join(shown)
     if shown and (len(shown) < len(page_lines) or text.endswith("\n")):
         raw_content += "\n"
-    artifact = {"artifact_id": artifact_id, "sha256": content_hash, "byte_count": total_bytes, "uri": path}
     summary = f"Read {len(shown)} line(s) from {path}"
     if has_more:
         summary += f"; continue with offset={next_offset}." if next_offset is not None else "; output is truncated."
@@ -298,17 +252,17 @@ def _render_artifact(
         output=_text_output(
             summary,
             raw_content=raw_content,
-            content_hash=content_hash,
+            content_hash=artifact.sha256,
             next_offset=next_offset,
             truncated=has_more,
             partial=has_more,
-            bounds=OutputBounds(truncated=has_more, partial=has_more, reference=OutputReference(uri=path, artifact=artifact)),
+            bounds=OutputBounds(truncated=has_more, partial=has_more, reference=artifact),
         ),
         body=OpaqueToolBody(
             {
                 "path": path,
                 "type": "artifact",
-                "artifact_id": artifact_id,
+                "artifact": artifact.as_payload(),
                 "offset": offset,
                 "offset_unit": "lines",
                 "limit": page_limit,
@@ -316,8 +270,6 @@ def _render_artifact(
                 "truncated": has_more,
                 "partial": has_more,
                 "byte_count": len(raw_content.encode("utf-8")),
-                "artifact_byte_count": total_bytes,
-                "content_hash": content_hash,
                 "raw_content": raw_content,
                 "line_count": len(shown),
             }
@@ -403,7 +355,7 @@ def _render_transcript(
             bounds=OutputBounds(
                 truncated=truncated,
                 partial=truncated,
-                reference=None if next_uri is None else OutputReference(uri=next_uri),
+                reference=next_uri,
             ),
         ),
         body=OpaqueToolBody(body),
@@ -611,7 +563,7 @@ def _render_file(
     content_truncated = False
     has_more = False
     digest = hashlib.sha256()
-    recovery_reference: OutputReference | None = None
+    recovery_reference: ArtifactReference | None = None
 
     with candidate.open("rb") as source:
         sample = source.read(BINARY_SNIFF_BYTES)
@@ -622,16 +574,13 @@ def _render_file(
             if len(raw) > maximum:
                 raise ValueError(f"read file exceeds the maximum supported size ({maximum} bytes): {relative_path}")
             effective_mime = mime or "application/octet-stream"
-            content_hash = hashlib.sha256(raw).hexdigest()
-            artifact, artifact_id, uri = _spill_artifact(services, kind="content", content=raw, mime=effective_mime, source=relative_path)
-            bounds = OutputBounds(reference=OutputReference(uri, artifact), source=relative_path)
+            artifact = services.spill_artifact(raw, media_type=effective_mime)
+            uri = artifact.uri
+            bounds = OutputBounds(reference=artifact, source=relative_path)
             body: dict[str, object] = {
                 "path": relative_path,
                 "type": "attachment" if attachment else "binary",
-                "content_type": effective_mime,
-                "byte_count": len(raw),
-                "content_hash": content_hash,
-                "artifact_id": artifact_id,
+                "artifact": artifact.as_payload(),
             }
             if attachment:
                 data_uri = (
@@ -640,11 +589,10 @@ def _render_file(
                     else None
                 )
                 message = "Image read successfully"
-                body.update(attachment={"mime": effective_mime, "reference": uri}, bounds={"reference": uri})
                 return _ReadOutcome(output=AttachmentOutput(effective_mime, data_uri, presentation=message, bounds=bounds), body=OpaqueToolBody(body))
-            body.update(source=relative_path, reference=uri)
             presentation = (
-                f'Binary file {relative_path} ({effective_mime}, {len(raw)} bytes, sha256:{content_hash}). Read full content with read(path="{uri}").'
+                f"Binary file {relative_path} ({effective_mime}, {len(raw)} bytes, sha256:{artifact.sha256}). "
+                f'Read full content with read(path="{uri}").'
             )
             return _ReadOutcome(output=TextOutput(presentation, bounds=bounds), body=OpaqueToolBody(body))
         try:
@@ -679,10 +627,7 @@ def _render_file(
                         raise ValueError(f"long-line recovery exceeds the maximum supported size ({MAX_BINARY_READ_BYTES} bytes): {relative_path}")
                     if hashlib.sha256(original).digest() != digest.digest():
                         raise ValueError(f"file changed while preparing long-line recovery; retry read: {relative_path}")
-                    artifact, _, uri = _spill_artifact(
-                        services, kind="text_source", content=original, mime="text/plain; charset=utf-8", source=relative_path
-                    )
-                    recovery_reference = OutputReference(uri=uri, artifact=artifact)
+                    recovery_reference = services.spill_artifact(original, media_type="text/plain; charset=utf-8")
         except UnicodeDecodeError as exc:
             raise ValueError("read only supports UTF-8 text files") from exc
     content_hash = digest.hexdigest()

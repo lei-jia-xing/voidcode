@@ -20,7 +20,6 @@ from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import (
     OpaqueToolBody,
     OutputBounds,
-    OutputReference,
     TextOutput,
     ToolCall,
     ToolDefinition,
@@ -434,14 +433,8 @@ class LspTool:
             response,
             document_state=document_state,
         )
-        response_artifact = _spill_response_artifact(
-            services,
-            content=json.dumps(response.response, ensure_ascii=False, indent=2),
-            kind="lsp_response",
-            mime="application/json",
-            source=f"lsp:{source_operation.value}",
-        )
-        artifact_uri = f"artifact://{response_artifact['artifact_id']}"
+        response_artifact = services.spill_artifact(json.dumps(response.response, ensure_ascii=False, indent=2), media_type="application/json")
+        artifact_uri = response_artifact.uri
         next_offset = offset + limit if is_truncated else None
         if item_count and offset <= item_count:
             page_summary = f"Items {offset}-{min(offset + limit - 1, item_count)} of {item_count}."
@@ -460,7 +453,8 @@ class LspTool:
                 bounds=OutputBounds(
                     truncated=is_truncated,
                     partial=is_truncated,
-                    reference=OutputReference(uri=artifact_uri, artifact=response_artifact),
+                    reference=response_artifact,
+                    source=f"lsp:{source_operation.value}",
                 ),
             ),
             body=OpaqueToolBody(
@@ -480,30 +474,6 @@ class LspTool:
 
     def __repr__(self) -> str:
         return "<LspTool plugin-owned>"
-
-
-def _spill_response_artifact(
-    services: PluginServices,
-    *,
-    content: str,
-    kind: str,
-    mime: str,
-    source: str,
-) -> dict[str, object]:
-    """Spill the full JSON-RPC response through the core artifact store."""
-    reference = services.spill_artifact(content, media_type=mime)
-    uri = f"artifact://{reference.sha256}"
-    return {
-        "artifact_id": reference.sha256,
-        "sha256": reference.sha256,
-        "byte_count": reference.bytes,
-        "content_type": reference.media_type,
-        "mime": reference.media_type,
-        "uri": uri,
-        "kind": kind,
-        "status": "available",
-        "source": source,
-    }
 
 
 def _document_state_result(

@@ -291,6 +291,21 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * ArtifactReference
+         * @description Immutable artifact identity and stored metadata; ``uri`` is derived, not persisted.
+         */
+        ArtifactReference: {
+            /** Bytes */
+            bytes: number;
+            /**
+             * Media Type
+             * @default application/octet-stream
+             */
+            media_type: string;
+            /** Sha256 */
+            sha256: string;
+        };
         /** AttachmentOutputWire */
         AttachmentOutputWire: {
             /**
@@ -672,7 +687,8 @@ export interface components {
              * @default false
              */
             partial: boolean;
-            reference?: components["schemas"]["OutputReferenceWire"] | null;
+            /** Reference */
+            reference?: components["schemas"]["ArtifactReference"] | string | null;
             /** Source */
             source?: string | null;
             /**
@@ -680,15 +696,6 @@ export interface components {
              * @default false
              */
             truncated: boolean;
-        };
-        /** OutputReferenceWire */
-        OutputReferenceWire: {
-            /** Artifact */
-            artifact?: {
-                [key: string]: unknown;
-            } | null;
-            /** Uri */
-            uri: string;
         };
         PluginViewData: components["schemas"]["NoticeViewData"] | components["schemas"]["MarkdownViewData"] | components["schemas"]["FieldsViewData"] | components["schemas"]["ChoicesViewData"] | components["schemas"]["ConfirmationViewData"] | components["schemas"]["FormViewData"] | components["schemas"]["DiffViewData"] | components["schemas"]["StatusViewData"];
         /**

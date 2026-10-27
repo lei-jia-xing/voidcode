@@ -122,7 +122,7 @@ class ArtifactStore:
             raise ArtifactError(f"stored artifact {digest} does not match the spilled bytes")
         self._write_media_type(digest, spill.media_type)
         self._sync_directory()
-        return digest, spill.written, spill.media_type
+        return digest, spill.written, self.media_type(digest)
 
     def _write_media_type(self, digest: str, media_type: str) -> None:
         """Record the producer's type claim once; the bytes stay addressed by content alone."""

@@ -214,11 +214,15 @@ class PluginBudget:
 
 @dataclass(frozen=True, slots=True)
 class ArtifactReference:
-    """Identity of one immutable, content-addressed artifact in the core's store."""
+    """Immutable artifact identity and stored metadata; ``uri`` is derived, not persisted."""
 
     sha256: str
     bytes: int
     media_type: str = "application/octet-stream"
+
+    @property
+    def uri(self) -> str:
+        return f"artifact://{self.sha256}"
 
     def as_payload(self) -> dict[str, object]:
         return {"sha256": self.sha256, "bytes": self.bytes, "media_type": self.media_type}
@@ -228,13 +232,10 @@ class ArtifactReference:
 class ArtifactPage:
     """One bounded read of an artifact: `data` at `offset`, `eof` when the store ends there."""
 
-    sha256: str
+    artifact: ArtifactReference
     offset: int
-    total_bytes: int
     data: bytes
     eof: bool
-    #: The type the artifact was stored with; empty when its producer declared none.
-    media_type: str = ""
 
     @property
     def text(self) -> str:
@@ -713,12 +714,12 @@ class PluginServices(Protocol):
 
     def read_artifact(
         self,
-        reference: ArtifactReference | Mapping[str, object] | str,
+        sha256: str,
         *,
         offset: int = 0,
         limit: int = 65536,
     ) -> ArtifactPage:
-        """Read one bounded page of an artifact; `eof` when the page reaches the end."""
+        """Read one byte page by SHA-256 digest; URI parsing belongs to the caller."""
         ...
 
     def spawn_service_process(

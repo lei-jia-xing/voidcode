@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from voidcode.sdk.provider import ProviderMessage, ProviderTurnResult
+from voidcode.sdk.services import ArtifactReference
 from voidcode.sdk.tools import TextOutput, ToolFailure, ToolOutput, ToolResult, ToolSuccess
 from voidcode.sdk.transcript import ContextRecord, TranscriptChild, TranscriptDispatch, TranscriptInterrupted, TranscriptTool
 
@@ -254,9 +255,7 @@ class ToolResultFact:
     content: str
     resource_paths: tuple[str, ...] = ()
     error: str | None = None
-    artifact_id: str | None = None
-    artifact_byte_count: int | None = None
-    artifact_line_count: int | None = None
+    artifact: ArtifactReference | None = None
 
     @property
     def text(self) -> str:
@@ -266,12 +265,8 @@ class ToolResultFact:
     def preview(self, *, max_preview_chars: int = _COMPACTION_PREVIEW_CHAR_LIMIT) -> str:
         """The legacy one-line preview: identity, refs, then a clipped content/error excerpt."""
         parts = [self.tool_name, self.status]
-        if self.artifact_id is not None:
-            parts.extend((f"artifact_id={self.artifact_id}", f"uri=artifact://{self.artifact_id}"))
-            if self.artifact_byte_count is not None:
-                parts.append(f"byte_count={self.artifact_byte_count}")
-            if self.artifact_line_count is not None:
-                parts.append(f"line_count={self.artifact_line_count}")
+        if self.artifact is not None:
+            parts.extend((f"uri={self.artifact.uri}", f"bytes={self.artifact.bytes}"))
             return " ".join(parts)
         for key, value in self.arguments.items():
             if isinstance(value, str) and value:
@@ -287,27 +282,6 @@ class ToolResultFact:
 
 def _output_text(output: ToolOutput) -> str:
     return output.text if isinstance(output, TextOutput) else (output.presentation or "")
-
-
-def _artifact_metadata(result: ToolResult, key: str) -> object:
-    reference = result.output.bounds.reference
-    metadata = reference.artifact if reference is not None else None
-    if not isinstance(metadata, Mapping):
-        return None
-    artifact = metadata.get("artifact")
-    if isinstance(artifact, Mapping) and artifact.get(key) is not None:
-        return artifact[key]
-    return metadata.get(key)
-
-
-def _artifact_string(result: ToolResult, key: str) -> str | None:
-    value = _artifact_metadata(result, key)
-    return value if isinstance(value, str) and value else None
-
-
-def _artifact_int(result: ToolResult, key: str) -> int | None:
-    value = _artifact_metadata(result, key)
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _result_error(result: ToolResult) -> str | None:
@@ -344,9 +318,7 @@ def tool_result_fact(event: ContextRecord) -> ToolResultFact | None:
         content=_output_text(result.output),
         resource_paths=paths,
         error=_result_error(result),
-        artifact_id=_artifact_string(result, "artifact_id"),
-        artifact_byte_count=_artifact_int(result, "byte_count") or _artifact_int(result, "original_byte_count"),
-        artifact_line_count=_artifact_int(result, "line_count") or _artifact_int(result, "original_line_count"),
+        artifact=result.output.bounds.reference if isinstance(result.output.bounds.reference, ArtifactReference) else None,
     )
 
 

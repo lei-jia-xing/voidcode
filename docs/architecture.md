@@ -157,7 +157,10 @@ with profile scope and read-only stance applied); `transcript://<session>` compo
 payload-included page from committed events for the caller's own session or one of its own
 descendants (parents, siblings, unrelated roots, and foreign workspaces are refused by the
 core's lineage guard); `artifact://<id>` reads through
-`PluginServices.read_artifact`. `apply_workspace_edit` demands `expectedHash`, and version
+`PluginServices.read_artifact(sha256, offset=..., limit=...)`. Producers return the
+SDK's immutable `ArtifactReference` directly in `OutputBounds.reference`; its URI
+is derived from its digest. Other resource references are URI strings. See
+[artifact contracts](./contracts/artifacts.md). `apply_workspace_edit` demands `expectedHash`, and version
 constraints are checked against the LSP plugin's `workspace.document_version` query — a pure
 read of documents this session already opened (never a server start) — failing closed with a
 visible diagnostic when nothing is open. Language servers run as supervised runtime-generation

@@ -42,19 +42,6 @@ if TYPE_CHECKING:
     from .plugins import LeaseContext, PluginRuntime
 
 
-def _artifact_sha256(reference: ArtifactReference | Mapping[str, object] | str) -> str:
-    """Accept the reference shapes a plugin legitimately holds and extract its digest."""
-    if isinstance(reference, ArtifactReference):
-        return reference.sha256
-    if isinstance(reference, str):
-        return reference
-    if isinstance(reference, Mapping):
-        value = reference.get("sha256")
-        if isinstance(value, str):
-            return value
-    raise ValueError("artifact reference must carry a sha256 digest")
-
-
 class RuntimeServices:
     """`PluginServices` bound directly to one lease, calling the runtime directly."""
 
@@ -267,7 +254,7 @@ class RuntimeServices:
 
     def read_artifact(
         self,
-        reference: ArtifactReference | Mapping[str, object] | str,
+        sha256: str,
         *,
         offset: int = 0,
         limit: int = 65536,
@@ -275,17 +262,14 @@ class RuntimeServices:
         from .artifacts import SHA256_PATTERN
 
         self._active_lease()
-        digest = _artifact_sha256(reference)
-        if not SHA256_PATTERN.match(digest):
+        if not isinstance(sha256, str) or SHA256_PATTERN.fullmatch(sha256) is None:
             raise ValueError("artifact reference must be a lowercase sha256 digest")
-        data, total, eof, media_type = self._runtime.require_artifacts().read(digest, offset=int(offset), limit=int(limit))
+        data, total, eof, media_type = self._runtime.require_artifacts().read(sha256, offset=offset, limit=limit)
         return ArtifactPage(
-            sha256=digest,
-            offset=int(offset),
-            total_bytes=total,
+            artifact=ArtifactReference(sha256, total, media_type),
+            offset=offset,
             data=data,
             eof=eof,
-            media_type=media_type,
         )
 
     # ---- state / events / continuations / budgets (staged on the lease) ----

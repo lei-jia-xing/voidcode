@@ -305,9 +305,8 @@ class ServicesProbe:
                             "data": page.text,
                             "bytes": len(page.data),
                             "offset": page.offset,
-                            "total_bytes": page.total_bytes,
+                            "artifact": page.artifact.as_payload(),
                             "eof": page.eof,
-                            "media_type": page.media_type,
                         }},
                         sort_keys=True,
                     )

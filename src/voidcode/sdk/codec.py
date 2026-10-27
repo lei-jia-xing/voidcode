@@ -13,13 +13,13 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from .json_values import json_wire_object
 from .provider import ProviderMessage, ProviderTurnResult
+from .services import ArtifactReference
 from .tools import (
     AttachmentOutput,
     ConfirmedStop,
     EmptyOutput,
     OpaqueToolBody,
     OutputBounds,
-    OutputReference,
     ReadObservation,
     ResourceChange,
     TextOutput,
@@ -116,15 +116,10 @@ def decode_provider_result(payload: Mapping[str, object]) -> ProviderTurnResult:
     return _decode(_PROVIDER_RESULT, payload)
 
 
-class OutputReferenceWire(WireModel):
-    uri: str
-    artifact: dict[str, object] | None = None
-
-
 class OutputBoundsWire(WireModel):
     truncated: bool = False
     partial: bool = False
-    reference: OutputReferenceWire | None = None
+    reference: ArtifactReference | str | None = None
     source: str | None = None
     fallback_reason: str | None = None
 
@@ -226,8 +221,7 @@ def decode_tool_result(payload: Mapping[str, object]) -> ToolResult:
     wire = _decode(_RESULT, payload)
     output = wire.output
     bounds = output.bounds
-    reference = None if bounds.reference is None else OutputReference(bounds.reference.uri, bounds.reference.artifact)
-    decoded_bounds = OutputBounds(bounds.truncated, bounds.partial, reference, bounds.source, bounds.fallback_reason)
+    decoded_bounds = OutputBounds(bounds.truncated, bounds.partial, bounds.reference, bounds.source, bounds.fallback_reason)
     if isinstance(output, TextOutputWire):
         decoded = TextOutput(output.text, output.presentation, decoded_bounds)
     elif isinstance(output, EmptyOutputWire):

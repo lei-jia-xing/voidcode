@@ -23,7 +23,6 @@ from voidcode.sdk.tools import (
     ConfirmedStop,
     OpaqueToolBody,
     OutputBounds,
-    OutputReference,
     TextOutput,
     ToolDiagnostics,
     ToolFailure,
@@ -61,7 +60,7 @@ def test_decode_tool_call_strict_ingress_boundaries() -> None:
 def test_tool_result_with_actual_sdk_fields_roundtrip() -> None:
     # ToolSuccess with real fields
     body = OpaqueToolBody(structured_content=MappingProxyType({"lines": 10}))
-    bounds = OutputBounds(truncated=True, partial=False, reference=OutputReference(uri="void://art/1"), source="fs")
+    bounds = OutputBounds(truncated=True, partial=False, reference="void://art/1", source="fs")
     success = ToolSuccess(
         tool_name="read",
         output=AttachmentOutput(mime="text/plain", data_uri="data:text/plain;base64,aGVsbG8=", bounds=bounds),
@@ -75,7 +74,7 @@ def test_tool_result_with_actual_sdk_fields_roundtrip() -> None:
     assert dec_success.output.data_uri == "data:text/plain;base64,aGVsbG8="
     assert dec_success.output.bounds.truncated is True
     assert dec_success.output.bounds.reference is not None
-    assert dec_success.output.bounds.reference.uri == "void://art/1"
+    assert dec_success.output.bounds.reference == "void://art/1"
     assert dec_success.body is not None
     assert dec_success.body.as_payload() == {"lines": 10}
 

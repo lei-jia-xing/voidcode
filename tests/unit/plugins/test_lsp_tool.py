@@ -2,19 +2,19 @@
 
 from hashlib import sha256
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from voidcode.plugins.lsp.lsp_manager import LspRequestResult
 from voidcode.plugins.lsp.lsp_tool import LspTool
 from voidcode.sdk.invocation import ToolContext
+from voidcode.sdk.services import ArtifactReference
 from voidcode.sdk.tools import ToolCall
 
 
 class Services:
     def spill_artifact(self, content, *, media_type):
-        return SimpleNamespace(sha256=sha256(content.encode()).hexdigest(), bytes=len(content.encode()), media_type=media_type)
+        return ArtifactReference(sha256=sha256(content.encode()).hexdigest(), bytes=len(content.encode()), media_type=media_type)
 
 
 class Manager:
@@ -144,7 +144,7 @@ def test_empty_call_hierarchy_preparation_is_success_without_followup(tmp_path: 
     assert result.body.as_payload()["item_count"] == 0
     assert "No call hierarchy results" in result.output.text
     assert [request.method for request in manager.requests] == ["textDocument/prepareCallHierarchy"]
-    assert result.output.bounds.reference.artifact["source"] == "lsp:textDocument/prepareCallHierarchy"
+    assert result.output.bounds.source == "lsp:textDocument/prepareCallHierarchy"
 
 
 @pytest.mark.parametrize("prepared", [{}, {"name": "old-shape"}, [None], [{"name": "missing-fields"}]])

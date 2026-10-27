@@ -32,18 +32,15 @@ class FakeArtifactStore:
         self.spills.append(media_type)
         return ArtifactReference(sha256=sha256, bytes=len(raw), media_type=media_type)
 
-    def read_artifact(self, reference: object, *, offset: int = 0, limit: int = 65536) -> ArtifactPage:
-        sha256 = reference.sha256 if isinstance(reference, ArtifactReference) else str(reference)
+    def read_artifact(self, sha256: str, *, offset: int = 0, limit: int = 65536) -> ArtifactPage:
         raw = self.blobs[sha256]
         start = min(max(0, offset), len(raw))
         page = raw[start : start + limit]
         return ArtifactPage(
-            sha256=sha256,
+            artifact=ArtifactReference(sha256, len(raw), self.media_types.get(sha256, "")),
             offset=start,
-            total_bytes=len(raw),
             data=page,
             eof=start + len(page) >= len(raw),
-            media_type=self.media_types.get(sha256, ""),
         )
 
 
@@ -92,8 +89,8 @@ def test_spill_then_read_line_page_round_trips(tmp_path: Path) -> None:
     assert body["limit"] == 2
     assert body["line_count"] == 2
     assert body["raw_content"] == "artifact-line-2\nartifact-line-3\n"
-    assert body["content_hash"] == sha256
-    assert body["artifact_byte_count"] == len(text.encode("utf-8"))
+    assert body["artifact"]["sha256"] == sha256
+    assert body["artifact"]["bytes"] == len(text.encode("utf-8"))
     assert body["next_offset"] == 4
     assert body["truncated"] is True
     assert "artifact-line-2" in output
@@ -116,10 +113,10 @@ def test_artifact_byte_page_honors_byte_window(tmp_path: Path) -> None:
     assert body["byte_limit"] == 4
     assert body["raw_content"] == "4567"
     assert body["byte_count"] == 4
-    assert body["artifact_byte_count"] == 16
+    assert body["artifact"]["bytes"] == 16
     assert body["next_byte_offset"] == 8
     assert body["truncated"] is True
-    assert body["content_hash"] == artifact.sha256
+    assert body["artifact"]["sha256"] == artifact.sha256
 
     tail, _ = _read_body(store, tmp_path, path=uri, byte_offset=8, byte_limit=8)
     assert tail["raw_content"] == "89abcdef"
@@ -155,17 +152,7 @@ def test_image_artifact_renders_as_attachment(tmp_path: Path) -> None:
     assert output.bounds.reference is not None
     assert output.bounds.reference.uri == uri
     assert output.bounds.truncated is False
-    assert body["type"] == "attachment"
-    assert body["path"] == uri
-    assert body["artifact_id"] == sha256
-    assert body["sha256"] == sha256
-    assert body["content_hash"] == sha256
-    assert body["byte_count"] == len(png)
-    assert body["mime"] == "image/png"
-    assert body["content_type"] == "image/png"
-    assert body["uri"] == uri
-    assert body["attachment"] == {"mime": "image/png", "reference": uri}
-    assert body["bounds"] == {"reference": uri}
+    assert body == {"path": uri, "type": "attachment", "artifact": artifact.as_payload()}
     # Inline bytes need no second write: the artifact is its own reference.
     assert store.spills == ["image/png"]
 
@@ -186,11 +173,7 @@ def test_large_image_artifact_reuses_stored_reference(tmp_path: Path) -> None:
     assert output.bounds.reference.uri == uri
     assert output.bounds.truncated is False
     assert output.bounds.partial is False
-    assert body["type"] == "attachment"
-    assert body["byte_count"] == len(png)
-    assert body["artifact_id"] == sha256
-    assert body["uri"] == uri
-    assert body["attachment"] == {"mime": "image/png", "reference": uri}
+    assert body == {"path": uri, "type": "attachment", "artifact": artifact.as_payload()}
     # Reading an existing artifact must not store its bytes again.
     assert store.spills == ["image/png"]
 

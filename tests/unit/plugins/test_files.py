@@ -18,13 +18,14 @@ from voidcode.plugins.files import create_plugin as _orig_create_plugin
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.plugin import Plugin
 from voidcode.sdk.provider import ProviderAbortSignal
+from voidcode.sdk.services import ArtifactPage, ArtifactReference
 from voidcode.sdk.tools import ConfirmedStop, ReadObservation, ToolCall, ToolFailure, ToolSuccess
 
 
 class _DummyServices:
     def spill_artifact(self, data: bytes | str, *, media_type: str = "text/plain; charset=utf-8"):  # type: ignore[no-untyped-def]
         raw = data.encode("utf-8") if isinstance(data, str) else bytes(data)
-        return SimpleNamespace(sha256=hashlib.sha256(raw).hexdigest(), bytes=len(raw), media_type=media_type)
+        return ArtifactReference(sha256=hashlib.sha256(raw).hexdigest(), bytes=len(raw), media_type=media_type)
 
 
 _SERVICES = cast(Any, _DummyServices())
@@ -293,18 +294,10 @@ def test_read_tool_uri_read_grants_no_coverage(tmp_path: Path) -> None:
     artifact_id = hashlib.sha256(raw).hexdigest()
     total = len(raw)
 
-    def read_artifact(reference: object, *, offset: int = 0, limit: int = 65536):  # type: ignore[no-untyped-def]
-        digest = getattr(reference, "sha256", reference)
-        assert digest == artifact_id
+    def read_artifact(sha256: str, *, offset: int = 0, limit: int = 65536):  # type: ignore[no-untyped-def]
+        assert sha256 == artifact_id
         page = raw[offset : offset + limit]
-        return SimpleNamespace(
-            sha256=artifact_id,
-            offset=offset,
-            total_bytes=total,
-            data=page,
-            eof=offset + len(page) >= total,
-            media_type="",
-        )
+        return ArtifactPage(artifact=ArtifactReference(artifact_id, total, ""), offset=offset, data=page, eof=offset + len(page) >= total)
 
     result = read_tool.invoke(
         ToolCall(tool_name="read", arguments={"path": f"artifact://{artifact_id}"}),

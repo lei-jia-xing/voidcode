@@ -22,7 +22,7 @@ from .limits import (
 from .limits import (
     DIAGNOSTIC_TEXT_CHARS as _MAX_DIAGNOSTIC_TEXT_CHARS,
 )
-from .services import PluginServices
+from .services import ArtifactReference, PluginServices
 
 type ToolDiagnosticsDetails = Mapping[str, object]
 type ToolReplayPolicy = Literal["safe", "never"]
@@ -208,20 +208,10 @@ class ToolCall:
 
 
 @dataclass(frozen=True, slots=True)
-class OutputReference:
-    uri: str
-    artifact: Mapping[str, object] | None = None
-
-    def __post_init__(self) -> None:
-        if self.artifact is not None:
-            object.__setattr__(self, "artifact", own_json_object(self.artifact))
-
-
-@dataclass(frozen=True, slots=True)
 class OutputBounds:
     truncated: bool = False
     partial: bool = False
-    reference: OutputReference | None = None
+    reference: ArtifactReference | str | None = None
     source: str | None = None
     fallback_reason: str | None = None
 

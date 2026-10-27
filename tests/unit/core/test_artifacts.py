@@ -166,9 +166,9 @@ def test_pages_are_bounded_and_report_their_own_geometry(tmp_path: Path) -> None
         assert core.run("page it", session_id="sess-page").status == "completed"
 
         first, last, beyond = (_tool_payloads(server, index)[-1] for index in (2, 3, 4))
-        assert (first["data"], first["offset"], first["total_bytes"], first["eof"]) == ("0123456789", 0, 200, False)
+        assert (first["data"], first["offset"], first["artifact"]["bytes"], first["eof"]) == ("0123456789", 0, 200, False)
         assert (last["data"], last["offset"], last["eof"]) == ("0123456789", 190, True)
-        assert (beyond["data"], beyond["eof"], beyond["total_bytes"]) == ("", True, 200)
+        assert (beyond["data"], beyond["eof"], beyond["artifact"]["bytes"]) == ("", True, 200)
 
 
 def test_spilling_the_same_bytes_again_is_free(tmp_path: Path) -> None:
@@ -215,7 +215,7 @@ def test_the_media_type_survives_the_reference(tmp_path: Path) -> None:
         assert reference["media_type"] == "image/png"
         page = _tool_payloads(server, index=2)[-1]
         # A later reader holding only the digest recovers the producer's type.
-        assert page["media_type"] == "image/png"
+        assert page["artifact"]["media_type"] == "image/png"
         assert page["bytes"] == len(payload)
         assert (tmp_path / "state" / "artifacts" / f"{sha}.media").read_text(encoding="utf-8") == "image/png"
 
@@ -238,7 +238,7 @@ def test_empty_payloads_are_stored_and_read_back(tmp_path: Path) -> None:
         assert reference["sha256"] == EMPTY_SHA
         assert reference["bytes"] == 0
         page = _tool_payloads(server, index=2)[-1]
-        assert (page["data"], page["eof"], page["total_bytes"]) == ("", True, 0)
+        assert (page["data"], page["eof"], page["artifact"]["bytes"]) == ("", True, 0)
 
 
 def test_a_foreign_reference_is_refused_and_never_read(tmp_path: Path) -> None:

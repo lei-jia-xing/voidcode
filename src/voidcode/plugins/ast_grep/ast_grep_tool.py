@@ -10,11 +10,10 @@ from pydantic import BaseModel, ConfigDict, ValidationInfo, field_validator
 
 from voidcode.capabilities.files.errors import raise_tool_diagnostic
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.services import PluginServices, ProcessResult
+from voidcode.sdk.services import ArtifactReference, PluginServices, ProcessResult
 from voidcode.sdk.tools import (
     OpaqueToolBody,
     OutputBounds,
-    OutputReference,
     ResourceChange,
     TextOutput,
     ToolCall,
@@ -119,40 +118,17 @@ def _match_result_output(
     *,
     services: PluginServices,
     truncated: bool,
-    artifact: dict[str, object] | None = None,
-) -> tuple[TextOutput, dict[str, object]]:
+    artifact: ArtifactReference | None = None,
+) -> tuple[TextOutput, ArtifactReference]:
     if artifact is None:
-        reference = services.spill_artifact(native_jsonl, media_type="text/x-ndjson; charset=utf-8")
-        uri = f"artifact://{reference.sha256}"
-        artifact = {
-            "artifact_id": reference.sha256,
-            "sha256": reference.sha256,
-            "byte_count": reference.bytes,
-            "content_type": reference.media_type,
-            "mime": reference.media_type,
-            "uri": uri,
-            "kind": "ast_grep_matches",
-            "status": "available",
-            "source": "ast-grep:json-stream",
-        }
-    else:
-        uri = f"artifact://{artifact['artifact_id']}"
+        artifact = services.spill_artifact(native_jsonl, media_type="text/x-ndjson; charset=utf-8")
     return (
         TextOutput(
-            f'Full native AST match JSONL: read(path="{uri}").\n{output}',
-            bounds=OutputBounds(
-                truncated=truncated,
-                partial=truncated,
-                reference=OutputReference(uri=uri, artifact=artifact),
-            ),
+            f'Full native AST match JSONL: read(path="{artifact.uri}").\n{output}',
+            bounds=OutputBounds(truncated=truncated, partial=truncated, reference=artifact, source="ast-grep:json-stream"),
         ),
         artifact,
     )
-
-
-def _add_match_artifact(body: dict[str, Any], artifact: dict[str, object]) -> None:
-    uri = f"artifact://{artifact['artifact_id']}"
-    body.update(body_artifact=artifact, artifacts=[artifact], response_reference=uri)
 
 
 def _with_match_counts(matches: list[dict[str, Any]]) -> dict[str, Any]:
@@ -365,7 +341,6 @@ class AstGrepTool:
             "timeout_seconds": timeout_seconds,
             **_with_match_counts(matches),
         }
-        _add_match_artifact(body, artifact)
         return ToolSuccess(
             tool_name=self.definition.name,
             output=output,
@@ -422,7 +397,6 @@ class AstGrepTool:
                 "mode": "preview",
                 "timeout_seconds": timeout_seconds,
             }
-            _add_match_artifact(body, artifact)
             return ToolSuccess(
                 tool_name=self.definition.name,
                 output=output,
@@ -520,7 +494,6 @@ class AstGrepTool:
             result_body["diff"] = file_results[0]["diff"]
         elif file_results:
             result_body["files"] = file_results
-        _add_match_artifact(result_body, artifact)
         return ToolSuccess(
             tool_name=self.definition.name,
             output=output,

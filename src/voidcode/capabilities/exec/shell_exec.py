@@ -21,7 +21,6 @@ from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import ArtifactReference, PluginServices
 from voidcode.sdk.tools import (
     OutputBounds,
-    OutputReference,
     TextOutput,
     ToolCall,
     ToolDefinition,
@@ -91,12 +90,6 @@ class ShellExecResultBody:
         if self.cancelled:
             payload.update(cancelled=True, reason=self.reason)
         return payload
-
-
-def _artifact_reference(artifact: ArtifactReference | None) -> OutputReference | None:
-    if artifact is None:
-        return None
-    return OutputReference(f"artifact://{artifact.sha256}", artifact.as_payload())
 
 
 class ShellExecArgs(BaseModel):
@@ -187,9 +180,9 @@ class ShellExecTool:
         stderr_artifact = _spill_stream(services, result.stderr)
         output_limit_exceeded = result.truncated
         output_truncated = _preview_truncated(result.stdout) or _preview_truncated(result.stderr) or output_limit_exceeded
-        output_reference = _artifact_reference(stdout_artifact) or _artifact_reference(stderr_artifact)
+        output_reference = stdout_artifact or stderr_artifact
         output = f"{stderr}{stdout}" if output_truncated and stderr else f"{stdout}{stderr}"
-        artifact_refs = [f"artifact://{artifact.sha256}" for artifact in (stdout_artifact, stderr_artifact) if artifact is not None]
+        artifact_refs = [artifact.uri for artifact in (stdout_artifact, stderr_artifact) if artifact is not None]
         if output_truncated and artifact_refs:
             output = "Captured process output: " + ", ".join(artifact_refs) + "\n\n" + output
 

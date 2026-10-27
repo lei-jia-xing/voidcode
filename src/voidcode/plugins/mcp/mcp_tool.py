@@ -16,12 +16,11 @@ from typing import ClassVar
 
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
-from voidcode.sdk.services import PluginServices
+from voidcode.sdk.services import ArtifactReference, PluginServices
 from voidcode.sdk.tools import (
     AttachmentOutput,
     OpaqueToolBody,
     OutputBounds,
-    OutputReference,
     TextOutput,
     ToolCall,
     ToolDefinition,
@@ -81,30 +80,6 @@ def _call_arguments(raw: Mapping[str, object]) -> tuple[str, str, dict[str, obje
     if not isinstance(arguments, Mapping):
         raise ValueError("mcp 'arguments' must be an object")
     return server_name, tool_name, json_wire_object(arguments)
-
-
-def _spill_artifact(
-    services: PluginServices,
-    *,
-    kind: str,
-    content: str | bytes,
-    mime: str,
-    source: str,
-) -> dict[str, object]:
-    """Spill a payload through the core artifact service and project its reference."""
-    reference = services.spill_artifact(content, media_type=mime)
-    uri = f"artifact://{reference.sha256}"
-    return {
-        "artifact_id": reference.sha256,
-        "sha256": reference.sha256,
-        "byte_count": reference.bytes,
-        "content_type": reference.media_type,
-        "mime": reference.media_type,
-        "uri": uri,
-        "kind": kind,
-        "status": "available",
-        "source": source,
-    }
 
 
 class McpTool:
@@ -184,10 +159,9 @@ class McpTool:
                 ),
             )
 
-        source = f"mcp:{server_name}/{tool_name}"
-        result_artifact = _spill_artifact(services, kind="mcp-result", content=result_json, mime="application/json", source=source)
+        result_artifact = services.spill_artifact(result_json, media_type="application/json")
         rendered: list[str] = []
-        artifacts: list[dict[str, object]] = []
+        artifacts: list[ArtifactReference] = []
         projection_error: str | None = None
         try:
             content_items = original_result["content"]
@@ -204,7 +178,7 @@ class McpTool:
                         raise ValueError(f"MCP text item {index} has an invalid text payload")
                     rendered.append(text)
                 elif kind in {"image", "audio"}:
-                    ref, description = _media_item(item, index=index, services=services, source=source)
+                    ref, description = _media_item(item, index=index, services=services)
                     rendered.append(description)
                     if ref is not None:
                         artifacts.append(ref)
@@ -212,7 +186,7 @@ class McpTool:
                     resource = item.get("resource")
                     if not isinstance(resource, Mapping):
                         raise ValueError(f"MCP resource item {index} has an invalid resource payload")
-                    ref, description = _media_item(resource, index=index, services=services, source=source)
+                    ref, description = _media_item(resource, index=index, services=services)
                     rendered.append(description)
                     if ref is not None:
                         artifacts.append(ref)
@@ -241,19 +215,16 @@ class McpTool:
         self,
         result: McpToolCallResult,
         rendered: list[str],
-        artifacts: list[dict[str, object]],
+        artifacts: list[ArtifactReference],
         *,
         server_name: str,
         tool_name: str,
-        result_artifact: dict[str, object],
+        result_artifact: ArtifactReference,
         projection_error: str | None,
     ) -> ToolResult:
-        result_uri = result_artifact.get("uri")
-        if not isinstance(result_uri, str) or not result_uri:
-            raise RuntimeError("MCP result JSON artifact has no URI")
-        references = [uri for artifact in artifacts if isinstance(uri := artifact.get("uri"), str)]
+        result_uri = result_artifact.uri
+        references = [artifact.uri for artifact in artifacts]
         rendered.insert(0, f"Full MCP result JSON: {result_uri}")
-        result_reference = OutputReference(result_uri, result_artifact)
         if references:
             rendered.insert(1, "Embedded output artifacts: " + ", ".join(references))
         content = "\n\n".join(part for part in rendered if part)
@@ -263,7 +234,7 @@ class McpTool:
             "server": server_name,
             "tool": tool_name,
             "is_error": result.is_error,
-            "result_artifact": result_artifact,
+            "result_artifact": result_artifact.as_payload(),
             "safety": {
                 "read_only": safety.read_only,
                 "destructive": safety.destructive,
@@ -275,30 +246,19 @@ class McpTool:
         if projection_error is not None:
             payload["projection_error"] = projection_error
         if artifacts:
-            payload["artifacts"] = [result_artifact] + artifacts
-        image_artifacts = [artifact for artifact in artifacts if artifact.get("kind") == "mcp-image"]
-        image_artifact = image_artifacts[0] if len(image_artifacts) == 1 else None
-        artifact_size = image_artifact.get("byte_count") if image_artifact is not None else None
-        artifact_uri_value = image_artifact.get("uri") if image_artifact is not None else None
-        artifact_mime = image_artifact.get("mime") if image_artifact is not None else None
-        image_reference = (
-            OutputReference(artifact_uri_value, image_artifact) if image_artifact is not None and isinstance(artifact_uri_value, str) else None
-        )
-        if (
-            image_artifact is not None
-            and type(artifact_size) is int
-            and artifact_size <= MAX_INLINE_ATTACHMENT_BYTES
-            and isinstance(artifact_mime, str)
-            and image_reference is not None
-        ):
+            payload["artifacts"] = [artifact.as_payload() for artifact in artifacts]
+        images = [artifact for artifact in artifacts if artifact.media_type in RASTER_IMAGE_MIMES]
+        image = images[0] if len(images) == 1 else None
+        source = f"mcp:{server_name}/{tool_name}"
+        if image is not None and image.bytes <= MAX_INLINE_ATTACHMENT_BYTES:
             output = AttachmentOutput(
-                artifact_mime,
+                image.media_type,
                 data_uri=None,
                 presentation=content,
-                bounds=OutputBounds(partial=is_error, reference=image_reference),
+                bounds=OutputBounds(partial=is_error, reference=image, source=source),
             )
         else:
-            output = TextOutput(content, bounds=OutputBounds(partial=is_error, reference=result_reference))
+            output = TextOutput(content, bounds=OutputBounds(partial=is_error, reference=result_artifact, source=source))
         if is_error:
             error = (
                 f"MCP content projection failed: {projection_error}"
@@ -332,8 +292,7 @@ def _media_item(
     *,
     index: int,
     services: PluginServices,
-    source: str,
-) -> tuple[dict[str, object] | None, str]:
+) -> tuple[ArtifactReference | None, str]:
     """Decode one embedded image/audio/resource item; returns (artifact, description).
 
     Text resources return no binary artifact.
@@ -374,13 +333,11 @@ def _media_item(
     if mime_type is None:
         mime_type = "application/octet-stream"
 
-    artifact_kind = "mcp-resource"
     if mime_type == "image/svg+xml":
         try:
             data.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise ValueError("embedded SVG is not valid UTF-8") from exc
-        artifact_kind = "mcp-svg"
     elif mime_type in RASTER_IMAGE_MIMES:
         signature_matches = (
             (mime_type == "image/png" and data.startswith(b"\x89PNG\r\n\x1a\n"))
@@ -390,7 +347,6 @@ def _media_item(
         )
         if not signature_matches:
             raise ValueError(f"embedded image MIME {mime_type!r} does not match its bytes")
-        artifact_kind = "mcp-image"
     elif kind == "image":
         raise ValueError(f"embedded image MIME {mime_type!r} does not match its bytes")
     elif kind == "audio" or mime_type.startswith("audio/"):
@@ -398,10 +354,8 @@ def _media_item(
             raise ValueError(f"embedded audio MIME {mime_type!r} is not audio")
         if mime_type in {"audio/wav", "audio/x-wav"} and not (data.startswith(b"RIFF") and len(data) >= 12 and data[8:12] == b"WAVE"):
             raise ValueError(f"embedded audio MIME {mime_type!r} does not match its bytes")
-        artifact_kind = "mcp-audio"
 
-    spilled = _spill_artifact(services, kind=artifact_kind, content=data, mime=mime_type, source=source)
-    ref = {**spilled, "kind": artifact_kind, "mime": mime_type, "byte_count": len(data)}
+    ref = services.spill_artifact(data, media_type=mime_type)
     return ref, description + f"; {len(data)} embedded bytes saved as output artifact]"
 
 
