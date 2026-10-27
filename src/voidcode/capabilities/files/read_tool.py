@@ -333,8 +333,13 @@ def _render_artifact(
         content_hash = window.sha256
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
         raw_content = decoder.decode(data, final=window.eof)
+        if len(raw_content.encode("utf-8")) > MAX_ARTIFACT_PAGE_BYTES:
+            # Each invalid input byte can expand to a three-byte replacement.
+            data = data[: MAX_ARTIFACT_PAGE_BYTES // 3]
+            decoder.reset()
+            raw_content = decoder.decode(data, final=False)
         consumed = len(data) - len(decoder.getstate()[0])
-        next_byte_offset = None if window.eof else window.offset + consumed
+        next_byte_offset = None if window.eof and consumed == len(window.data) else window.offset + consumed
         truncated = next_byte_offset is not None
         artifact: Mapping[str, object] = {"artifact_id": artifact_id, "sha256": content_hash, "byte_count": total_bytes, "uri": path}
         summary = f"Read {consumed} artifact byte(s) from byte offset {byte_offset}"
@@ -401,6 +406,8 @@ def _render_artifact(
             return _render_artifact(path, context=context, services=services, offset=offset, limit=limit, byte_offset=byte_start)
         data = data[: last_newline + 1]
     text = data.decode("utf-8", "replace")
+    if len(text.encode("utf-8")) > MAX_ARTIFACT_PAGE_BYTES:
+        return _render_artifact(path, context=context, services=services, offset=offset, limit=limit, byte_offset=byte_start)
     page_lines = text.split("\n")
     if page_lines[-1] == "":
         page_lines.pop()

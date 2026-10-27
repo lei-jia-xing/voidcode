@@ -3011,3 +3011,18 @@ four admission/crash cases still exercising retired migration-fixture behavior
 and two old synchronous-TUI cases; the current workspace already uses an
 asynchronous TUI and its two cases pass. Admission fixture/state-version
 reconciliation and final current-tree gate remain outstanding.
+
+### Artifact decoding output budget
+
+Invalid UTF-8 could expand a 47,104-byte artifact page into 141,506 bytes of
+rendered output while reporting a complete page. Byte pages now account for
+replacement-character expansion and reuse their existing continuation cursor;
+line pages that exceed the decoded budget fall back to that same byte path.
+No additional paging mechanism or test cases were introduced. The 10 existing
+artifact cases pass. Manual pagination of invalid bytes, newline-separated
+invalid bytes, and mixed Chinese/emoji/invalid sequences stayed below 50 KiB
+per output and reconstructed the complete replacement-decoded input.
+
+The four current admission/crash recovery cases also passed after fixture and
+state-version reconciliation. Earlier six-failure snapshot results describe
+the old snapshot, not the current source. A fresh current-tree gate is required.
