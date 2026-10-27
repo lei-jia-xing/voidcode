@@ -14,7 +14,7 @@ import stat
 import tarfile
 import time
 import zipfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import CancelledError
 from dataclasses import dataclass
 from io import TextIOWrapper
@@ -1088,35 +1088,40 @@ def _render_directory(root: Path, *, label: str, context: ToolContext) -> _ReadO
         return ToolFailure("read", error="read cancelled", execution=ConfirmedStop(cancellation_signalled=True))
     lines = [f"{label}/"]
     entry_count = 0
+    footer = "… listing is incomplete; read a subdirectory to see omitted or unexpanded entries."
+    summary_bound = f"Listed {DIRECTORY_ENTRY_LIMIT} entries in {label}; listing is truncated."
+    budget = MAX_BYTES - len(summary_bound.encode("utf-8")) - len(footer.encode("utf-8")) - 3
+    used_bytes = len(lines[0].encode("utf-8"))
+    if used_bytes > budget:
+        raise ValueError("directory path exceeds the read output byte limit")
 
-    def _emit(node: _TreeNode, prefix: str) -> None:
-        nonlocal entry_count
-        children = node.children
-        for index, child in enumerate(children):
-            last = index == len(children) - 1
+    def _emit(node: _TreeNode, prefix: str) -> Iterator[tuple[str, bool]]:
+        for index, child in enumerate(node.children):
+            last = index == len(node.children) - 1
             connector = "└── " if last else "├── "
-            is_dir = child.is_dir
-            name = child.name
-            mtime = child.mtime
-            if is_dir:
-                lines.append(f"{prefix}{connector}{name}/  ({_relative_age(mtime)})")
+            if child.is_dir:
+                line = f"{prefix}{connector}{child.name}/  ({_relative_age(child.mtime)})"
             else:
-                lines.append(f"{prefix}{connector}{name} ({_human_size(child.size)}, {_relative_age(mtime)})")
-            entry_count += 1
-            if is_dir:
-                nested_prefix = f"{prefix}{'    ' if last else '│   '}"
+                line = f"{prefix}{connector}{child.name} ({_human_size(child.size)}, {_relative_age(child.mtime)})"
+            yield line, True
+            nested_prefix = f"{prefix}{'    ' if last else '│   '}"
+            if child.is_dir:
                 if child.expanded and not child.children:
-                    lines.append(f"{nested_prefix}└── (empty directory)")
-                _emit(child, nested_prefix)
-            omitted = child.omitted
-            if omitted:
-                lines.append(f"{prefix}{'    ' if last else '│   '}… {omitted} more")
+                    yield f"{nested_prefix}└── (empty directory)", False
+                yield from _emit(child, nested_prefix)
+        if node.omitted:
+            yield f"{prefix}… {node.omitted} more", False
 
-    _emit(tree, "")
-    if tree.omitted:
-        lines.append(f"… {tree.omitted} more")
+    for line, is_entry in _emit(tree, ""):
+        byte_count = len(line.encode("utf-8")) + 1
+        if used_bytes + byte_count > budget:
+            truncated = True
+            break
+        lines.append(line)
+        used_bytes += byte_count
+        entry_count += is_entry
     if truncated:
-        lines.append("… listing is incomplete; read a subdirectory to see omitted or unexpanded entries.")
+        lines.append(footer)
     rendered = "\n".join(lines)
     content = f"Listed {entry_count} entr{'y' if entry_count == 1 else 'ies'} in {label}"
     content += "; listing is truncated." if truncated else "."
