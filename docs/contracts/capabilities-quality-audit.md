@@ -132,7 +132,12 @@ Current verification:
   This includes loopback integration for optional queries, transcript and public
   read facts. Directory/legacy-URI rejection, the five-argument schema, plain-text
   notebook reads and generic core URI preservation also passed manual probes.
-  Final full-suite verification of this new source is pending.
+  The final full Python suite passed on the current worktree: 1,612 passed,
+  one skipped in 345.35 seconds, using
+  `.venv/bin/python -m pytest -n 8 --dist worksteal -q --tb=short`.
+  The count decreased because retired format tests were removed with the feature.
+  This worktree includes the existing pending loopback-fixture corrections;
+  these are separate from the read simplification commit (`aadf605`).
 
 All 59 current capability files are listed, including packaged tokenizer data.
 A filesystem comparison found no missing inventory entries; import inspection
