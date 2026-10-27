@@ -36,3 +36,4 @@ htmlcov/
 playwright-report/
 .codegraph/
 frontend/test-results/
+native/sandbox-adapter/target
