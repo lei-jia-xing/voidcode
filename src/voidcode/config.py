@@ -18,7 +18,7 @@ CONFIG_SCHEMA_VERSION = 1
 ReasoningEffort = Literal["off", "none", "minimal", "low", "medium", "high", "xhigh", "max"] | int
 
 
-class ProductModelConfig(BaseModel):
+class ModelConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     model: str | None = None
@@ -39,14 +39,50 @@ class ProductModelConfig(BaseModel):
         return v
 
 
-class ProductPolicyConfig(BaseModel):
+class PolicyConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     approval_mode: Literal["ask", "write", "yolo"] = "ask"
     read_only: bool = False
 
 
-class ProductProviderEntry(BaseModel):
+class SandboxConfig(BaseModel):
+    """Optional transparent exec backend: absent section means unconfined, today's behavior."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    mode: Literal["workspace-write", "read-only", "danger-full-access"] = "workspace-write"
+    network: bool | None = None
+    writable_roots: tuple[str, ...] = ()
+
+    @field_validator("writable_roots", mode="before")
+    @classmethod
+    def _validate_roots(cls, v: Any) -> tuple[str, ...]:
+        if not isinstance(v, (list, tuple)):
+            raise ValueError("sandbox writable_roots must be a list of absolute paths")
+        for root in v:
+            if not isinstance(root, str) or not root or not root.startswith("/"):
+                raise ValueError(f"sandbox writable_roots must be absolute paths: {root!r}")
+        return tuple(v)
+
+    @model_validator(mode="after")
+    def _validate_mode(self) -> SandboxConfig:
+        if self.mode == "danger-full-access" and self.network is False:
+            raise ValueError("sandbox danger-full-access with network=false is contradictory")
+        if self.mode == "read-only" and self.writable_roots:
+            raise ValueError("sandbox writable_roots must be empty under read-only")
+        if self.mode == "danger-full-access" and self.writable_roots:
+            raise ValueError("sandbox danger-full-access takes no confinement options")
+        return self
+
+    @property
+    def effective_network(self) -> bool:
+        if self.network is not None:
+            return self.network
+        return self.mode == "danger-full-access"
+
+
+class ProviderEntry(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True, arbitrary_types_allowed=True, hide_input_in_errors=True)
 
     api_key: str | None = Field(default=None, min_length=1, repr=False)
@@ -82,7 +118,7 @@ class ProductProviderEntry(BaseModel):
         return own_json_object(v)
 
 
-class ProductPluginEntry(BaseModel):
+class PluginEntry(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True, arbitrary_types_allowed=True, hide_input_in_errors=True)
 
     enabled: bool = True
@@ -104,19 +140,20 @@ class ProductPluginEntry(BaseModel):
         return own_json_object(v)
 
 
-class ProductConfig(BaseModel):
+class Config(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True, hide_input_in_errors=True)
 
     schema_version: Literal[1] = 1
-    model: ProductModelConfig = Field(default_factory=ProductModelConfig)
-    policy: ProductPolicyConfig = Field(default_factory=ProductPolicyConfig)
+    model: ModelConfig = Field(default_factory=ModelConfig)
+    policy: PolicyConfig = Field(default_factory=PolicyConfig)
+    sandbox: SandboxConfig | None = None
     providers: Mapping[
         Annotated[str, Field(pattern=r"^[a-z][a-z0-9_-]*$")],
-        ProductProviderEntry,
+        ProviderEntry,
     ] = Field(default_factory=dict)
     plugins: Mapping[
         Annotated[str, Field(pattern=r"^[a-z][a-z0-9_-]*$")],
-        ProductPluginEntry,
+        PluginEntry,
     ] = Field(default_factory=dict)
 
     @field_validator("schema_version", mode="before")
@@ -127,12 +164,12 @@ class ProductConfig(BaseModel):
         return v
 
 
-def parse_product_config(payload: object) -> ProductConfig:
+def parse_config(payload: object) -> Config:
     """Validate an untrusted ``voidcode.json`` payload."""
     if not isinstance(payload, dict):
         raise ValueError("config must be an object")
     try:
-        return ProductConfig.model_validate(payload)
+        return Config.model_validate(payload)
     except ValidationError as err:
         for error in err.errors():
             if error.get("type") == "extra_forbidden":
@@ -141,7 +178,7 @@ def parse_product_config(payload: object) -> ProductConfig:
         raise ValueError(str(err)) from err
 
 
-def resolve_providers(config: ProductConfig) -> dict[str, object]:
+def resolve_providers(config: Config) -> dict[str, object]:
     """Resolve the private provider vocabulary once: configured fields plus the environment key."""
     private: dict[str, object] = {}
     for name, entry in config.providers.items():
@@ -152,14 +189,14 @@ def resolve_providers(config: ProductConfig) -> dict[str, object]:
     return private
 
 
-def load_config(workspace: Path, *, allow_missing: bool = False) -> ProductConfig:
+def load_config(workspace: Path, *, allow_missing: bool = False) -> Config:
     path = workspace / CONFIG_FILE_NAME
     if not path.exists():
         if allow_missing:
-            return ProductConfig()
+            return Config()
         raise FileNotFoundError(f"configuration not found: {path.name}")
     if not path.is_file():
         raise ValueError(f"not a regular file: {path.name}")
     if path.stat().st_size > 256 * 1024:
         raise ValueError("configuration file too large")
-    return parse_product_config(json.loads(path.read_text(encoding="utf-8")))
+    return parse_config(json.loads(path.read_text(encoding="utf-8")))

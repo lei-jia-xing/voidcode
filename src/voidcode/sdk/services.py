@@ -15,6 +15,7 @@ from .json_values import json_wire_object, own_json_object
 if TYPE_CHECKING:
     from .history import HistoryPage
     from .hooks import FactPage
+    from .observed_effects import ObservedEffects
     from .tools import ToolDefinition
     from .transcript import ContextHistory, TranscriptPage
 
@@ -306,6 +307,9 @@ class ProcessResult:
     truncated: bool = False
     timed_out: bool = False
     cancelled: bool = False
+    #: Bounded observed-effects report when this execution ran confined; None on the
+    #: unconfined/absent path. Failed/cancelled/timed-out runs still carry the prefix.
+    effects: ObservedEffects | None = None
 
 
 @dataclass(frozen=True, slots=True)

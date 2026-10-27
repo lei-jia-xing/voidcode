@@ -46,6 +46,22 @@ class ExecutionPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class SandboxPolicy:
+    """Neutral confinement for registry children. None (absent) means unconfined host exec.
+
+    No reload gate: new spawns use the current policy; old jobs keep the enforcement argv
+    fixed at their spawn. Model-editing-config plus yolo reload is out of threat model.
+    """
+
+    mode: Literal["workspace-write", "read-only", "danger-full-access"] = "workspace-write"
+    network: bool = False
+    writable_roots: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "writable_roots", tuple(self.writable_roots))
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionConfig:
     """Core execution options for model selection and policy."""
 

@@ -210,6 +210,41 @@ def test_a_stream_reports_reasoning_text_and_terminal_usage_as_events(start_sse_
     assert terminal.usage.cost_usd == pytest.approx(900 * 0.6e-06 + 500 * 2.2e-06 + 100 * 0.11e-06)
 
 
+def test_a_terminal_usage_only_chunk_after_finish_sets_usage_without_clobbering_the_finish(
+    start_sse_server: Callable[..., _SseLoopback],
+) -> None:
+    """The real wire reports usage in a final chunk with empty choices; a streamed
+    zero stays a zero and an unreported metric stays unknown."""
+    usage_chunk: dict[str, object] = {
+        "id": "chunk-loopback",
+        "object": "chat.completion.chunk",
+        "created": 1,
+        "model": "glm-4.5",
+        "choices": [],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 5},
+    }
+    server = start_sse_server(
+        [
+            [
+                (0.0, _chunk({"role": "assistant", "content": "answer"}, "stop")),
+                (0.0, _frame(usage_chunk)),
+                (0.0, _DONE_FRAME),
+            ]
+        ]
+    )
+    provider = _streaming_provider(server.base_url)
+
+    events = list(provider.stream_turn(_request()))
+
+    terminal = events[-1]
+    assert terminal.kind == "done"
+    assert terminal.done_reason == "stop"
+    assert terminal.usage is not None
+    assert terminal.usage.input_tokens == 0
+    assert terminal.usage.output_tokens == 5
+    assert terminal.usage.cache_read_tokens is None
+
+
 def test_tool_call_fragments_are_reported_in_order_and_parsed_at_the_end(start_sse_server: Callable[..., _SseLoopback]) -> None:
     server = start_sse_server(
         [

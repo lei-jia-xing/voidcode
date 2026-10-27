@@ -7,6 +7,7 @@ __pycache__/
 dist/
 build/
 src/voidcode/_web_dist/
+src/voidcode/bin/
 *.egg-info/
 .env
 .env.local

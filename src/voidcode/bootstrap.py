@@ -15,16 +15,17 @@ from typing import TYPE_CHECKING, Literal, cast
 from uuid import uuid4
 
 from .config import (
-    ProductConfig,
-    ProductPluginEntry,
+    Config,
+    PluginEntry,
     load_config,
-    parse_product_config,
+    parse_config,
     resolve_providers,
 )
 from .core.activation import (
     Admission,
     ExecutionConfig,
     ExecutionPolicy,
+    SandboxPolicy,
     load_private_snapshot,
     plan_state_copies,
     write_private_snapshot,
@@ -32,6 +33,7 @@ from .core.activation import (
 from .core.engine import Core
 from .core.events import EventType
 from .core.plugins import PluginRuntime, PluginSource
+from .core.sandbox import SandboxBackend, check_helper
 from .core.storage.store import (
     SCHEMA_VERSION,
     EventDraft,
@@ -45,7 +47,6 @@ if TYPE_CHECKING:
     from .sdk.client import SessionClient
 
 PRIVATE_SNAPSHOT_VERSION = 2
-
 BUNDLED_PLUGIN_IDS = (
     "ast_grep",
     "btw",
@@ -77,9 +78,9 @@ def bundled_sources(package_root: Path | None = None) -> dict[str, Path]:
     return {plugin_id: bundled / plugin_id.replace("-", "_") for plugin_id in BUNDLED_PLUGIN_IDS}
 
 
-def merged_entries(config: ProductConfig, bundled_sources_: Mapping[str, Path]) -> dict[str, ProductPluginEntry]:
+def merged_entries(config: Config, bundled_sources_: Mapping[str, Path]) -> dict[str, PluginEntry]:
     """Every configured entry: the shipped bundled defaults first, the user's entries on top."""
-    entries = {plugin_id: config.plugins.get(plugin_id, ProductPluginEntry()) for plugin_id in bundled_sources_}
+    entries = {plugin_id: config.plugins.get(plugin_id, PluginEntry()) for plugin_id in bundled_sources_}
     entries.update(config.plugins)
     return entries
 
@@ -88,7 +89,7 @@ def _plugin_root(
     workspace: Path,
     bundled: Mapping[str, Path],
     plugin_id: str,
-    entry: ProductPluginEntry,
+    entry: PluginEntry,
 ) -> Path:
     if entry.path is not None:
         root = (workspace / entry.path).resolve(strict=True)
@@ -107,7 +108,7 @@ def _plugin_root(
 
 
 def admit_live(
-    config: ProductConfig,
+    config: Config,
     *,
     workspace: Path,
     bundled_sources: Mapping[str, Path],
@@ -142,6 +143,12 @@ def admit_live(
         "policy": {"approval_mode": config.policy.approval_mode, "read_only": config.policy.read_only},
         "plugins": snapshot_plugins,
     }
+    if config.sandbox is not None:
+        snapshot["sandbox"] = {
+            "mode": config.sandbox.mode,
+            "network": config.sandbox.effective_network,
+            "writable_roots": list(config.sandbox.writable_roots),
+        }
     plugin_tuple = tuple(plugins)
     payload: dict[str, object] = {
         "python": sys.implementation.cache_tag,
@@ -169,7 +176,7 @@ def admit_live(
     )
 
 
-def config_from_snapshot(snapshot: Mapping[str, object]) -> ProductConfig:
+def config_from_snapshot(snapshot: Mapping[str, object]) -> Config:
     """Rebuild the effective configuration a stored revision was admitted with."""
     if snapshot.get("version") != PRIVATE_SNAPSHOT_VERSION:
         raise ValueError(
@@ -184,7 +191,13 @@ def config_from_snapshot(snapshot: Mapping[str, object]) -> ProductConfig:
         if not isinstance(section, Mapping):
             raise ValueError(f"private configuration snapshot section {name!r} must be an object")
         sections[name] = json_wire_object(section)
-    return parse_product_config({"schema_version": 1, **sections})
+    # Optional section: old snapshots without it rebuild to an absent sandbox (unconfined).
+    sandbox = snapshot.get("sandbox")
+    if sandbox is not None:
+        if not isinstance(sandbox, Mapping):
+            raise ValueError("private configuration snapshot section 'sandbox' must be an object")
+        sections["sandbox"] = json_wire_object(sandbox)
+    return parse_config({"schema_version": 1, **sections})
 
 
 def restore_admission(
@@ -249,7 +262,7 @@ def _deactivation_unavailable(
     raise ValueError(f"plugin {owner} needs deactivation but this installation no longer ships it; disable it before upgrading")
 
 
-def validate_providers(config: ProductConfig, registered: Sequence[str]) -> None:
+def validate_providers(config: Config, registered: Sequence[str]) -> None:
     names = set(registered)
     model = config.model.model
     if model is not None:
@@ -263,6 +276,84 @@ def validate_providers(config: ProductConfig, registered: Sequence[str]) -> None
     missing = sorted(set(config.providers) - names)
     if missing:
         raise ValueError(f"provider {missing[0]!r} is not registered by any admitted plugin")
+
+
+def _sandbox_env_baseline() -> dict[str, str]:
+    """Minimal deliberate env baseline for confined children: login/shell basics only."""
+    baseline: dict[str, str] = {}
+    for key in ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "TMPDIR", "TZ", "LANG", "LC_ALL"):
+        value = os.environ.get(key)
+        if value:
+            baseline[key] = value
+    return baseline
+
+
+def locate_sandbox_helper() -> Path | None:
+    """Resolve the native helper binary for this installation, or None when not shipped."""
+    override = os.environ.get("VOIDCODE_SANDBOX_HELPER")
+    if override:
+        candidate = Path(override)
+        return candidate if candidate.is_file() else None
+    package_root = Path(__file__).resolve().parent
+    suffix = "voidcode-sandbox-helper.exe" if os.name == "nt" else "voidcode-sandbox-helper"
+    for candidate in (package_root / "bin" / suffix, package_root / "native" / suffix):
+        if candidate.is_file():
+            return candidate
+    # Dev tree: <repo>/native/sandbox-adapter/target/{debug,release}/.
+    for parent in Path(__file__).resolve().parents:
+        adapter = parent / "native" / "sandbox-adapter" / "target"
+        if adapter.is_dir():
+            for profile in ("debug", "release"):
+                candidate = adapter / profile / suffix
+                if candidate.is_file():
+                    return candidate
+            break
+    return None
+
+
+def sandbox_backend_for(
+    *,
+    config: Config | None,
+    workspace: Path,
+    state_dir: Path,
+    admission: Admission,
+) -> SandboxBackend | None:
+    """Assemble the transparent exec backend, or None when no sandbox section is configured.
+
+    Product maps config to neutral core policy; core never sees voidcode.json. A configured
+    sandbox with a missing backend refuses loudly, naming the missing piece. No silent
+    degrade. Absent section means unconfined, today's behavior exactly.
+    """
+    if config is None or config.sandbox is None:
+        return None
+    helper = locate_sandbox_helper()
+    if helper is None:
+        raise ValueError(
+            "sandbox is configured but the native helper is missing from this installation "
+            "(expected voidcode/bin/voidcode-sandbox-helper). Remove the sandbox section to run unconfined."
+        )
+    check_helper(helper)
+    workspace = workspace.resolve(strict=True)
+    protected = [str(workspace / "voidcode.json")]
+    for source in admission.plugins:
+        try:
+            protected.append(str(source.root.resolve(strict=True)))
+        except OSError:
+            protected.append(str(source.root))
+    protected.append(str(helper))
+    protected.append(str(state_dir / "private"))
+    protected.append(str(state_dir / "voidcode.db"))
+    protected.append(str(state_dir / "process-spool"))
+    return SandboxBackend(
+        policy=SandboxPolicy(
+            mode=config.sandbox.mode,
+            network=config.sandbox.effective_network,
+            writable_roots=tuple(config.sandbox.writable_roots),
+        ),
+        helper_path=str(helper),
+        protected_paths=tuple(dict.fromkeys(protected)),
+        env_baseline=tuple(sorted(_sandbox_env_baseline().items())),
+    )
 
 
 def open_core(
@@ -283,7 +374,7 @@ def open_core(
 
     def admit_callback(
         *,
-        config: ProductConfig | None = None,
+        config: Config | None = None,
         snapshot: Mapping[str, object] | None = None,
         revision_id: str | None = None,
     ) -> Admission:
@@ -313,6 +404,9 @@ def open_core(
             workspace=workspace,
             bundled_sources=bundled_sources(),
         )
+    # The recorded configuration — not the live file — decides the backend: a restart
+    # rebuilds the generation it recorded, and only an explicit reload changes it.
+    recorded = config_from_snapshot(load_private_snapshot(state_dir, admission.revision_id))
     return Core(
         workspace=workspace,
         state_dir=state_dir,
@@ -322,6 +416,7 @@ def open_core(
         revision_payload=admission.revision_payload,
         admission=admission,
         admits=admit_callback,
+        sandbox_backend=sandbox_backend_for(config=recorded, workspace=workspace, state_dir=state_dir, admission=admission),
     )
 
 

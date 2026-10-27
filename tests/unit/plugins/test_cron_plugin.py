@@ -46,7 +46,7 @@ def _pinned_clock(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def services() -> FakeServices:
-    return FakeServices(owner=OWNER, schema_version=SCHEMA_VERSION)
+    return FakeServices(owner=OWNER)
 
 
 def _context(workspace: Path) -> ToolContext:

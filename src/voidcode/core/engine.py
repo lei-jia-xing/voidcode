@@ -39,6 +39,7 @@ from ..sdk.hooks import RequestWindow, StopCause, WindowSegment
 from ..sdk.invocation import ToolContext
 from ..sdk.json_values import json_wire_object
 from ..sdk.limits import CLIENT_PROMPT_MAX_BYTES
+from ..sdk.observed_effects import MAX_OBSERVED_CHANGES, ObservedChange
 from ..sdk.provider import ProviderExecutionError, ProviderMessage, ProviderTurnRequest, ProviderTurnResult
 from ..sdk.services import (
     ChildOutcome,
@@ -48,6 +49,7 @@ from ..sdk.services import (
     SessionUsageReport,
 )
 from ..sdk.tools import (
+    ResourceChange,
     TextOutput,
     ToolCall,
     ToolDefinition,
@@ -82,6 +84,7 @@ from .events import CHILD_MESSAGE_OWNER, EventType, child_completion_notice_id
 from .facts import FACT_EVENT_TYPES as _FACT_EVENT_TYPES
 from .facts import fact_for_event
 from .plugins import LeaseContext, PluginRuntime, PluginSource, ToolInvocationOutcome
+from .sandbox import SandboxBackend
 from .storage.store import (
     Checkpoint,
     ContinuationRecord,
@@ -225,6 +228,10 @@ CORE_TOOL_NAMES = frozenset(name for name, _d, _s, _e in _CORE_TOOL_SPECS)
 #: sessions stay available; only a model turn or governed query fails with this text.
 MODEL_CONFIGURATION_GUIDANCE = "no model configured or registered"
 
+#: At most this many supervisor-observed changes join one tool result at merge time. The
+#: helper already caps its own report at MAX_OBSERVED_CHANGES; this only bounds multi-child
+#: accumulation within one invocation.
+MAX_MERGED_OBSERVATIONS = MAX_OBSERVED_CHANGES
 #: Reserved core command that activates the configured sources on explicit request.
 RELOAD_COMMAND_NAME = "core.reload"
 _RELOAD_COMMAND_SPEC: tuple[str, str, Mapping[str, object], tuple[ToolEffect, ...], bool] = (
@@ -484,6 +491,7 @@ class Core:
         auto_drain: bool = True,
         admission: Admission | None = None,
         admits: Callable[..., Admission] | None = None,
+        sandbox_backend: SandboxBackend | None = None,
     ) -> None:
         self.auto_drain = auto_drain
         self.workspace = workspace.resolve(strict=True)
@@ -552,6 +560,8 @@ class Core:
                 progress_callback=self._report_progress,
                 tool_definition_callback=self._visible_tool_definition,
                 artifacts_dir=self._state_dir / "artifacts",
+                sandbox_backend=sandbox_backend,
+                process_spool_dir=self._process_spool_dir(),
             )
             # A runtime whose registry cannot be published is closed here: nothing may outlive a
             # failed construction, and the late-bound cleanup callback is registered only after
@@ -587,6 +597,16 @@ class Core:
             # fixing the same authorized source and retrying works without deleting any database.
             self.store.record_workspace_revision(str(self.workspace), revision_id)
             self._resources = resources.pop_all()
+
+    def _process_spool_dir(self) -> Path:
+        """Stable runtime-owned spool ancestor for confined logs: state_dir/process-spool (0700)."""
+        spool = self._state_dir / "process-spool"
+        spool.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(spool, 0o700)
+        except OSError:
+            pass
+        return spool
 
     def _assert_state_schema_compatible(self) -> None:
         """Refuse to reinterpret stored owner state under a different declared schema."""
@@ -2067,6 +2087,34 @@ class Core:
             self._clear_fence()
             raise
 
+    def _candidate_sandbox_backend(self, admission: Admission) -> SandboxBackend | None:
+        """Rebuild the exec backend for a candidate generation (core-side assembly).
+
+        Same neutral rule as bootstrap: the current backend's policy/helper/baseline plus
+        freshly resolved protected paths (live config + admitted plugin roots + helper +
+        state private/db). None stays None. No gate: new spawns use the current policy.
+        """
+        current = self._snapshot.plugin_runtime.sandbox_backend if self._snapshot is not None else None
+        if current is None:
+            return None
+        protected = [str(self.workspace / "voidcode.json")]
+        for source in admission.plugins:
+            try:
+                protected.append(str(source.root.resolve(strict=True)))
+            except OSError:
+                protected.append(str(source.root))
+        if current.helper_path:
+            protected.append(current.helper_path)
+        protected.append(str(self._state_dir / "private"))
+        protected.append(str(self._state_dir / "voidcode.db"))
+        protected.append(str(self._state_dir / "process-spool"))
+        return SandboxBackend(
+            policy=current.policy,
+            helper_path=current.helper_path,
+            protected_paths=tuple(dict.fromkeys(protected)),
+            env_baseline=current.env_baseline,
+        )
+
     def _prepare_activation_locked(self, snapshot: _Snapshot, *, admission: Admission, source: str) -> _PreparedActivation:
         target_revision_id = admission.revision_id
         if target_revision_id == snapshot.revision_id:
@@ -2102,6 +2150,8 @@ class Core:
                 progress_callback=self._report_progress,
                 tool_definition_callback=self._visible_tool_definition,
                 artifacts_dir=self._state_dir / "artifacts",
+                sandbox_backend=self._candidate_sandbox_backend(admission),
+                process_spool_dir=self._process_spool_dir(),
             )
             # Flush facts that belong to the OLD generation before its runtime and subscriptions go
             # away. An eligible owner the candidate re-registers receives its fact right after the
@@ -3785,6 +3835,7 @@ class Core:
                 staged_conts = outcome.staged_continuations
                 staged_cancels = outcome.staged_cancellations
                 staged_budget = outcome.staged_budget
+                staged_observations = outcome.staged_observations
             except ActivationFenced as exc:
                 if effective_abort.cancelled:
                     return self._stop(execution, str(exc), stop_cause=effective_abort.stop_cause or "user_stop")
@@ -3796,6 +3847,7 @@ class Core:
                 staged_conts = ()
                 staged_cancels = ()
                 staged_budget = None
+                staged_observations = ()
 
             if result.tool_name != call.tool_name:
                 return self._stop(execution, "tool result identity differs from the dispatched native call", stop_cause="error")
@@ -3816,6 +3868,7 @@ class Core:
                 staged_conts=staged_conts,
                 staged_cancels=staged_cancels,
                 staged_budget=staged_budget,
+                staged_observations=staged_observations,
             )
             claim_id = execution.cursor.continuation_id
             claim_owner = self.store.continuation_owner(claim_id) if claim_id is not None else None
@@ -3837,7 +3890,26 @@ class Core:
         staged_conts: tuple[StagedContinuationDraft, ...] = (),
         staged_cancels: tuple[StagedCancellation, ...] = (),
         staged_budget: PluginBudget | None | Literal["clear"] = None,
+        staged_observations: tuple[ObservedChange, ...] = (),
     ) -> None:
+        # Transparent backend merge: supervisor-observed changes join the tool's self-report
+        # (success AND failure — a failed invocation may have committed a prefix). Deduped by
+        # (path, operation, old_path); the tool's own entries win ties. Capped: at most
+        # MAX_MERGED_OBSERVATIONS supervisor entries join one result; the helper already caps
+        # its own report at 256, so this only bounds multi-child accumulation per invocation.
+        if staged_observations:
+            seen = {(item.path, item.operation, item.old_path) for item in result.changes}
+            extra: list[ResourceChange] = []
+            for observed in staged_observations:
+                key = (observed.path, observed.operation, observed.old_path)
+                if key in seen:
+                    continue
+                seen.add(key)
+                extra.append(ResourceChange(path=observed.path, operation=observed.operation, old_path=observed.old_path))
+                if len(extra) >= MAX_MERGED_OBSERVATIONS:
+                    break
+            if extra:
+                result = replace(result, changes=(*result.changes, *extra))
         cursor = execution.cursor
         deferred = cursor.deferred_sequence is not None
         batch_sequence = cursor.deferred_sequence or cursor.batch_sequence

@@ -52,8 +52,8 @@ The `my-linter` entry illustrates an external plugin: the directory must exist a
 | `schema_version` | integer | Required to be `1` when present (the default). Any other value is refused. |
 | `model` | object | Model selection: `model` and `reasoning_effort`. |
 | `policy` | object | Execution policy: `approval_mode` and `read_only`. |
+| `sandbox` | object | Optional transparent exec backend: `mode`, `network`, `writable_roots`. Absent means unconfined host exec. |
 | `providers` | object | Endpoint configuration for provider names declared by admitted plugins. |
-| `plugins` | object | Per-plugin enablement, configuration, and source override. |
 
 No other top-level field is accepted.
 
@@ -79,6 +79,33 @@ Policy semantics:
 - **`read_only`** — checked before approval mode, so it is stronger than `yolo`: a tool that declares `WRITE` or `EXECUTE` is refused outright rather than prompted. It is not a blanket "no mutation" mode: `READ` and `SESSION` effects are never refused, and a `SPAWN`-only tool stays available because a restricted session may delegate only to a child that inherits the same restriction, which the core records on that child.
 
 There is no per-invocation override (no `--model`, `--approval-mode`, or in-session policy command): the active policy comes from `voidcode.json` for the workspace.
+
+### `sandbox`
+
+Optional. When absent, registry children run unconfined on the host — today's behavior
+exactly, with no observed effects. When present, every registry child (shell commands,
+background jobs, user-shell escapes, LSP service processes) runs under OS-enforced
+confinement, and the core merges supervisor-observed file changes into tool results
+transparently: plugins make zero sandbox changes.
+
+| Field | Type | Description |
+|---|---|---|
+| `mode` | string | `workspace-write` (default), `read-only`, or `danger-full-access`. |
+| `network` | boolean | Default `false` (`true` under `danger-full-access`). `false` = private network namespace with no route; `true` = unfiltered direct egress, labeled as such. `danger-full-access` with explicit `false` is refused as contradictory. |
+| `writable_roots` | list of strings | Default `[]`. Extra absolute writable roots beyond workspace+tmp. Non-empty under `read-only` is refused; any confinement option under `danger-full-access` is refused. |
+
+No other field is accepted. A configured sandbox with a missing native backend (no
+helper binary, no `bwrap` on Linux) refuses `open_core` with a clear error naming the
+missing piece — there is no silent degrade to unconfined. `danger-full-access` runs the
+supervisor unconfined: its observations are labeled best-effort, not ground truth, and no
+isolation is claimed.
+
+V1 boundary (honest, not hidden): hooks executor commands, review git diagnostics, and
+MCP stdio servers stay host-side with zero plugin changes and are NEVER claimed
+confined. File tools stay host-side and self-report; the engine dedups overlap with
+supervisor observations. Reload carries no gate: new spawns use the current policy, old
+jobs keep the enforcement fixed at their spawn. Model-editing-config plus `yolo` reload
+is out of threat model.
 
 ### `providers`
 

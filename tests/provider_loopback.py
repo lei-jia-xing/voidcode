@@ -26,7 +26,9 @@ class _OpenAILoopbackHandler(BaseHTTPRequestHandler):
             return
         response = server.replies.pop(0)
         streaming = payload.get("stream") is True
-        encoded = _stream_response_body(response) if streaming else json.dumps(response).encode()
+        stream_options = payload.get("stream_options")
+        include_usage = isinstance(stream_options, dict) and stream_options.get("include_usage") is True
+        encoded = _stream_response_body(response, include_usage=include_usage) if streaming else json.dumps(response).encode()
         content_type = "text/event-stream" if streaming else "application/json"
         server.response_bodies.append(encoded)
         server.response_content_types.append(content_type)
@@ -40,7 +42,7 @@ class _OpenAILoopbackHandler(BaseHTTPRequestHandler):
         _ = format, args
 
 
-def _stream_response_body(response: dict[str, object]) -> bytes:
+def _stream_response_body(response: dict[str, object], *, include_usage: bool) -> bytes:
     choice = cast(dict[str, object], cast(list[object], response["choices"])[0])
     message = cast(dict[str, object], choice["message"])
     head: dict[str, object] = {"role": "assistant"}
@@ -84,6 +86,23 @@ def _stream_response_body(response: dict[str, object]) -> bytes:
             ],
         },
     ]
+    # The real wire sends the usage block as a terminal usage-only chunk after
+    # the finish chunk, and only when the request asked for it with
+    # stream_options.include_usage. A reply without a usage block (usage=None)
+    # sends no chunk, so unknown usage stays unknown; a reported zero stays a
+    # zero because the block is forwarded verbatim.
+    usage = response.get("usage")
+    if include_usage and isinstance(usage, dict):
+        chunks.append(
+            {
+                "id": response["id"],
+                "object": "chat.completion.chunk",
+                "created": response["created"],
+                "model": response["model"],
+                "choices": [],
+                "usage": usage,
+            }
+        )
     frames = (f"data: {json.dumps(chunk, separators=(',', ':'))}\n\n".encode() for chunk in chunks)
     return b"".join((*frames, b"data: [DONE]\n\n"))
 

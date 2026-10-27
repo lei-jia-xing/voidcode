@@ -4,6 +4,12 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Transparent sandbox exec backend
+- New optional top-level `sandbox` section in `voidcode.json` (`mode`, `network`, `writable_roots`): when present, every registry child (shell, background, user-shell, LSP services) runs under OS-enforced confinement via the native `voidcode-sandbox-helper` (public `mxc-sdk` engine: bubblewrap/Seatbelt/ProcessContainer). Absent section means unconfined host exec, byte-identical to today.
+- Confinement is transparent: plugins make zero sandbox changes. `SandboxPolicy` follows the `ExecutionPolicy` neutral pattern; `core/sandbox.py` builds helper argv + explicit env + protected paths; spool-only logs under `state_dir/process-spool/`; no silent degrade (missing backend refuses open loudly).
+- Observed true effects: the confined supervisor snapshot-diffs writable roots and reports creates/updates/deletes/moves; `RuntimeServices` stages them onto the lease and the engine merges them into `result.changes` for success AND failure (prefix rule), deduped by `(path, operation, old_path)`, capped at 256 per result. Background reads/cancels stage the cumulative sidecar; services never stage.
+- Honest V1 boundary: hooks executor, review git, and MCP stdio stay host-side with zero plugin changes and are never claimed confined. File tools stay host-side and self-report. No reload gate (new spawns use current policy; old jobs keep birth enforcement). `danger-full-access` observations are labeled best-effort. No seccomp filter on the bubblewrap path (namespace+mount isolation only).
+
 ### Streaming turns end-to-end (P1)
 - The engine prefers `stream_turn` when the selected provider offers it, aggregating text/reasoning/tool deltas into the same turn shape `propose_turn` returns; non-streamable providers keep the `propose_turn` fallback. Single-attempt by contract: no retry once bytes flowed.
 - Observational `core.provider_progress` events (dispatch-correlated text fragments) flow through the existing control-event/SSE path ahead of the committed `core.model_turn`.

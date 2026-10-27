@@ -12,9 +12,11 @@ stopped at generation retire) run in their own session. Detached background jobs
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -23,7 +25,10 @@ from pathlib import Path
 from typing import Any, Final
 from uuid import uuid4
 
+from voidcode.sdk.observed_effects import ObservedEffects
 from voidcode.sdk.services import ProcessHandle, ProcessResult
+
+from .sandbox import SandboxBackend, build_plan, native_backend, read_effects_file, scratch_dir, with_effects_path, with_stdin
 
 #: Hard ceiling for one stream's capture. The bound exists so a runaway command cannot exhaust the
 #: core's memory; a caller that wants more must spill the output itself.
@@ -226,6 +231,8 @@ class _Background:
     process: subprocess.Popen[Any]
     own_group: bool = True
     tree_pids: tuple[int, ...] = ()
+    #: Supervisor effects sidecar path for confined spawns; None when unconfined.
+    effects_path: Path | None = None
 
     def running(self) -> bool:
         return self.process.poll() is None
@@ -269,6 +276,8 @@ class ProcessRegistry:
         max_output_bytes: int,
         cancel_event: threading.Event | None = None,
         on_output: Callable[[str, bytes], None] | None = None,
+        sandbox: SandboxBackend | None = None,
+        workspace: Path | None = None,
     ) -> ProcessResult:
         """Run one command to completion, a timeout, or a lease cancellation."""
         command = _decode_argv(argv)
@@ -277,6 +286,21 @@ class ProcessRegistry:
         if max_output_bytes <= 0:
             raise ValueError("run_process max_output_bytes must be positive")
         limit = min(int(max_output_bytes), MAX_CAPTURE_BYTES)
+        # A backend means the helper's argv replaces the caller's argv; None means today's
+        # host path with effects=None.
+        if sandbox is not None:
+            return self._run_confined(
+                sandbox,
+                command,
+                cwd=cwd,
+                env=env,
+                workspace=workspace,
+                stdin=stdin,
+                timeout_seconds=timeout_seconds,
+                max_output_bytes=limit,
+                cancel_event=cancel_event,
+                on_output=on_output,
+            )
         child_env = None if env is None else {**os.environ, **{str(key): str(value) for key, value in env.items()}}
 
         started = time.monotonic()
@@ -379,6 +403,184 @@ class ProcessRegistry:
             cancelled=cancelled,
         )
 
+    def _run_confined(
+        self,
+        sandbox: SandboxBackend,
+        command: list[str],
+        *,
+        cwd: Path | None,
+        env: Mapping[str, str] | None,
+        workspace: Path | None,
+        stdin: bytes | str | None,
+        timeout_seconds: float | None,
+        max_output_bytes: int,
+        cancel_event: threading.Event | None,
+        on_output: Callable[[str, bytes], None] | None,
+    ) -> ProcessResult:
+        """Run one command under the helper: its argv IS the child; effects ride report.json.
+
+        The helper's stdout carries ONLY the child's stdout bytes (byte-clean for capture);
+        the exit code + observed effects ride the pid-keyed stage sidecar. A helper launch
+        failure is a visible error with the prefix when one exists — never a host fallback.
+        Kill/timeout still report the committed prefix the supervisor flushed.
+        """
+        anchor = str(workspace.resolve()) if workspace is not None else str((cwd or Path.cwd()).resolve())
+        child_cwd = str(cwd.resolve()) if cwd is not None else anchor
+        helper_argv, helper_cwd, helper_env, frame = build_plan(
+            sandbox,
+            argv=tuple(command),
+            cwd=child_cwd,
+            env_overrides={str(key): str(value) for key, value in dict(env or {}).items()},
+            workspace=anchor,
+            scratch=scratch_dir(anchor),
+        )
+        if stdin is not None:
+            raw = stdin.encode("utf-8") if isinstance(stdin, str) else bytes(stdin)
+            try:
+                frame = with_stdin(frame, raw)
+            except ValueError as exc:
+                raise ValueError(f"sandbox run cannot carry stdin: invalid plan payload: {exc}") from exc
+        started = time.monotonic()
+        try:
+            process = subprocess.Popen(
+                list(helper_argv),
+                cwd=helper_cwd,
+                env=helper_env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+                creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+            )
+        except OSError as exc:
+            raise ValueError(f"sandbox run failed to start the helper: {exc}") from exc
+        with self._lock:
+            self._groups[process.pid] = process
+        helper_pid = process.pid
+        backend_name = "unconfined" if sandbox.policy.mode == "danger-full-access" else native_backend()
+        stdout_capture = _StreamCapture(max_output_bytes)
+        stderr_capture = _StreamCapture(max_output_bytes)
+        reader_errors: list[BaseException] = []
+        stdin_thread = threading.Thread(target=_write_stdin, args=(process, frame), name="core-stdin", daemon=True)
+        readers = [
+            threading.Thread(
+                target=_read_stream,
+                args=(pipe, capture, stream_name, reader_errors, on_output),
+                name=f"core-{stream_name}",
+                daemon=True,
+            )
+            for pipe, capture, stream_name in (
+                (process.stdout, stdout_capture, "stdout"),
+                (process.stderr, stderr_capture, "stderr"),
+            )
+        ]
+        stdin_thread.start()
+        for reader in readers:
+            reader.start()
+        cancelled = False
+        timed_out = False
+        drain_until = time.monotonic() + _READER_GRACE_SECONDS
+        deadline = None if timeout_seconds is None else started + timeout_seconds
+        while True:
+            if reader_errors:
+                drain_until = time.monotonic() + _READER_GRACE_SECONDS
+                self._stop(process, drain_until=drain_until)
+                break
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                drain_until = time.monotonic() + _CANCEL_RESPONSE_SECONDS
+                self._stop(process, drain_until=drain_until)
+                break
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                timed_out = True
+                drain_until = time.monotonic() + _READER_GRACE_SECONDS
+                self._stop(process, drain_until=drain_until)
+                break
+            if process.poll() is not None:
+                break
+            slot = _POLL_SECONDS if remaining is None else min(_POLL_SECONDS, remaining)
+            if cancel_event is not None:
+                cancel_event.wait(slot)
+            else:
+                time.sleep(slot)
+        for reader in readers:
+            reader.join(timeout=max(0.0, drain_until - time.monotonic()))
+        stdin_thread.join(timeout=max(0.0, drain_until - time.monotonic()))
+        duration_ms = int((time.monotonic() - started) * 1000)
+        with self._lock:
+            self._groups.pop(process.pid, None)
+        if reader_errors:
+            first = reader_errors[0]
+            raise ValueError(f"sandbox run failed while reading helper output: {type(first).__name__}: {first}")
+        effects, helper_exit = self._read_exec_report(helper_pid, helper_env, scratch_dir(anchor), backend_name)
+        # The HELPER's exit is transport; the CHILD's exit rides the report. A helper crash
+        # (nonzero with no report) is a visible failure — never a host fallback.
+        exit_code: int | None
+        if cancelled or timed_out:
+            exit_code = None
+        elif helper_exit is not None:
+            exit_code = helper_exit
+        elif process.returncode != 0:
+            raise ValueError(f"sandbox helper failed (exit {process.returncode}): {stderr_capture.text()[:2000]}")
+        else:
+            exit_code = process.returncode
+        return ProcessResult(
+            exit_code=exit_code,
+            stdout=stdout_capture.text(),
+            stderr=stderr_capture.text(),
+            duration_ms=duration_ms,
+            truncated=stdout_capture.truncated or stderr_capture.truncated,
+            timed_out=timed_out,
+            cancelled=cancelled,
+            effects=effects,
+        )
+
+    def _read_exec_report(self, helper_pid: int, helper_env: dict[str, str], scratch: str, backend: str) -> tuple[ObservedEffects | None, int | None]:
+        """Read the pid-keyed stage sidecar; reap the stage dir. Missing report, honest empty.
+
+        Danger (unconfined) mode writes no report.json: the supervisor drops its effects at
+        scratch/effects.json instead, so fall back there. The exit code then comes from the
+        helper process itself.
+        """
+        # The helper stages under ITS temp dir (its own TMPDIR from the plan env), not ours.
+        temp_base = Path(helper_env.get("TMPDIR") or helper_env.get("TEMP") or tempfile.gettempdir())
+        stage = temp_base / f"voidcode-sandbox-{helper_pid}"
+        report_path = stage / "report.json"
+        try:
+            text = report_path.read_text(encoding="utf-8")
+        except OSError:
+            self._reap_stage(stage)
+            return read_effects_file(Path(scratch) / "effects.json", backend=backend), None
+        self._reap_stage(stage)
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            return None, None
+        exit_code = payload.get("exit_code")
+        if exit_code is not None and type(exit_code) is not int:
+            exit_code = None
+        raw_effects = payload.get("effects", {})
+        if isinstance(raw_effects, dict) and not raw_effects.get("backend"):
+            raw_effects = {**raw_effects, "backend": backend}
+        try:
+            effects = ObservedEffects.from_payload(raw_effects)
+        except ValueError:
+            return None, exit_code
+        return effects, exit_code
+
+    @staticmethod
+    def _reap_stage(stage: Path) -> None:
+        try:
+            for child in stage.iterdir():
+                try:
+                    child.unlink()
+                except OSError:
+                    pass
+            stage.rmdir()
+        except OSError:
+            pass
+
     def _stop(self, process: subprocess.Popen[Any], *, drain_until: float) -> None:
         """Signal the group, escalating to SIGKILL, without ever blocking past the drain budget."""
         _kill_group(process, signal.SIGTERM)
@@ -426,6 +628,8 @@ class ProcessRegistry:
         stderr_path: Path,
         process_id: str | None = None,
         service: bool = False,
+        sandbox: SandboxBackend | None = None,
+        workspace: Path | None = None,
     ) -> ProcessHandle:
         """Start one supervised process, streaming its output into the caller's paths.
 
@@ -441,7 +645,27 @@ class ProcessRegistry:
                 raise ValueError(f"background process {identifier} is already running")
         for path in (stdout_path, stderr_path):
             path.parent.mkdir(parents=True, exist_ok=True)
-        child_env = None if env is None else {**os.environ, **{str(key): str(value) for key, value in env.items()}}
+        frame: bytes | None = None
+        effects_path: Path | None = None
+        if sandbox is not None:
+            anchor = str(workspace.resolve()) if workspace is not None else str((cwd or Path.cwd()).resolve())
+            child_cwd = str(cwd.resolve()) if cwd is not None else anchor
+            helper_argv, helper_cwd, helper_env, frame = build_plan(
+                sandbox,
+                argv=tuple(command),
+                cwd=child_cwd,
+                env_overrides={str(key): str(value) for key, value in dict(env or {}).items()},
+                workspace=anchor,
+                scratch=scratch_dir(anchor),
+            )
+            command = list(helper_argv)
+            child_env: dict[str, str] | None = helper_env
+            cwd = Path(helper_cwd)
+            # The supervisor's cumulative sidecar lives next to the logs (runtime-owned spool).
+            effects_path = stdout_path.parent / f"{identifier}.effects.json"
+            frame = with_effects_path(frame, str(effects_path))
+        else:
+            child_env = None if env is None else {**os.environ, **{str(key): str(value) for key, value in env.items()}}
         if service:
             return self._spawn_service(
                 command,
@@ -451,6 +675,8 @@ class ProcessRegistry:
                 child_env=child_env,
                 stdout_path=stdout_path,
                 stderr_path=stderr_path,
+                frame=frame,
+                effects_path=effects_path,
             )
         try:
             # Logs are appended, never truncated: restarting the same process id keeps one history,
@@ -460,7 +686,7 @@ class ProcessRegistry:
                     command,
                     cwd=None if cwd is None else str(cwd),
                     env=child_env,
-                    stdin=subprocess.PIPE if stdin else subprocess.DEVNULL,
+                    stdin=subprocess.PIPE if (stdin or frame is not None) else subprocess.DEVNULL,
                     stdout=out,
                     stderr=err,
                     start_new_session=True,
@@ -468,6 +694,16 @@ class ProcessRegistry:
                 )
         except OSError as exc:
             raise ValueError(f"failed to start background process: {exc}") from exc
+        if frame is not None:
+            self._feed_frame(process, frame)
+            if not stdin:
+                # The frame was the only stdin the helper reads; close so a service-style
+                # helper never blocks waiting for more (a stdin=True caller keeps the pipe).
+                try:
+                    if process.stdin is not None:
+                        process.stdin.close()
+                except BrokenPipeError, OSError, ValueError:
+                    pass
         entry = _Background(
             process_id=identifier,
             session_id=session_id,
@@ -477,6 +713,7 @@ class ProcessRegistry:
             stderr_path=stderr_path,
             process=process,
             own_group=True,
+            effects_path=effects_path,
         )
         with self._lock:
             replaced = self._background.get(identifier)
@@ -496,6 +733,8 @@ class ProcessRegistry:
         child_env: dict[str, str] | None,
         stdout_path: Path,
         stderr_path: Path,
+        frame: bytes | None = None,
+        effects_path: Path | None = None,
     ) -> ProcessHandle:
         """Start one service child in its own session."""
         try:
@@ -512,6 +751,10 @@ class ProcessRegistry:
                 )
         except OSError as exc:
             raise ValueError(f"failed to start service process: {exc}") from exc
+        if frame is not None:
+            # Services keep the stdin pipe (frame first, then caller bytes): the helper
+            # reads its one frame and the supervisor forwards the rest to the child.
+            self._feed_frame(server, frame)
         entry = _Background(
             process_id=identifier,
             session_id=session_id,
@@ -521,6 +764,7 @@ class ProcessRegistry:
             stderr_path=stderr_path,
             process=server,
             own_group=True,
+            effects_path=effects_path,
         )
         with self._lock:
             replaced = self._services.get(identifier)
@@ -530,6 +774,25 @@ class ProcessRegistry:
             self._services[identifier] = entry
         self._refresh_tree(entry)
         return entry.handle()
+
+    @staticmethod
+    def _feed_frame(process: subprocess.Popen[Any], frame: bytes) -> None:
+        """Write one framed plan payload to the helper's stdin."""
+        pipe = process.stdin
+        if pipe is None:
+            raise ValueError("sandbox spawn lost its helper stdin pipe")
+        try:
+            pipe.write(frame)
+            pipe.flush()
+        except (BrokenPipeError, OSError, ValueError) as exc:
+            raise ValueError(f"sandbox spawn failed to deliver its plan: {exc}") from exc
+
+    def process_effects(self, process_id: str, *, session_id: str) -> ObservedEffects | None:
+        """Cumulative supervisor sidecar for one supervised process; None when unconfined."""
+        entry = self._supervised(process_id, session_id=session_id)
+        if entry.effects_path is None:
+            return None
+        return read_effects_file(entry.effects_path, backend=native_backend())
 
     def _supervised(self, process_id: str, *, session_id: str) -> _Background:
         """One supervised entry (background or service), visible only to its own session."""

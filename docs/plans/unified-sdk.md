@@ -56,11 +56,12 @@ product concepts into `core/`. After this plan:
 
 ## Phases (smallest diff first; proven by affected suites + pre-commit)
 
-Baseline note: the full `mise run check` tree is red on 6 integration
-failures + 42 cron fixture errors that reproduce identically on unmodified
-HEAD (pre-existing, unrelated scope — see triage). Each phase below is
-proven by its affected suites, schema/factory smokes, and
-`pre-commit run --all-files`, all green.
+Baseline note (RESOLVED, historical): the full `mise run check` tree was red
+on 6 integration failures + 42 cron fixture errors that reproduced identically
+on unmodified HEAD (pre-existing, unrelated scope — see triage). Both are
+fixed (shared loopback streaming-usage fixture drift; obsolete cron fixture
+kwarg); the gate is green. Each phase below was proven by its affected suites,
+schema/factory smokes, and `pre-commit run --all-files`, all green.
 
 Status: P1–P5 implemented and verified: typed clients/history/gates/views
 landed; affected suites (122 pass, 1 skip), TUI suite (37 pass), schema +

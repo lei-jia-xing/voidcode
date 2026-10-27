@@ -17,6 +17,7 @@ from uuid import uuid4
 from voidcode.sdk.history import HistoryPage
 from voidcode.sdk.hooks import FactPage
 from voidcode.sdk.json_values import own_json_object
+from voidcode.sdk.observed_effects import ObservedEffects
 from voidcode.sdk.services import (
     ArtifactPage,
     ArtifactReference,
@@ -89,6 +90,59 @@ class RuntimeServices:
         if lease.hook or lease.readonly:
             raise PermissionError(f"this lease may not {action}: read-only and hook leases do not touch the machine")
 
+    def _stage_observations(self, lease: LeaseContext, effects: ObservedEffects | None) -> None:
+        """Append confined changes to the lease; the engine merges them into result.changes.
+
+        Scratch-only changes (sandbox tmpfs, no host path) are skipped: they name sandbox
+        paths, not host facts. None (unconfined/absent path) stages nothing.
+        """
+        if effects is None:
+            return
+        for change in effects.changes:
+            if change.scratch:
+                continue
+            lease.staged_observations.append(change)
+
+    def _spool_paths(
+        self,
+        identifier: str,
+        stdout_path: Path | str | None,
+        stderr_path: Path | str | None,
+        spool: Path,
+        *,
+        service: bool,
+    ) -> tuple[Path, Path]:
+        """Resolve log targets: runtime-generated spool under confinement, caller paths otherwise.
+
+        Under an active backend, custom stdout/stderr paths are REFUSED with a clear sandbox
+        reason (a crafted target would become a parent-opened bypass FD); only
+        runtime-generated spool files. Each generated path is resolved and checked before
+        mkdir/open. Absent backend preserves today's custom-path behavior.
+        """
+        if self._runtime.sandbox_backend is not None:
+            if stdout_path is not None or stderr_path is not None:
+                raise ValueError(
+                    "sandbox refuses custom log paths: only runtime-generated spool files "
+                    f"(got stdout_path={stdout_path!r} stderr_path={stderr_path!r})"
+                )
+            root = self._runtime.process_spool_dir or spool
+            root = Path(root)
+            if not root.is_absolute():
+                raise ValueError(f"sandbox process spool root must be absolute: {root}")
+            stdout_resolved = (root / f"{identifier}.stdout.log").resolve()
+            stderr_resolved = (root / f"{identifier}.stderr.log").resolve()
+            # Exact-FD exceptions: the two validated log FDs are pre-opened as the child's
+            # stdout/stderr; the paths must stay under the spool ancestor after resolution.
+            for resolved in (stdout_resolved, stderr_resolved):
+                if resolved != root and root not in resolved.parents:
+                    raise ValueError(f"sandbox process spool path escapes its root: {resolved}")
+            return stdout_resolved, stderr_resolved
+        _ = service
+        return (
+            Path(stdout_path) if stdout_path is not None else spool / f"{identifier}.stdout.log",
+            Path(stderr_path) if stderr_path is not None else spool / f"{identifier}.stderr.log",
+        )
+
     def run_process(
         self,
         argv: Sequence[str],
@@ -106,7 +160,7 @@ class RuntimeServices:
         resolved_cwd = self._runtime.workspace if cwd is None else Path(cwd)
         if cwd is not None and not resolved_cwd.is_dir():
             raise ValueError(f"run_process cwd is not a directory: {resolved_cwd}")
-        return self._runtime.processes.run(
+        result = self._runtime.processes.run(
             argv,
             cwd=resolved_cwd,
             env=env,
@@ -115,7 +169,11 @@ class RuntimeServices:
             max_output_bytes=max_output_bytes,
             cancel_event=self._runtime.cancel_event_for(lease),
             on_output=on_output,
+            sandbox=self._runtime.sandbox_backend,
+            workspace=self._runtime.workspace,
         )
+        self._stage_observations(lease, result.effects)
+        return result
 
     def spawn_process(
         self,
@@ -135,15 +193,18 @@ class RuntimeServices:
         resolved_cwd = self._runtime.workspace if cwd is None else Path(cwd)
         if cwd is not None and not resolved_cwd.is_dir():
             raise ValueError(f"spawn_process cwd is not a directory: {resolved_cwd}")
+        stdout_resolved, stderr_resolved = self._spool_paths(identifier, stdout_path, stderr_path, spool, service=False)
         return self._runtime.processes.spawn(
             argv,
             session_id=lease.session_id,
             cwd=resolved_cwd,
             env=env,
             stdin=bool(stdin),
-            stdout_path=Path(stdout_path) if stdout_path is not None else spool / f"{identifier}.stdout.log",
-            stderr_path=Path(stderr_path) if stderr_path is not None else spool / f"{identifier}.stderr.log",
+            stdout_path=stdout_resolved,
+            stderr_path=stderr_resolved,
             process_id=identifier,
+            sandbox=self._runtime.sandbox_backend,
+            workspace=self._runtime.workspace,
         )
 
     def spawn_service_process(
@@ -161,16 +222,19 @@ class RuntimeServices:
         resolved_cwd = self._runtime.workspace if cwd is None else Path(cwd)
         if cwd is not None and not resolved_cwd.is_dir():
             raise ValueError(f"spawn_service_process cwd is not a directory: {resolved_cwd}")
+        stdout_resolved, stderr_resolved = self._spool_paths(identifier, None, None, spool, service=True)
         handle = self._runtime.processes.spawn(
             argv,
             session_id=lease.session_id,
             cwd=resolved_cwd,
             env=env,
             stdin=True,
-            stdout_path=spool / f"{identifier}.stdout.log",
-            stderr_path=spool / f"{identifier}.stderr.log",
+            stdout_path=stdout_resolved,
+            stderr_path=stderr_resolved,
             process_id=identifier,
             service=True,
+            sandbox=self._runtime.sandbox_backend,
+            workspace=self._runtime.workspace,
         )
         self._mark_active_process(handle.process_id)
         return handle
@@ -194,13 +258,18 @@ class RuntimeServices:
         # Binding precedes the read: a second invocation reusing a service is already
         # cancellable while it waits for that server's next bytes.
         self._mark_active_process(str(process_id))
+        lease = self._active_lease()
         data, total, eof, running = self._runtime.processes.read_output(
             str(process_id),
             stream=stream,
             offset=int(offset),
             limit=int(limit),
-            session_id=self._active_lease().session_id,
+            session_id=lease.session_id,
         )
+        # User jobs stage their current cumulative effects; service reads never stage
+        # (long-lived helper noise is not tool-observed change).
+        if self._runtime.processes.service_entry(str(process_id), session_id=lease.session_id) is None:
+            self._stage_observations(lease, self._runtime.processes.process_effects(str(process_id), session_id=lease.session_id))
         return ProcessOutput(
             process_id=str(process_id),
             stream=stream,
@@ -214,7 +283,13 @@ class RuntimeServices:
     def cancel_process(self, process_id: str, reason: str = "owner cancellation") -> bool:
         self._require_writable_stance("stop background processes")
         del reason  # the stop is by process group; a reason would only be a log line we do not own
-        return self._runtime.processes.cancel(str(process_id), session_id=self._active_lease().session_id)
+        lease = self._active_lease()
+        gone = self._runtime.processes.cancel(str(process_id), session_id=lease.session_id)
+        # Stopping a user job stages its final cumulative effects (the committed prefix).
+        # Service stops never stage.
+        if self._runtime.processes.service_entry(str(process_id), session_id=lease.session_id) is None:
+            self._stage_observations(lease, self._runtime.processes.process_effects(str(process_id), session_id=lease.session_id))
+        return gone
 
     def list_processes(self) -> tuple[ProcessHandle, ...]:
         return self._runtime.processes.list_background(session_id=self._active_lease().session_id)

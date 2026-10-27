@@ -57,6 +57,7 @@ from voidcode.sdk.hooks import (
 )
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
+from voidcode.sdk.observed_effects import ObservedChange
 from voidcode.sdk.plugin import Plugin, PluginQueryCaller, StateSchema
 from voidcode.sdk.provider import (
     ProviderExecutionError,
@@ -89,6 +90,7 @@ from .artifacts import ArtifactStore
 from .events import EventType
 from .facts import fact_for_event
 from .processes import ProcessRegistry
+from .sandbox import SandboxBackend
 from .services import RuntimeServices
 from .storage.store import (
     EventDraft,
@@ -149,6 +151,8 @@ class LeaseContext:
     staged_continuations: list[StagedContinuationDraft] = field(default_factory=list)
     staged_cancellations: list[StagedCancellation] = field(default_factory=list)
     staged_budget: PluginBudget | None | Literal["clear"] = None
+    #: Supervisor-observed FS changes from this lease's confined children (transparent backend).
+    staged_observations: list[ObservedChange] = field(default_factory=list)
     revoked: bool = False
     op_counter: int = 0
 
@@ -166,6 +170,7 @@ class ToolInvocationOutcome:
     staged_continuations: tuple[StagedContinuationDraft, ...] = ()
     staged_cancellations: tuple[StagedCancellation, ...] = ()
     staged_budget: PluginBudget | None | Literal["clear"] = None
+    staged_observations: tuple[ObservedChange, ...] = ()
 
 
 #: One invocation's staged side effects: state, events, continuations, cancellations, budget.
@@ -216,6 +221,8 @@ class PluginRuntime:
         progress_callback: Callable[[LeaseContext, Mapping[str, object]], None] | None = None,
         tool_definition_callback: Callable[[str, str, str], tuple[Mapping[str, object] | None, str]] | None = None,
         artifacts_dir: Path | None = None,
+        sandbox_backend: SandboxBackend | None = None,
+        process_spool_dir: Path | None = None,
     ) -> None:
         self.workspace = Path(workspace).resolve()
         if not self.workspace.is_dir():
@@ -254,6 +261,10 @@ class PluginRuntime:
         self._closed = False
         #: Every child process this runtime started; reaped on close.
         self.processes = ProcessRegistry()
+        #: Transparent exec backend for this generation; None means unconfined host exec.
+        self.sandbox_backend: SandboxBackend | None = sandbox_backend
+        #: Stable runtime-owned spool ancestor for confined logs (None = per-generation temp).
+        self.process_spool_dir: Path | None = Path(process_spool_dir) if process_spool_dir is not None else None
         #: Where a background process spools its output when the caller names no log path.
         self.background_spool = Path(tempfile.mkdtemp(prefix="voidcode-process-"))
 
@@ -876,7 +887,9 @@ class PluginRuntime:
             self._cancel_claimed_services(lease)
             staged = ToolInvocationOutcome(result=result)
         elif tool_threw:
-            staged = ToolInvocationOutcome(result=result)
+            # A thrown tool keeps no staged state — but supervisor observations are committed
+            # truth about the world, not tool claims, so the prefix survives the throw.
+            staged = ToolInvocationOutcome(result=result, staged_observations=tuple(lease.staged_observations))
         else:
             staged_state, staged_events, staged_conts, staged_cancels, staged_budget = self._staged_changes(lease)
             staged = ToolInvocationOutcome(
@@ -886,6 +899,7 @@ class PluginRuntime:
                 staged_continuations=staged_conts,
                 staged_cancellations=staged_cancels,
                 staged_budget=staged_budget,
+                staged_observations=tuple(lease.staged_observations),
             )
         self._revoke_lease(lease)
         if return_outcome:

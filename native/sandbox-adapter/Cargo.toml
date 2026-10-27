@@ -1,0 +1,23 @@
+[package]
+name = "voidcode-sandbox-helper"
+version = "0.1.0"
+edition = "2021"
+description = "Native confinement helper for VoidCode: mxc-sdk-backed exec plus policy-checked fs-op"
+license = "MIT"
+
+[[bin]]
+name = "voidcode-sandbox-helper"
+path = "src/main.rs"
+
+[dependencies]
+mxc-sdk = "1.0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+sha2 = "0.10"
+
+[target.'cfg(unix)'.dependencies]
+signal-hook = "0.3"
+
+[target.'cfg(windows)'.dependencies]
+ctrlc = "3"

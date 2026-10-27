@@ -52,7 +52,7 @@ scope. See `docs/contracts/optional-queries.md`.
 | Core generation & activation state | `src/voidcode/core/` | `activation.py` (`Admission`, `ExecutionConfig`) |
 | In-process plugin runtime, invocation leases | `src/voidcode/core/` | `plugins.py` (`PluginRuntime`), `services.py` |
 | Append-only session persistence (schema v6) | `src/voidcode/core/storage/` | `store.py` (`SqliteStore`), `schema.sql` |
-| Product config & voidcode.json parser | `src/voidcode/` | `config.py` (`ProductConfig`, `parse_product_config`) |
+| Product config & voidcode.json parser | `src/voidcode/` | `config.py` (`Config`, `parse_config`) |
 | Product wiring, admission, adoption | `src/voidcode/` | `bootstrap.py` (`open_core`, `adopt_generation`) |
 | CLI entry point and subcommands | `src/voidcode/` | `cli.py` (`main`) |
 | HTTP/SSE transport and web client bundle | `src/voidcode/transport/` | `http.py`, `server.py`, `static.py` |

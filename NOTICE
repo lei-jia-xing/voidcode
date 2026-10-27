@@ -40,3 +40,8 @@ byte-for-byte from `can1357/oh-my-pi`, commit
 `b07a1c146d0d12cfc855a2c65d52f892ef319040`, directory
 `packages/tui/src/theme/defaults`. Copyright notices and the full MIT licence
 are in `src/voidcode/tui/themes/LICENSE.oh-my-pi`.
+
+The native sandbox helper (`native/sandbox-adapter/`) links the `mxc-sdk` Rust
+crate (version 1.0.1, from crates.io) as its confinement engine: Microsoft
+Corporation, MIT licence (<https://github.com/microsoft/mxc>). The helper
+binary statically links it; no Codex sources are vendored.

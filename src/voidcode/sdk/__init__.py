@@ -91,6 +91,20 @@ from .hooks import (
 from .invocation import ToolContext
 from .json_values import json_wire_object, json_wire_value, own_json_object, own_json_value
 from .limits import CHILD_PROMPT_MAX_BYTES, DIAGNOSTIC_DEPTH, DIAGNOSTIC_ITEMS, DIAGNOSTIC_TEXT_CHARS, TOOL_OUTPUT_BYTES
+from .observed_effects import (
+    LIST_MAX_ENTRIES,
+    MAX_OBSERVED_CHANGES,
+    MAX_OBSERVED_DENIALS,
+    MAX_SYMLINK_FOLLOW,
+    READ_PAGE_BYTES,
+    SNAPSHOT_HASH_BYTES,
+    WRITE_MAX_BYTES,
+    NetworkObservation,
+    ObservedChange,
+    ObservedDenial,
+    ObservedEffects,
+    ObservedOperation,
+)
 from .plugin import Plugin, PluginQuery, PluginQueryCaller, StateSchema
 from .provider import (
     ProviderAbortSignal,
@@ -263,12 +277,21 @@ __all__ = [
     "HistoryEvent",
     "HistoryPage",
     "InvocationFinishedFact",
+    "LIST_MAX_ENTRIES",
+    "MAX_OBSERVED_CHANGES",
+    "MAX_OBSERVED_DENIALS",
+    "MAX_SYMLINK_FOLLOW",
     "MarkdownViewData",
+    "NetworkObservation",
     "NoticeViewData",
+    "ObservedChange",
+    "ObservedDenial",
+    "ObservedEffects",
     "ObservedFactKind",
+    "ObservedOperation",
     "OpaqueToolBody",
-    "PendingGate",
     "OutputBounds",
+    "PendingGate",
     "Plugin",
     "PluginBudget",
     "PluginFact",
@@ -277,6 +300,9 @@ __all__ = [
     "PluginServices",
     "PluginView",
     "PluginViewDescriptor",
+    "READ_PAGE_BYTES",
+    "SNAPSHOT_HASH_BYTES",
+    "WRITE_MAX_BYTES",
     "ProcessHandle",
     "ProcessOutput",
     "ProcessResult",
