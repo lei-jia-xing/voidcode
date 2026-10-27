@@ -15,11 +15,10 @@ from pathlib import Path
 from typing import ClassVar
 
 from voidcode.capabilities.frontmatter import load_frontmatter_mapping, split_frontmatter
-from voidcode.capabilities.workspace_queries import RULE_PAGES, RulePage, RulePageRequest
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
 from voidcode.sdk.hooks import ContextContribution, InvocationFinishedFact, PluginFact
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.plugin import Plugin, PluginQueryCaller, StateSchema
+from voidcode.sdk.plugin import Plugin, StateSchema
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import (
     TextOutput,
@@ -31,7 +30,7 @@ from voidcode.sdk.tools import (
     ToolSuccess,
 )
 
-from .rules import build_rule_catalog, read_rule_page, render_file_rules, rulebook_prompt_context, runtime_file_rule_contexts
+from .rules import build_rule_catalog, render_file_rules, rulebook_prompt_context, runtime_file_rule_contexts
 
 SKILL_ENTRY_FILE_NAME = "SKILL.md"
 DEFAULT_SKILL_SEARCH_PATHS: tuple[str, ...] = (".voidcode/skills",)
@@ -688,10 +687,6 @@ class SkillsContextProvider:
         return None if not parts else ContextContribution(content="\n\n".join(parts))
 
 
-def _rule_page_query(request: RulePageRequest, caller: PluginQueryCaller) -> RulePage | None:
-    return read_rule_page(caller.workspace, request.uri.strip(), offset=request.offset, limit=request.limit)
-
-
 def prepare_skills_deactivation(
     state: Mapping[str, object],
     scope: str,
@@ -712,7 +707,6 @@ def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
     return Plugin(
         tools=(SkillTool(skills_config),),
         commands=(SkillsCommand(skills_config),),
-        queries=(RULE_PAGES.bind(_rule_page_query),),
         context=SkillsContextProvider(skills_config),
         observer=skills_observer,
         observed_facts=("invocation_finished",),

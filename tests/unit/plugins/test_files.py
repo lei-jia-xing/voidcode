@@ -538,18 +538,11 @@ class _UriServices:
         events: tuple = (),
         child_events: tuple = (),
         refuse_child: Exception | None = None,
-        rule_answer: dict | None = None,
-        rule_unanswered: bool = False,
     ) -> None:
-        from voidcode.sdk.services import QueryUnavailable
-
         self._definitions = definitions or {}
         self._events = events
         self._child_events = child_events
         self._refuse_child = refuse_child
-        self._rule_answer = rule_answer
-        self._rule_unanswered = rule_unanswered
-        self._missing = QueryUnavailable
         self.child_session_ids: list = []
 
     def tool_definition(self, name: str):  # type: ignore[no-untyped-def]
@@ -567,12 +560,6 @@ class _UriServices:
 
         events = self._events if session_id == "session-test" else self._child_events
         return render_history_page(events, after_sequence=after_sequence, offset=offset)
-
-    def query(self, name: str, arguments: dict | None = None):  # type: ignore[no-untyped-def]
-        assert name == "workspace.rule_page"
-        if self._rule_unanswered:
-            raise self._missing(f"no admitted plugin answers the query {name!r}")
-        return self._rule_answer
 
 
 def test_read_tool_documentation_renders_visible_definition_and_refuses_hidden(tmp_path: Path) -> None:
@@ -684,46 +671,6 @@ def test_read_transcript_returns_readable_pages_with_a_cursor_and_reports_core_r
     assert isinstance(sibling, ToolFailure)
     assert "transcript not accessible for session sibling" in json.dumps(sibling.error)
     assert "own descendants" in json.dumps(sibling.error)
-
-
-def test_read_rule_reports_unavailable_unknown_and_malformed(tmp_path: Path) -> None:
-    plugin = create_plugin({})
-    read_tool = next(t for t in plugin.tools if t.definition.name == "read")
-
-    disabled = read_tool.invoke(
-        ToolCall(tool_name="read", arguments={"path": "rule://notes"}),
-        context=_context(tmp_path),
-        services=cast(Any, _UriServices(rule_unanswered=True)),
-    )
-    assert isinstance(disabled, ToolFailure)
-    assert "rule catalog is unavailable" in disabled.error
-
-    unknown = read_tool.invoke(
-        ToolCall(tool_name="read", arguments={"path": "rule://notes"}),
-        context=_context(tmp_path),
-        services=cast(Any, _UriServices(rule_answer=None)),
-    )
-    assert isinstance(unknown, ToolFailure)
-    assert "unknown rule in this workspace" in unknown.error
-
-    malformed = read_tool.invoke(
-        ToolCall(tool_name="read", arguments={"path": "rule://notes"}),
-        context=_context(tmp_path),
-        services=cast(Any, _UriServices(rule_answer={"rule": "notes"})),
-    )
-    assert isinstance(malformed, ToolFailure)
-    assert "provider shape violated" in malformed.error
-
-    page = read_tool.invoke(
-        ToolCall(tool_name="read", arguments={"path": "rule://notes"}),
-        context=_context(tmp_path),
-        services=cast(
-            Any,
-            _UriServices(rule_answer={"rule": "notes", "content_hash": "a" * 64, "text": "Read me", "next_offset": None}),
-        ),
-    )
-    assert isinstance(page, ToolSuccess)
-    assert "Read me" in page.output.text  # type: ignore[union-attr]
 
 
 class _VersionServices:

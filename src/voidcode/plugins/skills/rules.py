@@ -8,14 +8,11 @@ result bodies.
 
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
-
-from voidcode.capabilities.workspace_queries import RULE_URI_PREFIX, RulePage
 
 RULE_FILE_NAME = "AGENTS.md"
 LOCAL_RULE_FILE_NAME = "AGENTS.override.md"
@@ -28,7 +25,6 @@ MAX_RULEBOOK_FILES = 64
 MAX_RULEBOOK_CONTENT_CHARS = 12_000
 MAX_RULEBOOK_METADATA_CHARS = 240
 MAX_RULEBOOK_PROMPT_CHARS = 12_000
-#: Rule URI prefix, shared verbatim with the files plugin's ``rule://`` reader.
 
 _RULE_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 
@@ -231,7 +227,7 @@ class RuleMetadata:
     application: RuleApplication
     scope: RuleScope
     precedence: int
-    content_hash: str
+    path: str
 
     def payload(self) -> dict[str, object]:
         return {
@@ -240,8 +236,7 @@ class RuleMetadata:
             "application": self.application,
             "scope": self.scope,
             "precedence": self.precedence,
-            "uri": f"{RULE_URI_PREFIX}{self.name}",
-            "content_hash": self.content_hash,
+            "path": self.path,
         }
 
 
@@ -262,10 +257,6 @@ class RuleCatalog:
     @property
     def discoverable(self) -> tuple[RuleCatalogEntry, ...]:
         return tuple(entry for entry in self.entries if entry.metadata.application == "discoverable")
-
-
-def _canonical_rule_bytes(content: str) -> bytes:
-    return content.replace("\r\n", "\n").replace("\r", "\n").strip().encode("utf-8")
 
 
 def _rule_sort_key(metadata: RuleMetadata) -> tuple[int, int, str]:
@@ -315,7 +306,7 @@ def _parse_rule_document(path: Path, text: str) -> RuleCatalogEntry | None:
         return None
     description = fields.get("description") or next((line.strip().lstrip("#").strip() for line in content.splitlines() if line.strip()), name)
     description = description[:MAX_RULEBOOK_METADATA_CHARS].strip()
-    metadata = RuleMetadata(name, description, application, scope, precedence, hashlib.sha256(_canonical_rule_bytes(content)).hexdigest())
+    metadata = RuleMetadata(name, description, application, scope, precedence, path.as_posix())
     return RuleCatalogEntry(metadata=metadata, content=content)
 
 
@@ -368,36 +359,10 @@ def rulebook_prompt_context(catalog: RuleCatalog) -> str:
             metadata = entry.metadata
             parts.append(f"\nRule {metadata.name} (scope={metadata.scope}, precedence={metadata.precedence}):\n{entry.content}")
     if catalog.discoverable:
-        parts.append(f"\nDiscoverable runtime rules (metadata only; read {RULE_URI_PREFIX}<name> when needed):")
+        parts.append("\nDiscoverable runtime rules (read the listed files when needed):")
         for entry in catalog.discoverable:
             metadata = entry.metadata
             parts.append(
-                f"- {metadata.name}: {metadata.description} (scope={metadata.scope}, "
-                f"precedence={metadata.precedence}, hash={metadata.content_hash}, uri={RULE_URI_PREFIX}{metadata.name})"
+                f"- {metadata.name}: {metadata.description} (scope={metadata.scope}, precedence={metadata.precedence}, path={metadata.path})"
             )
     return "\n".join(parts)[:MAX_RULEBOOK_PROMPT_CHARS]
-
-
-def read_rule_page(workspace: Path | None, uri: str, *, offset: int = 1, limit: int = 2000) -> RulePage | None:
-    """Read one line page of the rulebook rule named by a ``rule://<name>`` URI.
-
-    The same catalog the context hook publishes (`build_rule_catalog`), so a URI the model was
-    shown always resolves to the same text; ``None`` means no such rule exists in this workspace.
-    """
-    name = uri[len(RULE_URI_PREFIX) :] if uri.startswith(RULE_URI_PREFIX) else uri
-    if _RULE_NAME_PATTERN.fullmatch(name.strip()) is None:
-        return None
-    catalog = build_rule_catalog(workspace)
-    entry = next((item for item in catalog.entries if item.metadata.name == name.strip()), None)
-    if entry is None:
-        return None
-    lines = entry.content.splitlines()
-    start = max(1, offset) - 1
-    window = lines[start : start + max(1, limit)]
-    end = start + len(window)
-    return RulePage(
-        rule=entry.metadata.name,
-        content_hash=entry.metadata.content_hash,
-        text="\n".join(window),
-        next_offset=end + 1 if end < len(lines) else None,
-    )

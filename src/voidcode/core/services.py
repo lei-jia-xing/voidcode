@@ -274,6 +274,7 @@ class RuntimeServices:
     ) -> ArtifactPage:
         from .artifacts import SHA256_PATTERN
 
+        self._active_lease()
         digest = _artifact_sha256(reference)
         if not SHA256_PATTERN.match(digest):
             raise ValueError("artifact reference must be a lowercase sha256 digest")

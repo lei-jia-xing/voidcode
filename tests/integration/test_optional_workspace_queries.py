@@ -18,14 +18,10 @@ _PROVIDER = """
 from hashlib import sha256
 from pathlib import Path
 from voidcode.sdk.plugin import Plugin
-from voidcode.capabilities.workspace_queries import RULE_PAGES, DOCUMENT_STATES, RulePage, DocumentState
+from voidcode.capabilities.workspace_queries import DOCUMENT_STATES, DocumentState
 
 
 def create_plugin(config):
-    def rule(request, caller):
-        assert caller.session_id
-        return RulePage("" if config.get("broken") else "style", "a" * 64, "Independent rule provider", None)
-
     def document(request, caller):
         target = Path(request.path)
         return DocumentState(
@@ -33,7 +29,7 @@ def create_plugin(config):
             version=1, content_hash=sha256(target.read_bytes()).hexdigest(), position_encoding="utf-16",
         )
 
-    return Plugin(queries=(RULE_PAGES.bind(rule), DOCUMENT_STATES.bind(document)))
+    return Plugin(queries=(DOCUMENT_STATES.bind(document),))
 """
 
 
@@ -73,7 +69,6 @@ def test_file_tools_use_any_optional_workspace_provider(tmp_path: Path, mode: st
     server = OpenAILoopbackServer(
         [
             _turn("read", {"path": "note.txt"}),
-            _turn("read", {"path": "rule://style"}),
             _turn("apply_workspace_edit", {"edits": [edit]}),
             _turn(None),
         ]
@@ -94,26 +89,21 @@ def test_file_tools_use_any_optional_workspace_provider(tmp_path: Path, mode: st
         )
         with open_core(workspace, state_dir=tmp_path / "state") as core:
             assert core.plugin_runtime.plugin_ids == (("files", "providers") if mode == "absent" else ("alternate-provider", "files", "providers"))
-            result = core.run("Read a rule and apply a version-constrained edit")
+            result = core.run("Read a file and apply a version-constrained edit")
             assert result.status == "completed", result.error
             answers = [
                 decode_tool_result(event.payload["result"])
                 for event in core.store.events(result.session_id)
                 if event.event_type == "core.tool_completed"
             ]
-            assert len(answers) == 3 and isinstance(answers[0], ToolSuccess)
+            assert len(answers) == 2 and isinstance(answers[0], ToolSuccess)
             expected = ToolSuccess if mode == "replacement" else ToolFailure
             assert isinstance(answers[1], expected), answers[1]
-            assert isinstance(answers[2], expected), answers[2]
             assert target.read_text() == ("Zbc\n" if mode == "replacement" else "abc\n")
-            if mode == "replacement":
-                assert "Independent rule provider" in str(answers[1].output)
-            elif mode == "absent":
-                assert "unavailable" in answers[1].error
-                assert answers[2].diagnostics.details["reason"] == "document_version_unavailable"
-            else:
-                assert "provider shape violated" in answers[1].error
-                assert answers[2].diagnostics.details["reason"] == "document_answer_shape_violation"
+            if mode == "absent":
+                assert answers[1].diagnostics.details["reason"] == "document_version_unavailable"
+            elif mode == "broken":
+                assert answers[1].diagnostics.details["reason"] == "document_answer_shape_violation"
     finally:
         server.shutdown()
         worker.join(timeout=5)

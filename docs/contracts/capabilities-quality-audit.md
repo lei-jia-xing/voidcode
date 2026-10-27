@@ -88,7 +88,7 @@ not establish source review.
   unused persisted-body decoder. Artifact pages preserve incomplete UTF-8 and
   budget replacement-character expansion (`65da3ab`). Image artifacts reuse
   their existing reference and inline images use the already-read first page.
-- Resource schemes are `artifact://`, `tool://`, `rule://` and `transcript://`.
+- Resource schemes are `artifact://`, `tool://` and `transcript://`.
   Producers, readers, scoped queries, history links and documentation share the
   new spelling; no old aliases remain. Core path canonicalization preserves
   resource URIs generically instead of hardcoding a product scheme.
@@ -172,3 +172,12 @@ feature and existing consumer fixtures were updated; no test cases were added.
   individually; trace-file retention is not automatic.
 - Workspace ignore matching is root-based. Search results are bounded
   observations; narrower searches are the recovery path for omissions.
+
+Subsequent simplification: removed the rule URI reader, shared rule-page query and
+its skills provider. Discoverable rules now publish real file paths; redundant
+rule-content hashes were removed with the query. Artifact reads now check the
+invocation lease before accessing storage, matching other scoped services.
+Verification of this follow-up: 102 existing rule/file/query unit cases and 22
+existing artifact/service/query integration cases passed; revoked-lease rejection
+was reproduced manually before and after the fix. Ruff and source ty passed.
+No test cases were added.

@@ -156,8 +156,7 @@ core's active dispatch snapshot advertises to this session (plugin plus reserved
 with profile scope and read-only stance applied); `transcript://<session>` composes a
 payload-included page from committed events for the caller's own session or one of its own
 descendants (parents, siblings, unrelated roots, and foreign workspaces are refused by the
-core's lineage guard); `rule://<name>` asks the skills plugin's `workspace.rule_page`
-query, which owns the rulebook semantics; `artifact://<id>` reads through
+core's lineage guard); `artifact://<id>` reads through
 `PluginServices.read_artifact`. `apply_workspace_edit` demands `expectedHash`, and version
 constraints are checked against the LSP plugin's `workspace.document_version` query — a pure
 read of documents this session already opened (never a server start) — failing closed with a
@@ -197,13 +196,14 @@ With every bundled plugin disabled, the core still manages sessions and SQLite p
 Disabling `files`, `exec`, or `providers` removes those capabilities completely; re-enabling restores them. Duplicate tool names between plugins remain errors.
 
 Plugins collaborate through optional contracts rather than importing a concrete peer.
-`voidcode.capabilities.workspace_queries` defines `workspace.rule_page` and
-`workspace.document_version`, their shared request/answer types, and the rule URI prefix.
+`voidcode.capabilities.workspace_queries` defines `workspace.document_version`
+and its shared request/answer types.
 Both sides use the shared `bind` / `ask` helpers rather than duplicating dictionaries and validation. Any plugin
 can implement them. `QueryUnavailable` means no provider was admitted; `None` means the
 provider knows no such resource. Malformed answers and provider exceptions remain visible
-failures. Files can operate without skills or LSP; rule URIs report unavailability, hash-only
-edits remain usable, and version-constrained edits fail closed without a document version.
+failures. Files can operate without skills or LSP; hash-only edits remain usable, and
+version-constrained edits fail closed without a document version. Discoverable
+rules advertise their source files and use ordinary file reads.
 This removes duplicated contract definitions, while retaining the explicit semantic dependency
 when a caller requests an optional resource. Custom query names remain available to plugins.
 

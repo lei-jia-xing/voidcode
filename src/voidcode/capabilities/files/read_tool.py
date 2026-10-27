@@ -18,10 +18,9 @@ from urllib.parse import parse_qs
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from voidcode.capabilities.workspace_queries import RULE_PAGES, RULE_URI_PREFIX, RulePageRequest
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
-from voidcode.sdk.services import ArtifactPage, PluginServices, QueryContractError, QueryUnavailable
+from voidcode.sdk.services import ArtifactPage, PluginServices
 from voidcode.sdk.tools import (
     AttachmentOutput,
     ConfirmedStop,
@@ -414,7 +413,7 @@ def _render_transcript(
 class ReadArgs(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
-    path: str = Field(description="File path, artifact://<id>, tool://<name>, rule://<name>, or transcript://<session_id>.")
+    path: str = Field(description="File path, artifact://<id>, tool://<name>, or transcript://<session_id>.")
     offset: int | None = Field(
         default=None,
         ge=1,
@@ -759,41 +758,6 @@ class ReadTool:
             raise ValueError("byte_offset and byte_limit are only valid for artifact:// URIs")
         if args.byte_limit is not None and args.byte_offset is None:
             raise ValueError("byte_limit requires byte_offset")
-
-        if args.path.startswith(RULE_URI_PREFIX):
-            try:
-                page = RULE_PAGES.ask(services, RulePageRequest(uri=args.path, offset=args.offset or 1, limit=args.limit or DEFAULT_READ_LIMIT))
-            except QueryUnavailable:
-                return _uri_failure(self.definition.name, f"rule catalog is unavailable in this runtime generation: {args.path}")
-            except QueryContractError:
-                return _uri_failure(self.definition.name, f"unreadable rule page for {args.path}: provider shape violated")
-            if page is None:
-                return _uri_failure(self.definition.name, f"unknown rule in this workspace: {args.path}")
-            next_offset = page.next_offset
-            truncated = next_offset is not None
-            body = page.as_payload()
-            body.update(
-                {
-                    "type": "rule",
-                    "truncated": truncated,
-                    "partial": truncated,
-                    "byte_count": len(page.text.encode("utf-8")),
-                    "raw_content": page.text,
-                }
-            )
-            return _read_success(
-                _ReadOutcome(
-                    output=_text_output(
-                        f"Read rule {page.rule} from {args.path}" + ("; output is truncated; continue with next_offset." if truncated else "."),
-                        raw_content=page.text,
-                        content_hash=page.content_hash,
-                        next_offset=next_offset,
-                        truncated=truncated,
-                        partial=truncated,
-                    ),
-                    body=OpaqueToolBody(body),
-                )
-            )
 
         if args.path.startswith(TOOL_URI_PREFIX):
             outcome = _render_tool_documentation(args.path, context=context, services=services, tool_name_label=self.definition.name)

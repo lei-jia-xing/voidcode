@@ -1,7 +1,7 @@
 # Optional queries between plugins
 
 A consumer depends on a named capability contract, never on an implementing plugin id,
-module, owner state, or startup order. Both sides import the same SDK contract. The core
+module, owner state, or startup order. Both sides import the same shared capability contract. The core
 routes its bounded JSON transport inside the caller's invocation; queries gain no writable
 services and must remain read-only. Queries are a trusted-code convention, not a sandbox.
 
@@ -16,33 +16,33 @@ A provider registers the shared contract, without restating parameter parsing:
 
 ```python
 from voidcode.sdk.plugin import Plugin, PluginQueryCaller
-from voidcode.capabilities.workspace_queries import RULE_PAGES, RulePage, RulePageRequest
+from voidcode.capabilities.workspace_queries import DOCUMENT_STATES, DocumentState, DocumentStateRequest
 
 
-def page(request: RulePageRequest, caller: PluginQueryCaller) -> RulePage | None:
-    # Read your own catalog, scoped by caller.workspace and caller.session_id.
-    # Return None when the requested rule is absent.
+def document(request: DocumentStateRequest, caller: PluginQueryCaller) -> DocumentState | None:
+    # Read your own document state, scoped by caller.workspace and caller.session_id.
+    # Return None when the requested document is not open.
     ...
 
 
 def create_plugin(config):
-    return Plugin(queries=(RULE_PAGES.bind(page),))
+    return Plugin(queries=(DOCUMENT_STATES.bind(document),))
 ```
 
 The consumer uses the same contract:
 
 ```python
-from voidcode.capabilities.workspace_queries import RULE_PAGES, RulePageRequest
+from voidcode.capabilities.workspace_queries import DOCUMENT_STATES, DocumentStateRequest
 
-page = RULE_PAGES.ask(services, RulePageRequest(uri="rule://style"))
+state = DOCUMENT_STATES.ask(services, DocumentStateRequest(path="/workspace/style.py"))
 ```
 
-No consumer checks whether `skills` or `lsp` is enabled. `RULE_PAGES` and `DOCUMENT_STATES`
-can be implemented by any admitted plugin. Duplicate registrations for the same name still
+No consumer checks whether `lsp` is enabled. `DOCUMENT_STATES` can be implemented
+by any admitted plugin. Duplicate registrations for the same name still
 fail visibly: disable one provider before admitting another. A breaking request/answer change
 requires a new query name; do not silently change the meaning of an existing contract.
 Custom contracts can use the same SDK API; the low-level `PluginServices.query` and
-`PluginQuery` transport remain available for compatibility.
+`PluginQuery` transport remain available for custom contracts.
 
 ## Distinct outcomes
 

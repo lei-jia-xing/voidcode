@@ -8,11 +8,8 @@ from pydantic import ValidationError
 
 from voidcode.capabilities.workspace_queries import (
     DOCUMENT_STATES,
-    RULE_PAGES,
     DocumentState,
     DocumentStateRequest,
-    RulePage,
-    RulePageRequest,
 )
 from voidcode.sdk.plugin import PluginQueryCaller
 from voidcode.sdk.services import QueryContractError, QueryUnavailable
@@ -32,18 +29,6 @@ def test_document_state_rejects_wrong_document_or_hash() -> None:
     assert DocumentState.from_query({**state.as_payload(), "position_encoding": "unknown"}, path=state.path) is None
 
 
-@pytest.mark.parametrize("offset", [True, False, 0, -1, "2"])
-def test_rule_page_rejects_invalid_pagination(offset: object) -> None:
-    page = RulePage("style", "a" * 64, "Use tabs", None)
-    assert RulePage.from_query({**page.as_payload(), "next_offset": offset}) is None
-
-
-def test_rule_page_preserves_terminal_page_and_next_offset() -> None:
-    for offset in (None, 2):
-        page = RulePage("style", "a" * 64, "", offset)
-        assert RulePage.from_query(page.as_payload()) == page
-
-
 class Transport:
     def __init__(self, answer: object) -> None:
         self.answer = answer
@@ -55,18 +40,18 @@ class Transport:
 
 
 def test_optional_query_distinguishes_absence_resource_missing_and_handler_failure() -> None:
-    request = RulePageRequest(uri="rule://example")
-    assert RULE_PAGES.ask(cast(Any, Transport(None)), request) is None
+    request = DocumentStateRequest(path="/example")
+    assert DOCUMENT_STATES.ask(cast(Any, Transport(None)), request) is None
     for failure in (QueryUnavailable("no implementation"), RuntimeError("provider bug")):
         with pytest.raises(type(failure)) as caught:
-            RULE_PAGES.ask(cast(Any, Transport(failure)), request)
+            DOCUMENT_STATES.ask(cast(Any, Transport(failure)), request)
         assert caught.value is failure
 
 
-@pytest.mark.parametrize("answer", [[], "bad", {}, {"rule": "style", "text": "body"}])
+@pytest.mark.parametrize("answer", [[], "bad", {}, {"path": "/style"}])
 def test_query_rejects_malformed_answers(answer: object) -> None:
     with pytest.raises(QueryContractError):
-        RULE_PAGES.ask(cast(Any, Transport(answer)), RulePageRequest(uri="rule://style"))
+        DOCUMENT_STATES.ask(cast(Any, Transport(answer)), DocumentStateRequest(path="/style"))
 
 
 def test_document_answer_must_belong_to_requested_document() -> None:
@@ -78,15 +63,15 @@ def test_document_answer_must_belong_to_requested_document() -> None:
 @pytest.mark.parametrize(
     "arguments",
     [
-        {"uri": "  "},
-        {"uri": "rule", "offset": True},
-        {"uri": "rule", "limit": 2001},
-        {"uri": "rule", "extra": 1},
+        {"path": ""},
+        {"path": True},
+        {"path": None},
+        {"path": "/rule", "extra": 1},
     ],
 )
 def test_bound_query_rejects_invalid_requests_before_handler(arguments: dict[str, object]) -> None:
-    def handler(_request: RulePageRequest, _caller: PluginQueryCaller) -> RulePage:
+    def handler(_request: DocumentStateRequest, _caller: PluginQueryCaller) -> DocumentState:
         pytest.fail("invalid request reached handler")
 
     with pytest.raises(ValidationError):
-        RULE_PAGES.bind(handler).handler(arguments, PluginQueryCaller(session_id="session", workspace=Path("/workspace")))
+        DOCUMENT_STATES.bind(handler).handler(arguments, PluginQueryCaller(session_id="session", workspace=Path("/workspace")))
