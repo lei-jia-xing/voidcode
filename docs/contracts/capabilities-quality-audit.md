@@ -126,18 +126,15 @@ Current verification:
 - Frontend lint, typecheck, 16 tests and generated API consistency pass.
 - Manual invalid-byte and mixed Chinese/emoji artifact pagination stayed below
   50 KiB and reconstructed the complete replacement-decoded input.
-- The complete pre-simplification Python suite passed: 1,632 passed, one skipped
-  in 380.63 seconds. This is baseline evidence; verification of format removal,
-  directory removal and URI changes has passed 337 relevant existing cases.
-  This includes loopback integration for optional queries, transcript and public
-  read facts. Directory/legacy-URI rejection, the five-argument schema, plain-text
-  notebook reads and generic core URI preservation also passed manual probes.
-  The final full Python suite passed on the current worktree: 1,612 passed,
-  one skipped in 345.35 seconds, using
+- Final full Python verification after artifact SDK unification: 1,603 passed,
+  one skipped in 290.54 seconds, using
   `.venv/bin/python -m pytest -n 8 --dist worksteal -q --tb=short`.
-  The count decreased because retired format tests were removed with the feature.
-  This worktree includes the existing pending loopback-fixture corrections;
-  these are separate from the read simplification commit (`aadf605`).
+- The current SDK/plugin subset passed 276 existing cases; artifact/service and
+  cross-plugin integration passed 22. Typed-reference/URI/None codec roundtrips,
+  zero-byte references, strict digest-only read inputs, canonical MIME reuse and
+  lossless bounded artifact pagination also passed manual probes.
+- Verification is against the current worktree, including its pre-existing
+  pending loopback-fixture corrections. No test cases were added by this change.
 
 All 59 current capability files are listed, including packaged tokenizer data.
 A filesystem comparison found no missing inventory entries; import inspection
