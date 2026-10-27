@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
+from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import (
@@ -48,6 +49,7 @@ def _hash_file(path: Path) -> str:
 class WriteTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="write",
+        icon=Icon(glyph="✚", fallback="W"),
         description="Write a UTF-8 text file inside the current workspace.",
         input_schema={
             "type": "object",

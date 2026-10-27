@@ -1,6 +1,7 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
 import type { ConfirmationViewData } from "../../lib/core/types";
+import { componentFg, componentStyle } from "./componentStyle";
 
 export interface ConfirmationViewProps {
   data: ConfirmationViewData;
@@ -15,23 +16,32 @@ export const ConfirmationView: React.FC<ConfirmationViewProps> = ({
 }) => {
   const { t } = useTranslation();
   const actions = data.actions || ["allow", "deny"];
+  const fg = componentFg(data);
 
   return (
     <div
       data-testid="confirmation-view"
+      style={componentStyle(data)}
       className="rounded-lg border border-red-500/80 bg-red-950/30 p-4 my-2 text-sm"
     >
       <div className="flex items-center gap-2 mb-2 text-red-300 font-semibold text-xs tracking-wider uppercase">
         <span className="inline-block w-2 h-2 rounded-full bg-red-400 animate-pulse" />
         {t("core.approvalRequired")}
       </div>
-      <div className="text-neutral-100 font-medium mb-3 whitespace-pre-wrap">
+      <div
+        style={fg}
+        className="text-neutral-100 font-medium mb-3 whitespace-pre-wrap"
+      >
         {data.message}
       </div>
-      <div className="text-xs text-neutral-400 mb-4 font-mono select-all">
+      <div
+        style={fg}
+        className="text-xs text-neutral-400 mb-4 font-mono select-all"
+      >
         {t("core.confirmRequestId")}:{" "}
         <span
           data-testid="confirmation-request-id"
+          style={fg}
           className="text-neutral-300"
         >
           {data.request_id}

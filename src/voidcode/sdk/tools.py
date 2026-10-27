@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, ClassVar, Literal, Protocol, runtime_checkable
 
+from .icons import Icon
 from .invocation import ToolContext
 from .json_values import json_wire_object, own_json_object, own_json_value
 from .limits import (
@@ -173,6 +174,7 @@ class ToolDefinition:
     # Safe read/query tools may be replayed after a process crash. Mutating
     # tools default to never replay unless they explicitly opt in.
     replay_policy: ToolReplayPolicy | None = None
+    icon: Icon | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "input_schema", own_json_object(self.input_schema))

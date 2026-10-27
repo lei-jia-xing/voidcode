@@ -10,6 +10,7 @@ from typing import ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from voidcode.capabilities.workspace_queries import DOCUMENT_STATES, DocumentState, DocumentStateRequest
+from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.services import PluginServices, QueryContractError, QueryUnavailable
@@ -109,6 +110,7 @@ def _query_document_state(services: PluginServices, path: Path, *, tool_name: st
 class ApplyWorkspaceEditTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="apply_workspace_edit",
+        icon=Icon(glyph="✎", fallback="E"),
         description="Apply validated LSP text edits with document-version checks; runtime approval governs filesystem access.",
         input_schema=_WorkspaceEditArgs.model_json_schema(),
         effects=frozenset({ToolEffect.WRITE}),

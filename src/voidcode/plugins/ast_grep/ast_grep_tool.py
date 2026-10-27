@@ -9,6 +9,7 @@ from typing import Any, ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, ValidationInfo, field_validator
 
 from voidcode.capabilities.files.errors import raise_tool_diagnostic
+from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import ArtifactReference, PluginServices, ProcessResult
 from voidcode.sdk.tools import (
@@ -258,6 +259,7 @@ def _run_preview_replace(
 class AstGrepTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="ast_grep",
+        icon=Icon(glyph="⌕", fallback="A"),
         description=(
             "Structural code search and rewrite with ast-grep. Search and preview are read operations; replace mutates files and requires approval."
         ),

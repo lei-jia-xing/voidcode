@@ -12,6 +12,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
+from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.limits import TOOL_OUTPUT_BYTES
@@ -115,6 +116,7 @@ class GrepResultBody:
 class GrepTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="grep",
+        icon=Icon(glyph="⌕", fallback="S"),
         description=(
             "Search workspace files. Pattern is literal by default; set regex=true to use regular expressions, "
             "and ignore_case=true for case-insensitive matching."

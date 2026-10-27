@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from .codec import ToolResultWire
 from .hooks import RequestWindow
+from .icons import Icon
 from .provider import ProviderMessage, ProviderTurnResult
 from .tools import ToolCall, ToolResult
 
@@ -23,6 +24,7 @@ class TranscriptTool:
     interrupted: bool
     batch_sequence: int
     deferred: bool
+    icon: Icon | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +121,7 @@ class TranscriptToolWire(TranscriptWireModel):
     interrupted: bool
     batch_sequence: int = Field(ge=1)
     deferred: bool
+    icon: Icon | None = None
 
 
 class WindowSegmentWire(TranscriptWireModel):
@@ -257,6 +260,7 @@ def encode_transcript_content(content: TranscriptContent) -> dict[str, object]:
                 "interrupted": content.interrupted,
                 "batch_sequence": content.batch_sequence,
                 "deferred": content.deferred,
+                "icon": {"glyph": content.icon.glyph, "fallback": content.icon.fallback} if content.icon is not None else None,
             },
         }
     if isinstance(content, TranscriptDispatch):
@@ -286,6 +290,7 @@ def _tool_wire_to_domain(tool: TranscriptToolWire) -> TranscriptTool:
         interrupted=tool.interrupted,
         batch_sequence=tool.batch_sequence,
         deferred=tool.deferred,
+        icon=tool.icon,
     )
 
 

@@ -8,8 +8,8 @@ from voidcode.sdk.client import CommandCatalog
 from voidcode.sdk.commands import CommandDescriptor
 from voidcode.tui.composer import Composer, ComposerAction, ComposerOutcome
 from voidcode.tui.keys import Key
+from voidcode.tui.styles import Styles
 from voidcode.tui.terminal_app import CoreTuiApp
-from voidcode.tui.theme import resolve_theme
 
 
 class _StubTerminal:
@@ -57,7 +57,7 @@ def _type(app: CoreTuiApp, text: str) -> None:
 
 def test_completion_is_pure_candidates_in_outcome_out() -> None:
     """The composer completes from app-supplied candidates; Enter accepts, Esc cancels."""
-    composer = Composer(theme=resolve_theme(color_system=None), width=40)
+    composer = Composer(styles=Styles(None), width=40)
     composer.set_text("/sh")
     assert composer.handle_key(Key("tab")) == ComposerOutcome()  # no candidates: no-op
 
@@ -105,9 +105,9 @@ def test_multi_popup_cycles_and_accepts_without_committing() -> None:
 
 def test_tui_controls_complete_from_bare_prefix() -> None:
     app, _ = _app()
-    _type(app, "/tui t")
+    _type(app, "/tui v")
     app._handle_composer_key(Key("tab"))
-    assert app.composer.value == "/tui theme"
+    assert app.composer.value == "/tui views"
 
 
 def test_escape_cancels_popup_keeps_draft_and_plain_text_never_completes() -> None:

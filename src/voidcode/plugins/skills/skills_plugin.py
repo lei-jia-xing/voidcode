@@ -17,6 +17,7 @@ from typing import ClassVar
 from voidcode.capabilities.frontmatter import load_frontmatter_mapping, split_frontmatter
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
 from voidcode.sdk.hooks import ContextContribution, InvocationFinishedFact, PluginFact
+from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.plugin import Plugin, StateSchema
 from voidcode.sdk.services import PluginServices
@@ -420,6 +421,7 @@ class SkillTool:
     # description, so the catalog is not shipped twice on every provider request.
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="skill",
+        icon=Icon(glyph="✦", fallback="K"),
         description=SKILL_DESCRIPTION,
         input_schema={
             "type": "object",

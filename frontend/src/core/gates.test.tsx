@@ -358,3 +358,129 @@ describe("gate preservation across upgrade_pending", () => {
     unmount();
   }, 15000);
 });
+
+describe("tool birth icons", () => {
+  it("renders the recorded glyph in glyph mode and fallback in ascii mode", async () => {
+    const toolEvent = (icon: object | null) =>
+      storedEvent(3, "core.tool_completed", {
+        batch_sequence: 2,
+        call: { tool_name: "read", arguments: {} },
+        result: {
+          status: "ok",
+          tool_name: "read",
+          output: { type: "text", text: "contents" },
+        },
+        icon,
+      });
+    const head = (icon: object | null) =>
+      JSON.stringify({
+        session: { session_id: SESSION },
+        events: [toolEvent(icon)],
+      });
+    const fetchMock = vi.fn(async (url: unknown): Promise<Response> => {
+      const path = String(url);
+      if (path.includes("/api/commands")) {
+        return jsonResponse({ revision_id: "rev-1", commands: [] });
+      }
+      if (path.includes("/views")) {
+        return jsonResponse({ revision_id: "rev-1", views: [] });
+      }
+      if (path.includes("/events")) {
+        return sseResponse([head({ glyph: "⛁", fallback: "R" })], []);
+      }
+      if (path.includes("/api/health")) {
+        return jsonResponse({ status: "ok", fenced: false });
+      }
+      if (path.includes("/api/sessions") && !path.includes("/events")) {
+        return jsonResponse({
+          sessions: [
+            {
+              session_id: SESSION,
+              workspace: "/tmp/ws",
+              status: "idle",
+              active_revision_id: "rev-1",
+              run_id: "run-1",
+              turn: 1,
+              last_event_sequence: 9,
+            },
+          ],
+        });
+      }
+      return jsonResponse({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { unmount } = render(<CoreApp baseUrl="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId("event-3")).toHaveTextContent("⛁");
+    });
+    expect(screen.getByTestId("event-3")).toHaveTextContent("Tool [read]");
+    unmount();
+
+    const { unmount: unmount2 } = render(
+      <CoreApp baseUrl="" iconStyle="ascii" />,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId("event-3")).toHaveTextContent("R");
+    });
+    expect(screen.getByTestId("event-3")).not.toHaveTextContent("⛁");
+    unmount2();
+  });
+
+  it("falls back to the generic mark when history carries no icon", async () => {
+    const head = JSON.stringify({
+      session: { session_id: SESSION },
+      events: [
+        storedEvent(4, "core.tool_completed", {
+          batch_sequence: 2,
+          call: { tool_name: "mystery_tool", arguments: {} },
+          result: {
+            status: "ok",
+            tool_name: "mystery_tool",
+            output: { type: "text", text: "done" },
+          },
+        }),
+      ],
+    });
+    const fetchMock = vi.fn(async (url: unknown): Promise<Response> => {
+      const path = String(url);
+      if (path.includes("/api/commands")) {
+        return jsonResponse({ revision_id: "rev-1", commands: [] });
+      }
+      if (path.includes("/views")) {
+        return jsonResponse({ revision_id: "rev-1", views: [] });
+      }
+      if (path.includes("/events")) {
+        return sseResponse([head], []);
+      }
+      if (path.includes("/api/health")) {
+        return jsonResponse({ status: "ok", fenced: false });
+      }
+      if (path.includes("/api/sessions") && !path.includes("/events")) {
+        return jsonResponse({
+          sessions: [
+            {
+              session_id: SESSION,
+              workspace: "/tmp/ws",
+              status: "idle",
+              active_revision_id: "rev-1",
+              run_id: "run-1",
+              turn: 1,
+              last_event_sequence: 9,
+            },
+          ],
+        });
+      }
+      return jsonResponse({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { unmount } = render(<CoreApp baseUrl="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId("event-4")).toHaveTextContent("▷");
+    });
+    expect(screen.getByTestId("event-4")).toHaveTextContent(
+      "Tool [mystery_tool]",
+    );
+    unmount();
+  });
+});

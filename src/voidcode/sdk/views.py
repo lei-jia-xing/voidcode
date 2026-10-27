@@ -5,20 +5,58 @@ import math
 import re
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Annotated, Any, Literal, Protocol, runtime_checkable
 
-from pydantic import TypeAdapter
+from pydantic import Field, TypeAdapter
 
 from .commands import CommandCatalog, ConfirmationUIType
 from .json_values import json_wire_object, own_json_object
 from .services import PluginServices
 from .tools import ToolEffect
 
+StyleTone = Literal["default", "info", "success", "warning", "error"]
+StyleColorName = Literal[
+    "black",
+    "red",
+    "green",
+    "yellow",
+    "blue",
+    "magenta",
+    "cyan",
+    "white",
+    "bright_black",
+    "bright_red",
+    "bright_green",
+    "bright_yellow",
+    "bright_blue",
+    "bright_magenta",
+    "bright_cyan",
+    "bright_white",
+]
+#: Validated typed color: 16 ANSI names or #RRGGBB. The pattern rides the JSON
+#: Schema so OpenAPI carries the same constraint as SDK ingress.
+_STYLE_COLOR_NAMES = (
+    "black|red|green|yellow|blue|magenta|cyan|white"
+    "|bright_black|bright_red|bright_green|bright_yellow"
+    "|bright_blue|bright_magenta|bright_cyan|bright_white"
+)
+StyleColor = Annotated[str, Field(pattern=rf"^(?:#(?:[0-9a-fA-F]{{6}})|{_STYLE_COLOR_NAMES})$")]
+
+
+@dataclass(frozen=True, slots=True)
+class ComponentStyle:
+    """View-local tint: semantic tone plus optional explicit colors (frozen contract)."""
+
+    tone: StyleTone = "default"
+    foreground: StyleColor | None = None
+    background: StyleColor | None = None
+
 
 @dataclass(frozen=True, slots=True)
 class NoticeViewData:
     message: str
     level: Literal["info", "warning", "error"] = "info"
+    style: ComponentStyle | None = None
 
     @staticmethod
     def from_payload(payload: Mapping[str, object]) -> NoticeViewData:
@@ -28,6 +66,7 @@ class NoticeViewData:
 @dataclass(frozen=True, slots=True)
 class MarkdownViewData:
     content: str
+    style: ComponentStyle | None = None
 
     @staticmethod
     def from_payload(payload: Mapping[str, object]) -> MarkdownViewData:
@@ -43,6 +82,7 @@ class FieldRow:
 @dataclass(frozen=True, slots=True)
 class FieldsViewData:
     rows: tuple[FieldRow, ...]
+    style: ComponentStyle | None = None
 
     @staticmethod
     def from_payload(payload: Mapping[str, object]) -> FieldsViewData:
@@ -60,6 +100,7 @@ class ChoicesViewData:
     options: tuple[ChoiceOption, ...]
     action: str
     argument_name: str = "choice"
+    style: ComponentStyle | None = None
 
     @staticmethod
     def from_payload(payload: Mapping[str, object]) -> ChoicesViewData:
@@ -71,6 +112,7 @@ class ConfirmationViewData:
     request_id: str
     message: str
     actions: tuple[str, ...] = ("allow", "deny")
+    style: ComponentStyle | None = None
 
     @staticmethod
     def from_payload(payload: Mapping[str, object]) -> ConfirmationViewData:
@@ -94,6 +136,7 @@ class FormViewData:
     action: str
     initial_values: Mapping[str, object] = field(default_factory=dict)
     load_action: str | None = None
+    style: ComponentStyle | None = None
 
     @staticmethod
     def from_payload(payload: Mapping[str, object]) -> FormViewData:
@@ -105,6 +148,7 @@ class DiffViewData:
     before: str
     after: str
     path: str | None = None
+    style: ComponentStyle | None = None
 
     @staticmethod
     def from_payload(payload: Mapping[str, object]) -> DiffViewData:
@@ -115,6 +159,7 @@ class DiffViewData:
 class StatusViewData:
     label: str
     value: str
+    style: ComponentStyle | None = None
 
     @staticmethod
     def from_payload(payload: Mapping[str, object]) -> StatusViewData:

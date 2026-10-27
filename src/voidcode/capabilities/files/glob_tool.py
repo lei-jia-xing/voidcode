@@ -7,6 +7,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
+from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.limits import TOOL_OUTPUT_BYTES
 from voidcode.sdk.services import PluginServices
@@ -86,6 +87,7 @@ class GlobResultBody:
 class GlobTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="glob",
+        icon=Icon(glyph="❋", fallback="G"),
         description="Find files matching a glob pattern.",
         input_schema={
             "type": "object",

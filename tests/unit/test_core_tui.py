@@ -778,7 +778,7 @@ def test_activation_refresh_is_silent_for_optional_views() -> None:
 
 
 def test_idle_chrome_shows_status_segments() -> None:
-    """Idle chrome shows session/run-state/theme segments in the status dock."""
+    """Idle chrome shows session/run-state segments in the status dock."""
     from voidcode.tui.terminal_app import CoreTuiApp
 
     client = _CommandClient()
@@ -792,7 +792,7 @@ def test_idle_chrome_shows_status_segments() -> None:
     frame_text = "\n".join(terminal.frames[-1])
     assert "s1" in frame_text
     assert "idle" in frame_text
-    assert "voidcode-dark" in frame_text
+    assert "voidcode-dark" not in frame_text
 
     app._show_sessions()
     assert any("s1" in row for row in terminal.committed), terminal.committed
@@ -1051,39 +1051,6 @@ def test_run_failure_error_is_rendered_once_from_the_response_path() -> None:
     )
     app._drain_events()
     assert sum("boom" in row for row in terminal.committed) == 1, terminal.committed
-
-
-def test_appearance_mode_picks_dark_for_black_and_light_for_white() -> None:
-    from voidcode.tui.theme import appearance_mode
-
-    assert appearance_mode((0, 0, 0)) == "dark"
-    assert appearance_mode(None) == "dark"
-    assert appearance_mode((255, 255, 255)) == "light"
-
-
-def test_theme_command_switches_palette_and_reports_unknown() -> None:
-    from voidcode.tui.terminal_app import CoreTuiApp
-
-    terminal = _StubTerminal()
-    app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
-    assert app.theme.name == "voidcode-dark"
-
-    app._run_local_control("theme", "voidcode-light")
-    assert app.theme.name == "voidcode-light"
-    assert app.status_line == "Theme: voidcode-light"
-
-    app._run_local_control("theme", "no-such-theme")
-    assert app.theme.name == "voidcode-light"
-    assert any("Unknown theme" in row and "no-such-theme" in row for row in terminal.committed)
-
-
-def test_theme_command_lists_available_names() -> None:
-    from voidcode.tui.terminal_app import CoreTuiApp
-
-    terminal = _StubTerminal()
-    app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
-    app._run_local_control("theme", "")
-    assert any("voidcode-dark" in row for row in terminal.committed), terminal.committed
 
 
 def test_rows_carry_no_hardcoded_colors() -> None:

@@ -1,6 +1,7 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
 import type { DiffViewData } from "../../lib/core/types";
+import { componentFg, componentStyle } from "./componentStyle";
 
 export interface DiffViewProps {
   data: DiffViewData;
@@ -10,14 +11,19 @@ export const DiffView: React.FC<DiffViewProps> = ({ data }) => {
   const { t } = useTranslation();
   const before = data.before || "";
   const after = data.after || "";
+  const fg = componentFg(data);
 
   return (
     <div
       data-testid="diff-view"
+      style={componentStyle(data)}
       className="rounded-lg border border-neutral-700 bg-neutral-900/60 p-4 my-2 text-sm font-mono"
     >
       {data.path && (
-        <div className="text-xs font-semibold text-neutral-400 mb-2 border-b border-neutral-800 pb-1">
+        <div
+          style={fg}
+          className="text-xs font-semibold text-neutral-400 mb-2 border-b border-neutral-800 pb-1"
+        >
           {t("core.diffFile", { path: data.path })}
         </div>
       )}

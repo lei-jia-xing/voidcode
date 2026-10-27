@@ -13,6 +13,7 @@ from lsprotocol import converters as lsp_converters
 from lsprotocol import types as lsp_types
 from pydantic import BaseModel, ConfigDict, Field
 
+from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.provider import ProviderAbortSignal
@@ -117,6 +118,7 @@ class LspTool:
 
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="lsp",
+        icon=Icon(glyph="λ", fallback="L"),
         description="LSP client for basic code intelligence lookups.",
         input_schema={
             "type": "object",

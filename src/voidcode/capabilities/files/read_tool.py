@@ -17,6 +17,7 @@ from urllib.parse import parse_qs
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.services import ArtifactPage, ArtifactReference, PluginServices
@@ -689,6 +690,7 @@ class ReadTool:
 
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="read",
+        icon=Icon(glyph="⛁", fallback="R"),
         description="Read a file or a resource URI.",
         input_schema=ReadArgs.model_json_schema(),
         effects=frozenset({ToolEffect.READ}),

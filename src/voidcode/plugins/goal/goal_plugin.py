@@ -25,6 +25,7 @@ from voidcode.sdk.hooks import (
     RunFinishedFact,
     UsageFact,
 )
+from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.plugin import Plugin
 from voidcode.sdk.provider import ProviderTokenUsage
@@ -570,6 +571,7 @@ class GoalResultBody:
 class GetGoalTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="get_goal",
+        icon=Icon(glyph="◎", fallback="G"),
         description=("Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget."),
         input_schema={
             "type": "object",
@@ -602,6 +604,7 @@ class GetGoalTool:
 class CreateGoalTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="create_goal",
+        icon=Icon(glyph="◎", fallback="G"),
         description=(
             "Create a goal only when explicitly requested by the user or system/developer instructions; "
             "do not infer goals from ordinary tasks. Set token_budget only when an explicit token budget "
@@ -716,6 +719,7 @@ class CreateGoalTool:
 class UpdateGoalTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="update_goal",
+        icon=Icon(glyph="◎", fallback="G"),
         description=(
             "Update the existing goal. Use this tool only to mark the goal achieved or genuinely blocked. "
             "Set status to complete only when the objective has actually been achieved and no required work remains. "

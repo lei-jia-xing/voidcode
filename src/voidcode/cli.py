@@ -14,7 +14,7 @@ import signal
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, cast
 
 from . import __version__
 from .bootstrap import open_core, state_directory
@@ -53,7 +53,7 @@ _COMMANDS = frozenset(
 )
 _ROOT_VALUE_OPTIONS = frozenset({"--workspace", "--state-dir"})
 #: Every value option the command scan skips, so a session named e.g. ``run`` never reads as a subcommand.
-_COMMAND_SCAN_VALUE_OPTIONS = _ROOT_VALUE_OPTIONS | frozenset({"--server", "--token", "--session-id"})
+_COMMAND_SCAN_VALUE_OPTIONS = _ROOT_VALUE_OPTIONS | frozenset({"--server", "--token", "--session-id", "--icons"})
 
 
 def _normalized_argv(argv: Sequence[str]) -> list[str]:
@@ -109,6 +109,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     client.add_argument("--token", metavar="TOKEN", default=None, help="Bearer token for --server")
     client.add_argument(
         "--session-id", dest="tui_session_id", metavar="ID", default=None, help="Attach to an existing session (default: latest, or a new one)"
+    )
+    client.add_argument(
+        "--icons",
+        choices=("glyph", "ascii"),
+        default="glyph",
+        help="Tool icon style: glyph (tool-declared Unicode) or ascii (explicit fallback; default: glyph)",
     )
     roots = parser.add_argument_group("workspace options")
     roots.add_argument(
@@ -202,17 +208,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     serve.add_argument("--open", dest="open_browser", action="store_true", help="Open the served web client in a browser")
     normalized = _normalized_argv(argv if argv is not None else sys.argv[1:])
     args = parser.parse_args(normalized)
-    if args.command is not None and (args.server is not None or args.token is not None or args.tui_session_id is not None):
-        parser.error("--server/--token/--session-id are bare-client options and cannot be combined with a subcommand")
+    if args.command is not None and (args.server is not None or args.token is not None or args.tui_session_id is not None or args.icons != "glyph"):
+        parser.error("--server/--token/--session-id/--icons are bare-client options and cannot be combined with a subcommand")
     try:
         workspace = args.workspace.resolve(strict=True)
         bare_directory = args.state_dir if args.state_dir is not None else state_directory(workspace)
         if args.command is None:
             from .tui import run_tui
 
+            icon_style = cast(Literal["glyph", "ascii"], args.icons)
             if args.server is not None:
-                return run_tui(args.server, token=args.token, session_id=args.tui_session_id)
-            return _embedded_tui(workspace, bare_directory, session_id=args.tui_session_id)
+                return run_tui(args.server, token=args.token, session_id=args.tui_session_id, icon_style=icon_style)
+            return _embedded_tui(workspace, bare_directory, session_id=args.tui_session_id, icon_style=icon_style)
         if args.command == "show":
             return _show(workspace, bare_directory, args.session_id, events=args.events)
         if args.command == "invoke":
@@ -307,11 +314,11 @@ def _show(workspace: Path, directory: Path, session_id: str, *, events: bool) ->
     return 0
 
 
-def _embedded_tui(workspace: Path, directory: Path, *, session_id: str | None) -> int:
+def _embedded_tui(workspace: Path, directory: Path, *, session_id: str | None, icon_style: Literal["glyph", "ascii"] = "glyph") -> int:
     """Run the TUI directly against an in-process core: no socket, no HTTP framing."""
     from .tui import run_embedded_tui
 
-    return run_embedded_tui(workspace, directory, session_id=session_id)
+    return run_embedded_tui(workspace, directory, session_id=session_id, icon_style=icon_style)
 
 
 def _dispatch(core: Core, args: argparse.Namespace) -> int:

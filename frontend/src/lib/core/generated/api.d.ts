@@ -354,6 +354,8 @@ export interface components {
             argument_name: string;
             /** Options */
             options: components["schemas"]["ChoiceOption"][];
+            /** @default null */
+            style: components["schemas"]["ComponentStyle"] | null;
         };
         /**
          * CommandCatalog
@@ -416,6 +418,28 @@ export interface components {
              */
             status: "ok" | "error" | "pending_confirmation";
         };
+        /**
+         * ComponentStyle
+         * @description View-local tint: semantic tone plus optional explicit colors (frozen contract).
+         */
+        ComponentStyle: {
+            /**
+             * Background
+             * @default null
+             */
+            background: string | null;
+            /**
+             * Foreground
+             * @default null
+             */
+            foreground: string | null;
+            /**
+             * Tone
+             * @default default
+             * @enum {string}
+             */
+            tone: "default" | "info" | "success" | "warning" | "error";
+        };
         /** ConfirmRequest */
         ConfirmRequest: {
             /**
@@ -469,6 +493,8 @@ export interface components {
             message: string;
             /** Request Id */
             request_id: string;
+            /** @default null */
+            style: components["schemas"]["ComponentStyle"] | null;
         };
         /** ContextHistoryWire */
         ContextHistoryWire: {
@@ -536,6 +562,8 @@ export interface components {
              * @default null
              */
             path: string | null;
+            /** @default null */
+            style: components["schemas"]["ComponentStyle"] | null;
         };
         /** DrainRequest */
         DrainRequest: {
@@ -585,6 +613,8 @@ export interface components {
         FieldsViewData: {
             /** Rows */
             rows: components["schemas"]["FieldRow"][];
+            /** @default null */
+            style: components["schemas"]["ComponentStyle"] | null;
         };
         /** FormField */
         FormField: {
@@ -619,6 +649,8 @@ export interface components {
              * @default null
              */
             load_action: string | null;
+            /** @default null */
+            style: components["schemas"]["ComponentStyle"] | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -653,6 +685,19 @@ export interface components {
             /** Workspace */
             workspace: string;
         };
+        /**
+         * Icon
+         * @description One tool's display identity: preferred glyph + printable-ASCII fallback.
+         *
+         *     Both fields are required and tool-owned. Empty string is a real value
+         *     (render nothing), distinct from a missing icon (client generic).
+         */
+        Icon: {
+            /** Fallback */
+            fallback: string;
+            /** Glyph */
+            glyph: string;
+        };
         /** InvokeRequest */
         InvokeRequest: {
             /** Arguments */
@@ -666,6 +711,8 @@ export interface components {
         MarkdownViewData: {
             /** Content */
             content: string;
+            /** @default null */
+            style: components["schemas"]["ComponentStyle"] | null;
         };
         /** NoticeViewData */
         NoticeViewData: {
@@ -677,6 +724,8 @@ export interface components {
             level: "info" | "warning" | "error";
             /** Message */
             message: string;
+            /** @default null */
+            style: components["schemas"]["ComponentStyle"] | null;
         };
         /** OutputBoundsWire */
         OutputBoundsWire: {
@@ -975,6 +1024,8 @@ export interface components {
         StatusViewData: {
             /** Label */
             label: string;
+            /** @default null */
+            style: components["schemas"]["ComponentStyle"] | null;
             /** Value */
             value: string;
         };
@@ -1199,6 +1250,7 @@ export interface components {
             call: components["schemas"]["ToolCallWire"];
             /** Deferred */
             deferred: boolean;
+            icon?: components["schemas"]["Icon"] | null;
             /** Interrupted */
             interrupted: boolean;
             result: components["schemas"]["ToolResultWire"];

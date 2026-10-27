@@ -88,6 +88,7 @@ from .hooks import (
     WakeupFiredFact,
     WindowSegment,
 )
+from .icons import Icon
 from .invocation import ToolContext
 from .json_values import json_wire_object, json_wire_value, own_json_object, own_json_value
 from .limits import CHILD_PROMPT_MAX_BYTES, DIAGNOSTIC_DEPTH, DIAGNOSTIC_ITEMS, DIAGNOSTIC_TEXT_CHARS, TOOL_OUTPUT_BYTES
@@ -194,6 +195,7 @@ from .views import (
     MAX_VIEW_DATA_BYTES,
     ChoiceOption,
     ChoicesViewData,
+    ComponentStyle,
     ConfirmationViewData,
     DiffViewData,
     FieldRow,
@@ -206,6 +208,9 @@ from .views import (
     PluginView,
     PluginViewDescriptor,
     StatusViewData,
+    StyleColor,
+    StyleColorName,
+    StyleTone,
     ViewsSnapshot,
     validate_view_data,
 )
@@ -243,6 +248,7 @@ __all__ = [
     "CommandDescriptor",
     "CommandInvocation",
     "CommandResult",
+    "ComponentStyle",
     "ConfirmationGate",
     "ConfirmationRequested",
     "ConfirmedStop",
@@ -276,6 +282,7 @@ __all__ = [
     "HealthStatus",
     "HistoryEvent",
     "HistoryPage",
+    "Icon",
     "InvocationFinishedFact",
     "LIST_MAX_ENTRIES",
     "MAX_OBSERVED_CHANGES",
@@ -343,6 +350,9 @@ __all__ = [
     "StreamCancellation",
     "StreamEvent",
     "StreamableTurnProvider",
+    "StyleColor",
+    "StyleColorName",
+    "StyleTone",
     "TextOutput",
     "Tool",
     "ToolBody",

@@ -5,9 +5,13 @@ import { ChoicesView } from "./views/ChoicesView";
 import { FormView } from "./views/FormView";
 import { DiffView } from "./views/DiffView";
 import { PluginViewRenderer } from "./views/PluginViewRenderer";
+import { NoticeView } from "./views/NoticeView";
+import { StatusView } from "./views/StatusView";
+import { FieldsView } from "./views/FieldsView";
 import type {
   CommandDescriptor,
   PluginViewDescriptor,
+  StatusViewData,
 } from "../lib/core/types";
 import type { CoreClient } from "../lib/core/client";
 import { CoreApiError } from "../lib/core/client";
@@ -23,7 +27,10 @@ describe("MarkdownView", () => {
   it("renders markdown structure rather than raw text", () => {
     render(
       <MarkdownView
-        data={{ content: "## Hello Core\n\n- first item\n- second item\n" }}
+        data={{
+          style: null,
+          content: "## Hello Core\n\n- first item\n- second item\n",
+        }}
       />,
     );
     const view = screen.getByTestId("markdown-view");
@@ -38,6 +45,7 @@ describe("ChoicesView", () => {
     render(
       <ChoicesView
         data={{
+          style: null,
           action: "set_mode",
           argument_name: "mode_id",
           options: [
@@ -83,6 +91,7 @@ describe("FormView", () => {
     render(
       <FormView
         data={{
+          style: null,
           action: "update_profile",
           fields: [
             {
@@ -136,6 +145,7 @@ describe("FormView", () => {
     render(
       <FormView
         data={{
+          style: null,
           action: "set_budget",
           fields: [
             {
@@ -200,6 +210,7 @@ describe("FormView", () => {
     const { unmount } = render(
       <FormView
         data={{
+          style: null,
           action: "set_flags",
           fields: [
             {
@@ -265,6 +276,7 @@ describe("FormView", () => {
     render(
       <FormView
         data={{
+          style: null,
           action: "set_budget",
           fields: [
             {
@@ -299,6 +311,7 @@ describe("FormView", () => {
     render(
       <FormView
         data={{
+          style: null,
           action: "set_required",
           fields: [
             {
@@ -331,6 +344,7 @@ describe("FormView", () => {
     render(
       <FormView
         data={{
+          style: null,
           action: "create_item",
           fields: [
             {
@@ -360,6 +374,7 @@ describe("FormView", () => {
     render(
       <FormView
         data={{
+          style: null,
           action: "submit_order",
           fields: [
             {
@@ -395,6 +410,7 @@ describe("FormView", () => {
     render(
       <FormView
         data={{
+          style: null,
           action: "goal.edit",
           load_action: "goal.load_objective",
           fields: [
@@ -454,6 +470,7 @@ describe("FormView", () => {
     render(
       <FormView
         data={{
+          style: null,
           action: "save_item",
           load_action: "read_write_probe",
           fields: [
@@ -493,6 +510,7 @@ describe("FormView", () => {
     render(
       <FormView
         data={{
+          style: null,
           action: "save_item",
           load_action: "get_initial_form",
           fields: [
@@ -541,6 +559,7 @@ describe("FormView", () => {
     const { rerender } = render(
       <FormView
         data={{
+          style: null,
           action: "edit_item",
           load_action: "get_initial_form",
           fields: [
@@ -564,6 +583,7 @@ describe("FormView", () => {
     rerender(
       <FormView
         data={{
+          style: null,
           action: "edit_item",
           load_action: "get_initial_form",
           fields: [
@@ -614,6 +634,7 @@ describe("FormView", () => {
     render(
       <FormView
         data={{
+          style: null,
           action: "edit_item",
           load_action: "get_initial_form",
           fields: [
@@ -653,6 +674,7 @@ describe("DiffView", () => {
     render(
       <DiffView
         data={{
+          style: null,
           path: "src/main.ts",
           before: "const a = 1;",
           after: "const a = 2;",
@@ -688,5 +710,214 @@ describe("PluginViewRenderer", () => {
     );
     const banner = screen.getByTestId("unsupported-view-error");
     expect(banner).toHaveTextContent("invalid_mystery_view");
+  });
+});
+
+describe("ComponentStyle", () => {
+  it("renders an explicit RGB foreground on the owning component only", () => {
+    render(
+      <>
+        <StatusView
+          data={{
+            label: "greeting",
+            value: "hello",
+            style: { tone: "default", foreground: "#112233", background: null },
+          }}
+        />
+        <StatusView data={{ label: "other", value: "plain", style: null }} />
+      </>,
+    );
+    const [styled, plain] = screen.getAllByTestId("status-view");
+    expect(styled).toHaveStyle({ color: "#112233" });
+    expect(styled).toHaveTextContent("hello");
+    expect(plain).not.toHaveAttribute("style");
+    // Resolved fg reaches own text, not just the root box: the value span's
+    // built-in text-emerald class is overridden by the component color.
+    const value = screen.getByText("hello");
+    expect(value).toHaveStyle({ color: "#112233" });
+    const plainValue = screen.getByText("plain");
+    expect(plainValue).not.toHaveAttribute("style");
+  });
+
+  it("renders a named ANSI color with tone fallback precedence", () => {
+    render(
+      <NoticeView
+        data={{
+          message: "named",
+          level: "info",
+          style: {
+            tone: "default",
+            foreground: "bright_red",
+            background: null,
+          },
+        }}
+      />,
+    );
+    expect(screen.getByTestId("notice-view")).toHaveStyle({
+      color: "#f87171",
+    });
+  });
+
+  it("applies a non-default tone and explicit overrides over notice level", () => {
+    render(
+      <>
+        <NoticeView
+          data={{
+            message: "toned",
+            level: "info",
+            style: { tone: "error", foreground: null, background: null },
+          }}
+        />
+        <NoticeView
+          data={{
+            message: "explicit",
+            level: "error",
+            style: { tone: "default", foreground: "#445566", background: null },
+          }}
+        />
+      </>,
+    );
+    const [toned, explicit] = screen.getAllByTestId("notice-view");
+    expect(toned).toHaveStyle({ color: "#fca5a5" });
+    expect(explicit).toHaveStyle({ color: "#445566" });
+  });
+
+  it("leaves unstyled views on built-in defaults and ignores invalid values", () => {
+    render(
+      <>
+        <NoticeView
+          data={{ message: "plain", level: "warning", style: null }}
+        />
+        <StatusView
+          data={
+            {
+              label: "bad",
+              value: "x",
+              style: {
+                tone: "mystery",
+                foreground: "not-a-color",
+                background: null,
+              },
+            } as unknown as StatusViewData
+          }
+        />
+      </>,
+    );
+    const notice = screen.getByTestId("notice-view");
+    expect(notice).not.toHaveAttribute("style");
+    expect(notice.className).toContain("border-yellow-500");
+    expect(screen.getByTestId("status-view")).not.toHaveAttribute("style");
+  });
+
+  it("keeps interactive choices dispatching with a styled container", () => {
+    const onSelect = vi.fn();
+    render(
+      <ChoicesView
+        data={{
+          options: [{ id: "a", label: "A" }],
+          action: "pick",
+          style: { tone: "info", foreground: null, background: null },
+        }}
+        onSelect={onSelect}
+      />,
+    );
+    expect(screen.getByTestId("choices-view")).toHaveStyle({
+      color: "#7dd3fc",
+    });
+    screen.getByTestId("choice-option-a").click();
+    expect(onSelect).toHaveBeenCalledWith("pick", { choice: "a" });
+  });
+
+  it("does not turn malicious text into markup or styles", () => {
+    render(
+      <NoticeView
+        data={{
+          message: "<img src=x onerror=alert(1)>",
+          level: "info",
+          style: {
+            tone: "default",
+            foreground: "red;position:absolute",
+            background: null,
+          },
+        }}
+      />,
+    );
+    const notice = screen.getByTestId("notice-view");
+    expect(notice.querySelector("img")).toBeNull();
+    expect(notice).not.toHaveAttribute("style");
+    expect(notice).toHaveTextContent("<img src=x onerror=alert(1)>");
+  });
+
+  it("paints fields rows and notice message with the resolved foreground", () => {
+    render(
+      <>
+        <FieldsView
+          data={{
+            rows: [{ label: "k", value: "v" }],
+            style: { tone: "success", foreground: null, background: null },
+          }}
+        />
+        <NoticeView
+          data={{
+            message: "hello-msg",
+            level: "warning",
+            style: { tone: "default", foreground: "#123456", background: null },
+          }}
+        />
+      </>,
+    );
+    // tone fg wins over the row's built-in text-neutral classes
+    expect(screen.getByText("v")).toHaveStyle({ color: "#6ee7b7" });
+    expect(screen.getByText("k:")).toHaveStyle({ color: "#6ee7b7" });
+    // explicit fg wins over the notice level default on the message itself
+    expect(screen.getByText("hello-msg")).toHaveStyle({ color: "#123456" });
+  });
+
+  it("retints the status marker with the tone but keeps diff +/- cues", () => {
+    render(
+      <>
+        <StatusView
+          data={{
+            label: "health",
+            value: "down",
+            style: { tone: "error", foreground: null, background: null },
+          }}
+        />
+        <DiffView
+          data={{
+            path: "f.ts",
+            before: "a",
+            after: "b",
+            style: { tone: "warning", foreground: null, background: null },
+          }}
+        />
+      </>,
+    );
+    const status = screen.getByTestId("status-view");
+    expect(status.firstElementChild).toHaveStyle({
+      backgroundColor: "#fca5a5",
+    });
+    const diff = screen.getByTestId("diff-view");
+    expect(diff.firstElementChild).toHaveStyle({ color: "#fcd34d" });
+    expect(screen.getByText("- a")).not.toHaveAttribute("style");
+    expect(screen.getByText("+ b")).not.toHaveAttribute("style");
+  });
+
+  it("ignores prototype-named colors instead of leaking objects", () => {
+    render(
+      <StatusView
+        data={{
+          label: "p",
+          value: "v",
+          style: {
+            tone: "default",
+            foreground: "constructor",
+            background: null,
+          },
+        }}
+      />,
+    );
+    expect(screen.getByTestId("status-view")).not.toHaveAttribute("style");
+    expect(screen.getByText("v")).not.toHaveAttribute("style");
   });
 });

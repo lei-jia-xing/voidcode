@@ -49,7 +49,15 @@ same public seam, so an author hits no ceiling they do not also hit.
 
 Each tool declares `effects` (`read`, `write`, `execute`, `network`,
 `spawn`, `session`), an `input_schema`, `replay_policy`,
-`path_argument_keys`. The core validates the model's
+`path_argument_keys`, and optionally `icon` (`Icon(glyph, fallback)` from
+`voidcode.sdk.icons`). The icon is the tool's own display identity: `glyph`
+is the preferred mark (plain Unicode text, NerdFont PUA allowed), `fallback`
+is the explicit printable-ASCII rendering for ascii mode (empty allowed,
+meaning "render nothing"). Omit `icon` and clients show their generic tool
+mark. The core snapshots the birth icon into the tool intent/result events
+and `TranscriptTool.icon`; history keeps that value across reloads and
+removals, never re-resolving from the live catalog. Icons never enter
+provider function schemas. The core validates the model's
 arguments against the registered schema before dispatch; a schema failure is
 `"tool arguments failed the admitted JSON schema"`, never a handler call.
 
@@ -208,11 +216,18 @@ Run these in order; each step's failure names the layer at fault.
    decode with the strict `from_payload` constructors
    (`NoticeViewData` … `StatusViewData`, `PluginViewDescriptor`,
    `ViewsSnapshot`, `CommandCatalog`, `CommandDescriptor`,
-   `CommandResult`, `ConfirmationRequest`) or `parse_view_data(view_type,
-   descriptor.data)`. Dispatch semantics live in `choices_dispatch`,
-   `validate_form_submission` (native numeric prefill accepted; typed
-   strings validated strictly), and `is_read_only_load` (load runs only
-   when the catalog command declares exactly the `read` effect).
+   `ConfirmationRequest`) or `parse_view_data(view_type,
+   descriptor.data)`. Views style via an optional `style` object on the data
+   mapping — `{"tone": "success", "foreground": "#22c55e",
+   "background": null}` (`tone` optional, default `default`; colors
+   `#RRGGBB` or one of the 16 ANSI names, no raw CSS/ANSI/markup); absent
+   style renders the client's built-in default, and
+   `dataclasses.asdict(StatusViewData(label="Count", value="2",
+   style=ComponentStyle(foreground="#12ab34")))` is the supported author
+   pattern, as in the tally example (`style` is never a top-level
+   `PluginViewDescriptor` field). Dispatch semantics live in `choices_dispatch`,
+   `validate_form_submission` (native numeric prefill accepted; typed strings validated strictly), and
+   `is_read_only_load` (load runs only when the catalog command declares exactly the `read` effect).
 6. **Durable truth** — `show <sid> --events` (no config/runtime/revision
    needed) and the SQLite store (`plugin_state`, `kernel.tool_completed`,
    `kernel.command_completed`) confirm what actually committed.

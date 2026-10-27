@@ -4,6 +4,14 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Plugin-owned view colors (ComponentStyle)
+- Every view data kind (`notice`, `markdown`, `fields`, `choices`, `confirmation`, `form`, `diff`, `status`) plus `ConfirmationRequest.ui_data` carries an optional `style` object: optional `tone` (`default`/`info`/`success`/`warning`/`error`, default `default`), optional nullable `foreground`/`background` as `#RRGGBB` or one of the 16 ANSI names. SDK ingress rejects unknown tones/colors/keys — no raw CSS/ANSI/markup channel. Unstyled views render the client's built-in default.
+- Both clients render the same precedence (explicit colors > non-default tone > `notice.level` > built-in default), scoped to the owning component only; semantic cues (confirmation allow/deny, diff `+`/`-`, focus, error markers) stay fixed. The TUI theme catalog is deleted (no theme command/names/modes); web renders validated colors via one shared converter as a scoped inline style.
+
+### Tool-owned display icons (Icon)
+- Tools declare their own identity: `Icon(glyph, fallback)` on `ToolDefinition` (`None` = client generic). Built-in glyphs are ordinary Unicode symbols with explicit ASCII fallbacks (fallback validated printable-ASCII at construction); plugins may use NerdFont PUA glyphs. All 24 bundled tools plus `core_reload` and the tally example declare icons; the MCP proxy declares one generic icon.
+- The core snapshots the birth `icon` onto tool intent/result events and `TranscriptTool.icon` (wire `IconWire`); history keeps it across reloads/removals, clients never map names or re-resolve. Modes are explicit (`glyph | ascii`, default glyph): TUI `--icons glyph|ascii`, web `iconStyle` prop / `?icons=ascii`. The TUI tool-name→glyph map is deleted. No font detection: UTF-8 proves bytes, not coverage.
+
 ### Transparent sandbox exec backend
 - New optional top-level `sandbox` section in `voidcode.json` (`mode`, `network`, `writable_roots`): when present, every registry child (shell, background, user-shell, LSP services) runs under OS-enforced confinement via the native `voidcode-sandbox-helper` (public `mxc-sdk` engine: bubblewrap/Seatbelt/ProcessContainer). Absent section means unconfined host exec, byte-identical to today.
 - Confinement is transparent: plugins make zero sandbox changes. `SandboxPolicy` follows the `ExecutionPolicy` neutral pattern; `core/sandbox.py` builds helper argv + explicit env + protected paths; spool-only logs under `state_dir/process-spool/`; no silent degrade (missing backend refuses open loudly).
@@ -14,13 +22,13 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 - The engine prefers `stream_turn` when the selected provider offers it, aggregating text/reasoning/tool deltas into the same turn shape `propose_turn` returns; non-streamable providers keep the `propose_turn` fallback. Single-attempt by contract: no retry once bytes flowed.
 - Observational `core.provider_progress` events (dispatch-correlated text fragments) flow through the existing control-event/SSE path ahead of the committed `core.model_turn`.
 - SSE follow poll tightened 1.0s -> 0.1s (measured 2026-10-26: commit-to-delivery 0.1-0.9s down to 0.007-0.09s).
-- The TUI renders the in-flight token buffer as partial markdown in the live region with a theme spinner, settling to committed markdown on `core.model_turn`; the statusline shows spinner + run state.
+- The TUI renders the in-flight token buffer as partial markdown in the live region with a semantic run spinner, settling to committed markdown on `core.model_turn`; the statusline shows spinner + run state.
 - Tab completes `/-command` names from the catalog plus `/tui` controls: a single match completes inline, multiple matches open a chrome popup above the composer (Tab cycles, Enter accepts, Esc cancels).
-- The statusline is segmented: short session id, run-state with spinner, theme name, plus the current notice.
+- The statusline is segmented: short session id, run-state with spinner, plus the current notice.
 - The spinner advances once per frame while a run is active and stays static when idle, reusing the existing run-active tracking.
 
 ### SDK strengthening (BREAKING)
-- `voidcode.sdk` now exports the full unified surface (141 names with `__all__`): `Plugin`, `StateSchema`, `PluginQuery`/`PluginQueryCaller`, tools, providers, commands, `PluginServices` + value types, views, hooks/facts, `ToolContext`, codec, `json_values`, `limits`, and history/transcript types. Submodule paths keep working; no circular imports; the SDK direction guard stays green.
+- `voidcode.sdk` now exports the full unified surface (`Plugin`, `StateSchema`, `PluginQuery`/`PluginQueryCaller`, tools, providers, commands, `PluginServices` + value types, views including `ComponentStyle`, hooks/facts, `ToolContext`, codec, `json_values`, `limits`, and history/transcript types). Submodule paths keep working; no circular imports; the SDK direction guard stays green.
 - `PluginServices.get_state_schema_version` and `clear_window_projection` are deleted (zero in-repo consumers; test-only references migrated). The orphaned `store.plugin_state_meta` and `store.clear_window_projection` go with them. All other 40 protocol members keep at least one caller in `capabilities/**` or `plugins/**`.
 - `QueryContractError` moves from `voidcode.sdk.queries` into `voidcode.sdk.services` beside `QueryUnavailable` and the `query()` transport; `sdk/queries.py` is deleted. The Unavailable-vs-ContractError distinction is documented once on the error: `QueryUnavailable` = no admitted provider (take the optional path), `None` = provider knows no matching resource, `QueryContractError` = malformed answer, a provider bug. Import sites in `workspace_queries`, `read_tool`, and `apply_workspace_edit` are migrated.
 

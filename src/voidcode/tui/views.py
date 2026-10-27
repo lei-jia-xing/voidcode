@@ -14,6 +14,7 @@ from rich.table import Table
 from rich.text import Text
 
 from voidcode.sdk.gates import ApprovalGate
+from voidcode.sdk.icons import Icon
 from voidcode.sdk.json_values import json_wire_value
 from voidcode.sdk.views import (
     ChoicesViewData,
@@ -31,60 +32,60 @@ from voidcode.sdk.views import (
 )
 
 from .keys import Key
+from .styles import Styles, markdown_theme, render_icon, resolve_component, syntax_theme
 from .term import escape_terminal_controls, render_lines
-from .theme import Theme, resolve_theme
 
 
-def _theme_arg(theme: Theme | None) -> Theme:
-    """The caller's theme, or the default palette when none travels with the call."""
-    return theme if theme is not None else resolve_theme()
+def _styles_arg(styles: Styles | None) -> Styles:
+    """The caller's styles, or a default-depth handle when none travels with the call."""
+    return styles if styles is not None else Styles()
 
 
 class UnsupportedViewError(ValueError):
     """Raised when a plugin attempts to render an unrecognised view type."""
 
 
-def render_notice(data: NoticeViewData, width: int, theme: Theme | None = None) -> list[str]:
-    message = data.message
-    level = data.level
-    resolved = _theme_arg(theme)
-    style_map = {
-        "info": ("accent", "[info]"),
-        "warning": ("warning", "[warn]"),
-        "error": ("error", "[error]"),
-    }
-    token, prefix = style_map.get(level, ("accent", "[info]"))
-    content = Text.assemble((f"{prefix}: ", resolved.style(token, bold=True)), (message, resolved.style("text")))
-    return render_lines(content, width, theme=resolved.rich_theme(), color_system=resolved.color_system)
+def render_notice(data: NoticeViewData, width: int, styles: Styles | None = None) -> list[str]:
+    resolved = _styles_arg(styles)
+    fg, bg, tone_slot = resolve_component(data.style, level=data.level)
+    prefix = {"info": "[info]", "warning": "[warn]", "error": "[error]"}.get(data.level, "[info]")
+    slot = tone_slot or {"info": "accent", "warning": "warning", "error": "error"}.get(data.level, "accent")
+    content = Text.assemble(
+        (f"{prefix}: ", resolved.style(slot, color=fg, background=bg, bold=True)),
+        (escape_terminal_controls(data.message), resolved.style("text", color=fg, background=bg)),
+    )
+    return render_lines(content, width, theme=markdown_theme(), color_system=resolved.color_system)
 
 
-def render_assistant_markdown(text: str, width: int, theme: Theme | None = None) -> list[str]:
+def render_assistant_markdown(text: str, width: int, styles: Styles | None = None) -> list[str]:
     """Assistant prose through the same markdown path as plugin views.
 
     One shared renderer for both so assistant output and plugin markdown can
     never drift apart in styling or control-byte handling.
     """
-    return render_markdown(MarkdownViewData(content=text), width, theme)
+    return render_markdown(MarkdownViewData(content=text), width, styles)
 
 
-def render_tool_call(name: str, arguments: object, width: int, theme: Theme | None = None) -> list[str]:
+def render_tool_call(
+    name: str, arguments: object, width: int, styles: Styles | None = None, icon: Icon | None = None, icon_style: str = "glyph"
+) -> list[str]:
     """One tool-call header plus its pretty JSON arguments, never one raw line."""
-    resolved = _theme_arg(theme)
+    resolved = _styles_arg(styles)
     pretty = json.dumps(json_wire_value(arguments), indent=2, ensure_ascii=False, default=str)
-    icon = resolved.tool_icon(name)
+    glyph = render_icon(icon, icon_style)
     header = Text.assemble(
-        ((f"{icon} " if icon else ""), resolved.style("warning")),
-        (f"> Tool call {name}", resolved.style("warning", bold=True)),
+        ((f"{glyph} " if glyph else ""), resolved.style("warning")),
+        (f"> Tool call {escape_terminal_controls(name)}", resolved.style("warning", bold=True)),
     )
-    rows = render_lines(header, width, theme=resolved.rich_theme(), color_system=resolved.color_system)
+    rows = render_lines(header, width, theme=markdown_theme(), color_system=resolved.color_system)
     if pretty and pretty != "{}":
         syntax = Syntax(
             escape_terminal_controls(pretty, preserve_newlines=True, preserve_tabs=True),
             "json",
-            theme=resolved.syntax_theme(),
+            theme=syntax_theme(),
             word_wrap=True,
         )
-        rows.extend(render_lines(syntax, width, theme=resolved.rich_theme(), color_system=resolved.color_system))
+        rows.extend(render_lines(syntax, width, theme=markdown_theme(), color_system=resolved.color_system))
     return rows
 
 
@@ -92,17 +93,17 @@ def render_tool_result(
     name: str,
     result: Mapping[str, Any],
     width: int,
-    theme: Theme | None = None,
+    styles: Styles | None = None,
     *,
     interrupted: bool = False,
 ) -> list[str]:
-    """One tool-result block: themed header, then text or a bounds note."""
-    resolved = _theme_arg(theme)
+    """One tool-result block: header, then text or a bounds note."""
+    resolved = _styles_arg(styles)
     failed = interrupted or result.get("status") == "error"
-    token = "error" if failed else "success"
+    slot = "error" if failed else "success"
     verb = "failed" if failed else "ok"
-    header = Text.assemble((f"[{verb}] Tool {name}", resolved.style(token, bold=True)))
-    rows = render_lines(header, width, theme=resolved.rich_theme(), color_system=resolved.color_system)
+    header = Text.assemble((f"[{verb}] Tool {name}", resolved.style(slot, bold=True)))
+    rows = render_lines(header, width, theme=markdown_theme(), color_system=resolved.color_system)
     output = result.get("output")
     body = ""
     suffix = ""
@@ -128,7 +129,7 @@ def render_tool_result(
             render_lines(
                 Text(escape_terminal_controls(body, preserve_newlines=True, preserve_tabs=True), style=resolved.style("text")),
                 width,
-                theme=resolved.rich_theme(),
+                theme=markdown_theme(),
                 color_system=resolved.color_system,
             )
         )
@@ -137,69 +138,73 @@ def render_tool_result(
     return rows
 
 
-def render_markdown(data: MarkdownViewData, width: int, theme: Theme | None = None) -> list[str]:
+def render_markdown(data: MarkdownViewData, width: int, styles: Styles | None = None) -> list[str]:
     """Render plugin markdown.
 
     Control bytes are escaped first, so plugin text cannot emit terminal
     commands; rich's Markdown then owns headings, lists, tables and code.
     """
-    resolved = _theme_arg(theme)
+    resolved = _styles_arg(styles)
     content = escape_terminal_controls(data.content, preserve_newlines=True, preserve_tabs=True)
     document = Markdown(content)
     # rich names ``code_theme`` str but hands it straight to ``Syntax(theme=...)``,
     # which takes a SyntaxTheme: set it post-construction instead of lying in the call.
-    document.__dict__["code_theme"] = resolved.syntax_theme()
-    return render_lines(document, width, theme=resolved.rich_theme(), color_system=resolved.color_system)
+    document.__dict__["code_theme"] = syntax_theme()
+    return render_lines(document, width, theme=markdown_theme(), color_system=resolved.color_system)
 
 
-def render_fields(data: FieldsViewData, width: int, theme: Theme | None = None) -> list[str]:
-    resolved = _theme_arg(theme)
+def render_fields(data: FieldsViewData, width: int, styles: Styles | None = None) -> list[str]:
+    resolved = _styles_arg(styles)
+    fg, bg, tone_slot = resolve_component(data.style)
     table = Table(show_header=False, box=None, padding=(0, 2), expand=False)
-    table.add_column("Key", style=resolved.style("mdLink", bold=True), no_wrap=True)
-    table.add_column("Value", style=resolved.style("text"), overflow="fold")
+    table.add_column("Key", style=resolved.style(tone_slot or "link", color=fg, background=bg, bold=True), no_wrap=True)
+    table.add_column("Value", style=resolved.style(tone_slot or "text", color=fg, background=bg), overflow="fold")
     for row in data.rows:
-        table.add_row(row.label, row.value)
-    return render_lines(table, width, theme=resolved.rich_theme(), color_system=resolved.color_system)
+        table.add_row(
+            Text(escape_terminal_controls(row.label)),
+            Text(escape_terminal_controls(row.value)),
+        )
+    return render_lines(table, width, theme=markdown_theme(), color_system=resolved.color_system)
 
 
-def render_diff(data: DiffViewData, width: int, theme: Theme | None = None) -> list[str]:
-    before = data.before
-    after = data.after
-    path = data.path
-    resolved = _theme_arg(theme)
+def render_diff(data: DiffViewData, width: int, styles: Styles | None = None) -> list[str]:
+    resolved = _styles_arg(styles)
+    fg, bg, tone_slot = resolve_component(data.style)
     diff_lines = list(
         difflib.unified_diff(
-            before.splitlines(),
-            after.splitlines(),
-            fromfile=f"a/{path or 'before'}",
-            tofile=f"b/{path or 'after'}",
+            data.before.splitlines(),
+            data.after.splitlines(),
+            fromfile=f"a/{data.path or 'before'}",
+            tofile=f"b/{data.path or 'after'}",
             lineterm="",
         )
     )
     diff_text = Text()
-    heading = f"Diff: {escape_terminal_controls(str(path))}" if path else "Diff"
-    diff_text.append(heading, style=resolved.style("text", bold=True))
+    heading = f"Diff: {escape_terminal_controls(str(data.path))}" if data.path else "Diff"
+    diff_text.append(heading, style=resolved.style(tone_slot or "text", color=fg, background=bg, bold=True))
     for line in diff_lines:
         diff_text.append("\n")
+        clean = escape_terminal_controls(line)
         if line.startswith("+") and not line.startswith("+++"):
-            diff_text.append(line, style=resolved.style("toolDiffAdded"))
+            diff_text.append(clean, style=resolved.style("diff_added"))
         elif line.startswith("-") and not line.startswith("---"):
-            diff_text.append(line, style=resolved.style("toolDiffRemoved"))
+            diff_text.append(clean, style=resolved.style("diff_removed"))
         elif line.startswith("@@"):
-            diff_text.append(line, style=resolved.style("accent"))
+            diff_text.append(clean, style=resolved.style("accent"))
         else:
-            diff_text.append(line, style=resolved.style("toolDiffContext"))
-    return render_lines(diff_text, width, theme=resolved.rich_theme(), color_system=resolved.color_system)
+            diff_text.append(clean, style=resolved.style(tone_slot or "diff_context", color=fg, background=bg))
+    return render_lines(diff_text, width, theme=markdown_theme(), color_system=resolved.color_system)
 
 
-def render_status(data: StatusViewData, width: int, theme: Theme | None = None) -> list[str]:
-    resolved = _theme_arg(theme)
+def render_status(data: StatusViewData, width: int, styles: Styles | None = None) -> list[str]:
+    resolved = _styles_arg(styles)
+    fg, bg, tone_slot = resolve_component(data.style)
     text = Text.assemble(
-        ("* ", resolved.style("success", bold=True)),
-        (f"{data.label}: ", resolved.style("text", bold=True)),
-        (data.value, resolved.style("text")),
+        ("* ", resolved.style(tone_slot or "success", color=fg, background=bg, bold=True)),
+        (f"{escape_terminal_controls(data.label)}: ", resolved.style(tone_slot or "text", color=fg, background=bg, bold=True)),
+        (escape_terminal_controls(data.value), resolved.style(tone_slot or "text", color=fg, background=bg)),
     )
-    return render_lines(text, width, theme=resolved.rich_theme(), color_system=resolved.color_system)
+    return render_lines(text, width, theme=markdown_theme(), color_system=resolved.color_system)
 
 
 class InteractiveChoices:
@@ -238,17 +243,24 @@ class InteractiveChoices:
             return {"cancel": True}
         return None
 
-    def render_rows(self, width: int, theme: Theme | None = None) -> list[str]:
-        resolved = _theme_arg(theme)
+    def render_rows(self, width: int, styles: Styles | None = None) -> list[str]:
+        resolved = _styles_arg(styles)
+        fg, bg, tone_slot = resolve_component(self.view.style)
         text = Text()
-        text.append("Choose an option:\n", style=resolved.style("accent", bold=True))
+        text.append("Choose an option:\n", style=resolved.style(tone_slot or "accent", color=fg, background=bg, bold=True))
         for i, opt in enumerate(self.view.options):
+            label = escape_terminal_controls(opt.label)
             if i == self.selected_index:
-                text.append(f" > [{i + 1}] {opt.label}\n", style=resolved.style("warning", bold=True))
+                text.append(f" > [{i + 1}] {label}\n", style=resolved.style("warning", bold=True))
             else:
-                text.append(f"   [{i + 1}] {opt.label}\n", style=resolved.style("text"))
-        panel = Panel(text, title=f"Action: {self.view.action}", border_style=resolved.style("warning"), expand=True)
-        return render_lines(panel, width, theme=resolved.rich_theme(), color_system=resolved.color_system)
+                text.append(f"   [{i + 1}] {label}\n", style=resolved.style(tone_slot or "text", color=fg, background=bg))
+        panel = Panel(
+            text,
+            title=f"Action: {escape_terminal_controls(self.view.action)}",
+            border_style=resolved.style(tone_slot or "warning", color=fg, background=bg),
+            expand=True,
+        )
+        return render_lines(panel, width, theme=markdown_theme(), color_system=resolved.color_system)
 
 
 class InteractiveConfirmation:
@@ -286,13 +298,16 @@ class InteractiveConfirmation:
             return {"request_id": self.view.request_id, "decision": "deny"}
         return None
 
-    def render_rows(self, width: int, theme: Theme | None = None) -> list[str]:
-        resolved = _theme_arg(theme)
+    def render_rows(self, width: int, styles: Styles | None = None) -> list[str]:
+        resolved = _styles_arg(styles)
+        fg, bg, tone_slot = resolve_component(self.view.style)
         text = Text()
-        text.append(f"{self.view.message}\n\n", style=resolved.style("text", bold=True))
+        message = escape_terminal_controls(self.view.message)
+        text.append(f"{message}\n\n", style=resolved.style(tone_slot or "text", color=fg, background=bg, bold=True))
         text.append("Request ID: ", style=resolved.style("dim"))
-        text.append(f"{self.view.request_id}\n\n", style=resolved.style("accent"))
+        text.append(f"{escape_terminal_controls(self.view.request_id)}\n\n", style=resolved.style(tone_slot or "accent", color=fg, background=bg))
         for i, act in enumerate(self.view.actions):
+            clean = escape_terminal_controls(act)
             is_selected = i == self.selected_index
             if is_selected and act == "allow":
                 style = resolved.style("success", bold=True, reverse=True)
@@ -300,10 +315,10 @@ class InteractiveConfirmation:
                 style = resolved.style("error", bold=True, reverse=True)
             else:
                 style = resolved.style("dim")
-            text.append(f" [ {act.upper()} ] ", style=style)
+            text.append(f" [ {clean.upper()} ] ", style=style)
             text.append("  ")
-        panel = Panel(text, title="Action Confirmation", border_style=resolved.style("error"), expand=True)
-        return render_lines(panel, width, theme=resolved.rich_theme(), color_system=resolved.color_system)
+        panel = Panel(text, title="Action Confirmation", border_style=resolved.style(tone_slot or "error", color=fg, background=bg), expand=True)
+        return render_lines(panel, width, theme=markdown_theme(), color_system=resolved.color_system)
 
 
 class InteractiveApproval:
@@ -313,8 +328,9 @@ class InteractiveApproval:
     deny, or esc (deny). Scroll keys move the preview; they never decide.
     """
 
-    def __init__(self, gate: ApprovalGate) -> None:
+    def __init__(self, gate: ApprovalGate, *, icon: Icon | None = None) -> None:
         self.gate = gate
+        self.icon = icon
         self.request_id = gate.request_id
         self.tool_name = gate.tool_name
         self.arguments: Mapping[str, Any] = gate.call.arguments
@@ -358,14 +374,14 @@ class InteractiveApproval:
             return path, old, new
         return None
 
-    def render_rows(self, width: int, theme: Theme | None = None) -> list[str]:
-        resolved = _theme_arg(theme)
-        icon = resolved.tool_icon(self.tool_name)
+    def render_rows(self, width: int, styles: Styles | None = None, *, icon_style: str = "glyph") -> list[str]:
+        resolved = _styles_arg(styles)
+        glyph = render_icon(self.icon, icon_style)
         header = Text.assemble(
-            ((f"{icon} " if icon else ""), resolved.style("warning")),
+            ((f"{glyph} " if glyph else ""), resolved.style("warning")),
             ("Tool approval required", resolved.style("warning", bold=True)),
         )
-        rows = render_lines(header, width, theme=resolved.rich_theme(), color_system=resolved.color_system)
+        rows = render_lines(header, width, theme=markdown_theme(), color_system=resolved.color_system)
         rows.append(resolved.fg("text", f"  tool: {escape_terminal_controls(self.tool_name)}"))
         rows.append(resolved.fg("dim", f"  request: {escape_terminal_controls(self.request_id)}"))
         preview = self._edit_preview()
@@ -380,11 +396,11 @@ class InteractiveApproval:
                     Syntax(
                         escape_terminal_controls(pretty, preserve_newlines=True, preserve_tabs=True),
                         "json",
-                        theme=resolved.syntax_theme(),
+                        theme=syntax_theme(),
                         word_wrap=True,
                     ),
                     width,
-                    theme=resolved.rich_theme(),
+                    theme=markdown_theme(),
                     color_system=resolved.color_system,
                 )
             )
@@ -498,36 +514,44 @@ class InteractiveForm:
             return None
         return {"action": self.view.action, "arguments": arguments}
 
-    def render_rows(self, width: int, theme: Theme | None = None) -> list[str]:
-        resolved = _theme_arg(theme)
+    def render_rows(self, width: int, styles: Styles | None = None) -> list[str]:
+        resolved = _styles_arg(styles)
+        fg, bg, tone_slot = resolve_component(self.view.style)
         text = Text()
         if self.load_error:
-            text.append(f"[warn] Load failure: {self.load_error}\n", style=resolved.style("error", bold=True))
+            text.append(f"[warn] Load failure: {escape_terminal_controls(self.load_error)}\n", style=resolved.style("error", bold=True))
         if self.validation_error:
-            text.append(f"[error] Validation: {self.validation_error}\n", style=resolved.style("error", bold=True))
+            text.append(f"[error] Validation: {escape_terminal_controls(self.validation_error)}\n", style=resolved.style("error", bold=True))
 
-        text.append(f"Form: {self.view.action} (Enter/Tab next, Ctrl+S submit, Esc cancel)\n\n", style=resolved.style("dim"))
+        text.append(
+            f"Form: {escape_terminal_controls(self.view.action)} (Enter/Tab next, Ctrl+S submit, Esc cancel)\n\n",
+            style=resolved.style(tone_slot or "dim", color=fg, background=bg),
+        )
         for i, field in enumerate(self.view.fields):
             name = field.name
-            label = field.label
+            label = escape_terminal_controls(field.label)
             ftype = field.field_type
-            val = self.values.get(name, "")
+            raw = self.values.get(name, "")
+            val = escape_terminal_controls("" if raw is None else str(raw), preserve_newlines=True)
             is_active = i == self.active_index
             req_mark = "*" if field.required else ""
 
             prefix = "> " if is_active else "  "
-            label_style = resolved.style("accent", bold=True) if is_active else resolved.style("text")
+            if is_active:
+                label_style = resolved.style(tone_slot or "accent", color=fg, background=bg, bold=True)
+            else:
+                label_style = resolved.style(tone_slot or "text", color=fg, background=bg)
             text.append(f"{prefix}{label}{req_mark} [{ftype}]: ", style=label_style)
 
             if ftype == "boolean":
-                if val is True:
+                if raw is True:
                     bool_str = "[X] True"
-                elif val is False:
+                elif raw is False:
                     bool_str = "[ ] False"
                 else:
                     bool_str = "[ ] (unset)"
-                present = val is not None
-                if val is True:
+                present = raw is not None
+                if raw is True:
                     value_style = resolved.style("success", bold=True)
                 elif present:
                     value_style = resolved.style("dim")
@@ -535,7 +559,7 @@ class InteractiveForm:
                     value_style = resolved.style("text", italic=True)
                 text.append(f"{bool_str}\n", style=value_style)
             elif ftype == "multiline":
-                lines = str(val).split("\n")
+                lines = val.split("\n")
                 value_style = resolved.style("warning") if is_active else resolved.style("dim")
                 if len(lines) <= 1:
                     text.append(f"'{val}'\n", style=value_style)
@@ -546,11 +570,16 @@ class InteractiveForm:
             else:
                 text.append(f"'{val}'\n", style=resolved.style("warning") if is_active else resolved.style("dim"))
 
-        panel = Panel(text, title=f"Form: {self.view.action}", border_style=resolved.style("accent"), expand=True)
-        return render_lines(panel, width, theme=resolved.rich_theme(), color_system=resolved.color_system)
+        panel = Panel(
+            text,
+            title=f"Form: {escape_terminal_controls(self.view.action)}",
+            border_style=resolved.style(tone_slot or "accent", color=fg, background=bg),
+            expand=True,
+        )
+        return render_lines(panel, width, theme=markdown_theme(), color_system=resolved.color_system)
 
 
-def render_plugin_view(descriptor: PluginViewDescriptor, width: int, theme: Theme | None = None) -> list[str]:
+def render_plugin_view(descriptor: PluginViewDescriptor, width: int, styles: Styles | None = None) -> list[str]:
     """Render any of the 8 finite view kinds into ANSI rows.
 
     Raises UnsupportedViewError if the view_type is outside the 8 finite kinds.
@@ -558,20 +587,20 @@ def render_plugin_view(descriptor: PluginViewDescriptor, width: int, theme: Them
     data = parse_view_data(descriptor.view_type, descriptor.data)
 
     if isinstance(data, NoticeViewData):
-        return render_notice(data, width, theme)
+        return render_notice(data, width, styles)
     if isinstance(data, MarkdownViewData):
-        return render_markdown(data, width, theme)
+        return render_markdown(data, width, styles)
     if isinstance(data, FieldsViewData):
-        return render_fields(data, width, theme)
+        return render_fields(data, width, styles)
     if isinstance(data, DiffViewData):
-        return render_diff(data, width, theme)
+        return render_diff(data, width, styles)
     if isinstance(data, StatusViewData):
-        return render_status(data, width, theme)
+        return render_status(data, width, styles)
     if isinstance(data, ChoicesViewData):
-        return InteractiveChoices(data).render_rows(width, theme)
+        return InteractiveChoices(data).render_rows(width, styles)
     if isinstance(data, ConfirmationViewData):
-        return InteractiveConfirmation(data).render_rows(width, theme)
+        return InteractiveConfirmation(data).render_rows(width, styles)
     if isinstance(data, FormViewData):
-        return InteractiveForm(data).render_rows(width, theme)
+        return InteractiveForm(data).render_rows(width, styles)
 
     raise UnsupportedViewError(f"unsupported view type: {descriptor.view_type}")

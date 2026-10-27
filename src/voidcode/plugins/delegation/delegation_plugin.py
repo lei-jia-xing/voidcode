@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import ClassVar
 from uuid import uuid4
 
+from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.plugin import Plugin
 from voidcode.sdk.services import ChildOutcome, PluginServices
@@ -789,6 +790,7 @@ TASK_BATCH_DESCRIPTION = (
 class TaskTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="task",
+        icon=Icon(glyph="⧉", fallback="T"),
         description=TASK_DESCRIPTION,
         input_schema={
             "type": "object",
@@ -1112,6 +1114,7 @@ class TaskTool:
 class TaskBatchTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="task_batch",
+        icon=Icon(glyph="⧉", fallback="T"),
         description=TASK_BATCH_DESCRIPTION,
         input_schema={
             "type": "object",

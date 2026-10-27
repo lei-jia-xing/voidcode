@@ -6,6 +6,7 @@ import type {
   FormViewData,
 } from "../../lib/core/types";
 import type { CoreClient } from "../../lib/core/client";
+import { componentFg, componentStyle } from "./componentStyle";
 
 export interface FormViewProps {
   data: Omit<FormViewData, "load_action" | "initial_values"> & {
@@ -150,6 +151,7 @@ export const FormView: React.FC<FormViewProps> = ({
 }) => {
   const { t } = useTranslation();
   const fields = useMemo(() => data.fields || [], [data.fields]);
+  const fg = componentFg(data);
 
   // Raw editor text per field: no synthetic defaults are ever materialized.
   const [formValues, setFormValues] = useState<Record<string, unknown>>(() => ({
@@ -329,11 +331,15 @@ export const FormView: React.FC<FormViewProps> = ({
   return (
     <form
       data-testid="form-view"
+      style={componentStyle(data)}
       onSubmit={handleSubmit}
       className="rounded-lg border border-neutral-700 bg-neutral-900/60 p-4 my-2 text-sm text-neutral-200"
     >
       <div className="flex items-center justify-between mb-3 border-b border-neutral-800 pb-2">
-        <div className="font-semibold text-neutral-300 uppercase tracking-wider text-xs">
+        <div
+          style={fg}
+          className="font-semibold text-neutral-300 uppercase tracking-wider text-xs"
+        >
           {t("core.formTitle", { action: data.action })}
         </div>
         {loading && (
@@ -374,6 +380,7 @@ export const FormView: React.FC<FormViewProps> = ({
             <div key={field.name} className="flex flex-col gap-1">
               <label
                 htmlFor={`form-field-${field.name}`}
+                style={fg}
                 className="text-xs font-medium text-neutral-400"
               >
                 {field.label || field.name}

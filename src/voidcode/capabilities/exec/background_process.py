@@ -18,6 +18,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
+from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.services import PluginServices, ProcessHandle
@@ -476,6 +477,7 @@ def _external_failure(*, tool_name: str, process_id: str, record: _ProcessRecord
 class BackgroundProcessTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="background_process",
+        icon=Icon(glyph="◷", fallback="B"),
         description=(
             "Manage a long-running background process. Use op=start to launch, ps to list the current workspace processes, "
             "logs to read bounded output, send to write stdin, or stop to terminate a process. "

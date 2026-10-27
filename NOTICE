@@ -35,11 +35,11 @@ copyright notice above is the attribution that licence requires.
 
 MIT covers this project's own code; see `LICENSE`.
 
-The 100 theme palette JSON files in `src/voidcode/tui/themes/` are bundled
-byte-for-byte from `can1357/oh-my-pi`, commit
-`b07a1c146d0d12cfc855a2c65d52f892ef319040`, directory
-`packages/tui/src/theme/defaults`. Copyright notices and the full MIT licence
-are in `src/voidcode/tui/themes/LICENSE.oh-my-pi`.
+The TUI glyph/spinner tables in `src/voidcode/tui/styles.py` are ported from
+the `can1357/oh-my-pi` ASCII symbol subset and spinner frames
+(`packages/tui/src/theme/symbols.ts`). Copyright notices and the full MIT
+licence are in `src/voidcode/tui/LICENSE.oh-my-pi`. The 100 bundled upstream
+palette JSON files were removed; no palette data is redistributed.
 
 The native sandbox helper (`native/sandbox-adapter/`) links the `mxc-sdk` Rust
 crate (version 1.0.1, from crates.io) as its confinement engine: Microsoft

@@ -14,6 +14,7 @@ import re
 from collections.abc import Mapping
 from typing import ClassVar
 
+from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.services import ArtifactReference, PluginServices
@@ -87,6 +88,7 @@ class McpTool:
 
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="mcp",
+        icon=Icon(glyph="⎔", fallback="M"),
         description=(
             "Call a tool exposed by a configured MCP server: pass the server name, the remote tool name, and its arguments object. "
             "MCP servers are discovered dynamically, so never assume a remote tool is available, read-only, idempotent, "

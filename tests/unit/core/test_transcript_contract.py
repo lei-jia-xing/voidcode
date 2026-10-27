@@ -216,3 +216,15 @@ def test_context_history_service_is_readonly_session_scoped_and_revocable(tmp_pa
         services.read_context_history()
     with pytest.raises(PermissionError, match="revoked"):
         _ = services.owner
+
+
+def test_tool_icon_absence_stays_generic_and_malformed_icon_fails_visibly():
+    from voidcode.sdk.transcript import TranscriptTool
+
+    call = {"tool_name": "read", "arguments": {}, "tool_call_id": "c1"}
+    result = {"status": "ok", "tool_name": "read", "output": {"type": "text", "text": "hi"}}
+    old = transcript_entry(_event(10, "core.tool_completed", {"call": call, "result": result, "batch_sequence": 4}))
+    assert isinstance(old.content, TranscriptTool)
+    assert old.content.icon is None
+    with pytest.raises(ValueError):
+        transcript_entry(_event(11, "core.tool_completed", {"call": call, "result": result, "batch_sequence": 4, "icon": {"glyph": "x"}}))

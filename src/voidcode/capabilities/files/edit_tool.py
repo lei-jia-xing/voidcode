@@ -9,6 +9,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
+from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.services import PluginServices
@@ -166,6 +167,7 @@ _EDIT_ARGS = TypeAdapter(_SingleEdit | _BatchEdit | _PatchEdit)
 class EditTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="edit",
+        icon=Icon(glyph="✎", fallback="E"),
         description=(
             "Edit files by replacing text (single replacement or ordered batch) or applying a patch. "
             "Replacements require exact current file text. Patches use *** Begin Patch marker format with add, update, delete and move operations. "

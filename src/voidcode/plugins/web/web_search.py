@@ -11,6 +11,7 @@ from urllib.parse import quote
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import OutputBounds, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult, ToolSuccess
@@ -378,6 +379,7 @@ PROVIDERS: tuple[SearchProvider, ...] = (
 class WebSearchTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="web_search",
+        icon=Icon(glyph="⌕", fallback="W"),
         description="Search the web for information. Returns search results with titles, URLs, and snippets.",
         input_schema={
             "type": "object",

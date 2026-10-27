@@ -8,16 +8,18 @@ goes through optimistic ``get_state``/``replace_state`` versioning.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import ClassVar, cast
 
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
+from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.plugin import Plugin, StateSchema
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult, ToolSuccess
-from voidcode.sdk.views import PluginViewDescriptor
+from voidcode.sdk.views import ComponentStyle, PluginViewDescriptor, StatusViewData
 
 SCHEMA_VERSION = 1
 _STATE_KEYS: frozenset[str] = frozenset({"schema_version", "total", "updates"})
@@ -77,6 +79,7 @@ class TallyAddTool:
 
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="tally_add",
+        icon=Icon(glyph="∑", fallback="+"),
         description="Add a delta to this session's tally counter.",
         input_schema={
             "type": "object",
@@ -145,7 +148,13 @@ class TallyView:
             name=self.name,
             title="Tally",
             view_type="status",
-            data={"label": "Tally", "value": f"{state.total} ({state.updates} update(s))"},
+            data=dataclasses.asdict(
+                StatusViewData(
+                    label="Tally",
+                    value=f"{state.total} ({state.updates} update(s))",
+                    style=ComponentStyle(foreground="#12ab34"),
+                )
+            ),
         )
 
 

@@ -32,6 +32,7 @@ from typing import ClassVar, Literal, TypedDict
 
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
 from voidcode.sdk.hooks import ContextContribution, InvocationFinishedFact, PluginFact, RunFinishedFact, RunRequestedFact
+from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.plugin import Plugin, StateSchema
 from voidcode.sdk.services import PluginServices
@@ -1017,6 +1018,7 @@ def _load_state(services: PluginServices) -> tuple[TodoState, int]:
 class TodoTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="todo",
+        icon=Icon(glyph="☑", fallback="T"),
         description=TODO_DESCRIPTION,
         input_schema={
             "type": "object",

@@ -89,6 +89,19 @@ Plugins contribute presentation exclusively through eight bounded descriptors; c
 7. `diff` — unified diff (`before`, `after`, optional `path`).
 8. `status` — state badge (`label`, `value`).
 
+Every view data kind carries an optional `style` object (`ComponentStyle`:
+optional `tone` ∈ `default`/`info`/`success`/`warning`/`error` defaulting to
+`default`, optional nullable `foreground`/`background` as `#RRGGBB` or one of the 16 ANSI names).
+Absent or null style (or `tone: "default"` with no colors) renders the
+client's built-in default; `ConfirmationRequest.ui_data` (a `confirmation`
+view) styles the same way. Precedence: explicit colors > non-default tone >
+`notice.level` (notice only) > client default. Colors tint only the owning
+component's content and chrome accent — semantic cues (confirmation
+allow/deny, diff `+`/`-`, focus, error markers) stay fixed, and unknown
+tones/colors degrade to the default. RGB values render as given; ANSI-name
+appearance may vary by client. SDK ingress rejects unknown tones, colors,
+and keys, so clients never see raw CSS/ANSI/markup in `style`.
+
 An unrecognized or malformed view is reported visibly; clients never simulate success.
 
 ## The Two Decision Gates
@@ -141,11 +154,27 @@ serve the explicitly discriminated wire (`{kind, body}`, OpenAPI
 `decode_transcript_page`/`decode_context_history`. Same conversation facts;
 new consumers should prefer the routes.
 
+## Tool Icons
+
+Each tool declares its own display identity (`Icon(glyph, fallback)` on
+`ToolDefinition`; `None` means generic). The core snapshots the birth icon
+as an `icon` key (`{glyph, fallback} | null`) on the `core.tool_intent`
+and `core.tool_completed`/`tool_interrupted` payloads, and projects it to
+`TranscriptTool.icon` (`TranscriptToolWire.icon` on the wire, same
+optional value). Clients render the recorded value — `glyph` in glyph
+mode, `fallback` in ascii mode, generic mark when absent — and never map
+tool names to glyphs or re-resolve history from the live catalog. Modes
+are explicit per client (`glyph | ascii`, default `glyph`): the TUI takes
+`--icons glyph|ascii` (non-UTF8 output may force ascii as an encoding
+limit, never a font heuristic); the web client takes an `iconStyle` prop
+or `?icons=ascii` query param. No font detection is promised: UTF-8
+proves bytes travel, not that the font has the codepoint.
+
 ## Web Client
 
-The built bundle is served by the core at `/` (an exact file when present, otherwise `index.html`, so client-side routes survive a reload). During frontend development, Vite serves the app on `127.0.0.1:5173` and proxies `/api` to the core (`VITE_BACKEND_URL`, default `http://127.0.0.1:8765`).
+The built bundle is served by the core at `/` (an exact file when present, otherwise `index.html`, so client-side routes survive a reload). During frontend development, Vite serves the app on `127.0.0.1:5173` and proxies `/api` to the core (`VITE_BACKEND_URL`, default `http://127.0.0.1:8765`). The `?icons=ascii` query param selects ASCII tool icons (default glyph), mirroring the `iconStyle` prop.
 
-The core app (`frontend/src/core/`) renders the same catalog and views with pure components in `frontend/src/core/views/`; markdown goes through `react-markdown` + `remark-gfm` and never evaluates raw HTML. Every response, view render, form draft, and SSE frame is bound to the session that issued it, and revision binding follows the HTTP rules above.
+The core app (`frontend/src/core/`) renders the same catalog and views with pure components in `frontend/src/core/views/`; markdown goes through `react-markdown` + `remark-gfm` and never evaluates raw HTML. Each view applies its own `style` as a validated inline `style` prop via the one shared converter (`componentStyle.ts`): color/border/background only, scoped to that component, no global CSS, no classnames from data, no separate UI protocol. Every response, view render, form draft, and SSE frame is bound to the session that issued it, and revision binding follows the HTTP rules above.
 
 TypeScript types are generated from the core transport's OpenAPI document:
 

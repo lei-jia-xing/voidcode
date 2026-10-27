@@ -2,6 +2,7 @@ import React from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { MarkdownViewData } from "../../lib/core/types";
+import { componentStyle } from "./componentStyle";
 
 export interface MarkdownViewProps {
   data: MarkdownViewData;
@@ -16,6 +17,7 @@ export const MarkdownView: React.FC<MarkdownViewProps> = ({ data }) => {
   return (
     <div
       data-testid="markdown-view"
+      style={componentStyle(data)}
       className="markdown-body rounded-lg border border-neutral-700 bg-neutral-900/60 p-4 my-2 text-sm text-neutral-200"
     >
       <ReactMarkdown remarkPlugins={REMARK_PLUGINS}>

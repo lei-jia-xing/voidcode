@@ -11,7 +11,7 @@ import queue
 import threading
 import time
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal
 
 from voidcode.core.events import EventType
 from voidcode.sdk.client import (
@@ -43,6 +43,7 @@ from voidcode.sdk.gates import (
     RunTerminated,
     reduce_gates,
 )
+from voidcode.sdk.icons import Icon
 from voidcode.sdk.provider import ProviderMessage, ProviderTurnResult
 from voidcode.sdk.tools import (
     ToolEffect,
@@ -68,8 +69,8 @@ from voidcode.sdk.views import (
 from .composer import Composer, ComposerAction
 from .keys import Key, KeyDecoder
 from .region import TuiFrame
+from .styles import SPINNER_FRAMES, Styles
 from .term import Terminal, escape_terminal_controls
-from .theme import Theme, appearance_mode, palette_names, resolve_theme
 from .views import (
     InteractiveApproval,
     InteractiveChoices,
@@ -111,12 +112,12 @@ def json_safe(value: object) -> object:
         return str(value)
 
 
-def _prefixed_rows(prefix: str, text: str, theme: Theme, *, token: str) -> list[str]:
+def _prefixed_rows(prefix: str, text: str, styles: Styles, *, slot: str) -> list[str]:
     """Prefix sanitized multiline text, one row per explicit line.
 
     Terminal owns physical width wrapping, so this helper never clips content.
     """
-    label = f"{theme.style(token, bold=True).render(prefix, color_system=theme.color_system)} "
+    label = f"{styles.render(slot, prefix, bold=True)} "
     clean = escape_terminal_controls(text, preserve_newlines=True, preserve_tabs=True)
     rows: list[str] = []
     for index, line in enumerate(clean.split("\n")):
@@ -143,7 +144,7 @@ def _command_result_text(result: CommandResult) -> str:
     return ""
 
 
-def _command_result_rows(name: str, result: CommandResult, theme: Theme) -> list[str]:
+def _command_result_rows(name: str, result: CommandResult, styles: Styles) -> list[str]:
     """One visible command-result block shared by direct receipts and events.
 
     A direct core read receipt and a durable plugin ``core.command_completed``
@@ -154,53 +155,71 @@ def _command_result_rows(name: str, result: CommandResult, theme: Theme) -> list
     label = _safe(name or "command")
     text = _command_result_text(result)
     if result.status == "error":
-        return _prefixed_rows(f"[error] Command /{label} failed:", text, theme, token="error")
+        return _prefixed_rows(f"[error] Command /{label} failed:", text, styles, slot="error")
     if result.status == "pending_confirmation":
-        return [theme.fg("warning", f"[wait] Command /{label} awaits confirmation")]
+        return [styles.fg("warning", f"[wait] Command /{label} awaits confirmation")]
     if result.status == "ok":
-        return _prefixed_rows(f"[ok] Command /{label}:", text, theme, token="success")
-    return _prefixed_rows(f"Command /{label} [{result.status or 'unknown'}]:", text, theme, token="warning")
+        return _prefixed_rows(f"[ok] Command /{label}:", text, styles, slot="success")
+    return _prefixed_rows(f"Command /{label} [{result.status or 'unknown'}]:", text, styles, slot="warning")
 
 
-def _tool_result_rows(name: str, result: ToolResult, width: int, theme: Theme, *, interrupted: bool) -> list[str]:
+def _tool_result_rows(name: str, result: ToolResult, width: int, styles: Styles, *, interrupted: bool) -> list[str]:
     """One tool-result block from the typed result; same pixels as the wire path."""
-    return render_tool_result(name, encode_tool_result(result), width, theme, interrupted=interrupted)
+    return render_tool_result(name, encode_tool_result(result), width, styles, interrupted=interrupted)
 
 
-def _content_rows(content: TranscriptContent, width: int, theme: Theme) -> list[str]:
+def _content_rows(
+    content: TranscriptContent,
+    width: int,
+    styles: Styles,
+    *,
+    icon_style: str = "glyph",
+    include_tool_header: bool = True,
+) -> list[str]:
     """Render one typed transcript content into settled rows."""
     if isinstance(content, ProviderMessage):
         if content.role == "user":
-            user = theme.style("accent", bold=True).render("User>", color_system=theme.color_system)
+            user = styles.render("accent", "User>", bold=True)
             return [f"{user} {_safe(content.content)}"]
         if content.role == "system":
-            return _prefixed_rows("System>", content.content or "", theme, token="dim")
+            return _prefixed_rows("System>", content.content or "", styles, slot="dim")
         rows: list[str] = []
         if content.content:
-            rows.extend(render_assistant_markdown(content.content, width, theme))
+            rows.extend(render_assistant_markdown(content.content, width, styles))
         return rows
     if isinstance(content, ProviderTurnResult):
         rows = []
         if isinstance(content.output, str) and content.output:
-            rows.extend(render_assistant_markdown(content.output, width, theme))
+            rows.extend(render_assistant_markdown(content.output, width, styles))
         if isinstance(content.reasoning, str) and content.reasoning:
-            rows.extend(_prefixed_rows("Reasoning>", content.reasoning, theme, token="thinkingText"))
-        for call in content.tool_calls:
-            rows.extend(render_tool_call(_safe(call.tool_name or "tool"), json_safe(call.arguments), width, theme))
+            rows.extend(_prefixed_rows("Reasoning>", content.reasoning, styles, slot="muted"))
         return rows
     if isinstance(content, TranscriptTool):
         name = _safe(content.result.tool_name or "unknown")
-        return _tool_result_rows(name, content.result, width, theme, interrupted=content.interrupted)
+        rows = []
+        if include_tool_header:
+            rows.extend(
+                render_tool_call(
+                    _safe(content.call.tool_name or "tool"),
+                    json_safe(content.call.arguments),
+                    width,
+                    styles,
+                    icon=content.icon,
+                    icon_style=icon_style,
+                )
+            )
+        rows.extend(_tool_result_rows(name, content.result, width, styles, interrupted=content.interrupted))
+        return rows
     if isinstance(content, TranscriptRun):
         if content.status == "failed":
-            return [theme.fg("error", "[Run failed]")]
+            return [styles.fg("error", "[Run failed]")]
         if content.status == "interrupted":
-            return [theme.fg("warning", "[Run interrupted]")]
+            return [styles.fg("warning", "[Run interrupted]")]
         return []
     if isinstance(content, TranscriptInterrupted):
-        return [theme.fg("dim", "[interrupted: usage unknown]")]
+        return [styles.fg("dim", "[interrupted: usage unknown]")]
     if isinstance(content, TranscriptChild):
-        return [theme.fg("dim", f"[child session: {_safe(content.child_session_id)}]")]
+        return [styles.fg("dim", f"[child session: {_safe(content.child_session_id)}]")]
     if isinstance(content, TranscriptDispatch):
         return []
     raise ValueError(f"unknown transcript content: {type(content).__name__}")
@@ -291,9 +310,24 @@ def _hydrate_head_events(client: SessionClient, session_id: str, head: HeadFrame
     return tuple(merged)
 
 
-def _notice_row(text: object, tone: str, theme: Theme) -> str:
-    token = {"ok": "success", "warning": "warning", "error": "error"}.get(tone, "accent")
-    return theme.fg(token, f"[{_safe(text)}]")
+def _tool_icon(raw: object) -> Icon | None:
+    """Strict birth icon: None stays generic, malformed fails visibly."""
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise ValueError(f"tool icon must be an object or null, got {type(raw).__name__}")
+    glyph, fallback = raw.get("glyph"), raw.get("fallback")
+    if not isinstance(glyph, str) or not isinstance(fallback, str):
+        raise ValueError("tool icon requires glyph and fallback strings")
+    extra = set(raw) - {"glyph", "fallback"}
+    if extra:
+        raise ValueError(f"unknown tool icon keys: {sorted(extra)}")
+    return Icon(glyph=glyph, fallback=fallback)
+
+
+def _notice_row(text: object, tone: str, styles: Styles) -> str:
+    slot = {"ok": "success", "warning": "warning", "error": "error"}.get(tone, "accent")
+    return styles.fg(slot, f"[{_safe(text)}]")
 
 
 class CoreTuiApp:
@@ -305,19 +339,26 @@ class CoreTuiApp:
         *,
         session_id: str | None = None,
         terminal: Terminal | None = None,
+        icon_style: Literal["glyph", "ascii"] = "glyph",
     ) -> None:
         self.client = client
         self.terminal = terminal or Terminal.open()
+        if icon_style not in ("glyph", "ascii"):
+            raise ValueError("icon_style must be 'glyph' or 'ascii'")
+        # Non-UTF8 output cannot encode the glyph bytes: ascii mode is an
+        # encoding limit, never a font heuristic.
+        self.icon_style: Literal["glyph", "ascii"] = "ascii" if getattr(self.terminal, "unicode_ok", True) is False else icon_style
         self.owns_terminal = terminal is None
         self.session_id = session_id or ""
         self.running = False
-        mode = appearance_mode(self.terminal.query_default_background_rgb())
-        self.theme = resolve_theme(mode=mode, color_system=self.terminal.color_system)
-        self.composer = Composer(theme=self.theme, width=self.terminal.width, placeholder="Type a message or /command...")
+        self.styles = Styles(self.terminal.color_system)
+        self.composer = Composer(styles=self.styles, width=self.terminal.width, placeholder="Type a message or /command...")
         self.key_decoder = KeyDecoder()
         self._escape_flush_at = 0.0
         self.event_queue: queue.Queue[dict[str, Any]] = queue.Queue()
         self._session_cursors: dict[str, int] = {}
+        #: Invocation ids whose tool-call header already committed (dedupes intent/result).
+        self._tool_headers: set[str] = set()
         self._generation = 0
         #: Last known server identity/liveness from /api/health. The fence bit
         #: pauses dispatch; the identity triple detects a replaced server.
@@ -500,22 +541,20 @@ class CoreTuiApp:
         text = "".join(self._stream_buffers.get(dispatch, []))
         if not text:
             return []
-        rows = render_assistant_markdown(text, width, self.theme)
-        frames = self.theme.spinner_frames()
-        spinner = frames[self._spinner_tick % len(frames)] if frames else ""
+        rows = render_assistant_markdown(text, width, self.styles)
+        spinner = SPINNER_FRAMES[self._spinner_tick % len(SPINNER_FRAMES)]
         head = f"{spinner} " if spinner else ""
         rows = [f"{head}{rows[0]}", *rows[1:]] if rows else ([head.strip()] if head else [])
         return rows
 
     def _status_with_spinner(self) -> str:
-        """Segments: short session id, run-state + spinner, theme name, notice."""
+        """Segments: short session id, run-state + spinner, notice."""
         if self._run_active:
-            frames = self.theme.spinner_frames()
-            spinner = frames[self._spinner_tick % len(frames)] if frames else ""
+            spinner = SPINNER_FRAMES[self._spinner_tick % len(SPINNER_FRAMES)]
             run_state = f"{spinner} running" if spinner else "running"
         else:
             run_state = "idle"
-        segments = [self.session_id[:8], run_state, self.theme.name]
+        segments = [self.session_id[:8], run_state]
         if self.status_line:
             segments.append(self.status_line)
         return " · ".join(segment for segment in segments if segment)
@@ -553,7 +592,7 @@ class CoreTuiApp:
                 if isinstance(head, EventFrame):
                     self._handle_stream_event(head.event, rows_to_commit)
             elif kind == "notice":
-                rows_to_commit.append(_notice_row(frame.get("text"), str(frame.get("tone", "info")), self.theme))
+                rows_to_commit.append(_notice_row(frame.get("text"), str(frame.get("tone", "info")), self.styles))
             elif kind == "command_done":
                 raw_name = str(frame.get("name") or "command")
                 status = str(frame.get("status", ""))
@@ -566,7 +605,7 @@ class CoreTuiApp:
                     self.status_line = f"/{_safe(raw_name)}: {status}"
                 receipt = frame.get("result")
                 if isinstance(receipt, CommandResult):
-                    rows_to_commit.extend(_command_result_rows(raw_name, receipt, self.theme))
+                    rows_to_commit.extend(_command_result_rows(raw_name, receipt, self.styles))
             elif kind == "approval_accepted":
                 # The server accepted this exact request: close the gate it
                 # matches, or nothing when a newer request already replaced it.
@@ -588,7 +627,7 @@ class CoreTuiApp:
                 if status in ("failed", "interrupted"):
                     detail = frame.get("error")
                     suffix = f": {_safe(detail)}" if detail else ""
-                    rows_to_commit.append(self.theme.fg("warning", f"[Run {status}]{suffix}"))
+                    rows_to_commit.append(self.styles.fg("warning", f"[Run {status}]{suffix}"))
                 if status in ("completed", "failed", "interrupted"):
                     self._run_active = False
                 elif status in ("running", "waiting"):
@@ -681,7 +720,7 @@ class CoreTuiApp:
                     if isinstance(status, str) and status:
                         self.status_line = f"Run {status}" if status in ("running", "waiting") else self.status_line
                     if isinstance(failures, list) and failures:
-                        rows_to_commit.append(self.theme.fg("warning", f"[Reconnect refresh incomplete: {', '.join(str(f) for f in failures)}]"))
+                        rows_to_commit.append(self.styles.fg("warning", f"[Reconnect refresh incomplete: {', '.join(str(f) for f in failures)}]"))
             elif kind == "server_restart":
                 # Watermark only (contract §8.2/§6): the worker already broke
                 # its iterator and is reconnecting from our applied cursor.
@@ -692,7 +731,7 @@ class CoreTuiApp:
                 # blocking request ever runs on this UI thread.
                 self.status_line = "Core restarting -- reconnecting..."
             elif kind == "error":
-                rows_to_commit.append(f"{self.theme.fg('error', '[Core stream error]')} {_safe(frame.get('error'))}")
+                rows_to_commit.append(f"{self.styles.fg('error', '[Core stream error]')} {_safe(frame.get('error'))}")
 
         if rows_to_commit:
             self.terminal.commit_rows(rows_to_commit)
@@ -717,8 +756,36 @@ class CoreTuiApp:
         ):
             if isinstance(entry.content, ProviderTurnResult):
                 self._settle_stream(payload)
-            rows.extend(_content_rows(entry.content, self.terminal.width, self.theme))
-        if etype == EventType.PROVIDER_PROGRESS:
+            include_header = True
+            if isinstance(entry.content, TranscriptTool):
+                # The live header (TOOL_INTENT) and this settled block share one
+                # invocation id: pop it so the header commits exactly once.
+                invocation = payload.get("invocation_id")
+                if isinstance(invocation, str) and invocation:
+                    include_header = invocation not in self._tool_headers
+                    self._tool_headers.discard(invocation)
+            rows.extend(
+                _content_rows(entry.content, self.terminal.width, self.styles, icon_style=self.icon_style, include_tool_header=include_header)
+            )
+        if etype == EventType.TOOL_INTENT:
+            invocation = payload.get("invocation_id")
+            raw_call = payload.get("call")
+            if isinstance(invocation, str) and invocation and isinstance(raw_call, Mapping):
+                call = decode_tool_call(raw_call)
+                icon = _tool_icon(payload.get("icon"))
+                if invocation not in self._tool_headers:
+                    self._tool_headers.add(invocation)
+                    rows.extend(
+                        render_tool_call(
+                            _safe(call.tool_name or "tool"),
+                            json_safe(call.arguments),
+                            self.terminal.width,
+                            self.styles,
+                            icon=icon,
+                            icon_style=self.icon_style,
+                        )
+                    )
+        elif etype == EventType.PROVIDER_PROGRESS:
             dispatch = payload.get("dispatch_id")
             delta = payload.get("text_delta")
             if isinstance(dispatch, str) and dispatch and isinstance(delta, str) and delta:
@@ -731,7 +798,7 @@ class CoreTuiApp:
             raw_result = payload.get("result")
             raw_name = str(payload.get("name") or "command")
             if isinstance(raw_result, Mapping):
-                rows.extend(_command_result_rows(raw_name, CommandResult.from_payload(raw_result), self.theme))
+                rows.extend(_command_result_rows(raw_name, CommandResult.from_payload(raw_result), self.styles))
         elif etype == EventType.ACTIVATION_COMMITTED:
             # The displayed generation changed: the command catalog is
             # refetched and anything captured under the previous revision is
@@ -746,20 +813,20 @@ class CoreTuiApp:
             self._load_catalog()
             self._present_queued_confirmation()
             suffix = " (stale action discarded)" if dropped else ""
-            rows.append(self.theme.fg("warning", f"[Capabilities changed: command catalog refreshed{suffix}]"))
+            rows.append(self.styles.fg("warning", f"[Capabilities changed: command catalog refreshed{suffix}]"))
         elif etype in (EventType.CONFIRMATION_REQUESTED, EventType.CONFIRMATION_DECIDED, EventType.APPROVAL_REQUESTED, EventType.APPROVAL_DECIDED):
             if etype == EventType.APPROVAL_DECIDED:
-                rows.append(self.theme.fg("warning", f"[Approval {_safe(payload.get('decision'))}]"))
+                rows.append(self.styles.fg("warning", f"[Approval {_safe(payload.get('decision'))}]"))
             for change in _gate_changes(event)[0]:
                 self._apply_gate_change(change)
         elif etype == EventType.RUN_INTERRUPTED:
-            rows.append(self.theme.fg("warning", f"[Run interrupted: {_safe(payload.get('stop_cause'))}]"))
+            rows.append(self.styles.fg("warning", f"[Run interrupted: {_safe(payload.get('stop_cause'))}]"))
             for change in _gate_changes(event)[0]:
                 self._apply_gate_change(change)
             self._clear_stream()
             self._present_queued_confirmation()
         elif etype == EventType.RUN_FAILED:
-            rows.append(self.theme.fg("error", "[Run failed]"))
+            rows.append(self.styles.fg("error", "[Run failed]"))
             for change in _gate_changes(event)[0]:
                 self._apply_gate_change(change)
             self._clear_stream()
@@ -769,7 +836,7 @@ class CoreTuiApp:
                 self._apply_gate_change(change)
             self._clear_stream()
         elif etype == EventType.OBSERVER_ERROR:
-            rows.append(f"{self.theme.fg('error', '[Plugin observer error]')} {_safe(payload.get('error'))}")
+            rows.append(f"{self.styles.fg('error', '[Plugin observer error]')} {_safe(payload.get('error'))}")
 
     def _apply_gate_change(self, change: GateChange) -> None:
         """Fold one typed gate change and sync the mounted widgets to the reducer."""
@@ -1293,7 +1360,7 @@ class CoreTuiApp:
         if not draft.startswith("/"):
             return []
         names = [entry.name for entry in self.catalog_cache]
-        names.extend(f"tui {control}" for control in ("help", "sessions", "session", "new", "theme", "views", "cancel", "quit", "exit"))
+        names.extend(f"tui {control}" for control in ("help", "sessions", "session", "new", "views", "cancel", "quit", "exit"))
         prefix = draft[1:].strip()
         return sorted(f"/{name}" for name in names if name and name.startswith(prefix))
 
@@ -1384,7 +1451,7 @@ class CoreTuiApp:
                 return
             if self._run_local_control(local, local_args.strip()):
                 return
-            self.terminal.commit_rows([self.theme.fg("error", f"Unknown TUI control: /tui {_safe(local)}")])
+            self.terminal.commit_rows([self.styles.fg("error", f"Unknown TUI control: /tui {_safe(local)}")])
             return
 
         # A bare name is a local control only when no admitted command owns it.
@@ -1408,9 +1475,6 @@ class CoreTuiApp:
         if cmd == "new":
             self._create_session()
             return True
-        if cmd == "theme":
-            self._switch_theme(arg_str.strip())
-            return True
         if cmd == "cancel":
             self._cancel_active_run()
             return True
@@ -1421,22 +1485,6 @@ class CoreTuiApp:
             self.running = False
             return True
         return False
-
-    def _switch_theme(self, name: str) -> None:
-        """Switch the app palette live; bare ``/tui theme`` lists what ``mode`` admits."""
-        if not name:
-            options = [*palette_names("dark"), *palette_names("light")]
-            current = f" (current: {self.theme.name})" if self.theme.name in options else ""
-            self.terminal.commit_rows([f"Available themes: {', '.join(options)}{current}"])
-            return
-        try:
-            self.theme = resolve_theme(name, color_system=self.terminal.color_system)
-        except ValueError:
-            options = [*palette_names("dark"), *palette_names("light")]
-            self.terminal.commit_rows([self.theme.fg("error", f"Unknown theme: {_safe(name)} (choose: {', '.join(options)})")])
-            return
-        self.composer.set_appearance(theme=self.theme, style="band", gutter="prompt", padding="normal")
-        self.status_line = f"Theme: {self.theme.name}"
 
     def _action_schema(self, name: str) -> Mapping[str, Any] | None:
         """The target command's declared argument schema, the form's field authority."""
@@ -1468,6 +1516,7 @@ class CoreTuiApp:
         self.pending_approval = None
         self.queued_confirmations.clear()
         self._gates = GateState()
+        self._tool_headers.clear()
         self._clear_stream()
         # A new stream is about to start: its first frame reconciles.
         self._stream_ready = False
@@ -1479,27 +1528,26 @@ class CoreTuiApp:
             res = self.client.create_session()
             new_id = res.session_id
         except Exception as exc:
-            self.terminal.commit_rows([self.theme.fg("error", f"Failed to create session: {_safe(exc)}")])
+            self.terminal.commit_rows([self.styles.fg("error", f"Failed to create session: {_safe(exc)}")])
             return
         if new_id:
             self._switch_session(new_id)
 
     def _show_help(self) -> None:
-        heading = self.theme.style("accent", bold=True).render("=== VoidCode Terminal Controls ===", color_system=self.theme.color_system)
+        heading = self.styles.render("accent", "=== VoidCode Terminal Controls ===")
         lines = [
             heading,
             "  /tui help              Show this help (always available)",
             "  /tui sessions          List available sessions",
             "  /tui session <id>      Switch active session",
             "  /tui new               Create new session",
-            "  /tui theme [name]      Show or switch the color theme",
             "  /tui views [name]      Open plugin views/forms (for example goal)",
             "  /tui cancel            Cancel active session run",
             "  /tui quit              Exit TUI",
             "  Ctrl+C                 Cancel a run, or close/deny a dialog",
             "  Ctrl+D                 Quit",
             "  (/views, /sessions, ... are local when no admitted command owns the name)",
-            self.theme.style("accent", bold=True).render("=== Admitted Commands ===", color_system=self.theme.color_system),
+            self.styles.render("accent", "=== Admitted Commands ==="),
         ]
         if not self.catalog_cache:
             self._load_catalog()
@@ -1510,13 +1558,13 @@ class CoreTuiApp:
     def _show_sessions(self) -> None:
         try:
             sess_list = self.client.list_sessions()
-            lines = [self.theme.style("accent", bold=True).render("=== Active Sessions ===", color_system=self.theme.color_system)]
+            lines = [self.styles.render("accent", "=== Active Sessions ===")]
             for s in sess_list:
                 marker = " >" if s.session_id == self.session_id else "  "
                 lines.append(f"{marker} {s.session_id} (status={s.status}, turn={s.turn})")
             self.terminal.commit_rows(lines)
         except Exception as exc:
-            self.terminal.commit_rows([self.theme.fg("error", f"Failed to list sessions: {_safe(exc)}")])
+            self.terminal.commit_rows([self.styles.fg("error", f"Failed to list sessions: {_safe(exc)}")])
 
     def _show_views(self, name_filter: str = "") -> None:
         """Render plugin views only when explicitly requested.
@@ -1529,7 +1577,7 @@ class CoreTuiApp:
         try:
             snapshot = self.client.views(self.session_id)
         except Exception as exc:
-            self.terminal.commit_rows([self.theme.fg("error", f"Failed to read views: {_safe(exc)}")])
+            self.terminal.commit_rows([self.styles.fg("error", f"Failed to read views: {_safe(exc)}")])
             return
         views_revision = snapshot.revision_id
         descriptors: list[PluginViewDescriptor] = list(snapshot.views)
@@ -1537,7 +1585,7 @@ class CoreTuiApp:
             wanted = name_filter.strip().lower()
             descriptors = [v for v in descriptors if wanted in v.name.lower() or wanted in v.title.lower()]
         if not descriptors:
-            self.terminal.commit_rows([self.theme.fg("warning", "No plugin views available for this session.")])
+            self.terminal.commit_rows([self.styles.fg("warning", "No plugin views available for this session.")])
             return
         for v in descriptors:
             vtype = v.view_type
@@ -1566,7 +1614,7 @@ class CoreTuiApp:
                     self.active_overlay = InteractiveConfirmation(data, revision_id=views_revision)
                 return
             # Non-interactive view: render rows and commit
-            rows = render_plugin_view(v, self.terminal.width, self.theme)
+            rows = render_plugin_view(v, self.terminal.width, self.styles)
             self.terminal.commit_rows(rows)
 
     def _maybe_load_form_data(self, form: InteractiveForm) -> None:
@@ -1609,7 +1657,7 @@ class CoreTuiApp:
     def _dispatch_catalog_command(self, cmd_name: str, arg_str: str) -> None:
         cmd_desc = next((c for c in self._catalog() if c.name == cmd_name), None)
         if cmd_desc is None:
-            self.terminal.commit_rows([f"{self.theme.fg('error', f'Unknown command: /{_safe(cmd_name)}')} (try /help)"])
+            self.terminal.commit_rows([f"{self.styles.fg('error', f'Unknown command: /{_safe(cmd_name)}')} (try /help)"])
             return
         # The revision of the catalog this descriptor was read from.
         revision = self.catalog_revision
@@ -1643,11 +1691,11 @@ class CoreTuiApp:
                 if len(properties) == 1:
                     arguments = {next(iter(properties)): arg_str}
                 else:
-                    self.terminal.commit_rows([self.theme.fg("error", f"Arguments must be valid JSON: {_safe(arg_str)}")])
+                    self.terminal.commit_rows([self.styles.fg("error", f"Arguments must be valid JSON: {_safe(arg_str)}")])
                     return
             else:
                 if not isinstance(parsed, dict):
-                    self.terminal.commit_rows([self.theme.fg("error", f"Arguments must be a JSON object: {_safe(arg_str)}")])
+                    self.terminal.commit_rows([self.styles.fg("error", f"Arguments must be a JSON object: {_safe(arg_str)}")])
                     return
                 arguments = parsed
 
@@ -1661,14 +1709,14 @@ class CoreTuiApp:
         # One status row for every branch, styled only when it has real text:
         # an empty reverse-video row would paint a blank band, not a quiet idle.
         status_line = self._status_with_spinner()
-        status_text = self.theme.style("text", reverse=True).render(status_line, color_system=self.theme.color_system) if status_line else ""
+        status_text = self.styles.render("text", status_line, reverse=True) if status_line else ""
         status_rows = (status_text,) if status_text else ()
         if self.pending_approval is not None:
-            rows = self.pending_approval.render_rows(width, self.theme)
+            rows = self.pending_approval.render_rows(width, self.styles, icon_style=self.icon_style)
             frame = TuiFrame(transcript_rows=(), chrome_rows=(*rows, *status_rows), cursor=None)
             self.terminal.paint_frame(frame)
         elif self.active_overlay is not None:
-            overlay_rows = self.active_overlay.render_rows(width, self.theme)
+            overlay_rows = self.active_overlay.render_rows(width, self.styles)
             frame = TuiFrame(transcript_rows=(), chrome_rows=(*overlay_rows, *status_rows), cursor=None)
             self.terminal.paint_frame(frame)
         else:
@@ -1684,16 +1732,16 @@ class CoreTuiApp:
             self.terminal.paint_frame(frame)
 
 
-def run_tui(server_url: str, *, token: str | None = None, session_id: str | None = None) -> int:
+def run_tui(server_url: str, *, token: str | None = None, session_id: str | None = None, icon_style: Literal["glyph", "ascii"] = "glyph") -> int:
     """Launch the generic TUI connected to a running core."""
     from voidcode.bootstrap import open_session_client
 
     with open_session_client(server_url=server_url, token=token) as client:
-        app = CoreTuiApp(client, session_id=session_id)
+        app = CoreTuiApp(client, session_id=session_id, icon_style=icon_style)
         return app.run()
 
 
-def run_embedded_tui(workspace: object, state_dir: object, *, session_id: str | None = None) -> int:
+def run_embedded_tui(workspace: object, state_dir: object, *, session_id: str | None = None, icon_style: Literal["glyph", "ascii"] = "glyph") -> int:
     """Launch the TUI against an in-process core: no socket, no HTTP framing."""
     import signal
     from pathlib import Path
@@ -1703,7 +1751,7 @@ def run_embedded_tui(workspace: object, state_dir: object, *, session_id: str | 
     workspace_path = Path(str(workspace))
     state_path = None if state_dir is None else Path(str(state_dir))
     with open_session_client(workspace=workspace_path, state_dir=state_path) as client:
-        app = CoreTuiApp(client, session_id=session_id)
+        app = CoreTuiApp(client, session_id=session_id, icon_style=icon_style)
         active = app
 
         def _cancel(*_: object) -> None:

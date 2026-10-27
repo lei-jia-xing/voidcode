@@ -16,6 +16,8 @@ export type StoredEventBody = Schemas["StoredEventBody"];
 export type ShowBody = Schemas["ShowBody"];
 export type PluginViewDescriptor = Schemas["PluginViewDescriptor"];
 export type PluginViewData = Schemas["PluginViewData"];
+export type ComponentStyle = Schemas["ComponentStyle"];
+export type Icon = Schemas["Icon"];
 
 export type NoticeViewData = Schemas["NoticeViewData"];
 export type MarkdownViewData = Schemas["MarkdownViewData"];

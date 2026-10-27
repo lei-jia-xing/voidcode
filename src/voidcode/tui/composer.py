@@ -3,7 +3,7 @@
 Implements pure composer contracts:
 editing, history, Unicode wrapping, cursor placement, and all eight named
 frames. A closed frame table keeps layout geometry independent from editor
-state, statusline profile, theme, prompt gutter, and cursor. The app supplies
+state, statusline profile, prompt gutter, and cursor. The app supplies
 the one real statusline row; this module renders it in the selected dock.
 
 The class is deliberately I/O free: it never touches a terminal, ``rich``
@@ -23,8 +23,8 @@ from enum import StrEnum
 from typing import Final, Literal
 
 from .keys import Key
+from .styles import Styles, symbol
 from .term import clamp_row, escape_terminal_controls, grapheme_spans, visible_width
-from .theme import Theme
 
 __all__ = ["Composer", "ComposerAction", "ComposerOutcome"]
 
@@ -245,7 +245,7 @@ class Composer:
     def __init__(
         self,
         *,
-        theme: Theme,
+        styles: Styles | None = None,
         width: int,
         placeholder: str = "",
         max_height: int = 10,
@@ -254,7 +254,7 @@ class Composer:
         padding: str = "normal",
         clock: Callable[[], float] | None = None,
     ) -> None:
-        self._theme = theme
+        self._styles = styles if styles is not None else Styles()
         self._width = max(1, width)
         self._placeholder = placeholder
         self._max_height = max(1, max_height)
@@ -290,13 +290,6 @@ class Composer:
     def cursor_position(self) -> tuple[int, int] | None:
         """Native cursor location in the most recently rendered composer frame."""
         return self._cursor_position
-
-    def set_appearance(self, *, theme: Theme, style: str, gutter: str, padding: str) -> None:
-        self._theme = theme
-        self._style = style
-        self._gutter = gutter
-        self._padding = padding
-        self._cursor_position = None
 
     @property
     def history(self) -> tuple[str, ...]:
@@ -591,61 +584,61 @@ class Composer:
         if self._gutter != "prompt":
             return ""
         if self.is_bash_mode:
-            return f"{self._theme.fg('accent', '!')} "
-        return f"{self._theme.symbol('nav.cursor')} "
+            return f"{self._styles.fg('accent', '!')} "
+        return f"{symbol('nav.cursor')} "
 
     def _empty_content(self, layout_width: int) -> str:
-        return clamp_row(self._theme.fg("dim", self._placeholder), layout_width) if self._placeholder else ""
+        return clamp_row(self._styles.fg("dim", self._placeholder), layout_width) if self._placeholder else ""
 
     def _input_row(self, gutter: str, content: str, layout_width: int, width: int) -> str:
         frame = _FRAMES[self._style]
-        vertical = self._theme.symbol("boxRound.vertical") or "|"
+        vertical = symbol("boxRound.vertical") or "|"
         pad = " " * max(0, layout_width - visible_width(content))
         parts = []
         if frame.sides or frame.sidebar:
-            parts.append(self._theme.fg("border", vertical))
+            parts.append(self._styles.fg("border", vertical))
         elif frame.rail:
-            parts.append(self._theme.fg("accent", vertical))
+            parts.append(self._styles.fg("accent", vertical))
         if gutter:
-            parts.append(self._theme.fg("border", gutter))
+            parts.append(self._styles.fg("border", gutter))
         if frame.sidebar:
-            parts.append(self._theme.fg("border", vertical))
+            parts.append(self._styles.fg("border", vertical))
         parts.append(content + pad)
         if frame.sides:
-            parts.append(self._theme.fg("border", vertical))
+            parts.append(self._styles.fg("border", vertical))
         return clamp_row("".join(parts), width)
 
     def _horizontal_rule(self, *, corners: bool = False) -> str:
-        horizontal = self._theme.symbol("boxRound.horizontal") or "-"
+        horizontal = symbol("boxRound.horizontal") or "-"
         if corners and self._width >= 2:
-            line = self._theme.symbol("boxRound.topLeft") + horizontal * (self._width - 2) + self._theme.symbol("boxRound.topRight")
+            line = symbol("boxRound.topLeft") + horizontal * (self._width - 2) + symbol("boxRound.topRight")
         else:
             line = horizontal * self._width
-        return clamp_row(self._theme.fg("border", line), self._width)
+        return clamp_row(self._styles.fg("border", line), self._width)
 
     def _status_row(self, status: str) -> str | None:
         if not status:
             return None
         frame = _FRAMES[self._style]
         width = self.status_width()
-        vertical = self._theme.symbol("boxRound.vertical") or "|"
+        vertical = symbol("boxRound.vertical") or "|"
         row = clamp_row(status, width)
         if frame.status_dock == "band":
             row += " " * max(0, width - visible_width(row))
             row = vertical + row + vertical
             return clamp_row(row, self._width)
         if frame.sides:
-            row = self._theme.fg("border", vertical) + row + self._theme.fg("border", vertical)
+            row = self._styles.fg("border", vertical) + row + self._styles.fg("border", vertical)
         elif frame.sidebar:
-            row = self._theme.fg("border", vertical) + row
+            row = self._styles.fg("border", vertical) + row
         return clamp_row(row, self._width)
 
     def _style_rows(self, rows: list[str], status: str) -> list[str]:
         frame = _FRAMES[self._style]
         status_row = self._status_row(status)
         padded = self._padding == "normal"
-        vertical = self._theme.symbol("boxRound.vertical") or "|"
-        padding_row = self._theme.fg("border", vertical + " " * max(0, self._width - 2) + vertical) if frame.sides else ""
+        vertical = symbol("boxRound.vertical") or "|"
+        padding_row = self._styles.fg("border", vertical + " " * max(0, self._width - 2) + vertical) if frame.sides else ""
         output: list[str] = []
         if frame.top_rule:
             output.append(self._horizontal_rule(corners=frame.sides))
@@ -662,11 +655,11 @@ class Composer:
         if frame.bottom_rule:
             output.append(
                 clamp_row(
-                    self._theme.fg(
+                    self._styles.fg(
                         "border",
-                        self._theme.symbol("boxRound.bottomLeft")
-                        + (self._theme.symbol("boxRound.horizontal") or "-") * max(0, self._width - 2)
-                        + self._theme.symbol("boxRound.bottomRight"),
+                        symbol("boxRound.bottomLeft")
+                        + (symbol("boxRound.horizontal") or "-") * max(0, self._width - 2)
+                        + symbol("boxRound.bottomRight"),
                     ),
                     self._width,
                 )
@@ -748,7 +741,7 @@ class Composer:
         for index, candidate in enumerate(self._completion):
             label = escape_terminal_controls(candidate)
             if index == self._completion_index:
-                rows.append(self._theme.style("accent", bold=True, reverse=True).render(f"> {label}", color_system=self._theme.color_system))
+                rows.append(self._styles.render("accent", f"> {label}", bold=True, reverse=True))
             else:
-                rows.append(self._theme.fg("dim", f"  {label}"))
+                rows.append(self._styles.fg("dim", f"  {label}"))
         return [clamp_row(row, self._width) for row in rows]

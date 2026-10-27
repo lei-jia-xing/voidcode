@@ -36,6 +36,7 @@ from ..sdk.commands import (
     CommandResult,
 )
 from ..sdk.hooks import RequestWindow, StopCause, WindowSegment
+from ..sdk.icons import Icon
 from ..sdk.invocation import ToolContext
 from ..sdk.json_values import json_wire_object
 from ..sdk.limits import CLIENT_PROMPT_MAX_BYTES
@@ -208,7 +209,7 @@ _CORE_COMMAND_SPECS: tuple[tuple[str, str, Mapping[str, object], tuple[ToolEffec
 _CORE_COMMAND_NAMES = frozenset(name for name, _d, _s, _e, _g in _CORE_COMMAND_SPECS)
 
 #: Tools the core itself dispatches. A plugin can never shadow these names.
-_CORE_TOOL_SPECS: tuple[tuple[str, str, Mapping[str, object], tuple[ToolEffect, ...]], ...] = (
+_CORE_TOOL_SPECS: tuple[tuple[str, str, Mapping[str, object], tuple[ToolEffect, ...], Icon], ...] = (
     (
         "core_reload",
         "Request that the configured plugins be re-admitted as a new capability revision. This only stages the "
@@ -219,9 +220,10 @@ _CORE_TOOL_SPECS: tuple[tuple[str, str, Mapping[str, object], tuple[ToolEffect, 
             "additionalProperties": False,
         },
         (ToolEffect.EXECUTE,),
+        Icon(glyph="\u21bb", fallback="R"),
     ),
 )
-CORE_TOOL_NAMES = frozenset(name for name, _d, _s, _e in _CORE_TOOL_SPECS)
+CORE_TOOL_NAMES = frozenset(name for name, _d, _s, _e, _i in _CORE_TOOL_SPECS)
 
 
 #: One truthful, actionable message for a providerless core. Launch, commands, tools, and
@@ -261,8 +263,8 @@ def _core_command_descriptors(*, with_reload: bool) -> tuple[CommandDescriptor, 
 
 def _core_tool_definitions() -> dict[str, ToolDefinition]:
     return {
-        name: ToolDefinition(name=name, description=description, input_schema=dict(schema), effects=frozenset(effects))
-        for name, description, schema, effects in _CORE_TOOL_SPECS
+        name: ToolDefinition(name=name, description=description, input_schema=dict(schema), effects=frozenset(effects), icon=icon)
+        for name, description, schema, effects, icon in _CORE_TOOL_SPECS
     }
 
 
@@ -3764,6 +3766,7 @@ class Core:
                             "effects": sorted(effect.value for effect in definition.effects),
                             "semantics": [],
                             "replay_policy": definition.effective_replay_policy,
+                            "icon": {"glyph": definition.icon.glyph, "fallback": definition.icon.fallback} if definition.icon is not None else None,
                             "logical_turn": execution.cursor.logical_turn,
                             "depth": cursor.deferred_depth,
                         },
@@ -3984,6 +3987,9 @@ class Core:
             "call": encode_tool_call(call),
             "result": encode_tool_result(result),
             "fact_metadata": metadata,
+            "icon": declaration.get("icon")
+            if intent is not None
+            else ({"glyph": definition.icon.glyph, "fallback": definition.icon.fallback} if definition and definition.icon else None),
             "logical_turn": execution.cursor.logical_turn,
         }
         if deferred:

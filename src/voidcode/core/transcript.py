@@ -5,6 +5,7 @@ from collections.abc import Mapping, Sequence
 
 from voidcode.sdk.codec import decode_provider_result, decode_tool_call, decode_tool_result
 from voidcode.sdk.hooks import RequestWindow
+from voidcode.sdk.icons import Icon
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.provider import ProviderMessage
 from voidcode.sdk.transcript import (
@@ -57,6 +58,7 @@ def transcript_entry(event: StoredEvent) -> TranscriptEntry | None:
                 interrupted=event.event_type == EventType.TOOL_INTERRUPTED,
                 batch_sequence=_sequence(payload["batch_sequence"]),
                 deferred=payload.get("deferred", False) is True,
+                icon=_icon(payload.get("icon")),
             )
         case EventType.PROVIDER_INTERRUPTED:
             content = TranscriptInterrupted()
@@ -89,6 +91,17 @@ def _sequence(value: object) -> int:
     if type(value) is not int or value < 1:
         raise ValueError("transcript correlation sequence must be a positive integer")
     return value
+
+
+def _icon(value: object) -> Icon | None:
+    """Birth icon from the committed payload; old events carry none."""
+    if value is None:
+        return None
+    icon = _mapping(value)
+    glyph, fallback = icon.get("glyph"), icon.get("fallback")
+    if not isinstance(glyph, str) or not isinstance(fallback, str):
+        raise ValueError("tool icon requires glyph and fallback strings")
+    return Icon(glyph=glyph, fallback=fallback)
 
 
 def context_records(events: Sequence[StoredEvent]) -> tuple[ContextRecord, ...]:

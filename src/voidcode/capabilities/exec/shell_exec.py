@@ -17,6 +17,7 @@ from typing import ClassVar, final
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import ArtifactReference, PluginServices
 from voidcode.sdk.tools import (
@@ -152,6 +153,7 @@ def _progress_sink(context: ToolContext) -> Callable[[str, bytes], None] | None:
 class ShellExecTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="shell_exec",
+        icon=Icon(glyph="⌁", fallback="$"),
         description="Execute a command inside the current workspace.",
         input_schema=ShellExecArgs.model_json_schema(),
         effects=frozenset({ToolEffect.EXECUTE, ToolEffect.SPAWN}),

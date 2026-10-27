@@ -23,8 +23,8 @@ product concepts into `core/`. After this plan:
   `Core` stays the only orchestrator; the SDK gains a *client* of a
   core, not a second core. Deferred until a headless embedding asks for
   it — say so then.
-- No TUI render code in the SDK. SDK owns typed view *models*;
-  `tui/theme.py` + `tui/views.py` own pixels (gap 6 decision, below).
+- No TUI render code in the SDK. SDK owns typed view *models* (including the
+  `ComponentStyle` color data each view may carry); the TUI and web clients own pixels (gap 6 decision, below). Historical note: this line once named `tui/theme.py` + `tui/views.py`; the theme catalog has since been deleted — clients render fixed semantics plus plugin-owned `style`, with no theme system.
 - No new dependencies. Wire fields stay identical, but OpenAPI component
   names follow the SDK (`HealthStatus`, `SessionRow`, `RunResult`,
   `TranscriptPageWire`, ...) and additive history routes extend the schema,

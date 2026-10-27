@@ -11,6 +11,7 @@ import { CoreClient, CoreApiError } from "../lib/core/client";
 import type { CommandCatalog } from "../lib/core/client";
 import type {
   HealthStatus,
+  Icon,
   PluginViewDescriptor,
   SessionRow,
   SseEventFrame,
@@ -20,6 +21,20 @@ import { PluginViewRenderer } from "./views/PluginViewRenderer";
 export interface CoreAppProps {
   baseUrl?: string;
   token?: string;
+  iconStyle?: "glyph" | "ascii";
+}
+
+/** Tool birth icon from committed metadata; unknown shapes degrade to generic. */
+type ToolIconValue =
+  Pick<Icon, "glyph" | "fallback"> | { glyph?: unknown; fallback?: unknown };
+
+function toolIconText(
+  icon: ToolIconValue | null | undefined,
+  style: "glyph" | "ascii",
+  generic: string,
+): string {
+  const pick = style === "ascii" ? icon?.fallback : icon?.glyph;
+  return typeof pick === "string" ? pick : generic;
 }
 
 /** One authentic pending confirmation: a typed UI envelope bound to the revision it was displayed under. */
@@ -32,13 +47,21 @@ interface PendingConfirmationEntry {
   revisionId: string;
 }
 
-export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
+export const CoreApp: React.FC<CoreAppProps> = ({
+  baseUrl = "",
+  token,
+  iconStyle,
+}) => {
   const searchParams =
     typeof window !== "undefined"
       ? new URLSearchParams(window.location.search)
       : null;
   const effectiveBaseUrl = baseUrl || searchParams?.get("server") || "";
   const effectiveToken = token || searchParams?.get("token") || undefined;
+  const iconParam = searchParams?.get("icons");
+  const effectiveIconStyle =
+    iconStyle ??
+    (iconParam === "ascii" || iconParam === "glyph" ? iconParam : "glyph");
 
   const client = useMemo(
     () => new CoreClient(effectiveBaseUrl, effectiveToken),
@@ -1304,8 +1327,15 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
                         error?: string | null;
                       };
                       interrupted?: boolean;
+                      icon?: ToolIconValue | null;
                     }
                   | undefined;
+                const payloadIcon =
+                  typeof ev.payload === "object" &&
+                  ev.payload !== null &&
+                  "icon" in ev.payload
+                    ? (ev.payload.icon as ToolIconValue | null)
+                    : undefined;
                 const toolResult = (ev.payload.result ?? {}) as {
                   status?: string;
                   tool_name?: string;
@@ -1347,7 +1377,13 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
                         : "text-emerald-400 bg-emerald-950/20 border-emerald-900/50"
                     }`}
                   >
-                    {failed ? "✖" : "✔"} {t("core.toolLabel")} [{toolName}]:{" "}
+                    {failed ? "✖" : "✔"}{" "}
+                    {toolIconText(
+                      transcriptTool?.icon ?? payloadIcon,
+                      effectiveIconStyle,
+                      "▷",
+                    )}{" "}
+                    {t("core.toolLabel")} [{toolName}]:{" "}
                     {failed ? (errorMsg ?? text ?? "") : text}
                   </div>
                 );

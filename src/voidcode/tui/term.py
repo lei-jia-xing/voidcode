@@ -43,7 +43,7 @@ import threading
 import time
 from collections.abc import Iterator, Sequence
 from io import StringIO
-from typing import Any, Literal
+from typing import Any
 
 import regex
 from rich.cells import cell_len
@@ -52,7 +52,7 @@ from rich.console import Console, OverflowMethod, RenderableType
 from rich.theme import Theme as RichTheme
 
 from .region import TuiFrame, diff_rows
-from .theme import color_system_name
+from .styles import color_system_name
 
 termios: Any = importlib.import_module("termios") if os.name != "nt" else None
 tty: Any = importlib.import_module("tty") if os.name != "nt" else None
@@ -101,7 +101,6 @@ _READ_CHUNK = 4096
 #: Height handed to the off-screen render console: rich only honours an explicit
 #: ``width`` when both dimensions are set. Rows are never cropped by it.
 _RENDER_HEIGHT = 1000
-_BACKGROUND_RESPONSE = regex.compile(rb"\x1b\]11;rgb:([0-9a-fA-F]{1,4})/([0-9a-fA-F]{1,4})/([0-9a-fA-F]{1,4})(?:\x07|\x1b\\)")
 _PRIVATE_MODE_RESPONSE = regex.compile(rb"\x1b\[\?(\d+);([0-4])\$y")
 _CURSOR_STYLE_RESPONSE = regex.compile(rb"\x1bP1\$r(?:q)?([0-6]) q\x1b\\")
 
@@ -413,47 +412,6 @@ def _detect_unicode() -> bool:
     return "utf" in encoding
 
 
-def _colorfgbg_rgb() -> tuple[int, int, int] | None:
-    fields = os.environ.get("COLORFGBG", "").split(";")
-    try:
-        index = int(fields[-1])
-    except ValueError, IndexError:
-        return None
-    if not 0 <= index <= 255:
-        return None
-    if index < 16:
-        colors = (
-            (0, 0, 0),
-            (205, 0, 0),
-            (0, 205, 0),
-            (205, 205, 0),
-            (0, 0, 238),
-            (205, 0, 205),
-            (0, 205, 205),
-            (229, 229, 229),
-            (127, 127, 127),
-            (255, 0, 0),
-            (0, 255, 0),
-            (255, 255, 0),
-            (92, 92, 255),
-            (255, 0, 255),
-            (0, 255, 255),
-            (255, 255, 255),
-        )
-        return colors[index]
-    if index < 232:
-        levels = (0, 95, 135, 175, 215, 255)
-        offset = index - 16
-        return levels[offset // 36], levels[(offset // 6) % 6], levels[offset % 6]
-    gray = 8 + (index - 232) * 10
-    return gray, gray, gray
-
-
-def _osc_rgb(match: Any) -> tuple[int, int, int]:
-    channels = [round(int(group, 16) * 255 / (16 ** len(group) - 1)) for group in match.groups()]
-    return channels[0], channels[1], channels[2]
-
-
 class TerminalCapabilityError(RuntimeError):
     """The requested native terminal behavior cannot be queried safely."""
 
@@ -501,7 +459,6 @@ class Terminal:
         self._pending_input = bytearray()
         self._windows_input_record_type: Any = None
         self._windows_pending_high_surrogate: int | None = None
-        self._background_source: Literal["osc11", "COLORFGBG", "unavailable", "not queried"] = "not queried"
         self._keyboard_active = False
         self._enabled_private_modes: set[int] = set()
         self._unsupported_private_modes: set[int] = set()
@@ -574,11 +531,6 @@ class Terminal:
     def eof(self) -> bool:
         """Whether the input side reported end of file."""
         return self._eof
-
-    @property
-    def background_source(self) -> Literal["osc11", "COLORFGBG", "unavailable", "not queried"]:
-        """Source actually used by the most recent background probe."""
-        return self._background_source
 
     @property
     def has_input(self) -> bool:
@@ -893,37 +845,6 @@ class Terminal:
         restore_cursor = SHOW_CURSOR if cursor is True else HIDE_CURSOR if cursor is False else ""
         self._emit(ALTERNATE_SCREEN_OFF + restore_cursor)
         self._reapply_cursor_style()
-
-    def query_default_background_rgb(self) -> tuple[int, int, int] | None:
-        """Query OSC 11 once, preserving unrelated bytes read during the timeout."""
-        if not self._is_tty or self._input_fd is None:
-            colorfgbg = _colorfgbg_rgb()
-            self._background_source = "COLORFGBG" if colorfgbg is not None else "unavailable"
-            return colorfgbg
-        self._emit("\x1b]11;?\x07")
-        received = bytearray()
-        deadline = time.monotonic() + 0.1
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            chunk = self._read_input_chunk(remaining)
-            if chunk is None:
-                break
-            if not chunk:
-                self._eof = True
-                break
-            received.extend(chunk)
-            match = _BACKGROUND_RESPONSE.search(received)
-            if match is not None:
-                self._pending_input.extend(received[: match.start()])
-                self._pending_input.extend(received[match.end() :])
-                self._background_source = "osc11"
-                return _osc_rgb(match)
-        self._pending_input.extend(received)
-        colorfgbg = _colorfgbg_rgb()
-        self._background_source = "COLORFGBG" if colorfgbg is not None else "unavailable"
-        return colorfgbg
 
     def read_bytes(self, timeout: float | None = None) -> bytes:
         """Read available input bytes, blocking at most ``timeout`` seconds."""
