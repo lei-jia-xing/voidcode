@@ -183,7 +183,7 @@ def _with_children(state: DelegationState, created: Sequence[tuple[str, ChildRec
     return DelegationState(children=children, groups=groups)
 
 
-# --- Argument parsing (the core schema stays the first gate; these are second-line messages) ---
+# --- Argument parsing ---
 
 
 @dataclass(frozen=True, slots=True)
@@ -1287,12 +1287,10 @@ def prepare_delegation_deactivation(
     scope_key: str,
     tip_sequence: int | None,
 ) -> Mapping[str, object]:
-    """Pure deactivation transform: child/group mappings survive untouched as history.
+    """Child/group mappings survive untouched as history.
 
-    Children are core-owned sessions with their own lifecycle; this record is not a lease.
-    A running or parked child refuses the switch through the core's session blockers before
-    this transform ever runs; on re-enable the same mappings resume control (including
-    children that finished while disabled, whose outcome facts are durable).
+    Children are core-owned, not leases; running children block the switch, and the
+    mappings resume control on re-enable.
     """
     _ = (scope, scope_key, tip_sequence)
     return state

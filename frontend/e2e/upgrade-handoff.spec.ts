@@ -157,11 +157,11 @@ test("a live upgrade keeps endpoint/token/session with exact resume", async ({
   const sessionId = tabId.replace("session-tab-", "");
 
   // Settle one command before the handoff so the prefix is non-trivial.
-  await page.getByTestId("prompt-input").fill("/session_status");
+  await page.getByTestId("prompt-input").fill("/usage");
   await page.getByTestId("send-btn").click();
   const rows = page.locator('[data-testid^="event-"]');
   await expect(
-    rows.filter({ hasText: "/session_status [ok]" }).last(),
+    rows.filter({ hasText: "/usage [ok]" }).last(),
   ).toBeVisible();
   const before = await rows.count();
   expect(before).toBeGreaterThan(0);
@@ -234,7 +234,7 @@ test("a live upgrade keeps endpoint/token/session with exact resume", async ({
   );
   expect(new Set(ids).size).toBe(ids.length);
 
-  await page.getByTestId("prompt-input").fill("/session_status");
+  await page.getByTestId("prompt-input").fill("/usage");
   await page.getByTestId("send-btn").click();
   await expect(rows).toHaveCount(ids.length + 2, { timeout: 15000 });
 

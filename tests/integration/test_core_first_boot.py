@@ -43,7 +43,18 @@ def test_fresh_state_without_config_opens_providerless_and_keeps_commands(tmp_pa
         status = core.invoke_command("fresh-session", "status", {}, expected_revision=revision)
         assert status.status == "ok"
         assert "model: not configured" in (status.output or "")
-        assert status.data == core.show("fresh-session")
+        assert status.data is not None
+        assert {key: status.data[key] for key in ("session_id", "status", "run_id", "revision_id", "turn", "last_event_sequence")} == {
+            "session_id": "fresh-session",
+            "status": "idle",
+            "run_id": None,
+            "revision_id": revision,
+            "turn": 0,
+            "last_event_sequence": 0,
+        }
+        assert status.data["event_counts"] == {}
+        assert status.data["usage"]["turn_count"] == 0
+        assert status.data["budgets"] == ()
 
         failed = core.run("hello", session_id="fresh-session")
         assert failed.status == "failed"

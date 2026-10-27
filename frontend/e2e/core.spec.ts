@@ -145,13 +145,13 @@ test("the core client creates a session and renders a command result", async ({
   await page.getByTestId("new-session-btn").click();
   await expect(sessionTabs).toHaveCount(2);
 
-  // A plugin command round trip: /session_status is admitted by the session_info
+  // A plugin command round trip: /usage is admitted by the session_info
   // plugin, and its committed result is rendered in the transcript.
-  await page.getByTestId("prompt-input").fill("/session_status");
+  await page.getByTestId("prompt-input").fill("/usage");
   await page.getByTestId("send-btn").click();
   await expect(
     page
       .locator('[data-testid^="event-"]')
-      .filter({ hasText: "/session_status [ok]" }),
+      .filter({ hasText: "/usage [ok]" }),
   ).toBeVisible();
 });

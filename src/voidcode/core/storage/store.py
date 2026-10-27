@@ -1255,6 +1255,22 @@ class SqliteStore:
         """Bounded tail read of stored events for continuous SSE streaming."""
         return self.events(session_id, after_sequence=after_sequence, limit=limit)
 
+    def event_type_counts(self, session_id: str) -> dict[str, int]:
+        """Count committed events by type with one SQL aggregate, no payload reads."""
+        with self._lock:
+            self._check_open()
+            self.session(session_id)
+            cursor = self._connection.execute(
+                """
+                SELECT event_type, COUNT(*)
+                FROM session_events
+                WHERE session_id = ?
+                GROUP BY event_type
+                """,
+                (session_id,),
+            )
+            return {row[0]: int(row[1]) for row in cursor.fetchall()}
+
     def checkpoint(self, session_id: str) -> Checkpoint | None:
         """Fetch the current checkpoint of a session, or None if none has been committed."""
         with self._lock:

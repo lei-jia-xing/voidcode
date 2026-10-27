@@ -1,27 +1,4 @@
-"""Todo plugin: runtime-owned plan list, plan truth context, and reminder policy.
-
-Ported from the legacy runtime mechanism without behavior changes:
-
-- Op engine, rendering and argument errors: ``legacy tools/todo.py`` (pure compute, whole-op
-  atomicity, one ``in_progress`` invariant, first-pending promotion, blocked never promoted).
-- State validation shape: ``legacy runtime/todos.py`` (strict unknown-key rejection, summary
-  must equal the projection of phases, blocker only while blocked).
-- Plan-truth provider text: ``legacy runtime/todos.py:render_provider_todo_state`` verbatim.
-- Reminder decisions and texts: ``legacy runtime/reminders.py`` verbatim.
-
-Persistence moves from the legacy session-metadata back door to the plugin's own session-scope
-state document with CAS versioning, and events become plugin-namespaced facts.
-
-Reminders are wired to the core's typed-message seam: both kinds are durable *user-role*
-continuations carrying the verbatim legacy text under ``payload["text"]``, so a reminder is never
-restated as a system message. The mid-run nudge fires on the invocation that crosses the mutation
-threshold and the completion reminder fires when a run finishes with open todos; per-cycle
-budgets, watermarks and the cycle identity (the newest genuine user prompt, read from the
-session's own public facts) reproduce the legacy accounting. The legacy suppression
-inputs ("delegated child", "runtime waits for user", "pending background task", "todo tool
-advertised") are not exposed to a plugin, so reminders never suppress on them: a parked run
-emits no run-finished fact, so "waits for user" is silent by construction.
-"""
+"""Manage session todos, context, and durable reminders."""
 
 from __future__ import annotations
 
@@ -106,7 +83,7 @@ def todo_summary(phases: Sequence[TodoPhase]) -> TodoSummary:
     }
 
 
-# --- Reminder bookkeeping (ported state models) ---
+# --- Reminder bookkeeping ---
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,10 +262,9 @@ def phases_payload(phases: Sequence[TodoPhase]) -> list[dict[str, object]]:
 
 
 def parse_phases(raw_phases: object) -> tuple[TodoPhase, ...]:
-    """Strict phase/task parsing, including the single ``in_progress`` invariant.
+    """Validate phases/tasks and enforce one ``in_progress`` task.
 
-    Arrays arrive either as plain lists (tests, freshly built payloads) or as tuples: plugin
-    state is handed to a handler as an immutable JSON snapshot, where every array is a tuple.
+    Snapshot arrays arrive as tuples; tests and fresh payloads use lists.
     """
     if not isinstance(raw_phases, (list, tuple)):
         raise ValueError("todo state requires phases array")
@@ -356,7 +332,7 @@ def todo_event_payload(*, phases: Sequence[TodoPhase], revision: int) -> dict[st
     }
 
 
-# --- Operation engine (ported verbatim from legacy tools/todo.py) ---
+# --- Operation engine ---
 
 
 @dataclass(frozen=True, slots=True)
@@ -389,7 +365,7 @@ def _item_strings(raw_items: object) -> tuple[str, ...]:
 
 
 def _parse_args(arguments: Mapping[str, object]) -> _TodoArgs:
-    # Arguments arrive as an immutable JSON snapshot: arrays are tuples here.
+    # Snapshot arguments: arrays arrive as tuples.
     op = arguments.get("op")
     if not isinstance(op, str) or op not in _TODO_OPS:
         raise ValueError(f"todo op must be one of {', '.join(_TODO_OPS)}")
@@ -647,11 +623,11 @@ def _render_table(phases: Sequence[TodoPhase]) -> str:
     return "\n".join(lines)
 
 
-# --- Provider plan truth (verbatim legacy text) ---
+# --- Provider plan truth ---
 
 
 def render_provider_state(phases: Sequence[TodoPhase]) -> str | None:
-    """The legacy plan-truth prompt text, or None when no active task remains."""
+    """Plan-truth prompt text, or None when no active task remains."""
     active_phases: tuple[TodoPhase, ...] = tuple(
         {"name": phase["name"], "tasks": [task for task in phase["tasks"] if task["status"] in _ACTIVE_PROVIDER_STATUSES]} for phase in phases
     )
@@ -672,17 +648,14 @@ def render_provider_state(phases: Sequence[TodoPhase]) -> str | None:
     return "\n".join(lines)
 
 
-# --- Reminder policy (ported verbatim; wired through typed user-role continuations) ---
+# --- Reminder policy ---
 
 #: Mutation-tool calls since the last todo touch that trigger a mid-run nudge.
 TODO_MID_RUN_MUTATION_THRESHOLD = 12
-#: Mid-run nudges per cycle.
 TODO_MID_RUN_MAX_PER_CYCLE = 2
-#: Default per-cycle budget for todo completion reminders.
 DEFAULT_TODO_REMINDER_MAX_PER_CYCLE = 3
 #: Role the reminder must keep: a trailing user message, never a system segment.
 TODO_REMINDER_ROLE: Literal["user"] = "user"
-#: Reminder kind names.
 TODO_REMINDER_KIND = "todo"
 TODO_MID_RUN_KIND = "todo_mid_run"
 
@@ -796,12 +769,12 @@ def todo_reminder_text(
     return "\n".join(lines)
 
 
-# --- Reminder wiring (typed user-role continuations over the core's durable seams) ---
+# --- Reminder wiring ---
 
 
 @dataclass(frozen=True, slots=True)
 class TodoRemindersConfig:
-    """Reminder policy from the plugin config; legacy defaults are enabled + 3 per cycle."""
+    """Reminder policy from the plugin config."""
 
     enabled: bool = True
     max_per_cycle: int = DEFAULT_TODO_REMINDER_MAX_PER_CYCLE
@@ -873,7 +846,7 @@ def _incomplete_count(phases: Sequence[TodoPhase]) -> int:
 def _account_invocation(state: TodoState, fact: InvocationFinishedFact, cycle: str) -> tuple[TodoState, str | None]:
     mid = state.mid_run if state.mid_run.cycle_run_id == cycle else TodoMidRunState(cycle_run_id=cycle)
     if fact.status == "ok" and fact.tool_name in OWN_TOOL_NAMES and fact.owner == OWNER:
-        # A todo touch clears the mutation counter, exactly like the legacy recalculation.
+        # A todo touch clears the mutation counter.
         mid = replace(mid, mutations=0, mutation_baseline=0)
     elif fact.status == "ok" and fact.tool_name not in OWN_TOOL_NAMES and not is_read_tier(frozenset(ToolEffect(effect) for effect in fact.effects)):
         mid = replace(mid, mutations=mid.mutations + 1)
@@ -1148,11 +1121,10 @@ def prepare_todo_deactivation(
     scope_key: str,
     tip_sequence: int | None,
 ) -> Mapping[str, object]:
-    """Pure deactivation transform: the plan list survives; per-cycle reminder counters reset.
+    """Reset per-cycle reminder counters; the plan list and cursor survive.
 
-    The activation transaction cancels this owner's pending reminder continuations, so kept
-    attempt counters or awaiting flags would describe injections that no longer exist. The
-    cursor stays forward-only and the next genuine user prompt starts a fresh cycle anyway.
+    Pending continuations are cancelled on deactivate, so kept counters would
+    describe injections that no longer exist. A fresh user prompt starts a new cycle.
     """
     _ = (scope, scope_key, tip_sequence)
     parsed = TodoState.from_payload(state)

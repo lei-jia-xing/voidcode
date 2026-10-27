@@ -73,7 +73,7 @@ def test_public_transcript_and_panels_survive_restart_without_clipping_messages(
             assert len(dispatches) == 2
             assert all(entry.content.provider_name == "endpoint" and entry.content.model_name == "exact-model" for entry in dispatches)
             expected = entries
-            for command in ("export", "copy", "context", "session_status", "usage"):
+            for command in ("export", "copy", "context", "usage"):
                 panel = core.invoke_command(result.session_id, command, {}, expected_revision=core.revision_id)
                 assert panel.status == "ok", panel.error
                 if command == "export":

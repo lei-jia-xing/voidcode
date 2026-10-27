@@ -1407,19 +1407,27 @@ class Core:
                 return CommandResult(status="ok", data=data)
             if name == "status":
                 data = self.show(session_id, events=False)
+                counts = self.store.event_type_counts(session_id)
+                usage = self.usage(session_id)
+                budgets = self.store.session_budgets(session_id)
+                data["event_counts"] = counts
+                data["usage"] = usage.as_payload()
+                data["budgets"] = [budget.as_payload() for budget in budgets]
                 model = self.config.model
-                output = "\n".join(
-                    (
-                        f"session: {s.session_id}",
-                        f"status: {s.status}",
-                        f"workspace: {self.workspace}",
-                        f"revision: {s.active_revision_id}",
-                        f"model: {model}" if model is not None else "model: not configured",
-                        f"run: {s.run_id or 'none'}",
-                        f"turn: {s.turn}, last event: {s.last_event_sequence}",
-                    )
-                )
-                return CommandResult(status="ok", output=output, data=data)
+                lines = [
+                    f"session: {s.session_id}",
+                    f"status: {s.status}",
+                    f"workspace: {self.workspace}",
+                    f"revision: {s.active_revision_id}",
+                    f"model: {model}" if model is not None else "model: not configured",
+                    f"run: {s.run_id or 'none'}",
+                    f"turn: {s.turn}, last event: {s.last_event_sequence}",
+                    f"turns: {usage.turn_count}, input tokens: {usage.input_tokens}, "
+                    f"output tokens: {usage.output_tokens}, cost: {usage.total_cost_usd}",
+                ]
+                lines.extend("budget: " + ", ".join(f"{key}={value}" for key, value in budget.as_payload().items()) for budget in budgets)
+                lines.extend(f"{event_type}: {count}" for event_type, count in sorted(counts.items()))
+                return CommandResult(status="ok", output="\n".join(lines), data=data)
             if name == "help":
                 payload = dict(self.command_catalog().as_payload())
                 commands = payload.get("commands")

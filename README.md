@@ -97,7 +97,7 @@ Every client dispatches commands from the admitted catalog — the core's reserv
 
 | Plugin | Commands |
 |---|---|
-| `session_info` | `/session_status`, `/context`, `/usage`, `/export`, `/copy` |
+| `session_info` | `/context`, `/usage`, `/export`, `/copy` |
 | `plan` | `/plan`, `/plan.off`, `/plan.status` |
 | `todo` | `/todo`, `/todo.clear` |
 | `goal` | `/goal`, `/goal.set`, `/goal.edit`, `/goal.pause`, `/goal.resume`, `/goal.clear`, `/goal.load_objective` |
@@ -115,7 +115,7 @@ Every client dispatches commands from the admitted catalog — the core's reserv
 
 The TUI also has client-local controls that are not admitted commands: `/tui help`, `/tui sessions`, `/tui session <id>`, `/tui new`, `/tui views`, `/tui cancel`, `/tui quit`.
 
-The TUI opens on a quiet composer: no plugin views load until requested. Goal, provider, and model details stay behind their on-demand commands (`/goal`, `/providers`, `/model`), and `/tui views [name]` (for example `/tui views goal.details`) renders passive views inline while a form, choices, or confirmation opens as a framed dialog. The status line shows meaningful progress, errors, and gates — never session hashes — and explicit `/status`, `/show`, `/session_status`, and `/tui sessions` keep diagnostics.
+The TUI opens on a quiet composer: no plugin views load until requested. Goal, provider, and model details stay behind their on-demand commands (`/goal`, `/providers`, `/model`), and `/tui views [name]` (for example `/tui views goal.details`) renders passive views inline while a form, choices, or confirmation opens as a framed dialog. The status line shows meaningful progress, errors, and gates — never session hashes — and explicit `/status`, `/show`, and `/tui sessions` keep diagnostics.
 
 ## Architecture
 

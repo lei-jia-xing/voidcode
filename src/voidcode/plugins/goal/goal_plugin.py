@@ -414,13 +414,7 @@ def read_full_objective(workspace: Path, state: GoalState) -> str:
 
 
 def render_context_prompt(goal: GoalState) -> str:
-    """Render goal context in the original prompt text, adapted only for typed state.
-
-    The legacy prose, section order and `<objective>` markers are preserved verbatim from
-    `runtime/goal.py`. Adaptations are limited to values that did not exist before: nullable
-    counters render as `unknown` (never as `0`/`unbounded` when the truth is unknown), and
-    the new `usage-limited`/`blocked` statuses get a matching truthful notice.
-    """
+    """Render goal context; unknown counters stay `unknown`, never `0`/`unbounded`."""
     safe_objective = html.escape(goal.objective)
     token_budget_str = str(goal.token_budget) if goal.token_budget is not None else "none"
     used_str = str(goal.tokens_used) if goal.tokens_used is not None else "unknown"
@@ -432,7 +426,7 @@ def render_context_prompt(goal: GoalState) -> str:
         remaining = str(max(0, goal.token_budget - goal.tokens_used))
 
     if goal.status == "budget-limited":
-        # Legacy prose printed whole seconds; keep that display, and never invent 0 for unknown.
+        # Whole seconds; never invent 0 for unknown.
         time_str = f"{int(goal.time_used_seconds)} seconds" if goal.time_used_seconds is not None else "unknown"
         return f"""The active thread goal has reached its token budget.
 
@@ -453,7 +447,7 @@ summarize useful progress, identify remaining work or blockers, and leave the us
 Do not call update_goal unless the goal is actually complete."""
 
     if goal.status == "usage-limited":
-        # Legacy prose printed whole seconds; keep that display, and never invent 0 for unknown.
+        # Whole seconds; never invent 0 for unknown.
         time_str = f"{int(goal.time_used_seconds)} seconds" if goal.time_used_seconds is not None else "unknown"
         return f"""The active thread goal encountered unreported usage on a budgeted metric.
 
@@ -1053,10 +1047,8 @@ class GoalEditCommand:
         workspace = invocation.context.workspace
 
         if "objective" not in invocation.arguments and "token_budget" not in invocation.arguments:
-            # Bounded form descriptor only: the full objective is served by the dedicated
-            # READ loader (goal.load_objective), never duplicated here. A spilled objective
-            # is always loaded through that action because a view frame is size-bounded and
-            # JSON escaping of Unicode/control characters can exceed the raw byte count.
+            # Bounded form only: the full objective is served by the READ loader
+            # (goal.load_objective); a view frame is size-bounded.
             init_vals: dict[str, object] = {}
             load_action: str | None = None
             if goal.objective_file_ref is None:
@@ -1469,11 +1461,7 @@ def _get_closed_window_spend(
     services: PluginServices,
     windows: tuple[ActiveWindow, ...],
 ) -> int | None:
-    """Truthful token spend of closed windows from core usage reporting.
-
-    Returns the summed tokens of the closed windows, or ``None`` when any of them has
-    unreported usage. An empty set of closed windows is a known zero.
-    """
+    """Closed-window token spend, or ``None`` when any window's usage is unreported."""
     total = 0
     for w in windows:
         if w.end_sequence is None:
@@ -1493,13 +1481,7 @@ def _fact_total_tokens(usage: ProviderTokenUsage) -> int | None:
 
 
 def goal_context(ctx: ToolContext, services: PluginServices) -> ContextContribution | None:
-    """Contribute active goal instructions to model context, in the legacy user role.
-
-    The goal prompt is the legacy user-facing turn text (`runtime/goal.py` templates, submitted
-    as the user's prompt by the TUI and merged into the request prompt as steering by the
-    runtime), so it is declared `role="user"` and reaches the provider verbatim instead of being
-    re-wrapped in `[goal context]` system prose.
-    """
+    """Contribute active goal instructions as a verbatim `role="user"` turn, not system prose."""
     _ = ctx
     state_data, _ = services.get_state("session")
     if not state_data:
@@ -1652,19 +1634,10 @@ def prepare_goal_deactivation(
     scope_key: str,
     tip_sequence: int | None,
 ) -> Mapping[str, object]:
-    """Pure deactivation transform: close the live window at the authentic tip and pause the goal.
+    """Close the live window at the tip and pause the goal.
 
-    The core runs this in the runtime that still holds this schema, before the owner's
-    registrations are dropped, so there is no service, lease, store or clock to consult: the
-    paused copy is derived from the state alone and keeps the identity, objective, lifetime
-    counters, budgets and `updated_at` a disable must not rewrite. Closing the window at the
-    supplied tip stops usage attribution, and pausing keeps the goal out of context and out of
-    budget re-arming; only an explicit `goal.resume` re-opens a window and re-arms the
-    allowance with the core budget staged in the same commit.
-
-    The scope and tip contract is enforced before anything is decoded: session scope needs the
-    owning session's non-negative integer tip, workspace scope needs none. A tip that would
-    close an open window before it started is refused, so no inverted range is ever written.
+    Session scope needs its event tip; workspace scope needs none. A tip before an
+    open window's start is refused, so no inverted range is ever written.
     """
     _ = scope_key
     if scope == "session":

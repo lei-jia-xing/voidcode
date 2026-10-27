@@ -4,13 +4,17 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Single `/status` owned by the core (BREAKING)
+- Core `/status` is the one session-status entry: it keeps every existing `show` key and adds `event_counts` (one SQL aggregate), `usage`, and `budgets` for all owners. The plugin `session_status` command is deleted with no alias.
+- Prune verbose plugin comments (todo/goal/delegation), no behavior change.
+
 ### Plugin-owned view colors (ComponentStyle)
 - Every view data kind (`notice`, `markdown`, `fields`, `choices`, `confirmation`, `form`, `diff`, `status`) plus `ConfirmationRequest.ui_data` carries an optional `style` object: optional `tone` (`default`/`info`/`success`/`warning`/`error`, default `default`), optional nullable `foreground`/`background` as `#RRGGBB` or one of the 16 ANSI names. SDK ingress rejects unknown tones/colors/keys — no raw CSS/ANSI/markup channel. Unstyled views render the client's built-in default.
 - Both clients render the same precedence (explicit colors > non-default tone > `notice.level` > built-in default), scoped to the owning component only; semantic cues (confirmation allow/deny, diff `+`/`-`, focus, error markers) stay fixed. The TUI theme catalog is deleted (no theme command/names/modes); web renders validated colors via one shared converter as a scoped inline style.
 
 ### Tool-owned display icons (Icon)
 - Tools declare their own identity: `Icon(glyph, fallback)` on `ToolDefinition` (`None` = client generic). Built-in glyphs are ordinary Unicode symbols with explicit ASCII fallbacks (fallback validated printable-ASCII at construction); plugins may use NerdFont PUA glyphs. All 24 bundled tools plus `core_reload` and the tally example declare icons; the MCP proxy declares one generic icon.
-- The core snapshots the birth `icon` onto tool intent/result events and `TranscriptTool.icon` (wire `IconWire`); history keeps it across reloads/removals, clients never map names or re-resolve. Modes are explicit (`glyph | ascii`, default glyph): TUI `--icons glyph|ascii`, web `iconStyle` prop / `?icons=ascii`. The TUI tool-name→glyph map is deleted. No font detection: UTF-8 proves bytes, not coverage.
+- The core snapshots the birth `icon` onto tool intent/result events and `TranscriptTool.icon`; history keeps it across reloads/removals, clients never map names or re-resolve. Modes are explicit (`glyph | ascii`, default glyph): TUI `--icons glyph|ascii`, web `iconStyle` prop / `?icons=ascii`. The TUI tool-name→glyph map is deleted. No font detection: UTF-8 proves bytes, not coverage.
 
 ### Transparent sandbox exec backend
 - New optional top-level `sandbox` section in `voidcode.json` (`mode`, `network`, `writable_roots`): when present, every registry child (shell, background, user-shell, LSP services) runs under OS-enforced confinement via the native `voidcode-sandbox-helper` (public `mxc-sdk` engine: bubblewrap/Seatbelt/ProcessContainer). Absent section means unconfined host exec, byte-identical to today.

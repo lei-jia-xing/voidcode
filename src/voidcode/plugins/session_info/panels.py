@@ -1,9 +1,4 @@
-"""Session information panels: status, context, usage, export and copy.
-
-Every panel reads committed facts through the SDK's bounded session services
-(``read_transcript``, header-only ``read_events``, ``get_usage``, ``get_budget``); nothing here writes state or
-touches storage directly.
-"""
+"""Session information panels: context, usage, export and copy."""
 
 from __future__ import annotations
 
@@ -14,7 +9,7 @@ from markdown_it import MarkdownIt
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.provider import ProviderMessage, ProviderTurnResult
-from voidcode.sdk.services import EventView, PluginServices, SessionUsageReport
+from voidcode.sdk.services import PluginServices, SessionUsageReport
 from voidcode.sdk.tools import TextOutput, ToolResult, ToolSuccess
 from voidcode.sdk.transcript import TranscriptDispatch, TranscriptEntry, TranscriptRun, TranscriptTool
 
@@ -25,7 +20,6 @@ _EXPORT_CHARS = 200_000
 
 
 _PANEL_DESCRIPTIONS: dict[str, str] = {
-    "session_status": "Show the current session identity, event counts, usage and budget.",
     "context": "Show what the model context is made of, with measured and estimated sizes.",
     "usage": "Show measured token usage, cost and the active budget for this session.",
     "export": "Export the session transcript as Markdown.",
@@ -45,10 +39,8 @@ class SessionInfoCommand:
         self._panel = panel
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
+        _ = invocation
         usage = services.get_usage()
-        if self._panel == "session_status":
-            events, truncated = _read_events(services)
-            return _status(invocation, services, events, usage, truncated)
         if self._panel == "usage":
             return _usage(services, usage)
         entries, truncated, source_events = _read_transcript(services)
@@ -65,24 +57,6 @@ class SessionInfoCommand:
         raise ValueError(f"unknown session_info panel: {self._panel}")
 
 
-def _read_events(services: PluginServices) -> tuple[tuple[EventView, ...], bool]:
-    """Page the session's events up to the panel cap."""
-    collected: list[EventView] = []
-    after = 0
-    truncated = False
-    while len(collected) < MAX_EVENTS:
-        page = services.read_events(after_sequence=after, limit=min(READ_PAGE, MAX_EVENTS - len(collected)), include_payload=False)
-        if not page:
-            break
-        collected.extend(page)
-        after = page[-1].sequence
-        if len(page) < READ_PAGE:
-            break
-    else:
-        truncated = True
-    return tuple(collected), truncated
-
-
 def _read_transcript(services: PluginServices) -> tuple[tuple[TranscriptEntry, ...], bool, int]:
     entries: list[TranscriptEntry] = []
     cursor = 0
@@ -95,48 +69,6 @@ def _read_transcript(services: PluginServices) -> tuple[tuple[TranscriptEntry, .
         if not page.has_more:
             return tuple(entries), False, scanned
     return tuple(entries), True, scanned
-
-
-def _status(
-    invocation: CommandInvocation,
-    services: PluginServices,
-    events: tuple[EventView, ...],
-    usage: SessionUsageReport,
-    truncated: bool,
-) -> CommandResult:
-    context = invocation.context
-    counts: dict[str, int] = {}
-    for event in events:
-        counts[event.event_type] = counts.get(event.event_type, 0) + 1
-    budget = services.get_budget()
-    last = events[-1] if events else None
-    data: dict[str, object] = {
-        "session_id": context.session_id,
-        "run_id": context.run_id,
-        "revision_id": context.revision_id,
-        "actor": context.actor,
-        "workspace": str(context.require_workspace()),
-        "last_event_sequence": last.sequence if last is not None else 0,
-        "event_counts": counts,
-        "events_truncated": truncated,
-        "usage": usage.as_payload(),
-        "budget": None if budget is None else budget.as_payload(),
-    }
-    lines = [
-        f"session: {data['session_id']}",
-        f"run: {data['run_id']}",
-        f"revision: {data['revision_id']}",
-        f"workspace: {data['workspace']}",
-        f"last event: {data['last_event_sequence']}" + (" (window truncated)" if truncated else ""),
-        f"turns: {usage.turn_count}, input tokens: {usage.input_tokens}, output tokens: {usage.output_tokens}, cost: {usage.total_cost_usd}",
-    ]
-    if budget is not None:
-        lines.append(
-            f"budget: input<={budget.max_input_tokens} output<={budget.max_output_tokens} "
-            f"total<={budget.max_total_tokens} cost<={budget.max_cost_usd} elapsed<={budget.max_elapsed_seconds}"
-        )
-    lines.extend(f"{event_type}: {count}" for event_type, count in sorted(counts.items()))
-    return CommandResult(status="ok", output="\n".join(lines), data=data)
 
 
 def _context(entries: tuple[TranscriptEntry, ...], usage: SessionUsageReport, truncated: bool) -> CommandResult:

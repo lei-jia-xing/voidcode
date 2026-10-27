@@ -118,7 +118,7 @@ Each plugin directory is a Python package admitted by the same rules as a third-
 | `lsp` | `lsp` tool and `/lsp` command |
 | `mcp` | `mcp` tool and `/mcp` inventory |
 | `providers` | turn providers for OpenAI-compatible, Anthropic, and Google families, plus `/model` and `/providers` panels |
-| `session_info` | `/session_status`, `/context`, `/usage`, `/export`, `/copy` |
+| `session_info` | `/context`, `/usage`, `/export`, `/copy` |
 | `todo` | `todo` tool, `/todo`, `/todo.clear` |
 | `plan` | `/plan`, `/plan.off`, `/plan.status` collaboration mode |
 | `skills` | `skill` tool and `/skills` |

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -157,20 +156,6 @@ def _result(tmp_path: Path, name: str, services: object | None = None):
     return command.invoke(_invocation(tmp_path, name), services if services is not None else _FakeServices())  # type: ignore[arg-type]
 
 
-def test_session_status_reports_identity_counts_and_budget(tmp_path: Path) -> None:
-    budget = PluginBudget(owner="goal", since_sequence=0, max_total_tokens=1000)
-
-    result = _result(tmp_path, "session_status", _FakeServices(budget=budget))
-
-    assert result.status == "ok"
-    assert "session-1" in result.output
-    assert result.data is not None
-    assert result.data["last_event_sequence"] == 4
-    assert result.data["event_counts"]["core.model_turn"] == 1
-    assert result.data["budget"]["max_total_tokens"] == 1000
-    assert result.data["usage"]["total_cost_usd"] == 0.0123
-
-
 def test_usage_panel_reports_measured_values(tmp_path: Path) -> None:
     result = _result(tmp_path, "usage")
 
@@ -249,18 +234,10 @@ def test_copy_without_an_assistant_turn_is_an_explicit_error(tmp_path: Path) -> 
 def test_panels_only_register_their_commands() -> None:
     plugin = _plugin()
 
-    assert sorted(command.definition.name for command in plugin.commands) == ["context", "copy", "export", "session_status", "usage"]
+    assert sorted(command.definition.name for command in plugin.commands) == ["context", "copy", "export", "usage"]
     assert plugin.tools == ()
     for command in plugin.commands:
         assert command.definition.effects == frozenset()
-
-
-def test_event_identity_is_preserved_in_status_data(tmp_path: Path) -> None:
-    result = _result(tmp_path, "session_status")
-
-    assert result.data is not None
-    assert isinstance(result.data["event_counts"], Mapping)
-    assert result.data["revision_id"] == "rev"
 
 
 def test_usage_does_not_require_history_access(tmp_path: Path) -> None:
