@@ -73,7 +73,7 @@ mise run frontend:api:check      # fail when the committed types are stale
 
 ```bash
 bun run build       # the served bundle is dist/index.html
-bun run test:e2e    # spawns `uv run python -X utf8 -m voidcode.core ... serve` itself
+bun run test:e2e    # spawns `uv run python -X utf8 -m voidcode ... serve` itself
 ```
 
 Requirements: `uv` on `PATH` (the spec starts the core from the repository root) and the Playwright Chromium build (`bunx playwright install chromium`). `mise run frontend:e2e` runs the build and the spec in one step.

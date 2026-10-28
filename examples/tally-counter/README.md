@@ -31,13 +31,13 @@ point a workspace at it:
 
 ```bash
 export WS=/tmp/tally-ws STATE=/tmp/tally-state
-uv run python -m voidcode.core --workspace "$WS" --state-dir "$STATE" \
+uv run python -m voidcode --workspace "$WS" --state-dir "$STATE" \
   create-session --session-id demo
-REV=$(uv run python -m voidcode.core --workspace "$WS" --state-dir "$STATE" \
+REV=$(uv run python -m voidcode --workspace "$WS" --state-dir "$STATE" \
   catalog | python -c "import json,sys; print(json.load(sys.stdin)['revision_id'])")
-uv run python -m voidcode.core --workspace "$WS" --state-dir "$STATE" \
+uv run python -m voidcode --workspace "$WS" --state-dir "$STATE" \
   invoke demo tally --arguments '{"delta": 3}' --expected-revision "$REV"
-uv run python -m voidcode.core --workspace "$WS" --state-dir "$STATE" \
+uv run python -m voidcode --workspace "$WS" --state-dir "$STATE" \
   views demo
 ```
 Expected: `invoke` returns `status: ok` with `data: {"total": 3,

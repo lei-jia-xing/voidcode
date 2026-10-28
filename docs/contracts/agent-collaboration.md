@@ -5,8 +5,8 @@ Delegated agent work is core-owned: a parent session starts child sessions, stee
 ## Durable facts
 
 - A child is a normal session with `parent_session_id`, `root_session_id`, and `depth`; only the direct parent may join, send, or cancel it. Depth (`DELEGATION_MAX_DEPTH`), the chain spawn budget (`DELEGATION_SPAWN_BUDGET`), and the parent's visible tool scope bound every spawn; a requested allowlist may only narrow.
-- `kernel.child_spawned` records the linkage, label, effective allowlist, and `notify_on_completion`. The notify flag is persisted in the fact so a restart reconstructs the request from the durable log, never from a thread-local argument.
-- `kernel.child_finished` is the terminal fact for exactly one `(child_session_id, run_id)`: status, error, stop cause, label, output (inline under `CHILD_INLINE_OUTPUT_BYTES`, otherwise a bounded preview plus `output_sha256`/`output_bytes` reachable through the artifact page API), and the immutable history snapshot (`sha256`, `bytes`).
+- `core.child_spawned` records the linkage, label, effective allowlist, and `notify_on_completion`. The notify flag is persisted in the fact so a restart reconstructs the request from the durable log, never from a thread-local argument.
+- `core.child_finished` is the terminal fact for exactly one `(child_session_id, run_id)`: status, error, stop cause, label, output (inline under `CHILD_INLINE_OUTPUT_BYTES`, otherwise a bounded preview plus `output_sha256`/`output_bytes` reachable through the artifact page API), and the immutable history snapshot (`sha256`, `bytes`).
 - Waiting on an authentic approval checkpoint and a recoverable interruption are parked, not terminal. Only a public resume or cancel publishes their terminal fact.
 
 ## Join and steering
@@ -17,7 +17,7 @@ Delegated agent work is core-owned: a parent session starts child sessions, stee
 
 ## Completion notices and acknowledgement
 
-- With `notify_on_completion`, the child's terminal publication stages one bounded notice continuation in the same transaction as `kernel.child_finished`, keyed by `(parent_session_id, child_session_id, run_id)`. An idle parent is woken; a busy parent merges the notice at its next safe boundary; a deeper or foreign session never receives it.
+- With `notify_on_completion`, the child's terminal publication stages one bounded notice continuation in the same transaction as `core.child_finished`, keyed by `(parent_session_id, child_session_id, run_id)`. An idle parent is woken; a busy parent merges the notice at its next safe boundary; a deeper or foreign session never receives it.
 - The model acknowledges the run it actually consumed through `acknowledge_child_completion`. The acknowledgement is staged on the invocation lease and commits atomically with the successful tool result carrying the outcome: a crash cannot acknowledge an outcome without durably committing the consuming tool result, and a notice already claimed or completed is untouched. This guarantees durable consumption, not provider/model receipt of the notice.
 - Restart recovery republishes every terminal child run whose parent fact is missing (including an older run beside a newer follow-up), rebuilding status/output/error/stop cause/label/history from durable events. It publishes each exactly once and delivers the run-scoped notice; child work is never rerun.
 
@@ -39,7 +39,7 @@ scheduling coverage.
   fails closed on a non-contiguous or incomplete read. It never appends an unbounded store tail.
   A child-message claim reconciles the whole range from the old tip to the post-claim tip, allowing
   exactly the claimed `continuation_started` sequences; it does not advance the session over an
-  intervening `kernel.child_finished`.
+  intervening `core.child_finished`.
 - **Sequence conflicts.** `SequenceConflict` means the atomic CAS committed nothing. The same
   payload is retried after reconciling to the fresh tip (bounded retries), including commits that
   carry staged plugin state or continuations: the failed transaction re-applies nothing twice and
@@ -50,7 +50,7 @@ scheduling coverage.
   produced is not reported as a completed outcome. Join waits for the publisher; on its deadline
   (including `timeout_seconds=0`) it returns the existing nonterminal outcome
   (`status="running"`, current run id, no output). Once published, join returns the full fact.
-  After restart, join loads the durable `kernel.child_finished` fact for the child's CURRENT run;
+  After restart, join loads the durable `core.child_finished` fact for the child's CURRENT run;
   it never substitutes an older run's fact. A terminal cancellation's durable fact (error and
   history) is likewise preferred over the bare status outcome.
 - **Per-run history.** A saved snapshot is the session prefix through THAT run's genuine terminal

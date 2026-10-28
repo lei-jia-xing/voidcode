@@ -10,8 +10,7 @@ This directory contains the authoritative technical contracts for the VoidCode c
 
 - [`artifacts.md`](./artifacts.md): Shared artifact references, output recovery, and SDK storage/read boundaries.
 
-- [`facts.md`](./facts.md): Typed durable observations, tool semantics, historical paging, and effectiveness metrics.
-- [`plugin-coupling-audit.md`](./plugin-coupling-audit.md): Remaining implementation dependencies, resolved todo coupling, and the next public contracts to introduce.
+- [`facts.md`](./facts.md): Typed durable observations, governance effects, historical paging, and effectiveness metrics.
 
 - [`optional-queries.md`](./optional-queries.md): Typed, optional plugin collaboration, replacement providers, absence and failure behavior, and capability-based workflow scopes.
 
@@ -19,7 +18,7 @@ This directory contains the authoritative technical contracts for the VoidCode c
 - [`agent-collaboration.md`](./agent-collaboration.md): Delegated agent collaboration: child facts, run-scoped join/steering, completion notices and atomic acknowledgement, restart publication recovery, and bounded transcript/history paging.
 - [`goal-plugin.md`](./goal-plugin.md): Official Goal plugin contracts, state schema, windowed accounting, 3-turn blocked audit, and declarative views.
 - [`hot-activation.md`](./hot-activation.md): Same-session capability activation: trusted admission, immutable generation snapshots, state validation/deactivation, the activation transaction, durable automatic continuation, and restart restore.
-- [`core-upgrade.md`](./core-upgrade.md): Adoption transaction and restart recovery (historical spec; placeholder CLI commands in that file are no longer applicable).
+- Generation adoption (cross-build moves) is stop-and-restart plus `bootstrap.adopt_generation`; there is no supervised upgrade path.
 - [`plugin-authoring.md`](./plugin-authoring.md): Third-party plugin author contract: package layout, tools/commands/views, state deactivation, revisions, and executable diagnostics. Runnable reference: `examples/tally-counter/`.
 
 Wire models, configuration, and tool definitions are defined directly in code, which is the only source of truth:

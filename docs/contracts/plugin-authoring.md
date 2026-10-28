@@ -141,15 +141,15 @@ Conventions that keep state debuggable:
   configuration.
 - Activation re-admits the live configuration and commits one new revision
   transactionally; clients refetch catalog + views on
-  `kernel.activation_committed`. Two paths (`docs/contracts/hot-activation.md`):
+  `core.activation_committed`. Two paths (`docs/contracts/hot-activation.md`):
   the user command `core.reload` (idle sessions only, refused under `read_only`
   and while busy, no automatic continuation) and the native model tool
   `core_reload` (stages the request mid-run; the switch commits at the
   native-batch boundary and the same session continues automatically with no
   prompt resend).
 - To remove a plugin, disable it via `core.reload` on the old running
-  core first so its real `prepare_deactivate` runs, then upgrade; a
-  disabled owner's historic state rows may remain.
+  core first so its real `prepare_deactivate` runs, then adopt the new
+  generation; a disabled owner's historic state rows may remain.
 
 ## 7. SDK service scopes and contracts
 
@@ -229,8 +229,8 @@ Run these in order; each step's failure names the layer at fault.
    `validate_form_submission` (native numeric prefill accepted; typed strings validated strictly), and
    `is_read_only_load` (load runs only when the catalog command declares exactly the `read` effect).
 6. **Durable truth** — `show <sid> --events` (no config/runtime/revision
-   needed) and the SQLite store (`plugin_state`, `kernel.tool_completed`,
-   `kernel.command_completed`) confirm what actually committed.
+   needed) and the SQLite store (`plugin_state`, `core.tool_completed`,
+   `core.command_completed`) confirm what actually committed.
 
 Common refusals and their fixes:
 

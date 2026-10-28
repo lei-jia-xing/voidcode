@@ -7,7 +7,7 @@ Plugins depend on SDK contracts, rather than another plugin's tool names or the 
 | Contract | Meaning |
 | --- | --- |
 | `ToolEffect` | Authority, approval, read-only admission, and recovery policy. `WRITE` does not imply a file edit. |
-| `ToolDefinition.semantics` | Business purpose declared by a tool. `ToolSemantic.RESOURCE_EDIT` identifies edit attempts, including failures. Names are presentation and dispatch identities. |
+| `ToolDefinition` | Authority declaration: name, description, input schema, effects, replay policy, icon. Business meaning comes from recorded observations, not a separate declaration: there are no per-tool semantic predicates. Names are presentation and dispatch identities.
 | `ToolSuccess.coverage` | Existing `ReadObservation` records: path, content version, and lines/whole-file window the result reports showing. |
 | `ToolSuccess.changes`, `ToolFailure.changes` | `ResourceChange` records for committed create/update/delete/move operations. A failed or cancelled invocation may have committed a prefix; its outcome does not erase those changes. |
 | `InvocationFinishedFact` | Outcome, frozen owner/effects/semantics, model attribution, measured JSON envelope sizes, result bounds, diagnostic category, read/change observations, and declared resource paths. |
@@ -18,27 +18,11 @@ Plugins depend on SDK contracts, rather than another plugin's tool names or the 
 | `ContextProjectedFact` | An applied core window projection with measured covered/dropped UTF-8 bytes. It does not depend on a compressor plugin id. |
 | `UsageFact`, `RunFinishedFact` | Existing truthful usage and terminal-run observations. |
 
-Mixed-mode tools declare `ToolDefinition.semantic_rules`: a mapping from `ToolSemantic` to a Draft 2020-12 JSON Schema over invocation arguments. `semantics_for(arguments)` combines static `semantics` with all matching rules. Rules are immutable, validated at definition ingress, and survive the ordinary definition codec; they are data rather than executable callbacks or a custom predicate language.
+Tools declare governance effects (`ToolEffect`) on their definition; results carry observations (`coverage`, `changes`). The core freezes both into `fact_metadata` at commit time: owner, effects, measured envelope sizes, result bounds, diagnostic category, read/change observations, and declared resource paths. `InvocationFinishedFact.semantics` is a retained required metadata slot: the current engine records it empty for every invocation (the tool intent hardcodes `"semantics": []`), and consumers must treat it as opaque committed data, never re-derive it from the current catalog. There are no per-tool semantic declarations, predicates, or argument rules; `ast_grep` declares plain `WRITE` effects for all modes.
 
-```python
-ToolDefinition(
-    name="structural_tool",
-    description="Search, preview, or replace code",
-    effects=frozenset({ToolEffect.WRITE}),
-    semantic_rules={
-        ToolSemantic.RESOURCE_EDIT: {
-            "properties": {"mode": {"const": "replace"}},
-            "required": ["mode"],
-        },
-    },
-)
-```
+The core freezes the recorded declaration in the tool intent before execution. Pre-execution refusals create no intent; unresolved tools have no recorded declaration. History and recovery read the recorded metadata and never re-evaluate a changed catalog.
 
-`ast_grep` uses this rule: search and preview are not edit attempts; replace is an edit attempt even if validation, approval, or execution refuses it. One semantic can use standard `anyOf`/`allOf` schemas for more complex conditions. Static meanings always apply; matching rules add meanings and never remove them. These predicates do not alter effects, approval, read-only admission, replay policy, or input validation.
-
-The core freezes the resolved semantics in the tool intent before execution. Failures use that recorded declaration too. Pre-execution refusals resolve against the same invocation arguments without creating an intent; unresolved tools have no declared meanings. History and recovery read the recorded meanings and never re-evaluate a changed catalog's predicates.
-
-Tools report their own successful resource observations. The core records them with invocation identity and the declaration used for that invocation. Consumers must not reconstruct historical semantics from the currently installed catalog. Read observations are historical facts, not write permissions. File mutations validate explicit content hashes and edit matching without requiring a prior read in the session.
+Read observations are historical facts, not write permissions. File mutations validate explicit content hashes and edit matching without requiring a prior read in the session.
 
 A tool can declare paths using `path_argument_keys`, including `edits[].path`. Invocation facts collect those paths and successful read/change paths. Skills uses that surface for touched-file rules; it no longer guesses parameter names or parses patch text. Undeclared shell effects are not inferred from command text. File-tool observations are claims by trusted tools, not filesystem monitoring — but exec changes ARE supervisor-observed: when the sandbox backend is configured, the confined supervisor snapshots writable roots before/after each child and the engine merges those observed changes into the tool's `changes` (success and failure alike, deduped against the tool's self-report). Background jobs contribute their cumulative sidecar when read or cancelled; service processes never stage.
 
@@ -73,13 +57,13 @@ Provider usage `output_tokens` counts total generated output, including reasonin
 
 ## Current contract and effectiveness v2
 
-Only the current persisted fact shape is supported. Invocation outcomes require their full recorded semantic metadata, and public fact events require their recorded observer eligibility. Missing fields fail explicitly; the runtime never joins older tool intents, fills fields from the current catalog, or bypasses replay validation for older events. There is no legacy-data adapter or automatic conversion. This SDK change follows the existing explicit core-image upgrade rules, which do not make incompatible event records compatible.
+Only the current persisted fact shape is supported. Invocation outcomes require their full recorded metadata, and public fact events require their recorded observer eligibility. Missing fields fail explicitly; the runtime never joins older tool intents, fills fields from the current catalog, or bypasses replay validation for older events. There is no legacy-data adapter or automatic conversion. Generation adoption (stop the old build, start the new one against the same workspace and state) does not make incompatible event records compatible.
 
 `/effectiveness` emits `schema_version=2` and aggregates public facts:
 
 - Repeated reads mean the same path, content hash, line window, whole-file flag, and clipping flag were observed again. Another content version is a different observation.
 - Follow-up reads add lines to an earlier partial observation of the same version, or finish that version with a complete whole-file read. Repeating the same partial range is not a follow-up.
-- Per-model edits include only declared edit attempts or actual recorded changes with model attribution. A missing model attribution is a legitimate unknown, distinct from an invalid record with missing required metadata.
+- Per-model edits count invocations with `WRITE` in the recorded effects or actual recorded changes, with model attribution. A missing model attribution is a legitimate unknown, distinct from an invalid record with missing required metadata.
 - Delegated tasks count actual child facts; resumes count explicit resumes; compression counts core projection facts.
 - `result_bytes` measures the canonical UTF-8 JSON result envelope, including its output, body, and observations. It is not provider wire size or token usage.
 - The report retains aggregate counts only. It reads persisted public SDK facts and retains no resource paths, source text, arguments, or output text.

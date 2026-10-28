@@ -12,3 +12,7 @@ Welcome to the VoidCode documentation. Here you will find guides on architecture
 ## Technical Contracts
 
 - [`contracts/README.md`](./contracts/README.md): Core durability semantics and the index of core, activation, goal, and client transport contracts.
+
+## Open work
+
+- [`TODO.md`](./TODO.md): Verified open gaps and deferred work preserved from retired reports.

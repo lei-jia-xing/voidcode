@@ -11,18 +11,22 @@ admission, activation, and continuation behavior.
   application: the enabled bundled defaults plus configured external packages.
 - One active generation per workspace. There is no long-lived mixed-version routing and no
   in-place module reloading; a candidate is a new runtime over the current source.
-- A changed SDK or image is a controlled core upgrade
-  (`voidcode upgrade run --candidate`, see [`core-upgrade.md`](./core-upgrade.md)),
-  never a hot reload: activation refuses when the installed image pin
-  differs from the revision's.
+- A changed SDK or build is a generation adoption (stop the old process, start
+  the new installation against the same workspace and state directory; see
+  `bootstrap.adopt_generation`), never a hot reload: activation only switches
+  configuration/composition over the current source.
 
 ## Admission loads packages; it never copies code
 
-`core/activation.py:admit_live` resolves each configured plugin id to its source
-directory, validates the configuration, injects the resolved providers map, and hands the
-runtime `{id, root, config}` specs. Nothing is copied, hashed, or pinned: the runtime imports
-the current source, and the returned `Plugin` registration is the single truth the runtime
-serves as the init catalog.
+`bootstrap.admit_live` (outer product layer, not core) resolves each enabled
+configured plugin id to its source directory, validates the configuration,
+injects the resolved providers map, and hands the runtime `{id, root, config}`
+specs. `core/activation.py` holds only the neutral types it assembles into
+(`Admission`, `ExecutionConfig`, `ExecutionPolicy`) plus private-snapshot
+storage and state-copy planning — no product configuration concepts. Nothing
+is copied, hashed, or pinned: the runtime imports the current source, and the
+returned `Plugin` registration is the single truth the runtime serves as the
+init catalog.
 
 The public revision payload never carries credentials or raw plugin configuration: an opaque
 UUID names the recorded config/composition, and a single `private_config_sha256` digest of the
@@ -64,7 +68,7 @@ run's own tool stack waits for or triggers the switch.
 ## The two control surfaces
 
 - Reserved tool `core_reload` (core-owned, `EXECUTE` effect, so `ask` mode parks it for user
-  approval): it only records `kernel.activation_requested` with the prepared target and returns. It
+  approval): it only records `core.activation_requested` with the prepared target and returns. It
   never waits, never imports, and never switches anything inside the tool call.
 - Reserved command `core.reload` (client-initiated, same activation service): refused in
   `read_only` mode and for busy sessions, and it owes no automatic continuation.
@@ -123,8 +127,8 @@ before the runtime loads it.
 7. the acting session's checkpoint **with its existing kind preserved** (no checkpoint is invented
    for a session that had none), plus the durable resume intent described below.
 
-A blocker found here raises a conflict: the refusal is recorded as `kernel.activation_blocked` (with
-the blocker list) or `kernel.activation_failed`, the candidate runtime is closed, and the previous
+A blocker found here raises a conflict: the refusal is recorded as `core.activation_failed` (with
+the error plus the blocker list), the candidate runtime is closed, and the previous
 generation stays active. Nothing is cancelled implicitly.
 
 After the commit: pending facts of the old generation were already flushed through the old runtime;
@@ -166,9 +170,9 @@ never be papered over); during ordinary replay it surfaces visibly and stays pen
 - `GET /api/commands` and the session views return `revision_id` captured together with their data.
 - Mutating invokes and confirmations send that `expected_revision`; a mismatch is a visible stale
   error with no side effect. An omitted expected revision is an error, never "current".
-- `kernel.activation_committed` (`from_revision_id`, `to_revision_id`,
+- `core.activation_committed` (`from_revision_id`, `to_revision_id`,
   `deactivated_owners`, `source`) on the session stream tells clients to refetch catalog and views;
-  `kernel.activation_requested`, `kernel.activation_failed` and `kernel.activation_blocked` are the
+  `core.activation_requested` and `core.activation_failed` are the
   request lifecycle around it.
 - The model sees the outcome of a staged request as a bounded system note before its next dispatch
   (committed revision, or the refusal reason), so a refused switch never looks applied.
