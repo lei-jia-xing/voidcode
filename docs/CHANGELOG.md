@@ -9,6 +9,7 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 - One model tool (`workflow_run`, governed `EXECUTE+SPAWN+SESSION`, never replayed), five commands (`workflow.run/status/pause/resume/cancel` with shared `/workflow.*` client syntax), and two generic views. Terminal runs optionally hand their bounded summary back to the originating session as a durable follow-up turn; failures fail both the run and the background action so `invoke --wait-background` exits nonzero.
 - CLI `invoke`/`confirm` gain `--wait-background` (`--wait-timeout` seconds): after the command commits, the same process waits for the receipt's background action (or the session's active ones) and reports settled states in the result JSON. Timeouts, stale claims, and failures are never green.
 - `policy.max_root_children` (1..64, default 4) is the single governed child-session quota per chain root, replacing the fixed internal budget. Runnable reference: `examples/workflows/`.
+- Restored the pending command-confirmation gate in generation adoption: a pending confirmation blocks `adopt_generation` until it is decided.
 
 ### Canonical SSE transcript cutover (BREAKING)
 - Every SSE event now carries the canonical `transcript` projection (`TranscriptEntryWire | null`): the same discriminated `{kind, body}` the `/transcript` route serves. Untagged-shape adapters, `payload.result` fallbacks, and duplicate JSON decode are deleted on both clients; no compat shims. `transcript: null` means genuine bookkeeping only.

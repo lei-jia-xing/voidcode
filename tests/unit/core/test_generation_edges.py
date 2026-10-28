@@ -10,6 +10,7 @@ import pytest
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import adopt_generation, bundled_sources, open_core
+from voidcode.core.storage.store import StoreConflict
 
 OBSERVER = """
 from __future__ import annotations
@@ -238,3 +239,32 @@ def test_confirmation_is_provenance_not_a_read_only_exemption(tmp_path: Path) ->
         assert goal_rows["goal"].payload.get("objective") == "second"
     finally:
         core.close()
+
+
+def test_pending_confirmation_blocks_quiescent_adoption_until_resolved(tmp_path: Path) -> None:
+    """A pending command confirmation blocks generation adoption until it is decided."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _write(workspace / "confirmer", CONFIRMER)
+    (workspace / "voidcode.json").write_text(json.dumps({"schema_version": 1, "plugins": {"confirmer": {"path": "confirmer"}}}), encoding="utf-8")
+    core = open_core(workspace, state_dir=tmp_path / "state")
+    try:
+        core.create_session("s")
+        pending = core.invoke_command("s", "mutate.confirm", {}, expected_revision=core.revision_id)
+        assert pending.status == "pending_confirmation" and pending.confirmation is not None
+        request_id = pending.confirmation.request_id
+    finally:
+        core.close()
+
+    with pytest.raises(StoreConflict):
+        adopt_generation(workspace=workspace, state_dir=tmp_path / "state", session_id="s")
+
+    core = open_core(workspace, state_dir=tmp_path / "state")
+    try:
+        denied = core.confirm_action("s", request_id, "deny", expected_revision=core.revision_id)
+        assert denied.status == "ok", denied.as_payload()
+    finally:
+        core.close()
+
+    report = adopt_generation(workspace=workspace, state_dir=tmp_path / "state", session_id="s")
+    assert report["to_revision_id"] != report["from_revision_id"]

@@ -2340,6 +2340,7 @@ class SqliteStore:
                 """,
                 (workspace,),
             )
+            blockers.extend((str(row[0]), "pending_confirmation") for row in cursor.fetchall())
         cursor = self._connection.execute(
             """
             SELECT session_id, continuation_id, owner

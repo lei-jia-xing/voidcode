@@ -259,6 +259,7 @@ def test_cancel_reaches_a_live_driver_and_keeps_earlier_checkpoints(tmp_path: Pa
         core.create_session("parent")
         action_id = _enqueue(core, "parent", note="slow", spins=50)
         _wait_for(lambda: _status(core, "parent", action_id)["status"] == "running", what="the claim")
+        _wait_for(lambda: "first:slow" in _marks(core, "parent"), what="the first checkpoint commit")
         assert _cancel(core, "parent", action_id) is True
         _wait_for(lambda: _status(core, "parent", action_id)["status"] == "cancelled", what="the cancel settle")
         assert _marks(core, "parent")[0] == "first:slow"
@@ -272,6 +273,7 @@ def test_stale_claim_reports_interrupted_and_blocks_nothing(tmp_path: Path) -> N
         core.create_session("parent")
         doomed = _enqueue(core, "parent", note="doomed", spins=50)
         _wait_for(lambda: _claimed(core, doomed), what="the doomed claim")
+        _wait_for(lambda: "first:doomed" in _marks(core, "parent"), what="the doomed first checkpoint commit")
         # Simulate a crashed holder: orphan the claimed row with a foreign identity while the
         # live driver is signalled away, so the row stands alone with no driver in this process.
         with core.store._lock:  # noqa: SLF001 - the test simulates a dead claim holder
@@ -376,6 +378,7 @@ def test_close_parks_live_drivers_without_replay(tmp_path: Path) -> None:
         core.create_session("parent")
         action_id = _enqueue(core, "parent", note="parked", spins=50)
         _wait_for(lambda: _status(core, "parent", action_id)["status"] == "running", what="the parked claim")
+        _wait_for(lambda: "first:parked" in _marks(core, "parent"), what="the parked first checkpoint commit")
         core.close()
         _CREATED.remove(core)
         # A reopened core reports the settled row and never replays the driver.
