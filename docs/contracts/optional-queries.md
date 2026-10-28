@@ -41,21 +41,14 @@ No consumer checks whether `lsp` is enabled. `DOCUMENT_STATES` can be implemente
 by any admitted plugin. Duplicate registrations for the same name still
 fail visibly: disable one provider before admitting another. A breaking request/answer change
 requires a new query name; do not silently change the meaning of an existing contract.
-Custom contracts can use the same SDK API; the low-level `PluginServices.query` and
-`PluginQuery` transport remain available for custom contracts.
+Domain policy — what absence means for a concrete consumer, which answers are
+malformed — lives with the domain contracts in the owning plugin READMEs
+(files, lsp, delegation), not here.
 
-`voidcode.capabilities.agent_queries` shares one more contract the same way:
-`AGENT_DEFINITIONS.ask(services, AgentDefinitionRequest(name=...))` resolves an
-effective named agent (`name`, `description`, `prompt`, `source_scope`,
-`source_path`, `readonly`, `tools`, `max_turns`); `AGENT_DEFINITIONS.bind(handler)`
-provides it. Delegation is the default provider: it answers from its Markdown
-registry, returns `None` for an unknown name, and surfaces an unloadable
-registry as a provider failure. With delegation disabled the query is
-unavailable, visibly, like any other unanswered capability. Any admitted plugin
-may substitute the provider; consumers never import delegation. The shared
-`apply_agent_profile` helper turns one resolved definition plus a caller scope
-into the effective child prompt, stance, tool scope, and step budget, so every
-consumer applies the same narrowing without restating profile policy.
+`voidcode.capabilities.agent_queries` shares one more contract the same way
+(`AGENT_DEFINITIONS.ask`/`bind`). The named-agent answer shape, provider
+behavior, substitution rules, and profile narrowing are canonical in the
+[delegation](../../src/voidcode/plugins/delegation/README.md) README.
 
 ## Distinct outcomes
 
@@ -66,29 +59,10 @@ consumer applies the same narrowing without restating profile policy.
   never treat it as ordinary absence.
 - Other handler exceptions: preserve them as provider failures, without a broad fallback.
 
-Ordinary file reads/writes work without either workspace query. A rule URI reports an absent
-catalog; a version-constrained edit is refused when no document version exists. Hash-only
-edits remain available without a document-state provider. Malformed answers remain failures.
-
-## Optional tools in workflow profiles
-
-Delegation uses [Markdown agent definitions](./agent-definitions.md). Built-ins
-have no fixed tool tables. Unless a file declares standard `tools`, children
-inherit the parent's scope. Explicit caller `tool_allowlist` and file `tools`
-restrictions intersect; neither can widen the parent. The core validates names
-and authority, and spawn failures are never retried with a wider scope.
-
-The former custom profile metadata and serialization paths are removed. Standard
-fields without an execution implementation fail visibly, rather than generating
-warnings that a model preference or skill reference was not applied.
-
-A built-in read-only stance restricts external mutation through core policy; it
-does not mean filesystem-only inspection. Network and delegation tools within
-the inherited scope can remain visible.
-
-The separate review workflow still intersects its fixed inspection list with
-`PluginServices.tool_definition`. This remaining concrete-name policy has not
-been migrated as part of delegation simplification.
+Absent-provider behavior for concrete file consumers lives in the owning
+READMEs: [files](../../src/voidcode/plugins/files/README.md) and
+[lsp](../../src/voidcode/plugins/lsp/README.md). Malformed answers remain
+failures.
 
 ## Behavioral verification
 

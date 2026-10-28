@@ -155,7 +155,7 @@ mise run frontend:test    # Vitest component tests
 - [Configuration Guide](./docs/configuration.md): `voidcode.json` fields and state directory.
 - [Coding Standards](./docs/coding-standards.md): conventions and commit formats.
 - [Testing Policy](./docs/testing.md): test tiers, loopback providers, and offline guards.
-- [Core & Plugin Contracts](./docs/contracts/README.md): durability, activation, goal, and client transport contracts.
+- [Core/SDK Contracts](./docs/contracts/README.md): durability, activation, client transport, and the plugin entry-doc index.
 - [Contributing](./CONTRIBUTING.md): development environment and pull request workflow.
 
 ## License

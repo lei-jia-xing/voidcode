@@ -143,8 +143,8 @@ codegraph node --path . --file src/voidcode/core/engine.py Core
 - [Configuration Guide](./docs/configuration.md)
 - [Coding Standards](./docs/coding-standards.md)
 - [Testing Policy](./docs/testing.md)
-- [Core & Plugin Contracts](./docs/contracts/README.md)
+- [Core/SDK Contracts](./docs/contracts/README.md)
 
 ## Public Facts
 
-Plugins consume typed SDK facts through observers or `PluginServices.read_facts()`, rather than classifying tool names or parsing private `core.*` payloads. Tools declare governance effects; results and the runtime contribute observations (reads, changes, paths). Historical facts use committed metadata, never the current catalog. See [public facts](./docs/contracts/facts.md) for paging, unknown historical metadata, and metric definitions.
+Plugins consume typed SDK facts through observers or `PluginServices.read_facts()`, rather than classifying tool names or parsing private `core.*` payloads. Tools declare governance effects; results and the runtime contribute observations (reads, changes, paths). Historical facts use committed metadata, never the current catalog. See [public facts](./docs/contracts/facts.md) for paging, byte-observation semantics, and unknown historical metadata.

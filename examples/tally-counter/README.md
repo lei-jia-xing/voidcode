@@ -62,7 +62,9 @@ re-admits the live configuration as a new generation in-session.
 - Tool and command declare `SESSION`: internal state, auto-allowed in every
   approval mode, never refused by `read_only`.
 - Definitions live in `__init__.py` next to the handlers: that module is the
-  single truth, so drift is impossible by construction.
+  single source of truth for what this plugin registers.
 - The full author contract (registration, scope/approval, revisions, errors,
-  state migration, activation, diagnostics) lives in
-  `docs/contracts/plugin-authoring.md`.
+  state validation/deactivation, activation, diagnostics) lives in
+  [plugin authoring](../../docs/contracts/plugin-authoring.md). There is no
+  `migrate_state` hook: a stored state a schema increase does not match is
+  refused visibly.

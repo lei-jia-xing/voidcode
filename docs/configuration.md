@@ -137,8 +137,8 @@ Bundled plugin ids (those shipped in `src/voidcode/plugins/`) need no entry at a
 
 Agent discovery and `/agents`/`agents.show` belong to `delegation`, along with
 `task`/`task_batch`. Agent files use `.claude/agents/` and the supported Claude Code
-Markdown format. See [agent definitions](contracts/agent-definitions.md) for the
-supported fields and explicit runtime limitations.
+Markdown format. See the [delegation](../src/voidcode/plugins/delegation/README.md)
+README for the supported fields and explicit runtime limitations.
 
 ### Scripted workflows
 
@@ -146,8 +146,8 @@ The bundled `workflows` plugin runs explicitly configured trusted `.py` scripts:
 `plugins.workflows.config` accepts exactly `workflows: {name: workspace-relative
 .py path}` (plus the reserved injected `providers` key). Unknown fields, absolute
 paths, `..`, and non-`.py` files are refused. An empty mapping admits the plugin
-with nothing runnable. See [workflows](contracts/workflows.md) and the runnable
-`examples/workflows/` parallel-review setup.
+with nothing runnable. See the [workflows](../src/voidcode/plugins/workflows/README.md)
+README and the runnable `examples/workflows/` parallel-review setup.
 
 ### MCP servers
 

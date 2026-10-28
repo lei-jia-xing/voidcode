@@ -56,7 +56,7 @@ VITE_BACKEND_URL=http://127.0.0.1:8765 bun run dev
 # then open http://127.0.0.1:5173/?token=<token>
 ```
 
-The core reads one config file, `voidcode.json` in the workspace (`{"schema_version": 1}` is a complete minimal file). A legacy `.voidcode.json` is an error and is never converted.
+The core reads one config file, `voidcode.json` in the workspace (`{"schema_version": 1}` is a complete minimal file). Any other filename (including a legacy `.voidcode.json`) is ignored, not detected or converted.
 
 ## API surface
 

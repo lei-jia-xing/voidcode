@@ -107,7 +107,7 @@ The shared vocabulary: `plugin.py` (`Plugin` registration: tools, commands, prov
 
 ### Bundled plugins (`src/voidcode/plugins/`)
 
-Each plugin directory is a Python package admitted by the same rules as a third-party plugin. The bundled set provides:
+Each plugin directory is a Python package admitted by the same rules as a third-party plugin. Each documents its own surface, configuration, behavior, and limits in its package README (indexed once in [docs](README.md#plugins)). The bundled set provides:
 
 | Plugin | Contributes |
 |---|---|
@@ -131,6 +131,7 @@ Each plugin directory is a Python package admitted by the same rules as a third-
 | `user_shell` | `/shell` user shell escape |
 | `effectiveness` | `/effectiveness` session-scoped metrics |
 | `goal` | thread goal tools and `/goal*` commands |
+| `workflows` | `workflow_run` tool, `/workflow.*` commands, scripted child-session graphs |
 
 Which ids are admitted by default is decided in `bootstrap.py` (`BUNDLED_PLUGIN_IDS`); any additional id needs an explicit `plugins.<id>.path`.
 

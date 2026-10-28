@@ -1,27 +1,23 @@
-# Core & Plugin Contracts
+# Core/SDK Contracts
 
-This directory contains the authoritative technical contracts for the VoidCode core, its plugin seam, and client integration.
+This directory contains the authoritative technical contracts for the VoidCode core, its SDK seam, and client integration. Plugin-owned usage, configuration, state, and limits live in each plugin's package README, indexed once in [docs](../README.md#plugins).
 
-## Contracts
-
-- [`agent-definitions.md`](./agent-definitions.md): Claude Code Markdown agent format, supported execution subset, and discovery rules.
-
-- [`transcript.md`](./transcript.md): Typed, lossless committed conversation paging and session inspection.
+## Core contracts
 
 - [`artifacts.md`](./artifacts.md): Shared artifact references, output recovery, and SDK storage/read boundaries.
-
-- [`facts.md`](./facts.md): Typed durable observations, governance effects, historical paging, and effectiveness metrics.
-
-- [`optional-queries.md`](./optional-queries.md): Typed, optional plugin collaboration, replacement providers, absence and failure behavior, and capability-based workflow scopes.
-
-- [`client-transport.md`](./client-transport.md): Core HTTP/SSE API, core CLI, inline TUI, and the web client: catalog/revision binding, view descriptors, event streams, and the two decision gates.
+- [`facts.md`](./facts.md): Typed durable observations, governance effects, core byte-observation semantics, and historical paging.
+- [`transcript.md`](./transcript.md): Typed, lossless committed conversation paging and session inspection.
 - [`agent-collaboration.md`](./agent-collaboration.md): Delegated agent collaboration: child facts, run-scoped join/steering, completion notices and atomic acknowledgement, restart publication recovery, and bounded transcript/history paging.
 - [`background-actions.md`](./background-actions.md): Owner background actions: driver registration, per-invoke leases, source-isolated storage, cancel/wait, stale liveness, and idempotent child spawn.
-- [`goal-plugin.md`](./goal-plugin.md): Official Goal plugin contracts, state schema, windowed accounting, 3-turn blocked audit, and declarative views.
-- [`workflows.md`](./workflows.md): Scripted dynamic agent workflows: trusted configured scripts, source snapshots, effective-spec node fingerprints, driver states, steering, and completion notices. Runnable reference: `examples/workflows/`.
+- [`optional-queries.md`](./optional-queries.md): Typed, optional plugin collaboration: the generic read-only query transport, typed requests/answers, distinct absence/failure outcomes, and capability substitution.
 - [`hot-activation.md`](./hot-activation.md): Same-session capability activation: trusted admission, immutable generation snapshots, state validation/deactivation, the activation transaction, durable automatic continuation, and restart restore.
 - Generation adoption (cross-build moves) is stop-and-restart plus `bootstrap.adopt_generation`; there is no supervised upgrade path.
+- [`client-transport.md`](./client-transport.md): Core HTTP/SSE API, core CLI, inline TUI, and the web client: catalog/revision binding, view descriptors, event streams, and the two decision gates.
 - [`plugin-authoring.md`](./plugin-authoring.md): Third-party plugin author contract: package layout, tools/commands/views, state deactivation, revisions, and executable diagnostics. Runnable reference: `examples/tally-counter/`.
+
+## Plugin entry docs
+
+See the canonical [plugin index](../README.md#plugins): one README per bundled plugin. Cross-references from core contracts point there (agent format → delegation, scripted workflows → workflows, goal accounting → goal, effectiveness aggregation → effectiveness, edit/version domain policy → files/lsp).
 
 Wire models, configuration, and tool definitions are defined directly in code, which is the only source of truth:
 - SDK contracts: `src/voidcode/sdk/` (`plugin.py`, `tools.py`, `commands.py`, `views.py`).

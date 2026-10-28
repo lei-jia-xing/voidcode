@@ -55,18 +55,11 @@ Installing a window projection is staged with the callback, and the verified pro
 
 Provider usage `output_tokens` counts total generated output, including reasoning. When a provider reports candidate and thinking counts separately, the adapter sums them only when both are known; an incomplete total remains `None`, distinct from an observed zero. Historical usage facts retain the values recorded by their original adapter and are not recomputed.
 
-## Current contract and effectiveness v2
+## Current contract
 
 Only the current persisted fact shape is supported. Invocation outcomes require their full recorded metadata, and public fact events require their recorded observer eligibility. Missing fields fail explicitly; the runtime never joins older tool intents, fills fields from the current catalog, or bypasses replay validation for older events. There is no legacy-data adapter or automatic conversion. Generation adoption (stop the old build, start the new one against the same workspace and state) does not make incompatible event records compatible.
 
-`/effectiveness` emits `schema_version=2` and aggregates public facts:
-
-- Repeated reads mean the same path, content hash, line window, whole-file flag, and clipping flag were observed again. Another content version is a different observation.
-- Follow-up reads add lines to an earlier partial observation of the same version, or finish that version with a complete whole-file read. Repeating the same partial range is not a follow-up.
-- Per-model edits count invocations with `WRITE` in the recorded effects or actual recorded changes, with model attribution. A missing model attribution is a legitimate unknown, distinct from an invalid record with missing required metadata.
-- Delegated tasks count actual child facts; resumes count explicit resumes; compression counts core projection facts.
-- `result_bytes` measures the canonical UTF-8 JSON result envelope, including its output, body, and observations. It is not provider wire size or token usage.
-- The report retains aggregate counts only. It reads persisted public SDK facts and retains no resource paths, source text, arguments, or output text.
+Core byte-observation semantics: `result_bytes` measures the canonical UTF-8 JSON result envelope, including its output, body, and observations. It is not provider wire size or token usage. Report-level aggregation on top of these facts — repeated/follow-up reads, the per-model WRITE-or-changes proxy, task/resume/projection counters, schema versioning, and retention limits — is plugin-owned and canonical in the [effectiveness](../../src/voidcode/plugins/effectiveness/README.md) README.
 
 
 ## Wakeup ownership and recovery
