@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import dataclasses
 import json
 import logging
 import queue
@@ -53,9 +52,7 @@ from voidcode.sdk.transcript import (
     TranscriptChild,
     TranscriptContent,
     TranscriptDispatch,
-    TranscriptEntry,
     TranscriptInterrupted,
-    TranscriptPage,
     TranscriptRun,
     TranscriptTool,
 )
@@ -271,45 +268,6 @@ def _gate_changes(event: StreamEvent) -> tuple[list[GateChange], bool]:
     return [], False
 
 
-def _hydrate_head_events(client: SessionClient, session_id: str, head: HeadFrame, *, after_sequence: int = 0) -> tuple[StreamEvent, ...]:
-    """Overlay typed transcript entries onto one head backlog, in source order.
-
-    The head's last event sequence is the tip: transcript pages walk from the
-    applied cursor through empty bookkeeping pages until that tip, and entries
-    at or below it are the AUTHORITATIVE transcript for matching head events
-    by sequence (page data replaces any stream-carried entry, including None).
-    The walk never touches the TUI's settled cursor; a stalled page cursor or
-    a short page below the tip fails visibly instead of rendering incomplete.
-    """
-    events = head.events
-    if not events:
-        return ()
-    tip = max(event.sequence for event in events)
-    by_sequence: dict[int, TranscriptEntry] = {}
-    cursor = after_sequence
-    while True:
-        page: TranscriptPage = client.transcript(session_id, after_sequence=cursor, limit=100)
-        if page.next_sequence < cursor:
-            raise ValueError(f"transcript page moved backwards: {page.next_sequence} < {cursor}")
-        for entry in page.entries:
-            if entry.sequence <= tip:
-                by_sequence[entry.sequence] = entry
-        advanced = page.next_sequence > cursor
-        cursor = page.next_sequence
-        if cursor >= tip:
-            break
-        if not page.has_more:
-            raise ValueError(f"transcript pages ended at {cursor} below head tip {tip}")
-        if not advanced:
-            raise ValueError(f"transcript page stalled at {cursor} below head tip {tip}")
-    merged: list[StreamEvent] = []
-    for event in events:
-        # Page entries are authoritative for head-source sequences: the stream
-        # entry is replaced even when the page has no entry (bookkeeping None).
-        merged.append(dataclasses.replace(event, transcript=by_sequence.get(event.sequence)))
-    return tuple(merged)
-
-
 def _tool_icon(raw: object) -> Icon | None:
     """Strict birth icon: None stays generic, malformed fails visibly."""
     if raw is None:
@@ -484,22 +442,10 @@ class CoreTuiApp:
                             if self._stop_event.is_set() or generation != self._generation:
                                 return
                             if isinstance(frame, HeadFrame):
-                                try:
-                                    hydrated = await asyncio.to_thread(_hydrate_head_events, self.client, session_id, frame, after_sequence=after_seq)
-                                except Exception as exc:
-                                    self.event_queue.put(
-                                        {
-                                            "kind": "error",
-                                            "error": f"transcript replay failed: {exc}",
-                                            "session_id": session_id,
-                                            "generation": generation,
-                                        }
-                                    )
-                                    raise
                                 self.event_queue.put(
                                     {
                                         "kind": "stream_head",
-                                        "frame": HeadFrame(session=frame.session, events=hydrated),
+                                        "frame": frame,
                                         "session_id": session_id,
                                         "generation": generation,
                                     }
@@ -511,6 +457,7 @@ class CoreTuiApp:
                                 break
                             elif isinstance(frame, ErrorFrame):
                                 self.event_queue.put({"kind": "error", "error": frame.error, "session_id": session_id, "generation": generation})
+                                return
                 except asyncio.CancelledError:
                     return
                 except Exception as exc:

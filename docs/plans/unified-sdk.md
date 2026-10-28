@@ -25,11 +25,7 @@ product concepts into `core/`. After this plan:
   it — say so then.
 - No TUI render code in the SDK. SDK owns typed view *models* (including the
   `ComponentStyle` color data each view may carry); the TUI and web clients own pixels (gap 6 decision, below). Historical note: this line once named `tui/theme.py` + `tui/views.py`; the theme catalog has since been deleted — clients render fixed semantics plus plugin-owned `style`, with no theme system.
-- No new dependencies. Wire fields stay identical, but OpenAPI component
-  names follow the SDK (`HealthStatus`, `SessionRow`, `RunResult`,
-  `TranscriptPageWire`, ...) and additive history routes extend the schema,
-  so generated `api.d.ts` changes; frontend edits are type-only. OpenAPI
-  stays the wire truth; SDK types serialize to it.
+- No new dependencies. The outer frame envelope is unchanged (kind-less head + `event`/`error`/`server_restart`), but the conversation wire is now canonical: SSE events carry the same discriminated `{kind, body}` transcript as `/transcript` (OpenAPI `SseFrameWire`/`StreamEventWire`/`TranscriptEntryWire`), so the web conversation renderer is generated-typed, not a type-only edit; legacy-shape clients are deleted, not shimmed. OpenAPI stays the wire truth; SDK types serialize to it.
 - No `sdk/` behavior: constructors that touch config, storage, sockets,
   or a `Core` live in the outer layer. The direction guard
   (`tests/unit/sdk/test_sdk_direction.py`) must keep passing unmodified.
@@ -107,8 +103,10 @@ restart no-dup) green; `pre-commit run --all-files` all 10 hooks pass.
   signatures (typed returns; `CoreClientError` moved to the SDK so
   programmatic clients catch it without importing `tui.*`, all imports
   migrated, `tui` re-export removed). `local_client` keeps its single legal
-  `transport.projection` import: projection serializes SDK types and exposes
-  `decode_stream_event` for both arms (no second shaping path, no move).
+  `transport.projection` import: projection emits the canonical transcript
+  via the SDK encoders and all SSE decode runs through
+  `StreamEvent.from_payload` + `parse_sse_frame` (no legacy adapter, no
+  second shaping path, no move).
   The HTTP arm validates session ids client-side for identical 400s.
 - **Verification:** `tests/unit/test_session_client_conformance.py` (parametrize
   local + loopback-HTTP arms over real cores): durable command effects,
@@ -122,8 +120,9 @@ restart no-dup) green; `pre-commit run --all-files` all 10 hooks pass.
   `sdk/transcript.py`; new explicit-kind wire
   (`encode/decode_transcript_page`, `encode/decode_context_history`) because
   untagged `{}` is ambiguous between `TranscriptInterrupted` and an
-  all-default `ProviderTurnResult`. Legacy SSE transcript is normalized by
-  the outer transport adapter (event type disambiguates), never in the SDK.
+  all-default `ProviderTurnResult`. SSE carries the same canonical
+  `{kind, body}` transcript (emitted via the SDK encoders, decoded via
+  `StreamEvent.from_payload` + `parse_sse_frame`); no legacy adapter.
 - **Impl:** `Core.transcript_page` / `Core.context_history` pass-throughs
   (delegating to the existing `PluginRuntime` implementations at
   `core/plugins.py:706-726`); client `transcript()`/`context_history()`
@@ -137,9 +136,8 @@ restart no-dup) green; `pre-commit run --all-files` all 10 hooks pass.
   `GET .../transcript` / `GET .../context` in OpenAPI, so the served schema
   describes the exact `{kind, body}` wire including tool-result
   `status`/`type` codec fields. `run`/`resume` document `sdk.client.RunResult`
-  (same wire as `CoreResult`). Legacy SSE transcript keeps its untagged
-  shape; `projection.decode_stream_event` normalizes via the event type
-  before SDK decode. Programmatic use:
+  (same wire as `CoreResult`). SSE carries the same canonical `{kind, body}`
+  transcript; the SDK decoders own it end to end. Programmatic use:
   `with open_session_client(workspace=ws) as client:` then
   `page = client.transcript(sid)` and advance `cursor = page.next_sequence`
   while `page.has_more` (even when `entries` is empty).

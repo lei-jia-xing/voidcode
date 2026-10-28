@@ -69,10 +69,10 @@ A command advertised by one capability generation is never executed by another:
 
 `GET /api/sessions/{id}/events` returns `text/event-stream`. Each frame is `data: <json>\n\n`.
 
-- **Head frame** (always first): `{"session": <session record>, "events": [<stored event>, ...]}` — the session record plus everything already appended after `after_sequence` (default `0`; negative values are rejected).
-- **Follow frames** (`follow=true` only): `{"kind": "event", "session_id": ..., "event": {<stored event>}}` as new events are appended. A backend failure during follow yields `{"kind": "error", "session_id": ..., "error": "..."}` and ends the stream.
+- **Head frame** (first on a successful replay): `{"session": <session record>, "events": [<stored event>, ...]}` — the session record plus everything already appended after `after_sequence` (default `0`; negative values are rejected). No `kind`; OpenAPI `SseFrameWire` is the exact frame contract. A projection/read failure before the first yield emits a terminal `error` frame instead, with no head.
+- **Follow frames** (`follow=true` only): `{"kind": "event", "session_id": ..., "event": {<stored event>}}` as new events are appended. A backend failure during head or follow yields `{"kind": "error", "session_id": ..., "error": "..."}` and ends the stream; a projection error carries sequence + event type + exception class, a read failure carries the safe exception class only — never raw input. Clients surface it once and stop — no cursor advance, no hot reconnect on the corrupt cursor.
 - **Restart frame** (after a successful upgrade drain only): `{"kind": "server_restart", "session_id": ..., "cursor": <last sequence this stream delivered>}`, following a flush of the final backlog. Clients reconnect with `after_sequence` set to their own applied cursor (never advancing it from the frame) and never resend a prompt; a failed drain leaves the stream connected with no frame.
-- **Stored event fields**: `session_id`, `sequence` (monotonic within the session), `type` (for example `kernel.user_message`, `kernel.model_turn`, `kernel.tool_completed`, `kernel.approval_requested`, `kernel.confirmation_requested`, `kernel.command_completed`), `run_id`, `revision_id`, `source`, `actor`, `payload`.
+- **Stored event fields**: `session_id`, `sequence` (monotonic within the session), `type` (for example `core.user_message`, `core.model_turn`, `core.tool_completed`, `core.approval_requested`, `core.confirmation_requested`, `core.command_completed`, `kernel.activation_committed`), `run_id`, `revision_id`, `source`, `actor`, `payload` (dynamic plugin JSON), `transcript` (canonical `TranscriptEntryWire | null`, the only typed projection; `null` is genuine bookkeeping only).
 
 `follow=false` (default) replays and closes. `follow=true` crosses run boundaries: `completed`, `failed`, and `interrupted` end a *run*, not the session, so the stream ends only when the client disconnects, a terminal error frame is sent, or a successful upgrade drain ends it with the restart frame above. While a core is fenced for an upgrade, business writes answer `503` with `code: "upgrade_pending"` and reads keep working; `cancel` stays allowed because it can only reduce work. The inline TUI owns a cancellable connection to this stream and shuts it down on quit before joining its reader and before an embedded supervisor stops the core; idle follow streams need no heartbeat and are woken by that socket shutdown.
 
@@ -117,7 +117,7 @@ A request id from one gate is never sent to the other endpoint. Both are project
 
 - Launched embedded against a direct in-process core (`CoreLocalClient`: no socket, same refusals and frames as HTTP) or remote with `--server`/`--token` (`CoreHttpClient`). Both implement the typed `SessionClient` Protocol (`sdk/client.py`); programmatic callers open either arm with `bootstrap.open_session_client()`.
 - Inline scrollback with a **commit-once ledger**: rows are committed to the native scrollback exactly once by the main loop, driven by a durable `last_sequence` cursor. Committed text wraps to terminal cell width without dropping long output; live input/dialog geometry remains bounded. Reconnects, follow polling, resizes, and session switches never replay or clear settled output; only the live region repaints.
-- Renders durable event payloads (`core.user_message`, `core.model_turn`, `core.tool_completed`, `core.command_completed`) plus the direct `CommandResult` of core read-only commands (`help`, `status`, `show`), which have no command event. Plugin and run/resume results remain event-projected; one shared formatter renders each result once, preserving multi-line output and falling back to JSON for data-only receipts. Every model- and plugin-provided string is escaped for terminal control bytes.
+- Renders conversational rows from the canonical transcript (`core.user_message`, `core.model_turn`, `core.tool_completed`/`core.tool_interrupted`) plus the direct `CommandResult` of core read-only commands (`help`, `status`, `show`), which have no command event; command/control payloads (`core.command_completed`, gates, progress) remain dynamic. Plugin and run/resume results remain event-projected; one shared formatter renders each result once, preserving multi-line output and falling back to JSON for data-only receipts. Every model- and plugin-provided string is escaped for terminal control bytes.
 - Startup, connect, reconnect, session switch, and capability activation never fetch or display optional plugin views: the TUI reconciles health, the catalog, durable session state, and the event-projected decision gates only. `/tui views [name]` explicitly fetches a revision-bound views envelope and displays passive content inline and borderless — passive field values wrap rather than ellipsize (deliberate plugin-level previews/limits still apply) — or an interactive form/choices/confirmation as a framed dialog. The two decision gates above remain event-projected and are never closed or denied by a refresh.
 - Idle chrome carries no session, revision, or request hashes and no Attached/Created banners; the transient status line shows meaningful progress, errors, gates, fence state, and command status only. A real command completion updates it from its actual `status`; explicit `/status`, `/show`, and `/tui sessions` keep diagnostics and ids.
 - Slash input resolves against the displayed catalog and echoes its revision; overlays capture the revision that rendered them. `Esc`/`Ctrl+C` on a confirmation overlay submit an explicit `deny`, never a local "cancelled".
@@ -144,15 +144,17 @@ with open_session_client(workspace=ws) as client:  # or server_url=..., token=..
         page = client.transcript(session.session_id, after_sequence=page.next_sequence)
 ```
 
-History comes in two shapes. The SSE event stream keeps its legacy wire:
-each event carries an untagged `transcript` projection (or `null`), decoded
-client-side by `transport.projection.decode_stream_event` (the event type
-disambiguates the `{}` empty-content case) into `StreamEvent.transcript:
-TranscriptEntry | None`. The `/transcript` and `/context` routes instead
-serve the explicitly discriminated wire (`{kind, body}`, OpenAPI
-`TranscriptPageWire`/`ContextHistoryWire`), decoded by
-`decode_transcript_page`/`decode_context_history`. Same conversation facts;
-new consumers should prefer the routes.
+History comes in one shape. Every SSE event carries the canonical `transcript`
+projection (`TranscriptEntryWire | null`, OpenAPI `StreamEventWire`), the same
+discriminated `{kind, body}` the `/transcript` and `/context` routes serve
+(`TranscriptPageWire`/`ContextHistoryWire`). `transcript: null` means genuine
+bookkeeping only; a recognized conversation event that fails projection ends
+the stream with a terminal `error` frame carrying sequence + event type +
+exception class (never raw input). Clients stop on it without advancing their
+applied cursor or hot-reconnecting. SDK `StreamEvent.from_payload` +
+`parse_sse_frame` own all SSE decode; web consumes the generated
+`SseFrameWire`/`StreamEventWire` union and narrows the kind-less head via
+`'events' in frame`.
 
 ## Tool Icons
 

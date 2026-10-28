@@ -33,9 +33,9 @@ from voidcode.transport.projection import (
     FOLLOW_POLL_SECONDS,
     FOLLOW_TAIL_LIMIT,
     core_error_status,
-    decode_stream_event,
     event_payload,
     health_payload,
+    safe_projection_error,
     session_payload,
     validated_session_id,
 )
@@ -239,7 +239,7 @@ class CoreLocalClient:
         follow: bool = True,
         cancel: StreamCancellation | None = None,
     ) -> AsyncGenerator[SseFrame]:
-        from voidcode.sdk.client import ErrorFrame, EventFrame, HeadFrame
+        from voidcode.sdk.client import ErrorFrame, EventFrame, HeadFrame, StreamEvent
 
         self._validated(session_id)
         if cancel is not None:
@@ -251,13 +251,18 @@ class CoreLocalClient:
                 record = await asyncio.to_thread(self._core.session, session_id)
             except Exception as exc:
                 raise self._refusal(exc) from None
-            initial = []
+            initial: list[StreamEvent] = []
             cursor = after_sequence
             while True:
                 chunk = await asyncio.to_thread(self._core.events_after, session_id, after_sequence=cursor, limit=FOLLOW_TAIL_LIMIT)
                 if not chunk:
                     break
-                initial.extend(decode_stream_event(event_payload(session_id, event)) for event in chunk)
+                for event in chunk:
+                    try:
+                        initial.append(StreamEvent.from_payload(event_payload(session_id, event)))
+                    except Exception as exc:
+                        yield ErrorFrame(session_id=session_id, error=safe_projection_error(event, exc))
+                        return
                 cursor = chunk[-1].sequence
                 if len(chunk) < FOLLOW_TAIL_LIMIT:
                     break
@@ -272,13 +277,18 @@ class CoreLocalClient:
                     try:
                         pending = await asyncio.to_thread(self._core.events_after, session_id, after_sequence=cursor, limit=FOLLOW_TAIL_LIMIT)
                     except Exception as exc:
-                        yield ErrorFrame(session_id=session_id, error=f"{type(exc).__name__}: {exc}")
+                        yield ErrorFrame(session_id=session_id, error=f"event read failed: {type(exc).__name__}")
                         return
                     if not pending:
                         break
                     for event in pending:
+                        try:
+                            frame = EventFrame(session_id=session_id, event=StreamEvent.from_payload(event_payload(session_id, event)))
+                        except Exception as exc:
+                            yield ErrorFrame(session_id=session_id, error=safe_projection_error(event, exc))
+                            return
                         cursor = event.sequence
-                        yield EventFrame(session_id=session_id, event=decode_stream_event(event_payload(session_id, event)))
+                        yield frame
                     if len(pending) < FOLLOW_TAIL_LIMIT:
                         break
         except asyncio.CancelledError:

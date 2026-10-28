@@ -9,16 +9,13 @@ other; the wire framing (JSON bytes, SSE bytes) stays in ``http.py``.
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
 from typing import Any
 
 from voidcode import __version__
-from voidcode.core.events import EventType
 from voidcode.core.storage.store import SessionRecord, StoredEvent
 from voidcode.core.transcript import transcript_entry
-from voidcode.sdk.client import StreamEvent
-from voidcode.sdk.codec import _wire
 from voidcode.sdk.json_values import json_wire_object
+from voidcode.sdk.transcript import encode_transcript_entry
 
 LAUNCH_PROTOCOL_VERSION = 1
 
@@ -43,81 +40,9 @@ def session_payload(record: SessionRecord) -> dict[str, object]:
     }
 
 
-def _legacy_tool_result_shape(result: Mapping[str, object]) -> dict[str, object]:
-    """Reshape a legacy untagged tool result into the strict codec wire shape.
-
-    Legacy ``_wire`` output omits the success/failure ``status`` and the
-    output ``type`` tag (it serializes the dataclass, not the codec wire
-    model); both are recoverable: ``error`` present means failure, and the
-    output variant follows its unique keys (``text``/``mime``/neither).
-    """
-    shaped = dict(result)
-    if "status" not in shaped:
-        shaped["status"] = "error" if shaped.get("error") is not None else "ok"
-    output = shaped.get("output")
-    if isinstance(output, Mapping) and "type" not in output:
-        marker: dict[str, object] = dict(output)
-        if "text" in marker:
-            marker["type"] = "text"
-        elif "mime" in marker:
-            marker["type"] = "attachment"
-        else:
-            marker["type"] = "empty"
-        shaped["output"] = marker
-    return shaped
-
-
-def tag_transcript_content(event_type: str, raw: Mapping[str, object]) -> Mapping[str, object]:
-    """Attach the content discriminator the legacy untagged SSE wire omits.
-
-    ``MODEL_TURN`` always carries a provider turn result and
-    ``PROVIDER_INTERRUPTED`` always carries an interruption marker, so the
-    event type resolves the ``{}`` ambiguity the new history routes avoid
-    with an explicit tag. Already-tagged payloads pass through untouched.
-    The wire itself is unchanged; this only prepares the SDK decode.
-    """
-    content = raw.get("content")
-    if not isinstance(content, Mapping) or "kind" in content:
-        return raw
-    if event_type == EventType.PROVIDER_INTERRUPTED:
-        kind = "interrupted"
-    elif event_type == EventType.MODEL_TURN:
-        kind = "turn"
-    elif isinstance(content.get("role"), str):
-        kind = "message"
-    elif isinstance(content.get("call"), Mapping) and isinstance(content.get("result"), Mapping):
-        kind = "tool"
-        result = content.get("result")
-        assert isinstance(result, Mapping)
-        content = {**content, "result": _legacy_tool_result_shape(result)}
-    elif isinstance(content.get("window"), Mapping):
-        kind = "dispatch"
-    elif isinstance(content.get("status"), str):
-        kind = "run"
-    elif isinstance(content.get("child_session_id"), str):
-        kind = "child"
-    elif not content:
-        raise ValueError("untagged empty transcript content is ambiguous without its event type")
-    else:
-        raise ValueError("untagged transcript content has an unrecognized shape")
-    return {**raw, "content": {"kind": kind, "body": dict(content)}}
-
-
-def decode_stream_event(payload: Mapping[str, object]) -> StreamEvent:
-    """Decode one SSE event payload through the legacy-wire adapter into SDK form."""
-    if not isinstance(payload, Mapping):
-        raise ValueError("stream event payload must be an object")
-    raw_transcript = payload.get("transcript")
-    if isinstance(raw_transcript, Mapping):
-        payload = {**payload, "transcript": tag_transcript_content(str(payload.get("type", "")), raw_transcript)}
-    return StreamEvent.from_payload(payload)
-
-
 def event_payload(session_id: str, event: StoredEvent) -> dict[str, object]:
-    try:
-        entry = transcript_entry(event)
-    except Exception:
-        entry = None
+    """One stored event as SSE frames carry it; malformed conversation records fail visibly."""
+    entry = transcript_entry(event)
     return {
         "session_id": session_id,
         "sequence": event.sequence,
@@ -127,8 +52,13 @@ def event_payload(session_id: str, event: StoredEvent) -> dict[str, object]:
         "source": event.source,
         "actor": event.actor,
         "payload": json_wire_object(event.payload),
-        "transcript": _wire(entry) if entry is not None else None,
+        "transcript": None if entry is None else encode_transcript_entry(entry),
     }
+
+
+def safe_projection_error(event: StoredEvent, error: Exception) -> str:
+    """Sequence + event type + exception class only; never str(exc), which leaks inputs."""
+    return f"projection failed: sequence={event.sequence} type={event.event_type} error={type(error).__name__}"
 
 
 def health_payload(

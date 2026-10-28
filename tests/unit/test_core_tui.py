@@ -1349,46 +1349,48 @@ def test_activation_tombstones_old_revision_confirmation() -> None:
     assert state.confirmations == ()
 
 
-def test_head_hydration_walks_empty_pages_and_keeps_gate_order_without_duplicates() -> None:
-    """Transcript pages walk through empty bookkeeping; head gates still apply in order, once."""
-    from voidcode.tui.terminal_app import CoreTuiApp, _hydrate_head_events
+def test_head_transcript_arrives_canonical_and_terminal_error_stops_the_worker() -> None:
+    """Stream-carried transcript renders; a terminal error exits the worker without reconnect."""
+    from voidcode.sdk.client import ErrorFrame
+    from voidcode.tui.terminal_app import CoreTuiApp
 
     approval = _event(1, "core.approval_requested", request_id="appr-1", call={"tool_name": "write", "arguments": {}})
     prompt = _user_event(2, "hello")
-    command = _event(
-        3,
-        "core.command_completed",
-        name="status",
-        result={"status": "ok", "output": "status-ok"},
-    )
-    head = HeadFrame(session=_session_row("s1"), events=(approval, prompt, command))
+    head = HeadFrame(session=_session_row("s1"), events=(approval, prompt))
 
-    class _PagedClient(_CommandClient):
+    class _ErrorClient(_CommandClient):
         def transcript(self, session_id: str, *, after_sequence: int = 0, limit: int = 100) -> TranscriptPage:
-            del session_id, limit
-            if after_sequence < 1:
-                return TranscriptPage(entries=(), next_sequence=1, has_more=True, source_events=1)
-            if after_sequence < 2:
-                assert prompt.transcript is not None
-                return TranscriptPage(entries=(prompt.transcript,), next_sequence=2, has_more=True, source_events=1)
-            return TranscriptPage(entries=(), next_sequence=3, has_more=False, source_events=1)
+            raise AssertionError("stream-carried transcript must not refetch")
 
-    client = _PagedClient()
-    merged = _hydrate_head_events(client, "s1", head)
-    assert [event.sequence for event in merged] == [1, 2, 3]
-    assert merged[0].transcript is None and merged[1].transcript is not None
+        async def events_stream(
+            self,
+            session_id: str,
+            after_sequence: int = 0,
+            *,
+            follow: bool = True,
+            cancel: StreamCancellation | None = None,
+        ) -> AsyncIterator[SseFrame]:
+            self._connections += 1
+            yield head
+            yield ErrorFrame(session_id=session_id, error="projection failed: sequence=3 type=core.tool_completed error=ValidationError")
 
+    client = _ErrorClient()
     terminal = _StubTerminal()
     app = CoreTuiApp(client, session_id="s1", terminal=terminal)
-    app.event_queue.put({"kind": "stream_head", "frame": HeadFrame(session=head.session, events=merged), "session_id": "s1", "generation": 0})
-    app._stream_ready = True
-    app._drain_events()
-    assert sum("hello" in row for row in terminal.committed) == 1
-    assert sum("status-ok" in row for row in terminal.committed) == 1
-    assert app.pending_approval is not None and app.pending_approval.request_id == "appr-1"
-    assert app._session_cursors["s1"] == 3
-    # Replaying the same head hydrates nothing twice.
-    app.event_queue.put({"kind": "stream_head", "frame": HeadFrame(session=head.session, events=merged), "session_id": "s1", "generation": 0})
-    app._drain_events()
-    assert sum("hello" in row for row in terminal.committed) == 1
-    assert sum("status-ok" in row for row in terminal.committed) == 1
+    app._reconcile_connection_async = lambda: None  # type: ignore[method-assign]
+    app._start_sse_stream()
+    assert app._sse_thread is not None
+    try:
+        _drain_until(app, terminal, "hello")
+        _drain_until(app, terminal, "Core stream error")
+        app._sse_thread.join(timeout=5.0)
+        assert not app._sse_thread.is_alive()
+        app._drain_events()
+        assert client._connections == 1
+        assert sum("hello" in row for row in terminal.committed) == 1
+        assert app.pending_approval is not None and app.pending_approval.request_id == "appr-1"
+        assert app._session_cursors["s1"] == 2
+    finally:
+        app._stop_event.set()
+        app._sse_thread.join(timeout=5.0)
+        assert not app._sse_thread.is_alive()

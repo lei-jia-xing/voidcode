@@ -14,7 +14,12 @@ import type {
   Icon,
   PluginViewDescriptor,
   SessionRow,
-  SseEventFrame,
+  SseFrame,
+  StreamEvent,
+  ToolExecution,
+  ToolOutput,
+  TranscriptEntry,
+  TranscriptTool,
 } from "../lib/core/types";
 import { PluginViewRenderer } from "./views/PluginViewRenderer";
 
@@ -24,17 +29,56 @@ export interface CoreAppProps {
   iconStyle?: "glyph" | "ascii";
 }
 
-/** Tool birth icon from committed metadata; unknown shapes degrade to generic. */
-type ToolIconValue =
-  Pick<Icon, "glyph" | "fallback"> | { glyph?: unknown; fallback?: unknown };
-
+/** Tool birth icon from the recorded transcript value; absent means generic. */
 function toolIconText(
-  icon: ToolIconValue | null | undefined,
+  icon: Icon | null | undefined,
   style: "glyph" | "ascii",
   generic: string,
 ): string {
   const pick = style === "ascii" ? icon?.fallback : icon?.glyph;
   return typeof pick === "string" ? pick : generic;
+}
+
+/** Canonical text for one typed tool output; the union replaces type guessing. */
+function toolOutputText(output: ToolOutput): string {
+  if (output.type === "text") {
+    return output.presentation || output.text;
+  }
+  if (output.type === "attachment") {
+    return `[${output.mime}]`;
+  }
+  return output.presentation ?? "";
+}
+
+/** Execution cue key for stopped/unknown-effects tools, else null. */
+function toolExecutionCueKey(
+  execution: ToolExecution | null | undefined,
+): string | null {
+  if (!execution) return null;
+  if (!execution.execution_stopped) return "core.toolStoppedUnconfirmed";
+  if (execution.side_effect_state === "unknown")
+    return "core.toolEffectsUnknown";
+  return null;
+}
+
+/** Narrow one dynamic pending_approval object to its display fields. */
+function parkedApprovalOf(value: unknown): {
+  requestId: string;
+  toolName: string | null;
+  toolArguments: unknown;
+} | null {
+  if (value === null || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.request_id !== "string" || !record.request_id) return null;
+  const call =
+    record.call !== null && typeof record.call === "object"
+      ? (record.call as Record<string, unknown>)
+      : null;
+  return {
+    requestId: record.request_id,
+    toolName: typeof call?.tool_name === "string" ? call.tool_name : null,
+    toolArguments: call?.arguments ?? {},
+  };
 }
 
 /** One authentic pending confirmation: a typed UI envelope bound to the revision it was displayed under. */
@@ -81,7 +125,7 @@ export const CoreApp: React.FC<CoreAppProps> = ({
       type: string;
       revision_id: string;
       payload: Record<string, unknown>;
-      transcript?: Record<string, unknown> | null;
+      transcript?: TranscriptEntry | null;
     }>
   >([]);
   const [viewScope, setViewScope] = useState<{
@@ -227,25 +271,22 @@ export const CoreApp: React.FC<CoreAppProps> = ({
         type: string;
         revision_id: string;
         payload: Record<string, unknown>;
-        transcript?: Record<string, unknown> | null;
+        transcript?: TranscriptEntry | null;
       },
       session: string,
       epoch: number,
       clientKey: string,
     ) => {
       if (ev.type === "core.approval_requested") {
-        const approval = ev.payload as {
-          request_id?: string;
-          call?: { tool_name?: string; arguments?: unknown };
-        };
-        if (approval.request_id) {
+        const parked = parkedApprovalOf(ev.payload);
+        if (parked) {
           setPendingApproval({
             sessionId: session,
             epoch,
             clientKey,
-            requestId: approval.request_id,
-            toolName: approval.call?.tool_name ?? t("core.unknownLabel"),
-            toolArguments: JSON.stringify(approval.call?.arguments ?? {}),
+            requestId: parked.requestId,
+            toolName: parked.toolName ?? t("core.unknownLabel"),
+            toolArguments: JSON.stringify(parked.toolArguments),
           });
           setStatusMessage(t("core.statusWaitingApproval"));
         }
@@ -316,6 +357,9 @@ export const CoreApp: React.FC<CoreAppProps> = ({
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const lastSequenceRef = useRef<number>(0);
+  // Latched terminal stream error for this session scope: once set, no
+  // reconnect reconcile may overwrite the visible failure message.
+  const terminalErrorRef = useRef<string | null>(null);
   const refreshViews = useCallback(
     (sessionId: string, epoch: number, clientKey: string) => {
       const serial = ++viewsRequestRef.current;
@@ -363,6 +407,96 @@ export const CoreApp: React.FC<CoreAppProps> = ({
         );
       });
   }, [client, t]);
+  // Append-once application for one head backlog or live event batch: filter
+  // to fresh sequences, commit rows, project gates, and invalidate the
+  // displayed generation on activation commits. Called outside any updater.
+  const applyEvents = useCallback(
+    (
+      batch: StreamEvent[],
+      session: string,
+      epoch: number,
+      clientKey: string,
+    ) => {
+      // Authenticated, ordered events are processed exactly once, outside any
+      // state updater: a StrictMode replay of the updater can never re-run a
+      // projection or overwrite a newer interaction state.
+      const fresh = batch
+        .filter((e) => e.sequence > lastSequenceRef.current)
+        .sort((a, b) => a.sequence - b.sequence);
+      if (fresh.length > 0) {
+        lastSequenceRef.current = fresh[fresh.length - 1].sequence;
+      }
+      setEvents((prev) => {
+        const seen = new Set(prev.map((e) => e.sequence));
+        const incoming = fresh.filter((e) => !seen.has(e.sequence));
+        if (incoming.length === 0) {
+          return prev;
+        }
+        return [
+          ...prev,
+          ...incoming.map((e) => ({
+            sequence: e.sequence,
+            type: e.type,
+            revision_id: e.revision_id,
+            payload: e.payload,
+            transcript: e.transcript,
+          })),
+        ].sort((a, b) => a.sequence - b.sequence);
+      });
+      for (const ev of fresh) {
+        projectEvent(ev, session, epoch, clientKey);
+      }
+
+      // An activation commit or an upgrade adoption invalidates the displayed
+      // generation: catalog and views are cleared immediately (nothing old
+      // stays actionable), then refetched together and anything captured
+      // under another revision is dropped — never relabelled, never re-sent.
+      const commits = fresh.filter(
+        (e) =>
+          e.type === "core.activation_committed" ||
+          e.type === "core.revision_adopted",
+      );
+      if (commits.length > 0) {
+        const committed = commits[commits.length - 1];
+        const committedPayload = committed.payload;
+        const toRevisionId =
+          typeof committedPayload.to_revision_id === "string"
+            ? committedPayload.to_revision_id
+            : "";
+        // The row's revision column is the committed target (same fact the
+        // payload carries); a blank target is surfaced, never stored as a
+        // revision the client pretends to know.
+        const targetRevision = toRevisionId || committed.revision_id;
+        setStatusMessage(
+          toRevisionId
+            ? t("core.statusActivationCommitted", {
+                revision: toRevisionId,
+              })
+            : t("core.statusActivationMalformed"),
+        );
+        setPendingConfirmations((prev) =>
+          // Only a request that belongs to the committed generation survives;
+          // the others could never be resolved against it.
+          Object.fromEntries(
+            Object.entries(prev).filter(
+              ([, entry]) => entry.revisionId === targetRevision,
+            ),
+          ),
+        );
+        setCatalog({ revisionId: "", commands: [] });
+        setViewScope((prev) =>
+          prev.sessionId === session &&
+          prev.epoch === epoch &&
+          prev.clientKey === clientKey
+            ? { ...prev, revisionId: "", views: [] }
+            : prev,
+        );
+        refreshCatalog();
+        refreshViews(session, epoch, clientKey);
+      }
+    },
+    [projectEvent, refreshCatalog, refreshViews, t],
+  );
   // Read server identity/liveness. Only the newest reply for the current scope
   // may render: a stale health answer must never overwrite a newer one or
   // clear a fence the supervisor already raised.
@@ -462,13 +596,15 @@ export const CoreApp: React.FC<CoreAppProps> = ({
           }
           upgradeRef.current = next;
           setUpgrade(next);
-          setStatusMessage(
-            next.fenced
-              ? t("core.upgradeFenced", {
-                  stage: next.activeUpgrade?.stage ?? next.stage,
-                })
-              : t("core.statusConnected", { sessionId }),
-          );
+          if (terminalErrorRef.current === null) {
+            setStatusMessage(
+              next.fenced
+                ? t("core.upgradeFenced", {
+                    stage: next.activeUpgrade?.stage ?? next.stage,
+                  })
+                : t("core.statusConnected", { sessionId }),
+            );
+          }
         })
         .catch((err) => {
           // Unreachable during a handoff gap is expected and must not clobber
@@ -642,6 +778,7 @@ export const CoreApp: React.FC<CoreAppProps> = ({
     });
     setEvents([]);
     lastSequenceRef.current = 0;
+    terminalErrorRef.current = null;
     resolvedConfirmationsRef.current.clear();
     setPendingConfirmations({});
     setPendingApproval(null);
@@ -668,9 +805,16 @@ export const CoreApp: React.FC<CoreAppProps> = ({
     const cleanup = client.streamEvents(
       boundSession,
       0,
-      (frame: SseEventFrame) => {
+      (frame: SseFrame) => {
         if (!isCurrent(boundSession, boundEpoch, boundClientKey)) {
           return; // a follower from a superseded session/epoch: never render it
+        }
+        if ("events" in frame) {
+          if (frame.session.session_id !== boundSession) {
+            return;
+          }
+          applyEvents(frame.events, boundSession, boundEpoch, boundClientKey);
+          return;
         }
         if (frame.kind === "server_restart") {
           // The server replaced itself. The frame cursor is a watermark of
@@ -682,98 +826,26 @@ export const CoreApp: React.FC<CoreAppProps> = ({
           setStatusMessage(t("core.statusReconnecting"));
           return;
         }
-        if (frame.session && frame.session.session_id !== boundSession) {
+        if (frame.kind === "error") {
+          // Terminal stream failure: the transport already stopped this
+          // stream, so show the safe error once and stay stopped. The
+          // applied cursor never advances past the unapplied bad record,
+          // and no later reconcile may overwrite the terminal message.
+          terminalErrorRef.current = frame.error;
+          setStatusMessage(
+            t("core.streamError", { message: terminalErrorRef.current }),
+          );
           return;
         }
-        const backlog =
-          frame.events && Array.isArray(frame.events) ? frame.events : null;
-        const live = frame.event ?? null;
-
-        if (backlog || live) {
-          // Authenticated, ordered events are processed exactly once, outside any
-          // state updater: a StrictMode replay of the updater can never re-run a
-          // projection or overwrite a newer interaction state.
-          const fresh = (backlog ?? [live!])
-            .filter((e) => e.sequence > lastSequenceRef.current)
-            .sort((a, b) => a.sequence - b.sequence);
-          if (fresh.length > 0) {
-            lastSequenceRef.current = fresh[fresh.length - 1].sequence;
-          }
-          setEvents((prev) => {
-            const seen = new Set(prev.map((e) => e.sequence));
-            const incoming = fresh.filter((e) => !seen.has(e.sequence));
-            if (incoming.length === 0) {
-              return prev;
-            }
-            return [
-              ...prev,
-              ...incoming.map((e) => ({
-                sequence: e.sequence,
-                type: e.type,
-                revision_id: e.revision_id,
-                payload: e.payload,
-                transcript: e.transcript,
-              })),
-            ].sort((a, b) => a.sequence - b.sequence);
-          });
-          for (const ev of fresh) {
-            projectEvent(ev, boundSession, boundEpoch, boundClientKey);
-          }
-
-          // An activation commit or an upgrade adoption invalidates the displayed
-          // generation: catalog and views are cleared immediately (nothing old
-          // stays actionable), then refetched together and anything captured
-          // under another revision is dropped — never relabelled, never re-sent.
-          const commits = fresh.filter(
-            (e) =>
-              e.type === "core.activation_committed" ||
-              e.type === "core.revision_adopted",
-          );
-          if (commits.length > 0) {
-            const committed = commits[commits.length - 1];
-            const committedPayload = committed.payload;
-            const toRevisionId =
-              typeof committedPayload.to_revision_id === "string"
-                ? committedPayload.to_revision_id
-                : "";
-            // The row's revision column is the committed target (same fact the
-            // payload carries); a blank target is surfaced, never stored as a
-            // revision the client pretends to know.
-            const targetRevision = toRevisionId || committed.revision_id;
-            setStatusMessage(
-              toRevisionId
-                ? t("core.statusActivationCommitted", {
-                    revision: toRevisionId,
-                  })
-                : t("core.statusActivationMalformed"),
-            );
-            setPendingConfirmations((prev) =>
-              // Only a request that belongs to the committed generation survives;
-              // the others could never be resolved against it.
-              Object.fromEntries(
-                Object.entries(prev).filter(
-                  ([, entry]) => entry.revisionId === targetRevision,
-                ),
-              ),
-            );
-            setCatalog({ revisionId: "", commands: [] });
-            setViewScope((prev) =>
-              prev.sessionId === boundSession &&
-              prev.epoch === boundEpoch &&
-              prev.clientKey === boundClientKey
-                ? { ...prev, revisionId: "", views: [] }
-                : prev,
-            );
-            refreshCatalog();
-            refreshViews(boundSession, boundEpoch, boundClientKey);
-          }
-        }
+        applyEvents([frame.event], boundSession, boundEpoch, boundClientKey);
       },
       (err) => {
         if (!isCurrent(boundSession, boundEpoch, boundClientKey)) {
           return; // a superseded follower's failure must not touch this view
         }
-        setStatusMessage(t("core.streamError", { message: err.message }));
+        if (terminalErrorRef.current === null) {
+          setStatusMessage(t("core.streamError", { message: err.message }));
+        }
       },
       () => {
         // ONE establishment source: the transport fires this once per
@@ -801,7 +873,7 @@ export const CoreApp: React.FC<CoreAppProps> = ({
     refreshViews,
     reconcileConnection,
     isCurrent,
-    projectEvent,
+    applyEvents,
     t,
   ]);
 
@@ -835,22 +907,15 @@ export const CoreApp: React.FC<CoreAppProps> = ({
       if (!isCurrent(approval.sessionId, approval.epoch, approval.clientKey))
         return;
       setPendingApproval(null);
-      const reparked = (
-        res as {
-          pending_approval?: {
-            request_id?: string;
-            call?: { tool_name?: string; arguments?: unknown };
-          };
-        }
-      ).pending_approval;
-      if (reparked?.request_id) {
+      const reparked = parkedApprovalOf(res.pending_approval);
+      if (reparked) {
         setPendingApproval({
           sessionId: approval.sessionId,
           epoch: approval.epoch,
           clientKey: approval.clientKey,
-          requestId: reparked.request_id,
-          toolName: reparked.call?.tool_name ?? t("core.unknownLabel"),
-          toolArguments: JSON.stringify(reparked.call?.arguments ?? {}),
+          requestId: reparked.requestId,
+          toolName: reparked.toolName ?? t("core.unknownLabel"),
+          toolArguments: JSON.stringify(reparked.toolArguments),
         });
       }
       setStatusMessage(
@@ -950,19 +1015,10 @@ export const CoreApp: React.FC<CoreAppProps> = ({
         t("core.statusInvoked", { name: actionName, status: res.status }),
       );
       if (res.status === "pending_confirmation" && res.confirmation) {
-        const confirmation = res.confirmation as {
-          request_id?: string;
-          ui_type?: string;
-          ui_data?: Record<string, unknown>;
-        };
+        const confirmation = res.confirmation;
         const requestId =
           confirmation.request_id ?? confirmation.ui_data?.request_id;
-        if (
-          confirmation.ui_type &&
-          confirmation.ui_data &&
-          typeof requestId === "string" &&
-          requestId
-        ) {
+        if (typeof requestId === "string" && requestId) {
           retainPendingConfirmation(requestId, {
             owner: "core",
             name: "pending_confirmation",
@@ -1030,13 +1086,14 @@ export const CoreApp: React.FC<CoreAppProps> = ({
         return;
       }
 
-      const schema =
-        (descriptor.argument_schema as Record<string, unknown> | undefined) ||
-        {};
+      const schema = descriptor.argument_schema ?? {};
       const properties =
-        (schema.properties as Record<string, { type?: string }> | undefined) ||
-        {};
-      const required = (schema.required as string[] | undefined) || [];
+        schema.properties !== null && typeof schema.properties === "object"
+          ? (schema.properties as Record<string, { type?: string }>)
+          : {};
+      const required = Array.isArray(schema.required)
+        ? schema.required.filter((r): r is string => typeof r === "string")
+        : [];
 
       let parsedArgs: Record<string, unknown>;
       if (!argStr) {
@@ -1072,22 +1129,15 @@ export const CoreApp: React.FC<CoreAppProps> = ({
       try {
         const res = await client.run(issueSession, text);
         if (!isCurrent(issueSession, epoch, clientKey)) return;
-        const parked = (
-          res as {
-            pending_approval?: {
-              request_id?: string;
-              call?: { tool_name?: string; arguments?: unknown };
-            };
-          }
-        ).pending_approval;
-        if (parked?.request_id) {
+        const parked = parkedApprovalOf(res.pending_approval);
+        if (parked) {
           setPendingApproval({
             sessionId: issueSession,
             epoch,
             clientKey,
-            requestId: parked.request_id,
-            toolName: parked.call?.tool_name ?? t("core.unknownLabel"),
-            toolArguments: JSON.stringify(parked.call?.arguments ?? {}),
+            requestId: parked.requestId,
+            toolName: parked.toolName ?? t("core.unknownLabel"),
+            toolArguments: JSON.stringify(parked.toolArguments),
           });
         }
         setStatusMessage(
@@ -1233,55 +1283,34 @@ export const CoreApp: React.FC<CoreAppProps> = ({
           {/* Transcript */}
           <div className="flex-1 overflow-y-auto p-4 space-y-3">
             {events.map((ev) => {
-              if (ev.type === "core.user_message") {
-                const transcriptContent = (
-                  ev.transcript?.content as { content?: unknown } | undefined
-                )?.content;
-                const userText =
-                  typeof transcriptContent === "string"
-                    ? transcriptContent
-                    : String(ev.payload.content || "");
+              // Conversation rows select on the canonical content kind, never
+              // the core storage event name: continuation/wakeup facts project
+              // to the same message kind as user turns.
+              const content = ev.transcript?.content;
+              if (content?.kind === "message") {
+                const isUser = content.body.role === "user";
                 return (
                   <div
                     key={ev.sequence}
                     data-testid={`event-${ev.sequence}`}
-                    className="flex flex-col items-end"
+                    className={`flex flex-col ${isUser ? "items-end" : "items-start"}`}
                   >
-                    <div className="max-w-2xl px-4 py-2.5 rounded-2xl bg-cyan-700/80 text-white text-sm whitespace-pre-wrap">
-                      {userText}
+                    <div
+                      className={`max-w-2xl px-4 py-2.5 rounded-2xl text-sm whitespace-pre-wrap ${
+                        isUser
+                          ? "bg-cyan-700/80 text-white"
+                          : "bg-neutral-800 text-neutral-100"
+                      }`}
+                    >
+                      {content.body.content ?? ""}
                     </div>
                   </div>
                 );
               }
-              // Canonical persisted payloads only: provider turns live under
-              // payload.result (output / reasoning / tool_calls[].tool_name|arguments),
-              // commands under payload.name + payload.result.{status,output,error,data},
-              // and tool results under payload.result.{status,tool_name,output,error}.
-              if (ev.type === "core.model_turn") {
-                const transcriptTurn = ev.transcript?.content as
-                  | {
-                      output?: string | null;
-                      reasoning?: string | null;
-                      tool_calls?: Array<{
-                        tool_name?: string;
-                        arguments?: unknown;
-                      }>;
-                    }
-                  | undefined;
-                const turn = (ev.payload.result ?? {}) as {
-                  output?: string | null;
-                  reasoning?: string | null;
-                  tool_calls?: Array<{
-                    tool_name?: string;
-                    arguments?: unknown;
-                  }>;
-                };
-                const output = transcriptTurn?.output ?? turn.output;
-                const toolCalls = Array.isArray(transcriptTurn?.tool_calls)
-                  ? transcriptTurn.tool_calls
-                  : Array.isArray(turn.tool_calls)
-                    ? turn.tool_calls
-                    : [];
+              // The dynamic payload keeps gates/commands only.
+              if (content?.kind === "turn") {
+                const output = content.body.output ?? null;
+                const toolCalls = content.body.tool_calls ?? [];
                 return (
                   <div
                     key={ev.sequence}
@@ -1308,65 +1337,18 @@ export const CoreApp: React.FC<CoreAppProps> = ({
                   </div>
                 );
               }
-              if (
-                ev.type === "core.tool_completed" ||
-                ev.type === "core.tool_interrupted"
-              ) {
-                const transcriptTool = ev.transcript?.content as
-                  | {
-                      call?: { tool_name?: string; arguments?: unknown };
-                      result?: {
-                        status?: string;
-                        tool_name?: string;
-                        output?: {
-                          type?: string;
-                          text?: string;
-                          mime?: string;
-                          presentation?: string;
-                        };
-                        error?: string | null;
-                      };
-                      interrupted?: boolean;
-                      icon?: ToolIconValue | null;
-                    }
-                  | undefined;
-                const payloadIcon =
-                  typeof ev.payload === "object" &&
-                  ev.payload !== null &&
-                  "icon" in ev.payload
-                    ? (ev.payload.icon as ToolIconValue | null)
-                    : undefined;
-                const toolResult = (ev.payload.result ?? {}) as {
-                  status?: string;
-                  tool_name?: string;
-                  output?: {
-                    type?: string;
-                    text?: string;
-                    mime?: string;
-                    presentation?: string;
-                  };
-                  error?: string | null;
-                };
+              if (content?.kind === "tool") {
+                const tool: TranscriptTool = content.body;
+                const result = tool.result;
                 const toolName =
-                  transcriptTool?.call?.tool_name ??
-                  transcriptTool?.result?.tool_name ??
-                  toolResult.tool_name ??
+                  tool.call.tool_name ??
+                  result.tool_name ??
                   t("core.unknownLabel");
-                const output =
-                  transcriptTool?.result?.output ?? toolResult.output ?? {};
-                const text =
-                  output.type === "text"
-                    ? (output.text ?? "")
-                    : output.type === "attachment"
-                      ? `[${output.mime ?? "attachment"}]`
-                      : (output.text ?? output.presentation ?? "");
+                const text = toolOutputText(result.output);
                 const failed =
-                  ev.type === "core.tool_interrupted" ||
-                  transcriptTool?.interrupted === true ||
-                  transcriptTool?.result?.status === "error" ||
-                  toolResult.status === "error";
-                const errorMsg =
-                  transcriptTool?.result?.error ?? toolResult.error;
+                  tool.interrupted === true || result.status === "error";
+                const errorMsg = result.error ?? null;
+                const cueKey = toolExecutionCueKey(result.execution);
                 return (
                   <div
                     key={ev.sequence}
@@ -1378,45 +1360,33 @@ export const CoreApp: React.FC<CoreAppProps> = ({
                     }`}
                   >
                     {failed ? "✖" : "✔"}{" "}
-                    {toolIconText(
-                      transcriptTool?.icon ?? payloadIcon,
-                      effectiveIconStyle,
-                      "▷",
-                    )}{" "}
+                    {toolIconText(tool.icon, effectiveIconStyle, "▷")}{" "}
                     {t("core.toolLabel")} [{toolName}]:{" "}
-                    {failed ? (errorMsg ?? text ?? "") : text}
+                    {failed ? (errorMsg ?? text) : text}
+                    {cueKey && (
+                      <span className="text-neutral-400"> ({t(cueKey)})</span>
+                    )}
                   </div>
                 );
               }
-              if (
-                ev.type === "core.command_intent" ||
-                ev.type === "core.command_completed"
-              ) {
-                const command = (ev.payload ?? {}) as {
-                  name?: string;
-                  result?: {
-                    status?: string;
-                    output?: string | null;
-                    error?: string | null;
-                  };
-                };
-                if (ev.type === "core.command_intent") {
-                  return (
-                    <div
-                      key={ev.sequence}
-                      data-testid={`event-${ev.sequence}`}
-                      className="text-xs font-mono text-cyan-400 bg-cyan-950/20 px-3 py-1.5 rounded border border-cyan-900/50 max-w-2xl"
-                    >
-                      ▷{" "}
-                      {t("core.commandStarted", {
-                        name: command.name ?? t("core.unknownLabel"),
-                      })}
-                    </div>
-                  );
-                }
-                const status = command.result?.status ?? "unknown";
+              if (ev.type === "core.command_completed") {
+                const name =
+                  typeof ev.payload.name === "string" ? ev.payload.name : null;
+                const result =
+                  ev.payload.result !== null &&
+                  typeof ev.payload.result === "object"
+                    ? (ev.payload.result as Record<string, unknown>)
+                    : null;
+                const status =
+                  typeof result?.status === "string"
+                    ? result.status
+                    : "unknown";
                 const detail =
-                  command.result?.output ?? command.result?.error ?? "";
+                  typeof result?.output === "string"
+                    ? result.output
+                    : typeof result?.error === "string"
+                      ? result.error
+                      : "";
                 const tone =
                   status === "error"
                     ? "text-red-400 bg-red-950/20 border-red-900/50"
@@ -1429,9 +1399,8 @@ export const CoreApp: React.FC<CoreAppProps> = ({
                     data-testid={`event-${ev.sequence}`}
                     className={`text-xs font-mono px-3 py-1.5 rounded border max-w-2xl ${tone}`}
                   >
-                    ✔ {t("core.commandLabel")} /
-                    {command.name ?? t("core.unknownLabel")} [{status}]:{" "}
-                    {String(detail)}
+                    ✔ {t("core.commandLabel")} /{name ?? t("core.unknownLabel")}{" "}
+                    [{status}]: {detail}
                   </div>
                 );
               }
@@ -1450,14 +1419,14 @@ export const CoreApp: React.FC<CoreAppProps> = ({
                   </div>
                 );
               }
-              if (ev.type === "core.run_interrupted") {
+              if (
+                content?.kind === "run" &&
+                content.body.status === "interrupted"
+              ) {
                 const cause =
                   typeof ev.payload.stop_cause === "string"
                     ? ev.payload.stop_cause
-                    : ((
-                        ev.transcript?.content as
-                          { status?: string } | undefined
-                      )?.status ?? t("core.unknownLabel"));
+                    : t("core.unknownLabel");
                 return (
                   <div
                     key={ev.sequence}

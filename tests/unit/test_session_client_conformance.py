@@ -266,49 +266,62 @@ def test_invalid_inputs_refused_identically(arm_client: tuple[str, SessionClient
         client.run(session.session_id, RunSpec(prompt="   "))
 
 
-def test_outer_decode_distinguishes_empty_turn_from_interruption() -> None:
-    """Consumer edge: `{}` content decodes by event type, and bad flags fail."""
-    from voidcode.sdk.provider import ProviderTurnResult
-    from voidcode.sdk.transcript import TranscriptInterrupted
-    from voidcode.transport.projection import decode_stream_event
+def test_sse_preserves_business_tool_body() -> None:
+    """Consumer regression: an opaque tool body survives the SSE wire unwrapped."""
+    from voidcode.core.storage.store import StoredEvent
+    from voidcode.sdk.client import StreamEvent
+    from voidcode.sdk.codec import encode_tool_call, encode_tool_result
+    from voidcode.sdk.tools import OpaqueToolBody, TextOutput, ToolCall, ToolSuccess
+    from voidcode.sdk.transcript import TranscriptTool
+    from voidcode.transport.projection import event_payload
 
-    def event(event_type: str, content: object) -> dict[str, object]:
-        return {
-            "session_id": "s",
-            "sequence": 1,
-            "type": event_type,
-            "run_id": "r",
-            "revision_id": "v",
-            "source": "x",
-            "actor": "y",
-            "payload": {},
-            "transcript": {
-                "sequence": 1,
-                "run_id": "r",
-                "revision_id": "v",
-                "source": "x",
-                "content": content,
-            },
-        }
+    body = OpaqueToolBody({"marker": 1})
+    call = ToolCall("read", {"path": "x"}, "c1")
+    completed = StoredEvent(
+        "s",
+        9,
+        "r",
+        "core.tool_completed",
+        "kernel",
+        "agent",
+        "v",
+        {"batch_sequence": 4, "call": encode_tool_call(call), "result": encode_tool_result(ToolSuccess("read", TextOutput("hi"), body))},
+    )
+    stream_entry = StreamEvent.from_payload(event_payload("s", completed)).transcript
+    assert stream_entry is not None and isinstance(stream_entry.content, TranscriptTool)
+    assert stream_entry.content.result.body is not None
+    assert dict(stream_entry.content.result.body.structured_content) == {"marker": 1}
+    bookkeeping = StoredEvent("s", 10, "r", "plugin.probe.tick", "kernel", "agent", "v", {})
+    assert StreamEvent.from_payload(event_payload("s", bookkeeping)).transcript is None
 
-    turn = decode_stream_event(event("core.model_turn", {}))
-    assert turn.transcript is not None
-    assert isinstance(turn.transcript.content, ProviderTurnResult)
-    interrupted = decode_stream_event(event("core.provider_interrupted", {}))
-    assert interrupted.transcript is not None
-    assert isinstance(interrupted.transcript.content, TranscriptInterrupted)
-    with pytest.raises(ValueError, match="ambiguous"):
-        decode_stream_event(event("core.unknown", {}))
-    with pytest.raises(ValueError):
-        decode_stream_event(
-            event(
-                "core.tool_completed",
-                {
-                    "call": {"tool_name": "t", "arguments": {}},
-                    "result": {"status": "ok", "tool_name": "t", "output": {"type": "empty"}},
-                    "batch_sequence": 1,
-                    "interrupted": "yes",
-                    "deferred": False,
-                },
-            )
-        )
+
+@pytest.mark.parametrize("stopped_args", [{"confirmed": True}, {"confirmed": False}])
+@pytest.mark.parametrize("event_type", ["core.tool_completed", "core.tool_interrupted"])
+def test_cancelled_tool_records_decode_through_sse_and_keep_execution_flags(event_type: str, stopped_args: dict[str, bool]) -> None:
+    """Cancelled tools keep their confirmed/unconfirmed stop across the SSE wire."""
+    from voidcode.core.storage.store import StoredEvent
+    from voidcode.sdk.client import StreamEvent
+    from voidcode.sdk.codec import encode_tool_call, encode_tool_result
+    from voidcode.sdk.tools import ConfirmedStop, TextOutput, ToolCall, ToolFailure, UnconfirmedStop
+    from voidcode.sdk.transcript import TranscriptTool
+    from voidcode.transport.projection import event_payload
+
+    stopped = ConfirmedStop(True) if stopped_args["confirmed"] else UnconfirmedStop(True)
+    failure = ToolFailure("read", "cancelled", TextOutput("no"), None, None, stopped, None, ())
+    event = StoredEvent(
+        "s",
+        11,
+        "r",
+        event_type,
+        "kernel",
+        "agent",
+        "v",
+        {"batch_sequence": 4, "call": encode_tool_call(ToolCall("read", {}, "c1")), "result": encode_tool_result(failure)},
+    )
+    content = StreamEvent.from_payload(event_payload("s", event)).transcript
+    assert content is not None and isinstance(content.content, TranscriptTool)
+    result = content.content.result
+    assert isinstance(result, ToolFailure) and result.execution is not None
+    assert result.execution.execution_stopped == stopped.execution_stopped
+    assert result.execution.cancellation_signalled is True
+    assert result.execution.side_effect_state == ("settled" if stopped.execution_stopped else "unknown")

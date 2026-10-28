@@ -11,16 +11,16 @@ import asyncio
 import json
 from collections.abc import AsyncGenerator, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Annotated, Any, Literal, Protocol, runtime_checkable
 
-from pydantic import TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from .commands import CommandCatalog, CommandResult
 from .hooks import StopCause
 from .json_values import json_wire_object, own_json_object
 from .limits import CLIENT_PROMPT_MAX_BYTES
 from .services import ContinuationResult, SessionUsageReport
-from .transcript import ContextHistory, TranscriptEntry, TranscriptPage
+from .transcript import ContextHistory, TranscriptEntry, TranscriptEntryWire, TranscriptPage
 from .views import ViewsSnapshot
 
 
@@ -227,9 +227,8 @@ class StreamEvent:
     """One stored session event as SSE frames carry it.
 
     ``transcript`` preserves the server's conversation projection as a typed
-    ``TranscriptEntry`` (``None`` for bookkeeping events). Transcript content
-    arrives discriminated; legacy untagged wire is normalized by the outer
-    transport adapter, never here — this module knows no event vocabulary.
+    ``TranscriptEntry`` (``None`` for bookkeeping events); the wire shape is
+    ``StreamEventWire``, always discriminated — this module knows no event vocabulary.
     """
 
     session_id: str
@@ -277,9 +276,9 @@ class HeadFrame:
     def from_payload(payload: Mapping[str, object]) -> HeadFrame:
         if not isinstance(payload, Mapping):
             raise ValueError("head frame payload must be an object")
-        raw_events = payload.get("events", ())
+        raw_events = payload.get("events")
         if not isinstance(raw_events, (list, tuple)):
-            raise ValueError("head frame events must be an array")
+            raise ValueError("head frame must carry an events array")
         raw_session = payload.get("session")
         if not isinstance(raw_session, Mapping):
             raise ValueError("head frame must carry a session object")
@@ -360,6 +359,54 @@ def parse_sse_frame(payload: Mapping[str, object]) -> SseFrame:
     if kind == "server_restart":
         return RestartFrame.from_payload(body)
     raise ValueError(f"unknown SSE frame kind: {kind!r}")
+
+
+class ClientWireModel(BaseModel):
+    """Strict wire-model base for the client-visible SSE/OpenAPI schemas."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class StreamEventWire(ClientWireModel):
+    """One stored session event as SSE frames carry it; payload stays dynamic."""
+
+    session_id: str
+    sequence: int
+    type: str
+    run_id: str
+    revision_id: str
+    source: str
+    actor: str
+    payload: dict[str, Any]
+    transcript: TranscriptEntryWire | None = None
+
+
+class HeadFrameWire(ClientWireModel):
+    """First frame of every stream; head iff the frame carries events."""
+
+    session: SessionRow
+    events: list[StreamEventWire]
+
+
+class EventFrameWire(ClientWireModel):
+    kind: Literal["event"]
+    session_id: str
+    event: StreamEventWire
+
+
+class ErrorFrameWire(ClientWireModel):
+    kind: Literal["error"]
+    session_id: str
+    error: str
+
+
+class RestartFrameWire(ClientWireModel):
+    kind: Literal["server_restart"]
+    session_id: str
+    cursor: int
+
+
+SseFrameWire = Annotated[HeadFrameWire | EventFrameWire | ErrorFrameWire | RestartFrameWire, Field(union_mode="left_to_right")]
 
 
 class StreamCancellation:
@@ -470,23 +517,30 @@ class SessionClient(Protocol):
 
 __all__ = [
     "CancelReceipt",
+    "ClientWireModel",
     "CoreClientError",
     "ErrorEnvelope",
     "ErrorFrame",
+    "ErrorFrameWire",
     "EventFrame",
+    "EventFrameWire",
     "HeadFrame",
+    "HeadFrameWire",
     "HealthStatus",
     "MAX_PROMPT_BYTES",
     "MAX_PROMPT_CHARS",
     "MAX_STEPS",
     "RestartFrame",
+    "RestartFrameWire",
     "ResumeSpec",
     "RunResult",
     "RunSpec",
     "SessionClient",
     "SessionRow",
     "SseFrame",
+    "SseFrameWire",
     "StreamCancellation",
     "StreamEvent",
+    "StreamEventWire",
     "parse_sse_frame",
 ]

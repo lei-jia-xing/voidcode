@@ -18,6 +18,13 @@ export type PluginViewDescriptor = Schemas["PluginViewDescriptor"];
 export type PluginViewData = Schemas["PluginViewData"];
 export type ComponentStyle = Schemas["ComponentStyle"];
 export type Icon = Schemas["Icon"];
+export type TranscriptEntry = Schemas["TranscriptEntryWire"];
+export type TranscriptContent = TranscriptEntry["content"];
+export type TranscriptTool = Schemas["TranscriptToolWire"];
+export type ToolCall = Schemas["ToolCallWire"];
+export type ToolResult = Schemas["ToolResultWire"];
+export type ToolExecution = Schemas["ExecutionWire"];
+export type ToolOutput = ToolResult["output"];
 
 export type NoticeViewData = Schemas["NoticeViewData"];
 export type MarkdownViewData = Schemas["MarkdownViewData"];
@@ -30,37 +37,11 @@ export type FormViewData = Schemas["FormViewData"];
 export type FormField = Schemas["FormField"];
 export type DiffViewData = Schemas["DiffViewData"];
 export type StatusViewData = Schemas["StatusViewData"];
-
-export interface SseEventFrame {
-  kind?: "event" | "error" | "server_restart";
-  session_id?: string;
-  /**
-   * Restart watermark: the last sequence THAT stream delivered. Corroboration
-   * only — resume from the client's own applied cursor, never jump forward.
-   */
-  cursor?: number;
-  event?: {
-    session_id: string;
-    sequence: number;
-    type: string;
-    run_id: string;
-    revision_id: string;
-    source: string;
-    actor: string;
-    payload: Record<string, unknown>;
-    transcript?: Record<string, unknown> | null;
-  };
-  session?: SessionRow;
-  events?: Array<{
-    session_id: string;
-    sequence: number;
-    type: string;
-    run_id: string;
-    revision_id: string;
-    source: string;
-    actor: string;
-    payload: Record<string, unknown>;
-    transcript?: Record<string, unknown> | null;
-  }>;
-  error?: string;
-}
+// SSE frames: the generated union is the contract. The head carries no kind,
+// so TS narrows it via `'events' in frame`; the other three narrow on `kind`.
+export type SseFrame = Schemas["SseFrameWire"];
+export type StreamEvent = Schemas["StreamEventWire"];
+export type HeadFrame = Schemas["HeadFrameWire"];
+export type EventFrame = Schemas["EventFrameWire"];
+export type ErrorFrame = Schemas["ErrorFrameWire"];
+export type RestartFrame = Schemas["RestartFrameWire"];

@@ -11,7 +11,7 @@ import type {
   SessionRow,
   SessionUsageReport,
   ShowBody,
-  SseEventFrame,
+  SseFrame,
 } from "./types";
 
 export class CoreApiError extends Error {
@@ -274,7 +274,7 @@ export class CoreClient {
   streamEvents(
     sessionId: string,
     afterSequence: number,
-    onFrame: (frame: SseEventFrame) => void,
+    onFrame: (frame: SseFrame) => void,
     onError?: (err: Error) => void,
     onReconnect?: () => void,
   ): () => void {
@@ -331,9 +331,9 @@ export class CoreClient {
                   if (!line.startsWith("data:")) continue;
                   const jsonStr = line.slice(5).trim();
                   if (!jsonStr) continue;
-                  let frame: SseEventFrame;
+                  let frame: SseFrame;
                   try {
-                    frame = JSON.parse(jsonStr) as SseEventFrame;
+                    frame = JSON.parse(jsonStr) as SseFrame;
                   } catch {
                     // A malformed frame fails the connection visibly: skipping
                     // fact N and applying N+1 would advance the resume cursor
@@ -344,30 +344,42 @@ export class CoreClient {
                     firstFrameSeen = true;
                     if (onReconnect) onReconnect();
                   }
-                  if (frame.kind === "server_restart") {
-                    // Watermark only: the loop below reconnects from the
-                    // client's own applied cursor, which never jumps over
-                    // a row this client did not apply.
+                  if ("events" in frame) {
                     onFrame(frame);
-                    restartRequested = true;
-                    break;
-                  }
-                  onFrame(frame);
-                  // The resume cursor advances only after the frame was
-                  // applied: a callback failure below must not skip facts.
-                  if (frame.events && Array.isArray(frame.events)) {
+                    // The resume cursor advances only after the frame was
+                    // applied: a callback failure below must not skip facts.
                     for (const ev of frame.events) {
                       if (ev.sequence > cursor) {
                         cursor = ev.sequence;
                       }
                     }
-                  } else if (frame.event?.sequence) {
-                    if (frame.event.sequence > cursor) {
-                      cursor = frame.event.sequence;
-                    }
+                    continue;
+                  }
+                  if (frame.kind === "error") {
+                    // Terminal server-side failure (e.g. a projection error on
+                    // a committed fact): stop first, then surface once. The
+                    // flag precedes the callback so a throwing callback cannot
+                    // enter the reconnect path. No cursor advance — the bad
+                    // record was not applied.
+                    isCancelled = true;
+                    onFrame(frame);
+                    break;
+                  }
+                  if (frame.kind === "server_restart") {
+                    // Watermark only: the loop below reconnects from the
+                    // client's own applied cursor, which never jumps over
+                    // a row this client did not apply. Flag first so a
+                    // throwing callback cannot fall into event handling.
+                    restartRequested = true;
+                    onFrame(frame);
+                    break;
+                  }
+                  onFrame(frame);
+                  if (frame.event.sequence > cursor) {
+                    cursor = frame.event.sequence;
                   }
                 }
-                if (restartRequested) break;
+                if (restartRequested || isCancelled) break;
               }
             }
           } finally {

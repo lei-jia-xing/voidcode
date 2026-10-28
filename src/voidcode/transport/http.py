@@ -16,11 +16,10 @@ from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from fastapi import FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
-from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 from starlette.exceptions import HTTPException
 from starlette.responses import FileResponse, JSONResponse, Response
@@ -29,17 +28,13 @@ from starlette.types import Receive, Scope, Send
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
 from voidcode.core.storage.store import SessionRecord, StoredEvent, inspect_existing_workspace
-from voidcode.core.transcript import transcript_entry
-from voidcode.sdk.client import HealthStatus, RunResult, SessionRow
-from voidcode.sdk.codec import _wire
+from voidcode.sdk.client import HealthStatus, RunResult, SessionRow, SseFrameWire
 from voidcode.sdk.commands import CommandCatalog, CommandResult
-from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.services import SessionUsageReport
 from voidcode.sdk.transcript import ContextHistoryWire, TranscriptPageWire, encode_context_history, encode_transcript_page
 from voidcode.sdk.views import ViewsSnapshot
 
 from .models import (
-    CheckpointBody,
     ConfirmRequest,
     ContinuationsBody,
     CreateSessionRequest,
@@ -49,7 +44,6 @@ from .models import (
     RunRequest,
     SessionsBody,
     ShowBody,
-    StoredEventBody,
 )
 from .projection import (
     FOLLOW_POLL_SECONDS,
@@ -57,6 +51,7 @@ from .projection import (
     core_error_status,
     event_payload,
     health_payload,
+    safe_projection_error,
     session_payload,
     validated_session_id,
 )
@@ -130,6 +125,10 @@ def _validated_session_id(value: str) -> str:
         return validated_session_id(value)
     except ValueError as exc:
         raise HttpError(400, str(exc)) from None
+
+
+def _error_event(session_id: str, error: str) -> ServerSentEvent:
+    return ServerSentEvent(data=json.dumps({"kind": "error", "session_id": session_id, "error": error}, sort_keys=True, allow_nan=False), sep="\n")
 
 
 class CoreTransportApp(FastAPI):
@@ -268,6 +267,8 @@ class CoreTransportApp(FastAPI):
         schemas = doc.setdefault("components", {}).setdefault("schemas", {})
         from pydantic import TypeAdapter
 
+        from voidcode.sdk.client import ErrorFrameWire, EventFrameWire, HeadFrameWire, RestartFrameWire, StreamEventWire
+        from voidcode.sdk.transcript import TranscriptEntryWire as EntryWire
         from voidcode.sdk.views import (
             ChoicesViewData,
             ConfirmationViewData,
@@ -289,7 +290,8 @@ class CoreTransportApp(FastAPI):
             DiffViewData,
             StatusViewData,
         ]
-        for cls in view_classes:
+        wire_classes = [StreamEventWire, HeadFrameWire, EventFrameWire, ErrorFrameWire, RestartFrameWire, EntryWire]
+        for cls in [*view_classes, *wire_classes]:
             s = TypeAdapter(cls).json_schema(ref_template="#/components/schemas/{model}")
             defs = s.pop("$defs", None)
             if defs:
@@ -297,6 +299,11 @@ class CoreTransportApp(FastAPI):
                     schemas[def_name] = def_schema
             schemas[cls.__name__] = s
 
+        frame_defs = TypeAdapter(SseFrameWire).json_schema(ref_template="#/components/schemas/{model}").get("$defs", {})
+        for def_name, def_schema in frame_defs.items():
+            schemas.setdefault(def_name, def_schema)
+        frame_refs = [{"$ref": f"#/components/schemas/{name}"} for name in ("HeadFrameWire", "EventFrameWire", "ErrorFrameWire", "RestartFrameWire")]
+        schemas["SseFrameWire"] = {"oneOf": frame_refs}
         schemas["PluginViewData"] = {"oneOf": [{"$ref": f"#/components/schemas/{cls.__name__}"} for cls in view_classes]}
         if "PluginViewDescriptor" in schemas and "properties" in schemas["PluginViewDescriptor"]:
             schemas["PluginViewDescriptor"]["properties"]["data"] = {"$ref": "#/components/schemas/PluginViewData"}
@@ -311,7 +318,7 @@ class CoreTransportApp(FastAPI):
         summary: str,
         response_model: Any = None,
         status_code: int = 200,
-        streaming_frame: type[BaseModel] | None = None,
+        streaming_frame: Any = None,
         in_schema: bool = True,
     ) -> None:
         responses: dict[int | str, Any] = {
@@ -391,7 +398,9 @@ class CoreTransportApp(FastAPI):
             response_model=ContextHistoryWire,
         )
         route("/api/sessions/{session_id}/cancel", self._handle_cancel, methods=["POST"], summary="Request cancellation for one session")
-        route("/api/sessions/{session_id}/events", self._handle_events, methods=["GET"], summary="Replay session events", streaming_frame=ShowBody)
+        route(
+            "/api/sessions/{session_id}/events", self._handle_events, methods=["GET"], summary="Replay session events", streaming_frame=SseFrameWire
+        )  # noqa: E501
         route("/api/health", self._handle_health, methods=["GET"], summary="Read core health and identity", response_model=HealthStatus)
         if self._frontend_dist is not None:
             # The single-page client: an exact file when one exists, otherwise index.html, so a
@@ -649,26 +658,32 @@ class CoreTransportApp(FastAPI):
         follow: bool = False,
         record: SessionRecord | None = None,
     ) -> AsyncGenerator[ServerSentEvent]:
-        """Stream initial session events and optionally follow new ones until disconnect, error,
-        or a successful drain ends it with the restart frame carrying the last delivered sequence."""
+        """Stream initial events then follow until disconnect, error, or the drain's restart frame."""
         if record is None:
             record = await asyncio.to_thread(core.session, session_id)
         initial: list[StoredEvent] = []
         cursor = after_sequence
         while True:
-            chunk = await asyncio.to_thread(core.events_after, session_id, after_sequence=cursor, limit=FOLLOW_TAIL_LIMIT)
+            try:
+                chunk = await asyncio.to_thread(core.events_after, session_id, after_sequence=cursor, limit=FOLLOW_TAIL_LIMIT)
+            except Exception as exc:
+                yield _error_event(session_id, f"event read failed: {type(exc).__name__}")
+                return
             if not chunk:
                 break
             initial.extend(chunk)
             cursor = chunk[-1].sequence
             if len(chunk) < FOLLOW_TAIL_LIMIT:
                 break
-        head = {
-            "session": session_payload(record),
-            "events": [event_payload(session_id, event) for event in initial],
-        }
-        if initial:
-            cursor = max(event.sequence for event in initial)
+        frames: list[dict[str, object]] = []
+        for event in initial:
+            try:
+                frames.append(event_payload(session_id, event))
+            except Exception as exc:
+                logger.warning("head projection failed: %s", safe_projection_error(event, exc))
+                yield _error_event(session_id, safe_projection_error(event, exc))
+                return
+        head = {"session": session_payload(record), "events": frames}
         yield ServerSentEvent(data=json.dumps(head, sort_keys=True, allow_nan=False), sep="\n")
         if not follow:
             return
@@ -683,27 +698,19 @@ class CoreTransportApp(FastAPI):
                     except Exception as exc:
                         if self._restart_ready:
                             break
-                        yield ServerSentEvent(
-                            data=json.dumps(
-                                {"kind": "error", "session_id": session_id, "error": f"{type(exc).__name__}: {exc}"},
-                                sort_keys=True,
-                                allow_nan=False,
-                            ),
-                            sep="\n",
-                        )
+                        yield _error_event(session_id, f"event read failed: {type(exc).__name__}")
                         return
                     if not pending:
                         break
                     for event in pending:
+                        try:
+                            frame = {"kind": "event", "session_id": session_id, "event": event_payload(session_id, event)}
+                        except Exception as exc:
+                            logger.warning("live projection failed: %s", safe_projection_error(event, exc))
+                            yield _error_event(session_id, safe_projection_error(event, exc))
+                            return
                         cursor = event.sequence
-                        yield ServerSentEvent(
-                            data=json.dumps(
-                                {"kind": "event", "session_id": session_id, "event": event_payload(session_id, event)},
-                                sort_keys=True,
-                                allow_nan=False,
-                            ),
-                            sep="\n",
-                        )
+                        yield ServerSentEvent(data=json.dumps(frame, sort_keys=True, allow_nan=False), sep="\n")
                     if len(pending) < FOLLOW_TAIL_LIMIT:
                         break
                 if self._restart_ready:
@@ -715,15 +722,14 @@ class CoreTransportApp(FastAPI):
                         if not tail:
                             break
                         for event in tail:
+                            try:
+                                frame = {"kind": "event", "session_id": session_id, "event": event_payload(session_id, event)}
+                            except Exception as exc:
+                                logger.warning("drain projection failed: %s", safe_projection_error(event, exc))
+                                yield _error_event(session_id, safe_projection_error(event, exc))
+                                return
                             cursor = event.sequence
-                            yield ServerSentEvent(
-                                data=json.dumps(
-                                    {"kind": "event", "session_id": session_id, "event": event_payload(session_id, event)},
-                                    sort_keys=True,
-                                    allow_nan=False,
-                                ),
-                                sep="\n",
-                            )
+                            yield ServerSentEvent(data=json.dumps(frame, sort_keys=True, allow_nan=False), sep="\n")
                     yield ServerSentEvent(
                         data=json.dumps(
                             {"kind": "server_restart", "session_id": session_id, "cursor": cursor},
@@ -736,30 +742,6 @@ class CoreTransportApp(FastAPI):
         finally:
             self._follow_streams.discard(done)
             done.set()
-
-
-def _checkpoint_view(checkpoint: Any) -> dict[str, object] | None:
-    if checkpoint is None:
-        return None
-    return CheckpointBody.model_validate({"kind": checkpoint.kind, "payload": json_wire_object(checkpoint.payload)}).model_dump()  # type: ignore[return-value]
-
-
-def _stored_event_view(event: Any) -> dict[str, object]:
-    try:
-        entry = transcript_entry(event)
-    except Exception:
-        entry = None
-    body = StoredEventBody(
-        sequence=event.sequence,
-        type=event.event_type,
-        run_id=event.run_id,
-        revision_id=event.revision_id,
-        source=event.source,
-        actor=event.actor,
-        payload=json_wire_object(event.payload),
-        transcript=cast(dict[str, Any], _wire(entry)) if entry is not None else None,
-    )
-    return body.model_dump()  # type: ignore[return-value]
 
 
 def create_core_app(

@@ -310,7 +310,10 @@ export interface components {
         AttachmentOutputWire: {
             /**
              * @default {
+             *       "fallback_reason": null,
              *       "partial": false,
+             *       "reference": null,
+             *       "source": null,
              *       "truncated": false
              *     }
              */
@@ -319,8 +322,11 @@ export interface components {
             data_uri: string | null;
             /** Mime */
             mime: string;
-            /** Presentation */
-            presentation?: string | null;
+            /**
+             * Presentation
+             * @default null
+             */
+            presentation: string | null;
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
@@ -577,18 +583,47 @@ export interface components {
         EmptyOutputWire: {
             /**
              * @default {
+             *       "fallback_reason": null,
              *       "partial": false,
+             *       "reference": null,
+             *       "source": null,
              *       "truncated": false
              *     }
              */
             bounds: components["schemas"]["OutputBoundsWire"];
-            /** Presentation */
-            presentation?: string | null;
+            /**
+             * Presentation
+             * @default null
+             */
+            presentation: string | null;
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
             type: "empty";
+        };
+        /** ErrorFrameWire */
+        ErrorFrameWire: {
+            /** Error */
+            error: string;
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "error";
+            /** Session Id */
+            session_id: string;
+        };
+        /** EventFrameWire */
+        EventFrameWire: {
+            event: components["schemas"]["StreamEventWire"];
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "event";
+            /** Session Id */
+            session_id: string;
         };
         /** ExecutionWire */
         ExecutionWire: {
@@ -656,6 +691,15 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * HeadFrameWire
+         * @description First frame of every stream; head iff the frame carries events.
+         */
+        HeadFrameWire: {
+            /** Events */
+            events: components["schemas"]["StreamEventWire"][];
+            session: components["schemas"]["SessionRow"];
         };
         /**
          * HealthStatus
@@ -729,17 +773,26 @@ export interface components {
         };
         /** OutputBoundsWire */
         OutputBoundsWire: {
-            /** Fallback Reason */
-            fallback_reason?: string | null;
+            /**
+             * Fallback Reason
+             * @default null
+             */
+            fallback_reason: string | null;
             /**
              * Partial
              * @default false
              */
             partial: boolean;
-            /** Reference */
-            reference?: components["schemas"]["ArtifactReference"] | string | null;
-            /** Source */
-            source?: string | null;
+            /**
+             * Reference
+             * @default null
+             */
+            reference: components["schemas"]["ArtifactReference"] | string | null;
+            /**
+             * Source
+             * @default null
+             */
+            source: string | null;
             /**
              * Truncated
              * @default false
@@ -772,8 +825,11 @@ export interface components {
          * @description One neutral conversation message handed to a provider adapter.
          */
         ProviderMessage: {
-            /** Content */
-            content?: string | null;
+            /**
+             * Content
+             * @default null
+             */
+            content: string | null;
             /**
              * Is Error
              * @default false
@@ -783,37 +839,64 @@ export interface components {
             metadata?: {
                 [key: string]: unknown;
             };
-            /** Reasoning */
-            reasoning?: string | null;
+            /**
+             * Reasoning
+             * @default null
+             */
+            reasoning: string | null;
             /**
              * Role
              * @enum {string}
              */
             role: "system" | "user" | "assistant" | "tool";
-            /** Tool Call Id */
-            tool_call_id?: string | null;
+            /**
+             * Tool Call Id
+             * @default null
+             */
+            tool_call_id: string | null;
             /**
              * Tool Calls
              * @default []
              */
             tool_calls: components["schemas"]["ToolCall"][];
-            /** Tool Name */
-            tool_name?: string | null;
+            /**
+             * Tool Name
+             * @default null
+             */
+            tool_name: string | null;
         };
         /** ProviderTokenUsage */
         ProviderTokenUsage: {
-            /** Cache Read Tokens */
-            cache_read_tokens?: number | null;
-            /** Cache Write Tokens */
-            cache_write_tokens?: number | null;
-            /** Cost Usd */
-            cost_usd?: number | null;
-            /** Input Tokens */
-            input_tokens?: number | null;
-            /** Output Tokens */
-            output_tokens?: number | null;
-            /** Uncached Input Tokens */
-            uncached_input_tokens?: number | null;
+            /**
+             * Cache Read Tokens
+             * @default null
+             */
+            cache_read_tokens: number | null;
+            /**
+             * Cache Write Tokens
+             * @default null
+             */
+            cache_write_tokens: number | null;
+            /**
+             * Cost Usd
+             * @default null
+             */
+            cost_usd: number | null;
+            /**
+             * Input Tokens
+             * @default null
+             */
+            input_tokens: number | null;
+            /**
+             * Output Tokens
+             * @default null
+             */
+            output_tokens: number | null;
+            /**
+             * Uncached Input Tokens
+             * @default null
+             */
+            uncached_input_tokens: number | null;
         };
         /** ProviderTurnResult */
         ProviderTurnResult: {
@@ -824,20 +907,30 @@ export interface components {
              * @default false
              */
             finish_reason_reported: boolean;
-            /** Metadata */
-            metadata?: {
+            /**
+             * Metadata
+             * @default null
+             */
+            metadata: {
                 [key: string]: unknown;
             } | null;
-            /** Output */
-            output?: string | null;
-            /** Reasoning */
-            reasoning?: string | null;
+            /**
+             * Output
+             * @default null
+             */
+            output: string | null;
+            /**
+             * Reasoning
+             * @default null
+             */
+            reasoning: string | null;
             /**
              * Tool Calls
              * @default []
              */
             tool_calls: components["schemas"]["ToolCall"][];
-            usage?: components["schemas"]["ProviderTokenUsage"] | null;
+            /** @default null */
+            usage: components["schemas"]["ProviderTokenUsage"] | null;
         };
         /** ReadObservationWire */
         ReadObservationWire: {
@@ -876,8 +969,11 @@ export interface components {
         };
         /** ResourceChangeWire */
         ResourceChangeWire: {
-            /** Old Path */
-            old_path?: string | null;
+            /**
+             * Old Path
+             * @default null
+             */
+            old_path: string | null;
             /**
              * Operation
              * @default update
@@ -886,6 +982,18 @@ export interface components {
             operation: "create" | "update" | "delete" | "move";
             /** Path */
             path: string;
+        };
+        /** RestartFrameWire */
+        RestartFrameWire: {
+            /** Cursor */
+            cursor: number;
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "server_restart";
+            /** Session Id */
+            session_id: string;
         };
         /** ResumeRequest */
         ResumeRequest: {
@@ -1020,6 +1128,7 @@ export interface components {
             /** Turn */
             turn: number;
         };
+        SseFrameWire: components["schemas"]["HeadFrameWire"] | components["schemas"]["EventFrameWire"] | components["schemas"]["ErrorFrameWire"] | components["schemas"]["RestartFrameWire"];
         /** StatusViewData */
         StatusViewData: {
             /** Label */
@@ -1045,10 +1154,33 @@ export interface components {
             sequence: number;
             /** Source */
             source: string;
-            /** Transcript */
-            transcript?: {
+            transcript?: components["schemas"]["TranscriptEntryWire"] | null;
+            /** Type */
+            type: string;
+        };
+        /**
+         * StreamEventWire
+         * @description One stored session event as SSE frames carry it; payload stays dynamic.
+         */
+        StreamEventWire: {
+            /** Actor */
+            actor: string;
+            /** Payload */
+            payload: {
                 [key: string]: unknown;
-            } | null;
+            };
+            /** Revision Id */
+            revision_id: string;
+            /** Run Id */
+            run_id: string;
+            /** Sequence */
+            sequence: number;
+            /** Session Id */
+            session_id: string;
+            /** Source */
+            source: string;
+            /** @default null */
+            transcript: components["schemas"]["TranscriptEntryWire"] | null;
             /** Type */
             type: string;
         };
@@ -1056,13 +1188,19 @@ export interface components {
         TextOutputWire: {
             /**
              * @default {
+             *       "fallback_reason": null,
              *       "partial": false,
+             *       "reference": null,
+             *       "source": null,
              *       "truncated": false
              *     }
              */
             bounds: components["schemas"]["OutputBoundsWire"];
-            /** Presentation */
-            presentation?: string | null;
+            /**
+             * Presentation
+             * @default null
+             */
+            presentation: string | null;
             /** Text */
             text: string;
             /**
@@ -1077,8 +1215,11 @@ export interface components {
             arguments?: {
                 [key: string]: unknown;
             };
-            /** Tool Call Id */
-            tool_call_id?: string | null;
+            /**
+             * Tool Call Id
+             * @default null
+             */
+            tool_call_id: string | null;
             /** Tool Name */
             tool_name: string;
         };
@@ -1088,8 +1229,11 @@ export interface components {
             arguments: {
                 [key: string]: unknown;
             };
-            /** Tool Call Id */
-            tool_call_id?: string | null;
+            /**
+             * Tool Call Id
+             * @default null
+             */
+            tool_call_id: string | null;
             /** Tool Name */
             tool_name: string;
         };
@@ -1099,12 +1243,21 @@ export interface components {
          */
         ToolDiagnostics: {
             details?: components["schemas"]["ToolDiagnosticsDetails"];
-            /** Guidance */
-            guidance?: string | null;
-            /** Kind */
-            kind?: string | null;
-            /** Summary */
-            summary?: string | null;
+            /**
+             * Guidance
+             * @default null
+             */
+            guidance: string | null;
+            /**
+             * Kind
+             * @default null
+             */
+            kind: string | null;
+            /**
+             * Summary
+             * @default null
+             */
+            summary: string | null;
         };
         ToolDiagnosticsDetails: {
             [key: string]: unknown;
@@ -1116,18 +1269,32 @@ export interface components {
         ToolEffect: "read" | "write" | "execute" | "network" | "spawn" | "session";
         /** ToolResultWire */
         ToolResultWire: {
-            /** Body */
-            body?: {
+            /**
+             * Body
+             * @default null
+             */
+            body: {
                 [key: string]: unknown;
             } | null;
-            /** Changes */
-            changes?: components["schemas"]["ResourceChangeWire"][] | null;
-            /** Coverage */
-            coverage?: components["schemas"]["ReadObservationWire"][] | null;
-            diagnostics?: components["schemas"]["ToolDiagnostics"] | null;
-            /** Error */
-            error?: string | null;
-            execution?: components["schemas"]["ExecutionWire"] | null;
+            /**
+             * Changes
+             * @default null
+             */
+            changes: components["schemas"]["ResourceChangeWire"][] | null;
+            /**
+             * Coverage
+             * @default null
+             */
+            coverage: components["schemas"]["ReadObservationWire"][] | null;
+            /** @default null */
+            diagnostics: components["schemas"]["ToolDiagnostics"] | null;
+            /**
+             * Error
+             * @default null
+             */
+            error: string | null;
+            /** @default null */
+            execution: components["schemas"]["ExecutionWire"] | null;
             /** Output */
             output: components["schemas"]["TextOutputWire"] | components["schemas"]["EmptyOutputWire"] | components["schemas"]["AttachmentOutputWire"];
             /**
@@ -1135,8 +1302,11 @@ export interface components {
              * @enum {string}
              */
             status: "ok" | "error";
-            /** Timeout Seconds */
-            timeout_seconds?: number | null;
+            /**
+             * Timeout Seconds
+             * @default null
+             */
+            timeout_seconds: number | null;
             /** Tool Name */
             tool_name: string;
         };
@@ -1175,8 +1345,11 @@ export interface components {
         TranscriptEntryWire: {
             /** Content */
             content: components["schemas"]["TranscriptMessageWire"] | components["schemas"]["TranscriptTurnWire"] | components["schemas"]["TranscriptToolContentWire"] | components["schemas"]["TranscriptDispatchContentWire"] | components["schemas"]["TranscriptRunContentWire"] | components["schemas"]["TranscriptInterruptedContentWire"] | components["schemas"]["TranscriptChildContentWire"];
-            /** Dispatch Sequence */
-            dispatch_sequence?: number | null;
+            /**
+             * Dispatch Sequence
+             * @default null
+             */
+            dispatch_sequence: number | null;
             /** Revision Id */
             revision_id: string;
             /** Run Id */
@@ -1250,7 +1423,8 @@ export interface components {
             call: components["schemas"]["ToolCallWire"];
             /** Deferred */
             deferred: boolean;
-            icon?: components["schemas"]["Icon"] | null;
+            /** @default null */
+            icon: components["schemas"]["Icon"] | null;
             /** Interrupted */
             interrupted: boolean;
             result: components["schemas"]["ToolResultWire"];

@@ -41,7 +41,12 @@ function sseResponse(
   });
 }
 
-function storedEvent(sequence: number, type: string, payload: object) {
+function storedEvent(
+  sequence: number,
+  type: string,
+  payload: object,
+  transcript: object | null = null,
+) {
   return {
     session_id: SESSION,
     sequence,
@@ -51,6 +56,95 @@ function storedEvent(sequence: number, type: string, payload: object) {
     source: "core",
     actor: "core",
     payload,
+    transcript,
+  };
+}
+
+function toolTranscript(
+  sequence: number,
+  toolName: string,
+  text: string,
+  opts: {
+    status?: "ok" | "error";
+    error?: string | null;
+    icon?: { glyph: string; fallback: string } | null;
+    interrupted?: boolean;
+    execution?: {
+      cancellation_signalled: boolean;
+      execution_stopped: boolean;
+      side_effect_state: "settled" | "unknown";
+    } | null;
+  } = {},
+) {
+  return {
+    sequence,
+    run_id: "run-1",
+    revision_id: "rev-1",
+    source: "core",
+    content: {
+      kind: "tool",
+      body: {
+        call: { tool_name: toolName, arguments: {}, tool_call_id: null },
+        result: {
+          status: opts.status ?? "ok",
+          tool_name: toolName,
+          output: {
+            type: "text",
+            text,
+            presentation: null,
+            bounds: { truncated: false, partial: false },
+          },
+          error: opts.error ?? null,
+          body: null,
+          changes: null,
+          coverage: null,
+          diagnostics: null,
+          execution: opts.execution ?? null,
+          timeout_seconds: null,
+        },
+        interrupted: opts.interrupted ?? false,
+        batch_sequence: 2,
+        deferred: false,
+        icon: opts.icon ?? null,
+      },
+    },
+  };
+}
+
+function messageTranscript(sequence: number, content: string) {
+  return {
+    sequence,
+    run_id: "run-1",
+    revision_id: "rev-1",
+    source: "core",
+    content: {
+      kind: "message",
+      body: {
+        role: "user",
+        content,
+        is_error: false,
+        tool_calls: [],
+      },
+    },
+  };
+}
+
+function turnTranscript(sequence: number, output: string) {
+  return {
+    sequence,
+    run_id: "run-1",
+    revision_id: "rev-1",
+    source: "core",
+    content: {
+      kind: "turn",
+      body: {
+        output,
+        reasoning: null,
+        tool_calls: [],
+        done_reason: "stop",
+        finish_reason_reported: false,
+      },
+    },
   };
 }
 
@@ -278,7 +372,16 @@ describe("gate preservation across upgrade_pending", () => {
         if (connections === 1) {
           // Initial connection: one head, stays open until the test EOFs it.
           return sseResponse(
-            [head([storedEvent(1, "core.user_message", { content: "hi" })])],
+            [
+              head([
+                storedEvent(
+                  1,
+                  "core.user_message",
+                  { content: "hi" },
+                  messageTranscript(1, "hi"),
+                ),
+              ]),
+            ],
             liveControllers,
           );
         }
@@ -288,7 +391,14 @@ describe("gate preservation across upgrade_pending", () => {
           // though no error announced the drop.
           return sseResponse(
             [
-              head([storedEvent(1, "core.user_message", { content: "hi" })]),
+              head([
+                storedEvent(
+                  1,
+                  "core.user_message",
+                  { content: "hi" },
+                  messageTranscript(1, "hi"),
+                ),
+              ]),
               JSON.stringify({
                 kind: "server_restart",
                 session_id: SESSION,
@@ -304,10 +414,18 @@ describe("gate preservation across upgrade_pending", () => {
         return sseResponse(
           [
             head([
-              storedEvent(1, "core.user_message", { content: "hi" }),
-              storedEvent(2, "core.model_turn", {
-                result: { output: "hello" },
-              }),
+              storedEvent(
+                1,
+                "core.user_message",
+                { content: "hi" },
+                messageTranscript(1, "hi"),
+              ),
+              storedEvent(
+                2,
+                "core.model_turn",
+                { result: { output: "hello" } },
+                turnTranscript(2, "hello"),
+              ),
             ]),
           ],
           liveControllers,
@@ -361,22 +479,28 @@ describe("gate preservation across upgrade_pending", () => {
 
 describe("tool birth icons", () => {
   it("renders the recorded glyph in glyph mode and fallback in ascii mode", async () => {
-    const toolEvent = (icon: object | null) =>
-      storedEvent(3, "core.tool_completed", {
-        batch_sequence: 2,
-        call: { tool_name: "read", arguments: {} },
-        result: {
-          status: "ok",
-          tool_name: "read",
-          output: { type: "text", text: "contents" },
-        },
-        icon,
-      });
-    const head = (icon: object | null) =>
-      JSON.stringify({
-        session: { session_id: SESSION },
-        events: [toolEvent(icon)],
-      });
+    const head = JSON.stringify({
+      session: { session_id: SESSION },
+      events: [
+        storedEvent(
+          3,
+          "core.tool_completed",
+          {
+            batch_sequence: 2,
+            call: { tool_name: "read", arguments: {} },
+            result: {
+              status: "ok",
+              tool_name: "read",
+              output: { type: "text", text: "contents" },
+            },
+            icon: { glyph: "⛁", fallback: "R" },
+          },
+          toolTranscript(3, "read", "contents", {
+            icon: { glyph: "⛁", fallback: "R" },
+          }),
+        ),
+      ],
+    });
     const fetchMock = vi.fn(async (url: unknown): Promise<Response> => {
       const path = String(url);
       if (path.includes("/api/commands")) {
@@ -386,7 +510,7 @@ describe("tool birth icons", () => {
         return jsonResponse({ revision_id: "rev-1", views: [] });
       }
       if (path.includes("/events")) {
-        return sseResponse([head({ glyph: "⛁", fallback: "R" })], []);
+        return sseResponse([head], []);
       }
       if (path.includes("/api/health")) {
         return jsonResponse({ status: "ok", fenced: false });
@@ -431,15 +555,20 @@ describe("tool birth icons", () => {
     const head = JSON.stringify({
       session: { session_id: SESSION },
       events: [
-        storedEvent(4, "core.tool_completed", {
-          batch_sequence: 2,
-          call: { tool_name: "mystery_tool", arguments: {} },
-          result: {
-            status: "ok",
-            tool_name: "mystery_tool",
-            output: { type: "text", text: "done" },
+        storedEvent(
+          4,
+          "core.tool_completed",
+          {
+            batch_sequence: 2,
+            call: { tool_name: "mystery_tool", arguments: {} },
+            result: {
+              status: "ok",
+              tool_name: "mystery_tool",
+              output: { type: "text", text: "done" },
+            },
           },
-        }),
+          toolTranscript(4, "mystery_tool", "done", { icon: null }),
+        ),
       ],
     });
     const fetchMock = vi.fn(async (url: unknown): Promise<Response> => {
@@ -481,6 +610,275 @@ describe("tool birth icons", () => {
     expect(screen.getByTestId("event-4")).toHaveTextContent(
       "Tool [mystery_tool]",
     );
+    unmount();
+  });
+});
+
+describe("canonical transcript cutover", () => {
+  it("renders continuation/wakeup canonical messages with role alignment", async () => {
+    const head = JSON.stringify({
+      session: { session_id: SESSION },
+      events: [
+        storedEvent(
+          7,
+          "core.continuation_started",
+          { role: "user", payload: { text: "continued work" } },
+          {
+            sequence: 7,
+            run_id: "run-1",
+            revision_id: "rev-1",
+            source: "core",
+            content: {
+              kind: "message",
+              body: {
+                role: "user",
+                content: "continued work",
+                is_error: false,
+                tool_calls: [],
+              },
+            },
+          },
+        ),
+        storedEvent(
+          8,
+          "core.wakeup_fired",
+          { role: "system", owner: "cron", payload: { tick: 1 } },
+          {
+            sequence: 8,
+            run_id: "run-1",
+            revision_id: "rev-1",
+            source: "core",
+            content: {
+              kind: "message",
+              body: {
+                role: "system",
+                content: '[Durable wakeup from cron]\n{"tick": 1}',
+                is_error: false,
+                tool_calls: [],
+              },
+            },
+          },
+        ),
+      ],
+    });
+    const fetchMock = vi.fn(async (url: unknown): Promise<Response> => {
+      const path = String(url);
+      if (path.includes("/api/commands")) {
+        return jsonResponse({ revision_id: "rev-1", commands: [] });
+      }
+      if (path.includes("/views")) {
+        return jsonResponse({ revision_id: "rev-1", views: [] });
+      }
+      if (path.includes("/events")) {
+        return sseResponse([head], []);
+      }
+      if (path.includes("/api/health")) {
+        return jsonResponse({ status: "ok", fenced: false });
+      }
+      if (path.includes("/api/sessions") && !path.includes("/events")) {
+        return jsonResponse({
+          sessions: [
+            {
+              session_id: SESSION,
+              workspace: "/tmp/ws",
+              status: "idle",
+              active_revision_id: "rev-1",
+              run_id: "run-1",
+              turn: 1,
+              last_event_sequence: 9,
+            },
+          ],
+        });
+      }
+      return jsonResponse({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { unmount } = render(<CoreApp baseUrl="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId("event-7")).toHaveTextContent("continued work");
+    });
+    expect(screen.getByTestId("event-7")).toHaveClass("items-end");
+    await waitFor(() => {
+      expect(screen.getByTestId("event-8")).toHaveTextContent("Durable wakeup");
+    });
+    expect(screen.getByTestId("event-8")).toHaveClass("items-start");
+    unmount();
+  });
+
+  it("renders a cancelled tool with its execution cue and never the payload fallback", async () => {
+    // The payload deliberately disagrees: canonical UI reads transcript only.
+    const head = JSON.stringify({
+      session: { session_id: SESSION },
+      events: [
+        storedEvent(
+          5,
+          "core.tool_completed",
+          {
+            batch_sequence: 2,
+            call: { tool_name: "payload_name", arguments: {} },
+            result: {
+              status: "ok",
+              tool_name: "payload_name",
+              output: { type: "text", text: "payload text" },
+            },
+          },
+          toolTranscript(5, "read", "canonical text", {
+            status: "error",
+            error: "tool invocation was cancelled",
+            execution: {
+              cancellation_signalled: true,
+              execution_stopped: true,
+              side_effect_state: "settled",
+            },
+          }),
+        ),
+        storedEvent(
+          6,
+          "core.tool_interrupted",
+          {
+            batch_sequence: 2,
+            call: { tool_name: "write", arguments: {} },
+            result: {
+              status: "error",
+              tool_name: "write",
+              output: { type: "text", text: "unconfirmed text" },
+            },
+          },
+          toolTranscript(6, "write", "unconfirmed text", {
+            status: "error",
+            error: "tool timed out",
+            execution: {
+              cancellation_signalled: false,
+              execution_stopped: false,
+              side_effect_state: "unknown",
+            },
+          }),
+        ),
+      ],
+    });
+    const fetchMock = vi.fn(async (url: unknown): Promise<Response> => {
+      const path = String(url);
+      if (path.includes("/api/commands")) {
+        return jsonResponse({ revision_id: "rev-1", commands: [] });
+      }
+      if (path.includes("/views")) {
+        return jsonResponse({ revision_id: "rev-1", views: [] });
+      }
+      if (path.includes("/events")) {
+        return sseResponse([head], []);
+      }
+      if (path.includes("/api/health")) {
+        return jsonResponse({ status: "ok", fenced: false });
+      }
+      if (path.includes("/api/sessions") && !path.includes("/events")) {
+        return jsonResponse({
+          sessions: [
+            {
+              session_id: SESSION,
+              workspace: "/tmp/ws",
+              status: "idle",
+              active_revision_id: "rev-1",
+              run_id: "run-1",
+              turn: 1,
+              last_event_sequence: 9,
+            },
+          ],
+        });
+      }
+      return jsonResponse({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { unmount } = render(<CoreApp baseUrl="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId("event-5")).toHaveTextContent("Tool [read]");
+    });
+    // Transcript wins over the disagreeing payload on name and error text.
+    expect(screen.getByTestId("event-5")).not.toHaveTextContent("payload");
+    expect(screen.getByTestId("event-5")).toHaveTextContent(
+      "tool invocation was cancelled",
+    );
+    // A stopped/settled tool carries no execution cue.
+    expect(screen.getByTestId("event-5")).not.toHaveTextContent("side effects");
+    // An unstopped tool shows the unknown-effects cue inline.
+    await waitFor(() => {
+      expect(screen.getByTestId("event-6")).toHaveTextContent(
+        "may still be running; side effects unknown",
+      );
+    });
+    unmount();
+  });
+
+  it("shows a terminal error frame once and stops without reconnecting", async () => {
+    let connections = 0;
+    const frames = [
+      JSON.stringify({
+        session: { session_id: SESSION },
+        events: [
+          storedEvent(
+            1,
+            "core.user_message",
+            { content: "hi" },
+            messageTranscript(1, "hi"),
+          ),
+        ],
+      }),
+      JSON.stringify({
+        kind: "error",
+        session_id: SESSION,
+        error:
+          "projection failed: sequence=2 type=core.tool_completed error=ValidationError",
+      }),
+    ];
+    const fetchMock = vi.fn(async (url: unknown): Promise<Response> => {
+      const path = String(url);
+      if (path.includes("/api/commands")) {
+        return jsonResponse({ revision_id: "rev-1", commands: [] });
+      }
+      if (path.includes("/views")) {
+        return jsonResponse({ revision_id: "rev-1", views: [] });
+      }
+      if (path.includes("/events")) {
+        connections += 1;
+        return sseResponse(frames, [], connections > 1);
+      }
+      if (path.includes("/api/health")) {
+        return jsonResponse({ status: "ok", fenced: false });
+      }
+      if (path.includes("/api/sessions") && !path.includes("/events")) {
+        return jsonResponse({
+          sessions: [
+            {
+              session_id: SESSION,
+              workspace: "/tmp/ws",
+              status: "idle",
+              active_revision_id: "rev-1",
+              run_id: "run-1",
+              turn: 1,
+              last_event_sequence: 9,
+            },
+          ],
+        });
+      }
+      return jsonResponse({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { unmount } = render(<CoreApp baseUrl="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId("event-1")).toHaveTextContent("hi");
+    });
+    // The safe error surfaces once in the status line; settled rows stay.
+    await waitFor(() => {
+      expect(screen.getByText(/Stream error:/)).toHaveTextContent(
+        "projection failed: sequence=2",
+      );
+    });
+    expect(screen.getByTestId("event-1")).toBeVisible();
+    const settledConnections = connections;
+    // No hot retry on the corrupt cursor: the stream stays stopped.
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 1500);
+    await promise;
+    expect(connections).toBe(settledConnections);
     unmount();
   });
 });

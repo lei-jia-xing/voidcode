@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from voidcode.sdk.client import SessionRow
 from voidcode.sdk.services import ContinuationResult
+from voidcode.sdk.transcript import TranscriptEntryWire
 
 
 class CoreHttpModel(BaseModel):
@@ -76,7 +77,7 @@ class StoredEventBody(CoreHttpModel):
     source: str
     actor: str
     payload: dict[str, Any]
-    transcript: dict[str, Any] | None = None
+    transcript: TranscriptEntryWire | None = None
 
 
 class ShowBody(CoreHttpModel):

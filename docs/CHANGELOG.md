@@ -4,6 +4,11 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Canonical SSE transcript cutover (BREAKING)
+- Every SSE event now carries the canonical `transcript` projection (`TranscriptEntryWire | null`): the same discriminated `{kind, body}` the `/transcript` route serves. Untagged-shape adapters, `payload.result` fallbacks, and duplicate JSON decode are deleted on both clients; no compat shims. `transcript: null` means genuine bookkeeping only.
+- SSE frames are SDK-owned wire types (`SseFrameWire`: kind-less head + `event`/`error`/`server_restart`), registered in OpenAPI; web consumes the generated union and narrows the head via `'events' in frame`.
+- A recognized conversation event that fails projection ends the stream with a terminal `error` frame carrying sequence + event type + exception class only (never raw input/secrets). Both clients surface it once and stop — no applied-cursor advance, no hot reconnect on the corrupt cursor. Web tool rows show a one-line cue for unconfirmed stops / unknown side effects.
+
 ### Single `/status` owned by the core (BREAKING)
 - Core `/status` is the one session-status entry: it keeps every existing `show` key and adds `event_counts` (one SQL aggregate), `usage`, and `budgets` for all owners. The plugin `session_status` command is deleted with no alias.
 - Prune verbose plugin comments (todo/goal/delegation), no behavior change.

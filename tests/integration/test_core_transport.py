@@ -616,3 +616,53 @@ def test_events_cursor_replays_tail_without_full_rescan(tmp_path: Path) -> None:
             frames = [frame for frame in body.decode("utf-8").split("\n\n") if frame.startswith("data: ")]
             replayed = json.loads(frames[0][len("data: ") :])
             assert [event["sequence"] for event in replayed["events"]] == list(range(1, mid + 1))
+
+
+def test_malformed_conversational_record_is_a_terminal_error_not_a_null_transcript(tmp_path: Path) -> None:
+    """A corrupt user message ends the stream visibly; the sentinel payload never leaks."""
+    import sqlite3
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "external"
+    _hello_plugin_source(source)
+    state = tmp_path / "state"
+    with _provider([_turn(output="done")]) as server:
+        _configure(workspace, server, source)
+        ran = _cli(workspace, state, "run", "hello", "--session-id", "malformed-1")
+        assert ran["status"] == "completed"
+        shown = _cli(workspace, state, "show", "malformed-1", "--events")
+        tip = shown["last_event_sequence"]
+        catalog = _cli(workspace, state, "catalog")
+        sentinel = "SENTINEL-CREDENTIAL-malformed-probe"
+        connection = sqlite3.connect(state / "voidcode.db")
+        try:
+            connection.execute(
+                "INSERT INTO session_events(session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "malformed-1",
+                    tip + 1,
+                    shown["run_id"] or "run-probe",
+                    "core.user_message",
+                    "kernel",
+                    "user",
+                    catalog["revision_id"],
+                    json.dumps({"content": {"leaked": sentinel}, "eligible_owners": []}),
+                ),
+            )
+            connection.execute("UPDATE sessions SET last_event_sequence = ? WHERE session_id = ?", (tip + 1, "malformed-1"))
+            connection.commit()
+        finally:
+            connection.close()
+        token = "malformed-head-token"
+        with _listening_http(workspace, state, token) as base:
+            status, body = _request(base, "GET", "/api/sessions/malformed-1/events?after_sequence=0", token=token)
+            assert status == 200, body.decode()
+            text = body.decode("utf-8")
+            assert sentinel not in text and "leaked" not in text
+            frames = [json.loads(frame[len("data: ") :]) for frame in text.split("\n\n") if frame.startswith("data: ")]
+            assert len(frames) == 1, frames
+            (error,) = frames
+            assert error["kind"] == "error"
+            assert f"sequence={tip + 1}" in error["error"] and "core.user_message" in error["error"]

@@ -17,6 +17,7 @@ from voidcode.sdk.client import (
     CommandResult,
     ContinuationResult,
     CoreClientError,
+    ErrorFrame,
     HealthStatus,
     ResumeSpec,
     RunResult,
@@ -26,6 +27,7 @@ from voidcode.sdk.client import (
     SseFrame,
     StreamCancellation,
     ViewsSnapshot,
+    parse_sse_frame,
 )
 from voidcode.sdk.transcript import ContextHistory, TranscriptPage, decode_context_history, decode_transcript_page
 from voidcode.transport.projection import validated_session_id
@@ -38,36 +40,6 @@ def _checked_session_id(session_id: str) -> str:
         return validated_session_id(session_id)
     except ValueError as exc:
         raise CoreClientError(str(exc), status_code=400, code="invalid_params") from None
-
-
-def _decode_frame(raw: object) -> SseFrame:
-    """Decode one raw SSE frame: outer adapter normalizes legacy event payloads."""
-    from voidcode.sdk.client import ErrorFrame, EventFrame, HeadFrame, RestartFrame, SessionRow
-    from voidcode.transport.projection import decode_stream_event
-
-    if not isinstance(raw, Mapping):
-        raise ValueError("SSE frame must be an object")
-    if "events" in raw or "session" in raw:
-        session = raw.get("session")
-        events = raw.get("events", ())
-        if not isinstance(session, Mapping) or not isinstance(events, (list, tuple)):
-            raise ValueError("head frame must carry a session object and events array")
-        return HeadFrame(
-            session=SessionRow.from_payload(session),
-            events=tuple(decode_stream_event(item) for item in events),
-        )
-    kind = raw.get("kind")
-    if kind == "event":
-        event = raw.get("event")
-        session_id = raw.get("session_id")
-        if not isinstance(event, Mapping) or not isinstance(session_id, str):
-            raise ValueError("event frame must carry a session_id and event object")
-        return EventFrame(session_id=session_id, event=decode_stream_event(event))
-    if kind == "error":
-        return ErrorFrame.from_payload({k: v for k, v in raw.items() if k != "kind"})
-    if kind == "server_restart":
-        return RestartFrame.from_payload({k: v for k, v in raw.items() if k != "kind"})
-    raise ValueError(f"unknown SSE frame kind: {kind!r}")
 
 
 class CoreHttpClient:
@@ -331,9 +303,12 @@ class CoreHttpClient:
                                 except json.JSONDecodeError as exc:
                                     raise CoreClientError(f"malformed SSE frame: {exc}") from exc
                                 try:
-                                    yield _decode_frame(raw)
+                                    frame = parse_sse_frame(raw)
                                 except ValueError as exc:
                                     raise CoreClientError(f"malformed SSE frame: {exc}") from exc
+                                yield frame
+                                if isinstance(frame, ErrorFrame):
+                                    return
         except asyncio.CancelledError:
             return
         except (httpx.StreamClosed, httpx.RequestError) as exc:
