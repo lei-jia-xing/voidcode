@@ -21,7 +21,8 @@ Plugins may additionally read their own resources (for example agent profiles un
   },
   "policy": {
     "approval_mode": "ask",
-    "read_only": false
+    "read_only": false,
+    "max_root_children": 4
   },
   "providers": {
     "openai": {
@@ -51,7 +52,7 @@ The `my-linter` entry illustrates an external plugin: the directory must exist a
 |---|---|---|
 | `schema_version` | integer | Required to be `1` when present (the default). Any other value is refused. |
 | `model` | object | Model selection: `model` and `reasoning_effort`. |
-| `policy` | object | Execution policy: `approval_mode` and `read_only`. |
+| `policy` | object | Execution policy: `approval_mode`, `read_only`, and `max_root_children`. |
 | `sandbox` | object | Optional transparent exec backend: `mode`, `network`, `writable_roots`. Absent means unconfined host exec. |
 | `providers` | object | Endpoint configuration for provider names declared by admitted plugins. |
 
@@ -70,6 +71,7 @@ No other top-level field is accepted.
 |---|---|---|
 | `approval_mode` | string | `ask` (default), `write`, or `yolo`. |
 | `read_only` | boolean | Default `false`. When true, `WRITE` and `EXECUTE` effects are refused outright; `READ`, `SESSION`, and `SPAWN` are not refused by this setting alone (see below). |
+| `max_root_children` | integer | Default `4`, within `1..64`. The single governed quota for how many child sessions one chain root may hold; exhausted spawns fail visibly instead of queueing. |
 
 Policy semantics:
 
@@ -137,6 +139,15 @@ Agent discovery and `/agents`/`agents.show` belong to `delegation`, along with
 `task`/`task_batch`. Agent files use `.claude/agents/` and the supported Claude Code
 Markdown format. See [agent definitions](contracts/agent-definitions.md) for the
 supported fields and explicit runtime limitations.
+
+### Scripted workflows
+
+The bundled `workflows` plugin runs explicitly configured trusted `.py` scripts:
+`plugins.workflows.config` accepts exactly `workflows: {name: workspace-relative
+.py path}` (plus the reserved injected `providers` key). Unknown fields, absolute
+paths, `..`, and non-`.py` files are refused. An empty mapping admits the plugin
+with nothing runnable. See [workflows](contracts/workflows.md) and the runnable
+`examples/workflows/` parallel-review setup.
 
 ### MCP servers
 

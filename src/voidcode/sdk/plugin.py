@@ -19,7 +19,7 @@ from .hooks import ContextContribution, ObservedFactKind, PluginFact, RunLifecyc
 from .invocation import ToolContext
 from .json_values import json_wire_object, own_json_object
 from .provider import TurnProvider
-from .services import PluginServices
+from .services import BackgroundContext, PluginServices
 from .tools import Tool
 from .views import PluginView
 
@@ -96,6 +96,9 @@ class Plugin:
     observer: Callable[[PluginFact, ToolContext, PluginServices], None] | None = None
     #: Fact kinds this plugin's observer wants delivered.
     observed_facts: tuple[ObservedFactKind, ...] = ()
+    #: Long-running background driver: called once per claimed action on a worker thread,
+    #: outside any model turn. The context (never a lease) is what the driver keeps.
+    background_action: Callable[[BackgroundContext], None] | None = None
     #: Lifecycle notifications: run once at the start and once at the end of each run.
     session_start: Callable[[RunLifecycle, ToolContext, PluginServices], str | None] | None = None
     session_end: Callable[[RunLifecycle, ToolContext, PluginServices], str | None] | None = None

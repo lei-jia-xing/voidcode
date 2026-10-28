@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from importlib.resources import files
 
-from .models import AgentDefinition
+from voidcode.capabilities.agent_queries import AgentDefinition
 
 
 def _prompt(name: str) -> str:

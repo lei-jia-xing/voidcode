@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import signal
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
@@ -23,6 +24,7 @@ from .sdk.json_values import json_wire_object, own_json_object
 
 if TYPE_CHECKING:
     from .core.engine import Core
+    from .sdk.commands import CommandResult
 
 
 def _parse_arguments(raw: str) -> dict[str, object]:
@@ -33,6 +35,16 @@ def _parse_arguments(raw: str) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise ValueError("arguments must be a JSON object")
     return json_wire_object(own_json_object(payload))
+
+
+_DEFAULT_WAIT_TIMEOUT = 300.0
+
+
+def _check_wait_timeout(value: object) -> float:
+    """Validate --wait-timeout at ingress, before any core opens or command runs."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        raise ValueError("--wait-timeout must be a finite number of seconds >= 0")
+    return float(value)
 
 
 _COMMANDS = frozenset(
@@ -175,6 +187,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     invoke.add_argument("name", metavar="NAME", help="Command name from the catalog")
     invoke.add_argument("--arguments", default="{}", metavar="JSON", help="Command arguments as a JSON object")
     invoke.add_argument("--expected-revision", required=True, metavar="ID", help="Capability revision the displayed catalog was captured under")
+    invoke.add_argument(
+        "--wait-background",
+        action="store_true",
+        help="After the command commits, wait for this session's background actions to settle and print their statuses",
+    )
+    invoke.add_argument(
+        "--wait-timeout", type=float, default=_DEFAULT_WAIT_TIMEOUT, metavar="SECONDS", help="Wait bound for --wait-background (default: 300)"
+    )
     confirm = commands.add_parser(
         "confirm",
         help="Decide a pending confirmation and print one JSON result",
@@ -184,6 +204,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     confirm.add_argument("request_id", metavar="REQUEST", help="Pending request id")
     confirm.add_argument("--decision", choices=("allow", "deny"), required=True, help="Decision for the pending request")
     confirm.add_argument("--expected-revision", required=True, metavar="ID", help="Capability revision the displayed catalog was captured under")
+    confirm.add_argument(
+        "--wait-background",
+        action="store_true",
+        help="After the decision commits, wait for this session's background actions to settle and print their statuses",
+    )
+    confirm.add_argument(
+        "--wait-timeout", type=float, default=_DEFAULT_WAIT_TIMEOUT, metavar="SECONDS", help="Wait bound for --wait-background (default: 300)"
+    )
     views = commands.add_parser(
         "views", help="Print this session's plugin views as JSON", description="Print this session's rendered plugin views as JSON."
     )
@@ -224,6 +252,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _show(workspace, bare_directory, args.session_id, events=args.events)
         if args.command == "invoke":
             args.parsed_arguments = _parse_arguments(args.arguments)
+        if args.command in ("invoke", "confirm") and getattr(args, "wait_background", False):
+            _check_wait_timeout(args.wait_timeout)
 
         if args.command == "serve":
             from .transport.server import serve_core
@@ -354,7 +384,13 @@ def _dispatch(core: Core, args: argparse.Namespace) -> int:
             args.parsed_arguments,
             expected_revision=args.expected_revision,
         )
-        print(json.dumps(result.as_payload(), ensure_ascii=False, allow_nan=False))
+        payload = result.as_payload()
+        settled = _waited_background(core, args, result)
+        if settled is not None:
+            payload["background"] = settled
+        print(json.dumps(payload, ensure_ascii=False, allow_nan=False))
+        if settled is not None and any(item.get("status") in ("failed", "interrupted", "pending", "running", "claimed") for item in settled):
+            return 1
         return 0 if result.status == "ok" else 2 if result.status == "pending_confirmation" else 1
     if args.command == "confirm":
         result = core.confirm_action(
@@ -363,7 +399,13 @@ def _dispatch(core: Core, args: argparse.Namespace) -> int:
             args.decision,
             expected_revision=args.expected_revision,
         )
-        print(json.dumps(result.as_payload(), ensure_ascii=False, allow_nan=False))
+        payload = result.as_payload()
+        settled = _waited_background(core, args, result)
+        if settled is not None:
+            payload["background"] = settled
+        print(json.dumps(payload, ensure_ascii=False, allow_nan=False))
+        if settled is not None and any(item.get("status") in ("failed", "interrupted", "pending", "running", "claimed") for item in settled):
+            return 1
         return 0 if result.status == "ok" else 2 if result.status == "pending_confirmation" else 1
     if args.command == "views":
         snapshot = core.plugin_views(args.session_id)
@@ -378,6 +420,26 @@ def _dispatch(core: Core, args: argparse.Namespace) -> int:
         print(json.dumps(report.as_payload(), ensure_ascii=False, allow_nan=False))
         return 0
     raise AssertionError(f"unhandled command: {args.command}")
+
+
+def _waited_background(core: Core, args: argparse.Namespace, result: CommandResult) -> list[dict[str, object]] | None:
+    """Wait after the command already committed, following the receipt's action when it has one."""
+    if not getattr(args, "wait_background", False):
+        return None
+    timeout = float(args.wait_timeout)
+    # Only an ok receipt names the action to follow; anything else waits on nothing stale.
+    action_id: str | None = None
+    if result.status == "ok" and isinstance(result.data, Mapping):
+        candidate = result.data.get("action_id")
+        if isinstance(candidate, str) and candidate:
+            action_id = candidate
+    if result.status != "ok":
+        return []
+    try:
+        settled = core.wait_background_actions(args.session_id, action_id=action_id, timeout_seconds=float(timeout))
+    except RuntimeError as exc:
+        return [{"action_id": action_id or "", "status": "failed", "error": str(exc)}]
+    return [dict(item) for item in settled]
 
 
 def _session_payload(record: SessionRecord) -> dict[str, object]:

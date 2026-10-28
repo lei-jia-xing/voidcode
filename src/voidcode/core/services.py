@@ -21,6 +21,7 @@ from voidcode.sdk.observed_effects import ObservedEffects
 from voidcode.sdk.services import (
     ArtifactPage,
     ArtifactReference,
+    BackgroundActionStatus,
     ChildOutcome,
     ChildSendReceipt,
     EventView,
@@ -495,6 +496,7 @@ class RuntimeServices:
         max_steps: int = 32,
         readonly: bool = False,
         notify_on_completion: bool = False,
+        idempotency_key: str | None = None,
     ) -> str:
         lease = self._active_lease()
         self._check_hook("spawn_child")
@@ -508,6 +510,8 @@ class RuntimeServices:
             raise ValueError("tool_allowlist must be a list of tool names or null")
         if type(max_steps) is not int:
             raise ValueError("max_steps must be an integer")
+        if idempotency_key is not None and (not isinstance(idempotency_key, str) or not idempotency_key):
+            raise ValueError("idempotency_key must be a non-empty string or null")
         callback = self._runtime.spawn_child_callback
         if callback is None:
             raise RuntimeError("child spawning is unavailable")
@@ -519,7 +523,20 @@ class RuntimeServices:
             None if tool_allowlist is None else tuple(str(item) for item in tool_allowlist),
             bool(readonly) or lease.readonly,
             bool(notify_on_completion),
+            lease.owner,
+            idempotency_key,
         )
+
+    def find_child(self, *, idempotency_key: str) -> str | None:
+        lease = self._active_lease()
+        self._check_hook("find_child")
+        if not isinstance(idempotency_key, str) or not idempotency_key:
+            raise ValueError("idempotency_key must be a non-empty string")
+        callback = self._runtime.find_child_callback
+        if callback is None:
+            raise RuntimeError("child lookup is unavailable")
+        found = callback(lease.session_id, lease.owner, idempotency_key)
+        return None if found is None else str(found)
 
     def send_child(
         self,
@@ -631,6 +648,71 @@ class RuntimeServices:
         if callback is None:
             raise RuntimeError("child cancellation is unavailable")
         return callback(lease.session_id, str(child_session_id), str(reason))
+
+    def enqueue_background_action(
+        self,
+        payload: Mapping[str, object],
+        *,
+        idempotency_key: str | None = None,
+    ) -> str:
+        from .storage.store import BACKGROUND_ACTION_SOURCE, StagedContinuationDraft
+
+        lease = self._active_lease()
+        self._check_hook("enqueue_background_action")
+        owned = own_json_object(payload)
+        if idempotency_key is not None and (not isinstance(idempotency_key, str) or not idempotency_key):
+            raise ValueError("idempotency_key must be a non-empty string or null")
+        key = str(idempotency_key) if idempotency_key is not None else None
+        with self._runtime.lease_lock:
+            if lease.internal_restricted:
+                raise PermissionError("Cannot enqueue background actions from a read-only service lease")
+            if lease.revoked:
+                raise PermissionError("Service lease was revoked")
+            existing = next(
+                (c.continuation_id for c in lease.staged_continuations if c.idempotency_key == key and key is not None),
+                None,
+            )
+            if existing is None and key is not None:
+                existing = self._runtime.require_store().background_action_id_for_idempotency(lease.session_id, lease.owner, key)
+            if existing is not None:
+                return existing
+            # Same deterministic identity rule as continuations: two concurrent leases that
+            # both stage before either commits return the SAME id, and the store keeps one row.
+            cid = uuid4().hex if key is None else hashlib.sha256("\0".join((lease.session_id, lease.owner, key)).encode("utf-8")).hexdigest()
+            lease.op_counter += 1
+            lease.staged_continuations.append(
+                StagedContinuationDraft(
+                    continuation_id=cid,
+                    owner=lease.owner,
+                    source=BACKGROUND_ACTION_SOURCE,
+                    payload={"action": owned},
+                    idempotency_key=key,
+                    ordinal=lease.op_counter,
+                    role="system",
+                )
+            )
+        self._runtime.notify_background_action()
+        return cid
+
+    def cancel_background_action(self, action_id: str, reason: str = "owner cancellation") -> bool:
+        lease = self._active_lease()
+        self._check_hook("cancel_background_action")
+        if not isinstance(action_id, str) or not action_id:
+            raise ValueError("action_id must be a non-empty string")
+        callback = self._runtime.cancel_background_action_callback
+        if callback is None:
+            raise RuntimeError("background action cancellation is unavailable")
+        return callback(lease.session_id, lease.owner, action_id, str(reason))
+
+    def background_action_status(self, action_id: str) -> BackgroundActionStatus | None:
+        lease = self._active_lease()
+        self._check_hook("background_action_status")
+        if not isinstance(action_id, str) or not action_id:
+            raise ValueError("action_id must be a non-empty string")
+        record = self._runtime.require_store().background_action(action_id)
+        if record is None or record.owner != lease.owner or record.session_id != lease.session_id:
+            return None
+        return self._runtime.background_action_status(record)
 
     def project_window(self, *, covered_from_sequence: int, covered_to_sequence: int, replacement: str) -> None:
         lease = self._active_lease()

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import ClassVar
 
+from voidcode.capabilities.agent_queries import AgentDefinition
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import ToolEffect
 
-from .models import AgentDefinition
 from .registry import load_agent_registry
 
 

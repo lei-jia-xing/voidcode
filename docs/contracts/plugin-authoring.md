@@ -181,6 +181,14 @@ sibling, and unrelated sessions are refused).
   `spawn_process` jobs keep their own groups and survive a runtime swap.
   Poll `ToolContext.abort_signal` and cancel explicitly; never retain a
   `PluginServices` object past its invocation.
+- Long-running owner drivers: `Plugin.background_action` registers one callback
+  the core runs per claimed background action, outside any model turn. The driver
+  keeps only its `BackgroundContext` (action id, immutable payload, abort event);
+  each `context.invoke(callback)` runs the callback exactly once under a fresh
+  owner/revision-bound lease and commits its staged work atomically, so progress
+  is durable invoke by invoke. Services from one invoke must never escape into
+  another. See [background actions](./background-actions.md) for the claim,
+  status, cancel, wait, and liveness contract.
 - Sessions are commit-once ledgers over append-only facts: no fork, undo,
   revert, or import. `read_only` and approval are SDK invocation contracts
   over declared effects — not OS isolation.

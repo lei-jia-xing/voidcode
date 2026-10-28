@@ -57,3 +57,6 @@ preferences, derived selectable flags, or unused serialization protocol. YAML
 metadata is validated at file ingress; internal code uses the typed definition.
 Agents and skills share the same bounded PyYAML parser in
 `capabilities/frontmatter.py`, including duplicate-key and non-string-key checks.
+The shared definition and its query contract live in
+`capabilities/agent_queries.py`: an exact eight-key answer whose missing or
+unknown key is malformed, never a silent scope widening.

@@ -204,6 +204,12 @@ class StagedWakeup:
         object.__setattr__(self, "payload", own_json_object(self.payload))
 
 
+#: `continuations.source` value marking one row as a plugin-owned background action. The
+#: discriminator is the core-controlled column, never `payload.kind`: ordinary model
+#: continuations accept arbitrary JSON and must pass through untouched.
+BACKGROUND_ACTION_SOURCE = "@core/background"
+
+
 @dataclass(frozen=True, slots=True)
 class StagedWakeupCancel:
     wakeup_id: str
@@ -670,6 +676,7 @@ class SqliteStore:
         depth: int,
         tool_allowlist: tuple[str, ...] | None = None,
         max_root_children: int | None = None,
+        birth: Mapping[str, object] | None = None,
     ) -> SessionRecord:
         """Create a delegated child session that can only be narrower than its parent.
 
@@ -677,6 +684,14 @@ class SqliteStore:
         pointer, so a child can never be pinned to a generation that just moved. When
         `max_root_children` is set, the chain count and insert are one transaction so
         concurrent spawns cannot both pass the same budget check.
+
+        With `birth`, the child's own first event (sequence 1) is committed atomically
+        in the same transaction: a self-describing `core.child_spawned` birth record
+        carrying the keyed identity (owner, key, spec hash, birth stance). The parent
+        fact published afterwards is the readable linkage; the birth record is the
+        crash-window truth that lets a lookup verify the mapping even when the parent
+        fact never landed. It carries an empty `eligible_owners` list: it is an
+        identity record, never an observer notification.
         """
         now = int(time.time() * 1000)
         allowlist_json = None if tool_allowlist is None else json.dumps(list(tool_allowlist))
@@ -684,15 +699,16 @@ class SqliteStore:
             self._check_open()
             in_transaction = False
             try:
-                if max_root_children is not None:
+                if max_root_children is not None or birth is not None:
                     self._connection.execute("BEGIN IMMEDIATE")
                     in_transaction = True
-                    row = self._connection.execute(
-                        "SELECT COUNT(*) FROM sessions WHERE root_session_id = ? AND parent_session_id IS NOT NULL",
-                        (root_session_id,),
-                    ).fetchone()
-                    if row is not None and int(row[0]) >= max_root_children:
-                        raise ValueError("delegation spawn budget exhausted for this chain")
+                    if max_root_children is not None:
+                        row = self._connection.execute(
+                            "SELECT COUNT(*) FROM sessions WHERE root_session_id = ? AND parent_session_id IS NOT NULL",
+                            (root_session_id,),
+                        ).fetchone()
+                        if row is not None and int(row[0]) >= max_root_children:
+                            raise ValueError("delegation spawn budget exhausted for this chain")
                 cursor = self._connection.execute(
                     """
                     INSERT INTO sessions (
@@ -707,6 +723,32 @@ class SqliteStore:
                 )
                 if cursor.rowcount == 0:
                     raise StoreConflict(f"workspace revision moved away from {revision_id!r}; retry against the current revision")
+                if birth is not None:
+                    birth_payload = dict(own_json_object(birth))
+                    birth_payload["eligible_owners"] = []
+                    self._connection.execute(
+                        """
+                        INSERT INTO session_events (
+                            session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json
+                        ) VALUES (?, 1, '', ?, 'kernel', 'plugin', ?, ?)
+                        """,
+                        (session_id, EventType.CHILD_RESERVED, revision_id, canonical_json(birth_payload)),
+                    )
+                    self._connection.execute(
+                        "UPDATE sessions SET last_event_sequence = 1, updated_at = ? WHERE session_id = ?",
+                        (now, session_id),
+                    )
+                    if birth_payload.get("readonly") is True:
+                        # The birth stance lands in the same transaction as the row: no window
+                        # exists where a read-only child runs without its kernel overlay.
+                        self._connection.execute(
+                            """
+                            INSERT INTO session_overlays (session_id, owner, tier, created_at, updated_at)
+                            VALUES (?, 'kernel', 'read-only', ?, ?)
+                            ON CONFLICT (session_id, owner) DO NOTHING
+                            """,
+                            (session_id, now, now),
+                        )
                 if in_transaction:
                     self._connection.execute("COMMIT")
                     in_transaction = False
@@ -721,7 +763,7 @@ class SqliteStore:
                 active_revision_id=revision_id,
                 run_id=None,
                 turn=0,
-                last_event_sequence=0,
+                last_event_sequence=1 if birth is not None else 0,
                 root_session_id=root_session_id,
                 parent_session_id=parent_session_id,
                 depth=depth,
@@ -1424,12 +1466,16 @@ class SqliteStore:
                         cont = cast(StagedContinuationDraft, payload)
                         cont_payload_json = canonical_json(cont.payload)
                         if cont.idempotency_key is not None:
+                            # Namespaced by source family: a background action and a model
+                            # message may share one owner/session/key without swallowing
+                            # each other; only rows of the same family dedupe.
+                            source_clause = "source = ?" if cont.source == BACKGROUND_ACTION_SOURCE else "source <> ?"
                             c_chk = self._connection.execute(
-                                """
+                                f"""
                                 SELECT continuation_id FROM continuations
-                                WHERE session_id = ? AND owner = ? AND idempotency_key = ?
+                                WHERE session_id = ? AND owner = ? AND idempotency_key = ? AND {source_clause}
                                 """,
-                                (session_id, cont.owner, cont.idempotency_key),
+                                (session_id, cont.owner, cont.idempotency_key, BACKGROUND_ACTION_SOURCE),
                             )
                             if c_chk.fetchone() is not None:
                                 continue
@@ -1466,18 +1512,20 @@ class SqliteStore:
                                 UPDATE continuations
                                 SET status = 'cancelled', updated_at = ?
                                 WHERE session_id = ? AND owner = ? AND continuation_id = ?
-                                  AND status IN ('pending', 'claimed')
+                                  AND status IN ('pending', 'claimed') AND source <> ?
                                 """,
-                                (now, session_id, canc.owner, canc.continuation_id),
+                                (now, session_id, canc.owner, canc.continuation_id, BACKGROUND_ACTION_SOURCE),
                             )
                         else:
+                            # Background actions are cancelled through their own abort-aware path;
+                            # a blanket model-continuation cancel must not strand live drivers.
                             self._connection.execute(
                                 """
                                 UPDATE continuations
                                 SET status = 'cancelled', updated_at = ?
-                                WHERE session_id = ? AND owner = ? AND status IN ('pending', 'claimed')
+                                WHERE session_id = ? AND owner = ? AND status IN ('pending', 'claimed') AND source <> ?
                                 """,
-                                (now, session_id, canc.owner),
+                                (now, session_id, canc.owner, BACKGROUND_ACTION_SOURCE),
                             )
 
                 # Apply staged budgets
@@ -2292,16 +2340,15 @@ class SqliteStore:
                 """,
                 (workspace,),
             )
-            blockers.extend((str(row[0]), "pending_confirmation") for row in cursor.fetchall())
         cursor = self._connection.execute(
             """
             SELECT session_id, continuation_id, owner
             FROM continuations
-            WHERE status = 'claimed'
+            WHERE status = 'claimed' AND source <> ?
               AND session_id IN (SELECT session_id FROM sessions WHERE workspace = ?)
             ORDER BY continuation_id ASC
             """,
-            (workspace,),
+            (BACKGROUND_ACTION_SOURCE, workspace),
         )
         blockers.extend((str(row[0]), "claimed_continuation") for row in cursor.fetchall())
         return blockers
@@ -2471,10 +2518,10 @@ class SqliteStore:
                 """
                 SELECT continuation_id, owner
                 FROM continuations
-                WHERE session_id = ? AND status = 'claimed'
+                WHERE session_id = ? AND status = 'claimed' AND source <> ?
                 ORDER BY continuation_id ASC
                 """,
-                (acting_session_id,),
+                (acting_session_id, BACKGROUND_ACTION_SOURCE),
             )
             claimed = cursor.fetchall()
             if len(claimed) > 1:
@@ -2576,9 +2623,9 @@ class SqliteStore:
                 cursor = self._connection.execute(
                     """
                     SELECT continuation_id FROM continuations
-                    WHERE session_id = ? AND owner = ? AND idempotency_key = ?
+                    WHERE session_id = ? AND owner = ? AND idempotency_key = ? AND source <> ?
                     """,
-                    (session_id, owner, idempotency_key),
+                    (session_id, owner, idempotency_key, BACKGROUND_ACTION_SOURCE),
                 )
                 row = cursor.fetchone()
                 if row is not None:
@@ -2759,15 +2806,20 @@ class SqliteStore:
             return None if row is None else (int(row[0]), int(row[1]))
 
     def continuation_id_for_idempotency(self, session_id: str, owner: str, idempotency_key: str) -> str | None:
-        """Return the durable continuation id already recorded for an idempotency key."""
+        """Return the durable model-continuation id already recorded for an idempotency key.
+
+        Background actions share the table but own a separate idempotency namespace: the same
+        owner/session/key may name one model message AND one background action, and neither
+        lookup may swallow the other (ordinary keys are arbitrary strings, never prefixed).
+        """
         with self._lock:
             self._check_open()
             cursor = self._connection.execute(
                 """
                 SELECT continuation_id FROM continuations
-                WHERE session_id = ? AND owner = ? AND idempotency_key = ?
+                WHERE session_id = ? AND owner = ? AND idempotency_key = ? AND source <> ?
                 """,
-                (session_id, owner, idempotency_key),
+                (session_id, owner, idempotency_key, BACKGROUND_ACTION_SOURCE),
             )
             row = cursor.fetchone()
             return None if row is None else str(row[0])
@@ -2799,7 +2851,7 @@ class SqliteStore:
         session_id: str,
         limit: int = 1,
     ) -> tuple[ContinuationRecord, ...]:
-        """Fetch pending continuations in order of creation."""
+        """Fetch pending model continuations in order of creation (never background actions)."""
         with self._lock:
             self._check_open()
             cursor = self._connection.execute(
@@ -2807,11 +2859,11 @@ class SqliteStore:
                 SELECT continuation_id, owner, session_id, source, run_id, revision_id,
                        idempotency_key, root_id, status, payload_json, created_at, updated_at, role
                 FROM continuations
-                WHERE session_id = ? AND status = 'pending'
+                WHERE session_id = ? AND status = 'pending' AND source <> ?
                 ORDER BY created_at ASC
                 LIMIT ?
                 """,
-                (session_id, max(1, limit)),
+                (session_id, BACKGROUND_ACTION_SOURCE, max(1, limit)),
             )
             rows = cursor.fetchall()
             return tuple(
@@ -2838,7 +2890,7 @@ class SqliteStore:
         session_id: str,
         limit: int = 100,
     ) -> tuple[ContinuationRecord, ...]:
-        """Fetch previously claimed continuations for recovery in order of creation."""
+        """Fetch previously claimed model continuations for recovery (never background actions)."""
         with self._lock:
             self._check_open()
             cursor = self._connection.execute(
@@ -2846,11 +2898,11 @@ class SqliteStore:
                 SELECT continuation_id, owner, session_id, source, run_id, revision_id,
                        idempotency_key, root_id, status, payload_json, created_at, updated_at, role
                 FROM continuations
-                WHERE session_id = ? AND status = 'claimed'
+                WHERE session_id = ? AND status = 'claimed' AND source <> ?
                 ORDER BY created_at ASC
                 LIMIT ?
                 """,
-                (session_id, max(1, limit)),
+                (session_id, BACKGROUND_ACTION_SOURCE, max(1, limit)),
             )
             rows = cursor.fetchall()
             return tuple(
@@ -2938,6 +2990,7 @@ class SqliteStore:
                            idempotency_key, root_id, status, payload_json, created_at, updated_at, role
                     FROM continuations
                     WHERE session_id = ? AND status = 'pending'
+                      AND source <> '@core/background'
                       AND (? IS NULL OR continuation_id = ?)
                     ORDER BY created_at ASC
                     LIMIT 1
@@ -2952,6 +3005,7 @@ class SqliteStore:
                                idempotency_key, root_id, status, payload_json, created_at, updated_at, role
                         FROM continuations
                         WHERE session_id = ? AND status = 'claimed'
+                          AND source <> '@core/background'
                           AND (? IS NULL OR continuation_id = ?)
                         ORDER BY created_at ASC
                         LIMIT 1
@@ -3013,8 +3067,8 @@ class SqliteStore:
                 if checkpoint_row is not None and checkpoint_row[0] not in ("terminal",):
                     raise StoreConflict(f"session {session_id!r} holds a resumable/parked checkpoint ({checkpoint_row[0]})")
                 claimed_other = self._connection.execute(
-                    "SELECT 1 FROM continuations WHERE session_id = ? AND status = 'claimed' LIMIT 1",
-                    (session_id,),
+                    "SELECT 1 FROM continuations WHERE session_id = ? AND status = 'claimed' AND source <> ? LIMIT 1",
+                    (session_id, BACKGROUND_ACTION_SOURCE),
                 ).fetchone()
                 if claimed_other is not None:
                     raise StoreConflict(f"session {session_id!r} already has claimed work")
@@ -3203,3 +3257,183 @@ class SqliteStore:
                     (now, session_id, owner),
                 )
             return cursor.rowcount
+
+    def claim_background_action(self, *, workspace: str, claim_identity: Mapping[str, object]) -> ContinuationRecord | None:
+        """Claim ONE pending background action of this workspace; its driver runs it, not a model turn.
+
+        Only rows whose core-controlled `source` marks them background are eligible; ordinary
+        continuations (whose payload may contain anything) are never touched. The `claim_identity`
+        envelope records who holds the claim so another process can tell a live claim from a
+        stale one without a heartbeat framework.
+        """
+        with self._lock:
+            self._check_open()
+            in_transaction = False
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                in_transaction = True
+                row = self._connection.execute(
+                    """
+                    SELECT continuation_id, owner, session_id, source, run_id, revision_id,
+                           idempotency_key, root_id, status, payload_json, created_at, updated_at, role
+                    FROM continuations
+                    WHERE source = ? AND status = 'pending'
+                      AND session_id IN (SELECT session_id FROM sessions WHERE workspace = ?)
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                    """,
+                    (BACKGROUND_ACTION_SOURCE, workspace),
+                ).fetchone()
+                if row is None:
+                    self._connection.execute("COMMIT")
+                    in_transaction = False
+                    return None
+                now = int(time.time() * 1000)
+                payload = own_json_object(json.loads(row[9]))
+                pending = payload.get("action")
+                action = dict(pending) if isinstance(pending, Mapping) else {}
+                envelope = {"claim": json_wire_object(claim_identity), "action": action}
+                claimed = self._connection.execute(
+                    """
+                    UPDATE continuations SET status = 'claimed', updated_at = ?, payload_json = ?
+                    WHERE continuation_id = ? AND status = 'pending'
+                    """,
+                    (now, canonical_json(envelope), row[0]),
+                )
+                if claimed.rowcount == 0:
+                    raise StoreConflict(f"background action {row[0]!r} was claimed concurrently")
+                self._connection.execute("COMMIT")
+                in_transaction = False
+                return ContinuationRecord(
+                    continuation_id=row[0],
+                    owner=row[1],
+                    session_id=row[2],
+                    source=row[3],
+                    run_id=row[4],
+                    revision_id=row[5],
+                    idempotency_key=row[6],
+                    status="claimed",
+                    payload=envelope,
+                    created_at=row[10],
+                    updated_at=now,
+                    root_id=row[7],
+                    role=str(row[12]),
+                )
+            except Exception:
+                if in_transaction:
+                    self._connection.execute("ROLLBACK")
+                raise
+
+    def complete_background_action(self, action_id: str, *, status: Literal["completed", "failed", "cancelled"], error: str | None = None) -> None:
+        """Settle a pending or claimed background action into its terminal state.
+
+        A failed settle records the driver's error as core envelope metadata, leaving
+        the owner's action payload byte-identical: business payloads are arbitrary JSON
+        and must never be rewritten or misread as execution errors.
+        """
+        with self._lock:
+            self._check_open()
+            if status not in ("completed", "failed", "cancelled"):
+                raise ValueError(f"background action completion must be terminal, got {status!r}")
+            if error is not None and status == "failed":
+                row = self._connection.execute(
+                    "SELECT payload_json FROM continuations WHERE continuation_id = ? AND source = ?",
+                    (action_id, BACKGROUND_ACTION_SOURCE),
+                ).fetchone()
+                if row is not None:
+                    try:
+                        envelope = dict(json.loads(row[0]))
+                    except ValueError:
+                        envelope = {}
+                    envelope["error"] = error
+                    self._connection.execute(
+                        "UPDATE continuations SET payload_json = ? WHERE continuation_id = ?",
+                        (canonical_json(envelope), action_id),
+                    )
+            cursor = self._connection.execute(
+                """
+                UPDATE continuations SET status = ?, updated_at = ?
+                WHERE continuation_id = ? AND source = ? AND status IN ('pending', 'claimed')
+                """,
+                (status, int(time.time() * 1000), action_id, BACKGROUND_ACTION_SOURCE),
+            )
+            if cursor.rowcount == 0:
+                raise StoreConflict(f"background action {action_id!r} is not settleable")
+
+    def background_action(self, action_id: str) -> ContinuationRecord | None:
+        """One background action row by id, or None when it is not a background row."""
+        with self._lock:
+            self._check_open()
+            row = self._connection.execute(
+                """
+                SELECT continuation_id, owner, session_id, source, run_id, revision_id,
+                       idempotency_key, root_id, status, payload_json, created_at, updated_at, role
+                FROM continuations
+                WHERE continuation_id = ? AND source = ?
+                """,
+                (action_id, BACKGROUND_ACTION_SOURCE),
+            ).fetchone()
+            if row is None:
+                return None
+            return ContinuationRecord(
+                continuation_id=row[0],
+                owner=row[1],
+                session_id=row[2],
+                source=row[3],
+                run_id=row[4],
+                revision_id=row[5],
+                idempotency_key=row[6],
+                status=row[8],
+                payload=own_json_object(json.loads(row[9])),
+                created_at=row[10],
+                updated_at=row[11],
+                root_id=row[7],
+                role=str(row[12]),
+            )
+
+    def background_action_id_for_idempotency(self, session_id: str, owner: str, idempotency_key: str) -> str | None:
+        """The durable background action id already recorded for an idempotency key."""
+        with self._lock:
+            self._check_open()
+            row = self._connection.execute(
+                """
+                SELECT continuation_id FROM continuations
+                WHERE session_id = ? AND owner = ? AND idempotency_key = ? AND source = ?
+                """,
+                (session_id, owner, idempotency_key, BACKGROUND_ACTION_SOURCE),
+            ).fetchone()
+            return None if row is None else str(row[0])
+
+    def pending_background_actions(self, session_id: str) -> tuple[ContinuationRecord, ...]:
+        """Every pending or claimed background action of one session, oldest first."""
+        with self._lock:
+            self._check_open()
+            rows = self._connection.execute(
+                """
+                SELECT continuation_id, owner, session_id, source, run_id, revision_id,
+                       idempotency_key, root_id, status, payload_json, created_at, updated_at, role
+                FROM continuations
+                WHERE session_id = ? AND source = ? AND status IN ('pending', 'claimed')
+                ORDER BY created_at ASC
+                LIMIT 64
+                """,
+                (session_id, BACKGROUND_ACTION_SOURCE),
+            ).fetchall()
+            return tuple(
+                ContinuationRecord(
+                    continuation_id=row[0],
+                    owner=row[1],
+                    session_id=row[2],
+                    source=row[3],
+                    run_id=row[4],
+                    revision_id=row[5],
+                    idempotency_key=row[6],
+                    status=row[8],
+                    payload=own_json_object(json.loads(row[9])),
+                    created_at=row[10],
+                    updated_at=row[11],
+                    root_id=row[7],
+                    role=str(row[12]),
+                )
+                for row in rows
+            )

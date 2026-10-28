@@ -126,6 +126,8 @@ from .provider import (
 from .services import (
     ArtifactPage,
     ArtifactReference,
+    BackgroundActionStatus,
+    BackgroundContext,
     ChildOutcome,
     ChildSendReceipt,
     ContinuationResult,
@@ -233,6 +235,8 @@ __all__ = [
     "ActivationCommitted",
     "ApprovalGate",
     "ApprovalRequested",
+    "BackgroundActionStatus",
+    "BackgroundContext",
     "ArtifactPage",
     "ArtifactReference",
     "AttachmentOutput",

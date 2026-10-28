@@ -68,6 +68,12 @@ class ExecutionConfig:
     model: str | None = None
     reasoning_effort: str | int | None = None
     policy: ExecutionPolicy = ExecutionPolicy()
+    #: How many child sessions one chain root may hold; the single governed spawn quota.
+    max_root_children: int = 4
+
+    def __post_init__(self) -> None:
+        if type(self.max_root_children) is not int or not 1 <= self.max_root_children <= 64:
+            raise ValueError("max_root_children must be an integer within 1..64")
 
 
 @dataclass(frozen=True, slots=True)

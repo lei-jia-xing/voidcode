@@ -66,3 +66,32 @@ def test_state_directory_structure(tmp_path: Path) -> None:
     workspace.mkdir()
     state_dir = state_directory(workspace)
     assert state_dir.parent.name == "voidcode"
+
+
+@pytest.mark.parametrize("raw", ["-1", "nan", "inf"])
+def test_bad_wait_timeout_rejected_before_any_state_exists(tmp_path: Path, raw: str) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    assert (
+        main(
+            [
+                "invoke",
+                "s1",
+                "workflow.run",
+                "--arguments",
+                '{"workflow": "x"}',
+                "--expected-revision",
+                "rev",
+                "--wait-background",
+                "--wait-timeout",
+                raw,
+                "--workspace",
+                str(workspace.resolve()),
+                "--state-dir",
+                str(state_dir),
+            ]
+        )
+        == 1
+    )
+    assert not state_dir.exists(), "a rejected timeout must not create state or run anything"

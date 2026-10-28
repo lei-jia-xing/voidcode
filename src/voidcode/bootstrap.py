@@ -68,6 +68,7 @@ BUNDLED_PLUGIN_IDS = (
     "todo",
     "user_shell",
     "web",
+    "workflows",
 )
 
 
@@ -136,11 +137,16 @@ def admit_live(
             resolved["providers"] = providers
         plugins.append(PluginSource(root=root, plugin_id=plugin_id, config=resolved))
 
+    policy_section = {
+        "approval_mode": config.policy.approval_mode,
+        "read_only": config.policy.read_only,
+        "max_root_children": config.policy.max_root_children,
+    }
     snapshot: dict[str, object] = {
         "version": PRIVATE_SNAPSHOT_VERSION,
         "providers": providers,
         "model": {"model": config.model.model, "reasoning_effort": config.model.reasoning_effort},
-        "policy": {"approval_mode": config.policy.approval_mode, "read_only": config.policy.read_only},
+        "policy": policy_section,
         "plugins": snapshot_plugins,
     }
     if config.sandbox is not None:
@@ -154,7 +160,7 @@ def admit_live(
         "python": sys.implementation.cache_tag,
         "dependencies": {name: version(name) for name in ("openai", "pydantic", "jsonschema")},
         "model": {"model": config.model.model, "reasoning_effort": config.model.reasoning_effort},
-        "policy": {"approval_mode": config.policy.approval_mode, "read_only": config.policy.read_only},
+        "policy": dict(policy_section),
         "plugins": sorted(plugin.plugin_id for plugin in plugin_tuple),
         "private_config_sha256": hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest(),
     }
@@ -165,6 +171,7 @@ def admit_live(
             approval_mode=config.policy.approval_mode,
             read_only=config.policy.read_only,
         ),
+        max_root_children=config.policy.max_root_children,
     )
     return Admission(
         revision_id=uuid4().hex if revision_id is None else revision_id,

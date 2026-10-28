@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import cast
 
@@ -13,6 +14,9 @@ class OpenAILoopbackServer(ThreadingHTTPServer):
         self.request_headers: list[dict[str, str]] = []
         self.response_bodies: list[bytes] = []
         self.response_content_types: list[str] = []
+        #: Optional test hook run after each request is recorded, before its reply
+        #: is chosen. Returning a reply overrides the queued one for that request.
+        self.before_reply: Callable[[dict[str, object], int], dict[str, object] | None] | None = None
 
 
 class _OpenAILoopbackHandler(BaseHTTPRequestHandler):
@@ -24,7 +28,8 @@ class _OpenAILoopbackHandler(BaseHTTPRequestHandler):
         if self.path != "/v1/chat/completions":
             self.send_error(404)
             return
-        response = server.replies.pop(0)
+        override = server.before_reply(payload, len(server.requests)) if server.before_reply is not None else None
+        response = override if override is not None else server.replies.pop(0)
         streaming = payload.get("stream") is True
         stream_options = payload.get("stream_options")
         include_usage = isinstance(stream_options, dict) and stream_options.get("include_usage") is True

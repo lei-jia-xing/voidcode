@@ -4,6 +4,12 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Scripted workflows plugin
+- New bundled `workflows` plugin: explicitly configured trusted `.py` scripts (`plugins.workflows.config.workflows: {name: path}`) run `async def run(ctx, task)` over core-owned children via `ctx.agent(...)`. Source is snapshotted at start and the recorded bytes execute once after a digest check; changed sources refuse resume before executing anything.
+- One model tool (`workflow_run`, governed `EXECUTE+SPAWN+SESSION`, never replayed), five commands (`workflow.run/status/pause/resume/cancel` with shared `/workflow.*` client syntax), and two generic views. Terminal runs optionally hand their bounded summary back to the originating session as a durable follow-up turn; failures fail both the run and the background action so `invoke --wait-background` exits nonzero.
+- CLI `invoke`/`confirm` gain `--wait-background` (`--wait-timeout` seconds): after the command commits, the same process waits for the receipt's background action (or the session's active ones) and reports settled states in the result JSON. Timeouts, stale claims, and failures are never green.
+- `policy.max_root_children` (1..64, default 4) is the single governed child-session quota per chain root, replacing the fixed internal budget. Runnable reference: `examples/workflows/`.
+
 ### Canonical SSE transcript cutover (BREAKING)
 - Every SSE event now carries the canonical `transcript` projection (`TranscriptEntryWire | null`): the same discriminated `{kind, body}` the `/transcript` route serves. Untagged-shape adapters, `payload.result` fallbacks, and duplicate JSON decode are deleted on both clients; no compat shims. `transcript: null` means genuine bookkeeping only.
 - SSE frames are SDK-owned wire types (`SseFrameWire`: kind-less head + `event`/`error`/`server_restart`), registered in OpenAPI; web consumes the generated union and narrows the head via `'events' in frame`.

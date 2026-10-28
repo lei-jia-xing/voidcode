@@ -6,6 +6,8 @@ durable facts, notice delivery, and continuation merging.
 
 from __future__ import annotations
 
+import hashlib
+import sqlite3
 import threading
 import time
 from collections.abc import Mapping, Sequence
@@ -28,6 +30,7 @@ from .storage.store import (
     StagedContinuationDraft,
     StoreConflict,
     StoredEvent,
+    canonical_json,
 )
 
 if TYPE_CHECKING:
@@ -104,6 +107,12 @@ class DelegationManager:
         self._published_child_runs: set[tuple[str, str]] = set()
         #: (child, run) whose terminal fact/artifact is currently being produced.
         self._child_publication_inflight: set[tuple[str, str]] = set()
+        #: Child ids this process already drives. A keyed retry that lands here must not
+        #: start a second driver for a child whose first thread simply has not run yet;
+        #: only a fresh process (empty set) may repair the crash window by starting one.
+        #: ponytail: unbounded, one small id per spawn this process drove; cap it if a
+        #: long-lived core ever drives enough children for this to matter.
+        self._started_children: set[str] = set()
 
     def close(self) -> None:
         with self._child_finished_lock:
@@ -119,6 +128,8 @@ class DelegationManager:
         max_steps: int = 32,
         readonly: bool = False,
         notify_on_completion: bool = False,
+        owner: str = "",
+        idempotency_key: str | None = None,
     ) -> str:
         """Create and start a delegated child session under `parent_session_id`.
 
@@ -126,6 +137,12 @@ class DelegationManager:
         The child inherits the core policy unchanged (a request can never widen it), and its
         allowlist may only narrow the parent's visible catalog. `notify_on_completion` asks the
         core to deliver one bounded, run-scoped notice to the parent when this run terminates.
+
+        With `idempotency_key` the child identity is deterministic per parent, owner, and key:
+        a retry with the same effective spec returns the existing child (repairing a crash
+        window that left a pristine child or a missing spawn fact), while the same key with a
+        different spec is refused visibly instead of spawning a second child. Without a key the
+        child is always fresh.
         """
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode("utf-8")) > CHILD_PROMPT_MAX_BYTES:
             # A core guard, not a product budget: a delegated prompt may carry a whole
@@ -139,26 +156,236 @@ class DelegationManager:
         depth = parent.depth + 1
         if depth > DELEGATION_MAX_DEPTH:
             raise ValueError(f"delegation depth limit exceeded: depth {depth} exceeds max {DELEGATION_MAX_DEPTH}")
-        if self.core.store.count_root_children(parent.root_session_id) >= DELEGATION_SPAWN_BUDGET:
-            raise ValueError("delegation spawn budget exhausted for this chain")
+        budget = self.core.config.max_root_children
+        # No early return for existing keys here: every mapped key flows through the same
+        # recovery path below (spec verification plus pristine repair), and the quota only
+        # refuses genuine creation inside the store's atomic budget transaction.
         scope = self._child_tool_scope(parent, tool_allowlist)
-        child_id = uuid4().hex
-        self.core.store.create_child_session(
-            child_id,
-            str(self.core.workspace),
-            self.core.revision_id,
-            parent_session_id=parent.session_id,
-            root_session_id=parent.root_session_id,
-            depth=depth,
-            tool_allowlist=scope,
-            max_root_children=DELEGATION_SPAWN_BUDGET,
-        )
+        spec_hash = self._spawn_spec_hash(prompt, scope, max_steps, bool(readonly) or False)
+        if idempotency_key is None:
+            child_id = uuid4().hex
+        else:
+            child_id = self._keyed_child_id(parent.session_id, owner, idempotency_key)
+            recovery = self._recover_keyed_spawn(
+                parent.session_id,
+                child_id,
+                depth=depth,
+                label=label,
+                scope=scope,
+                max_steps=max_steps,
+                readonly=bool(readonly),
+                notify_on_completion=notify_on_completion,
+                spec_hash=spec_hash,
+                prompt=prompt,
+                owner=owner,
+                idempotency_key=idempotency_key,
+            )
+            if recovery is not None:
+                return recovery
+        try:
+            birth: dict[str, object] | None = None
+            if idempotency_key is not None:
+                birth = {
+                    "child_session_id": child_id,
+                    "parent_session_id": parent.session_id,
+                    "label": label,
+                    "depth": depth,
+                    "tool_allowlist": list(scope) if scope is not None else None,
+                    "notify_on_completion": notify_on_completion,
+                    "spawn_owner": owner,
+                    "idempotency_key": idempotency_key,
+                    "spec_hash": spec_hash,
+                    "readonly": bool(readonly),
+                }
+            self.core.store.create_child_session(
+                child_id,
+                str(self.core.workspace),
+                self.core.revision_id,
+                parent_session_id=parent.session_id,
+                root_session_id=parent.root_session_id,
+                depth=depth,
+                tool_allowlist=scope,
+                max_root_children=budget,
+                birth=birth,
+            )
+        except sqlite3.IntegrityError:
+            # Lost a same-key race: the winner owns the id, so re-enter the recovery path
+            # (spec-mismatched retries still refuse there). Only keyed ids can collide.
+            if idempotency_key is None:
+                raise
+            recovery = self._recover_keyed_spawn(
+                parent.session_id,
+                child_id,
+                depth=depth,
+                label=label,
+                scope=scope,
+                max_steps=max_steps,
+                readonly=bool(readonly),
+                notify_on_completion=notify_on_completion,
+                spec_hash=spec_hash,
+                prompt=prompt,
+                owner=owner,
+                idempotency_key=idempotency_key,
+            )
+            if recovery is None:  # pragma: no cover - the colliding row vanished mid-race
+                raise
+            return recovery
         if readonly:
             # Core-owned stance record: the child stays restricted even if the parent's
             # own overlay is later cleared, and no plugin can revoke it.
             self.core.store.set_session_overlay(child_id, "kernel")
+        spawned_payload: dict[str, object] = {
+            "child_session_id": child_id,
+            "label": label,
+            "depth": depth,
+            "tool_allowlist": list(scope) if scope is not None else None,
+            # Durable across restarts: a crash before publication rebuilds the notice
+            # request from this fact, never from the child thread's local argument.
+            "notify_on_completion": notify_on_completion,
+        }
+        if idempotency_key is not None:
+            spawned_payload["spawn_owner"] = owner
+            spawned_payload["idempotency_key"] = idempotency_key
+            spawned_payload["spec_hash"] = spec_hash
         self.core._commit_control_event(
             parent.session_id,
+            EventDraft(
+                EventType.CHILD_SPAWNED,
+                "kernel",
+                "plugin",
+                spawned_payload,
+            ),
+        )
+        self._start_child_run(parent.session_id, child_id, prompt, max_steps, label, notify_on_completion)
+        return child_id
+
+    @staticmethod
+    def _keyed_child_id(parent_session_id: str, owner: str, idempotency_key: str) -> str:
+        """The deterministic child id for one parent, owner, and key; a core identity, not a plugin hash."""
+        encoded = canonical_json({"parent": parent_session_id, "owner": owner, "key": idempotency_key})
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _spawn_spec_hash(prompt: str, scope: tuple[str, ...] | None, max_steps: int, readonly: bool) -> str:
+        """The immutable effective spec a keyed retry must match: prompt, scope, budget, stance."""
+        encoded = canonical_json({"prompt": prompt, "scope": None if scope is None else list(scope), "max_steps": max_steps, "readonly": readonly})
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def _spawned_fact(self, parent_session_id: str, child_id: str) -> dict[str, object] | None:
+        """The durable spawn fact for one child, if the crash window already committed it."""
+        for event in reversed(self.core.store.events(parent_session_id)):
+            if event.event_type == EventType.CHILD_SPAWNED and event.payload.get("child_session_id") == child_id:
+                return dict(event.payload)
+        return None
+
+    def _birth_record(self, child_id: str) -> dict[str, object] | None:
+        """The child's own atomic birth record (sequence 1), or None when it predates birth records.
+
+        The birth record commits in the same transaction as the child row, so it is the
+        crash-window truth when the parent fact never landed. It is read-only here.
+        """
+        for event in self.core.store.events(child_id, limit=1):
+            if event.sequence == 1 and event.event_type == EventType.CHILD_RESERVED:
+                return dict(event.payload)
+        return None
+
+    def _keyed_child(self, parent_session_id: str, owner: str, idempotency_key: str) -> str | None:
+        """The child id already mapped under one parent, owner, and key; None when unmapped.
+
+        The parent fact is the fast path; when a crash landed between the child row and
+        the parent fact, the child's own birth record verifies the mapping instead.
+        """
+        child_id = self._keyed_child_id(parent_session_id, owner, idempotency_key)
+        try:
+            child = self.core.store.session(child_id)
+        except KeyError:
+            return None
+        if child.parent_session_id != parent_session_id:
+            return None
+        fact = self._spawned_fact(parent_session_id, child_id)
+        if fact is not None:
+            if fact.get("spawn_owner") != owner or fact.get("idempotency_key") != idempotency_key:
+                return None
+            return child_id
+        birth = self._birth_record(child_id)
+        if birth is None:
+            return None
+        if birth.get("spawn_owner") != owner or birth.get("idempotency_key") != idempotency_key:
+            return None
+        return child_id
+
+    def find_keyed_child(self, parent_session_id: str, owner: str, idempotency_key: str) -> str | None:
+        """Public read-only mapping lookup: bound to this parent and owner, and it never creates."""
+        return self._keyed_child(parent_session_id, owner, idempotency_key)
+
+    def _recover_keyed_spawn(
+        self,
+        parent_session_id: str,
+        child_id: str,
+        *,
+        depth: int,
+        label: str,
+        scope: tuple[str, ...] | None,
+        max_steps: int,
+        readonly: bool,
+        notify_on_completion: bool,
+        spec_hash: str,
+        prompt: str,
+        owner: str,
+        idempotency_key: str,
+    ) -> str | None:
+        """Return the existing keyed child when the id already maps; None means create it now.
+
+        A retry with a differing spec is refused visibly. A crash that left a pristine idle
+        child without its spawn fact (or without its first run) is repaired by committing the
+        fact and starting the run; a child that already started work is returned as-is and its
+        unknown mutations are never replayed.
+        """
+        try:
+            child = self.core.store.session(child_id)
+        except KeyError:
+            return None
+        if child.parent_session_id != parent_session_id:
+            raise ValueError("spawn idempotency key collides with another parent's child")
+        fact = self._spawned_fact(parent_session_id, child_id)
+        if fact is not None:
+            if fact.get("spawn_owner") != owner or fact.get("idempotency_key") != idempotency_key:
+                raise ValueError("spawn idempotency key collides with another owner's child")
+            if fact.get("spec_hash") != spec_hash:
+                raise ValueError("spawn idempotency key was already used with a different spec")
+            pristine = child.status == "idle" and child.run_id is None
+            fact_missing_notify = "notify_on_completion" not in fact
+            if pristine or fact_missing_notify:
+                repaired: dict[str, object] = dict(fact)
+                repaired["notify_on_completion"] = notify_on_completion
+                self.core._commit_control_event(
+                    parent_session_id,
+                    EventDraft(EventType.CHILD_SPAWNED, "kernel", "plugin", repaired),
+                )
+            if pristine:
+                # Fresh process repairing the crash window; the start claim itself is
+                # atomic, so a retry in the spawning process never starts a second driver.
+                self._start_child_run(parent_session_id, child_id, prompt, max_steps, label, notify_on_completion)
+            return child_id
+        # Session row without a parent fact: the crash window. Verify the birth record
+        # FIRST — even a non-pristine child must prove this owner and spec before it is
+        # returned, and a row with neither fact nor birth cannot prove its origin, so it
+        # fails visibly instead of being adopted on a depth/scope guess.
+        birth = self._birth_record(child_id)
+        if birth is None:
+            raise ValueError("spawn idempotency key maps to a child with no verifiable origin; refusing to adopt it")
+        if birth.get("spawn_owner") != owner or birth.get("idempotency_key") != idempotency_key:
+            raise ValueError("spawn idempotency key collides with another owner's child")
+        if birth.get("spec_hash") != spec_hash:
+            raise ValueError("spawn idempotency key was already used with a different spec")
+        if birth.get("readonly") is True and "read-only" not in self.core.store.session_overlays(child_id):
+            self.core.store.set_session_overlay(child_id, "kernel")
+        if child.status != "idle" or child.run_id is not None:
+            return child_id
+        if readonly:
+            self.core.store.set_session_overlay(child_id, "kernel")
+        self.core._commit_control_event(
+            parent_session_id,
             EventDraft(
                 EventType.CHILD_SPAWNED,
                 "kernel",
@@ -168,20 +395,35 @@ class DelegationManager:
                     "label": label,
                     "depth": depth,
                     "tool_allowlist": list(scope) if scope is not None else None,
-                    # Durable across restarts: a crash before publication rebuilds the notice
-                    # request from this fact, never from the child thread's local argument.
                     "notify_on_completion": notify_on_completion,
+                    "spawn_owner": owner,
+                    "idempotency_key": idempotency_key,
+                    "spec_hash": spec_hash,
                 },
             ),
         )
+        self._start_child_run(parent_session_id, child_id, prompt, max_steps, label, notify_on_completion)
+        return child_id
+
+    def _start_child_run(self, parent_session_id: str, child_id: str, prompt: str, max_steps: int, label: str, notify_on_completion: bool) -> bool:
+        """Start one child driver thread; False when this process already drives it.
+
+        The check-and-claim is atomic under the publication lock, so concurrent retries
+        of one key start exactly one initial run. Follow-up runs go through `send_child`
+        and never consult this set.
+        """
+        with self._child_finished_lock:
+            if child_id in self._started_children:
+                return False
+            self._started_children.add(child_id)
         thread = threading.Thread(
             target=self._run_child,
-            args=(parent.session_id, child_id, prompt, max_steps, label, notify_on_completion),
+            args=(parent_session_id, child_id, prompt, max_steps, label, notify_on_completion),
             name=f"CoreChild-{child_id[:8]}",
             daemon=True,
         )
         thread.start()
-        return child_id
+        return True
 
     def _child_tool_scope(self, parent: SessionRecord, requested: tuple[str, ...] | None) -> tuple[str, ...] | None:
         """Validate a requested child tool scope: known names, and never wider than the parent."""
@@ -211,7 +453,9 @@ class DelegationManager:
         """Drive one spawn run. Waiting is NOT terminal: only a later resume/cancel publishes."""
         run_id = ""
         try:
-            result = self.core._run(prompt, session_id=child_id, max_steps=max_steps, prompt_max_bytes=CHILD_PROMPT_MAX_BYTES)
+            result = self.core._run(
+                prompt, session_id=child_id, max_steps=max_steps, prompt_max_bytes=CHILD_PROMPT_MAX_BYTES, _refuse_reserved_cancelled=True
+            )
             run_id = result.run_id
             status = _child_run_status(result)
             output, error, stop_cause = result.output, result.error, result.stop_cause
@@ -374,14 +618,18 @@ class DelegationManager:
         )
 
     def cancel_child(self, parent_session_id: str, child_id: str, reason: str = "owner cancellation") -> bool:
-        """Cancel a child (executing, parked, or with queued follow-ups) and publish a terminal fact.
+        """Cancel a child (executing, parked, reserved-but-unstarted, or with queued follow-ups).
 
         A send that overlaps this call may legally linearize after the pending sweep and start
         new work. Cancellation therefore publishes only the run identity it observed, never a
-        newer run that a concurrent follow-up legitimately claimed.
+        newer run that a concurrent follow-up legitimately claimed. A reserved child whose
+        first run never started is claimed with an owner-cancel interruption, so a late
+        driver thread can never start it afterwards.
         """
         self._owned_child(parent_session_id, child_id)
         target_run = self.core.store.session(child_id).run_id
+        if target_run is None and self._claim_reserved_child(child_id, reason):
+            return True
         cancelled = self.core.cancel_session(child_id, reason, cause="owner_cancel")
         pending = self.core.store.cancel_pending_continuations(child_id, CHILD_MESSAGE_OWNER)
         child = self.core.store.session(child_id)
@@ -407,6 +655,45 @@ class DelegationManager:
         if child.parent_session_id != parent_session_id:
             raise PermissionError("child session does not belong to this parent session")
         return child
+
+    def _claim_reserved_child(self, child_id: str, reason: str) -> bool:
+        """Claim a pristine reserved child with an owner-cancel interruption; False when it already ran.
+
+        The claim commits an owner-cancel interruption plus a terminal checkpoint in one
+        CAS transaction guarded on the pristine state (idle, no run), so a racing first
+        run either wins the CAS (and this claim is moot) or loses it. A claimed child
+        reports cancelled and its late driver refuses to start; an explicit follow-up
+        afterwards is still a legal fresh run.
+        """
+        with self.core._session_lock(child_id):  # noqa: SLF001 - the delegation manager serializes child claims
+            child = self.core.store.session(child_id)
+            if child.status != "idle" or child.run_id is not None:
+                return False
+            for event in self.core.store.events(child_id):
+                if event.event_type == EventType.USER_MESSAGE:
+                    return False
+            try:
+                self.core.store.commit_staged(
+                    child_id,
+                    expected_sequence=child.last_event_sequence,
+                    expected_run_id=None,
+                    run_id="",
+                    revision_id=self.core.revision_id,
+                    events=(
+                        EventDraft(
+                            EventType.RUN_INTERRUPTED,
+                            "kernel",
+                            "kernel",
+                            {"reason": reason, "stop_cause": "owner_cancel", "logical_turn": ""},
+                        ),
+                    ),
+                    status="interrupted",
+                    checkpoint_kind="terminal",
+                    checkpoint_payload={"step": 0, "stop_cause": "owner_cancel"},
+                )
+            except StoreConflict:
+                return False
+            return True
 
     def _child_has_outstanding_work(self, child: SessionRecord) -> bool:
         """A running child, or a follow-up queued for it (never unread notices or parked work)."""

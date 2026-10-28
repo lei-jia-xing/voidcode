@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,7 @@ from .json_values import json_wire_object, own_json_object
 if TYPE_CHECKING:
     from .history import HistoryPage
     from .hooks import FactPage
+    from .invocation import ToolContext
     from .observed_effects import ObservedEffects
     from .tools import ToolDefinition
     from .transcript import ContextHistory, TranscriptPage
@@ -420,6 +422,54 @@ class SessionUsageReport:
 _USAGE_ADAPTER: TypeAdapter[SessionUsageReport] = TypeAdapter(SessionUsageReport)
 
 
+@dataclass(frozen=True, slots=True)
+class BackgroundActionStatus:
+    """Durable status of one owner background action: its state and terminal error, if any."""
+
+    action_id: str
+    status: str
+    error: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.action_id, str) or not self.action_id:
+            raise ValueError("background action status needs a non-empty action id")
+        if self.status not in ("pending", "running", "interrupted", "completed", "failed", "cancelled"):
+            raise ValueError(f"background action status must be a known state, got {self.status!r}")
+
+    def as_payload(self) -> dict[str, object]:
+        return {"action_id": self.action_id, "status": self.status, "error": self.error}
+
+
+@runtime_checkable
+class BackgroundContext(Protocol):
+    """The long-lived handle a background driver keeps across its whole action."""
+
+    @property
+    def action_id(self) -> str:
+        """The durable continuation identity this driver run was claimed for."""
+        ...
+
+    @property
+    def payload(self) -> Mapping[str, object]:
+        """The immutable JSON object enqueued with the action."""
+        ...
+
+    @property
+    def abort_signal(self) -> threading.Event:
+        """Set when the owner cancels or the core shuts down; the driver polls it."""
+        ...
+
+    def invoke[T](self, callback: Callable[[ToolContext, PluginServices], T]) -> T:
+        """Run `callback` under a fresh owner/revision-bound lease and commit its staged work.
+
+        Each invoke is one atomic commit: state, events, and enqueues land durably before it
+        returns, so a crash loses at most the in-flight callback. The services object must not
+        escape the callback. When the abort signal is set, invoke raises `InterruptedError`
+        and commits nothing.
+        """
+        ...
+
+
 @runtime_checkable
 class PluginServices(Protocol):
     """Scoped services available to a plugin handler during lease callback."""
@@ -469,6 +519,7 @@ class PluginServices(Protocol):
         max_steps: int = 32,
         readonly: bool = False,
         notify_on_completion: bool = False,
+        idempotency_key: str | None = None,
     ) -> str:
         """Start a delegated child session of the bound session; returns its durable session id.
 
@@ -482,6 +533,10 @@ class PluginServices(Protocol):
         the child's readable history is spilled to an immutable artifact. The notice is keyed by
         the run, never by the child alone, so a follow-up run cannot be masked by an older one.
         A synchronous join is the normal choice for immediate work and does not need a notice.
+
+        With `idempotency_key` the identity is deterministic per parent, owner, and key: a retry
+        with the same effective spec returns the existing child, while the same key with a
+        different spec is refused visibly instead of spawning a second child.
         """
         ...
 
@@ -804,6 +859,45 @@ class PluginServices(Protocol):
 
     def cancel_child(self, child_session_id: str, reason: str = "owner cancellation") -> bool:
         """Cancel a child this session spawned, whether it is running or parked for approval."""
+        ...
+
+    def enqueue_background_action(
+        self,
+        payload: Mapping[str, object],
+        *,
+        idempotency_key: str | None = None,
+    ) -> str:
+        """Stage one owner background action, run by this plugin's driver outside any model turn.
+
+        The row commits atomically with the caller's result. With `idempotency_key` a retry
+        returns the existing action id instead of staging a second action. The driver receives
+        a `BackgroundContext` (never this lease) and commits per invoke, so progress is durable
+        action by action, not at the end of the run.
+        """
+        ...
+
+    def cancel_background_action(self, action_id: str, reason: str = "owner cancellation") -> bool:
+        """Cancel one owner background action: pending rows are marked cancelled, a live driver is signalled.
+
+        Returns False when the id is unknown or already terminal. A claimed-but-unattended
+        (stale) row is marked cancelled without touching any live driver.
+        """
+        ...
+
+    def background_action_status(self, action_id: str) -> BackgroundActionStatus | None:
+        """The durable status of one owner background action, or None when unknown.
+
+        Foreign owners' actions are never visible here. `interrupted` means the claim was lost
+        (shutdown or reload); resume is an explicit new action, never an automatic replay.
+        """
+        ...
+
+    def find_child(self, *, idempotency_key: str) -> str | None:
+        """The child this parent spawned under `idempotency_key`, if any; never spawns.
+
+        Owner- and parent-bound: a key another owner used is not visible here. This is the
+        read-only recovery path for a crash between spawn and the caller's own bookkeeping.
+        """
         ...
 
     def cancel_continuations(self, *, continuation_id: str | None = None) -> None:

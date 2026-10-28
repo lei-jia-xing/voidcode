@@ -44,6 +44,7 @@ class PolicyConfig(BaseModel):
 
     approval_mode: Literal["ask", "write", "yolo"] = "ask"
     read_only: bool = False
+    max_root_children: int = Field(default=4, ge=1, le=64)
 
 
 class SandboxConfig(BaseModel):

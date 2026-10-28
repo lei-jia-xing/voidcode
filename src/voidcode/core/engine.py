@@ -38,7 +38,7 @@ from ..sdk.commands import (
 from ..sdk.hooks import RequestWindow, StopCause, WindowSegment
 from ..sdk.icons import Icon
 from ..sdk.invocation import ToolContext
-from ..sdk.json_values import json_wire_object
+from ..sdk.json_values import json_wire_object, own_json_object
 from ..sdk.limits import CLIENT_PROMPT_MAX_BYTES
 from ..sdk.observed_effects import MAX_OBSERVED_CHANGES, ObservedChange
 from ..sdk.provider import ProviderExecutionError, ProviderMessage, ProviderTurnRequest, ProviderTurnResult
@@ -110,8 +110,8 @@ class Cancellation:
     def __init__(self) -> None:
         self._event = Event()
         self._reason: str | None = None
-        self._stop_cause: StopCause = "user_stop"
         self._lock = threading.Lock()
+        self._stop_cause: StopCause = "user_stop"
 
     @property
     def cancelled(self) -> bool:
@@ -137,6 +137,88 @@ class Cancellation:
                 self._event.clear()
 
 
+class _EventAbortSignal:
+    """A `ProviderAbortSignal` view over one background action's abort event.
+
+    The driver owns the event; callbacks only observe it. `set_cancelled` mirrors into
+    the shared event so cooperative tools can signal, but clearing is refused: an abort
+    once observed must stay observed for every later invoke of the same action.
+    """
+
+    def __init__(self, event: threading.Event) -> None:
+        self._event = event
+        self._reason: str | None = None
+        self._lock = threading.Lock()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._event.is_set()
+
+    @property
+    def reason(self) -> str | None:
+        with self._lock:
+            return self._reason
+
+    def set_cancelled(self, value: bool, *, reason: str | None = None) -> None:
+        with self._lock:
+            if value:
+                self._reason = reason
+                self._event.set()
+            elif not self._event.is_set():
+                self._reason = None
+
+
+class _BackgroundContext:
+    """The long-lived driver handle for one claimed background action.
+
+    The driver keeps only this object across its whole run. Each `invoke` opens a fresh
+    owner/revision-bound lease, runs the callback, and commits its staged work atomically —
+    so progress is durable invoke by invoke, never at the end of the run. Commits never
+    take the session run lock: the driver must not block (or be blocked by) model turns.
+    """
+
+    def __init__(
+        self,
+        core: Core,
+        *,
+        action_id: str,
+        owner: str,
+        session_id: str,
+        action: Mapping[str, object],
+        revision_id: str,
+        abort: threading.Event,
+    ) -> None:
+        self._core = core
+        self._action_id = action_id
+        self._owner = owner
+        self._session_id = session_id
+        self._action = own_json_object(action)
+        self._revision_id = revision_id
+        self._abort = abort
+
+    @property
+    def action_id(self) -> str:
+        return self._action_id
+
+    @property
+    def payload(self) -> Mapping[str, object]:
+        return self._action
+
+    @property
+    def abort_signal(self) -> threading.Event:
+        return self._abort
+
+    def invoke[T](self, callback: Callable[[ToolContext, Any], T]) -> T:
+        return self._core._invoke_background_action(
+            self._owner,
+            self._session_id,
+            callback,
+            action_id=self._action_id,
+            revision_id=self._revision_id,
+            abort=self._abort,
+        )
+
+
 class ActivationFenced(RuntimeError):
     """A dispatch or activation raced the activation fence; retry after it settles."""
 
@@ -154,6 +236,7 @@ _PARKED_INTERVENING_TYPES = frozenset(
         EventType.CONFIRMATION_REQUESTED,
         EventType.CONFIRMATION_DECIDED,
         EventType.CHILD_SPAWNED,
+        EventType.CHILD_RESERVED,
         EventType.CHILD_FINISHED,
         EventType.MODEL_QUERY,
         EventType.TOOL_DEFERRED,
@@ -333,6 +416,22 @@ def _is_parked_intervening(event: StoredEvent) -> bool:
     return event.event_type in _PARKED_INTERVENING_TYPES or event.event_type.startswith("plugin.")
 
 
+def _reserved_cancelled(events: list[StoredEvent]) -> bool:
+    """Whether a cancel claimed this child before its first run ever started.
+
+    A reserved child that never ran holds an owner-cancel interruption and no user
+    message at all. Any user message proves a real run began, so a late driver must
+    not mistake ordinary history for a pre-run cancellation.
+    """
+    cancelled = False
+    for event in events:
+        if event.event_type == EventType.USER_MESSAGE:
+            return False
+        if event.event_type == EventType.RUN_INTERRUPTED and event.payload.get("stop_cause") == "owner_cancel":
+            cancelled = True
+    return cancelled
+
+
 def _tool_calls_from_content(content: str, *, provider_name: str, model_name: str) -> tuple[ToolCall, ...]:
     """Decode one whole-message tool content event into turn tool calls."""
     try:
@@ -507,6 +606,14 @@ class Core:
         self._session_locks_guard = Lock()
         self._session_aborts: dict[str, Cancellation] = {}
         self._aborts_lock = Lock()
+        # Background action drivers: claimed-but-unsettled action ids this process drives.
+        # Cross-process double-driving is impossible: construction holds an exclusive
+        # workspace flock (`another process owns this workspace`), so a claimed row this
+        # process does not drive is necessarily stale, never a live foreign claim.
+        self._background_live: set[str] = set()
+        self._background_aborts: dict[str, threading.Event] = {}
+        self._background_cond = threading.Condition()
+        self._background_identity = {"pid": os.getpid(), "core": uuid4().hex}
         # One pointer per capability generation, plus short-critical-section call accounting.
         # The activation fence rejects new dispatches and reports foreign in-flight calls as
         # busy instead of blocking any run, and no lock is ever held across an RPC.
@@ -540,7 +647,7 @@ class Core:
                 store=self.store,
                 usage_callback=self._get_session_usage,
                 budget_callback=self._get_owner_budget,
-                spawn_child_callback=lambda parent, prompt, label, max_steps, scope, readonly, notify: self.spawn_child(
+                spawn_child_callback=lambda parent, prompt, label, max_steps, scope, readonly, notify, owner, key: self.spawn_child(
                     parent,
                     prompt,
                     label=label,
@@ -548,7 +655,10 @@ class Core:
                     max_steps=max_steps,
                     readonly=readonly,
                     notify_on_completion=notify,
+                    owner=owner,
+                    idempotency_key=key,
                 ),
+                find_child_callback=self._delegation.find_keyed_child,
                 join_child_callback=lambda parent, child, timeout: self.join_child(parent, child, timeout_seconds=timeout).as_payload(),
                 send_child_callback=lambda parent, child, prompt, label, notify: self.send_child(
                     parent,
@@ -558,6 +668,7 @@ class Core:
                     notify_on_completion=notify,
                 ).as_payload(),
                 cancel_child_callback=self.cancel_child,
+                cancel_background_action_callback=self.cancel_background_action,
                 model_query_callback=self.governed_model_query,
                 progress_callback=self._report_progress,
                 tool_definition_callback=self._visible_tool_definition,
@@ -623,22 +734,68 @@ class Core:
                 raise ValueError(f"plugin {row.owner} state schema mismatch: stored v{row.schema_version}, declared v{state.version}")
 
     def _start_background_work(self) -> None:
-        """Start the continuation driver and the wakeup ticker, exactly once."""
+        """Start the continuation driver, the wakeup ticker, and the background loop, exactly once."""
         with self._session_locks_guard:
             if self._closed or self._background_started:
                 return
             self._background_started = True
-            for target, name in ((self._drive_pending_activations, "CoreActivationDriver"), (self._wakeup_loop, "CoreWakeupTicker")):
+            self._wire_background_runtime(self._snapshot.plugin_runtime)
+            for target, name in (
+                (self._drive_pending_activations, "CoreActivationDriver"),
+                (self._wakeup_loop, "CoreWakeupTicker"),
+                (self._background_loop, "CoreBackgroundLoop"),
+            ):
                 worker = threading.Thread(target=target, name=name, daemon=True)
                 worker.start()
                 self._background_workers.append(worker)
 
+    def _wire_background_runtime(self, runtime: PluginRuntime) -> None:
+        """Bind one runtime's background projections to this core's live driver registry."""
+        runtime.background_action_notify_callback = self._notify_background_loop
+        runtime.background_claim_live_callback = self._background_claim_live
+        runtime.background_live_actions = set(self._background_live)
+
+    def _notify_background_loop(self) -> None:
+        with self._background_cond:
+            self._background_cond.notify_all()
+
+    def _background_claim_live(self, record: ContinuationRecord) -> bool:
+        """Whether one claimed background row is driven by this process right now.
+
+        Cross-process liveness needs no detection: construction holds the workspace's
+        exclusive flock, so no second process can hold a claim on this database.
+        """
+        with self._background_cond:
+            return record.continuation_id in self._background_live
+
+    def _park_background_drivers(self, *, reason: str) -> None:
+        """Signal every live driver to stop at its next invoke boundary, then wait for them.
+
+        Drivers settle their own rows (cancelled); rows whose driver never reaches a
+        boundary stay claimed-but-unattended and report `interrupted`. Nothing is
+        auto-replayed: resume is always an explicit new action.
+        """
+        _ = reason
+        with self._background_cond:
+            aborts = list(self._background_aborts.values())
+            for abort in aborts:
+                abort.set()
+            self._background_cond.notify_all()
+        deadline = time.monotonic() + 30.0
+        with self._background_cond:
+            while self._background_live and time.monotonic() < deadline:
+                remaining = deadline - time.monotonic()
+                self._background_cond.wait(timeout=min(remaining, 0.2))
+
     def _stop_background_work(self) -> None:
         """Join coordination workers before runtime/store callbacks close their resources."""
         self.cancel("core shutdown", cause="shutdown")
+        self._park_background_drivers(reason="core shutdown")
         with self._session_locks_guard:
             self._closed = True
             workers, self._background_workers = self._background_workers, []
+        with self._background_cond:
+            self._background_cond.notify_all()
         for worker in workers:
             worker.join()
 
@@ -840,8 +997,8 @@ class Core:
         session_id: str | None = None,
         max_steps: int = 32,
         prompt_max_bytes: int,
+        _refuse_reserved_cancelled: bool = False,
     ) -> CoreResult:
-        # The client ingress guard is deliberately tighter than the delegated-prompt guard:
         # a core-driven child run carries a delegated payload (e.g. a review diff).
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode("utf-8")) > prompt_max_bytes:
             raise ValueError(f"prompt must be nonempty UTF-8 text within {prompt_max_bytes // 1024} KiB")
@@ -871,6 +1028,13 @@ class Core:
                     list(self.store.events(session_id)),
                     uuid4().hex,
                 )
+                if _refuse_reserved_cancelled and _reserved_cancelled(execution.events):
+                    # A cancel claimed this reserved child before its first run started
+                    # (checked under the session lock, so a late driver can never slip
+                    # past the claim): report the cancellation instead of starting work.
+                    return CoreResult(
+                        session_id, "", self.revision_id, "interrupted", error="child was cancelled before its first run", stop_cause="owner_cancel"
+                    )
                 if session.status == "interrupted":
                     # Finish the abandoned stopped prefix on its own cursor first,
                     # then start the new user turn with a fresh cursor: it must not
@@ -2091,6 +2255,10 @@ class Core:
                 busy = ", ".join(sorted(self._active_calls.values()))
                 raise ActivationFenced(f"capability activation is blocked by in-flight work: {busy}")
             self._activating_thread = thread_id
+        # Drivers hold no dispatch slot between invokes, so the busy check above cannot see
+        # them: park them explicitly before the candidate builds, or an old-revision driver
+        # would keep running (and its next invoke would only then be refused).
+        self._park_background_drivers(reason="capability activation")
         try:
             return self._prepare_activation_locked(snapshot, admission=admission, source=source)
         except Exception:
@@ -2137,8 +2305,7 @@ class Core:
                 revision_id=target_revision_id,
                 store=self.store,
                 usage_callback=self._get_session_usage,
-                budget_callback=self._get_owner_budget,
-                spawn_child_callback=lambda parent, prompt, label, max_steps, scope, readonly, notify: self.spawn_child(
+                spawn_child_callback=lambda parent, prompt, label, max_steps, scope, readonly, notify, owner, key: self.spawn_child(
                     parent,
                     prompt,
                     label=label,
@@ -2146,7 +2313,10 @@ class Core:
                     max_steps=max_steps,
                     readonly=readonly,
                     notify_on_completion=notify,
+                    owner=owner,
+                    idempotency_key=key,
                 ),
+                find_child_callback=self._delegation.find_keyed_child,
                 join_child_callback=lambda parent, child, timeout: self.join_child(parent, child, timeout_seconds=timeout).as_payload(),
                 send_child_callback=lambda parent, child, prompt, label, notify: self.send_child(
                     parent,
@@ -2156,6 +2326,7 @@ class Core:
                     notify_on_completion=notify,
                 ).as_payload(),
                 cancel_child_callback=self.cancel_child,
+                cancel_background_action_callback=self.cancel_background_action,
                 model_query_callback=self.governed_model_query,
                 progress_callback=self._report_progress,
                 tool_definition_callback=self._visible_tool_definition,
@@ -2205,6 +2376,8 @@ class Core:
         max_steps: int = 32,
         readonly: bool = False,
         notify_on_completion: bool = False,
+        owner: str = "",
+        idempotency_key: str | None = None,
     ) -> str:
         return self._delegation.spawn_child(
             parent_session_id,
@@ -2214,7 +2387,13 @@ class Core:
             max_steps=max_steps,
             readonly=readonly,
             notify_on_completion=notify_on_completion,
+            owner=owner,
+            idempotency_key=idempotency_key,
         )
+
+    def find_keyed_child(self, parent_session_id: str, owner: str, idempotency_key: str) -> str | None:
+        """The child one parent spawned under one owner key; a read-only mapping lookup."""
+        return self._delegation.find_keyed_child(parent_session_id, owner, idempotency_key)
 
     def join_child(self, parent_session_id: str, child_id: str, *, timeout_seconds: float = 300.0) -> ChildOutcome:
         return self._delegation.join_child(parent_session_id, child_id, timeout_seconds=timeout_seconds)
@@ -2285,6 +2464,308 @@ class Core:
                 # A tick failure is visible to the next tick; it never kills the core.
                 pass
             time.sleep(1.0)
+
+    # --- Background actions: owner drivers outside any model turn ---
+
+    def _background_loop(self) -> None:
+        """Claim pending background actions and drive each on its own thread.
+
+        The loop only claims and spawns; each driver runs independently, so one slow
+        action never blocks another session's actions or any model turn. Claimed rows
+        reported as `interrupted` — and are never auto-replayed.
+        """
+        while not self._closed:
+            try:
+                claimed = self.store.claim_background_action(workspace=str(self.workspace), claim_identity=self._background_identity)
+            except StoreConflict:
+                # Lost a claim race; back off and retry. Anything else is a real
+                # store/contract failure and stays visible instead of idling as "no work".
+                claimed = None
+            if claimed is None:
+                with self._background_cond:
+                    self._background_cond.wait(timeout=1.0)
+                continue
+            abort = threading.Event()
+            with self._background_cond:
+                self._background_live.add(claimed.continuation_id)
+                self._background_aborts[claimed.continuation_id] = abort
+            self._snapshot.plugin_runtime.background_live_actions.add(claimed.continuation_id)
+            worker = threading.Thread(
+                target=self._drive_background_action,
+                args=(claimed, abort),
+                name=f"CoreBackground-{claimed.continuation_id[:8]}",
+                daemon=True,
+            )
+            worker.start()
+
+    def _drive_background_action(self, claimed: ContinuationRecord, abort: threading.Event) -> None:
+        """Run one claimed action's owner driver, then settle the row terminally."""
+        action_id = claimed.continuation_id
+        terminal: Literal["completed", "failed", "cancelled"] = "completed"
+        failure: str | None = None
+        try:
+            action = _wire_object(claimed.payload.get("action"), f"background action {action_id!r} envelope")
+            context = _BackgroundContext(
+                self,
+                action_id=action_id,
+                owner=claimed.owner,
+                session_id=claimed.session_id,
+                action=action,
+                revision_id=claimed.revision_id,
+                abort=abort,
+            )
+            driver = self._snapshot.plugin_runtime.background_driver(claimed.owner)
+            if driver is None:
+                raise RuntimeError(f"owner {claimed.owner!r} registers no background driver")
+            driver(context)
+            terminal = "cancelled" if abort.is_set() else "completed"
+        except InterruptedError:
+            terminal = "cancelled"
+            failure = None
+        except BaseException as exc:
+            # Any driver exit — including SystemExit or an asyncio cancellation escaping
+            # the script — settles failed with its real type recorded. This runs on the
+            # worker thread only, so it can never swallow the main thread's Ctrl-C, and
+            # the live registries below always clear in `finally`.
+            terminal = "failed"
+            failure = f"{type(exc).__name__}: {exc}"
+        try:
+            self.store.complete_background_action(action_id, status=terminal, error=failure)
+        except StoreConflict:
+            # The only provable race: a concurrent cancel settled the row first, so the
+            # driver's outcome is moot against an already-terminal row. Anything else
+            # propagates visibly out of the worker; cleanup still runs in `finally`.
+            pass
+        finally:
+            with self._background_cond:
+                self._background_live.discard(action_id)
+                self._background_aborts.pop(action_id, None)
+                self._background_cond.notify_all()
+            self._snapshot.plugin_runtime.background_live_actions.discard(action_id)
+
+    def _invoke_background_action[T](
+        self,
+        owner: str,
+        session_id: str,
+        callback: Callable[[ToolContext, Any], T],
+        *,
+        action_id: str,
+        revision_id: str,
+        abort: threading.Event,
+    ) -> T:
+        """Run one driver callback under a fresh lease and commit its staged work atomically.
+
+        The callback runs exactly once: it is never replayed. Only a `SequenceConflict`
+        retries, and then only by re-submitting the SAME staged proposal against the fresh
+        tip (bounded attempts) — no callback re-execution, no external work replay. Any
+        other conflict (state CAS, run id, revision) fails visibly so the driver sees the
+        real contention instead of a silently retried mutation. The commit never takes the
+        session run lock.
+        """
+        from .services import RuntimeServices
+
+        if abort.is_set() or self._closed:
+            raise InterruptedError(f"background action {action_id!r} was cancelled")
+        with self._dispatch(f"background:{owner}") as snapshot:
+            if snapshot.revision_id != revision_id:
+                raise InterruptedError(f"background action {action_id!r} belongs to a retired revision")
+            runtime = snapshot.plugin_runtime
+            session = self.store.session(session_id)
+            self._check_session(session)
+            signal = _EventAbortSignal(abort)
+            context = ToolContext(
+                workspace=self.workspace,
+                session_id=session_id,
+                run_id=action_id,
+                invocation_id=uuid4().hex,
+                revision_id=snapshot.revision_id,
+                actor="plugin",
+                logical_turn=action_id,
+                abort_signal=signal,
+            )
+            lease = runtime._open_lease(  # noqa: SLF001 - the core owns lease lifecycles
+                owner=owner,
+                session_id=session_id,
+                run_id=action_id,
+                invocation_id=context.invocation_id,
+                readonly=self._session_read_only(session_id),
+                actor="plugin",
+                internal_work=True,
+            )
+            services = RuntimeServices(runtime, lease)
+            try:
+                result = callback(context, services)
+            except BaseException:
+                runtime._revoke_lease(lease)  # noqa: SLF001 - the core owns lease lifecycles
+                raise
+            staged = runtime._staged_changes(lease)  # noqa: SLF001 - the core owns lease lifecycles
+            runtime._revoke_lease(lease)  # noqa: SLF001 - the core owns lease lifecycles
+            if abort.is_set() or self._closed:
+                raise InterruptedError(f"background action {action_id!r} was cancelled")
+            staged_state, staged_events, staged_conts, staged_cancels, staged_budget = staged
+            staged_budget_updates: list[StagedBudgetUpdate] = []
+            if staged_budget == "clear":
+                staged_budget_updates.append(StagedBudgetUpdate(owner=owner, action="clear"))
+            elif isinstance(staged_budget, PluginBudget):
+                staged_budget_updates.append(StagedBudgetUpdate(owner=staged_budget.owner, action="set", budget=staged_budget))
+            for _attempt in range(8):
+                if abort.is_set() or self._closed:
+                    raise InterruptedError(f"background action {action_id!r} was cancelled")
+                latest = self.store.session(session_id)
+                try:
+                    self.store.commit_staged(
+                        session_id,
+                        expected_sequence=latest.last_event_sequence,
+                        expected_run_id=latest.run_id,
+                        run_id=latest.run_id or action_id,
+                        revision_id=snapshot.revision_id,
+                        events=tuple(staged_events),
+                        status=latest.status,
+                        checkpoint_kind=None,
+                        checkpoint_payload=None,
+                        staged_state=staged_state,
+                        staged_continuations=staged_conts,
+                        staged_cancellations=staged_cancels,
+                        staged_budgets=tuple(staged_budget_updates),
+                    )
+                except SequenceConflict:
+                    continue
+                if staged_cancels:
+                    self._owner_cancel_claimed_work(
+                        session_id,
+                        staged_cancels,
+                        f"owner {owner} cancelled its durable work",
+                    )
+                return result
+            raise SequenceConflict(f"background action {action_id!r} could not commit its staged work")
+
+    def cancel_background_action(self, session_id: str, owner: str, action_id: str, reason: str = "owner cancellation") -> bool:
+        """Cancel one owner background action: signal its live driver and mark the row cancelled.
+
+        Pending rows are marked cancelled without ever running. A claimed row driven by this
+        process is signalled (the driver observes the abort and settles cancelled); a
+        claimed-but-unattended row is marked cancelled outright. Foreign owners' rows and
+        terminal rows are untouched; unknown ids return False.
+        """
+        _ = reason
+        self._ensure_open()
+        record = self.store.background_action(action_id)
+        if record is None or record.owner != owner or record.session_id != session_id:
+            return False
+        if record.status in ("completed", "failed", "cancelled"):
+            return False
+        with self._background_cond:
+            abort = self._background_aborts.get(action_id)
+            live = action_id in self._background_live
+        if live and abort is not None:
+            abort.set()
+            with self._background_cond:
+                self._background_cond.notify_all()
+            return True
+        try:
+            self.store.complete_background_action(action_id, status="cancelled")
+        except StoreConflict:
+            return False
+        with self._background_cond:
+            self._background_cond.notify_all()
+        return True
+
+    def wait_background_actions(
+        self, session_id: str, *, action_id: str | None = None, timeout_seconds: float = 300.0
+    ) -> tuple[dict[str, object], ...]:
+        """Wait until this session's background actions settle; raise when one failed.
+
+        With `action_id` the wait names one exact receipt: even when that action already
+        settled before the wait starts, its terminal state is checked and a failure is
+        raised — a pre-settled failure can never slip through as a green empty wait. The
+        id must belong to this session; a foreign or unknown id raises visibly. Without
+        an id the wait covers the session's currently active actions only, so a past
+        failure never poisons a new run.
+
+        Claimed-but-unattended (stale) rows are never waited on: they report `interrupted`
+        and need an explicit new action, never an automatic replay. An explicitly waited
+        stale row or a timeout is not success: the caller gets the honest remainder, and
+        a failed action raises `RuntimeError` naming its id and recorded error.
+        """
+        self._ensure_open()
+        self.session(session_id)
+        if action_id is not None:
+            return (self._wait_one_background_action(session_id, action_id, timeout_seconds=timeout_seconds),)
+        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+        while True:
+            pending = self.store.pending_background_actions(session_id)
+            with self._background_cond:
+                live = set(self._background_live)
+            waited = [record for record in pending if record.status == "pending" or record.continuation_id in live]
+            if not waited:
+                # A claimed row outside the live set is stale — but the claim and the live
+                # registration are two steps, so confirm across a beat before reporting it.
+                time.sleep(0.2)
+                pending = self.store.pending_background_actions(session_id)
+                with self._background_cond:
+                    live = set(self._background_live)
+                waited = [record for record in pending if record.status == "pending" or record.continuation_id in live]
+                if waited:
+                    continue
+                settled: list[dict[str, object]] = []
+                for record in pending:
+                    settled.append(self._stale_action_entry(record))
+                return tuple(settled)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return tuple({"action_id": record.continuation_id, "status": record.status} for record in waited)
+            with self._background_cond:
+                self._background_cond.wait(timeout=min(remaining, 0.2))
+            # One round settled (or was notified): surface failures before waiting further,
+            # so a failed action never hides behind a longer-running sibling.
+            for record in waited:
+                current = self.store.background_action(record.continuation_id)
+                if current is None or current.status != "failed":
+                    continue
+                raise RuntimeError(f"background action {current.continuation_id!r} failed" + self._action_error_suffix(current))
+
+    def _wait_one_background_action(self, session_id: str, action_id: str, *, timeout_seconds: float) -> dict[str, object]:
+        """Wait for one exact action receipt, however it settled — even before this call."""
+        record = self.store.background_action(action_id)
+        if record is None or record.session_id != session_id:
+            raise ValueError(f"background action {action_id!r} does not belong to session {session_id!r}")
+        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+        while True:
+            current = self.store.background_action(action_id)
+            assert current is not None  # background rows are never deleted
+            if current.status in ("completed", "failed", "cancelled"):
+                if current.status == "failed":
+                    raise RuntimeError(f"background action {action_id!r} failed" + self._action_error_suffix(current))
+                return {"action_id": action_id, "status": current.status}
+            with self._background_cond:
+                live = action_id in self._background_live
+            if current.status == "claimed" and not live:
+                time.sleep(0.2)
+                reconfirmed = self.store.background_action(action_id)
+                assert reconfirmed is not None
+                with self._background_cond:
+                    live = action_id in self._background_live
+                if reconfirmed.status == "claimed" and not live:
+                    return self._stale_action_entry(reconfirmed)
+                continue
+            if time.monotonic() >= deadline:
+                return {"action_id": action_id, "status": current.status}
+            with self._background_cond:
+                self._background_cond.wait(timeout=0.2)
+
+    @staticmethod
+    def _stale_action_entry(record: ContinuationRecord) -> dict[str, object]:
+        """The honest report for a claimed-but-unattended row: interrupted, never success."""
+        error = record.payload.get("error")
+        return {"action_id": record.continuation_id, "status": "interrupted", "error": error if isinstance(error, str) else None}
+
+    @staticmethod
+    def _action_error_suffix(record: ContinuationRecord) -> str:
+        """The recorded driver error of one failed row, as a raise suffix (empty when absent)."""
+        error = record.payload.get("error")
+        if isinstance(error, str) and error:
+            return f": {error}"
+        return ""
 
     def governed_model_query(
         self,
@@ -2622,6 +3103,8 @@ class Core:
         # Deliver facts deferred to owners the candidate now registers, under the new runtime.
         self._replay_pending_observers()
         snapshot.plugin_runtime.close()
+        self._wire_background_runtime(prepared.plugin_runtime)
+        self._notify_background_loop()
 
     def _activation_checkpoint(
         self,

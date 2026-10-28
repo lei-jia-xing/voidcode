@@ -16,9 +16,10 @@ from dataclasses import dataclass, field
 from typing import ClassVar
 from uuid import uuid4
 
+from voidcode.capabilities.agent_queries import AGENT_DEFINITIONS, AgentDefinition, AgentDefinitionRequest, apply_agent_profile
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.plugin import Plugin
+from voidcode.sdk.plugin import Plugin, PluginQueryCaller
 from voidcode.sdk.services import ChildOutcome, PluginServices
 from voidcode.sdk.tools import (
     TextOutput,
@@ -31,7 +32,6 @@ from voidcode.sdk.tools import (
 )
 
 from .profiles.commands import AgentsCommand, AgentShowCommand
-from .profiles.models import AgentDefinition
 from .profiles.registry import AgentRegistry, load_agent_registry
 
 SCHEMA_VERSION = 1
@@ -542,15 +542,7 @@ def _spawn_child(
     notify_on_completion: bool,
 ) -> str:
     """Apply profile text and stance; only the caller narrows the inherited scope."""
-    body = prompt if profile is None else f"{profile.prompt}\n\n{prompt}"
-    readonly = False if profile is None else profile.readonly
-    if profile is not None:
-        if profile.tools is not None:
-            tool_allowlist = profile.tools if tool_allowlist is None else tuple(name for name in tool_allowlist if name in profile.tools)
-            if not tool_allowlist:
-                raise ValueError(f"agent '{profile.name}' has no tools within the requested scope")
-        if profile.max_turns is not None:
-            max_steps = min(max_steps, profile.max_turns)
+    body, readonly, tool_allowlist, max_steps = apply_agent_profile(profile, prompt, tool_allowlist, max_steps)
     child_id = services.spawn_child(
         body,
         label=label,
@@ -560,6 +552,14 @@ def _spawn_child(
         notify_on_completion=notify_on_completion,
     )
     return child_id
+
+
+def _agent_definition(request: AgentDefinitionRequest, caller: PluginQueryCaller) -> AgentDefinition | None:
+    try:
+        registry = load_agent_registry(caller.workspace)
+    except (ValueError, OSError) as exc:
+        raise ValueError(f"agent profile registry is unavailable: {exc}") from exc
+    return registry.get(request.name)
 
 
 def _failure(tool_name: str, message: str) -> ToolResult:
@@ -1300,5 +1300,6 @@ def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
     return Plugin(
         tools=(TaskTool(), TaskBatchTool()),
         commands=(AgentsCommand(), AgentShowCommand()),
+        queries=(AGENT_DEFINITIONS.bind(_agent_definition),),
         prepare_deactivate=prepare_delegation_deactivation,
     )

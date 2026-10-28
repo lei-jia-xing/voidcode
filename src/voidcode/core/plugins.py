@@ -213,10 +213,12 @@ class PluginRuntime:
         store: SqliteStore | None = None,
         usage_callback: Callable[[str, int, int | None], SessionUsageReport] | None = None,
         budget_callback: Callable[[str, str], PluginBudget | None] | None = None,
-        spawn_child_callback: Callable[[str, str, str, int, tuple[str, ...] | None, bool, bool], str] | None = None,
+        spawn_child_callback: Callable[[str, str, str, int, tuple[str, ...] | None, bool, bool, str, str | None], str] | None = None,
+        find_child_callback: Callable[[str, str, str], str | None] | None = None,
         join_child_callback: Callable[[str, str, float], Mapping[str, object]] | None = None,
         send_child_callback: Callable[[str, str, str, str, bool], Mapping[str, object]] | None = None,
         cancel_child_callback: Callable[[str, str, str], bool] | None = None,
+        cancel_background_action_callback: Callable[[str, str, str, str], bool] | None = None,
         model_query_callback: Callable[[str, str, str | None, int | None, bool], str] | None = None,
         progress_callback: Callable[[LeaseContext, Mapping[str, object]], None] | None = None,
         tool_definition_callback: Callable[[str, str, str], tuple[Mapping[str, object] | None, str]] | None = None,
@@ -234,14 +236,20 @@ class PluginRuntime:
         self.usage_callback = usage_callback
         self.budget_callback = budget_callback
         self.spawn_child_callback = spawn_child_callback
+        self.find_child_callback = find_child_callback
         self.join_child_callback = join_child_callback
         self.send_child_callback = send_child_callback
         self.cancel_child_callback = cancel_child_callback
+        self.cancel_background_action_callback = cancel_background_action_callback
         self.model_query_callback = model_query_callback
         self.progress_callback = progress_callback
         self.tool_definition_callback = tool_definition_callback
+        #: Core-owned background wiring: the claim loop's wakeup, the claim liveness check,
+        #: and the action ids this generation currently drives. Set by the core after build.
+        self.background_action_notify_callback: Callable[[], None] | None = None
+        self.background_claim_live_callback: Callable[[Any], bool] | None = None
+        self.background_live_actions: set[str] = set()
         self._artifacts = None if artifacts_dir is None else ArtifactStore(artifacts_dir)
-        # Unique per runtime so two generations never share imported plugin modules.
         self._namespace = f"voidcode_runtime_{uuid4().hex}"
         self._modules: list[str] = []
 
@@ -277,6 +285,7 @@ class PluginRuntime:
         self._pre_tool_hooks: list[tuple[Any, tuple[str, ...], bool, str]] = []
         self._lifecycle_hooks: dict[str, tuple[Any, str]] = {}
         self._observers: list[tuple[Any, tuple[str, ...], str]] = []
+        self._background_actions: dict[str, Any] = {}
         self._state_deactivators: dict[str, Any] = {}
         self._queries: dict[str, tuple[Any, str]] = {}
 
@@ -382,6 +391,9 @@ class PluginRuntime:
         if plugin_instance.observer is not None:
             _check_arity(plugin_instance.observer, 3, f"Plugin {plugin_id} observer callback")
             self._observers.append((plugin_instance.observer, plugin_instance.observed_facts, plugin_id))
+        if plugin_instance.background_action is not None:
+            _check_arity(plugin_instance.background_action, 1, f"Plugin {plugin_id} background_action callback")
+            self._background_actions[plugin_id] = plugin_instance.background_action
         if plugin_instance.post_tool is not None:
             _check_arity(plugin_instance.post_tool, 3, f"Plugin {plugin_id} post_tool callback")
             self._post_tool_hooks.append((plugin_instance.post_tool, plugin_instance.post_tool_match, plugin_instance.post_tool_mutating, plugin_id))
@@ -520,6 +532,10 @@ class PluginRuntime:
     def pre_tool_hooks(self) -> tuple[tuple[str, tuple[str, ...], bool], ...]:
         """Declared pre-tool gates: (owner, tool match patterns, mutating)."""
         return tuple((plugin_id, match, mutating) for _, match, mutating, plugin_id in self._pre_tool_hooks)
+
+    def background_driver(self, owner: str) -> Any | None:
+        """The background driver one owner registered, or None when it declares none."""
+        return self._background_actions.get(owner)
 
     @property
     def post_tool_hooks(self) -> tuple[tuple[str, tuple[str, ...], bool], ...]:
@@ -780,6 +796,41 @@ class PluginRuntime:
             except KeyError:
                 return False
         return False
+
+    def notify_background_action(self) -> None:
+        """Wake the background driver loop; the default no-op keeps callback-free runtimes working."""
+        callback = self.background_action_notify_callback
+        if callback is not None:
+            callback()
+
+    def background_action_status(self, record: Any) -> Any:
+        """Project one background action row to its owner-visible status; the core sets liveness.
+
+        `interrupted` is reported when the row is claimed but its claim identity no longer
+        verifies live. The verification callback is core-owned; without it a claimed row
+        reports `running` only when this runtime drives it, else `interrupted`.
+        """
+        from voidcode.sdk.services import BackgroundActionStatus as Status
+
+        error: str | None = None
+        claimed = getattr(record, "status", "pending")
+        payload = getattr(record, "payload", {})
+        error_value = payload.get("error") if isinstance(payload, Mapping) else None
+        if isinstance(error_value, str) and error_value:
+            error = error_value
+        action_id = str(getattr(record, "continuation_id", ""))
+        if claimed in ("completed", "failed", "cancelled"):
+            return Status(action_id=action_id, status=claimed, error=error)
+        if claimed == "pending":
+            return Status(action_id=action_id, status="pending")
+        live = action_id in self.background_live_actions
+        verify = self.background_claim_live_callback
+        if not live and verify is not None:
+            try:
+                live = bool(verify(record))
+            except Exception:
+                live = False
+        return Status(action_id=action_id, status="running" if live else "interrupted", error=error)
 
     def execute_query(
         self,

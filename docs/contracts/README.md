@@ -16,7 +16,9 @@ This directory contains the authoritative technical contracts for the VoidCode c
 
 - [`client-transport.md`](./client-transport.md): Core HTTP/SSE API, core CLI, inline TUI, and the web client: catalog/revision binding, view descriptors, event streams, and the two decision gates.
 - [`agent-collaboration.md`](./agent-collaboration.md): Delegated agent collaboration: child facts, run-scoped join/steering, completion notices and atomic acknowledgement, restart publication recovery, and bounded transcript/history paging.
+- [`background-actions.md`](./background-actions.md): Owner background actions: driver registration, per-invoke leases, source-isolated storage, cancel/wait, stale liveness, and idempotent child spawn.
 - [`goal-plugin.md`](./goal-plugin.md): Official Goal plugin contracts, state schema, windowed accounting, 3-turn blocked audit, and declarative views.
+- [`workflows.md`](./workflows.md): Scripted dynamic agent workflows: trusted configured scripts, source snapshots, effective-spec node fingerprints, driver states, steering, and completion notices. Runnable reference: `examples/workflows/`.
 - [`hot-activation.md`](./hot-activation.md): Same-session capability activation: trusted admission, immutable generation snapshots, state validation/deactivation, the activation transaction, durable automatic continuation, and restart restore.
 - Generation adoption (cross-build moves) is stop-and-restart plus `bootstrap.adopt_generation`; there is no supervised upgrade path.
 - [`plugin-authoring.md`](./plugin-authoring.md): Third-party plugin author contract: package layout, tools/commands/views, state deactivation, revisions, and executable diagnostics. Runnable reference: `examples/tally-counter/`.

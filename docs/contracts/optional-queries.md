@@ -44,6 +44,19 @@ requires a new query name; do not silently change the meaning of an existing con
 Custom contracts can use the same SDK API; the low-level `PluginServices.query` and
 `PluginQuery` transport remain available for custom contracts.
 
+`voidcode.capabilities.agent_queries` shares one more contract the same way:
+`AGENT_DEFINITIONS.ask(services, AgentDefinitionRequest(name=...))` resolves an
+effective named agent (`name`, `description`, `prompt`, `source_scope`,
+`source_path`, `readonly`, `tools`, `max_turns`); `AGENT_DEFINITIONS.bind(handler)`
+provides it. Delegation is the default provider: it answers from its Markdown
+registry, returns `None` for an unknown name, and surfaces an unloadable
+registry as a provider failure. With delegation disabled the query is
+unavailable, visibly, like any other unanswered capability. Any admitted plugin
+may substitute the provider; consumers never import delegation. The shared
+`apply_agent_profile` helper turns one resolved definition plus a caller scope
+into the effective child prompt, stance, tool scope, and step budget, so every
+consumer applies the same narrowing without restating profile policy.
+
 ## Distinct outcomes
 
 - `QueryUnavailable`: no admitted implementation. The consumer chooses its documented
@@ -82,5 +95,8 @@ been migrated as part of delegation simplification.
 `tests/integration/test_optional_workspace_queries.py` admits an independent SDK-only provider
 with all official plugins disabled and drives real file tools through the core. It checks
 substitution, provider absence, malformed answers, and unchanged files after refused edits.
+`tests/integration/test_agent_definition_query.py` does the same for named agents:
+delegation answers, any admitted plugin may substitute, an unknown name is `None`,
+and absence is a visible `QueryUnavailable`.
 The review and delegation integration suites also run their workflows without optional
 inspection plugins or synthetic stand-in tools.

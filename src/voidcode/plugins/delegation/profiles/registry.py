@@ -7,10 +7,10 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import cast
 
+from voidcode.capabilities.agent_queries import AgentDefinition, AgentSourceScope
 from voidcode.capabilities.frontmatter import load_frontmatter_mapping, split_frontmatter
 
 from .builtin import list_builtin_agents
-from .models import AgentDefinition, AgentSourceScope
 
 _CLAUDE_TOOL_NAMES = {"Read": "read", "Write": "write", "Edit": "edit", "Glob": "glob", "Grep": "grep", "Bash": "shell_exec", "Agent": "task"}
 

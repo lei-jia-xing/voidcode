@@ -934,18 +934,18 @@ def test_concurrent_spawns_at_budget_accept_exactly_one_child(tmp_path: Path) ->
         assert core.store.count_root_children(parent) == 3
 
         contender_barrier = threading.Barrier(2, timeout=30)
-        original_count = core.store.count_root_children
+        original_create = core.store.create_child_session
         mainstream = threading.get_ident()
         captured: dict[str, int] = {}
 
-        def counting_count(root_session_id: str) -> int:
-            real = original_count(root_session_id)
-            if threading.get_ident() != mainstream and real == 3:
-                captured[threading.current_thread().name] = real
+        def gated_create(session_id: str, *args: object, **kwargs: object) -> object:
+            count = core.store.count_root_children(parent)
+            if threading.get_ident() != mainstream and count == 3:
+                captured[threading.current_thread().name] = count
                 contender_barrier.wait()
-            return real
+            return original_create(session_id, *args, **kwargs)  # type: ignore[arg-type]
 
-        core.store.count_root_children = counting_count  # type: ignore[method-assign]
+        core.store.create_child_session = gated_create  # type: ignore[method-assign]
         outcomes: dict[str, str] = {}
         start = threading.Barrier(3, timeout=30)
 
@@ -964,7 +964,7 @@ def test_concurrent_spawns_at_budget_accept_exactly_one_child(tmp_path: Path) ->
             for thread in threads:
                 thread.join(timeout=30)
         finally:
-            core.store.count_root_children = original_count  # type: ignore[method-assign]
+            core.store.create_child_session = original_create  # type: ignore[method-assign]
         assert not [thread for thread in threads if thread.is_alive()], "a contender hung"
         assert set(captured.values()) == {3} and len(captured) == 2, "both contenders raced on the real count 3"
 

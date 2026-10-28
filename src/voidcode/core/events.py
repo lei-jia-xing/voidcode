@@ -27,6 +27,9 @@ class EventType(StrEnum):
     CONTINUATION_STARTED = "core.continuation_started"
     WAKEUP_FIRED = "core.wakeup_fired"
     CHILD_SPAWNED = "core.child_spawned"
+    #: A keyed child's atomic birth record on its own session (sequence 1): core
+    #: bookkeeping, never a public spawn fact, transcript entry, or observer notice.
+    CHILD_RESERVED = "core.child_reserved"
     CHILD_FINISHED = "core.child_finished"
     WINDOW_PROJECTED = "core.window_projected"
     ACTIVATION_REQUESTED = "core.activation_requested"
